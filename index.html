@@ -526,21 +526,25 @@ tr:hover td { background: var(--gold-faint); }
 <!-- ═══ CONTRACT VIEW / SEND MODAL ═══ -->
 <div class="modal" id="contractModal">
   <div class="modal-bg" onclick="closeContract()"></div>
-  <div class="modal-card" style="max-width:760px">
+  <div class="modal-card" style="max-width:820px">
     <div class="modal-title">
       <span>📝 Rental Agreement</span>
       <button class="modal-close" onclick="closeContract()">✕</button>
     </div>
     <div id="contractHeader"></div>
+    <!-- Rendered HTML preview -->
+    <iframe id="contractPreviewFrame" style="width:100%;height:560px;border:1px solid var(--border);border-radius:10px;background:#fff;display:none" scrolling="yes"></iframe>
+    <!-- Raw / plain-text fallback -->
     <textarea id="contractFilled" class="finput" rows="20" style="font-family:monospace;font-size:12px;line-height:1.7;resize:vertical"></textarea>
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-sm" onclick="copyContract()" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📋 Copy Text</button>
       <button class="btn btn-sm" onclick="printContract()">🖨️ Print / PDF</button>
       <button class="btn btn-gold btn-sm" id="contractEmailBtn">✉ Send via Email</button>
+      <button class="btn btn-sm" id="contractRawToggle" onclick="toggleContractRaw()" style="display:none;border-color:var(--muted);color:var(--muted)">👁 View Raw HTML</button>
       <button class="btn btn-sm" onclick="closeContract();openContractTemplate()" style="margin-left:auto;border-color:var(--gold-dim);color:var(--gold)">✏ Edit Template</button>
       <button class="btn btn-sm" onclick="closeContract()">Close</button>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px">Tip: Edit the text above before sending. If email doesn't open, use Copy Text and paste into your email client.</div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Print opens a new window — use your browser's print dialog to save as PDF.</div>
   </div>
 </div>
 
@@ -4753,8 +4757,159 @@ function closeCustomerModal(){ $d('customerModal').classList.remove('open'); }
 // ════════════════════════════════════════════════════════
 var contractTemplate = '';
 
+var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { margin: 0.7in; size: letter; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; background: #fff; line-height: 1.55; }
+  .wrap { max-width: 720px; margin: 0 auto; border: 2px solid #C9A962; padding: 36px 44px; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; }
+  .co { font-weight: 700; font-size: 13px; line-height: 1.8; }
+  .logo-block { text-align: right; line-height: 1.2; }
+  .logo-p { font-size: 42px; font-weight: 900; color: #C9A962; font-family: Georgia, serif; line-height: 1; }
+  .logo-sub { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: #C9A962; margin-top: 2px; }
+  h1 { text-align: center; font-size: 20px; font-weight: 700; border-top: 1px solid #C9A962; border-bottom: 1px solid #C9A962; padding: 10px 0; margin-bottom: 22px; letter-spacing: .02em; }
+  h2 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 20px 0 10px; }
+  .fr { display: flex; align-items: baseline; margin-bottom: 5px; gap: 6px; }
+  .fl { width: 190px; flex-shrink: 0; color: #555; font-size: 11px; }
+  .fv { flex: 1; font-weight: 600; border-bottom: 1px solid #bbb; min-height: 16px; padding-bottom: 1px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 24px; }
+  p { margin-bottom: 9px; font-size: 11.5px; }
+  ul { margin: 6px 0 10px 18px; }
+  li { margin-bottom: 5px; font-size: 11.5px; }
+  .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 28px; }
+  .sig-box { }
+  .sig-line { border-bottom: 1px solid #555; height: 44px; margin-bottom: 6px; }
+  .sig-label { font-size: 10.5px; color: #555; }
+  .note { font-size: 10.5px; color: #555; margin-top: 7px; }
+  .center { text-align: center; font-weight: 700; margin: 10px 0 8px; }
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="co">
+      <strong>Prestige Black Corporation</strong><br>
+      5473 Blair Rd. Ste 100<br>
+      Dallas, TX 75231<br>
+      (214) 207-2481
+    </div>
+    <div class="logo-block">
+      <div class="logo-p">P</div>
+      <div class="logo-sub">Prestige<br>Black</div>
+    </div>
+  </div>
+
+  <h1>Car Rental Agreement</h1>
+
+  <!-- 1. PARTIES -->
+  <h2>1. Parties</h2>
+  <p>This Car Rental Agreement ("Agreement") is made and entered into on <strong>{{today}}</strong>, by and between:</p>
+  <div class="fr"><span class="fl">Owner:</span><span class="fv">Prestige Black Corporation</span></div>
+  <div class="fr"><span class="fl">Address:</span><span class="fv">5473 Blair Rd. Ste 100, Dallas, TX 75231</span></div>
+  <div class="fr"><span class="fl">Phone:</span><span class="fv">(214) 207-2481</span></div>
+  <p class="center">— and —</p>
+  <div class="fr"><span class="fl">Renter:</span><span class="fv">{{customer_name}}</span></div>
+  <div class="fr"><span class="fl">Address:</span><span class="fv">{{pickup_address}}</span></div>
+  <div class="fr"><span class="fl">Phone:</span><span class="fv">{{customer_phone}}</span></div>
+  <div class="fr"><span class="fl">Driver's License No.:</span><span class="fv">{{license_number}}</span></div>
+  <div class="fr"><span class="fl">State of Issue:</span><span class="fv">{{license_state}}</span></div>
+  {{broker_line}}
+
+  <!-- 2. VEHICLE INFORMATION -->
+  <h2>2. Vehicle Information</h2>
+  <div class="fr"><span class="fl">Vehicle:</span><span class="fv">{{vehicle}}</span></div>
+  <div class="fr"><span class="fl">Mileage at Start:</span><span class="fv">{{odometer_in}}</span></div>
+
+  <!-- 3. RENTAL TERM -->
+  <h2>3. Rental Term</h2>
+  <div class="fr"><span class="fl">Rental begins:</span><span class="fv">{{pickup_date}}{{pickup_time_display}}</span></div>
+  <div class="fr"><span class="fl">Rental ends:</span><span class="fv">{{return_date}}{{dropoff_time_display}}</span></div>
+  <div class="fr"><span class="fl">Duration:</span><span class="fv">{{days}} day(s)</span></div>
+
+  <!-- 4. RENTAL RATE AND FEES -->
+  <h2>4. Rental Rate and Fees</h2>
+  <div class="fr"><span class="fl">Daily Rate:</span><span class="fv">{{daily_rate}} per day</span></div>
+  <div class="fr"><span class="fl">Mileage Limit:</span><span class="fv">{{mileage_limit_display}}</span></div>
+  <div class="fr"><span class="fl">Excess Mileage Fee:</span><span class="fv">{{overage_display}}</span></div>
+  <div class="fr"><span class="fl">Unlimited Mileage Fee:</span><span class="fv">{{unlimited_fee}}</span></div>
+  <div class="fr"><span class="fl">Delivery Fee:</span><span class="fv">{{delivery_fee}}</span></div>
+  <div class="fr"><span class="fl">Pet Fee:</span><span class="fv">{{pet_fee}}</span></div>
+  <div class="fr"><span class="fl">Security Deposit:</span><span class="fv">{{deposit_amount}} &nbsp;<em style="font-weight:400;font-size:11px">(refundable upon trip completion and inspection)</em></span></div>
+  <div class="fr"><span class="fl">Total Due:</span><span class="fv" style="font-weight:700">{{total_revenue}}</span></div>
+  <div class="fr"><span class="fl">Balance Due at Pickup:</span><span class="fv">{{balance_due}}</span></div>
+  <div class="fr"><span class="fl">Refuel Fee:</span><span class="fv">$30 per quarter tank</span></div>
+  <p class="note">Payment is due in advance of the rental period unless otherwise agreed in writing.</p>
+
+  <!-- 5. CONDITION AND INSPECTION -->
+  <h2>5. Condition and Inspection of Vehicle</h2>
+  <p>The Renter acknowledges receipt of the Vehicle in clean, good operating condition and agrees to return it in the same condition (ordinary wear and tear excepted). Any damages, mechanical issues, or loss must be reported immediately to the Owner.</p>
+
+  <!-- 6. USE OF VEHICLE -->
+  <h2>6. Use of Vehicle</h2>
+  <p>The Renter agrees:</p>
+  <ul>
+    <li>To operate the Vehicle only for lawful personal use.</li>
+    <li>Not to use the Vehicle for racing, towing, transporting passengers for hire, or any illegal purpose.</li>
+    <li>Not to permit any person other than the authorized driver(s) to operate the Vehicle.</li>
+    <li>To operate the Vehicle in full compliance with all applicable federal, state, and local traffic laws, ordinances, and regulations. In the event Renter commits, causes, or is cited for any traffic violation, moving violation, reckless driving, excessive speeding, illegal racing, improper use of the Vehicle, or other unlawful operation during the rental period, Owner reserves the right to withhold all or a portion of the Security Deposit to cover fines, penalties, administrative costs, towing, impound fees, increased insurance exposure, or damages resulting from such violation.</li>
+    <li>Any evidence of reckless operation, including but not limited to excessive speeding (20+ mph over posted limit), racing, burnouts, drifting, launch control abuse, track use, or operation in a manner that materially increases risk shall constitute a material breach of this Agreement and may result in immediate termination of the rental without refund and forfeiture of the Security Deposit.</li>
+  </ul>
+
+  <!-- 7. INSURANCE AND LIABILITY -->
+  <h2>7. Insurance and Liability</h2>
+  <p>The Renter shall maintain valid automobile insurance covering liability, collision, and comprehensive damage during the rental term. The Renter shall be fully responsible for any loss, theft, or damage to the Vehicle, regardless of fault.</p>
+
+  <!-- 8. INDEMNIFICATION -->
+  <h2>8. Indemnification</h2>
+  <p>The Renter agrees to indemnify and hold harmless the Owner from any and all claims, damages, losses, or expenses (including attorney's fees) arising out of or related to the Renter's use, operation, or possession of the Vehicle.</p>
+
+  <!-- 9. SECURITY DEPOSIT -->
+  <h2>9. Security Deposit</h2>
+  <p>A refundable security deposit of <strong>{{deposit_amount}}</strong> is required before possession of the Vehicle. The deposit will be refunded within seven (7) days after return, provided no damage, excessive cleaning, unpaid mileage, or late fees apply.</p>
+
+  <!-- 10. RETURN OF VEHICLE -->
+  <h2>10. Return of Vehicle</h2>
+  <p>The Vehicle must be returned to the agreed location on or before the return date and time. Failure to return the Vehicle within 24 hours of the scheduled time without notice shall be considered vehicle theft and reported to law enforcement.</p>
+
+  <!-- 11. GOVERNING LAW -->
+  <h2>11. Governing Law</h2>
+  <p>This Agreement shall be governed by and construed in accordance with the laws of the State of Texas.</p>
+
+  <!-- 12. ENTIRE AGREEMENT -->
+  <h2>12. Entire Agreement</h2>
+  <p>This Agreement constitutes the entire understanding between the parties and supersedes all prior negotiations or representations. Any modification must be in writing and signed by both parties.</p>
+
+  <!-- 13. SIGNATURES -->
+  <h2>13. Signatures</h2>
+  <div class="sig-grid">
+    <div class="sig-box">
+      <div class="sig-line"></div>
+      <div class="sig-label"><strong>Owner:</strong> Jalen Nguyen on behalf of Prestige Black Corp.</div>
+      <div class="sig-label" style="margin-top:4px">Date: {{today}}</div>
+    </div>
+    <div class="sig-box">
+      <div class="sig-line"></div>
+      <div class="sig-label"><strong>Renter:</strong> {{customer_name}}</div>
+      <div class="sig-label" style="margin-top:4px">Date: ___________________</div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:18px;text-align:center">Prestige Black Corporation &nbsp;·&nbsp; 5473 Blair Rd. Ste 100, Dallas TX 75231 &nbsp;·&nbsp; (214) 207-2481</p>
+
+</div>
+</body>
+</html>`;
+
 function loadContractTemplate(){
-  contractTemplate = localStorage.getItem('pb_contract_template')||'';
+  contractTemplate = localStorage.getItem('pb_contract_template') || DEFAULT_CONTRACT_TEMPLATE;
 }
 
 function openContractTemplate(){
@@ -4790,44 +4945,89 @@ function openContract(id){
   }
   var addonLines=[];
   if(Number(b.delivery))  addonLines.push('Delivery ($'+b.delivery+')');
-  if(Number(b.unlimited)) addonLines.push('Unlimited Miles ($'+b.unlimited+')');
+  if(Number(b.unlimited)) addonLines.push('Unlimited Miles ($'+b.unlimited+'/day)');
   if(Number(b.pet))       addonLines.push('Pet Fee ($'+b.pet+')');
   if(Number(b.photo))     addonLines.push('Photoshoot ($'+b.photo+')');
   if(Number(b.champagne)) addonLines.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addonLines.push('Decor ($'+b.decor+')');
   if(Number(b.bouquet))   addonLines.push('Flower Bouquet ($'+b.bouquet+')');
   var rev=Number(b.revenue)||0, dep=Number(b.deposit)||0, bal=Math.max(0,rev-dep);
+  var days=Number(b.days)||1;
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+  // Computed display values
+  var dailyRate = days ? '$'+(Math.round(rev/days*100)/100).toFixed(2) : 'N/A';
+  var pickupDateFmt  = b.pickupDate  ? fmtDateFull(b.pickupDate)  : (b.date ? fmtDateFull(b.date) : '');
+  var returnDateFmt  = b.returnDate  ? fmtDateFull(b.returnDate)  : (b.dropoffDate ? fmtDateFull(b.dropoffDate) : '');
+  var pickupTimeTxt  = b.pickupTime  ? ' at '+fmtTime(b.pickupTime)  : '';
+  var dropoffTimeTxt = b.dropoffTime ? ' at '+fmtTime(b.dropoffTime) : '';
+  var milesDisplay   = b.includedMiles ? Number(b.includedMiles).toLocaleString()+' mi/day' : 'Unlimited';
+  var overageDisplay = b.overageRate  ? '$'+b.overageRate+'/mi over limit' : 'N/A';
+  var unlimitedFee   = b.unlimited    ? '$'+b.unlimited+'/day' : 'N/A';
+  var deliveryFee    = Number(b.delivery) ? '$'+b.delivery : 'N/A';
+  var petFee         = Number(b.pet)      ? '$'+b.pet      : 'N/A';
+  var odomIn         = b.odomIn ? Number(b.odomIn).toLocaleString()+' mi' : '';
+  var licNum         = (b.verify&&b.verify.idNumber) || '';
+  var licState       = (b.verify&&b.verify.idState)  || '';
+  var brokerLine     = b.broker
+    ? '<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+b.broker+'</span></div>'
+    : '';
   var filled=contractTemplate
-    .replace(/\{\{customer_name\}\}/gi,   b.name||'')
-    .replace(/\{\{customer_phone\}\}/gi,  b.phone||'')
-    .replace(/\{\{customer_email\}\}/gi,  b.email||'')
-    .replace(/\{\{vehicle\}\}/gi,         b.vehicle||'')
-    .replace(/\{\{rental_type\}\}/gi,     rentalType)
-    .replace(/\{\{booking_date\}\}/gi,    fmtDateFull(b.date))
-    .replace(/\{\{pickup_date\}\}/gi,     b.pickupDate?fmtDateFull(b.pickupDate):'')
-    .replace(/\{\{pickup_time\}\}/gi,     b.pickupTime?fmtTime(b.pickupTime):'')
-    .replace(/\{\{dropoff_date\}\}/gi,    b.dropoffDate?fmtDateFull(b.dropoffDate):'')
-    .replace(/\{\{dropoff_time\}\}/gi,    b.dropoffTime?fmtTime(b.dropoffTime):'')
-    .replace(/\{\{days\}\}/gi,            String(b.days||''))
-    .replace(/\{\{total_revenue\}\}/gi,   '$'+rev)
-    .replace(/\{\{deposit_amount\}\}/gi,  '$'+dep)
-    .replace(/\{\{balance_due\}\}/gi,     '$'+bal)
-    .replace(/\{\{pickup_address\}\}/gi,  b.address||'')
-    .replace(/\{\{addons\}\}/gi,          addonLines.length?addonLines.join(', '):'None')
-    .replace(/\{\{invoice_number\}\}/gi,  '#PBR-'+b.id.slice(-6).toUpperCase())
-    .replace(/\{\{notes\}\}/gi,           b.notes||'')
-    .replace(/\{\{today\}\}/gi,           todayFmt)
-    .replace(/\{\{broker\}\}/gi,          b.broker||'')
-    .replace(/\{\{broker_fee\}\}/gi,      b.brokerFee?'$'+((Number(b.brokerFee)||0)*(Number(b.days)||1)):'')
-    .replace(/\{\{broker_fee_rate\}\}/gi, b.brokerFee?'$'+b.brokerFee+'/day':'')
-    .replace(/\{\{net_revenue\}\}/gi,     '$'+(netRevenue(b)))
-    .replace(/\{\{included_miles\}\}/gi,  b.includedMiles?String(b.includedMiles):'Unlimited')
-    .replace(/\{\{overage_rate\}\}/gi,    b.overageRate?'$'+b.overageRate+'/mi':'N/A')
-    .replace(/\{\{source\}\}/gi,          b.source||'')
-    .replace(/\{\{loyalty_discount\}\}/gi,b.loyaltyDiscount?'$'+b.loyaltyDiscount:'');
+    .replace(/\{\{customer_name\}\}/gi,      b.name||'')
+    .replace(/\{\{customer_phone\}\}/gi,     b.phone||'')
+    .replace(/\{\{customer_email\}\}/gi,     b.email||'')
+    .replace(/\{\{vehicle\}\}/gi,            b.vehicle||'')
+    .replace(/\{\{rental_type\}\}/gi,        rentalType)
+    .replace(/\{\{booking_date\}\}/gi,       fmtDateFull(b.date))
+    .replace(/\{\{pickup_date\}\}/gi,        pickupDateFmt)
+    .replace(/\{\{return_date\}\}/gi,        returnDateFmt)
+    .replace(/\{\{pickup_time\}\}/gi,        b.pickupTime?fmtTime(b.pickupTime):'')
+    .replace(/\{\{dropoff_date\}\}/gi,       returnDateFmt)
+    .replace(/\{\{dropoff_time\}\}/gi,       b.dropoffTime?fmtTime(b.dropoffTime):'')
+    .replace(/\{\{pickup_time_display\}\}/gi, pickupTimeTxt)
+    .replace(/\{\{dropoff_time_display\}\}/gi,dropoffTimeTxt)
+    .replace(/\{\{days\}\}/gi,               String(days))
+    .replace(/\{\{total_revenue\}\}/gi,      '$'+rev.toLocaleString())
+    .replace(/\{\{deposit_amount\}\}/gi,     '$'+dep.toLocaleString())
+    .replace(/\{\{balance_due\}\}/gi,        '$'+bal.toLocaleString())
+    .replace(/\{\{pickup_address\}\}/gi,     b.address||'')
+    .replace(/\{\{addons\}\}/gi,             addonLines.length?addonLines.join(', '):'None')
+    .replace(/\{\{invoice_number\}\}/gi,     '#PBR-'+b.id.slice(-6).toUpperCase())
+    .replace(/\{\{notes\}\}/gi,              b.notes||'')
+    .replace(/\{\{today\}\}/gi,              todayFmt)
+    .replace(/\{\{broker\}\}/gi,             b.broker||'')
+    .replace(/\{\{broker_line\}\}/gi,        brokerLine)
+    .replace(/\{\{net_revenue\}\}/gi,        '$'+(netRevenue(b)))
+    .replace(/\{\{included_miles\}\}/gi,     b.includedMiles?String(b.includedMiles):'Unlimited')
+    .replace(/\{\{overage_rate\}\}/gi,       b.overageRate?'$'+b.overageRate+'/mi':'N/A')
+    .replace(/\{\{source\}\}/gi,             b.source||'')
+    .replace(/\{\{loyalty_discount\}\}/gi,   b.loyaltyDiscount?'$'+b.loyaltyDiscount:'')
+    .replace(/\{\{license_number\}\}/gi,     licNum)
+    .replace(/\{\{license_state\}\}/gi,      licState)
+    .replace(/\{\{daily_rate\}\}/gi,         dailyRate)
+    .replace(/\{\{mileage_limit_display\}\}/gi, milesDisplay)
+    .replace(/\{\{overage_display\}\}/gi,    overageDisplay)
+    .replace(/\{\{unlimited_fee\}\}/gi,      unlimitedFee)
+    .replace(/\{\{delivery_fee\}\}/gi,       deliveryFee)
+    .replace(/\{\{pet_fee\}\}/gi,            petFee)
+    .replace(/\{\{odometer_in\}\}/gi,        odomIn);
   $d('contractFilled').value=filled;
+  // If template is HTML, show iframe preview
+  var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
+  var frame=$d('contractPreviewFrame');
+  var rawToggle=$d('contractRawToggle');
+  if(isHtml){
+    frame.style.display='';
+    $d('contractFilled').style.display='none';
+    rawToggle.style.display='';
+    rawToggle.textContent='👁 View Raw HTML';
+    rawToggle._showingRaw=false;
+    frame.srcdoc=filled;
+  } else {
+    frame.style.display='none';
+    $d('contractFilled').style.display='';
+    rawToggle.style.display='none';
+  }
   $d('contractHeader').innerHTML=
     '<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">'+
     '<strong>'+b.vehicle+'</strong> <span>'+b.name+'</span>'+
@@ -4840,7 +5040,12 @@ function openContract(id){
   emailBtn.textContent=emailAddr?'✉ Send to '+emailAddr:'✉ Send Email';
   emailBtn.onclick=function(){
     var subj='Rental Agreement — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
+    // Email gets plain text version
     var body=$d('contractFilled').value;
+    if(body.trim().toLowerCase().startsWith('<!doctype')||body.trim().startsWith('<html')){
+      var tmp=document.createElement('div'); tmp.innerHTML=body;
+      body=tmp.innerText||tmp.textContent||'';
+    }
     window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(body);
   };
   $d('contractModal').classList.add('open');
@@ -4850,25 +5055,52 @@ function closeContract(){
   $d('contractModal').classList.remove('open');
 }
 
+function toggleContractRaw(){
+  var btn=$d('contractRawToggle');
+  var frame=$d('contractPreviewFrame');
+  var ta=$d('contractFilled');
+  if(btn._showingRaw){
+    frame.style.display=''; ta.style.display='none';
+    btn.textContent='👁 View Raw HTML'; btn._showingRaw=false;
+  } else {
+    frame.style.display='none'; ta.style.display='';
+    btn.textContent='◀ Back to Preview'; btn._showingRaw=true;
+  }
+}
+
 function copyContract(){
   var text=$d('contractFilled').value;
+  if(text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html')){
+    var tmp=document.createElement('div'); tmp.innerHTML=text;
+    text=tmp.innerText||tmp.textContent||'';
+  }
   if(navigator.clipboard){
-    navigator.clipboard.writeText(text).then(function(){ showToast('Contract copied to clipboard'); });
+    navigator.clipboard.writeText(text).then(function(){ toast('Contract copied to clipboard'); });
   } else {
+    $d('contractFilled').style.display='';
     $d('contractFilled').select();
     document.execCommand('copy');
-    showToast('Contract copied to clipboard');
+    toast('Contract copied to clipboard');
   }
 }
 
 function printContract(){
-  var el=$d('contractPrintArea');
   var text=$d('contractFilled').value;
-  el.innerHTML='<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap;max-width:700px;margin:0 auto">'+
-    text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
-  el.classList.add('pb-printable');
-  window.print();
-  setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; },1500);
+  var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
+  if(isHtml){
+    var w=window.open('','_blank','width=900,height=700');
+    w.document.write(text);
+    w.document.close();
+    w.focus();
+    setTimeout(function(){ w.print(); },600);
+  } else {
+    var el=$d('contractPrintArea');
+    el.innerHTML='<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap;max-width:700px;margin:0 auto">'+
+      text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
+    el.classList.add('pb-printable');
+    window.print();
+    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; },1500);
+  }
 }
 
 // ════════════════════════════════════════════════════════
