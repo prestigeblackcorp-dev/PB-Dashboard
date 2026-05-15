@@ -433,6 +433,7 @@ tr:hover td { background: var(--gold-faint); }
     <button class="btn btn-sm" id="gcalBtn" onclick="connectGCal()" title="Connect Google Calendar">🗓 Connect Calendar</button>
     <button class="btn btn-sm" id="gcalSyncBtn" onclick="syncAllToGCal()" title="Push all bookings to Google Calendar" style="display:none">↑ Sync All</button>
     <button class="btn btn-sm" onclick="openContractTemplate()" style="border-color:rgba(201,169,98,.4);color:var(--gold)" title="Set up rental agreement template">📝 Contract</button>
+    <button class="btn btn-sm" onclick="openSettings()" title="API keys & integrations">⚙️ Settings</button>
     <button class="btn btn-gold btn-sm" onclick="openModal()">+ Add Booking</button>
   </div>
 </div>
@@ -1096,7 +1097,11 @@ tr:hover td { background: var(--gold-faint); }
     <div id="verBookingLabel" style="font-size:13px;color:var(--muted);margin-bottom:16px"></div>
 
     <!-- ID Section -->
-    <div class="fsec" style="margin-bottom:12px">🪪 Driver ID Verification</div>
+    <div class="fsec" style="margin-bottom:10px">🪪 Driver ID Verification</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <button class="btn btn-sm" id="vStripeBtn" onclick="sendStripeVerification()" style="border-color:#635bff;color:#635bff;white-space:nowrap">📤 Send Stripe Verification Link</button>
+      <span id="vStripeStatus" style="font-size:12px;color:var(--muted)"></span>
+    </div>
     <div class="fgrid">
       <div class="fgroup">
         <div class="flabel">Full Legal Name</div>
@@ -1134,7 +1139,14 @@ tr:hover td { background: var(--gold-faint); }
     </div>
 
     <!-- Insurance Section -->
-    <div class="fsec" style="margin:18px 0 12px">🛡 Insurance Verification</div>
+    <div class="fsec" style="margin:18px 0 10px">🛡 Insurance Verification</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <label style="display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border:1px solid rgba(100,180,255,.5);border-radius:9px;cursor:pointer;font-size:12px;font-weight:700;color:#64b4ff;white-space:nowrap">
+        📷 Scan Insurance Card
+        <input type="file" id="vInsCardUpload" accept="image/*" style="display:none" onchange="scanInsuranceCard(this)">
+      </label>
+      <span id="vInscanStatus" style="font-size:12px;color:var(--muted)"></span>
+    </div>
     <div class="fgrid">
       <div class="fgroup">
         <div class="flabel">Insurance Carrier</div>
@@ -1203,6 +1215,40 @@ tr:hover td { background: var(--gold-faint); }
     <div style="display:flex;gap:10px;margin-top:20px">
       <button class="btn btn-gold" style="flex:1" onclick="saveVerify()">Save Verification</button>
       <button class="btn" onclick="closeVerify()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<div class="modal" id="settingsModal">
+  <div class="modal-bg" onclick="closeSettings()"></div>
+  <div class="modal-card" style="max-width:540px">
+    <div class="modal-title">
+      <span>⚙️ Settings & Integrations</span>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+
+    <div class="fsec" style="margin-bottom:12px">🔐 Verification Services</div>
+    <div class="fgrid">
+      <div class="fgroup ffull">
+        <div class="flabel">ID Verification Worker URL</div>
+        <input type="url" class="finput" id="settWorkerUrl" placeholder="https://your-worker.your-subdomain.workers.dev">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for Stripe Identity. Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-verification-worker.js</code> to get this URL.</div>
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">OpenAI API Key</div>
+        <input type="password" class="finput" id="settOpenAiKey" placeholder="sk-…">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Used for AI insurance card scanning (~$0.01/scan with GPT-4o). Get one at platform.openai.com.</div>
+      </div>
+    </div>
+
+    <div style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:12px;color:var(--muted);line-height:1.6">
+      <strong style="color:var(--gold)">Privacy note:</strong> Keys are stored only in this browser's localStorage and are never synced to Firebase or shared with any third party.
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:20px">
+      <button class="btn btn-gold" style="flex:1" onclick="saveSettings()">Save Settings</button>
+      <button class="btn" onclick="closeSettings()">Cancel</button>
     </div>
   </div>
 </div>
@@ -1503,6 +1549,8 @@ var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
 //  CLOUD SYNC
 // ════════════════════════════════════════════════════════
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
+var WORKER_URL   = localStorage.getItem('pb_worker_url')   || '';
+var OPENAI_KEY   = localStorage.getItem('pb_openai_key')   || '';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
 
 // Merge two arrays by ID — newer _t wins for conflicts, items from both sides kept
@@ -3772,10 +3820,17 @@ function openVerify(id){
   $d('vAuthAmount').value = v.authAmount||'';
   $d('vAuthDate').value   = v.authDate||'';
   $d('vAuthStatus').value = v.authStatus||'';
+  // Reset verification UI state
+  $d('vStripeStatus').textContent = '';
+  $d('vStripeStatus').style.color = '';
+  $d('vInscanStatus').textContent = '';
+  $d('vInscanStatus').style.color = '';
+  $d('vStripeBtn').disabled = false;
   $d('verifyModal').classList.add('open');
 }
 
 function closeVerify(){
+  clearVerificationPoll();
   $d('verifyModal').classList.remove('open');
   verifyId = null;
 }
@@ -3811,6 +3866,149 @@ function saveVerify(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+}
+
+// ════════════════════════════════════════════════════════
+//  SETTINGS
+// ════════════════════════════════════════════════════════
+function openSettings(){
+  $d('settWorkerUrl').value = WORKER_URL;
+  $d('settOpenAiKey').value = OPENAI_KEY;
+  $d('settingsModal').classList.add('open');
+}
+function closeSettings(){ $d('settingsModal').classList.remove('open'); }
+function saveSettings(){
+  WORKER_URL = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
+  OPENAI_KEY = ($d('settOpenAiKey').value||'').trim();
+  localStorage.setItem('pb_worker_url', WORKER_URL);
+  localStorage.setItem('pb_openai_key', OPENAI_KEY);
+  closeSettings();
+  toast('Settings saved.');
+}
+
+// ════════════════════════════════════════════════════════
+//  STRIPE IDENTITY VERIFICATION
+// ════════════════════════════════════════════════════════
+var _verifyPollTimer = null;
+
+function clearVerificationPoll(){
+  if(_verifyPollTimer){ clearInterval(_verifyPollTimer); _verifyPollTimer=null; }
+}
+
+function sendStripeVerification(){
+  if(!WORKER_URL){ openSettings(); return; }
+  var b=bookings.find(function(x){ return x.id===verifyId; });
+  $d('vStripeBtn').disabled=true;
+  $d('vStripeStatus').style.color='';
+  $d('vStripeStatus').textContent='Creating session…';
+  fetch(WORKER_URL+'/create-verification',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({bookingId:verifyId, returnUrl:window.location.href, customerName:b?b.name:''})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    if(!data.url||!data.id) throw new Error(data.error||'No URL returned from worker');
+    $d('vStripeBtn').disabled=false;
+    $d('vStripeStatus').innerHTML='<a href="'+data.url+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy & text to customer &nbsp;<button class="btn btn-sm" style="padding:3px 8px;font-size:11px" onclick="navigator.clipboard.writeText(\''+data.url+'\').then(function(){toast(\'Link copied!\');})">Copy</button>';
+    toast('Verification link created — polling for result…');
+    clearVerificationPoll();
+    _verifyPollTimer=setInterval(function(){
+      fetch(WORKER_URL+'/check-verification?session_id='+data.id)
+      .then(function(r){ return r.json(); })
+      .then(function(session){
+        if(session.status==='verified'){
+          clearVerificationPoll();
+          applyStripeVerification(session);
+        } else if(session.status==='canceled'){
+          clearVerificationPoll();
+          $d('vStripeStatus').textContent='❌ Verification was canceled by customer.';
+          $d('vStripeStatus').style.color='var(--red)';
+        }
+      }).catch(function(){});
+    },5000);
+  })
+  .catch(function(err){
+    $d('vStripeBtn').disabled=false;
+    $d('vStripeStatus').textContent='❌ '+err.message;
+    $d('vStripeStatus').style.color='var(--red)';
+  });
+}
+
+function applyStripeVerification(session){
+  var doc=session.last_verification_report&&session.last_verification_report.document;
+  if(doc){
+    var first=(doc.name&&doc.name.first_name)||'';
+    var last=(doc.name&&doc.name.last_name)||'';
+    if(first||last) $d('vIdName').value=(first+' '+last).trim();
+    var dob=doc.dob;
+    if(dob&&dob.year) $d('vIdDob').value=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
+    var exp=doc.expiration_date;
+    if(exp&&exp.year) $d('vIdExpiry').value=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
+    if(doc.number) $d('vIdNumber').value=doc.number;
+    if(doc.address&&doc.address.state) $d('vIdState').value=doc.address.state;
+    var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
+    if(doc.type&&typeMap[doc.type]) $d('vIdType').value=typeMap[doc.type];
+  }
+  $d('vIdVerified').checked=true;
+  $d('vStripeStatus').textContent='✅ Identity verified by Stripe!';
+  $d('vStripeStatus').style.color='var(--green)';
+  toast('✅ ID Verified via Stripe Identity!');
+}
+
+// ════════════════════════════════════════════════════════
+//  AI INSURANCE CARD SCANNING
+// ════════════════════════════════════════════════════════
+function scanInsuranceCard(input){
+  var file=input.files[0]; input.value='';
+  if(!file) return;
+  if(!OPENAI_KEY){ openSettings(); return; }
+  var b=bookings.find(function(x){ return x.id===verifyId; });
+  var rentalEnd=b?(b.returnDate||b.date):'';
+  var today=todayStr();
+  $d('vInscanStatus').style.color='';
+  $d('vInscanStatus').textContent='🔍 Scanning card with AI…';
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var parts=e.target.result.split(',');
+    var mime=parts[0].replace('data:','').replace(';base64','');
+    var b64=parts[1];
+    fetch('https://api.openai.com/v1/chat/completions',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+OPENAI_KEY},
+      body:JSON.stringify({
+        model:'gpt-4o',
+        max_tokens:400,
+        messages:[{role:'user',content:[
+          {type:'text',text:'Extract insurance info from this insurance card image. Return ONLY a JSON object with these exact keys: carrier (string), policyNumber (string), coverageType (one of: "Full Coverage","Liability Only","Comprehensive","Rental Coverage", or closest match), expiryDate (YYYY-MM-DD string, empty if not visible), policyholderName (string, empty if same as renter or not visible). No markdown, no explanation — just the JSON object.'},
+          {type:'image_url',image_url:{url:'data:'+mime+';base64,'+b64}}
+        ]}]
+      })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      var text=data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content;
+      if(!text) throw new Error('No response from OpenAI');
+      var match=text.match(/\{[\s\S]*\}/);
+      if(!match) throw new Error('Could not parse AI response');
+      var info=JSON.parse(match[0]);
+      if(info.carrier)         $d('vInsCarrier').value=info.carrier;
+      if(info.policyNumber)    $d('vInsPolicyNum').value=info.policyNumber;
+      if(info.coverageType)    $d('vInsCoverage').value=info.coverageType;
+      if(info.expiryDate)      $d('vInsExpiry').value=info.expiryDate;
+      if(info.policyholderName)$d('vInsHolder').value=info.policyholderName;
+      var warns=[];
+      if(info.expiryDate&&info.expiryDate<today)      warns.push('❌ Policy is EXPIRED ('+info.expiryDate+')');
+      else if(info.expiryDate&&rentalEnd&&info.expiryDate<rentalEnd) warns.push('⚠️ Expires '+info.expiryDate+' before rental ends '+rentalEnd);
+      $d('vInscanStatus').textContent=warns.length?warns.join(' · '):'✅ Card scanned — verify fields below';
+      $d('vInscanStatus').style.color=warns.length?'var(--red)':'var(--green)';
+    })
+    .catch(function(err){
+      $d('vInscanStatus').textContent='❌ Scan failed: '+err.message;
+      $d('vInscanStatus').style.color='var(--red)';
+    });
+  };
+  reader.readAsDataURL(file);
 }
 
 // ════════════════════════════════════════════════════════
