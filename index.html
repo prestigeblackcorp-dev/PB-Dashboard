@@ -1020,13 +1020,31 @@ var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
 
+// Merge two arrays by ID — newer _t wins for conflicts, items from both sides kept
+// Items marked _deleted:true are kept (tombstones) so deletions propagate across devices
+function mergeArray(local, cloud) {
+  var map = {};
+  (local || []).forEach(function(item) { if (item && item.id) map[item.id] = item; });
+  (cloud  || []).forEach(function(item) {
+    if (!item || !item.id) return;
+    if (!map[item.id]) {
+      map[item.id] = item;
+    } else {
+      var lt = Number(map[item.id]._t) || Number(map[item.id].createdAt) || 0;
+      var ct = Number(item._t)         || Number(item.createdAt)         || 0;
+      if (ct >= lt) map[item.id] = item;
+    }
+  });
+  var result = [];
+  for (var k in map) { if (map.hasOwnProperty(k)) result.push(map[k]); }
+  return result;
+}
+
 function cloudSave() {
-  if (!FIREBASE_URL || _cloudLoading) return; // never write back during a load
+  if (!FIREBASE_URL || _cloudLoading) return;
   setSyncStatus('syncing');
   var data = {
-    bookings: bookings,
-    expenses: expenses,
-    incomes: incomes,
+    bookings: bookings, expenses: expenses, incomes: incomes,
     custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
     budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
     savedAt: Date.now()
@@ -1035,9 +1053,18 @@ function cloudSave() {
     method: 'PUT', body: JSON.stringify(data),
     headers: { 'Content-Type': 'application/json' }
   }).then(function(r) {
-    setSyncStatus(r.ok ? 'ok' : 'error');
-    if (r.ok) localStorage.setItem('pb_last_cloud_save', Date.now().toString());
-  }).catch(function() { setSyncStatus('error'); });
+    if (r.ok) {
+      setSyncStatus('ok');
+      localStorage.setItem('pb_last_cloud_save', Date.now().toString());
+    } else {
+      setSyncStatus('error');
+      // Retry once after 5 seconds on failure
+      setTimeout(cloudSave, 5000);
+    }
+  }).catch(function() {
+    setSyncStatus('error');
+    setTimeout(cloudSave, 5000);
+  });
 }
 
 function cloudLoad(callback) {
@@ -1047,19 +1074,25 @@ function cloudLoad(callback) {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data && typeof data === 'object') {
-        _cloudLoading = true; // block cloudSave during writes
-        // Write directly to localStorage — do NOT call save()/saveExpenses()/saveIncomes()
-        // which would trigger cloudSave() and overwrite cloud with stale local data
+        _cloudLoading = true;
+        var needsPush = false;
+
         if (Array.isArray(data.bookings)) {
-          bookings = data.bookings;
+          var merged = mergeArray(bookings, data.bookings);
+          if (merged.length !== data.bookings.length) needsPush = true;
+          bookings = merged;
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
         }
         if (Array.isArray(data.expenses)) {
-          expenses = data.expenses;
+          var merged = mergeArray(expenses, data.expenses);
+          if (merged.length !== data.expenses.length) needsPush = true;
+          expenses = merged;
           try { localStorage.setItem('pb_expenses', JSON.stringify(expenses)); } catch(e) {}
         }
         if (Array.isArray(data.incomes)) {
-          incomes = data.incomes;
+          var merged = mergeArray(incomes, data.incomes);
+          if (merged.length !== data.incomes.length) needsPush = true;
+          incomes = merged;
           try { localStorage.setItem('pb_incomes', JSON.stringify(incomes)); } catch(e) {}
         }
         if (Array.isArray(data.custom_vehicles)) {
@@ -1071,6 +1104,8 @@ function cloudLoad(callback) {
           loadBudgets();
         }
         _cloudLoading = false;
+        // If local had items cloud didn't, push merged result so all devices get it
+        if (needsPush) cloudSave();
       }
       setSyncStatus('ok');
       localStorage.setItem('pb_last_cloud_save', (data && data.savedAt) ? data.savedAt.toString() : Date.now().toString());
@@ -1324,7 +1359,8 @@ function saveExpense(){
     vehicle:  $d('expVehicle').value,
     category: $d('expCategory').value,
     amount:   amount,
-    notes:    $d('expNotes').value.trim()
+    notes:    $d('expNotes').value.trim(),
+    _t:       Date.now()
   };
   var idx = expenses.findIndex(function(e){return e.id===entry.id;});
   if(idx!==-1) expenses[idx]=entry; else expenses.push(entry);
@@ -1336,7 +1372,8 @@ function saveExpense(){
 function deleteExpense(){
   var id=$d('expId').value; if(!id) return;
   if(!confirm('Delete this expense?')) return;
-  expenses=expenses.filter(function(e){return e.id!==id;});
+  var idx=expenses.findIndex(function(e){return e.id===id;});
+  if(idx!==-1){ expenses[idx]._deleted=true; expenses[idx]._t=Date.now(); }
   saveExpenses(); closeExpenseModal(); render(); renderExpenseLog();
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
@@ -1398,7 +1435,8 @@ function saveIncome(){
     toDate:      $d('iToDate').value,
     startTime:   $d('iStartTime').value,
     endTime:     $d('iEndTime').value,
-    notes:       $d('iNotes').value.trim()
+    notes:       $d('iNotes').value.trim(),
+    _t:          Date.now()
   };
   if(editingIncomeId){
     var idx=incomes.findIndex(function(x){ return x.id===editingIncomeId; });
@@ -1414,7 +1452,8 @@ function saveIncome(){
 
 function deleteIncome(){
   if(!editingIncomeId || !confirm('Delete this income entry?')) return;
-  incomes=incomes.filter(function(x){ return x.id!==editingIncomeId; });
+  var idx=incomes.findIndex(function(x){ return x.id===editingIncomeId; });
+  if(idx!==-1){ incomes[idx]._deleted=true; incomes[idx]._t=Date.now(); }
   saveIncomes(); closeIncomeModal(); renderIncomeList(); render();
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
@@ -1424,11 +1463,11 @@ function deleteIncome(){
 function renderIncomeList(){
   var container=$d('incomeListSection');
   if(!container) return;
-  if(!incomes.length){
+  if(!incomes.filter(function(i){return !i._deleted;}).length){
     container.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No additional income logged yet.</div>';
     return;
   }
-  var sorted=incomes.slice().sort(function(a,b){ return (b.fromDate||'').localeCompare(a.fromDate||''); });
+  var sorted=incomes.filter(function(i){return !i._deleted;}).sort(function(a,b){ return (b.fromDate||'').localeCompare(a.fromDate||''); });
   container.innerHTML='<div class="tbl-wrap"><table><thead><tr>'+
     '<th>Date</th><th>Description</th><th>Category</th><th>Vehicle</th><th>Time</th><th>Amount</th><th>Notes</th><th></th>'+
     '</tr></thead><tbody>'+
@@ -1614,7 +1653,7 @@ function removeFromGCal(b){
 
 function syncAllToGCal(){
   if(!gcalAccessToken){ alert('Connect Google Calendar first.'); return; }
-  var toSync = bookings.filter(function(b){ return b.status !== 'cancelled'; });
+  var toSync = bookings.filter(function(b){ return !b._deleted && b.status !== 'cancelled'; });
   if(!toSync.length){ alert('No active bookings to sync.'); return; }
   // Stagger requests slightly to avoid rate limits
   toSync.forEach(function(b, i){
@@ -1753,8 +1792,9 @@ function getEstCost(b){ return Number(b.cost)||0; }
 // Sum logged expenses for a vehicle within an optional date range
 function getVehicleExpenses(vehicle, from, to){
   return expenses.filter(function(e){
+    if(e._deleted) return false;
     if(vehicle && e.vehicle!==vehicle && e.vehicle!=='') return false;
-    if(vehicle && e.vehicle==='') return false; // "General" only in totals
+    if(vehicle && e.vehicle==='') return false;
     if(from && e.date<from) return false;
     if(to   && e.date>to)   return false;
     return true;
@@ -1762,6 +1802,7 @@ function getVehicleExpenses(vehicle, from, to){
 }
 function getTotalExpenses(from, to){
   return expenses.filter(function(e){
+    if(e._deleted) return false;
     if(from && e.date<from) return false;
     if(to   && e.date>to)   return false;
     return true;
@@ -1824,6 +1865,7 @@ function getFiltered(){
   var from=$d('filterFrom').value, to=$d('filterTo').value;
   var veh=$d('filterVehicle').value, typ=$d('filterType').value, sta=$d('filterStatus').value;
   return bookings.filter(function(b){
+    if(b._deleted) return false;
     if(from && b.date<from) return false;
     if(to   && b.date>to)   return false;
     if(veh  && b.vehicle!==veh) return false;
@@ -1853,6 +1895,7 @@ function renderKPIs(filtered, containerId){
 
   // Additional income from incomes log within date range
   var otherIncome = incomes.filter(function(inc){
+    if(inc._deleted) return false;
     if(from && (inc.fromDate||'') < from) return false;
     if(to   && (inc.fromDate||'') > to)   return false;
     return true;
@@ -1867,6 +1910,7 @@ function renderKPIs(filtered, containerId){
   var uncollected = active.filter(function(b){ return (Number(b.deposit)||0)===0 && b.status!=='cancelled'; }).length;
   // Feature 9: car payment expenses in range
   var carPayments = expenses.filter(function(e){
+    if(e._deleted) return false;
     if(e.category!=='Car Payment') return false;
     if(from && e.date<from) return false;
     if(to   && e.date>to)   return false;
@@ -2051,7 +2095,7 @@ function renderBookingsTable(filtered){
 // ════════════════════════════════════════════════════════
 function renderUpcoming(){
   var today=todayStr();
-  var upcoming=bookings.filter(function(b){ return b.date>=today && b.status!=='cancelled'; })
+  var upcoming=bookings.filter(function(b){ return !b._deleted && b.date>=today && b.status!=='cancelled'; })
     .sort(function(a,b){ return a.date.localeCompare(b.date); });
 
 
@@ -2097,7 +2141,7 @@ function renderUpcoming(){
 // ════════════════════════════════════════════════════════
 function renderPrevious(){
   var today=todayStr();
-  var prev=bookings.filter(function(b){ return b.date<today; })
+  var prev=bookings.filter(function(b){ return !b._deleted && b.date<today; })
     .sort(function(a,b){ return b.date.localeCompare(a.date); });
 
 
@@ -2218,7 +2262,7 @@ function isCurrentTrip(b){
 }
 
 function renderCurrent(){
-  var current=bookings.filter(isCurrentTrip)
+  var current=bookings.filter(function(b){ return !b._deleted && isCurrentTrip(b); })
     .sort(function(a,b){ return a.date.localeCompare(b.date); });
 
   // KPIs
@@ -2319,12 +2363,12 @@ function closeBookingDetail(){
 function renderExpenseLog(){
   var container=$d('expenseLogSection');
   if(!container) return;
-  if(!expenses.length){
+  if(!expenses.filter(function(e){return !e._deleted;}).length){
     container.innerHTML='<div class="tbl-head"><div class="tbl-title">💸 Expense Log</div></div>'+
       '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No expenses logged yet.</div>';
     return;
   }
-  var sorted=expenses.slice().sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+  var sorted=expenses.filter(function(e){return !e._deleted;}).sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
   container.innerHTML=
     '<div class="tbl-head">'+
       '<div class="tbl-title">💸 Expense Log</div>'+
@@ -2384,7 +2428,7 @@ function renderCalendar(){
   var lookup={};
   ALL_VEHICLES.forEach(function(v){ lookup[v]={}; week.forEach(function(d){ lookup[v][d]=[]; }); });
   bookings.forEach(function(b){
-    if(b.status==='cancelled') return;
+    if(b._deleted || b.status==='cancelled') return;
     if(vFilter && b.vehicle!==vFilter) return;
     var bDates=getBookingDates(b);
     bDates.forEach(function(bd){
@@ -2558,6 +2602,7 @@ function saveBooking(){
     status:    $d('fStatus').value,
     notes:     $d('fNotes').value.trim(),
     createdAt: editingId ? ((bookings.find(function(b){return b.id===editingId;})||{}).createdAt||Date.now()) : Date.now(),
+    _t: Date.now(),
   };
 
   if(editingId){
@@ -2584,8 +2629,9 @@ function deleteBookingModal(){ if(!editingId) return; confirmDelete(editingId); 
 function confirmDelete(id){
   if(!confirm('Delete this booking? Cannot be undone.')) return;
   var toDelete=bookings.find(function(b){return b.id===id;});
-  if(toDelete) removeFromGCal(toDelete); // remove from Google Calendar
-  bookings=bookings.filter(function(b){return b.id!==id;});
+  if(toDelete) removeFromGCal(toDelete);
+  var idx=bookings.findIndex(function(b){return b.id===id;});
+  if(idx!==-1){ bookings[idx]._deleted=true; bookings[idx]._t=Date.now(); }
   save(); closeModal(); initSelects();
   render();
   if(activeTab==='upcoming') renderUpcoming();
@@ -2711,7 +2757,7 @@ function saveVerify(){
 // ════════════════════════════════════════════════════════
 function renderTodayBanner(){
   var today=todayStr();
-  var todays=bookings.filter(function(b){ return b.date===today && b.status!=='cancelled'; });
+  var todays=bookings.filter(function(b){ return !b._deleted && b.date===today && b.status!=='cancelled'; });
   var banner=$d('todayBanner');
   if(!todays.length){ banner.classList.remove('visible'); return; }
   banner.classList.add('visible');
@@ -2734,6 +2780,7 @@ function renderTodayBanner(){
 function buildRepeatSet(){
   var phones={}, emails={};
   bookings.forEach(function(b){
+    if(b._deleted) return;
     if(b.phone){ phones[b.phone]=(phones[b.phone]||0)+1; }
     if(b.email){ emails[b.email]=(emails[b.email]||0)+1; }
   });
@@ -2769,7 +2816,7 @@ function getVehicleUtilization(vehicleName){
   var ninetyAgoStr=dateStr(ninetyAgo);
   var days={};
   bookings.forEach(function(b){
-    if(b.vehicle!==vehicleName || b.status==='cancelled') return;
+    if(b._deleted || b.vehicle!==vehicleName || b.status==='cancelled') return;
     getBookingDates(b).forEach(function(d){
       if(d>=ninetyAgoStr && d<=dateStr(today)) days[d]=1;
     });
@@ -2886,7 +2933,7 @@ function saveBudgets(){
 function getMonthSpent(category){
   var now=new Date(); var ym=now.getFullYear()+'-'+pad(now.getMonth()+1);
   return expenses.filter(function(e){
-    return e.category===category && (e.date||'').substring(0,7)===ym;
+    return !e._deleted && e.category===category && (e.date||'').substring(0,7)===ym;
   }).reduce(function(s,e){return s+(Number(e.amount)||0);},0);
 }
 function renderBudgetSection(){
@@ -2955,7 +3002,7 @@ function exportCSV(){
   var cols=['date','name','phone','email','vehicle','type','days','revenue','deposit','address',
             'delivery','unlimited','pet','photo','champagne','decor','bouquet','cost','status','notes'];
   var rows=[cols.join(',')];
-  bookings.forEach(function(b){
+  bookings.filter(function(b){return !b._deleted;}).forEach(function(b){
     rows.push(cols.map(function(c){
       var v=b[c]==null?'':String(b[c]);
       return v.includes(',')||v.includes('"')?'"'+v.replace(/"/g,'""')+'"':v;
@@ -3009,7 +3056,7 @@ function render(){
 // ════════════════════════════════════════════════════════
 function initSelects(){
   // Overview filter: only vehicles that have bookings
-  var bookedVehicles=Array.from(new Set(bookings.map(function(b){return b.vehicle;}).filter(Boolean))).sort();
+  var bookedVehicles=Array.from(new Set(bookings.filter(function(b){return !b._deleted;}).map(function(b){return b.vehicle;}).filter(Boolean))).sort();
   var ovSel=$d('filterVehicle'); var ovCur=ovSel.value;
   ovSel.innerHTML='<option value="">All Vehicles</option>';
   bookedVehicles.forEach(function(v){ var o=document.createElement('option'); o.value=o.textContent=v; ovSel.appendChild(o); });
@@ -3055,14 +3102,14 @@ document.addEventListener('visibilitychange', function() {
     });
   }
 });
-// Auto-pull every 60 seconds so deletions and clears propagate to all active devices
+// Auto-pull every 15 seconds so all changes propagate to every active device
 setInterval(function() {
   if (FIREBASE_URL && document.visibilityState === 'visible') {
     cloudLoad(function(ok) {
       if (ok) { initSelects(); render(); renderIncomeList(); renderExpenseLog(); }
     });
   }
-}, 60000);
+}, 15000);
 </script>
 </body>
 </html>
