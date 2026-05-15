@@ -180,6 +180,8 @@ tr:hover td { background: var(--gold-faint); }
 .cal-chip.photo  { background: rgba(192,132,252,.25); color: var(--purple); }
 .cal-chip.delivery { background: rgba(100,180,255,.2); color: var(--blue); }
 .cal-chip.unlimited { background: rgba(201,169,98,.2); color: var(--gold); }
+.cal-chip.broker  { background: rgba(255,92,92,.18); color: var(--red); }
+.cal-chip.source  { background: rgba(100,180,255,.15); color: var(--blue); }
 .cal-add-hint { position: absolute; bottom: 4px; right: 6px; font-size: 16px; color: var(--border);
   opacity: 0; transition: opacity .15s; pointer-events: none; }
 .cal-dc:hover .cal-add-hint { opacity: 1; }
@@ -497,6 +499,7 @@ tr:hover td { background: var(--gold-faint); }
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{notes}}</code>
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{broker}}</code>
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{broker_fee}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{broker_fee_rate}}</code>
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{net_revenue}}</code>
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{included_miles}}</code>
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{overage_rate}}</code>
@@ -622,6 +625,7 @@ tr:hover td { background: var(--gold-faint); }
             <th>Deposit</th><th>Kept</th><th>Returned</th><th>Delivery</th><th>Unlimited</th><th>Pet</th>
             <th>Photoshoot</th><th>Champagne</th><th>Decor</th><th>Bouquet</th>
             <th>Total Add-ons</th><th>Booking Cost</th><th onclick="sortB('profit')">Profit ↕</th>
+            <th onclick="sortB('broker')">Broker ↕</th><th>Source</th>
             <th>Status</th><th>Actions</th>
           </tr></thead>
           <tbody></tbody>
@@ -735,6 +739,7 @@ tr:hover td { background: var(--gold-faint); }
             <th>Bookings</th>
             <th>Gross Revenue</th>
             <th>Broker Fees Paid</th>
+            <th>Loyalty Discounts</th>
             <th>Net to PBR</th>
             <th>Avg Net / Booking</th>
             <th>Last Booking</th>
@@ -2623,7 +2628,7 @@ function renderBookingsTable(filtered){
   $d('bookingMeta').textContent=filtered.length+' booking'+(filtered.length!==1?'s':'')+
     ' — Revenue: '+$$(sumK(filtered.filter(function(b){return b.status!=='cancelled';}), 'revenue'));
   var tbody=document.querySelector('#bookingsTable tbody');
-  if(!sorted.length){ tbody.innerHTML='<tr class="empty-row"><td colspan="21">No bookings</td></tr>'; return; }
+  if(!sorted.length){ tbody.innerHTML='<tr class="empty-row"><td colspan="23">No bookings</td></tr>'; return; }
   tbody.innerHTML=sorted.map(function(b){
     var cost=getEstCost(b), profit=getProfit(b), pc=profit>=0?'pos':'neg';
     var del=Number(b.delivery)||0, unl=Number(b.unlimited)||0, pet=Number(b.pet)||0;
@@ -2631,6 +2636,8 @@ function renderBookingsTable(filtered){
     var kept=Number(b.depositKept)||0, returned=Math.max(0,(Number(b.deposit)||0)-kept);
     // Feature 4: orange warning row for zero-deposit non-cancelled bookings
     var noDeposit=(Number(b.deposit)||0)===0 && b.status!=='cancelled';
+    var tblBalanceDue=Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0));
+    var hasTblBalance=tblBalanceDue>0&&(b.status==='confirmed'||b.status==='completed');
     var rowCls=noDeposit?' class="deposit-warning"':'';
     return '<tr'+rowCls+'>'+
       '<td>'+fmtDate(b.date)+'</td>'+
@@ -2638,7 +2645,7 @@ function renderBookingsTable(filtered){
       '<td>'+b.vehicle+'</td>'+
       '<td><span class="badge '+b.type+'">'+b.type+'</span></td>'+
       '<td>'+b.days+'</td>'+
-      '<td style="color:'+GOLD+';font-weight:700">'+$$(b.revenue)+'</td>'+
+      '<td style="color:'+GOLD+';font-weight:700">'+$$(b.revenue)+(hasTblBalance?'<br><span style="font-size:10px;color:var(--red);font-weight:700">💵 −'+$$(tblBalanceDue)+' due</span>':'')+'</td>'+
       '<td>'+(b.deposit?$$(b.deposit):(noDeposit?'<span style="color:#f97316;font-weight:700">⚠ $0</span>':'—'))+'</td>'+
       '<td class="'+(kept?'pos':'')+'">'+  (kept?$$(kept):'—')+'</td>'+
       '<td class="'+(returned?'neg':'')+'">'+  (b.deposit?(returned?$$(returned):'$0'):'—')+'</td>'+
@@ -2652,6 +2659,8 @@ function renderBookingsTable(filtered){
       '<td>'+$$(getAddons(b))+'</td>'+
       '<td style="opacity:.7">'+$$(cost)+'</td>'+
       '<td class="'+pc+'">'+$$(profit)+'</td>'+
+      '<td>'+(b.broker?'<span style="font-size:11px;background:rgba(201,169,98,.15);color:var(--gold);padding:2px 7px;border-radius:5px;font-weight:700">'+b.broker+'</span>':'—')+'</td>'+
+      '<td style="font-size:11px;color:var(--muted)">'+(b.source||'—')+'</td>'+
       '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
       '<td style="display:flex;gap:5px">'+
         '<button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button>'+
@@ -2779,6 +2788,11 @@ function tripCard(b, showCountdown){
   var noDepositChip=(Number(b.deposit)||0)===0&&b.status!=='cancelled'?
     '<div style="margin-top:4px"><span class="deposit-chip">⚠️ No deposit collected</span></div>':'';
 
+  // Unpaid balance flag — shown when booking is confirmed/completed with balance still owed
+  var balanceDue=Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0));
+  var unpaidChip=(balanceDue>0&&(b.status==='confirmed'||b.status==='completed'))?
+    '<div style="margin-top:4px"><span style="background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">💵 Balance Due: '+$$(balanceDue)+'</span></div>':'';
+
   // Pickup/dropoff line
   var pdLine='';
   if(b.pickupDate||b.dropoffDate){
@@ -2802,6 +2816,7 @@ function tripCard(b, showCountdown){
       (addonsArr.length?'<div class="trip-extras">'+addonsArr.map(function(a){return'<span class="extra-chip">'+a+'</span>';}).join('')+'</div>':'')+
       (b.depositKept?'<div class="trip-extras"><span class="extra-chip" style="background:rgba(168,85,247,.15);color:#a855f7">🔒 Kept '+$$(b.depositKept)+'</span></div>':'')+
       noDepositChip+
+      unpaidChip+
       loggedLine+
     '</div>'+
     '<div>'+
@@ -3083,6 +3098,8 @@ function renderCalendar(){
         if(hasPhoto) chips.push('<span class="cal-chip photo">📷</span>');
         if(b.delivery) chips.push('<span class="cal-chip delivery">📦 Delivery</span>');
         if(b.unlimited) chips.push('<span class="cal-chip unlimited">∞ Unlim</span>');
+        if(b.broker) chips.push('<span class="cal-chip broker" title="Broker: '+b.broker+'">🤝 '+b.broker.split(' ')[0]+'</span>');
+        else if(b.source) chips.push('<span class="cal-chip source" title="Source: '+b.source+'">'+b.source.split(' ')[0]+'</span>');
         return '<div class="cal-block '+b.type+(hasPhoto?' has-photo':'')+'" onclick="event.stopPropagation();openModal(\''+b.id+'\')">'+
           '<div class="cal-block-name">'+b.name.split(' ')[0]+'</div>'+
           '<div class="cal-block-info">'+b.days+(b.type==='hourly'?'hr':'d')+' · '+$$(b.revenue)+'</div>'+
@@ -3970,12 +3987,17 @@ function dismissToast(){
 function exportCSV(){
   // Feature 12: record export date
   try{ localStorage.setItem('pb_last_export',todayStr()); }catch(e){}
-  var cols=['date','name','phone','email','vehicle','type','days','revenue','deposit','address',
-            'delivery','unlimited','pet','photo','champagne','decor','bouquet','cost','status','notes'];
+  var cols=['date','name','phone','email','vehicle','type','days','revenue','deposit',
+            'broker','brokerFee','brokerFeeTotal','source','loyaltyDiscount',
+            'includedMiles','overageRate',
+            'address','delivery','unlimited','pet','photo','champagne','decor','bouquet',
+            'cost','status','notes'];
   var rows=[cols.join(',')];
   bookings.filter(function(b){return !b._deleted;}).forEach(function(b){
     rows.push(cols.map(function(c){
-      var v=b[c]==null?'':String(b[c]);
+      var v;
+      if(c==='brokerFeeTotal') v=String(((Number(b.brokerFee)||0)*(Number(b.days)||1)));
+      else v=b[c]==null?'':String(b[c]);
       return v.includes(',')||v.includes('"')?'"'+v.replace(/"/g,'""')+'"':v;
     }).join(','));
   });
@@ -4330,23 +4352,25 @@ function renderBrokerTab(){
   var brokerMap={};
   brokered.forEach(function(b){
     var n=b.broker;
-    if(!brokerMap[n]) brokerMap[n]={name:n,count:0,gross:0,fees:0,lastDate:''};
+    if(!brokerMap[n]) brokerMap[n]={name:n,count:0,gross:0,fees:0,loyalty:0,lastDate:''};
     brokerMap[n].count++;
     brokerMap[n].gross+=(Number(b.revenue)||0);
     brokerMap[n].fees+=((Number(b.brokerFee)||0)*(Number(b.days)||1));
+    brokerMap[n].loyalty+=(Number(b.loyaltyDiscount)||0);
     if((b.date||'')>brokerMap[n].lastDate) brokerMap[n].lastDate=b.date;
   });
   var rows=Object.values(brokerMap).sort(function(a,b){return b.gross-a.gross;});
   var tbody=$d('brokerTable')?$d('brokerTable').querySelector('tbody'):null;
   if(tbody){
     tbody.innerHTML=rows.length?rows.map(function(r){
-      var net=r.gross-r.fees;
+      var net=r.gross-r.fees-r.loyalty;
       var avg=r.count?net/r.count:0;
       return '<tr>'+
         '<td><b>'+r.name+'</b></td>'+
         '<td>'+r.count+'</td>'+
         '<td>'+$$(r.gross)+'</td>'+
         '<td style="color:var(--red)">'+$$(r.fees)+'</td>'+
+        '<td style="color:var(--blue)">'+(r.loyalty?$$(r.loyalty):'—')+'</td>'+
         '<td style="color:var(--green)">'+$$(net)+'</td>'+
         '<td>'+$$(avg)+'</td>'+
         '<td>'+fmtDate(r.lastDate)+'</td>'+
@@ -4495,7 +4519,8 @@ function openContract(id){
     .replace(/\{\{notes\}\}/gi,           b.notes||'')
     .replace(/\{\{today\}\}/gi,           todayFmt)
     .replace(/\{\{broker\}\}/gi,          b.broker||'')
-    .replace(/\{\{broker_fee\}\}/gi,      b.brokerFee?'$'+b.brokerFee:'')
+    .replace(/\{\{broker_fee\}\}/gi,      b.brokerFee?'$'+((Number(b.brokerFee)||0)*(Number(b.days)||1)):'')
+    .replace(/\{\{broker_fee_rate\}\}/gi, b.brokerFee?'$'+b.brokerFee+'/day':'')
     .replace(/\{\{net_revenue\}\}/gi,     '$'+(netRevenue(b)))
     .replace(/\{\{included_miles\}\}/gi,  b.includedMiles?String(b.includedMiles):'Unlimited')
     .replace(/\{\{overage_rate\}\}/gi,    b.overageRate?'$'+b.overageRate+'/mi':'N/A')
