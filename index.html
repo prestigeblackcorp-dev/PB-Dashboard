@@ -1692,10 +1692,21 @@ function save(){ try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings
 function clearAllData(){
   if(!confirm('Delete ALL bookings, expenses, and additional income? This cannot be undone.')) return;
   bookings = []; expenses = []; incomes = [];
-  try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){}
-  try{ localStorage.setItem('pb_expenses', JSON.stringify(expenses)); }catch(e){}
-  try{ localStorage.setItem('pb_incomes', JSON.stringify(incomes)); }catch(e){}
-  cloudSave();
+  try{ localStorage.setItem('pb_dash_v2',  JSON.stringify([])); }catch(e){}
+  try{ localStorage.setItem('pb_expenses', JSON.stringify([])); }catch(e){}
+  try{ localStorage.setItem('pb_incomes',  JSON.stringify([])); }catch(e){}
+  // Force-push cleared state to Firebase so all devices see it immediately
+  if(FIREBASE_URL){
+    var data = { bookings:[], expenses:[], incomes:[],
+      custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles')||'[]'),
+      budgets: JSON.parse(localStorage.getItem('pb_budgets')||'{}'),
+      savedAt: Date.now() };
+    fetch(FIREBASE_URL.replace(/\/$/,'')+'/pb_data.json',{
+      method:'PUT', body:JSON.stringify(data),
+      headers:{'Content-Type':'application/json'}
+    }).then(function(r){ setSyncStatus(r.ok?'ok':'error'); })
+      .catch(function(){ setSyncStatus('error'); });
+  }
   initSelects(); render(); renderExpenseLog(); renderIncomeList();
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
@@ -3044,6 +3055,14 @@ document.addEventListener('visibilitychange', function() {
     });
   }
 });
+// Auto-pull every 60 seconds so deletions and clears propagate to all active devices
+setInterval(function() {
+  if (FIREBASE_URL && document.visibilityState === 'visible') {
+    cloudLoad(function(ok) {
+      if (ok) { initSelects(); render(); renderIncomeList(); renderExpenseLog(); }
+    });
+  }
+}, 60000);
 </script>
 </body>
 </html>
