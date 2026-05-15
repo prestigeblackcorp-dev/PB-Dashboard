@@ -804,6 +804,15 @@ tr:hover td { background: var(--gold-faint); }
         <div class="flabel">Pre-Trip Notes</div>
         <textarea class="finput ffull" id="ciNotes" rows="2" placeholder="Any existing damage or notes before the trip…" style="resize:vertical"></textarea>
       </div>
+      <div class="fsec ffull" style="margin-top:4px">Pre-Trip Photos</div>
+      <div class="fgroup ffull">
+        <label class="btn btn-sm" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;border-color:rgba(59,130,246,.4);color:#60a5fa">
+          📷 Add Photo
+          <input type="file" accept="image/*" multiple style="display:none" id="ciPhotoInput" onchange="handleCiPhotos(this)">
+        </label>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Photos are stored locally on this device</div>
+        <div id="ciPhotoGrid" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"></div>
+      </div>
     </div>
     <div style="display:flex;gap:10px;margin-top:18px">
       <button class="btn btn-gold" style="flex:1" onclick="saveCheckIn()">Save Check In</button>
@@ -869,6 +878,15 @@ tr:hover td { background: var(--gold-faint); }
           <option value="">Not recorded</option>
           <option>Excellent</option><option>Good</option><option>Minor Damage</option><option>Major Damage</option>
         </select>
+      </div>
+      <div class="fsec ffull" style="margin-top:4px">Post-Trip Photos</div>
+      <div class="fgroup ffull">
+        <label class="btn btn-sm" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;border-color:rgba(168,85,247,.4);color:#a855f7">
+          📷 Add Photo
+          <input type="file" accept="image/*" multiple style="display:none" id="coPhotoInput" onchange="handleCoPhotos(this)">
+        </label>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">Photos are stored locally on this device</div>
+        <div id="coPhotoGrid" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"></div>
       </div>
     </div>
     <div style="display:flex;gap:10px;margin-top:18px">
@@ -2636,22 +2654,24 @@ function openBookingDetail(id){
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' — '+b.addlIncome.desc:'')+'</span></div>':'')+
 
     // Check-In
-    (b.odomIn||b.fuelIn||b.condIn||b.checkInNotes?
+    (b.odomIn||b.fuelIn||b.condIn||b.checkInNotes||(b.checkInPhotoIds&&b.checkInPhotoIds.length)?
       '<div class="fsec">Check-In</div>'+
       (b.odomIn?'<div class="detail-row"><span class="detail-label">Odometer (Pickup)</span><span class="detail-val">'+Number(b.odomIn).toLocaleString()+' mi</span></div>':'')+
       (b.fuelIn?'<div class="detail-row"><span class="detail-label">Fuel at Pickup</span><span class="detail-val">'+b.fuelIn+'</span></div>':'')+
       (b.condIn?'<div class="detail-row"><span class="detail-label">Condition at Pickup</span><span class="detail-val">'+b.condIn+'</span></div>':'')+
-      (b.checkInNotes?'<div class="detail-row"><span class="detail-label">Pre-Trip Notes</span><span class="detail-val">'+b.checkInNotes+'</span></div>':'')
+      (b.checkInNotes?'<div class="detail-row"><span class="detail-label">Pre-Trip Notes</span><span class="detail-val">'+b.checkInNotes+'</span></div>':'')+
+      (b.checkInPhotoIds&&b.checkInPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkInPhotoIds.length+')</span><span class="detail-val"><div id="bdCiPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
 
     // Close-Out
-    (b.cost||b.closeOutNotes||b.odomOut||b.fuelOut||b.condOut?
+    (b.cost||b.closeOutNotes||b.odomOut||b.fuelOut||b.condOut||(b.checkOutPhotoIds&&b.checkOutPhotoIds.length)?
       '<div class="fsec">Close-Out</div>'+
       (b.cost?'<div class="detail-row"><span class="detail-label">Booking Cost</span><span class="detail-val">'+$$(b.cost)+'</span></div>':'')+
       (b.odomOut?'<div class="detail-row"><span class="detail-label">Odometer (Drop-off)</span><span class="detail-val">'+Number(b.odomOut).toLocaleString()+' mi'+(b.odomIn&&b.odomOut>b.odomIn?' — '+((b.odomOut-b.odomIn).toLocaleString())+' driven':'')+'</span></div>':'')+
       (b.fuelOut?'<div class="detail-row"><span class="detail-label">Fuel at Drop-off</span><span class="detail-val">'+(b.fuelIn?b.fuelIn+' → ':'')+b.fuelOut+'</span></div>':'')+
       (b.condOut?'<div class="detail-row"><span class="detail-label">Condition at Drop-off</span><span class="detail-val">'+(b.condIn?b.condIn+' → ':'')+b.condOut+'</span></div>':'')+
-      (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+b.closeOutNotes+'</span></div>':'')
+      (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+b.closeOutNotes+'</span></div>':'')+
+      (b.checkOutPhotoIds&&b.checkOutPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkOutPhotoIds.length+')</span><span class="detail-val"><div id="bdCoPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
 
     // Verification
@@ -2666,6 +2686,23 @@ function openBookingDetail(id){
     (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0">'+b.notes+'</div>':'');
 
   $d('bdBody').innerHTML=html;
+  // Async-load photo thumbnails into the detail view
+  if(b.checkInPhotoIds&&b.checkInPhotoIds.length){
+    dbLoadPhotos(b.checkInPhotoIds,function(photos){
+      var el=$d('bdCiPhotos'); if(!el) return;
+      el.innerHTML=photos.map(function(p){
+        return '<img src="'+p.data+'" style="width:64px;height:64px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(59,130,246,.4)" onclick="viewPhoto(\''+p.id+'\')">';
+      }).join('');
+    });
+  }
+  if(b.checkOutPhotoIds&&b.checkOutPhotoIds.length){
+    dbLoadPhotos(b.checkOutPhotoIds,function(photos){
+      var el=$d('bdCoPhotos'); if(!el) return;
+      el.innerHTML=photos.map(function(p){
+        return '<img src="'+p.data+'" style="width:64px;height:64px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(168,85,247,.4)" onclick="viewPhoto(\''+p.id+'\')">';
+      }).join('');
+    });
+  }
   $d('bookingDetailModal').classList.add('open');
 }
 
@@ -2960,6 +2997,136 @@ function confirmDelete(id){
 //  CLOSE OUT MODAL
 // ════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════
+//  PHOTO STORAGE  (IndexedDB — device-local)
+// ════════════════════════════════════════════════════════
+var _photoDB = null;
+function openPhotoDB(cb){
+  if(_photoDB){cb(_photoDB);return;}
+  try{
+    var req=indexedDB.open('pb_photos',1);
+    req.onupgradeneeded=function(e){e.target.result.createObjectStore('photos',{keyPath:'id'});};
+    req.onsuccess=function(e){_photoDB=e.target.result;cb(_photoDB);};
+    req.onerror=function(){cb(null);};
+  }catch(e){cb(null);}
+}
+function dbSavePhoto(id,dataUrl,cb){
+  openPhotoDB(function(db){
+    if(!db){if(cb)cb();return;}
+    var tx=db.transaction('photos','readwrite');
+    tx.objectStore('photos').put({id:id,data:dataUrl});
+    tx.oncomplete=function(){if(cb)cb();};
+    tx.onerror=function(){if(cb)cb();};
+  });
+}
+function dbLoadPhotos(ids,cb){
+  if(!ids||!ids.length){cb([]);return;}
+  openPhotoDB(function(db){
+    if(!db){cb([]);return;}
+    var results=[],pending=ids.length;
+    ids.forEach(function(id){
+      var tx=db.transaction('photos','readonly');
+      var req=tx.objectStore('photos').get(id);
+      req.onsuccess=function(e){
+        if(e.target.result) results.push({id:id,data:e.target.result.data});
+        if(--pending===0) cb(results);
+      };
+      req.onerror=function(){if(--pending===0) cb(results);};
+    });
+  });
+}
+function dbDeletePhoto(id,cb){
+  openPhotoDB(function(db){
+    if(!db){if(cb)cb();return;}
+    var tx=db.transaction('photos','readwrite');
+    tx.objectStore('photos').delete(id);
+    tx.oncomplete=function(){if(cb)cb();};
+    tx.onerror=function(){if(cb)cb();};
+  });
+}
+function compressImage(file,cb){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var img=new Image();
+    img.onload=function(){
+      var MAX=1200,q=0.78,w=img.width,h=img.height;
+      if(w>MAX){h=Math.round(h*MAX/w);w=MAX;}
+      var canvas=document.createElement('canvas');
+      canvas.width=w;canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      cb(canvas.toDataURL('image/jpeg',q));
+    };
+    img.onerror=function(){cb(null);};
+    img.src=e.target.result;
+  };
+  reader.onerror=function(){cb(null);};
+  reader.readAsDataURL(file);
+}
+function renderPhotoGrid(containerId,photoIds,deleteFn){
+  var el=$d(containerId); if(!el) return;
+  if(!photoIds||!photoIds.length){el.innerHTML='';return;}
+  dbLoadPhotos(photoIds,function(photos){
+    var map={};
+    photos.forEach(function(p){map[p.id]=p.data;});
+    el.innerHTML=photoIds.map(function(id){
+      var src=map[id]; if(!src) return '';
+      return '<div style="position:relative;display:inline-block">'+
+        '<img src="'+src+'" style="width:82px;height:82px;object-fit:cover;border-radius:8px;border:1px solid var(--gold-dim);cursor:pointer" onclick="viewPhoto(\''+id+'\')">'+
+        '<button onclick="'+deleteFn+'(\''+id+'\')" style="position:absolute;top:-7px;right:-7px;background:#ef4444;border:none;border-radius:50%;width:20px;height:20px;color:#fff;font-size:12px;cursor:pointer;line-height:20px;text-align:center;padding:0">✕</button>'+
+      '</div>';
+    }).join('');
+  });
+}
+function viewPhoto(photoId){
+  dbLoadPhotos([photoId],function(photos){
+    if(!photos.length) return;
+    var ov=document.createElement('div');
+    ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.93);display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+    ov.onclick=function(){document.body.removeChild(ov);};
+    ov.innerHTML='<img src="'+photos[0].data+'" style="max-width:95vw;max-height:90vh;border-radius:10px;object-fit:contain">';
+    document.body.appendChild(ov);
+  });
+}
+
+// Working lists — photos staged during modal edit, committed on Save
+var ciWorkingPhotos=[], ciOriginalPhotos=[];
+var coWorkingPhotos=[], coOriginalPhotos=[];
+
+function handleCiPhotos(input){
+  var files=Array.from(input.files); input.value='';
+  files.forEach(function(file){
+    compressImage(file,function(dataUrl){
+      if(!dataUrl) return;
+      var id='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+      dbSavePhoto(id,dataUrl,function(){
+        ciWorkingPhotos.push(id);
+        renderPhotoGrid('ciPhotoGrid',ciWorkingPhotos,'deleteCiPhoto');
+      });
+    });
+  });
+}
+function deleteCiPhoto(id){
+  ciWorkingPhotos=ciWorkingPhotos.filter(function(x){return x!==id;});
+  renderPhotoGrid('ciPhotoGrid',ciWorkingPhotos,'deleteCiPhoto');
+}
+function handleCoPhotos(input){
+  var files=Array.from(input.files); input.value='';
+  files.forEach(function(file){
+    compressImage(file,function(dataUrl){
+      if(!dataUrl) return;
+      var id='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+      dbSavePhoto(id,dataUrl,function(){
+        coWorkingPhotos.push(id);
+        renderPhotoGrid('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
+      });
+    });
+  });
+}
+function deleteCoPhoto(id){
+  coWorkingPhotos=coWorkingPhotos.filter(function(x){return x!==id;});
+  renderPhotoGrid('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
+}
+
+// ════════════════════════════════════════════════════════
 //  CHECK IN MODAL
 // ════════════════════════════════════════════════════════
 var checkInId = null;
@@ -2971,6 +3138,9 @@ function openCheckIn(id){
   $d('ciFuelIn').value = b.fuelIn||'';
   $d('ciCondIn').value = b.condIn||'';
   $d('ciNotes').value  = b.checkInNotes||'';
+  ciOriginalPhotos=(b.checkInPhotoIds||[]).slice();
+  ciWorkingPhotos=ciOriginalPhotos.slice();
+  renderPhotoGrid('ciPhotoGrid',ciWorkingPhotos,'deleteCiPhoto');
   $d('ciSummary').innerHTML=
     '<strong>'+b.vehicle+'</strong> &nbsp;·&nbsp; '+b.name+'<br>'+
     'Pickup: <strong>'+(b.pickupDate?fmtDate(b.pickupDate)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):''):fmtDate(b.date))+'</strong><br>'+
@@ -2979,6 +3149,9 @@ function openCheckIn(id){
 }
 
 function closeCheckIn(){
+  // Delete any newly added photos that won't be saved
+  ciWorkingPhotos.filter(function(id){return ciOriginalPhotos.indexOf(id)===-1;})
+    .forEach(function(id){dbDeletePhoto(id);});
   $d('checkInModal').classList.remove('open');
   checkInId=null;
 }
@@ -2987,13 +3160,18 @@ function saveCheckIn(){
   if(!checkInId) return;
   var idx=bookings.findIndex(function(b){return b.id===checkInId;});
   if(idx===-1) return;
-  bookings[idx].odomIn       = parseFloat($d('ciOdomIn').value)||0;
-  bookings[idx].fuelIn       = $d('ciFuelIn').value;
-  bookings[idx].condIn       = $d('ciCondIn').value;
-  bookings[idx].checkInNotes = $d('ciNotes').value.trim();
-  bookings[idx]._t           = Date.now();
+  // Delete photos removed during this session
+  ciOriginalPhotos.filter(function(id){return ciWorkingPhotos.indexOf(id)===-1;})
+    .forEach(function(id){dbDeletePhoto(id);});
+  bookings[idx].odomIn          = parseFloat($d('ciOdomIn').value)||0;
+  bookings[idx].fuelIn          = $d('ciFuelIn').value;
+  bookings[idx].condIn          = $d('ciCondIn').value;
+  bookings[idx].checkInNotes    = $d('ciNotes').value.trim();
+  bookings[idx].checkInPhotoIds = ciWorkingPhotos.slice();
+  bookings[idx]._t              = Date.now();
   save();
-  closeCheckIn();
+  $d('checkInModal').classList.remove('open');
+  checkInId=null;
   render();
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
@@ -3016,6 +3194,9 @@ function openCloseOut(id){
   $d('coOdomOut').value = b.odomOut||'';
   $d('coFuelOut').value = b.fuelOut||'';
   $d('coCondOut').value = b.condOut||'';
+  coOriginalPhotos=(b.checkOutPhotoIds||[]).slice();
+  coWorkingPhotos=coOriginalPhotos.slice();
+  renderPhotoGrid('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
   var oIn = Number(b.odomIn)||0, oOut = Number(b.odomOut)||0;
   $d('coMilesHint').textContent = (oIn&&oOut&&oOut>oIn) ? 'Miles driven: '+(oOut-oIn).toLocaleString()+' (pickup: '+oIn.toLocaleString()+' mi)' : (oIn?'Pickup odometer: '+oIn.toLocaleString()+' mi':'');
   var hasCI = b.odomIn||b.fuelIn||b.condIn||b.checkInNotes;
@@ -3048,6 +3229,9 @@ function coCalcMiles(){
 }
 
 function closeCloseOut(){
+  // Delete any newly added photos that won't be saved
+  coWorkingPhotos.filter(function(id){return coOriginalPhotos.indexOf(id)===-1;})
+    .forEach(function(id){dbDeletePhoto(id);});
   $d('closeOutModal').classList.remove('open');
   closeOutId = null;
 }
@@ -3056,16 +3240,21 @@ function saveCloseOut(){
   if(!closeOutId) return;
   var idx = bookings.findIndex(function(b){ return b.id===closeOutId; });
   if(idx===-1) return;
+  // Delete photos removed during this session
+  coOriginalPhotos.filter(function(id){return coWorkingPhotos.indexOf(id)===-1;})
+    .forEach(function(id){dbDeletePhoto(id);});
   var kept = parseFloat($d('coKept').value)||0;
-  bookings[idx].depositKept   = kept;
-  bookings[idx].cost          = parseFloat($d('coCost').value)||0;
-  bookings[idx].closeOutNotes = $d('coNotes').value.trim();
-  bookings[idx].odomOut  = parseFloat($d('coOdomOut').value)||0;
-  bookings[idx].fuelOut  = $d('coFuelOut').value;
-  bookings[idx].condOut  = $d('coCondOut').value;
-  bookings[idx]._t       = Date.now();
+  bookings[idx].depositKept      = kept;
+  bookings[idx].cost             = parseFloat($d('coCost').value)||0;
+  bookings[idx].closeOutNotes    = $d('coNotes').value.trim();
+  bookings[idx].odomOut          = parseFloat($d('coOdomOut').value)||0;
+  bookings[idx].fuelOut          = $d('coFuelOut').value;
+  bookings[idx].condOut          = $d('coCondOut').value;
+  bookings[idx].checkOutPhotoIds = coWorkingPhotos.slice();
+  bookings[idx]._t               = Date.now();
   save();
-  closeCloseOut();
+  $d('closeOutModal').classList.remove('open');
+  closeOutId = null;
   render();
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
