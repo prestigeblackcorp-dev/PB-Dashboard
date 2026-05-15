@@ -570,6 +570,8 @@ tr:hover td { background: var(--gold-faint); }
         <option value="">All</option><option value="completed">Completed</option>
         <option value="pending">Pending</option><option value="cancelled">Cancelled</option>
       </select></div>
+    <div class="fg"><div class="fl">Search</div>
+      <input type="text" class="fi" id="filterSearch" placeholder="Name, phone, vehicle, broker…" oninput="render()" style="min-width:200px"></div>
     <button class="btn btn-sm" style="align-self:flex-end" onclick="clearFilters()">Clear</button>
   </div>
 
@@ -1163,6 +1165,38 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup ffull" style="flex-direction:row;align-items:center;gap:10px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:10px 14px">
         <input type="checkbox" id="vInsVerified" style="width:18px;height:18px;accent-color:var(--green);cursor:pointer">
         <label for="vInsVerified" style="font-size:14px;font-weight:700;cursor:pointer;color:var(--green)">✅ Mark Insurance as Verified</label>
+      </div>
+    </div>
+
+    <!-- Credit Card Auth -->
+    <div class="fsec" style="margin:18px 0 12px">💳 Credit Card Auth Hold</div>
+    <div class="fgrid">
+      <div class="fgroup">
+        <div class="flabel">Card Type</div>
+        <select class="finput" id="vCardType">
+          <option value="">—</option>
+          <option>Visa</option><option>Mastercard</option><option>Amex</option>
+          <option>Discover</option><option>Other</option>
+        </select>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Last 4 Digits</div>
+        <input type="text" class="finput" id="vCardLast4" maxlength="4" placeholder="1234" inputmode="numeric">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Auth Hold Amount ($)</div>
+        <input type="number" class="finput" id="vAuthAmount" min="0" step="1" placeholder="0">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Auth Hold Date</div>
+        <input type="date" class="finput" id="vAuthDate">
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Auth Hold Status</div>
+        <select class="finput" id="vAuthStatus">
+          <option value="">—</option>
+          <option>Pending</option><option>Captured</option><option>Released</option><option>Disputed</option>
+        </select>
       </div>
     </div>
 
@@ -2435,6 +2469,7 @@ function switchTab(name){
 function getFiltered(){
   var from=$d('filterFrom').value, to=$d('filterTo').value;
   var veh=$d('filterVehicle').value, typ=$d('filterType').value, sta=$d('filterStatus').value;
+  var q=($d('filterSearch')?$d('filterSearch').value.trim().toLowerCase():'');
   return bookings.filter(function(b){
     if(b._deleted) return false;
     if(from && b.date<from) return false;
@@ -2442,11 +2477,15 @@ function getFiltered(){
     if(veh  && b.vehicle!==veh) return false;
     if(typ  && b.type!==typ)    return false;
     if(sta  && b.status!==sta)  return false;
+    if(q){
+      var hay=[b.name,b.phone,b.email,b.vehicle,b.broker,b.source,b.address,b.notes].join(' ').toLowerCase();
+      if(hay.indexOf(q)===-1) return false;
+    }
     return true;
   });
 }
 function clearFilters(){
-  ['filterFrom','filterTo','filterVehicle','filterType','filterStatus'].forEach(function(id){$d(id).value='';});
+  ['filterFrom','filterTo','filterVehicle','filterType','filterStatus','filterSearch'].forEach(function(id){ if($d(id)) $d(id).value=''; });
   render();
 }
 
@@ -2880,7 +2919,7 @@ function openBookingDetail(id){
   var idOk=v.idVerified, insOk=v.insVerified;
   var addonsHtml='';
   var addonFields=[
-    {label:'Delivery',val:b.delivery},{label:'Unlimited Miles',val:b.unlimited},
+    {label:'Delivery',val:b.delivery},{label:'Unlimited Miles ('+$$(b.unlimited)+'/day × '+(b.days||1)+'d)',val:(Number(b.unlimited)||0)*(Number(b.days)||1)},
     {label:'Pet Fee',val:b.pet},{label:'Photoshoot',val:b.photo},
     {label:'Champagne',val:b.champagne},{label:'Decor',val:b.decor},{label:'Bouquet',val:b.bouquet}
   ];
@@ -2914,7 +2953,7 @@ function openBookingDetail(id){
     // Revenue
     '<div class="fsec">Revenue</div>'+
     '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(b.revenue)+'</span></div>'+
-    (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$(b.brokerFee)+'</span></div>':'')+
+    (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/day × '+(b.days||1)+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">−'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
     (b.broker?'<div class="detail-row"><span class="detail-label">Broker / Partner</span><span class="detail-val">'+b.broker+'</span></div>':'')+
@@ -2949,6 +2988,15 @@ function openBookingDetail(id){
       (b.checkOutPhotoIds&&b.checkOutPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkOutPhotoIds.length+')</span><span class="detail-val"><div id="bdCoPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
 
+    // Photo Comparison (only when both sets exist)
+    ((b.checkInPhotoIds&&b.checkInPhotoIds.length&&b.checkOutPhotoIds&&b.checkOutPhotoIds.length)?
+      '<div class="fsec">📸 Photo Comparison</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">'+
+        '<div><div style="font-size:10px;font-weight:700;color:rgba(59,130,246,.8);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">Check-In ('+b.checkInPhotoIds.length+')</div><div id="bdCmpIn" style="display:flex;flex-wrap:wrap;gap:4px"></div></div>'+
+        '<div><div style="font-size:10px;font-weight:700;color:rgba(168,85,247,.8);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">Close-Out ('+b.checkOutPhotoIds.length+')</div><div id="bdCmpOut" style="display:flex;flex-wrap:wrap;gap:4px"></div></div>'+
+      '</div>'
+    : '')+
+
     // Verification
     '<div class="fsec">Verification</div>'+
     '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified':'🪪 Not verified')+'</span></div>'+
@@ -2975,6 +3023,21 @@ function openBookingDetail(id){
       var el=$d('bdCoPhotos'); if(!el) return;
       el.innerHTML=photos.map(function(p){
         return '<img src="'+p.data+'" style="width:64px;height:64px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(168,85,247,.4)" onclick="viewPhoto(\''+p.id+'\')">';
+      }).join('');
+    });
+  }
+  // Photo comparison grid
+  if(b.checkInPhotoIds&&b.checkInPhotoIds.length&&b.checkOutPhotoIds&&b.checkOutPhotoIds.length){
+    dbLoadPhotos(b.checkInPhotoIds,function(photos){
+      var el=$d('bdCmpIn'); if(!el) return;
+      el.innerHTML=photos.map(function(p){
+        return '<img src="'+p.data+'" style="width:56px;height:56px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid rgba(59,130,246,.4)" onclick="viewPhoto(\''+p.id+'\')">';
+      }).join('');
+    });
+    dbLoadPhotos(b.checkOutPhotoIds,function(photos){
+      var el=$d('bdCmpOut'); if(!el) return;
+      el.innerHTML=photos.map(function(p){
+        return '<img src="'+p.data+'" style="width:56px;height:56px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid rgba(168,85,247,.4)" onclick="viewPhoto(\''+p.id+'\')">';
       }).join('');
     });
   }
@@ -3627,7 +3690,7 @@ function coUpdateProfitSummary(){
   if(!b) return;
   var rev=Number(b.revenue)||0;
   var cost=parseFloat($d('coCost')?$d('coCost').value:0)||0;
-  var brokerFee=Number(b.brokerFee)||0;
+  var brokerFee=(Number(b.brokerFee)||0)*(Number(b.days)||1);
   var loyaltyDisc=Number(b.loyaltyDiscount)||0;
   var net=rev-cost-brokerFee-loyaltyDisc;
   var ps=$d('coProfitSummary');
@@ -3703,6 +3766,12 @@ function openVerify(id){
   $d('vInsExpiry').value    = v.insExpiry||'';
   $d('vInsHolder').value    = v.insHolder||'';
   $d('vInsVerified').checked = !!v.insVerified;
+  // Credit card auth fields
+  $d('vCardType').value   = v.cardType||'';
+  $d('vCardLast4').value  = v.cardLast4||'';
+  $d('vAuthAmount').value = v.authAmount||'';
+  $d('vAuthDate').value   = v.authDate||'';
+  $d('vAuthStatus').value = v.authStatus||'';
   $d('verifyModal').classList.add('open');
 }
 
@@ -3729,6 +3798,11 @@ function saveVerify(){
     insExpiry:   $d('vInsExpiry').value,
     insHolder:   $d('vInsHolder').value.trim(),
     insVerified: $d('vInsVerified').checked,
+    cardType:    $d('vCardType').value,
+    cardLast4:   $d('vCardLast4').value.trim(),
+    authAmount:  parseFloat($d('vAuthAmount').value)||0,
+    authDate:    $d('vAuthDate').value,
+    authStatus:  $d('vAuthStatus').value,
     verifiedAt:  new Date().toISOString()
   };
   save();
@@ -3864,6 +3938,15 @@ function duplicateBooking(id){
   setAddon('chkChampagne', 'fChampagne', b.champagne||0);
   setAddon('chkDecor',     'fDecor',     b.decor||0);
   setAddon('chkBouquet',   'fBouquet',   b.bouquet||0);
+  $d('fSource').value          = b.source||'';
+  $d('fLoyaltyDiscount').value = b.loyaltyDiscount||0;
+  $d('fIncludedMiles').value   = b.includedMiles||'';
+  $d('fIncludedMiles')._manual = !!b.includedMiles;
+  $d('fOverageRate').value     = b.overageRate||'';
+  $d('fOverageRate')._manual   = !!b.overageRate;
+  $d('fBroker').value          = b.broker||'';
+  $d('fBrokerFee').value       = b.brokerFee||0;
+  updateBrokerCalc(); updateMileageHint(); updateMaintWarning();
   $d('modal').classList.add('open');
   checkReturningCustomer();
 }
@@ -3884,7 +3967,7 @@ function renderPnl(filtered){
   var vMap={};
   active.forEach(function(b){
     if(!vMap[b.vehicle]) vMap[b.vehicle]={rev:0,cost:0,bookings:0};
-    vMap[b.vehicle].rev+=(Number(b.revenue)||0);
+    vMap[b.vehicle].rev+=netRevenue(b);
     vMap[b.vehicle].cost+=getEstCost(b);
     vMap[b.vehicle].bookings++;
   });
@@ -4035,7 +4118,7 @@ function generateInvoice(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   var addons=[];
   if(Number(b.delivery))  addons.push({lbl:'🚗 Delivery',val:b.delivery});
-  if(Number(b.unlimited)) addons.push({lbl:'∞ Unlimited Miles',val:b.unlimited});
+  if(Number(b.unlimited)) addons.push({lbl:'∞ Unlimited Miles ('+$$(b.unlimited)+'/day × '+(b.days||1)+'d)',val:(Number(b.unlimited)||0)*(Number(b.days)||1)});
   if(Number(b.pet))       addons.push({lbl:'🐾 Pet Fee',val:b.pet});
   if(Number(b.photo))     addons.push({lbl:'📷 Photoshoot',val:b.photo});
   if(Number(b.champagne)) addons.push({lbl:'🥂 Champagne',val:b.champagne});
@@ -4100,28 +4183,44 @@ function renderForecast(){
 // ════════════════════════════════════════════════════════
 function renderOutstanding(){
   var el=$d('outstandingSection'); if(!el) return;
-  var unpaid=bookings.filter(function(b){
-    return !b._deleted && b.status!=='cancelled' &&
-           (Number(b.deposit)||0)===0;
+  // Section 1: no deposit collected at all
+  var noDeposit=bookings.filter(function(b){
+    return !b._deleted && b.status!=='cancelled' && (Number(b.deposit)||0)===0;
   }).sort(function(a,b){return a.date.localeCompare(b.date);});
-  if(!unpaid.length){ el.innerHTML=''; return; }
-  el.innerHTML='<div class="tbl-card">'+
-    '<div class="tbl-head"><div class="tbl-title" style="color:#f97316">⚠ Outstanding — No Deposit Collected ('+unpaid.length+')</div></div>'+
-    '<div class="tbl-wrap"><table><thead><tr>'+
-      '<th>Date</th><th>Customer</th><th>Vehicle</th><th>Type</th><th>Revenue</th><th>Status</th><th></th>'+
-    '</tr></thead><tbody>'+
-    unpaid.map(function(b){
-      return '<tr>'+
-        '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
-        '<td style="font-weight:700">'+b.name+(b.phone?' <span style="color:var(--muted);font-size:11px">'+b.phone+'</span>':'')+'</td>'+
-        '<td>'+b.vehicle+'</td>'+
-        '<td><span class="badge '+b.type+'">'+b.type+'</span></td>'+
-        '<td style="color:var(--gold);font-weight:700">'+$$(b.revenue)+'</td>'+
-        '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
-        '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
-      '</tr>';
-    }).join('')+
-    '</tbody></table></div></div>';
+  // Section 2: confirmed/completed with balance still owed (revenue > deposit)
+  var balanceDue=bookings.filter(function(b){
+    if(b._deleted||b.status==='cancelled') return false;
+    if((b.status!=='confirmed'&&b.status!=='completed')) return false;
+    return (Number(b.revenue)||0)-(Number(b.deposit)||0)>0;
+  }).sort(function(a,b){return a.date.localeCompare(b.date);});
+  var html='';
+  function makeRow(b){
+    var bal=Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0));
+    return '<tr>'+
+      '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
+      '<td style="font-weight:700">'+b.name+(b.phone?' <span style="color:var(--muted);font-size:11px">'+b.phone+'</span>':'')+'</td>'+
+      '<td>'+b.vehicle+'</td>'+
+      '<td style="color:var(--gold);font-weight:700">'+$$(b.revenue)+'</td>'+
+      '<td>'+$$(b.deposit)+'</td>'+
+      '<td style="color:var(--red);font-weight:700">'+$$(bal)+'</td>'+
+      '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
+      '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
+    '</tr>';
+  }
+  var hdr='<th>Date</th><th>Customer</th><th>Vehicle</th><th>Revenue</th><th>Deposit</th><th>Balance Due</th><th>Status</th><th></th>';
+  if(balanceDue.length){
+    html+='<div class="tbl-card" style="margin-bottom:12px">'+
+      '<div class="tbl-head"><div class="tbl-title" style="color:var(--red)">💵 Balance Due — Collect Before/After Trip ('+balanceDue.length+')</div></div>'+
+      '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+
+      balanceDue.map(makeRow).join('')+'</tbody></table></div></div>';
+  }
+  if(noDeposit.length){
+    html+='<div class="tbl-card">'+
+      '<div class="tbl-head"><div class="tbl-title" style="color:#f97316">⚠ No Deposit Collected ('+noDeposit.length+')</div></div>'+
+      '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+
+      noDeposit.map(makeRow).join('')+'</tbody></table></div></div>';
+  }
+  el.innerHTML=html;
 }
 
 // ════════════════════════════════════════════════════════
@@ -4156,7 +4255,7 @@ function renderTaxTab(){
         var m=parseInt((i.fromDate||'').substring(5,7),10);
         return (i.fromDate||'').substring(0,4)===yr&&m>=qs&&m<=qe;
       });
-      var qRev=qBk.reduce(function(s,b){return s+(Number(b.revenue)||0);},0);
+      var qRev=qBk.reduce(function(s,b){return s+netRevenue(b);},0);
       var qOth=qIn.reduce(function(s,i){return s+(Number(i.amount)||0);},0);
       var qExp=qEx.reduce(function(s,e){return s+(Number(e.amount)||0);},0);
       var qNet=qRev+qOth-qExp;
@@ -4301,16 +4400,16 @@ function renderCustomersTab(){
   bookings.filter(function(b){return !b._deleted;}).forEach(function(b){
     var key=((b.phone||'').replace(/\D/g,'')||b.email||b.name||'').toLowerCase();
     if(!key) return;
-    if(!custMap[key]) custMap[key]={name:b.name,phone:b.phone||'',email:b.email||'',bookings:[],spent:0};
+    if(!custMap[key]) custMap[key]={name:b.name,phone:b.phone||'',email:b.email||'',bookings:[],spent:0,net:0};
     custMap[key].bookings.push(b);
-    if(b.status!=='cancelled') custMap[key].spent+=(Number(b.revenue)||0);
+    if(b.status!=='cancelled'){ custMap[key].spent+=(Number(b.revenue)||0); custMap[key].net+=netRevenue(b); }
   });
   var custs=Object.values(custMap).sort(function(a,b){return b.spent-a.spent;});
   if(!custs.length){ el.innerHTML='<div style="padding:40px;text-align:center;color:var(--muted)">No customer data yet.</div>'; return; }
   el.innerHTML='<div class="tbl-card">'+
     '<div class="tbl-head"><div class="tbl-title">All Customers</div><div class="tbl-meta">'+custs.length+' customers</div></div>'+
     '<div class="tbl-wrap"><table><thead><tr>'+
-      '<th>Customer</th><th>Phone</th><th>Bookings</th><th>Total Spent</th><th>Avg/Booking</th><th>Last Booking</th><th></th>'+
+      '<th>Customer</th><th>Phone</th><th>Bookings</th><th>Total Spent</th><th>Net Revenue</th><th>Avg/Booking</th><th>Last Booking</th><th></th>'+
     '</tr></thead><tbody>'+
     custs.map(function(c){
       var last=c.bookings.slice().sort(function(a,b){return b.date.localeCompare(a.date);})[0];
@@ -4322,7 +4421,8 @@ function renderCustomersTab(){
         '<td>'+(c.phone||'—')+'</td>'+
         '<td>'+c.bookings.length+'</td>'+
         '<td style="color:var(--gold);font-weight:700">'+$$(c.spent)+'</td>'+
-        '<td>'+$$(active?c.spent/active:0)+'</td>'+
+        '<td style="color:var(--green);font-weight:700">'+$$(c.net)+'</td>'+
+        '<td>'+$$(active?c.net/active:0)+'</td>'+
         '<td>'+(last?fmtDate(last.date):'—')+'</td>'+
         '<td><button class="btn btn-sm" onclick="openCustomerProfile(\''+enc+'\')">View</button></td>'+
       '</tr>';
@@ -4335,7 +4435,7 @@ function renderBrokerTab(){
   var active=bookings.filter(function(b){return !b._deleted&&b.status!=='cancelled';});
 
   // KPIs
-  var totalBF=sumK(active,'brokerFee');
+  var totalBF=active.reduce(function(s,b){return s+((Number(b.brokerFee)||0)*(Number(b.days)||1));},0);
   var totalLD=sumK(active,'loyaltyDiscount');
   var brokered=active.filter(function(b){return b.broker;});
   var kpiEl=$d('brokerKpiGrid'); if(!kpiEl) return;
@@ -4415,15 +4515,18 @@ function openCustomerProfile(enc){
   }).sort(function(a,b){return b.date.localeCompare(a.date);});
   if(!bks.length) return;
   var first=bks[0];
-  var spent=bks.filter(function(b){return b.status!=='cancelled';}).reduce(function(s,b){return s+(Number(b.revenue)||0);},0);
-  var active=bks.filter(function(b){return b.status!=='cancelled';}).length;
+  var nonCancelled=bks.filter(function(b){return b.status!=='cancelled';});
+  var spent=nonCancelled.reduce(function(s,b){return s+(Number(b.revenue)||0);},0);
+  var net=nonCancelled.reduce(function(s,b){return s+netRevenue(b);},0);
+  var active=nonCancelled.length;
   var vehs=Array.from(new Set(bks.map(function(b){return b.vehicle;}))).join(', ');
   $d('custModalTitle').textContent=first.name;
   $d('custModalBody').innerHTML=
     '<div class="cust-stat-grid">'+
       '<div class="cust-stat"><div class="cust-stat-val">'+bks.length+'</div><div class="cust-stat-lbl">Bookings</div></div>'+
       '<div class="cust-stat"><div class="cust-stat-val">'+$$(spent)+'</div><div class="cust-stat-lbl">Total Spent</div></div>'+
-      '<div class="cust-stat"><div class="cust-stat-val">'+$$(active?spent/active:0)+'</div><div class="cust-stat-lbl">Avg/Booking</div></div>'+
+      '<div class="cust-stat" style="color:var(--green)"><div class="cust-stat-val">'+$$(net)+'</div><div class="cust-stat-lbl">Net Revenue</div></div>'+
+      '<div class="cust-stat"><div class="cust-stat-val">'+$$(active?net/active:0)+'</div><div class="cust-stat-lbl">Avg Net/Booking</div></div>'+
     '</div>'+
     '<div style="font-size:12px;color:var(--muted);margin-bottom:14px">Vehicles: <strong style="color:var(--text)">'+vehs+'</strong>'+
       (first.phone?' &nbsp;·&nbsp; 📞 <strong>'+first.phone+'</strong>':'')+
