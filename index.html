@@ -786,7 +786,7 @@ tr:hover td { background: var(--gold-faint); }
           <option value="chauffeur">Chauffeur Service</option>
         </select></div>
       <div class="fgroup"><div class="flabel">Days / Hours</div>
-        <input type="number" class="finput" id="fDays" min="1" value="1" onchange="onVehicleChange();updateBrokerCalc()"></div>
+        <input type="number" class="finput" id="fDays" min="1" value="1" onchange="onVehicleChange();updateBrokerCalc();updateMileageHint()"></div>
       <div class="fgroup"><div class="flabel">Status</div>
         <select class="finput" id="fStatus">
           <option value="pending">Pending</option>
@@ -833,10 +833,10 @@ tr:hover td { background: var(--gold-faint); }
             <input type="number" class="addon-price-input" id="fDelivery" value="0" min="0">
           </div>
           <div class="addon-row">
-            <input type="checkbox" id="chkUnlimited" onchange="toggleAddon('fUnlimited',150,this.checked)">
+            <input type="checkbox" id="chkUnlimited" onchange="toggleAddon('fUnlimited',150,this.checked);updateMileageHint()">
             <span class="addon-name">∞ Unlimited Miles</span>
-            <span style="font-size:11px;color:var(--muted)">Varies by vehicle</span>
-            <input type="number" class="addon-price-input" id="fUnlimited" value="0" min="0">
+            <span style="font-size:11px;color:var(--muted)">$/day — overage waived</span>
+            <input type="number" class="addon-price-input" id="fUnlimited" value="0" min="0" oninput="updateMileageHint()">
           </div>
           <div class="addon-row">
             <input type="checkbox" id="chkPet" onchange="toggleAddon('fPet',50,this.checked)">
@@ -888,10 +888,11 @@ tr:hover td { background: var(--gold-faint); }
         <input type="number" class="finput" id="fLoyaltyDiscount" min="0" step="1" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
 
       <div class="fsec ffull">Mileage Allowance</div>
-      <div class="fgroup"><div class="flabel">Included Miles</div>
-        <input type="number" class="finput" id="fIncludedMiles" min="0" step="1" placeholder="e.g. 200"></div>
-      <div class="fgroup"><div class="flabel">Overage Rate (¢/mi)</div>
-        <input type="number" class="finput" id="fOverageRate" min="0" step="0.01" placeholder="e.g. 0.50"></div>
+      <div class="fgroup"><div class="flabel">Included Miles (total trip)</div>
+        <input type="number" class="finput" id="fIncludedMiles" min="0" step="1" placeholder="Auto-filled from vehicle" oninput="this._manual=!!this.value;updateMileageHint()"></div>
+      <div class="fgroup"><div class="flabel">Overage Rate ($/mi)</div>
+        <input type="number" class="finput" id="fOverageRate" min="0" step="0.01" placeholder="Auto-filled from vehicle" oninput="this._manual=!!this.value;updateMileageHint()"></div>
+      <div class="ffull" id="fMileageHint" style="font-size:12px;padding:2px 0 4px;color:var(--muted)"></div>
 
       <div class="fsec ffull">Broker / Partner</div>
       <div class="fgroup"><div class="flabel">Broker Name</div>
@@ -1417,6 +1418,24 @@ var VEHICLE_COSTS = {
   "Escalade Chauffeur": { rate:0,    deposit:0    },
 };
 var CHAUFFEUR_VEHICLES = ["Suburban","Escalade Chauffeur"];
+
+// ── Mileage policy from prestigeblackrentals.com ──
+// miles: included per day  |  overage: $ per mile over
+var VEHICLE_MILEAGE = {
+  "Corvette":           { miles: 150, overage: 2.00  },
+  "Corvette Z51":       { miles: 150, overage: 2.00  },
+  "BMW M3":             { miles: 150, overage: 3.50  },
+  "BMW i4":             { miles: 200, overage: 1.50  },
+  "Macan":              { miles: 200, overage: 2.00  },
+  "Porsche Boxster S":  { miles: 150, overage: 3.00  },
+  "C300":               { miles: 200, overage: 1.25  },
+  "Accord":             { miles: 200, overage: 0.50  },
+  "Lambo Huracan":      { miles: 125, overage: 10.00 },
+  "Lambo Urus":         { miles: 125, overage: 10.00 },
+  "Escalade Rental":    { miles: 150, overage: 5.00  },
+  "G Wagon":            { miles: 150, overage: 5.00  },
+  "Polaris Slingshot":  { miles: 300, overage: 1.00  },
+};
 var ALL_VEHICLES = Object.keys(VEHICLE_COSTS);
 
 // ════════════════════════════════════════════════════════
@@ -3097,6 +3116,9 @@ function openModal(id, vehiclePreset, datePreset){
   // New fields
   $d('fSource').value          = b?(b.source||'')         : '';
   $d('fLoyaltyDiscount').value = b?(b.loyaltyDiscount||0) : 0;
+  // Reset manual-edit flags so vehicle change can auto-fill mileage for new bookings
+  $d('fIncludedMiles')._manual = !!b;
+  $d('fOverageRate')._manual   = !!b;
   $d('fIncludedMiles').value   = b?(b.includedMiles||'')  : '';
   $d('fOverageRate').value     = b?(b.overageRate||'')     : '';
   $d('fBroker').value          = b?(b.broker||'')         : '';
@@ -3105,6 +3127,7 @@ function openModal(id, vehiclePreset, datePreset){
   var brokerNames=[...new Set(bookings.filter(function(x){return !x._deleted&&x.broker;}).map(function(x){return x.broker;}))];
   $d('brokerList').innerHTML=brokerNames.map(function(n){return '<option value="'+n.replace(/"/g,'&quot;')+'">'; }).join('');
   updateBrokerCalc();
+  updateMileageHint();
 
   if(!b && vehiclePreset) onVehicleChange();
   $d('modal').classList.add('open');
@@ -3149,6 +3172,34 @@ function onVehicleChange(){
   var vc=VEHICLE_COSTS[v];
   if(vc && vc.deposit) $d('fDeposit').value=vc.deposit;
   if(CHAUFFEUR_VEHICLES.indexOf(v)!==-1) $d('fType').value='chauffeur';
+  // Auto-fill mileage from website policy
+  var vm=VEHICLE_MILEAGE[v];
+  var days=parseFloat($d('fDays').value)||1;
+  if(vm){
+    // Only auto-fill if field is empty or was previously auto-filled (not manually edited)
+    if(!$d('fIncludedMiles')._manual) $d('fIncludedMiles').value=vm.miles*days;
+    if(!$d('fOverageRate')._manual)   $d('fOverageRate').value=vm.overage;
+  }
+  updateMileageHint();
+  updateBrokerCalc();
+}
+function updateMileageHint(){
+  var v=$d('fVehicle').value;
+  var vm=VEHICLE_MILEAGE[v];
+  var hint=$d('fMileageHint'); if(!hint) return;
+  var unlim=($d('chkUnlimited')&&$d('chkUnlimited').checked);
+  if(unlim){
+    var days=parseFloat($d('fDays').value)||1;
+    var rate=parseFloat($d('fUnlimited').value)||0;
+    hint.textContent='Unlimited miles selected — overage waived. Add-on cost: $'+rate+'/day × '+days+' days = $'+(rate*days);
+    hint.style.color='var(--green)';
+  } else if(vm){
+    var days=parseFloat($d('fDays').value)||1;
+    hint.textContent=vm.miles+' mi/day × '+days+' days = '+(vm.miles*days).toLocaleString()+' mi included · $'+vm.overage+'/mi overage';
+    hint.style.color='var(--muted)';
+  } else {
+    hint.textContent='';
+  }
 }
 
 function saveBooking(){
@@ -3471,19 +3522,36 @@ function coCalcMiles(){
   var o=parseFloat($d('coOdomOut').value)||0;
   var driven=(i&&o&&o>i)?(o-i):0;
   $d('coMilesHint').textContent = driven ? 'Miles driven: '+driven.toLocaleString()+' (pickup: '+i.toLocaleString()+' mi)' : (i?'Pickup odometer: '+i.toLocaleString()+' mi':'');
-  // Overage
+  // Overage — waived when unlimited miles add-on was purchased
   var allowed=Number(b.includedMiles)||0;
   var rate=Number(b.overageRate)||0;
+  var hasUnlimited=Number(b.unlimited)>0;
   var overRow=$d('coOverageRow');
   if(overRow){
-    if(driven && allowed && rate && driven>allowed){
+    if(hasUnlimited){
+      overRow.style.display='flex';
+      var unlimTotal=(Number(b.unlimited)||0)*(Number(b.days)||1);
+      overRow.style.background='rgba(124,252,152,.07)';
+      overRow.style.borderColor='rgba(124,252,152,.3)';
+      overRow.innerHTML='<span style="color:var(--green)">✅ Unlimited Miles purchased</span>'+
+        '<span>No overage charge — $0</span>'+
+        '<span style="color:var(--muted)">Add-on: '+$$(Number(b.unlimited))+'/day × '+(Number(b.days)||1)+' days = '+$$(unlimTotal)+'</span>';
+    } else if(driven && allowed && rate && driven>allowed){
       var over=driven-allowed;
       var charge=over*rate;
       overRow.style.display='flex';
+      overRow.style.background='rgba(255,92,92,.07)';
+      overRow.style.borderColor='rgba(255,92,92,.3)';
       overRow.innerHTML='<span>Miles driven: <b>'+driven.toLocaleString()+'</b></span>'+
         '<span>Included: <b>'+allowed.toLocaleString()+'</b></span>'+
         '<span>Over by: <b style="color:var(--red)">'+over.toLocaleString()+'</b></span>'+
         '<span>Overage charge: <b style="color:var(--red)">'+$$(charge)+'</b> @ $'+rate+'/mi</span>';
+    } else if(driven && allowed && driven<=allowed){
+      overRow.style.display='flex';
+      overRow.style.background='rgba(124,252,152,.07)';
+      overRow.style.borderColor='rgba(124,252,152,.3)';
+      overRow.innerHTML='<span style="color:var(--green)">✅ Within mileage limit</span>'+
+        '<span>'+driven.toLocaleString()+' / '+allowed.toLocaleString()+' mi used — $0 overage</span>';
     } else {
       overRow.style.display='none';
     }
