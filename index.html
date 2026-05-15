@@ -786,7 +786,7 @@ tr:hover td { background: var(--gold-faint); }
           <option value="chauffeur">Chauffeur Service</option>
         </select></div>
       <div class="fgroup"><div class="flabel">Days / Hours</div>
-        <input type="number" class="finput" id="fDays" min="1" value="1" onchange="onVehicleChange()"></div>
+        <input type="number" class="finput" id="fDays" min="1" value="1" onchange="onVehicleChange();updateBrokerCalc()"></div>
       <div class="fgroup"><div class="flabel">Status</div>
         <select class="finput" id="fStatus">
           <option value="pending">Pending</option>
@@ -897,8 +897,8 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup"><div class="flabel">Broker Name</div>
         <input type="text" class="finput" id="fBroker" list="brokerList" placeholder="Name or company" oninput="updateBrokerCalc()">
         <datalist id="brokerList"></datalist></div>
-      <div class="fgroup"><div class="flabel">Broker Fee ($)</div>
-        <input type="number" class="finput" id="fBrokerFee" min="0" step="1" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
+      <div class="fgroup"><div class="flabel">Broker Fee ($ / day)</div>
+        <input type="number" class="finput" id="fBrokerFee" min="0" step="0.01" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
       <div class="ffull" id="brokerCalcRow" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;display:flex;gap:18px;flex-wrap:wrap"></div>
     </div>
     <div class="factions">
@@ -2289,7 +2289,7 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
-function netRevenue(b){ return (Number(b.revenue)||0)-(Number(b.brokerFee)||0)-(Number(b.loyaltyDiscount)||0); }
+function netRevenue(b){ return (Number(b.revenue)||0)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
 
@@ -2397,7 +2397,7 @@ function renderKPIs(filtered, containerId){
   var deposits    = sumK(active,'deposit');
   var depositKept = sumK(active,'depositKept');
   var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
-  var totalBrokerFees = sumK(active,'brokerFee');
+  var totalBrokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*(Number(b.days)||1)); },0);
   var totalLoyaltyDisc = sumK(active,'loyaltyDiscount');
   var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0);
   var from        = $d('filterFrom') ? $d('filterFrom').value : '';
@@ -3129,15 +3129,17 @@ function onDepositChange(){}
 
 function updateBrokerCalc(){
   var rev=parseFloat($d('fRevenue')?$d('fRevenue').value:0)||0;
-  var fee=parseFloat($d('fBrokerFee')?$d('fBrokerFee').value:0)||0;
+  var ratePerDay=parseFloat($d('fBrokerFee')?$d('fBrokerFee').value:0)||0;
+  var days=parseFloat($d('fDays')?$d('fDays').value:1)||1;
+  var totalFee=ratePerDay*days;
   var dis=parseFloat($d('fLoyaltyDiscount')?$d('fLoyaltyDiscount').value:0)||0;
   var broker=$d('fBroker')?$d('fBroker').value.trim():'';
   var row=$d('brokerCalcRow'); if(!row) return;
-  if(!broker && !fee && !dis){ row.style.display='none'; return; }
-  var net=rev-fee-dis;
+  if(!broker && !ratePerDay && !dis){ row.style.display='none'; return; }
+  var net=rev-totalFee-dis;
   row.style.display='flex';
   row.innerHTML='<span>Gross: <b style="color:var(--gold)">'+$$(rev)+'</b></span>'+
-    (fee?'<span>Broker Fee: <b style="color:var(--red)">−'+$$(fee)+'</b></span>':'')+
+    (ratePerDay?'<span>Broker Fee: <b style="color:var(--red)">−'+$$(totalFee)+'</b> ('+$$(ratePerDay)+'/day × '+days+')</span>':'')+
     (dis?'<span>Loyalty Disc: <b style="color:var(--blue)">−'+$$(dis)+'</b></span>':'')+
     '<span>Net to PBR: <b style="color:var(--green)">'+$$(net)+'</b></span>';
 }
@@ -4216,7 +4218,7 @@ function renderBrokerTab(){
     if(!brokerMap[n]) brokerMap[n]={name:n,count:0,gross:0,fees:0,lastDate:''};
     brokerMap[n].count++;
     brokerMap[n].gross+=(Number(b.revenue)||0);
-    brokerMap[n].fees+=(Number(b.brokerFee)||0);
+    brokerMap[n].fees+=((Number(b.brokerFee)||0)*(Number(b.days)||1));
     if((b.date||'')>brokerMap[n].lastDate) brokerMap[n].lastDate=b.date;
   });
   var rows=Object.values(brokerMap).sort(function(a,b){return b.gross-a.gross;});
