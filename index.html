@@ -778,7 +778,8 @@ tr:hover td { background: var(--gold-faint); }
 
       <div class="fsec">Booking Details</div>
       <div class="fgroup"><div class="flabel">Vehicle *</div>
-        <select class="finput" id="fVehicle" onchange="onVehicleChange()"><option value="">Select vehicle</option></select></div>
+        <select class="finput" id="fVehicle" onchange="onVehicleChange();updateMaintWarning()"><option value="">Select vehicle</option></select></div>
+      <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
         <select class="finput" id="fType">
           <option value="daily">Daily Rental</option>
@@ -798,7 +799,7 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fsec" style="grid-column:1/-1">Pickup &amp; Drop-off</div>
       <div class="fgroup">
         <div class="flabel">Pickup Date</div>
-        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value">
+        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value;updateMaintWarning()">
       </div>
       <div class="fgroup">
         <div class="flabel">Pickup Time</div>
@@ -806,7 +807,7 @@ tr:hover td { background: var(--gold-faint); }
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Date</div>
-        <input type="date" class="finput" id="fDropoffDate">
+        <input type="date" class="finput" id="fDropoffDate" oninput="updateMaintWarning()">
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Time</div>
@@ -1845,6 +1846,44 @@ function saveMaintData(){
   try{ localStorage.setItem('pb_maintenance',JSON.stringify(maintenance)); }catch(e){}
   cloudSave();
 }
+// Returns array of conflicting maintenance records for a vehicle + date range
+function checkMaintenanceConflict(vehicle, pickupDate, dropoffDate){
+  if(!vehicle || !pickupDate) return [];
+  var end = dropoffDate || pickupDate;
+  return maintenance.filter(function(m){
+    if(m._deleted || m.vehicle !== vehicle) return false;
+    // Service date falls within booking window
+    if(m.date && m.date >= pickupDate && m.date <= end) return true;
+    // Next-due date falls within booking window (upcoming scheduled service)
+    if(m.nextDue && m.nextDue >= pickupDate && m.nextDue <= end) return true;
+    return false;
+  });
+}
+
+function updateMaintWarning(){
+  var el = $d('maintConflictWarning'); if(!el) return;
+  var vehicle   = $d('fVehicle') ? $d('fVehicle').value : '';
+  var pickup    = $d('fPickupDate') ? $d('fPickupDate').value : '';
+  var dropoff   = $d('fDropoffDate') ? $d('fDropoffDate').value : '';
+  var conflicts = checkMaintenanceConflict(vehicle, pickup, dropoff);
+  if(!conflicts.length){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.innerHTML = '<div style="display:flex;align-items:flex-start;gap:10px">' +
+    '<span style="font-size:18px;line-height:1">⚠️</span>' +
+    '<div>' +
+    '<div style="font-weight:700;color:#ffc800;margin-bottom:4px">Maintenance Conflict — ' + vehicle + '</div>' +
+    conflicts.map(function(m){
+      var lines = [];
+      if(m.date >= (pickup||'') && m.date <= (dropoff||pickup||''))
+        lines.push('<b>' + m.serviceType + '</b> scheduled on <b>' + fmtDate(m.date) + '</b>');
+      if(m.nextDue && m.nextDue >= (pickup||'') && m.nextDue <= (dropoff||pickup||''))
+        lines.push('Next service due <b>' + fmtDate(m.nextDue) + '</b> (' + m.serviceType + ')');
+      return lines.join(' · ');
+    }).join('<br>') +
+    '<div style="font-size:11px;color:rgba(255,200,0,.7);margin-top:4px">You can still save — but consider rescheduling.</div>' +
+    '</div></div>';
+}
+
 function openMaintenanceModal(id, vehiclePreset){
   editingMaintId = id||null;
   var m = id ? maintenance.find(function(x){return x.id===id;}) : null;
@@ -3128,6 +3167,7 @@ function openModal(id, vehiclePreset, datePreset){
   $d('brokerList').innerHTML=brokerNames.map(function(n){return '<option value="'+n.replace(/"/g,'&quot;')+'">'; }).join('');
   updateBrokerCalc();
   updateMileageHint();
+  updateMaintWarning();
 
   if(!b && vehiclePreset) onVehicleChange();
   $d('modal').classList.add('open');
@@ -3207,6 +3247,13 @@ function saveBooking(){
   if(!date)    { alert('Please enter a pickup date.');   return; }
   if(!name)    { alert('Please enter a customer name.'); return; }
   if(!vehicle) { alert('Please select a vehicle.');      return; }
+  var maintConflicts=checkMaintenanceConflict(vehicle, date, $d('fDropoffDate').value);
+  if(maintConflicts.length){
+    var msg='⚠️ Maintenance conflict for '+vehicle+':\n\n'+
+      maintConflicts.map(function(m){ return '• '+m.serviceType+' — '+fmtDate(m.date)+(m.nextDue?' (next due: '+fmtDate(m.nextDue)+')':''); }).join('\n')+
+      '\n\nSave booking anyway?';
+    if(!confirm(msg)) return;
+  }
 
   var entry={
     id:        editingId||('b'+Date.now()),
