@@ -9,6 +9,8 @@
 <meta name="apple-mobile-web-app-title" content="PB Rentals">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0a">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" type="image/png" href="icon.png">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" onload="initGCal()" async defer></script>
 <style>
@@ -346,6 +348,60 @@ tr:hover td { background: var(--gold-faint); }
 /* ── Current trips tab ── */
 .trip-card-current { border-color:var(--gold-dim); }
 .trip-card-current .trip-vehicle { color:var(--gold); }
+
+/* ── Invoice Print ── */
+@media print {
+  body>*:not(#invoicePrintArea){ display:none!important; }
+  #invoicePrintArea{ display:block!important; padding:36px; color:#111; background:#fff; }
+}
+#invoicePrintArea{ display:none; }
+.inv-wrap{ font-family:Arial,sans-serif; color:#111; max-width:720px; margin:0 auto; }
+.inv-header{ display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #C9A962;padding-bottom:20px;margin-bottom:20px; }
+.inv-logo{ font-size:18px;font-weight:900;color:#C9A962;letter-spacing:.08em;text-transform:uppercase; }
+.inv-co{ font-size:11px;color:#666;margin-top:3px; }
+.inv-title{ font-size:28px;font-weight:900;color:#111; }
+.inv-num{ font-size:11px;color:#999;margin-top:3px; }
+.inv-sec{ font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#888;border-bottom:1px solid #eee;padding-bottom:5px;margin:16px 0 10px; }
+.inv-row{ display:flex;justify-content:space-between;font-size:13px;padding:4px 0; }
+.inv-lbl{ color:#666; }
+.inv-val{ font-weight:600; }
+.inv-total{ display:flex;justify-content:space-between;font-size:16px;font-weight:900;border-top:2px solid #C9A962;padding-top:10px;margin-top:6px; }
+.inv-foot{ margin-top:28px;padding-top:12px;border-top:1px solid #eee;font-size:11px;color:#aaa;text-align:center; }
+
+/* ── Tax Summary Tab ── */
+.tax-quarter{ background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:12px; }
+.tax-q-hd{ padding:12px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border); }
+.tax-q-lbl{ font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--gold); }
+.tax-q-net{ font-size:16px;font-weight:900; }
+
+/* ── Customer Profile ── */
+.cust-stat-grid{ display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px; }
+.cust-stat{ background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center; }
+.cust-stat-val{ font-size:20px;font-weight:900;color:var(--gold); }
+.cust-stat-lbl{ font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:3px; }
+
+/* ── Maintenance ── */
+.maint-due{ color:var(--red);font-weight:700; }
+.maint-soon{ color:#ffc800;font-weight:700; }
+.maint-ok{ color:var(--green);font-weight:700; }
+
+/* ── Forecast ── */
+.forecast-grid{ display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px; }
+.forecast-card{ background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 18px; }
+.forecast-lbl{ font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px; }
+.forecast-val{ font-size:22px;font-weight:900;color:var(--gold); }
+.forecast-sub{ font-size:11px;color:var(--muted);margin-top:4px; }
+
+/* ── Utilization Heatmap ── */
+.heatmap-wrap{ overflow-x:auto;padding:8px 0; }
+.heatmap-vrow{ display:flex;align-items:center;gap:3px;margin-bottom:3px; }
+.heatmap-vlbl{ font-size:10px;color:var(--muted);min-width:130px;text-align:right;padding-right:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0; }
+.hm-day{ width:13px;height:13px;border-radius:2px;flex-shrink:0;cursor:default;transition:transform .1s; }
+.hm-day:hover{ transform:scale(1.4); }
+.hm-0{ background:rgba(255,255,255,.06); }
+.hm-1{ background:rgba(201,169,98,.3); }
+.hm-2{ background:rgba(201,169,98,.6); }
+.hm-3{ background:rgba(201,169,98,.9); }
 </style>
 </head>
 <body>
@@ -391,7 +447,13 @@ tr:hover td { background: var(--gold-faint); }
   <button class="tab-btn" onclick="switchTab('current')">🚗 Current</button>
   <button class="tab-btn" onclick="switchTab('previous')">Previous Trips</button>
   <button class="tab-btn" onclick="switchTab('calendar')">Calendar</button>
+  <button class="tab-btn" onclick="switchTab('tax')">Tax</button>
+  <button class="tab-btn" onclick="switchTab('fleet')">🔧 Fleet</button>
+  <button class="tab-btn" onclick="switchTab('customers')">👤 Customers</button>
 </div>
+
+<!-- INVOICE PRINT AREA -->
+<div id="invoicePrintArea"></div>
 
 <!-- ═══ BACKUP TOAST (Feature 12) ═══ -->
 <div id="backupToast">
@@ -424,6 +486,7 @@ tr:hover td { background: var(--gold-faint); }
   </div>
 
   <div class="main">
+    <div class="chart-card" id="forecastSection" style="padding:16px 18px"></div>
     <div class="kpi-grid" id="kpiGrid"></div>
     <div class="budget-section" id="budgetSection"></div>
     <div class="charts-row">
@@ -538,6 +601,37 @@ tr:hover td { background: var(--gold-faint); }
     <div style="margin-left:auto;font-size:11px;color:var(--muted)">Click a cell to add a booking for that vehicle & date</div>
   </div>
   <div class="cal-wrap" id="calendarWrap"></div>
+</div>
+
+<!-- ═══ TAB: TAX SUMMARY ═══ -->
+<div id="tab-tax" class="tab-panel">
+  <div class="main">
+    <div id="taxContent"></div>
+  </div>
+</div>
+
+<!-- ═══ TAB: FLEET MAINTENANCE ═══ -->
+<div id="tab-fleet" class="tab-panel">
+  <div class="main">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase">Fleet &amp; Maintenance</div>
+      <button class="btn btn-gold btn-sm" onclick="openMaintenanceModal()">+ Log Service</button>
+    </div>
+    <div id="fleetAlerts" style="margin-bottom:12px"></div>
+    <div class="chart-card" style="margin-bottom:16px">
+      <div class="chart-ttl">Vehicle Utilization — Last 90 Days</div>
+      <div class="heatmap-wrap" id="utilizationHeatmap"></div>
+    </div>
+    <div id="fleetRecords"></div>
+  </div>
+</div>
+
+<!-- ═══ TAB: CUSTOMERS ═══ -->
+<div id="tab-customers" class="tab-panel">
+  <div class="main">
+    <div id="outstandingSection" style="margin-bottom:16px"></div>
+    <div id="customersContent"></div>
+  </div>
 </div>
 
 <!-- ═══ MODAL ═══ -->
@@ -670,6 +764,7 @@ tr:hover td { background: var(--gold-faint); }
     </div>
     <div id="bdBody"></div>
     <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end">
+      <button class="btn" id="bdInvoiceBtn" onclick="">📄 Invoice</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">✏ Edit</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
     </div>
@@ -707,6 +802,49 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup ffull">
         <div class="flabel">Close-Out Notes</div>
         <textarea class="finput ffull" id="coNotes" rows="2" placeholder="Any damage, fees, or notes…" style="resize:vertical"></textarea>
+      </div>
+
+      <div class="fsec ffull">Mileage</div>
+      <div class="fgroup">
+        <div class="flabel">Odometer at Pickup</div>
+        <input type="number" class="finput" id="coOdomIn" min="0" step="1" placeholder="Miles">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Odometer at Drop-off</div>
+        <input type="number" class="finput" id="coOdomOut" min="0" step="1" placeholder="Miles" oninput="coCalcMiles()">
+        <div class="fhint" id="coMilesHint" style="color:var(--gold)"></div>
+      </div>
+
+      <div class="fsec ffull">Fuel Level</div>
+      <div class="fgroup">
+        <div class="flabel">Fuel at Pickup</div>
+        <select class="finput" id="coFuelIn">
+          <option value="">Not recorded</option>
+          <option>Full</option><option>3/4</option><option>1/2</option><option>1/4</option><option>Empty</option>
+        </select>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Fuel at Drop-off</div>
+        <select class="finput" id="coFuelOut">
+          <option value="">Not recorded</option>
+          <option>Full</option><option>3/4</option><option>1/2</option><option>1/4</option><option>Empty</option>
+        </select>
+      </div>
+
+      <div class="fsec ffull">Vehicle Condition</div>
+      <div class="fgroup">
+        <div class="flabel">Condition at Pickup</div>
+        <select class="finput" id="coCondIn">
+          <option value="">Not recorded</option>
+          <option>Excellent</option><option>Good</option><option>Minor Damage</option><option>Major Damage</option>
+        </select>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Condition at Drop-off</div>
+        <select class="finput" id="coCondOut">
+          <option value="">Not recorded</option>
+          <option>Excellent</option><option>Good</option><option>Minor Damage</option><option>Major Damage</option>
+        </select>
       </div>
     </div>
     <div style="display:flex;gap:10px;margin-top:18px">
@@ -963,6 +1101,72 @@ tr:hover td { background: var(--gold-faint); }
   </div>
 </div>
 
+<!-- ═══ MAINTENANCE MODAL ═══ -->
+<div class="modal" id="maintenanceModal">
+  <div class="modal-bg" onclick="closeMaintenanceModal()"></div>
+  <div class="modal-card" style="max-width:520px">
+    <div class="modal-title">
+      <span id="maintModalTitle">🔧 Log Service</span>
+      <button class="modal-close" onclick="closeMaintenanceModal()">✕</button>
+    </div>
+    <input type="hidden" id="maintId">
+    <div class="fgrid">
+      <div class="fgroup">
+        <div class="flabel">Vehicle *</div>
+        <select class="finput" id="maintVehicle"></select>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Service Type *</div>
+        <select class="finput" id="maintType">
+          <option>Oil Change</option><option>Tire Rotation</option><option>Tire Replacement</option>
+          <option>Detail / Wash</option><option>Registration</option><option>Inspection</option>
+          <option>Brake Service</option><option>Fluid Service</option><option>Battery</option><option>Other</option>
+        </select>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Service Date *</div>
+        <input type="date" class="finput" id="maintDate">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Next Due Date</div>
+        <input type="date" class="finput" id="maintNextDue">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Cost ($)</div>
+        <input type="number" class="finput" id="maintCost" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Mileage at Service</div>
+        <input type="number" class="finput" id="maintMileage" min="0" placeholder="Miles">
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Notes</div>
+        <input type="text" class="finput" id="maintNotes" placeholder="Optional details…">
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:18px;align-items:center">
+      <button class="btn btn-danger btn-sm" id="maintDeleteBtn" onclick="deleteMaintRecord()" style="display:none;margin-right:auto">Delete</button>
+      <button class="btn" onclick="closeMaintenanceModal()">Cancel</button>
+      <button class="btn btn-gold" style="flex:1" onclick="saveMaintRecord()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ CUSTOMER PROFILE MODAL ═══ -->
+<div class="modal" id="customerModal">
+  <div class="modal-bg" onclick="closeCustomerModal()"></div>
+  <div class="modal-card" style="max-width:680px">
+    <div class="modal-title">
+      <span id="custModalTitle">Customer Profile</span>
+      <button class="modal-close" onclick="closeCustomerModal()">✕</button>
+    </div>
+    <div id="custModalBody"></div>
+    <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end">
+      <button class="btn" onclick="closeCustomerModal()">Close</button>
+    </div>
+  </div>
+</div>
+
 <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="handleCSVImport(event)">
 
 <script>
@@ -1045,6 +1249,7 @@ function cloudSave() {
   setSyncStatus('syncing');
   var data = {
     bookings: bookings, expenses: expenses, incomes: incomes,
+    maintenance: maintenance,
     custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
     budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
     savedAt: Date.now()
@@ -1103,6 +1308,12 @@ function cloudLoad(callback) {
           try { localStorage.setItem('pb_budgets', JSON.stringify(data.budgets)); } catch(e) {}
           loadBudgets();
         }
+        if (Array.isArray(data.maintenance)) {
+          var merged = mergeArray(maintenance, data.maintenance);
+          if (merged.length !== data.maintenance.length) needsPush = true;
+          maintenance = merged;
+          try { localStorage.setItem('pb_maintenance', JSON.stringify(maintenance)); } catch(e) {}
+        }
         _cloudLoading = false;
         // If local had items cloud didn't, push merged result so all devices get it
         if (needsPush) cloudSave();
@@ -1136,8 +1347,8 @@ function openSyncSetup() {
     localStorage.setItem('pb_firebase_url', url);
     updateSyncUI();
     cloudLoad(function(ok) {
-      if (ok) { initSelects(); render(); renderIncomeList(); renderExpenseLog(); }
-      else alert('❌ Could not connect.\n\nCheck:\n1. URL is correct\n2. Firebase rules are set to public:\n{\n  "rules": { ".read": true, ".write": true }\n}');
+      afterCloudLoad(ok);
+      if (!ok) alert('❌ Could not connect.\n\nCheck:\n1. URL is correct\n2. Firebase rules are set to public:\n{\n  "rules": { ".read": true, ".write": true }\n}');
     });
   } else {
     localStorage.removeItem('pb_firebase_url');
@@ -1150,8 +1361,8 @@ function forcePull() {
   if (!FIREBASE_URL) { openSyncSetup(); return; }
   setSyncStatus('syncing');
   cloudLoad(function(ok) {
-    if (ok) { initSelects(); render(); renderIncomeList(); renderExpenseLog(); }
-    else alert('Could not reach Firebase. Check your internet connection.');
+    afterCloudLoad(ok);
+    if (!ok) alert('Could not reach Firebase. Check your internet connection.');
   });
 }
 
@@ -1378,6 +1589,68 @@ function deleteExpense(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+}
+
+// ════════════════════════════════════════════════════════
+//  FLEET MAINTENANCE
+// ════════════════════════════════════════════════════════
+var maintenance = [];
+var editingMaintId = null;
+
+function loadMaintenance(){
+  try{ var r=localStorage.getItem('pb_maintenance'); if(r) maintenance=JSON.parse(r); }catch(e){}
+}
+function saveMaintData(){
+  try{ localStorage.setItem('pb_maintenance',JSON.stringify(maintenance)); }catch(e){}
+  cloudSave();
+}
+function openMaintenanceModal(id, vehiclePreset){
+  editingMaintId = id||null;
+  var m = id ? maintenance.find(function(x){return x.id===id;}) : null;
+  $d('maintModalTitle').textContent = m ? '✏ Edit Service Record' : '🔧 Log Service';
+  $d('maintDeleteBtn').style.display = m ? '' : 'none';
+  $d('maintId').value     = m ? m.id : '';
+  $d('maintDate').value   = m ? m.date : todayStr();
+  $d('maintNextDue').value= m ? (m.nextDue||'') : '';
+  $d('maintCost').value   = m ? (m.cost||'') : '';
+  $d('maintMileage').value= m ? (m.mileage||'') : '';
+  $d('maintNotes').value  = m ? (m.notes||'') : '';
+  var sel=$d('maintVehicle'); sel.innerHTML='';
+  ALL_VEHICLES.forEach(function(v){ var o=document.createElement('option'); o.value=o.textContent=v; sel.appendChild(o); });
+  sel.value = m ? m.vehicle : (vehiclePreset||ALL_VEHICLES[0]||'');
+  $d('maintType').value = m ? (m.serviceType||'Oil Change') : 'Oil Change';
+  $d('maintenanceModal').classList.add('open');
+}
+function closeMaintenanceModal(){ $d('maintenanceModal').classList.remove('open'); editingMaintId=null; }
+function saveMaintRecord(){
+  var vehicle=$d('maintVehicle').value, date=$d('maintDate').value;
+  if(!vehicle||!date){ alert('Select a vehicle and date.'); return; }
+  var entry={
+    id:          editingMaintId||('m'+Date.now()),
+    vehicle:     vehicle,
+    serviceType: $d('maintType').value,
+    date:        date,
+    nextDue:     $d('maintNextDue').value,
+    cost:        parseFloat($d('maintCost').value)||0,
+    mileage:     parseFloat($d('maintMileage').value)||0,
+    notes:       $d('maintNotes').value.trim(),
+    _t:          Date.now()
+  };
+  if(editingMaintId){
+    var idx=maintenance.findIndex(function(x){return x.id===editingMaintId;});
+    if(idx!==-1) maintenance[idx]=entry; else maintenance.push(entry);
+  } else {
+    maintenance.push(entry);
+  }
+  saveMaintData(); closeMaintenanceModal();
+  if(activeTab==='fleet') renderFleetTab();
+}
+function deleteMaintRecord(){
+  if(!editingMaintId||!confirm('Delete this service record?')) return;
+  var idx=maintenance.findIndex(function(x){return x.id===editingMaintId;});
+  if(idx!==-1){ maintenance[idx]._deleted=true; maintenance[idx]._t=Date.now(); }
+  saveMaintData(); closeMaintenanceModal();
+  if(activeTab==='fleet') renderFleetTab();
 }
 
 // ════════════════════════════════════════════════════════
@@ -1730,13 +2003,14 @@ function loadBookings(){
 function save(){ try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){} cloudSave(); }
 function clearAllData(){
   if(!confirm('Delete ALL bookings, expenses, and additional income? This cannot be undone.')) return;
-  bookings = []; expenses = []; incomes = [];
-  try{ localStorage.setItem('pb_dash_v2',  JSON.stringify([])); }catch(e){}
-  try{ localStorage.setItem('pb_expenses', JSON.stringify([])); }catch(e){}
-  try{ localStorage.setItem('pb_incomes',  JSON.stringify([])); }catch(e){}
+  bookings = []; expenses = []; incomes = []; maintenance = [];
+  try{ localStorage.setItem('pb_dash_v2',     JSON.stringify([])); }catch(e){}
+  try{ localStorage.setItem('pb_expenses',    JSON.stringify([])); }catch(e){}
+  try{ localStorage.setItem('pb_incomes',     JSON.stringify([])); }catch(e){}
+  try{ localStorage.setItem('pb_maintenance', JSON.stringify([])); }catch(e){}
   // Force-push cleared state to Firebase so all devices see it immediately
   if(FIREBASE_URL){
-    var data = { bookings:[], expenses:[], incomes:[],
+    var data = { bookings:[], expenses:[], incomes:[], maintenance:[],
       custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles')||'[]'),
       budgets: JSON.parse(localStorage.getItem('pb_budgets')||'{}'),
       savedAt: Date.now() };
@@ -1850,12 +2124,15 @@ function switchTab(name){
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
   $d('tab-'+name).classList.add('active');
   var btns=document.querySelectorAll('.tab-btn');
-  var map={overview:0,upcoming:1,current:2,previous:3,calendar:4};
+  var map={overview:0,upcoming:1,current:2,previous:3,calendar:4,tax:5,fleet:6,customers:7};
   if(btns[map[name]]) btns[map[name]].classList.add('active');
-  if(name==='calendar') renderCalendar();
-  else if(name==='upcoming') renderUpcoming();
-  else if(name==='current') renderCurrent();
-  else if(name==='previous') renderPrevious();
+  if(name==='calendar')   renderCalendar();
+  else if(name==='upcoming')  renderUpcoming();
+  else if(name==='current')   renderCurrent();
+  else if(name==='previous')  renderPrevious();
+  else if(name==='tax')       renderTaxTab();
+  else if(name==='fleet')     renderFleetTab();
+  else if(name==='customers') renderCustomersTab();
 }
 
 // ════════════════════════════════════════════════════════
@@ -2242,6 +2519,7 @@ function tripCard(b, showCountdown){
       '<button class="btn btn-sm" onclick="openModal(\''+b.id+'\')" style="min-width:60px">✏ Edit</button>'+
       '<button class="btn btn-sm" style="border-color:#a855f7;color:#a855f7;min-width:80px" onclick="openCloseOut(\''+b.id+'\')">💰 Close Out</button>'+
       '<button class="btn btn-sm" style="border-color:#3b82f6;color:#3b82f6;min-width:60px" onclick="openVerify(\''+b.id+'\')">📋 Verify</button>'+
+      '<button class="btn btn-sm" style="border-color:var(--gold-dim);color:var(--gold)" onclick="generateInvoice(\''+b.id+'\')">📄 Invoice</button>'+
       statusBtn+
       dupBtn+
     '</div>'+
@@ -2285,6 +2563,7 @@ function openBookingDetail(id){
   if(!b) return;
   $d('bdTitle').textContent=b.vehicle+' — '+b.name;
   $d('bdEditBtn').onclick=function(){ closeBookingDetail(); openModal(b.id); };
+  $d('bdInvoiceBtn').onclick=function(){ generateInvoice(b.id); };
 
   var v=b.verify||{};
   var idOk=v.idVerified, insOk=v.insVerified;
@@ -2332,9 +2611,12 @@ function openBookingDetail(id){
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' — '+b.addlIncome.desc:'')+'</span></div>':'')+
 
     // Close-Out
-    (b.cost||b.closeOutNotes?
+    (b.cost||b.closeOutNotes||b.odomIn||b.odomOut||b.fuelIn||b.condIn?
       '<div class="fsec">Close-Out</div>'+
       (b.cost?'<div class="detail-row"><span class="detail-label">Booking Cost</span><span class="detail-val">'+$$(b.cost)+'</span></div>':'')+
+      (b.odomIn||b.odomOut?'<div class="detail-row"><span class="detail-label">Mileage</span><span class="detail-val">'+(b.odomIn?b.odomIn.toLocaleString()+' → ':'')+''+(b.odomOut?b.odomOut.toLocaleString()+' mi':'')+(b.odomIn&&b.odomOut&&b.odomOut>b.odomIn?' ('+((b.odomOut-b.odomIn).toLocaleString())+' driven)':'')+'</span></div>':'')+
+      (b.fuelIn||b.fuelOut?'<div class="detail-row"><span class="detail-label">Fuel</span><span class="detail-val">'+(b.fuelIn||'—')+' → '+(b.fuelOut||'—')+'</span></div>':'')+
+      (b.condIn||b.condOut?'<div class="detail-row"><span class="detail-label">Condition</span><span class="detail-val">'+(b.condIn||'—')+' → '+(b.condOut||'—')+'</span></div>':'')+
       (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+b.closeOutNotes+'</span></div>':'')
     : '')+
 
@@ -2656,6 +2938,13 @@ function openCloseOut(id){
   $d('coReturned').value = Math.max(0, collected - kept);
   $d('coNotes').value = b.closeOutNotes||'';
   $d('coCost').value = Number(b.cost)||0;
+  $d('coOdomIn').value  = b.odomIn||'';
+  $d('coOdomOut').value = b.odomOut||'';
+  $d('coFuelIn').value  = b.fuelIn||'';
+  $d('coFuelOut').value = b.fuelOut||'';
+  $d('coCondIn').value  = b.condIn||'';
+  $d('coCondOut').value = b.condOut||'';
+  $d('coMilesHint').textContent = b.odomIn && b.odomOut ? 'Miles driven: '+(Number(b.odomOut)-Number(b.odomIn)).toLocaleString() : '';
   $d('coSummary').innerHTML =
     '<strong>'+b.vehicle+'</strong> &nbsp;·&nbsp; '+b.name+'<br>'+
     'Trip date: <strong>'+b.date+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(b.revenue)+'</strong><br>'+
@@ -2668,6 +2957,10 @@ function coCalc(){
   var kept = parseFloat($d('coKept').value)||0;
   $d('coReturned').value = Math.max(0, collected - kept);
 }
+function coCalcMiles(){
+  var i=parseFloat($d('coOdomIn').value)||0, o=parseFloat($d('coOdomOut').value)||0;
+  $d('coMilesHint').textContent = (i&&o&&o>i) ? 'Miles driven: '+(o-i).toLocaleString() : '';
+}
 
 function closeCloseOut(){
   $d('closeOutModal').classList.remove('open');
@@ -2679,9 +2972,16 @@ function saveCloseOut(){
   var idx = bookings.findIndex(function(b){ return b.id===closeOutId; });
   if(idx===-1) return;
   var kept = parseFloat($d('coKept').value)||0;
-  bookings[idx].depositKept = kept;
-  bookings[idx].cost = parseFloat($d('coCost').value)||0;
+  bookings[idx].depositKept   = kept;
+  bookings[idx].cost          = parseFloat($d('coCost').value)||0;
   bookings[idx].closeOutNotes = $d('coNotes').value.trim();
+  bookings[idx].odomIn   = parseFloat($d('coOdomIn').value)||0;
+  bookings[idx].odomOut  = parseFloat($d('coOdomOut').value)||0;
+  bookings[idx].fuelIn   = $d('coFuelIn').value;
+  bookings[idx].fuelOut  = $d('coFuelOut').value;
+  bookings[idx].condIn   = $d('coCondIn').value;
+  bookings[idx].condOut  = $d('coCondOut').value;
+  bookings[idx]._t       = Date.now();
   save();
   closeCloseOut();
   render();
@@ -3036,17 +3336,358 @@ function handleCSVImport(e){
 }
 
 // ════════════════════════════════════════════════════════
+//  INVOICE GENERATOR  (feature 1)
+// ════════════════════════════════════════════════════════
+function generateInvoice(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
+  var addons=[];
+  if(Number(b.delivery))  addons.push({lbl:'🚗 Delivery',val:b.delivery});
+  if(Number(b.unlimited)) addons.push({lbl:'∞ Unlimited Miles',val:b.unlimited});
+  if(Number(b.pet))       addons.push({lbl:'🐾 Pet Fee',val:b.pet});
+  if(Number(b.photo))     addons.push({lbl:'📷 Photoshoot',val:b.photo});
+  if(Number(b.champagne)) addons.push({lbl:'🥂 Champagne',val:b.champagne});
+  if(Number(b.decor))     addons.push({lbl:'🎀 Decor',val:b.decor});
+  if(Number(b.bouquet))   addons.push({lbl:'💐 Flower Bouquet',val:b.bouquet});
+  var baseRev = (Number(b.revenue)||0) - getAddons(b);
+  var invNum  = '#PBR-'+b.id.slice(-6).toUpperCase();
+  $d('invoicePrintArea').innerHTML=
+    '<div class="inv-wrap">'+
+    '<div class="inv-header">'+
+      '<div><div class="inv-logo">Prestige Black Rentals</div><div class="inv-co">Dallas, TX · prestigeblackrentals.com</div></div>'+
+      '<div style="text-align:right"><div class="inv-title">INVOICE</div><div class="inv-num">'+invNum+' · Issued '+fmtDate(todayStr())+'</div></div>'+
+    '</div>'+
+    '<div class="inv-sec">Bill To</div>'+
+    '<div style="font-weight:700;font-size:15px;margin-bottom:2px">'+b.name+'</div>'+
+    (b.phone?'<div style="color:#666;font-size:13px">'+b.phone+'</div>':'')+
+    (b.email?'<div style="color:#666;font-size:13px">'+b.email+'</div>':'')+
+    '<div class="inv-sec">Booking Details</div>'+
+    '<div class="inv-row"><span class="inv-lbl">Vehicle</span><span class="inv-val">'+b.vehicle+'</span></div>'+
+    '<div class="inv-row"><span class="inv-lbl">Service</span><span class="inv-val">'+(b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service')+'</span></div>'+
+    '<div class="inv-row"><span class="inv-lbl">Pickup</span><span class="inv-val">'+(b.pickupDate?fmtDateFull(b.pickupDate):fmtDateFull(b.date))+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</span></div>'+
+    (b.dropoffDate?'<div class="inv-row"><span class="inv-lbl">Drop-off</span><span class="inv-val">'+fmtDateFull(b.dropoffDate)+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</span></div>':'')+
+    '<div class="inv-row"><span class="inv-lbl">Duration</span><span class="inv-val">'+b.days+' '+(b.type==='hourly'?'hr':'day')+(b.days!==1?'s':'')+'</span></div>'+
+    (b.address?'<div class="inv-row"><span class="inv-lbl">Address</span><span class="inv-val">'+b.address+'</span></div>':'')+
+    '<div class="inv-sec">Charges</div>'+
+    '<div class="inv-row"><span class="inv-lbl">Base '+(b.type==='daily'?'Rental':b.type==='hourly'?'Hourly Rate':'Service Fee')+'</span><span class="inv-val">'+$$(baseRev)+'</span></div>'+
+    addons.map(function(a){ return '<div class="inv-row"><span class="inv-lbl">'+a.lbl+'</span><span class="inv-val">'+$$(a.val)+'</span></div>'; }).join('')+
+    '<div class="inv-total"><span>TOTAL</span><span>'+$$(b.revenue)+'</span></div>'+
+    (b.deposit?'<div class="inv-row" style="margin-top:6px;color:#666;font-size:12px"><span class="inv-lbl">Security Deposit</span><span class="inv-val">'+$$(b.deposit)+'</span></div>':'')+
+    (b.notes?'<div class="inv-sec">Notes</div><div style="font-size:13px;color:#666">'+b.notes+'</div>':'')+
+    '<div class="inv-foot">Thank you for choosing Prestige Black Rentals · Dallas, TX</div>'+
+    '</div>';
+  window.print();
+}
+
+// ════════════════════════════════════════════════════════
+//  REVENUE FORECAST  (feature 8)
+// ════════════════════════════════════════════════════════
+function renderForecast(){
+  var el=$d('forecastSection'); if(!el) return;
+  var tod=todayStr();
+  function fr(days){
+    var lim=dateStr(addDays(new Date(tod+'T00:00:00'),days));
+    var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>tod&&(b.pickupDate||b.date)<=lim; });
+    return {count:bks.length, rev:bks.reduce(function(s,b){return s+(Number(b.revenue)||0);},0)};
+  }
+  var f30=fr(30),f60=fr(60),f90=fr(90);
+  el.innerHTML='<div class="chart-ttl" style="margin-bottom:12px">📈 Revenue Forecast (Confirmed &amp; Pending Bookings)</div>'+
+    '<div class="forecast-grid">'+
+    ['30','60','90'].map(function(d,i){
+      var f=[f30,f60,f90][i];
+      return '<div class="forecast-card"><div class="forecast-lbl">Next '+d+' Days</div><div class="forecast-val">'+$$(f.rev)+'</div><div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div></div>';
+    }).join('')+
+    '</div>';
+}
+
+// ════════════════════════════════════════════════════════
+//  OUTSTANDING BALANCES  (feature 6)
+// ════════════════════════════════════════════════════════
+function renderOutstanding(){
+  var el=$d('outstandingSection'); if(!el) return;
+  var unpaid=bookings.filter(function(b){
+    return !b._deleted && b.status!=='cancelled' &&
+           (Number(b.deposit)||0)===0;
+  }).sort(function(a,b){return a.date.localeCompare(b.date);});
+  if(!unpaid.length){ el.innerHTML=''; return; }
+  el.innerHTML='<div class="tbl-card">'+
+    '<div class="tbl-head"><div class="tbl-title" style="color:#f97316">⚠ Outstanding — No Deposit Collected ('+unpaid.length+')</div></div>'+
+    '<div class="tbl-wrap"><table><thead><tr>'+
+      '<th>Date</th><th>Customer</th><th>Vehicle</th><th>Type</th><th>Revenue</th><th>Status</th><th></th>'+
+    '</tr></thead><tbody>'+
+    unpaid.map(function(b){
+      return '<tr>'+
+        '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
+        '<td style="font-weight:700">'+b.name+(b.phone?' <span style="color:var(--muted);font-size:11px">'+b.phone+'</span>':'')+'</td>'+
+        '<td>'+b.vehicle+'</td>'+
+        '<td><span class="badge '+b.type+'">'+b.type+'</span></td>'+
+        '<td style="color:var(--gold);font-weight:700">'+$$(b.revenue)+'</td>'+
+        '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
+        '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
+      '</tr>';
+    }).join('')+
+    '</tbody></table></div></div>';
+}
+
+// ════════════════════════════════════════════════════════
+//  TAX SUMMARY TAB  (feature 5)
+// ════════════════════════════════════════════════════════
+function renderTaxTab(){
+  var el=$d('taxContent'); if(!el) return;
+  var years=new Set();
+  bookings.forEach(function(b){ if(!b._deleted&&b.date) years.add(b.date.substring(0,4)); });
+  expenses.forEach(function(e){ if(!e._deleted&&e.date) years.add(e.date.substring(0,4)); });
+  incomes.forEach(function(i){ if(!i._deleted&&i.fromDate) years.add(i.fromDate.substring(0,4)); });
+  var sortedYears=Array.from(years).sort(function(a,b){return b-a;});
+  if(!sortedYears.length){ el.innerHTML='<div style="padding:40px;text-align:center;color:var(--muted)">No data yet.</div>'; return; }
+  var html='';
+  sortedYears.forEach(function(yr){
+    html+='<div style="font-size:13px;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:var(--gold);margin:16px 0 8px">'+yr+' Tax Year</div>';
+    var annRev=0,annOth=0,annExp=0;
+    [1,2,3,4].forEach(function(q){
+      var qs=(q-1)*3+1, qe=q*3;
+      var qBk=bookings.filter(function(b){
+        if(b._deleted||b.status==='cancelled') return false;
+        var m=parseInt((b.date||'').substring(5,7),10);
+        return (b.date||'').substring(0,4)===yr&&m>=qs&&m<=qe;
+      });
+      var qEx=expenses.filter(function(e){
+        if(e._deleted) return false;
+        var m=parseInt((e.date||'').substring(5,7),10);
+        return (e.date||'').substring(0,4)===yr&&m>=qs&&m<=qe;
+      });
+      var qIn=incomes.filter(function(i){
+        if(i._deleted) return false;
+        var m=parseInt((i.fromDate||'').substring(5,7),10);
+        return (i.fromDate||'').substring(0,4)===yr&&m>=qs&&m<=qe;
+      });
+      var qRev=qBk.reduce(function(s,b){return s+(Number(b.revenue)||0);},0);
+      var qOth=qIn.reduce(function(s,i){return s+(Number(i.amount)||0);},0);
+      var qExp=qEx.reduce(function(s,e){return s+(Number(e.amount)||0);},0);
+      var qNet=qRev+qOth-qExp;
+      annRev+=qRev; annOth+=qOth; annExp+=qExp;
+      var pc=qNet>=0?'var(--green)':'var(--red)';
+      html+='<div class="tax-quarter">'+
+        '<div class="tax-q-hd">'+
+          '<div><div class="tax-q-lbl">Q'+q+' — '+['Jan–Mar','Apr–Jun','Jul–Sep','Oct–Dec'][q-1]+'</div>'+
+          '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+qBk.length+' bookings · '+qEx.length+' expenses</div></div>'+
+          '<div class="tax-q-net" style="color:'+pc+'">'+$$(qNet)+'</div>'+
+        '</div>'+
+        '<div class="tbl-wrap"><table style="font-size:12px"><thead><tr>'+
+          '<th>Booking Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax (25%)</th>'+
+        '</tr></thead><tbody><tr>'+
+          '<td style="color:var(--gold);font-weight:700">'+$$(qRev)+'</td>'+
+          '<td style="color:var(--green)">'+$$(qOth)+'</td>'+
+          '<td style="font-weight:700">'+$$(qRev+qOth)+'</td>'+
+          '<td style="color:var(--red)">'+$$(qExp)+'</td>'+
+          '<td style="font-weight:900;color:'+pc+'">'+$$(qNet)+'</td>'+
+          '<td style="color:#fbbf24">'+$$(Math.max(0,qNet*.25))+'</td>'+
+        '</tr></tbody></table></div></div>';
+    });
+    var annNet=annRev+annOth-annExp, annPc=annNet>=0?'var(--green)':'var(--red)';
+    html+='<div class="tbl-card" style="margin-bottom:20px"><div class="tbl-head"><div class="tbl-title">'+yr+' Annual Summary</div></div>'+
+      '<div class="tbl-wrap"><table style="font-size:13px"><thead><tr>'+
+        '<th>Total Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax (25%)</th>'+
+      '</tr></thead><tbody><tr>'+
+        '<td style="color:var(--gold);font-weight:800">'+$$(annRev)+'</td>'+
+        '<td style="color:var(--green)">'+$$(annOth)+'</td>'+
+        '<td style="font-weight:800">'+$$(annRev+annOth)+'</td>'+
+        '<td style="color:var(--red)">'+$$(annExp)+'</td>'+
+        '<td style="font-weight:900;color:'+annPc+'">'+$$(annNet)+'</td>'+
+        '<td style="color:#fbbf24;font-weight:700">'+$$(Math.max(0,annNet*.25))+'</td>'+
+      '</tr></tbody></table></div></div>';
+  });
+  el.innerHTML=html;
+}
+
+// ════════════════════════════════════════════════════════
+//  UTILIZATION HEATMAP  (feature 10)
+// ════════════════════════════════════════════════════════
+function renderHeatmap(){
+  var el=$d('utilizationHeatmap'); if(!el) return;
+  var today=new Date(); today.setHours(0,0,0,0);
+  var days=90;
+  // Build date range (last 90 days)
+  var dates=[];
+  for(var i=days-1;i>=0;i--) dates.push(dateStr(addDays(today,-i)));
+  // Build booking lookup: dateStr -> set of vehicles
+  var dayVeh={};
+  dates.forEach(function(d){ dayVeh[d]={}; });
+  bookings.forEach(function(b){
+    if(b._deleted||b.status==='cancelled') return;
+    getBookingDates(b).forEach(function(d){ if(dayVeh[d]) dayVeh[d][b.vehicle]=(dayVeh[d][b.vehicle]||0)+1; });
+  });
+  // Render one row per vehicle
+  var html='<div style="font-size:10px;color:var(--muted);margin-bottom:8px;display:flex;gap:16px">'+
+    '<span>Lighter = 1 booking &nbsp; Darker = multiple</span>'+
+    '<span style="margin-left:auto">← 90 days ago &nbsp; Today →</span>'+
+    '</div>';
+  ALL_VEHICLES.forEach(function(v){
+    var hasBk=dates.some(function(d){ return dayVeh[d][v]; });
+    if(!hasBk) return;
+    html+='<div class="heatmap-vrow"><div class="heatmap-vlbl" title="'+v+'">'+v+'</div>'+
+      dates.map(function(d){
+        var n=dayVeh[d][v]||0;
+        var lvl=n===0?0:n===1?1:n===2?2:3;
+        return '<div class="hm-day hm-'+lvl+'" title="'+v+' · '+d+(n?' · '+n+' booking'+(n!==1?'s':''):'')+'"></div>';
+      }).join('')+
+      '</div>';
+  });
+  el.innerHTML=html||'<div style="color:var(--muted);padding:12px">No bookings in last 90 days.</div>';
+}
+
+// ════════════════════════════════════════════════════════
+//  FLEET TAB  (feature 9)
+// ════════════════════════════════════════════════════════
+function renderFleetTab(){
+  renderHeatmap();
+  var records=maintenance.filter(function(m){return !m._deleted;}).sort(function(a,b){return b.date.localeCompare(a.date);});
+  var tod=todayStr(), soon=dateStr(addDays(new Date(),30));
+  // Alerts
+  var alerts=maintenance.filter(function(m){ return !m._deleted&&m.nextDue&&m.nextDue<=soon; });
+  var aEl=$d('fleetAlerts');
+  if(aEl){
+    aEl.innerHTML=alerts.length?'<div class="kpi-grid" style="margin-bottom:4px">'+
+      alerts.map(function(m){
+        var due=m.nextDue<=tod;
+        return '<div class="kpi '+(due?'red':'')+'">'+
+          '<div class="kpi-label">'+m.vehicle+'</div>'+
+          '<div class="kpi-val" style="font-size:15px">'+(due?'⚠ OVERDUE':'⏰ Due Soon')+'</div>'+
+          '<div class="kpi-sub">'+m.serviceType+' · '+fmtDate(m.nextDue)+'</div>'+
+          '</div>';
+      }).join('')+'</div>':'';
+  }
+  // Group by vehicle
+  var byV={};
+  records.forEach(function(m){ if(!byV[m.vehicle]) byV[m.vehicle]=[]; byV[m.vehicle].push(m); });
+  var el=$d('fleetRecords'); if(!el) return;
+  if(!records.length){
+    el.innerHTML='<div class="tbl-card"><div style="padding:40px;text-align:center;color:var(--muted)">No service records yet. Tap "+ Log Service" to add one.</div></div>';
+    return;
+  }
+  el.innerHTML=ALL_VEHICLES.filter(function(v){return byV[v]&&byV[v].length;}).map(function(v){
+    var recs=byV[v];
+    var total=recs.reduce(function(s,r){return s+(Number(r.cost)||0);},0);
+    var safe=v.replace(/'/g,"\\'");
+    return '<div class="tbl-card" style="margin-bottom:16px">'+
+      '<div class="tbl-head">'+
+        '<div class="tbl-title">'+v+'</div>'+
+        '<div class="tbl-meta">'+recs.length+' records · '+$$(total)+'</div>'+
+        '<button class="btn btn-sm btn-gold" style="margin-left:auto" onclick="openMaintenanceModal(null,\''+safe+'\')">+ Log</button>'+
+      '</div>'+
+      '<div class="tbl-wrap"><table><thead><tr>'+
+        '<th>Date</th><th>Service</th><th>Mileage</th><th>Cost</th><th>Next Due</th><th>Notes</th><th></th>'+
+      '</tr></thead><tbody>'+
+      recs.map(function(r){
+        var due=r.nextDue&&r.nextDue<=tod, soon2=r.nextDue&&r.nextDue<=soon&&!due;
+        var dueCls=due?'maint-due':soon2?'maint-soon':r.nextDue?'maint-ok':'';
+        var dueText=r.nextDue?(due?'⚠ '+fmtDate(r.nextDue):soon2?'⏰ '+fmtDate(r.nextDue):'✅ '+fmtDate(r.nextDue)):'—';
+        return '<tr>'+
+          '<td>'+fmtDate(r.date)+'</td>'+
+          '<td><span class="badge" style="background:rgba(100,180,255,.15);color:var(--blue)">'+r.serviceType+'</span></td>'+
+          '<td>'+(r.mileage?r.mileage.toLocaleString()+' mi':'—')+'</td>'+
+          '<td style="color:var(--red);font-weight:700">'+(r.cost?$$(r.cost):'—')+'</td>'+
+          '<td class="'+dueCls+'">'+dueText+'</td>'+
+          '<td style="color:var(--muted);font-size:12px">'+(r.notes||'')+'</td>'+
+          '<td><button class="btn btn-sm" onclick="openMaintenanceModal(\''+r.id+'\')">Edit</button></td>'+
+          '</tr>';
+      }).join('')+
+      '</tbody></table></div></div>';
+  }).join('')||'<div class="tbl-card"><div style="padding:40px;text-align:center;color:var(--muted)">No service records yet.</div></div>';
+}
+
+// ════════════════════════════════════════════════════════
+//  CUSTOMERS TAB  (feature 7)
+// ════════════════════════════════════════════════════════
+function renderCustomersTab(){
+  renderOutstanding();
+  var el=$d('customersContent'); if(!el) return;
+  var custMap={};
+  bookings.filter(function(b){return !b._deleted;}).forEach(function(b){
+    var key=((b.phone||'').replace(/\D/g,'')||b.email||b.name||'').toLowerCase();
+    if(!key) return;
+    if(!custMap[key]) custMap[key]={name:b.name,phone:b.phone||'',email:b.email||'',bookings:[],spent:0};
+    custMap[key].bookings.push(b);
+    if(b.status!=='cancelled') custMap[key].spent+=(Number(b.revenue)||0);
+  });
+  var custs=Object.values(custMap).sort(function(a,b){return b.spent-a.spent;});
+  if(!custs.length){ el.innerHTML='<div style="padding:40px;text-align:center;color:var(--muted)">No customer data yet.</div>'; return; }
+  el.innerHTML='<div class="tbl-card">'+
+    '<div class="tbl-head"><div class="tbl-title">All Customers</div><div class="tbl-meta">'+custs.length+' customers</div></div>'+
+    '<div class="tbl-wrap"><table><thead><tr>'+
+      '<th>Customer</th><th>Phone</th><th>Bookings</th><th>Total Spent</th><th>Avg/Booking</th><th>Last Booking</th><th></th>'+
+    '</tr></thead><tbody>'+
+    custs.map(function(c){
+      var last=c.bookings.slice().sort(function(a,b){return b.date.localeCompare(a.date);})[0];
+      var active=c.bookings.filter(function(b){return b.status!=='cancelled';}).length;
+      var repeat=active>1;
+      var enc=encodeURIComponent((c.phone||'').replace(/\D/g,'')||c.email||c.name);
+      return '<tr>'+
+        '<td style="font-weight:700">'+c.name+(repeat?' <span class="repeat-badge">🔄</span>':'')+'</td>'+
+        '<td>'+(c.phone||'—')+'</td>'+
+        '<td>'+c.bookings.length+'</td>'+
+        '<td style="color:var(--gold);font-weight:700">'+$$(c.spent)+'</td>'+
+        '<td>'+$$(active?c.spent/active:0)+'</td>'+
+        '<td>'+(last?fmtDate(last.date):'—')+'</td>'+
+        '<td><button class="btn btn-sm" onclick="openCustomerProfile(\''+enc+'\')">View</button></td>'+
+      '</tr>';
+    }).join('')+
+    '</tbody></table></div></div>';
+}
+
+function openCustomerProfile(enc){
+  var key=decodeURIComponent(enc).toLowerCase();
+  var bks=bookings.filter(function(b){
+    if(b._deleted) return false;
+    var k=((b.phone||'').replace(/\D/g,'')||b.email||b.name||'').toLowerCase();
+    return k===key;
+  }).sort(function(a,b){return b.date.localeCompare(a.date);});
+  if(!bks.length) return;
+  var first=bks[0];
+  var spent=bks.filter(function(b){return b.status!=='cancelled';}).reduce(function(s,b){return s+(Number(b.revenue)||0);},0);
+  var active=bks.filter(function(b){return b.status!=='cancelled';}).length;
+  var vehs=Array.from(new Set(bks.map(function(b){return b.vehicle;}))).join(', ');
+  $d('custModalTitle').textContent=first.name;
+  $d('custModalBody').innerHTML=
+    '<div class="cust-stat-grid">'+
+      '<div class="cust-stat"><div class="cust-stat-val">'+bks.length+'</div><div class="cust-stat-lbl">Bookings</div></div>'+
+      '<div class="cust-stat"><div class="cust-stat-val">'+$$(spent)+'</div><div class="cust-stat-lbl">Total Spent</div></div>'+
+      '<div class="cust-stat"><div class="cust-stat-val">'+$$(active?spent/active:0)+'</div><div class="cust-stat-lbl">Avg/Booking</div></div>'+
+    '</div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:14px">Vehicles: <strong style="color:var(--text)">'+vehs+'</strong>'+
+      (first.phone?' &nbsp;·&nbsp; 📞 <strong>'+first.phone+'</strong>':'')+
+      (first.email?' &nbsp;·&nbsp; ✉ <strong>'+first.email+'</strong>':'')+
+    '</div>'+
+    '<div class="tbl-wrap"><table><thead><tr>'+
+      '<th>Date</th><th>Vehicle</th><th>Type</th><th>Revenue</th><th>Status</th><th></th>'+
+    '</tr></thead><tbody>'+
+    bks.map(function(b){
+      return '<tr>'+
+        '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
+        '<td>'+b.vehicle+'</td>'+
+        '<td><span class="badge '+b.type+'">'+b.type+'</span></td>'+
+        '<td style="color:var(--gold);font-weight:700">'+$$(b.revenue)+'</td>'+
+        '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
+        '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\');closeCustomerModal()">Edit</button></td>'+
+      '</tr>';
+    }).join('')+
+    '</tbody></table></div>';
+  $d('customerModal').classList.add('open');
+}
+function closeCustomerModal(){ $d('customerModal').classList.remove('open'); }
+
+// ════════════════════════════════════════════════════════
 //  OVERVIEW RENDER
 // ════════════════════════════════════════════════════════
 function render(){
   var filtered=getFiltered();
+  renderForecast();
   renderKPIs(filtered,'kpiGrid');
-  renderBudgetSection();    // Feature 10
+  renderBudgetSection();
   renderCharts(filtered);
   renderVehicleTable(filtered);
   renderBookingsTable(filtered);
-  renderTodayBanner();      // Feature 1
-  if(pnlOpen) renderPnl(filtered); // Feature 8
+  renderTodayBanner();
+  if(pnlOpen) renderPnl(filtered);
   renderIncomeList();
   renderExpenseLog();
 }
@@ -3081,33 +3722,36 @@ function initSelects(){
 }
 
 document.addEventListener('keydown',function(e){
-  if(e.key==='Escape'){ closeModal(); closeCloseOut(); closeVerify(); closeIncomeModal(); closeBookingDetail(); closeExpenseModal(); closeVehicleModal(); }
+  if(e.key==='Escape'){ closeModal(); closeCloseOut(); closeVerify(); closeIncomeModal(); closeBookingDetail(); closeExpenseModal(); closeVehicleModal(); closeMaintenanceModal(); closeCustomerModal(); }
 });
 
 // Load local data first for instant display
-loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets();
+loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance();
 initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
 updateSyncUI();
+function afterCloudLoad(ok){
+  if(!ok) return;
+  initSelects(); render(); renderIncomeList(); renderExpenseLog();
+  if(activeTab==='tax')       renderTaxTab();
+  if(activeTab==='fleet')     renderFleetTab();
+  if(activeTab==='customers') renderCustomersTab();
+}
+
 // Pull from cloud — always wins over local data
 cloudLoad(function(ok) {
-  if (ok) { initSelects(); render(); renderIncomeList(); renderExpenseLog(); }
+  afterCloudLoad(ok);
   setSyncStatus(FIREBASE_URL ? (ok ? 'ok' : 'error') : 'off');
 });
 // Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
 document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && FIREBASE_URL) {
-    cloudLoad(function(ok) {
-      if (ok) { initSelects(); render(); renderIncomeList(); renderExpenseLog(); }
-      setSyncStatus(ok ? 'ok' : 'error');
-    });
+    cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
   }
 });
 // Auto-pull every 15 seconds so all changes propagate to every active device
 setInterval(function() {
   if (FIREBASE_URL && document.visibilityState === 'visible') {
-    cloudLoad(function(ok) {
-      if (ok) { initSelects(); render(); renderIncomeList(); renderExpenseLog(); }
-    });
+    cloudLoad(function(ok) { afterCloudLoad(ok); });
   }
 }, 15000);
 </script>
