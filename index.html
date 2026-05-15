@@ -9,6 +9,8 @@
 <meta name="apple-mobile-web-app-title" content="PB Rentals">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0a">
+<link rel="manifest" href="manifest.json">
+<script>if('serviceWorker' in navigator){ window.addEventListener('load',function(){ navigator.serviceWorker.register('sw.js'); }); }</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" onload="initGCal()" async defer></script>
 <style>
@@ -433,6 +435,9 @@ tr:hover td { background: var(--gold-faint); }
   </div>
 </div>
 
+<!-- ═══ TOAST ═══ -->
+<div id="pbToast" style="position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(80px);z-index:9999;background:#1e1e1e;color:#fff;border:1px solid var(--gold-dim);border-radius:12px;padding:11px 22px;font-size:13px;font-weight:600;pointer-events:none;opacity:0;transition:opacity .25s,transform .25s;white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,.6)"></div>
+
 <!-- ═══ TODAY'S BOOKINGS BANNER (Feature 1) ═══ -->
 <div id="todayBanner">
   <div class="today-banner-title">📅 Today's Bookings</div>
@@ -449,6 +454,7 @@ tr:hover td { background: var(--gold-faint); }
   <button class="tab-btn" onclick="switchTab('tax')">Tax</button>
   <button class="tab-btn" onclick="switchTab('fleet')">🔧 Fleet</button>
   <button class="tab-btn" onclick="switchTab('customers')">👤 Customers</button>
+  <button class="tab-btn" onclick="switchTab('brokers')">🤝 Brokers</button>
 </div>
 
 <!-- INVOICE PRINT AREA -->
@@ -489,6 +495,13 @@ tr:hover td { background: var(--gold-faint); }
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{booking_date}}</code>
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{today}}</code>
         <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{notes}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{broker}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{broker_fee}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{net_revenue}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{included_miles}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{overage_rate}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{source}}</code>
+        <code style="background:rgba(255,255,255,.07);padding:3px 7px;border-radius:5px;color:var(--gold)">{{loyalty_discount}}</code>
       </div>
     </details>
     <div style="margin-bottom:8px;display:flex;align-items:center;gap:10px">
@@ -706,6 +719,44 @@ tr:hover td { background: var(--gold-faint); }
   </div>
 </div>
 
+<!-- ═══ TAB: BROKERS ═══ -->
+<div id="tab-brokers" class="tab-panel">
+  <div class="main">
+    <div class="kpi-grid" id="brokerKpiGrid" style="margin-bottom:16px"></div>
+    <div class="tbl-card">
+      <div class="tbl-head">
+        <div class="tbl-title">Per-Broker Performance</div>
+        <div class="tbl-meta" id="brokerMeta"></div>
+      </div>
+      <div class="tbl-wrap">
+        <table id="brokerTable">
+          <thead><tr>
+            <th>Broker / Partner</th>
+            <th>Bookings</th>
+            <th>Gross Revenue</th>
+            <th>Broker Fees Paid</th>
+            <th>Net to PBR</th>
+            <th>Avg Net / Booking</th>
+            <th>Last Booking</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="tbl-card" style="margin-top:16px">
+      <div class="tbl-head"><div class="tbl-title">Booking Source Breakdown</div></div>
+      <div class="tbl-wrap">
+        <table id="sourceTable">
+          <thead><tr>
+            <th>Source</th><th>Bookings</th><th>Revenue</th><th>Net Revenue</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ MODAL ═══ -->
 <div class="modal" id="modal">
   <div class="modal-bg" onclick="closeModal()"></div>
@@ -763,7 +814,7 @@ tr:hover td { background: var(--gold-faint); }
       </div>
 
       <div class="fsec">Revenue</div>
-      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0"></div>
+      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="updateBrokerCalc()"></div>
       <div class="fgroup"><div class="flabel">Deposit Collected ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0" onchange="onDepositChange()"></div>
 
       <div class="fgroup"><div class="flabel">Pickup / Drop-off Address</div>
@@ -817,6 +868,38 @@ tr:hover td { background: var(--gold-faint); }
 
       <div class="fgroup ffull"><div class="flabel">Notes</div>
         <input type="text" class="finput" id="fNotes" placeholder="Optional notes"></div>
+
+      <div class="fsec ffull">Booking Source &amp; Discounts</div>
+      <div class="fgroup"><div class="flabel">How did they find us?</div>
+        <select class="finput" id="fSource">
+          <option value="">— Select source —</option>
+          <option>Direct / Referral</option>
+          <option>Instagram</option>
+          <option>TikTok</option>
+          <option>Facebook</option>
+          <option>Google</option>
+          <option>Turo</option>
+          <option>HyreCar</option>
+          <option>Broker / Partner</option>
+          <option>Repeat Customer</option>
+          <option>Other</option>
+        </select></div>
+      <div class="fgroup"><div class="flabel">Loyalty Discount ($)</div>
+        <input type="number" class="finput" id="fLoyaltyDiscount" min="0" step="1" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
+
+      <div class="fsec ffull">Mileage Allowance</div>
+      <div class="fgroup"><div class="flabel">Included Miles</div>
+        <input type="number" class="finput" id="fIncludedMiles" min="0" step="1" placeholder="e.g. 200"></div>
+      <div class="fgroup"><div class="flabel">Overage Rate (¢/mi)</div>
+        <input type="number" class="finput" id="fOverageRate" min="0" step="0.01" placeholder="e.g. 0.50"></div>
+
+      <div class="fsec ffull">Broker / Partner</div>
+      <div class="fgroup"><div class="flabel">Broker Name</div>
+        <input type="text" class="finput" id="fBroker" list="brokerList" placeholder="Name or company" oninput="updateBrokerCalc()">
+        <datalist id="brokerList"></datalist></div>
+      <div class="fgroup"><div class="flabel">Broker Fee ($)</div>
+        <input type="number" class="finput" id="fBrokerFee" min="0" step="1" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
+      <div class="ffull" id="brokerCalcRow" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;display:flex;gap:18px;flex-wrap:wrap"></div>
     </div>
     <div class="factions">
       <button class="btn btn-danger btn-sm" id="deleteBtn" onclick="deleteBookingModal()" style="display:none;margin-right:auto">Delete</button>
@@ -921,7 +1004,7 @@ tr:hover td { background: var(--gold-faint); }
       </div>
       <div class="fgroup ffull">
         <div class="flabel">Direct Booking Cost ($)</div>
-        <input type="number" class="finput" id="coCost" min="0" step="1" value="0">
+        <input type="number" class="finput" id="coCost" min="0" step="1" value="0" oninput="coUpdateProfitSummary()">
         <div class="fhint">Any cost tied to this specific booking (cleaning, damage repair, fuel, etc.)</div>
       </div>
       <div class="fgroup ffull">
@@ -953,6 +1036,29 @@ tr:hover td { background: var(--gold-faint); }
           <option>Excellent</option><option>Good</option><option>Minor Damage</option><option>Major Damage</option>
         </select>
       </div>
+      <div class="fsec ffull">Deposit Refund</div>
+      <div class="fgroup ffull" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="coRefundSent" onchange="coCalc()"> Refund Sent to Guest
+        </label>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Refund Date</div>
+        <input type="date" class="finput" id="coRefundDate">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Refund Method</div>
+        <select class="finput" id="coRefundMethod">
+          <option value="">—</option>
+          <option>Zelle</option><option>Cash App</option><option>Venmo</option>
+          <option>PayPal</option><option>Cash</option><option>Bank Transfer</option><option>Other</option>
+        </select>
+      </div>
+
+      <div class="ffull" id="coOverageRow" style="display:none;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.3);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap"></div>
+
+      <div class="ffull" id="coProfitSummary" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap;margin-top:2px"></div>
+
       <div class="fsec ffull" style="margin-top:4px">Post-Trip Photos</div>
       <div class="fgroup ffull">
         <label class="btn btn-sm" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;border-color:rgba(168,85,247,.4);color:#a855f7">
@@ -2149,6 +2255,13 @@ function clearAllData(){
 function $d(id){ return document.getElementById(id); }
 function $$(n){ return (typeof n==='number'&&isFinite(n)) ? '$'+Math.round(n).toLocaleString() : '$0'; }
 function pct(n){ return isFinite(n) ? Math.round(n)+'%' : '0%'; }
+var _toastTimer;
+function showToast(msg, duration){
+  var el=$d('pbToast'); if(!el) return;
+  el.textContent=msg; el.style.opacity='1'; el.style.transform='translateX(-50%) translateY(0)';
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(function(){ el.style.opacity='0'; el.style.transform='translateX(-50%) translateY(80px)'; }, duration||2800);
+}
 function todayStr(){
   var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
 }
@@ -2176,6 +2289,7 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
+function netRevenue(b){ return (Number(b.revenue)||0)-(Number(b.brokerFee)||0)-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
 
@@ -2240,7 +2354,7 @@ function switchTab(name){
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
   $d('tab-'+name).classList.add('active');
   var btns=document.querySelectorAll('.tab-btn');
-  var map={overview:0,upcoming:1,current:2,previous:3,calendar:4,tax:5,fleet:6,customers:7};
+  var map={overview:0,upcoming:1,current:2,previous:3,calendar:4,tax:5,fleet:6,customers:7,brokers:8};
   if(btns[map[name]]) btns[map[name]].classList.add('active');
   if(name==='calendar')   renderCalendar();
   else if(name==='upcoming')  renderUpcoming();
@@ -2249,6 +2363,7 @@ function switchTab(name){
   else if(name==='tax')       renderTaxTab();
   else if(name==='fleet')     renderFleetTab();
   else if(name==='customers') renderCustomersTab();
+  else if(name==='brokers')   renderBrokerTab();
 }
 
 // ════════════════════════════════════════════════════════
@@ -2282,6 +2397,9 @@ function renderKPIs(filtered, containerId){
   var deposits    = sumK(active,'deposit');
   var depositKept = sumK(active,'depositKept');
   var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
+  var totalBrokerFees = sumK(active,'brokerFee');
+  var totalLoyaltyDisc = sumK(active,'loyaltyDiscount');
+  var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0);
   var from        = $d('filterFrom') ? $d('filterFrom').value : '';
   var to          = $d('filterTo')   ? $d('filterTo').value   : '';
   var loggedExp   = getTotalExpenses(from||null, to||null);
@@ -2322,6 +2440,8 @@ function renderKPIs(filtered, containerId){
     {label:'Net Profit',            val:$$(profit),            sub:'Margin: '+pct(margin),                         cls:profit>=0?'green':'red'},
     {label:'Avg / Booking',         val:$$(active.length?bookingRev/active.length:0), sub:'Excl. cancelled',      cls:''},
     {label:'Net After Car Payments',val:$$(netAfterCar),       sub:$$(carPayments)+' in car payments',            cls:''},
+    {label:'Net to PBR',           val:$$(netBookingRev+otherIncome-totalCost), sub:'After broker fees & discounts', cls:netBookingRev+otherIncome-totalCost>=0?'green':'red'},
+    {label:'Broker Fees Paid',     val:$$(totalBrokerFees),   sub:'Loyalty discounts: '+$$(totalLoyaltyDisc),     cls:'red'},
   ];
   // Feature 4: uncollected deposits card — only on overview
   if(containerId==='kpiGrid'){
@@ -2721,6 +2841,12 @@ function openBookingDetail(id){
     // Revenue
     '<div class="fsec">Revenue</div>'+
     '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(b.revenue)+'</span></div>'+
+    (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$(b.brokerFee)+'</span></div>':'')+
+    (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">−'+$$(b.loyaltyDiscount)+'</span></div>':'')+
+    ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
+    (b.broker?'<div class="detail-row"><span class="detail-label">Broker / Partner</span><span class="detail-val">'+b.broker+'</span></div>':'')+
+    (b.source?'<div class="detail-row"><span class="detail-label">Booking Source</span><span class="detail-val">'+b.source+'</span></div>':'')+
+    (b.includedMiles?'<div class="detail-row"><span class="detail-label">Included Miles</span><span class="detail-val">'+Number(b.includedMiles).toLocaleString()+' mi'+(b.overageRate?' @ $'+b.overageRate+'/mi overage':'')+'</span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Deposit Collected</span><span class="detail-val">'+$$(b.deposit)+'</span></div>'+
     (Number(b.depositKept)?'<div class="detail-row"><span class="detail-label">Deposit Kept</span><span class="detail-val" style="color:var(--green)">'+$$(b.depositKept)+'</span></div>':'')+
     (Number(b.deposit)?'<div class="detail-row"><span class="detail-label">Deposit Returned</span><span class="detail-val">'+$$(Math.max(0,(Number(b.deposit)||0)-(Number(b.depositKept)||0)))+'</span></div>':'')+
@@ -2746,6 +2872,7 @@ function openBookingDetail(id){
       (b.fuelOut?'<div class="detail-row"><span class="detail-label">Fuel at Drop-off</span><span class="detail-val">'+(b.fuelIn?b.fuelIn+' → ':'')+b.fuelOut+'</span></div>':'')+
       (b.condOut?'<div class="detail-row"><span class="detail-label">Condition at Drop-off</span><span class="detail-val">'+(b.condIn?b.condIn+' → ':'')+b.condOut+'</span></div>':'')+
       (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+b.closeOutNotes+'</span></div>':'')+
+      (b.refundSent?'<div class="detail-row"><span class="detail-label">Refund</span><span class="detail-val" style="color:var(--green)">✅ Sent'+(b.refundDate?' on '+fmtDate(b.refundDate):'')+(b.refundMethod?' via '+b.refundMethod:'')+'</span></div>':'')+
       (b.checkOutPhotoIds&&b.checkOutPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkOutPhotoIds.length+')</span><span class="detail-val"><div id="bdCoPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
 
@@ -2967,6 +3094,17 @@ function openModal(id, vehiclePreset, datePreset){
   setAddon('chkDecor',     'fDecor',     b?b.decor:0);
   setAddon('chkBouquet',   'fBouquet',   b?b.bouquet:0);
 
+  // New fields
+  $d('fSource').value          = b?(b.source||'')         : '';
+  $d('fLoyaltyDiscount').value = b?(b.loyaltyDiscount||0) : 0;
+  $d('fIncludedMiles').value   = b?(b.includedMiles||'')  : '';
+  $d('fOverageRate').value     = b?(b.overageRate||'')     : '';
+  $d('fBroker').value          = b?(b.broker||'')         : '';
+  $d('fBrokerFee').value       = b?(b.brokerFee||0)       : 0;
+  // Populate broker datalist from existing bookings
+  var brokerNames=[...new Set(bookings.filter(function(x){return !x._deleted&&x.broker;}).map(function(x){return x.broker;}))];
+  $d('brokerList').innerHTML=brokerNames.map(function(n){return '<option value="'+n.replace(/"/g,'&quot;')+'">'; }).join('');
+  updateBrokerCalc();
 
   if(!b && vehiclePreset) onVehicleChange();
   $d('modal').classList.add('open');
@@ -2988,6 +3126,21 @@ function toggleAddon(inputId, defaultPrice, checked){
 }
 
 function onDepositChange(){}
+
+function updateBrokerCalc(){
+  var rev=parseFloat($d('fRevenue')?$d('fRevenue').value:0)||0;
+  var fee=parseFloat($d('fBrokerFee')?$d('fBrokerFee').value:0)||0;
+  var dis=parseFloat($d('fLoyaltyDiscount')?$d('fLoyaltyDiscount').value:0)||0;
+  var broker=$d('fBroker')?$d('fBroker').value.trim():'';
+  var row=$d('brokerCalcRow'); if(!row) return;
+  if(!broker && !fee && !dis){ row.style.display='none'; return; }
+  var net=rev-fee-dis;
+  row.style.display='flex';
+  row.innerHTML='<span>Gross: <b style="color:var(--gold)">'+$$(rev)+'</b></span>'+
+    (fee?'<span>Broker Fee: <b style="color:var(--red)">−'+$$(fee)+'</b></span>':'')+
+    (dis?'<span>Loyalty Disc: <b style="color:var(--blue)">−'+$$(dis)+'</b></span>':'')+
+    '<span>Net to PBR: <b style="color:var(--green)">'+$$(net)+'</b></span>';
+}
 
 function onVehicleChange(){
   var v=$d('fVehicle').value;
@@ -3029,6 +3182,12 @@ function saveBooking(){
     cost:      editingId ? (bookings.find(function(b){return b.id===editingId;})||{}).cost||0 : 0,
     status:    $d('fStatus').value,
     notes:     $d('fNotes').value.trim(),
+    source:          $d('fSource').value,
+    loyaltyDiscount: parseFloat($d('fLoyaltyDiscount').value)||0,
+    includedMiles:   parseFloat($d('fIncludedMiles').value)||0,
+    overageRate:     parseFloat($d('fOverageRate').value)||0,
+    broker:          $d('fBroker').value.trim(),
+    brokerFee:       parseFloat($d('fBrokerFee').value)||0,
     createdAt: editingId ? ((bookings.find(function(b){return b.id===editingId;})||{}).createdAt||Date.now()) : Date.now(),
     _t: Date.now(),
   };
@@ -3269,6 +3428,9 @@ function openCloseOut(id){
   $d('coOdomOut').value = b.odomOut||'';
   $d('coFuelOut').value = b.fuelOut||'';
   $d('coCondOut').value = b.condOut||'';
+  $d('coRefundSent').checked = !!b.refundSent;
+  $d('coRefundDate').value = b.refundDate||'';
+  $d('coRefundMethod').value = b.refundMethod||'';
   coOriginalPhotos=(b.checkOutPhotoIds||[]).slice();
   coWorkingPhotos=coOriginalPhotos.slice();
   renderPhotoGrid('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
@@ -3286,9 +3448,13 @@ function openCloseOut(id){
     '<div style="background:rgba(255,200,0,.06);border:1px solid rgba(255,200,0,.2);border-radius:10px;padding:8px 14px;font-size:12px;color:var(--muted)">⚠ No check-in recorded — open Check In first to log pickup odometer, fuel &amp; condition.</div>';
   $d('coSummary').innerHTML =
     '<strong>'+b.vehicle+'</strong> &nbsp;·&nbsp; '+b.name+'<br>'+
-    'Trip date: <strong>'+b.date+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(b.revenue)+'</strong><br>'+
-    'Deposit collected: <strong>'+$$(collected)+'</strong>';
+    'Trip date: <strong>'+b.date+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(b.revenue)+'</strong>'+
+    (b.broker?' &nbsp;·&nbsp; Broker: <strong>'+b.broker+'</strong>':'')+
+    (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$(b.brokerFee)+'</strong>':'')+
+    '<br>Deposit collected: <strong>'+$$(collected)+'</strong>';
   $d('closeOutModal').classList.add('open');
+  coCalcMiles();
+  coUpdateProfitSummary();
 }
 
 function coCalc(){
@@ -3298,9 +3464,47 @@ function coCalc(){
 }
 function coCalcMiles(){
   var b=bookings.find(function(x){return x.id===closeOutId;});
-  var i=b?Number(b.odomIn)||0:0;
+  if(!b) return;
+  var i=Number(b.odomIn)||0;
   var o=parseFloat($d('coOdomOut').value)||0;
-  $d('coMilesHint').textContent = (i&&o&&o>i) ? 'Miles driven: '+(o-i).toLocaleString()+' (pickup: '+i.toLocaleString()+' mi)' : (i?'Pickup odometer: '+i.toLocaleString()+' mi':'');
+  var driven=(i&&o&&o>i)?(o-i):0;
+  $d('coMilesHint').textContent = driven ? 'Miles driven: '+driven.toLocaleString()+' (pickup: '+i.toLocaleString()+' mi)' : (i?'Pickup odometer: '+i.toLocaleString()+' mi':'');
+  // Overage
+  var allowed=Number(b.includedMiles)||0;
+  var rate=Number(b.overageRate)||0;
+  var overRow=$d('coOverageRow');
+  if(overRow){
+    if(driven && allowed && rate && driven>allowed){
+      var over=driven-allowed;
+      var charge=over*rate;
+      overRow.style.display='flex';
+      overRow.innerHTML='<span>Miles driven: <b>'+driven.toLocaleString()+'</b></span>'+
+        '<span>Included: <b>'+allowed.toLocaleString()+'</b></span>'+
+        '<span>Over by: <b style="color:var(--red)">'+over.toLocaleString()+'</b></span>'+
+        '<span>Overage charge: <b style="color:var(--red)">'+$$(charge)+'</b> @ $'+rate+'/mi</span>';
+    } else {
+      overRow.style.display='none';
+    }
+  }
+  coUpdateProfitSummary();
+}
+function coUpdateProfitSummary(){
+  var b=bookings.find(function(x){return x.id===closeOutId;});
+  if(!b) return;
+  var rev=Number(b.revenue)||0;
+  var cost=parseFloat($d('coCost')?$d('coCost').value:0)||0;
+  var brokerFee=Number(b.brokerFee)||0;
+  var loyaltyDisc=Number(b.loyaltyDiscount)||0;
+  var net=rev-cost-brokerFee-loyaltyDisc;
+  var ps=$d('coProfitSummary');
+  if(!ps) return;
+  ps.style.display='flex';
+  ps.innerHTML='<b style="color:var(--gold);margin-right:4px">Trip Summary:</b>'+
+    '<span>Revenue: <b>'+$$(rev)+'</b></span>'+
+    (brokerFee?'<span>Broker Fee: <b style="color:var(--red)">−'+$$(brokerFee)+'</b></span>':'')+
+    (loyaltyDisc?'<span>Loyalty Disc: <b style="color:var(--blue)">−'+$$(loyaltyDisc)+'</b></span>':'')+
+    (cost?'<span>Booking Cost: <b style="color:var(--red)">−'+$$(cost)+'</b></span>':'')+
+    '<span>Net: <b style="color:var(--green)">'+$$(net)+'</b></span>';
 }
 
 function closeCloseOut(){
@@ -3325,6 +3529,9 @@ function saveCloseOut(){
   bookings[idx].odomOut          = parseFloat($d('coOdomOut').value)||0;
   bookings[idx].fuelOut          = $d('coFuelOut').value;
   bookings[idx].condOut          = $d('coCondOut').value;
+  bookings[idx].refundSent       = $d('coRefundSent').checked;
+  bookings[idx].refundDate       = $d('coRefundDate').value;
+  bookings[idx].refundMethod     = $d('coRefundMethod').value;
   bookings[idx].checkOutPhotoIds = coWorkingPhotos.slice();
   bookings[idx]._t               = Date.now();
   save();
@@ -3984,6 +4191,80 @@ function renderCustomersTab(){
     '</tbody></table></div></div>';
 }
 
+// ════════════════════════════════════════════════════════
+function renderBrokerTab(){
+  var active=bookings.filter(function(b){return !b._deleted&&b.status!=='cancelled';});
+
+  // KPIs
+  var totalBF=sumK(active,'brokerFee');
+  var totalLD=sumK(active,'loyaltyDiscount');
+  var brokered=active.filter(function(b){return b.broker;});
+  var kpiEl=$d('brokerKpiGrid'); if(!kpiEl) return;
+  kpiEl.innerHTML=[
+    {label:'Broker Bookings',val:brokered.length,sub:active.length+' total active',cls:''},
+    {label:'Total Broker Fees',val:$$(totalBF),sub:'Paid to partners',cls:'red'},
+    {label:'Loyalty Discounts',val:$$(totalLD),sub:'Given to returning customers',cls:'blue'},
+    {label:'Net Lost to Partners',val:$$(totalBF+totalLD),sub:'Fees + discounts combined',cls:'red'},
+  ].map(function(k){
+    return '<div class="kpi '+k.cls+'"><div class="kpi-label">'+k.label+'</div><div class="kpi-val">'+k.val+'</div><div class="kpi-sub">'+k.sub+'</div></div>';
+  }).join('');
+
+  // Per-broker table
+  var brokerMap={};
+  brokered.forEach(function(b){
+    var n=b.broker;
+    if(!brokerMap[n]) brokerMap[n]={name:n,count:0,gross:0,fees:0,lastDate:''};
+    brokerMap[n].count++;
+    brokerMap[n].gross+=(Number(b.revenue)||0);
+    brokerMap[n].fees+=(Number(b.brokerFee)||0);
+    if((b.date||'')>brokerMap[n].lastDate) brokerMap[n].lastDate=b.date;
+  });
+  var rows=Object.values(brokerMap).sort(function(a,b){return b.gross-a.gross;});
+  var tbody=$d('brokerTable')?$d('brokerTable').querySelector('tbody'):null;
+  if(tbody){
+    tbody.innerHTML=rows.length?rows.map(function(r){
+      var net=r.gross-r.fees;
+      var avg=r.count?net/r.count:0;
+      return '<tr>'+
+        '<td><b>'+r.name+'</b></td>'+
+        '<td>'+r.count+'</td>'+
+        '<td>'+$$(r.gross)+'</td>'+
+        '<td style="color:var(--red)">'+$$(r.fees)+'</td>'+
+        '<td style="color:var(--green)">'+$$(net)+'</td>'+
+        '<td>'+$$(avg)+'</td>'+
+        '<td>'+fmtDate(r.lastDate)+'</td>'+
+      '</tr>';
+    }).join(''):
+    '<tr class="empty-row"><td colspan="7">No broker bookings yet.</td></tr>';
+    $d('brokerMeta').textContent=rows.length+' partner'+(rows.length===1?'':'s');
+  }
+
+  // Source breakdown
+  var srcMap={};
+  active.forEach(function(b){
+    var s=b.source||'Unknown';
+    if(!srcMap[s]) srcMap[s]={count:0,rev:0,net:0};
+    srcMap[s].count++;
+    srcMap[s].rev+=(Number(b.revenue)||0);
+    srcMap[s].net+=netRevenue(b);
+  });
+  var srows=Object.values(Object.assign({},srcMap)).sort(function(a,b){return b.rev-a.rev;});
+  var srcKeys=Object.keys(srcMap).sort(function(a,b){return srcMap[b].rev-srcMap[a].rev;});
+  var stbody=$d('sourceTable')?$d('sourceTable').querySelector('tbody'):null;
+  if(stbody){
+    stbody.innerHTML=srcKeys.length?srcKeys.map(function(s){
+      var d=srcMap[s];
+      return '<tr>'+
+        '<td>'+s+'</td>'+
+        '<td>'+d.count+'</td>'+
+        '<td>'+$$(d.rev)+'</td>'+
+        '<td style="color:var(--green)">'+$$(d.net)+'</td>'+
+      '</tr>';
+    }).join(''):
+    '<tr class="empty-row"><td colspan="4">No source data yet.</td></tr>';
+  }
+}
+
 function openCustomerProfile(enc){
   var key=decodeURIComponent(enc).toLowerCase();
   var bks=bookings.filter(function(b){
@@ -4095,7 +4376,14 @@ function openContract(id){
     .replace(/\{\{addons\}\}/gi,          addonLines.length?addonLines.join(', '):'None')
     .replace(/\{\{invoice_number\}\}/gi,  '#PBR-'+b.id.slice(-6).toUpperCase())
     .replace(/\{\{notes\}\}/gi,           b.notes||'')
-    .replace(/\{\{today\}\}/gi,           todayFmt);
+    .replace(/\{\{today\}\}/gi,           todayFmt)
+    .replace(/\{\{broker\}\}/gi,          b.broker||'')
+    .replace(/\{\{broker_fee\}\}/gi,      b.brokerFee?'$'+b.brokerFee:'')
+    .replace(/\{\{net_revenue\}\}/gi,     '$'+(netRevenue(b)))
+    .replace(/\{\{included_miles\}\}/gi,  b.includedMiles?String(b.includedMiles):'Unlimited')
+    .replace(/\{\{overage_rate\}\}/gi,    b.overageRate?'$'+b.overageRate+'/mi':'N/A')
+    .replace(/\{\{source\}\}/gi,          b.source||'')
+    .replace(/\{\{loyalty_discount\}\}/gi,b.loyaltyDiscount?'$'+b.loyaltyDiscount:'');
   $d('contractFilled').value=filled;
   $d('contractHeader').innerHTML=
     '<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">'+
@@ -4200,6 +4488,7 @@ function afterCloudLoad(ok){
   if(activeTab==='tax')       renderTaxTab();
   if(activeTab==='fleet')     renderFleetTab();
   if(activeTab==='customers') renderCustomersTab();
+  if(activeTab==='brokers')   renderBrokerTab();
 }
 
 // Pull from cloud — always wins over local data
