@@ -9,8 +9,6 @@
 <meta name="apple-mobile-web-app-title" content="PB Rentals">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0a">
-<link rel="apple-touch-icon" href="icon.png">
-<link rel="icon" type="image/png" href="icon.png">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" onload="initGCal()" async defer></script>
 <style>
@@ -552,7 +550,7 @@ tr:hover td { background: var(--gold-faint); }
     </div>
     <div class="fgrid">
       <div class="fsec">Customer Info</div>
-      <div class="fgroup"><div class="flabel">Date *</div><input type="date" class="finput" id="fDate"></div>
+      <input type="hidden" id="fDate">
       <div class="fgroup"><div class="flabel">Customer Name *</div><input type="text" class="finput" id="fName" placeholder="Full name"></div>
       <div class="fgroup">
         <div class="flabel">Phone</div>
@@ -583,7 +581,7 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fsec" style="grid-column:1/-1">Pickup &amp; Drop-off</div>
       <div class="fgroup">
         <div class="flabel">Pickup Date</div>
-        <input type="date" class="finput" id="fPickupDate">
+        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value">
       </div>
       <div class="fgroup">
         <div class="flabel">Pickup Time</div>
@@ -1722,6 +1720,12 @@ function fmtDateFull(s){
   var d=new Date(s+'T00:00:00');
   return d.toLocaleString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
 }
+function fmtTime(t){
+  if(!t) return '';
+  var parts=t.split(':'), h=parseInt(parts[0],10), m=parts[1]||'00';
+  var ampm=h>=12?'PM':'AM'; h=h%12||12;
+  return h+':'+m+' '+ampm;
+}
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -2151,8 +2155,8 @@ function tripCard(b, showCountdown){
   var pdLine='';
   if(b.pickupDate||b.dropoffDate){
     pdLine='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+
-      '📍 Pickup: '+(b.pickupDate?fmtDate(b.pickupDate):'—')+(b.pickupTime?' '+b.pickupTime:'')+
-      '  →  Drop-off: '+(b.dropoffDate?fmtDate(b.dropoffDate):'—')+(b.dropoffTime?' '+b.dropoffTime:'')+
+      '📍 Pickup: '+(b.pickupDate?fmtDate(b.pickupDate):'—')+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+
+      '  →  Drop-off: '+(b.dropoffDate?fmtDate(b.dropoffDate):'—')+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+
     '</div>';
   }
 
@@ -2255,8 +2259,8 @@ function openBookingDetail(id){
     // Booking
     '<div class="fsec">Booking</div>'+
     '<div class="detail-row"><span class="detail-label">Booking Date</span><span class="detail-val">'+fmtDate(b.date)+'</span></div>'+
-    (b.pickupDate?'<div class="detail-row"><span class="detail-label">Pickup</span><span class="detail-val">'+fmtDate(b.pickupDate)+(b.pickupTime?' at '+b.pickupTime:'')+'</span></div>':'')+
-    (b.dropoffDate?'<div class="detail-row"><span class="detail-label">Drop-off</span><span class="detail-val">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+b.dropoffTime:'')+'</span></div>':'')+
+    (b.pickupDate?'<div class="detail-row"><span class="detail-label">Pickup</span><span class="detail-val">'+fmtDate(b.pickupDate)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</span></div>':'')+
+    (b.dropoffDate?'<div class="detail-row"><span class="detail-label">Drop-off</span><span class="detail-val">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Duration</span><span class="detail-val">'+b.days+' '+(b.type==='hourly'?'hr':'day')+(b.days!==1?'s':'')+'</span></div>'+
 
     // Revenue
@@ -2446,7 +2450,9 @@ function openModal(id, vehiclePreset, datePreset){
   var b=id?bookings.find(function(x){return x.id===id;}):null;
   var today=todayStr();
 
-  $d('fDate').value     = b?b.date    : (datePreset||today);
+  var primaryDate = b?(b.pickupDate||b.date):(datePreset||today);
+  $d('fDate').value        = primaryDate;
+  $d('fPickupDate').value  = primaryDate;
   $d('fName').value     = b?b.name    : '';
   $d('fPhone').value    = b?b.phone   : '';
   $d('fEmail').value    = b?b.email   : '';
@@ -2461,7 +2467,6 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fNotes').value    = b?b.notes   : '';
 
   // Pickup & Dropoff
-  $d('fPickupDate').value  = b?(b.pickupDate||'')  : '';
   $d('fPickupTime').value  = b?(b.pickupTime||'')  : '';
   $d('fDropoffDate').value = b?(b.dropoffDate||'') : '';
   $d('fDropoffTime').value = b?(b.dropoffTime||'') : '';
@@ -2505,8 +2510,8 @@ function onVehicleChange(){
 }
 
 function saveBooking(){
-  var date=$d('fDate').value, name=$d('fName').value.trim(), vehicle=$d('fVehicle').value;
-  if(!date)    { alert('Please enter a date.');          return; }
+  var date=$d('fPickupDate').value||$d('fDate').value, name=$d('fName').value.trim(), vehicle=$d('fVehicle').value;
+  if(!date)    { alert('Please enter a pickup date.');   return; }
   if(!name)    { alert('Please enter a customer name.'); return; }
   if(!vehicle) { alert('Please select a vehicle.');      return; }
 
@@ -2785,7 +2790,8 @@ function duplicateBooking(id){
   editingId=null;
   $d('modalTitle').textContent='Add Booking (Duplicate)';
   $d('deleteBtn').style.display='none';
-  $d('fDate').value='';
+  $d('fPickupDate').value=b.pickupDate||b.date||'';
+  $d('fDate').value=$d('fPickupDate').value;
   $d('fName').value=b.name||'';
   $d('fPhone').value=b.phone||'';
   $d('fEmail').value=b.email||'';
