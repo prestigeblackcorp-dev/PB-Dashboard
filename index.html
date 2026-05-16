@@ -3785,20 +3785,23 @@ function _photoBase(){
 }
 
 function dbSavePhoto(id,dataUrl,cb){
-  // Save to IndexedDB
+  // Save to IndexedDB — fire cb only after the write transaction commits
   openPhotoDB(function(db){
     if(db){
       var tx=db.transaction('photos','readwrite');
       tx.objectStore('photos').put({id:id,data:dataUrl});
+      tx.oncomplete=function(){ if(cb) cb(); };
+      tx.onerror=function(){ if(cb) cb(); };
+    } else {
+      if(cb) cb();
     }
   });
-  // Save to Firebase if connected
+  // Save to Firebase if connected (fire-and-forget)
   var base=_photoBase();
   if(base){
     fetch(base+id+'.json',{method:'PUT',body:JSON.stringify(dataUrl),headers:{'Content-Type':'application/json'}})
       .catch(function(){});
   }
-  if(cb) cb();
 }
 
 function dbLoadPhotos(ids,cb){
