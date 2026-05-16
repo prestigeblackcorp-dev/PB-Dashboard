@@ -432,9 +432,23 @@ tr:hover td { background: var(--gold-faint); }
     <button class="btn btn-sm" id="gcalBtn" onclick="connectGCal()" title="Connect Google Calendar">🗓 Connect Calendar</button>
     <button class="btn btn-sm" id="gcalSyncBtn" onclick="syncAllToGCal()" title="Push all bookings to Google Calendar" style="display:none">↑ Sync All</button>
     <button class="btn btn-sm" onclick="openContractTemplate()" style="border-color:rgba(201,169,98,.4);color:var(--gold)" title="Set up rental agreement template">📝 Contract</button>
+    <span id="offlineBadge" style="display:none;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.4);border-radius:8px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.06em">● OFFLINE</span>
+    <button class="btn btn-sm" onclick="lockApp()" title="Lock dashboard">🔒 Lock</button>
     <button class="btn btn-sm" onclick="openSettings()" title="API keys & integrations">⚙️ Settings</button>
     <button class="btn btn-gold btn-sm" onclick="openModal()">+ Add Booking</button>
   </div>
+</div>
+
+<!-- ═══ LOCK SCREEN ═══ -->
+<div id="lockScreen" style="display:none;position:fixed;inset:0;z-index:99999;background:#0a0a0a;flex-direction:column;align-items:center;justify-content:center;gap:20px">
+  <div style="font-size:36px">🔒</div>
+  <div style="font-size:22px;font-weight:900;color:var(--gold);letter-spacing:.08em;text-transform:uppercase">Prestige Black</div>
+  <div style="font-size:13px;color:var(--muted)">Enter PIN to unlock</div>
+  <input id="lockPinInput" type="password" inputmode="numeric" maxlength="10" placeholder="PIN"
+    style="width:180px;text-align:center;padding:12px;border-radius:12px;border:1px solid var(--gold-dim);background:#111;color:#fff;font-size:20px;letter-spacing:.2em;outline:none"
+    onkeydown="if(event.key==='Enter') unlockApp()">
+  <button class="btn btn-gold" onclick="unlockApp()" style="width:180px">Unlock</button>
+  <div id="lockError" style="color:var(--red);font-size:12px;font-weight:700;min-height:16px"></div>
 </div>
 
 <!-- ═══ TOAST ═══ -->
@@ -569,28 +583,28 @@ tr:hover td { background: var(--gold-faint); }
 <!-- ═══ TAB: OVERVIEW ═══ -->
 <div id="tab-overview" class="tab-panel active">
   <div class="filter-bar">
-    <div class="fg"><div class="fl">From</div><input type="date" class="fi" id="filterFrom" onchange="render()"></div>
-    <div class="fg"><div class="fl">To</div><input type="date" class="fi" id="filterTo" onchange="render()"></div>
+    <div class="fg"><div class="fl">From</div><input type="date" class="fi" id="filterFrom" onchange="filterChange()"></div>
+    <div class="fg"><div class="fl">To</div><input type="date" class="fi" id="filterTo" onchange="filterChange()"></div>
     <div class="fg"><div class="fl">Vehicle</div>
-      <select class="fi" id="filterVehicle" onchange="render()"><option value="">All Vehicles</option></select></div>
+      <select class="fi" id="filterVehicle" onchange="filterChange()"><option value="">All Vehicles</option></select></div>
     <div class="fg"><div class="fl">Type</div>
-      <select class="fi" id="filterType" onchange="render()">
+      <select class="fi" id="filterType" onchange="filterChange()">
         <option value="">All Types</option><option value="daily">Daily</option>
         <option value="hourly">Hourly</option><option value="chauffeur">Chauffeur</option>
       </select></div>
     <div class="fg"><div class="fl">Status</div>
-      <select class="fi" id="filterStatus" onchange="render()">
+      <select class="fi" id="filterStatus" onchange="filterChange()">
         <option value="">All</option><option value="completed">Completed</option>
         <option value="pending">Pending</option><option value="cancelled">Cancelled</option>
       </select></div>
       <div class="fg"><div class="fl">Source</div>
-      <select class="fi" id="filterSource" onchange="render()">
+      <select class="fi" id="filterSource" onchange="filterChange()">
         <option value="">All Sources</option>
         <option>Instagram</option><option>Turo</option><option>HyreCar</option>
         <option>Website</option><option>Referral</option><option>Repeat</option><option>Walk-in</option><option>Other</option>
       </select></div>
     <div class="fg"><div class="fl">Search</div>
-      <input type="text" class="fi" id="filterSearch" placeholder="Name, phone, vehicle, broker…" oninput="render()" style="min-width:200px"></div>
+      <input type="text" class="fi" id="filterSearch" placeholder="Name, phone, vehicle, broker…" oninput="filterChange()" style="min-width:200px"></div>
     <button class="btn btn-sm" style="align-self:flex-end" onclick="clearFilters()">Clear</button>
   </div>
 
@@ -651,6 +665,11 @@ tr:hover td { background: var(--gold-faint); }
           </tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+      <div id="bPagination" style="display:none;align-items:center;justify-content:center;gap:12px;padding:12px 0">
+        <button class="btn btn-sm" id="bPagePrev" onclick="_bPage--;render()">← Prev</button>
+        <span id="bPageInfo" style="font-size:12px;color:var(--muted)"></span>
+        <button class="btn btn-sm" id="bPageNext" onclick="_bPage++;render()">Next →</button>
       </div>
     </div>
     <!-- Additional Income List -->
@@ -1352,6 +1371,12 @@ tr:hover td { background: var(--gold-faint); }
       <strong style="color:var(--gold)">Privacy note:</strong> Keys and signature are stored only in this browser's localStorage and are never synced to Firebase or shared with any third party.
     </div>
 
+    <div style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:14px 16px;margin-top:14px">
+      <div style="font-size:12px;font-weight:800;color:var(--gold);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">🔒 PIN Lock</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Require a PIN when opening the dashboard in a new browser session. Does not encrypt data — UI-level access control only.</div>
+      <button class="btn btn-sm" onclick="setLockPin()" style="border-color:var(--gold-dim);color:var(--gold)">Set / Change PIN</button>
+    </div>
+
     <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
       <div style="font-size:12px;font-weight:800;color:#ef4444;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Danger Zone</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Permanently deletes all bookings, expenses, income, and maintenance records from this device and Firebase. This cannot be undone.</div>
@@ -1674,6 +1699,7 @@ var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
 var WORKER_URL   = localStorage.getItem('pb_worker_url')   || '';
 var OPENAI_KEY       = localStorage.getItem('pb_openai_key')       || '';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
+var _offlinePending = false; // queues a cloudSave for when we come back online
 
 // Merge two arrays by ID — newer _t wins for conflicts, items from both sides kept
 // Items marked _deleted:true are kept (tombstones) so deletions propagate across devices
@@ -1697,6 +1723,7 @@ function mergeArray(local, cloud) {
 
 function cloudSave() {
   if (!FIREBASE_URL || _cloudLoading) return;
+  if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
   setSyncStatus('syncing');
   var data = {
     bookings: bookings, expenses: expenses, incomes: incomes,
@@ -1711,10 +1738,10 @@ function cloudSave() {
   }).then(function(r) {
     if (r.ok) {
       setSyncStatus('ok');
+      _offlinePending = false;
       localStorage.setItem('pb_last_cloud_save', Date.now().toString());
     } else {
       setSyncStatus('error');
-      // Retry once after 5 seconds on failure
       setTimeout(cloudSave, 5000);
     }
   }).catch(function() {
@@ -2516,6 +2543,7 @@ var calStart = null; // Date object, start of displayed week (Sunday)
 var vSortKey = 'revenue', vSortAsc = false;
 var bSortKey = 'date',    bSortAsc = false;
 var charts   = {};
+var _bPage   = 0; // bookings table current page (50 per page)
 
 // ════════════════════════════════════════════════════════
 //  STORAGE
@@ -2524,7 +2552,15 @@ function loadBookings(){
   try { var r = localStorage.getItem('pb_dash_v2'); if(r){ bookings=JSON.parse(r); return; } } catch(e){}
   bookings = []; // start empty — no sample data auto-loaded
 }
-function save(){ try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){} cloudSave(); }
+function save(){
+  try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){}
+  // Warn when approaching localStorage limit (~4MB)
+  try{
+    var used=0; for(var k in localStorage){ if(localStorage.hasOwnProperty(k)) used+=localStorage[k].length*2; }
+    if(used > 3.5*1024*1024) toast('⚠️ Storage nearly full ('+Math.round(used/1024/1024*10)/10+' MB). Export a CSV backup.');
+  }catch(e){}
+  cloudSave();
+}
 function promptClearAll(){
   var pin = prompt('Enter PIN to clear all data:');
   if(pin === null) return;
@@ -2878,17 +2914,36 @@ function renderVehicleTable(filtered){
 // ════════════════════════════════════════════════════════
 function sortB(k){ if(bSortKey===k) bSortAsc=!bSortAsc; else{bSortKey=k;bSortAsc=false;} render(); }
 
+function filterChange(){ _bPage=0; render(); }
+function changeBPage(delta){ _bPage+=delta; render(); }
 function renderBookingsTable(filtered){
+  var PAGE_SIZE=50;
   var sorted=filtered.slice().sort(function(a,b){
     var ka=bSortKey==='profit'?getProfit(a):(a[bSortKey]||'');
     var kb=bSortKey==='profit'?getProfit(b):(b[bSortKey]||'');
     return typeof ka==='string'?(bSortAsc?ka.localeCompare(kb):kb.localeCompare(ka)):(bSortAsc?ka-kb:kb-ka);
   });
+  var totalPages=Math.max(1,Math.ceil(sorted.length/PAGE_SIZE));
+  if(_bPage>=totalPages) _bPage=totalPages-1;
+  if(_bPage<0) _bPage=0;
+  var page=sorted.slice(_bPage*PAGE_SIZE, (_bPage+1)*PAGE_SIZE);
   $d('bookingMeta').textContent=filtered.length+' booking'+(filtered.length!==1?'s':'')+
-    ' — Revenue: '+$$(sumK(filtered.filter(function(b){return b.status!=='cancelled';}), 'revenue'));
+    ' — Revenue: '+$$(sumK(filtered.filter(function(b){return b.status!=='cancelled';}), 'revenue'))+
+    (totalPages>1?' — Page '+(_bPage+1)+'/'+totalPages:'');
   var tbody=document.querySelector('#bookingsTable tbody');
-  if(!sorted.length){ tbody.innerHTML='<tr class="empty-row"><td colspan="23">No bookings</td></tr>'; return; }
-  tbody.innerHTML=sorted.map(function(b){
+  if(!sorted.length){ tbody.innerHTML='<tr class="empty-row"><td colspan="23">No bookings</td></tr>';
+    var pp=$d('bPagination'); if(pp) pp.style.display='none'; return; }
+  // Pagination controls
+  var pp=$d('bPagination');
+  if(pp){
+    if(totalPages>1){
+      pp.style.display='flex';
+      $d('bPageInfo').textContent='Page '+(_bPage+1)+' of '+totalPages;
+      $d('bPagePrev').disabled=_bPage===0;
+      $d('bPageNext').disabled=_bPage===totalPages-1;
+    } else { pp.style.display='none'; }
+  }
+  tbody.innerHTML=page.map(function(b){
     var cost=getEstCost(b), profit=getProfit(b), pc=profit>=0?'pos':'neg';
     var del=Number(b.delivery)||0, unl=Number(b.unlimited)||0, pet=Number(b.pet)||0;
     var photo=Number(b.photo)||0, champ=Number(b.champagne)||0, decor=Number(b.decor)||0, bouq=Number(b.bouquet)||0;
@@ -3588,6 +3643,14 @@ function saveBooking(){
   if(!date)    { alert('Please enter a pickup date.');   return; }
   if(!name)    { alert('Please enter a customer name.'); return; }
   if(!vehicle) { alert('Please select a vehicle.');      return; }
+  // Input validation
+  var rev=parseFloat($d('fRevenue').value)||0, dep=parseFloat($d('fDeposit').value)||0;
+  var daysVal=parseFloat($d('fDays').value)||0;
+  var pickupD=$d('fPickupDate').value, dropoffD=$d('fDropoffDate').value;
+  if(rev<0)    { alert('Revenue cannot be negative.'); return; }
+  if(dep<0)    { alert('Deposit cannot be negative.'); return; }
+  if(daysVal<=0){ alert('Duration must be at least 1.'); return; }
+  if(pickupD && dropoffD && dropoffD < pickupD){ alert('Drop-off date cannot be before pickup date.'); return; }
   var maintConflicts=checkMaintenanceConflict(vehicle, date, $d('fDropoffDate').value);
   if(maintConflicts.length){
     var msg='⚠️ Maintenance conflict for '+vehicle+':\n\n'+
@@ -3661,6 +3724,15 @@ function saveBooking(){
       if(ex.refundSent)         entry.refundSent         = ex.refundSent;
       if(ex.refundDate)         entry.refundDate         = ex.refundDate;
       if(ex.refundMethod)       entry.refundMethod       = ex.refundMethod;
+      // Audit trail: record which fields changed
+      var auditFields=['date','name','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
+      var changes=[];
+      auditFields.forEach(function(f){ if(String(ex[f]||'')!==String(entry[f]||'')) changes.push(f+': '+JSON.stringify(ex[f]||'')+'→'+JSON.stringify(entry[f]||'')); });
+      if(changes.length){
+        entry._history=(ex._history||[]).concat([{at:Date.now(),by:'owner',changes:changes}]);
+      } else {
+        if(ex._history) entry._history=ex._history;
+      }
       bookings[idx]=entry;
     }
   } else {
@@ -5594,10 +5666,68 @@ document.addEventListener('keydown',function(e){
   if(e.key==='Escape'){ closeModal(); closeCheckIn(); closeCloseOut(); closeVerify(); closeIncomeModal(); closeBookingDetail(); closeExpenseModal(); closeVehicleModal(); closeMaintenanceModal(); closeCustomerModal(); closeContract(); closeContractTemplate(); }
 });
 
+// ════════════════════════════════════════════════════════
+//  SESSION PIN LOCK
+// ════════════════════════════════════════════════════════
+function initLock(){
+  var pin=localStorage.getItem('pb_lock_pin');
+  if(!pin) return; // no PIN set — app is always open
+  var unlocked=sessionStorage.getItem('pb_unlocked');
+  if(!unlocked){ showLockScreen(); }
+}
+function showLockScreen(){
+  var ls=$d('lockScreen'); if(!ls) return;
+  ls.style.display='flex';
+  setTimeout(function(){ var inp=$d('lockPinInput'); if(inp) inp.focus(); },100);
+}
+function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='none'; }
+function unlockApp(){
+  var pin=localStorage.getItem('pb_lock_pin');
+  var entered=($d('lockPinInput').value||'').trim();
+  if(!pin || entered===pin){
+    sessionStorage.setItem('pb_unlocked','1');
+    hideLockScreen();
+    $d('lockPinInput').value='';
+    $d('lockError').textContent='';
+  } else {
+    $d('lockError').textContent='Incorrect PIN. Try again.';
+    $d('lockPinInput').value='';
+    $d('lockPinInput').focus();
+  }
+}
+function lockApp(){
+  sessionStorage.removeItem('pb_unlocked');
+  showLockScreen();
+}
+function setLockPin(){
+  var pin=localStorage.getItem('pb_lock_pin')||'';
+  var np=prompt('Set a PIN to lock the dashboard on new sessions.\nLeave blank to disable PIN lock.\nCurrent: '+(pin?'Set ('+pin.length+' chars)':'None'), '');
+  if(np===null) return;
+  np=np.trim();
+  if(np){ localStorage.setItem('pb_lock_pin',np); toast('PIN lock enabled.'); }
+  else  { localStorage.removeItem('pb_lock_pin'); toast('PIN lock disabled.'); }
+}
+
+// ════════════════════════════════════════════════════════
+//  ONLINE / OFFLINE DETECTION
+// ════════════════════════════════════════════════════════
+function updateOnlineStatus(){
+  var badge=$d('offlineBadge');
+  if(!badge) return;
+  if(navigator.onLine){
+    badge.style.display='none';
+    if(_offlinePending){ _offlinePending=false; cloudSave(); }
+  } else {
+    badge.style.display='';
+  }
+}
+window.addEventListener('online',  updateOnlineStatus);
+window.addEventListener('offline', updateOnlineStatus);
+
 // Load local data first for instant display
 loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate();
 initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
-updateSyncUI();
+updateSyncUI(); updateOnlineStatus(); initLock();
 function afterCloudLoad(ok){
   if(!ok) return;
   initSelects(); render(); renderIncomeList(); renderExpenseLog();
