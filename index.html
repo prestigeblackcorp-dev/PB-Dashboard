@@ -827,8 +827,21 @@ tr:hover td { background: var(--gold-faint); }
       </div>
 
       <div class="fsec">Revenue</div>
-      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="updateBrokerCalc()"></div>
-      <div class="fgroup"><div class="flabel">Deposit Collected ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0" onchange="onDepositChange()"></div>
+      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="updateBrokerCalc();updateRemainingBalance()"></div>
+      <div class="fgroup"><div class="flabel">Date Lock / Booking Fee ($)</div><input type="number" class="finput" id="fDateLock" min="0" step="1" value="100" oninput="updateRemainingBalance()" title="Upfront fee paid to hold the date — subtracted from total"></div>
+      <div class="fgroup ffull" style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;gap:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div>
+            <div class="flabel" style="margin-bottom:2px">Remaining Balance Due ($)</div>
+            <div style="font-size:11px;color:var(--muted)">Auto-calculated from Revenue − Date Lock. Edit freely to track partial payments.</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="number" class="finput" id="fRemainingBalance" min="0" step="1" placeholder="0" style="width:120px;text-align:right;font-size:15px;font-weight:700;color:var(--gold)">
+            <button type="button" class="btn btn-sm" onclick="updateRemainingBalance(true)" title="Recalculate from Revenue − Date Lock" style="white-space:nowrap">↺ Recalc</button>
+          </div>
+        </div>
+      </div>
+      <div class="fgroup"><div class="flabel">Security Deposit / Hold ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0"></div>
 
       <div class="fgroup"><div class="flabel">Pickup / Drop-off Address</div>
         <input type="text" class="finput ffull" id="fAddress" placeholder="e.g. DFW Airport or customer address"></div>
@@ -1246,8 +1259,27 @@ tr:hover td { background: var(--gold-faint); }
       </div>
     </div>
 
+    <div class="fsec" style="margin:18px 0 12px">✍️ Owner Signature</div>
+    <div class="fgrid">
+      <div class="fgroup ffull">
+        <div class="flabel">Signature Image</div>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <label style="display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border:1px solid var(--gold-dim);border-radius:9px;cursor:pointer;font-size:12px;font-weight:700;color:var(--gold)">
+            📁 Upload Signature
+            <input type="file" id="settSigUpload" accept="image/*" style="display:none" onchange="loadSigPreview(this)">
+          </label>
+          <button class="btn btn-sm" onclick="clearSignature()" style="border-color:var(--red);color:var(--red)">✕ Clear</button>
+        </div>
+        <div style="margin-top:10px;min-height:54px;background:rgba(255,255,255,.04);border:1px dashed var(--border);border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center">
+          <img id="settSigPreview" src="" style="max-height:50px;max-width:240px;display:none;object-fit:contain">
+          <span id="settSigEmpty" style="font-size:11px;color:var(--muted)">No signature uploaded — contracts will leave the line blank</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">PNG or JPG with transparent/white background works best. Stored locally in this browser only.</div>
+      </div>
+    </div>
+
     <div style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:12px;color:var(--muted);line-height:1.6">
-      <strong style="color:var(--gold)">Privacy note:</strong> Keys are stored only in this browser's localStorage and are never synced to Firebase or shared with any third party.
+      <strong style="color:var(--gold)">Privacy note:</strong> Keys and signature are stored only in this browser's localStorage and are never synced to Firebase or shared with any third party.
     </div>
 
     <div style="display:flex;gap:10px;margin-top:20px">
@@ -3011,7 +3043,11 @@ function openBookingDetail(id){
     (b.broker?'<div class="detail-row"><span class="detail-label">Broker / Partner</span><span class="detail-val">'+b.broker+'</span></div>':'')+
     (b.source?'<div class="detail-row"><span class="detail-label">Booking Source</span><span class="detail-val">'+b.source+'</span></div>':'')+
     (b.includedMiles?'<div class="detail-row"><span class="detail-label">Included Miles</span><span class="detail-val">'+Number(b.includedMiles).toLocaleString()+' mi'+(b.overageRate?' @ $'+b.overageRate+'/mi overage':'')+'</span></div>':'')+
-    '<div class="detail-row"><span class="detail-label">Deposit Collected</span><span class="detail-val">'+$$(b.deposit)+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Date Lock Paid</span><span class="detail-val" style="color:var(--green)">'+$$(b.dateLock!=null?b.dateLock:100)+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Remaining Balance</span><span class="detail-val" style="color:'+(getRemainingBalance(b)>0?'var(--red)':'var(--green)')+'">'+$$(getRemainingBalance(b))+
+      ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\');closeBookingDetail()" style="padding:2px 8px;font-size:10px;margin-left:6px">✏ Update</button>'+
+    '</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Security Deposit</span><span class="detail-val">'+$$(b.deposit)+'</span></div>'+
     (Number(b.depositKept)?'<div class="detail-row"><span class="detail-label">Deposit Kept</span><span class="detail-val" style="color:var(--green)">'+$$(b.depositKept)+'</span></div>':'')+
     (Number(b.deposit)?'<div class="detail-row"><span class="detail-label">Deposit Returned</span><span class="detail-val">'+$$(Math.max(0,(Number(b.deposit)||0)-(Number(b.depositKept)||0)))+'</span></div>':'')+
     '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">Add-ons</div>'+
@@ -3263,8 +3299,10 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fVehicle').value  = b?b.vehicle : (vehiclePreset||'');
   $d('fType').value     = b?b.type    : (vehiclePreset&&CHAUFFEUR_VEHICLES.indexOf(vehiclePreset)!==-1?'chauffeur':'daily');
   $d('fDays').value     = b?b.days    : 1;
-  $d('fRevenue').value       = b?b.revenue     : '';
-  $d('fDeposit').value       = b?b.deposit     : 0;
+  $d('fRevenue').value          = b?b.revenue      : '';
+  $d('fDateLock').value         = b?(b.dateLock!=null?b.dateLock:100):100;
+  $d('fRemainingBalance').value = b?(b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock!=null?b.dateLock:100)||100))):'';;
+  $d('fDeposit').value          = b?b.deposit      : 0;
 
   $d('fAddress').value  = b?b.address : '';
   $d('fStatus').value   = b?b.status  : 'pending';
@@ -3321,6 +3359,16 @@ function toggleAddon(inputId, defaultPrice, checked){
 }
 
 function onDepositChange(){}
+
+function updateRemainingBalance(force){
+  var rev  = parseFloat($d('fRevenue').value)||0;
+  var lock = parseFloat($d('fDateLock').value)||0;
+  var rb   = $d('fRemainingBalance');
+  // Auto-fill when field is empty OR when Recalc button clicked
+  if(force || rb.value==='' || rb.value==='0'){
+    rb.value = Math.max(0, rev - lock);
+  }
+}
 
 function updateBrokerCalc(){
   var rev=parseFloat($d('fRevenue')?$d('fRevenue').value:0)||0;
@@ -3397,7 +3445,9 @@ function saveBooking(){
     type:      $d('fType').value,
     days:      parseFloat($d('fDays').value)||1,
     revenue:      parseFloat($d('fRevenue').value)||0,
-    deposit:      parseFloat($d('fDeposit').value)||0,
+    deposit:          parseFloat($d('fDeposit').value)||0,
+    dateLock:         parseFloat($d('fDateLock').value)||0,
+    remainingBalance: parseFloat($d('fRemainingBalance').value)||0,
 
     address:      $d('fAddress').value.trim(),
     pickupDate:   $d('fPickupDate').value,
@@ -3875,9 +3925,12 @@ function saveVerify(){
 // ════════════════════════════════════════════════════════
 //  SETTINGS
 // ════════════════════════════════════════════════════════
+var OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
+
 function openSettings(){
   $d('settWorkerUrl').value = WORKER_URL;
   $d('settOpenAiKey').value = OPENAI_KEY;
+  _refreshSigPreview(OWNER_SIGNATURE);
   $d('settingsModal').classList.add('open');
 }
 function closeSettings(){ $d('settingsModal').classList.remove('open'); }
@@ -3886,8 +3939,28 @@ function saveSettings(){
   OPENAI_KEY = ($d('settOpenAiKey').value||'').trim();
   localStorage.setItem('pb_worker_url', WORKER_URL);
   localStorage.setItem('pb_openai_key', OPENAI_KEY);
+  // signature saved live via loadSigPreview; persist current value
+  localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
   closeSettings();
   toast('Settings saved.');
+}
+function loadSigPreview(input){
+  var file = input.files[0]; if(!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    OWNER_SIGNATURE = e.target.result;
+    _refreshSigPreview(OWNER_SIGNATURE);
+  };
+  reader.readAsDataURL(file);
+}
+function clearSignature(){
+  OWNER_SIGNATURE = '';
+  _refreshSigPreview('');
+}
+function _refreshSigPreview(src){
+  var img = $d('settSigPreview'), empty = $d('settSigEmpty');
+  if(src){ img.src=src; img.style.display=''; empty.style.display='none'; }
+  else   { img.src='';  img.style.display='none'; empty.style.display=''; }
 }
 
 // ════════════════════════════════════════════════════════
@@ -4146,8 +4219,10 @@ function duplicateBooking(id){
   $d('fIncludedMiles')._manual = !!b.includedMiles;
   $d('fOverageRate').value     = b.overageRate||'';
   $d('fOverageRate')._manual   = !!b.overageRate;
-  $d('fBroker').value          = b.broker||'';
-  $d('fBrokerFee').value       = b.brokerFee||0;
+  $d('fBroker').value           = b.broker||'';
+  $d('fBrokerFee').value        = b.brokerFee||0;
+  $d('fDateLock').value         = b.dateLock!=null?b.dateLock:100;
+  $d('fRemainingBalance').value = b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock!=null?b.dateLock:100)));
   updateBrokerCalc(); updateMileageHint(); updateMaintWarning();
   $d('modal').classList.add('open');
   checkReturningCustomer();
@@ -4385,44 +4460,68 @@ function renderForecast(){
 // ════════════════════════════════════════════════════════
 function renderOutstanding(){
   var el=$d('outstandingSection'); if(!el) return;
-  // Section 1: no deposit collected at all
-  var noDeposit=bookings.filter(function(b){
-    return !b._deleted && b.status!=='cancelled' && (Number(b.deposit)||0)===0;
-  }).sort(function(a,b){return a.date.localeCompare(b.date);});
-  // Section 2: confirmed/completed with balance still owed (revenue > deposit)
-  var balanceDue=bookings.filter(function(b){
-    if(b._deleted||b.status==='cancelled') return false;
-    if((b.status!=='confirmed'&&b.status!=='completed')) return false;
-    return (Number(b.revenue)||0)-(Number(b.deposit)||0)>0;
-  }).sort(function(a,b){return a.date.localeCompare(b.date);});
+  var active=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'; });
+  // Balance due = remainingBalance field if set, else revenue - dateLock
+  var balanceDue=active.filter(function(b){
+    var bal=getRemainingBalance(b);
+    return bal>0 && (b.status==='confirmed'||b.status==='completed'||b.status==='pending');
+  }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
+  var noLock=active.filter(function(b){
+    return (Number(b.dateLock)||0)===0&&(Number(b.remainingBalance)||0)===0&&(Number(b.deposit)||0)===0;
+  }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
   var html='';
   function makeRow(b){
-    var bal=Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0));
+    var bal=getRemainingBalance(b);
+    var lock=Number(b.dateLock)||0;
     return '<tr>'+
       '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
       '<td style="font-weight:700">'+b.name+(b.phone?' <span style="color:var(--muted);font-size:11px">'+b.phone+'</span>':'')+'</td>'+
       '<td>'+b.vehicle+'</td>'+
       '<td style="color:var(--gold);font-weight:700">'+$$(b.revenue)+'</td>'+
-      '<td>'+$$(b.deposit)+'</td>'+
-      '<td style="color:var(--red);font-weight:700">'+$$(bal)+'</td>'+
+      '<td style="color:var(--green)">'+$$(lock)+'</td>'+
+      '<td style="color:var(--red);font-weight:700">'+$$(bal)+
+        ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px">✏</button>'+
+      '</td>'+
       '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
       '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
     '</tr>';
   }
-  var hdr='<th>Date</th><th>Customer</th><th>Vehicle</th><th>Revenue</th><th>Deposit</th><th>Balance Due</th><th>Status</th><th></th>';
+  var hdr='<th>Date</th><th>Customer</th><th>Vehicle</th><th>Total</th><th>Date Lock Paid</th><th>Balance Due</th><th>Status</th><th></th>';
   if(balanceDue.length){
     html+='<div class="tbl-card" style="margin-bottom:12px">'+
-      '<div class="tbl-head"><div class="tbl-title" style="color:var(--red)">💵 Balance Due — Collect Before/After Trip ('+balanceDue.length+')</div></div>'+
+      '<div class="tbl-head"><div class="tbl-title" style="color:var(--red)">💵 Balance Due ('+balanceDue.length+')</div>'+
+      '<div class="tbl-meta" style="font-size:11px;color:var(--muted)">$100 date lock collected upfront — click ✏ to update remaining balance</div></div>'+
       '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+
       balanceDue.map(makeRow).join('')+'</tbody></table></div></div>';
   }
-  if(noDeposit.length){
+  if(noLock.length){
     html+='<div class="tbl-card">'+
-      '<div class="tbl-head"><div class="tbl-title" style="color:#f97316">⚠ No Deposit Collected ('+noDeposit.length+')</div></div>'+
+      '<div class="tbl-head"><div class="tbl-title" style="color:#f97316">⚠ No Payment Collected ('+noLock.length+')</div></div>'+
       '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+
-      noDeposit.map(makeRow).join('')+'</tbody></table></div></div>';
+      noLock.map(makeRow).join('')+'</tbody></table></div></div>';
   }
+  if(!html) html='<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">✅ All balances collected.</div>';
   el.innerHTML=html;
+}
+
+function getRemainingBalance(b){
+  if(b.remainingBalance!=null) return Number(b.remainingBalance)||0;
+  var lock=Number(b.dateLock)||0;
+  return Math.max(0,(Number(b.revenue)||0)-lock);
+}
+
+function editRemainingBalance(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
+  var cur=getRemainingBalance(b);
+  var val=prompt('Update remaining balance for '+b.name+' — '+b.vehicle+':\n\nCurrent: $'+cur+'\n\nEnter new balance (enter 0 if paid in full):', cur);
+  if(val===null) return;
+  var num=parseFloat(val);
+  if(isNaN(num)||num<0){ alert('Please enter a valid amount.'); return; }
+  b.remainingBalance=num;
+  b._t=Date.now();
+  save();
+  renderOutstanding();
+  toast(b.name+' remaining balance updated to $'+num);
 }
 
 // ════════════════════════════════════════════════════════
@@ -4892,7 +4991,7 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
   <h2>13. Signatures</h2>
   <div class="sig-grid">
     <div class="sig-box">
-      <div class="sig-line"></div>
+      <div class="sig-line">{{owner_signature}}</div>
       <div class="sig-label"><strong>Owner:</strong> Jalen Nguyen on behalf of Prestige Black Corp.</div>
       <div class="sig-label" style="margin-top:4px">Date: {{today}}</div>
     </div>
@@ -5010,7 +5109,12 @@ function openContract(id){
     .replace(/\{\{unlimited_fee\}\}/gi,      unlimitedFee)
     .replace(/\{\{delivery_fee\}\}/gi,       deliveryFee)
     .replace(/\{\{pet_fee\}\}/gi,            petFee)
-    .replace(/\{\{odometer_in\}\}/gi,        odomIn);
+    .replace(/\{\{odometer_in\}\}/gi,        odomIn)
+    .replace(/\{\{date_lock\}\}/gi,          b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100')
+    .replace(/\{\{remaining_balance\}\}/gi,  b.remainingBalance!=null?'$'+(Number(b.remainingBalance)||0):'$'+(rev-(Number(b.dateLock)||100)))
+    .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE
+      ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">'
+      : '');
   $d('contractFilled').value=filled;
   // If template is HTML, show iframe preview
   var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
