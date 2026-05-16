@@ -3043,8 +3043,14 @@ function renderBookingsTable(filtered){
 // ════════════════════════════════════════════════════════
 function renderUpcoming(){
   var today=todayStr();
-  var upcoming=bookings.filter(function(b){ return !b._deleted && b.date>=today && b.status!=='cancelled'; })
-    .sort(function(a,b){ return a.date.localeCompare(b.date); });
+  var upcoming=bookings.filter(function(b){
+    if(b._deleted||b.status==='cancelled') return false;
+    var start=b.pickupDate||b.date;
+    return start>=today && !isCurrentTrip(b);
+  }).sort(function(a,b){
+    var aS=a.pickupDate||a.date, bS=b.pickupDate||b.date;
+    return aS.localeCompare(bS);
+  });
 
 
   // Feature 11: deposits needed KPI
@@ -3070,7 +3076,7 @@ function renderUpcoming(){
   ];
   var now=new Date(); now.setHours(0,0,0,0);
   upcoming.forEach(function(b){
-    var d=new Date(b.date+'T00:00:00');
+    var d=new Date((b.pickupDate||b.date)+'T00:00:00');
     var diff=Math.round((d-now)/(1000*60*60*24));
     if(diff<=7) groups[0].items.push(b);
     else if(diff<=14) groups[1].items.push(b);
@@ -3089,14 +3095,17 @@ function renderUpcoming(){
 // ════════════════════════════════════════════════════════
 function renderPrevious(){
   var today=todayStr();
-  var prev=bookings.filter(function(b){ return !b._deleted && b.date<today; })
-    .sort(function(a,b){ return b.date.localeCompare(a.date); });
-
+  var prev=bookings.filter(function(b){
+    if(b._deleted) return false;
+    return tripEndDate(b)<today;
+  }).sort(function(a,b){
+    return tripEndDate(b).localeCompare(tripEndDate(a));
+  });
 
   var now=new Date(); now.setHours(0,0,0,0);
   var months={};
   prev.forEach(function(b){
-    var d=new Date(b.date+'T00:00:00');
+    var d=new Date((b.pickupDate||b.date)+'T00:00:00');
     var key=d.getFullYear()+'-'+pad(d.getMonth()+1);
     var label=d.toLocaleString('en-US',{month:'long',year:'numeric'});
     if(!months[key]) months[key]={label:label,items:[]};
@@ -3111,7 +3120,7 @@ function renderPrevious(){
 }
 
 function tripCard(b, showCountdown){
-  var cd=countdownLabel(b.date);
+  var cd=countdownLabel(b.pickupDate||b.date);
   var addonsArr=[];
   if(b.delivery)    addonsArr.push('🚗 Delivery '+$$(b.delivery));
   if(b.unlimited)   addonsArr.push('∞ Unlimited '+$$(b.unlimited));
@@ -3212,27 +3221,45 @@ function tripCard(b, showCountdown){
 function isCurrentTrip(b){
   if(b.status==='cancelled') return false;
   var today=todayStr();
-  if(b.type==='daily'){
-    var endDate=dateStr(addDays(new Date(b.date+'T00:00:00'), Math.max(1, Number(b.days)||1)));
-    return b.date<=today && endDate>today;
-  }
-  return b.date===today;
+  var start=b.pickupDate||b.date;
+  var end=b.dropoffDate||dateStr(addDays(new Date(start+'T00:00:00'), Math.max(1, Number(b.days)||1)));
+  return start<=today && end>=today;
+}
+function tripEndDate(b){
+  var start=b.pickupDate||b.date;
+  return b.dropoffDate||dateStr(addDays(new Date(start+'T00:00:00'), Math.max(1, Number(b.days)||1)));
 }
 
 function renderCurrent(){
+  var today=todayStr();
   var current=bookings.filter(function(b){ return !b._deleted && isCurrentTrip(b); })
-    .sort(function(a,b){ return a.date.localeCompare(b.date); });
-
-  // KPIs
+    .sort(function(a,b){
+      var aS=a.pickupDate||a.date, bS=b.pickupDate||b.date;
+      return aS.localeCompare(bS);
+    });
 
   if(!current.length){
     $d('currentList').innerHTML='<div style="padding:60px;text-align:center;color:var(--muted);font-size:15px">🚗 No trips currently active</div>';
     return;
   }
-  $d('currentList').innerHTML='<div class="trip-group">'+
-    '<div class="trip-group-label">Active Right Now ('+current.length+')</div>'+
-    current.map(function(b){ return tripCard(b, false); }).join('')+
-    '</div>';
+
+  var returns=current.filter(function(b){ return tripEndDate(b)===today; });
+  var active=current.filter(function(b){ return tripEndDate(b)!==today; });
+
+  var html='';
+  if(returns.length){
+    html+='<div class="trip-group">'+
+      '<div class="trip-group-label" style="color:#f97316">🔁 Today\'s Returns ('+returns.length+')</div>'+
+      returns.map(function(b){ return tripCard(b,false); }).join('')+
+      '</div>';
+  }
+  if(active.length){
+    html+='<div class="trip-group">'+
+      '<div class="trip-group-label">Active Right Now ('+active.length+')</div>'+
+      active.map(function(b){ return tripCard(b,false); }).join('')+
+      '</div>';
+  }
+  $d('currentList').innerHTML=html;
 }
 
 // ════════════════════════════════════════════════════════
