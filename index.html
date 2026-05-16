@@ -857,7 +857,7 @@ tr:hover td { background: var(--gold-faint); }
         <select class="finput" id="fVehicle" onchange="onVehicleChange();updateMaintWarning()"><option value="">Select vehicle</option></select></div>
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
-        <select class="finput" id="fType">
+        <select class="finput" id="fType" onchange="checkSlingshotHourly()">
           <option value="daily">Daily Rental</option>
           <option value="hourly">Hourly Booking</option>
           <option value="chauffeur">Chauffeur Service</option>
@@ -917,7 +917,7 @@ tr:hover td { background: var(--gold-faint); }
           <div style="font-size:16px;font-weight:900;color:var(--gold)">Total: <span id="liveTotalVal">$0</span></div>
         </div>
       </div>
-      <div class="fgroup"><div class="flabel">Security Deposit / Hold ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0"></div>
+      <div class="fgroup" id="fDepositGroup"><div class="flabel">Security Deposit / Hold ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0"></div>
 
       <div class="fgroup"><div class="flabel">Pickup / Drop-off Address</div>
         <input type="text" class="finput ffull" id="fAddress" placeholder="e.g. DFW Airport or customer address"></div>
@@ -992,12 +992,14 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup"><div class="flabel">Loyalty Discount ($)</div>
         <input type="number" class="finput" id="fLoyaltyDiscount" min="0" step="1" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
 
+      <div id="fMileageSection" style="display:contents">
       <div class="fsec ffull">Mileage Allowance</div>
       <div class="fgroup"><div class="flabel">Included Miles (total trip)</div>
         <input type="number" class="finput" id="fIncludedMiles" min="0" step="1" placeholder="Auto-filled from vehicle" oninput="this._manual=!!this.value;updateMileageHint()"></div>
       <div class="fgroup"><div class="flabel">Overage Rate ($/mi)</div>
         <input type="number" class="finput" id="fOverageRate" min="0" step="0.01" placeholder="Auto-filled from vehicle" oninput="this._manual=!!this.value;updateMileageHint()"></div>
       <div class="ffull" id="fMileageHint" style="font-size:12px;padding:2px 0 4px;color:var(--muted)"></div>
+      </div>
 
       <div class="fsec ffull">Broker / Partner</div>
       <div class="fgroup"><div class="flabel">Broker Name</div>
@@ -3625,6 +3627,7 @@ function openModal(id, vehiclePreset, datePreset){
   var rbEl=$d('fRemainingBalance'); rbEl._manual=(b&&b.remainingBalance!=null);
   rbEl.value = b?(b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock!=null?b.dateLock:100)||100))):'';;
   $d('fDeposit').value          = b?b.deposit      : 0;
+  checkSlingshotHourly();
 
   $d('fAddress').value  = b?b.address : '';
   $d('fStatus').value   = b?b.status  : 'pending';
@@ -3748,6 +3751,18 @@ function onVehicleChange(){
   }
   updateMileageHint();
   updateBrokerCalc();
+  checkSlingshotHourly();
+}
+function checkSlingshotHourly(){
+  var isSH = $d('fVehicle').value==='Polaris Slingshot' && $d('fType').value==='hourly';
+  var dg=$d('fDepositGroup'), ms=$d('fMileageSection');
+  if(dg) dg.style.display = isSH ? 'none' : '';
+  if(ms) ms.style.display = isSH ? 'none' : 'contents';
+  if(isSH){
+    $d('fDeposit').value=0;
+    $d('fIncludedMiles').value='';
+    $d('fOverageRate').value='';
+  }
 }
 function updateMileageHint(){
   var v=$d('fVehicle').value;
@@ -5624,102 +5639,187 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <style>
-  @page { margin: 0.7in; size: letter; }
+  @page { margin: 0.75in; size: letter; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; background: #fff; line-height: 1.6; }
-  .wrap { max-width: 720px; margin: 0 auto; border: 2px solid #C9A962; padding: 36px 44px; }
-  .hdr { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; }
-  .co { font-weight: 700; font-size: 13px; line-height: 1.9; }
-  .logo-p { font-size: 42px; font-weight: 900; color: #C9A962; font-family: Georgia, serif; line-height: 1; }
-  .logo-sub { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: #C9A962; margin-top: 2px; }
-  h1 { text-align: center; font-size: 17px; font-weight: 900; border-top: 2px solid #C9A962; border-bottom: 2px solid #C9A962; padding: 10px 0; margin-bottom: 20px; letter-spacing: .04em; text-transform: uppercase; }
-  h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 18px 0 9px; color: #555; }
-  .fr { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
-  .fl { color: #555; }
-  .fv { font-weight: 700; }
-  .clause { font-size: 11.5px; line-height: 1.7; margin-bottom: 10px; text-align: justify; }
-  .clause strong { font-weight: 700; }
-  .sig-block { display: flex; gap: 28px; margin-top: 18px; }
-  .sig-col { flex: 1; }
-  .sig-line { border-bottom: 1.5px solid #111; min-height: 54px; display: flex; align-items: flex-end; padding-bottom: 4px; }
-  .sig-lbl { font-size: 10px; color: #777; margin-top: 4px; }
-  .warn-box { background: #fffbe6; border: 1.5px solid #C9A962; border-radius: 6px; padding: 10px 15px; margin-bottom: 18px; font-size: 11.5px; line-height: 1.6; }
-  .warn-box strong { color: #b8780a; }
+  body { font-family: 'Times New Roman', Times, serif; font-size: 12px; color: #000; background: #fff; line-height: 1.55; }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  h1 { text-align: center; font-size: 20px; font-weight: 900; text-transform: uppercase; letter-spacing: .02em; margin-bottom: 6px; }
+  .hr { border: none; border-top: 1.5px solid #000; margin: 14px 0; }
+  h2 { font-size: 14px; font-weight: 900; text-transform: uppercase; margin: 20px 0 8px; }
+  p { font-size: 12px; line-height: 1.65; margin-bottom: 8px; }
+  ul { margin: 5px 0 8px 24px; }
+  li { font-size: 12px; line-height: 1.75; }
+  .bold { font-weight: 700; }
+  .field { display: inline; font-weight: 700; border-bottom: 1px solid #000; padding: 0 4px; min-width: 120px; }
+  .sig-line { border-bottom: 1.5px solid #000; min-height: 52px; display: flex; align-items: flex-end; padding-bottom: 3px; }
+  .sig-lbl { font-size: 10.5px; color: #444; margin-top: 4px; }
+  .date-line { display: inline-block; border-bottom: 1px solid #000; width: 160px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="hdr">
-    <div class="co">Prestige Black Rentals<br>Dallas, TX<br>info@prestigeblackrentals.com</div>
-    <div style="text-align:right">
-      <div class="logo-p">P</div>
-      <div class="logo-sub">Prestige Black</div>
-      <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#aaa;margin-top:2px">Rentals</div>
+
+  <h1>Hold Harmless &amp; Liability Waiver Agreement</h1>
+  <hr class="hr">
+
+  <h2>1. Parties</h2>
+  <p>This Hold Harmless &amp; Liability Waiver Agreement (&ldquo;Agreement&rdquo;) is entered into on <span class="bold">{{today}}</span>, by and between:</p>
+
+  <p><span class="bold">Company:</span><br>
+  Prestige Black Corporation<br>
+  5473 Blair Rd. Ste 100 Dallas, TX 75231</p>
+
+  <p style="margin-top:10px"><span class="bold">Renter/Driver:</span><br>
+  Full Name: <span class="bold">{{customer_name}}</span><br>
+  Driver&rsquo;s License #: <span class="bold">{{license_number}}</span><br>
+  State: <span class="bold">{{license_state}}</span></p>
+
+  <hr class="hr">
+
+  <h2>2. Vehicle Description</h2>
+  <p>Vehicle: <span class="bold">Polaris Slingshot SL</span><br>
+  VIN: 57XAAPHD4S8167698<br>
+  Rental Period: <span class="bold">{{days}} Hour(s) &mdash; {{pickup_date}}{{pickup_time_display}}</span></p>
+
+  <hr class="hr">
+
+  <h2>3. Assumption of Risk</h2>
+  <p>Renter acknowledges and agrees that operating a <span class="bold">Polaris Slingshot SL</span>, which is a three-wheeled, open-air vehicle, involves <span class="bold">inherent risks</span>, including but not limited to:</p>
+  <ul>
+    <li>Loss of control</li>
+    <li>Collision with other vehicles or objects</li>
+    <li>Road hazards and weather conditions</li>
+    <li>Injury or death to driver or passengers</li>
+    <li>Increased exposure due to open-air design</li>
+  </ul>
+  <p>Renter <span class="bold">voluntarily assumes all risks</span>, whether known or unknown.</p>
+
+  <hr class="hr">
+
+  <h2>4. Hold Harmless &amp; Indemnification</h2>
+  <p>Renter agrees to <span class="bold">fully indemnify, defend, and hold harmless</span> Prestige Black Corporation, its owners, officers, employees, affiliates, and agents from any and all claims, demands, damages, losses, liabilities, costs, or expenses, including attorney&rsquo;s fees, arising from:</p>
+  <ul>
+    <li>Use or operation of the vehicle</li>
+    <li>Injury or death of any person</li>
+    <li>Damage to property (including the vehicle)</li>
+    <li>Violations of traffic laws or regulations</li>
+    <li>Negligence or misconduct by the Renter</li>
+  </ul>
+  <p>This applies <span class="bold">regardless of fault</span>, except in cases of <span class="bold">gross negligence or willful misconduct</span> by Prestige Black Corporation.</p>
+
+  <hr class="hr">
+
+  <h2>5. Liability Waiver</h2>
+  <p>To the fullest extent permitted under Texas law, Renter <span class="bold">releases and discharges</span> Prestige Black Corporation from any liability for:</p>
+  <ul>
+    <li>Personal injury or death</li>
+    <li>Property damage</li>
+    <li>Financial loss</li>
+  </ul>
+  <p>arising out of or related to the rental or use of the Polaris Slingshot SL.</p>
+
+  <hr class="hr">
+
+  <h2>6. Driver Responsibility Requirements</h2>
+  <p>Renter agrees:</p>
+  <ul>
+    <li>Must be <span class="bold">21+ years old</span> with a valid driver&rsquo;s license</li>
+    <li>Will <span class="bold">not allow unauthorized drivers</span></li>
+    <li>Will not operate under <span class="bold">alcohol, drugs, or impairment</span></li>
+    <li>Will obey all <span class="bold">Texas traffic laws</span></li>
+    <li>Will not use vehicle for <span class="bold">racing, reckless driving, or illegal activity</span></li>
+  </ul>
+
+  <hr class="hr">
+
+  <h2>7. Damage &amp; Financial Responsibility</h2>
+  <p>Renter accepts full financial responsibility for:</p>
+  <ul>
+    <li>Any damage to the vehicle</li>
+    <li>Tire, wheel, or windshield damage</li>
+    <li>Loss of use during repairs</li>
+    <li>Diminished value</li>
+    <li>Administrative and recovery costs</li>
+  </ul>
+  <p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>
+
+  <hr class="hr">
+
+  <h2>8. Third-Party Claims</h2>
+  <p>Renter agrees to assume full responsibility for any third-party claims, including:</p>
+  <ul>
+    <li>Bodily injury claims</li>
+    <li>Property damage claims</li>
+    <li>Insurance deductibles or uncovered losses</li>
+  </ul>
+
+  <hr class="hr">
+
+  <h2>9. No Warranties</h2>
+  <p>Vehicle is provided <span class="bold">&ldquo;AS IS&rdquo;</span> without warranties of any kind. Renter accepts the vehicle in its current condition.</p>
+
+  <hr class="hr">
+
+  <h2>10. Medical Consent</h2>
+  <p>Renter authorizes emergency medical treatment if needed and agrees to be <span class="bold">financially responsible</span> for any medical services rendered.</p>
+
+  <hr class="hr">
+
+  <h2>11. Governing Law</h2>
+  <p>This Agreement shall be governed by and interpreted under the laws of the <span class="bold">State of Texas</span>.</p>
+
+  <hr class="hr">
+
+  <h2>12. Severability</h2>
+  <p>If any provision of this Agreement is found unenforceable, the remaining provisions shall remain in full force.</p>
+
+  <hr class="hr">
+
+  <h2>13. Acknowledgment of Understanding</h2>
+  <p>Renter acknowledges that they:</p>
+  <ul>
+    <li>Have read this Agreement carefully</li>
+    <li>Fully understand its contents</li>
+    <li>Are signing voluntarily</li>
+    <li>Understand they are <span class="bold">waiving substantial legal rights</span></li>
+  </ul>
+
+  <hr class="hr">
+
+  <h2>14. Signatures</h2>
+
+  <div style="margin-top:14px">
+    <div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:6px">
+      <span class="bold" style="white-space:nowrap">Renter Signature:</span>
+      <div class="sig-line" style="flex:1">{{customer_signature}}</div>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:14px">
+      <span style="white-space:nowrap">Date:</span>
+      <div class="date-line">&nbsp;</div>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:8px">
+      <span class="bold" style="white-space:nowrap">Printed Name:</span>
+      <div style="border-bottom:1px solid #000;flex:1;padding-bottom:2px;font-weight:700">{{customer_name}}</div>
     </div>
   </div>
 
-  <h1>&#9888; Polaris Slingshot &mdash; Liability Release &amp; Waiver</h1>
+  <hr class="hr" style="margin-top:20px">
 
-  <div class="warn-box">
-    <strong>IMPORTANT:</strong> The Polaris Slingshot is a 3-wheeled autocycle, not a standard automobile. This waiver is <strong>required before every hourly Slingshot rental</strong>. No formal rental agreement is issued for hourly bookings. Read carefully before signing.
-  </div>
-
-  <h2>Booking Details</h2>
-  <div class="fr"><span class="fl">Customer Name</span><span class="fv">{{customer_name}}</span></div>
-  <div class="fr"><span class="fl">Phone</span><span class="fv">{{customer_phone}}</span></div>
-  <div class="fr"><span class="fl">Email</span><span class="fv">{{customer_email}}</span></div>
-  <div class="fr"><span class="fl">Vehicle</span><span class="fv">{{vehicle}}</span></div>
-  <div class="fr"><span class="fl">Rental Type</span><span class="fv">Hourly &mdash; {{days}} hr(s)</span></div>
-  <div class="fr"><span class="fl">Date &amp; Pickup Time</span><span class="fv">{{pickup_date}}{{pickup_time_display}}</span></div>
-  <div class="fr"><span class="fl">Amount Collected</span><span class="fv">{{total_revenue}}</span></div>
-  <div class="fr"><span class="fl">Damage Hold</span><span class="fv">{{date_lock}}</span></div>
-  <div class="fr"><span class="fl">Waiver ID</span><span class="fv">{{invoice_number}}</span></div>
-  <div class="fr"><span class="fl">Date Issued</span><span class="fv">{{today}}</span></div>
-
-  <h2>1. Assumption of Risk</h2>
-  <p class="clause">I, <strong>{{customer_name}}</strong>, fully understand that operating a Polaris Slingshot carries inherent and significant risks, including but not limited to loss of vehicle control, collision with other vehicles or objects, road hazards, mechanical failure, and serious bodily injury or death. I voluntarily and knowingly assume all such risks.</p>
-
-  <h2>2. License &amp; Eligibility</h2>
-  <p class="clause">I certify that I hold a valid driver&rsquo;s license (License No. <strong>{{license_number}}</strong> &mdash; State: <strong>{{license_state}}</strong>) and meet all legal requirements to operate a 3-wheeled autocycle in the state of Texas. I am at least 25 years of age, in good physical health, and am not under the influence of alcohol, drugs, or any substance that could impair my ability to safely operate the vehicle.</p>
-
-  <h2>3. Release of Liability</h2>
-  <p class="clause">In consideration of being permitted to operate the Polaris Slingshot, I hereby <strong>RELEASE, WAIVE, DISCHARGE, AND COVENANT NOT TO SUE</strong> Prestige Black Rentals, its owners, officers, employees, and agents from any and all liability, claims, demands, actions, and causes of action arising out of or related to any loss, property damage, injury, or death sustained while operating or riding in the vehicle, <em>except in cases of gross negligence or willful misconduct by Prestige Black Rentals.</em></p>
-
-  <h2>4. Vehicle Condition &amp; Damage Responsibility</h2>
-  <p class="clause">I accept the vehicle in its present condition and agree to return it in the same condition, free of any new damage. I acknowledge that I am <strong>financially responsible</strong> for all damage &mdash; including cosmetic damage &mdash; occurring during my rental period. A damage authorization hold of <strong>{{date_lock}}</strong> is placed at the time of pickup and released upon satisfactory return of the vehicle.</p>
-
-  <h2>5. Rules of Operation</h2>
-  <p class="clause">I agree to: (a) obey all posted speed limits and traffic laws; (b) not allow any other person to operate this vehicle; (c) not use the vehicle for racing, stunts, off-road use, or reckless driving; (d) not exceed the authorized rental hours without prior written or verbal approval from Prestige Black Rentals; (e) not operate the vehicle while using a mobile device.</p>
-
-  <h2>6. Hourly Rental Terms</h2>
-  <p class="clause">I understand this is an <strong>hourly rental only</strong> and that no formal rental agreement is issued. The rental is limited to <strong>{{days}} hour(s)</strong> from pickup. Exceeding the authorized time without approval will result in additional charges at the standard hourly rate. Prestige Black Rentals reserves the right to charge the card or hold on file for any overages, damage, or fees discovered after return.</p>
-
-  <h2>7. Indemnification</h2>
-  <p class="clause">I agree to <strong>indemnify, defend, and hold harmless</strong> Prestige Black Rentals from and against any and all claims, liabilities, damages, losses, costs, and expenses (including reasonable attorneys&rsquo; fees) arising from my use of the vehicle, including any third-party claims for bodily injury or property damage.</p>
-
-  <h2>Customer Acknowledgment &amp; Signature</h2>
-  <p class="clause">By signing below, I confirm that I have read, fully understood, and voluntarily agree to all terms of this Liability Release &amp; Waiver. <strong>I understand this is a legally binding document and that I am waiving significant legal rights.</strong></p>
-
-  <div class="sig-block">
-    <div class="sig-col">
-      <div class="sig-line">{{customer_signature}}</div>
-      <div class="sig-lbl">Customer Signature</div>
-      <div style="margin-top:10px;font-size:12px;font-weight:700">{{customer_name}}</div>
-      <div class="sig-lbl">Printed Name</div>
+  <div style="margin-top:14px">
+    <div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:6px">
+      <span class="bold" style="white-space:nowrap">Prestige Black Corporation Representative:</span>
+      <div class="sig-line" style="flex:1">{{owner_signature}}</div>
     </div>
-    <div class="sig-col">
-      <div class="sig-line"></div>
-      <div class="sig-lbl">Date Signed</div>
-      <div style="margin-top:22px">
-        <div class="sig-line">{{owner_signature}}</div>
-        <div class="sig-lbl">Authorized by &mdash; Prestige Black Rentals</div>
-      </div>
+    <div style="display:flex;align-items:flex-end;gap:8px">
+      <span style="white-space:nowrap">Date:</span>
+      <div class="date-line">&nbsp;</div>
     </div>
   </div>
 
-  <div style="font-size:10px;color:#aaa;text-align:center;margin-top:24px;border-top:1px solid #eee;padding-top:10px">
-    Prestige Black Rentals &middot; Dallas, TX &middot; Waiver ID: {{invoice_number}} &middot; {{today}}
+  <div style="font-size:10px;color:#777;text-align:center;margin-top:28px;border-top:1px solid #ccc;padding-top:10px">
+    Prestige Black Corporation &middot; 5473 Blair Rd. Ste 100 Dallas, TX 75231 &middot; Waiver ID: {{invoice_number}} &middot; {{today}}
   </div>
+
 </div>
 </body>
 </html>`;
