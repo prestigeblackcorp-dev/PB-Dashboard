@@ -437,6 +437,7 @@ tr:hover td { background: var(--gold-faint); }
     <button class="btn btn-sm" id="gcalBtn" onclick="connectGCal()" title="Connect Google Calendar">🗓 Connect Calendar</button>
     <button class="btn btn-sm" id="gcalSyncBtn" onclick="syncAllToGCal()" title="Push all bookings to Google Calendar" style="display:none">↑ Sync All</button>
     <button class="btn btn-sm" onclick="openContractTemplate()" style="border-color:rgba(201,169,98,.4);color:var(--gold)" title="Set up rental agreement template">📝 Contract</button>
+    <button class="btn btn-sm" onclick="openContractTemplate('waiver')" style="border-color:rgba(100,180,255,.4);color:var(--blue)" title="Set up Slingshot hourly liability waiver">🏍 Slingshot Waiver</button>
     <span id="offlineBadge" style="display:none;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.4);border-radius:8px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.06em">● OFFLINE</span>
     <button class="btn btn-sm" onclick="lockApp()" title="Lock dashboard">🔒 Lock</button>
     <button class="btn btn-sm" onclick="openSettings()" title="API keys & integrations">⚙️ Settings</button>
@@ -504,7 +505,7 @@ tr:hover td { background: var(--gold-faint); }
   <div class="modal-bg" onclick="closeContractTemplate()"></div>
   <div class="modal-card" style="max-width:760px">
     <div class="modal-title">
-      <span>📝 Rental Agreement Template</span>
+      <span id="contractTemplateModeTitle">📝 Rental Agreement Template</span>
       <button class="modal-close" onclick="closeContractTemplate()">✕</button>
     </div>
     <div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:11px 15px;margin-bottom:12px;font-size:13px;line-height:1.7">
@@ -563,7 +564,7 @@ tr:hover td { background: var(--gold-faint); }
   <div class="modal-bg" onclick="closeContract()"></div>
   <div class="modal-card" style="max-width:820px">
     <div class="modal-title">
-      <span>📝 Rental Agreement</span>
+      <span id="contractModalTitle">📝 Rental Agreement</span>
       <button class="modal-close" onclick="closeContract()">✕</button>
     </div>
     <div id="contractHeader"></div>
@@ -585,7 +586,7 @@ tr:hover td { background: var(--gold-faint); }
       <button class="btn btn-sm" onclick="printContract()">🖨️ Print / PDF</button>
       <button class="btn btn-gold btn-sm" id="contractEmailBtn">✉ Send via Email</button>
       <button class="btn btn-sm" id="contractRawToggle" onclick="toggleContractRaw()" style="display:none;border-color:var(--muted);color:var(--muted)">👁 View Raw HTML</button>
-      <button class="btn btn-sm" onclick="closeContract();openContractTemplate()" style="margin-left:auto;border-color:var(--gold-dim);color:var(--gold)">✏ Edit Template</button>
+      <button class="btn btn-sm" id="contractEditTemplateBtn" onclick="closeContract();openContractTemplate(_contractIsWaiver?'waiver':'')" style="margin-left:auto;border-color:var(--gold-dim);color:var(--gold)">✏ Edit Template</button>
       <button class="btn btn-sm" onclick="closeContract()">Close</button>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">Print opens a new window — use your browser's print dialog to save as PDF.</div>
@@ -5614,13 +5615,126 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
 </body>
 </html>`;
 
+var slingshotWaiverTemplate = '';
+var _contractTemplateMode = ''; // '' = contract, 'waiver' = slingshot waiver
+var _contractIsWaiver = false;  // tracks what's currently open in the contract view modal
+
+var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { margin: 0.7in; size: letter; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; background: #fff; line-height: 1.6; }
+  .wrap { max-width: 720px; margin: 0 auto; border: 2px solid #C9A962; padding: 36px 44px; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; }
+  .co { font-weight: 700; font-size: 13px; line-height: 1.9; }
+  .logo-p { font-size: 42px; font-weight: 900; color: #C9A962; font-family: Georgia, serif; line-height: 1; }
+  .logo-sub { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: #C9A962; margin-top: 2px; }
+  h1 { text-align: center; font-size: 17px; font-weight: 900; border-top: 2px solid #C9A962; border-bottom: 2px solid #C9A962; padding: 10px 0; margin-bottom: 20px; letter-spacing: .04em; text-transform: uppercase; }
+  h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin: 18px 0 9px; color: #555; }
+  .fr { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
+  .fl { color: #555; }
+  .fv { font-weight: 700; }
+  .clause { font-size: 11.5px; line-height: 1.7; margin-bottom: 10px; text-align: justify; }
+  .clause strong { font-weight: 700; }
+  .sig-block { display: flex; gap: 28px; margin-top: 18px; }
+  .sig-col { flex: 1; }
+  .sig-line { border-bottom: 1.5px solid #111; min-height: 54px; display: flex; align-items: flex-end; padding-bottom: 4px; }
+  .sig-lbl { font-size: 10px; color: #777; margin-top: 4px; }
+  .warn-box { background: #fffbe6; border: 1.5px solid #C9A962; border-radius: 6px; padding: 10px 15px; margin-bottom: 18px; font-size: 11.5px; line-height: 1.6; }
+  .warn-box strong { color: #b8780a; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div class="co">Prestige Black Rentals<br>Dallas, TX<br>info@prestigeblackrentals.com</div>
+    <div style="text-align:right">
+      <div class="logo-p">P</div>
+      <div class="logo-sub">Prestige Black</div>
+      <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#aaa;margin-top:2px">Rentals</div>
+    </div>
+  </div>
+
+  <h1>&#9888; Polaris Slingshot &mdash; Liability Release &amp; Waiver</h1>
+
+  <div class="warn-box">
+    <strong>IMPORTANT:</strong> The Polaris Slingshot is a 3-wheeled autocycle, not a standard automobile. This waiver is <strong>required before every hourly Slingshot rental</strong>. No formal rental agreement is issued for hourly bookings. Read carefully before signing.
+  </div>
+
+  <h2>Booking Details</h2>
+  <div class="fr"><span class="fl">Customer Name</span><span class="fv">{{customer_name}}</span></div>
+  <div class="fr"><span class="fl">Phone</span><span class="fv">{{customer_phone}}</span></div>
+  <div class="fr"><span class="fl">Email</span><span class="fv">{{customer_email}}</span></div>
+  <div class="fr"><span class="fl">Vehicle</span><span class="fv">{{vehicle}}</span></div>
+  <div class="fr"><span class="fl">Rental Type</span><span class="fv">Hourly &mdash; {{days}} hr(s)</span></div>
+  <div class="fr"><span class="fl">Date &amp; Pickup Time</span><span class="fv">{{pickup_date}}{{pickup_time_display}}</span></div>
+  <div class="fr"><span class="fl">Amount Collected</span><span class="fv">{{total_revenue}}</span></div>
+  <div class="fr"><span class="fl">Damage Hold</span><span class="fv">{{date_lock}}</span></div>
+  <div class="fr"><span class="fl">Waiver ID</span><span class="fv">{{invoice_number}}</span></div>
+  <div class="fr"><span class="fl">Date Issued</span><span class="fv">{{today}}</span></div>
+
+  <h2>1. Assumption of Risk</h2>
+  <p class="clause">I, <strong>{{customer_name}}</strong>, fully understand that operating a Polaris Slingshot carries inherent and significant risks, including but not limited to loss of vehicle control, collision with other vehicles or objects, road hazards, mechanical failure, and serious bodily injury or death. I voluntarily and knowingly assume all such risks.</p>
+
+  <h2>2. License &amp; Eligibility</h2>
+  <p class="clause">I certify that I hold a valid driver&rsquo;s license (License No. <strong>{{license_number}}</strong> &mdash; State: <strong>{{license_state}}</strong>) and meet all legal requirements to operate a 3-wheeled autocycle in the state of Texas. I am at least 25 years of age, in good physical health, and am not under the influence of alcohol, drugs, or any substance that could impair my ability to safely operate the vehicle.</p>
+
+  <h2>3. Release of Liability</h2>
+  <p class="clause">In consideration of being permitted to operate the Polaris Slingshot, I hereby <strong>RELEASE, WAIVE, DISCHARGE, AND COVENANT NOT TO SUE</strong> Prestige Black Rentals, its owners, officers, employees, and agents from any and all liability, claims, demands, actions, and causes of action arising out of or related to any loss, property damage, injury, or death sustained while operating or riding in the vehicle, <em>except in cases of gross negligence or willful misconduct by Prestige Black Rentals.</em></p>
+
+  <h2>4. Vehicle Condition &amp; Damage Responsibility</h2>
+  <p class="clause">I accept the vehicle in its present condition and agree to return it in the same condition, free of any new damage. I acknowledge that I am <strong>financially responsible</strong> for all damage &mdash; including cosmetic damage &mdash; occurring during my rental period. A damage authorization hold of <strong>{{date_lock}}</strong> is placed at the time of pickup and released upon satisfactory return of the vehicle.</p>
+
+  <h2>5. Rules of Operation</h2>
+  <p class="clause">I agree to: (a) obey all posted speed limits and traffic laws; (b) not allow any other person to operate this vehicle; (c) not use the vehicle for racing, stunts, off-road use, or reckless driving; (d) not exceed the authorized rental hours without prior written or verbal approval from Prestige Black Rentals; (e) not operate the vehicle while using a mobile device.</p>
+
+  <h2>6. Hourly Rental Terms</h2>
+  <p class="clause">I understand this is an <strong>hourly rental only</strong> and that no formal rental agreement is issued. The rental is limited to <strong>{{days}} hour(s)</strong> from pickup. Exceeding the authorized time without approval will result in additional charges at the standard hourly rate. Prestige Black Rentals reserves the right to charge the card or hold on file for any overages, damage, or fees discovered after return.</p>
+
+  <h2>7. Indemnification</h2>
+  <p class="clause">I agree to <strong>indemnify, defend, and hold harmless</strong> Prestige Black Rentals from and against any and all claims, liabilities, damages, losses, costs, and expenses (including reasonable attorneys&rsquo; fees) arising from my use of the vehicle, including any third-party claims for bodily injury or property damage.</p>
+
+  <h2>Customer Acknowledgment &amp; Signature</h2>
+  <p class="clause">By signing below, I confirm that I have read, fully understood, and voluntarily agree to all terms of this Liability Release &amp; Waiver. <strong>I understand this is a legally binding document and that I am waiving significant legal rights.</strong></p>
+
+  <div class="sig-block">
+    <div class="sig-col">
+      <div class="sig-line">{{customer_signature}}</div>
+      <div class="sig-lbl">Customer Signature</div>
+      <div style="margin-top:10px;font-size:12px;font-weight:700">{{customer_name}}</div>
+      <div class="sig-lbl">Printed Name</div>
+    </div>
+    <div class="sig-col">
+      <div class="sig-line"></div>
+      <div class="sig-lbl">Date Signed</div>
+      <div style="margin-top:22px">
+        <div class="sig-line">{{owner_signature}}</div>
+        <div class="sig-lbl">Authorized by &mdash; Prestige Black Rentals</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="font-size:10px;color:#aaa;text-align:center;margin-top:24px;border-top:1px solid #eee;padding-top:10px">
+    Prestige Black Rentals &middot; Dallas, TX &middot; Waiver ID: {{invoice_number}} &middot; {{today}}
+  </div>
+</div>
+</body>
+</html>`;
+
 function loadContractTemplate(){
   contractTemplate = localStorage.getItem('pb_contract_template') || DEFAULT_CONTRACT_TEMPLATE;
+  slingshotWaiverTemplate = localStorage.getItem('pb_slingshot_waiver') || DEFAULT_SLINGSHOT_WAIVER_TEMPLATE;
 }
 
-function openContractTemplate(){
+function openContractTemplate(mode){
+  _contractTemplateMode = mode || '';
   loadContractTemplate();
-  $d('contractTemplateText').value = contractTemplate;
+  var isWaiver = _contractTemplateMode === 'waiver';
+  $d('contractTemplateModeTitle').textContent = isWaiver ? '🏍 Slingshot Hourly Waiver Template' : '📝 Rental Agreement Template';
+  $d('contractTemplateText').value = isWaiver ? slingshotWaiverTemplate : contractTemplate;
   $d('contractTemplateModal').classList.add('open');
 }
 function closeContractTemplate(){
@@ -5636,10 +5750,18 @@ function loadContractFile(input){
 }
 
 function saveContractTemplate(){
-  contractTemplate=$d('contractTemplateText').value.trim();
-  localStorage.setItem('pb_contract_template',contractTemplate);
-  closeContractTemplate();
-  showToast('Contract template saved');
+  var text=$d('contractTemplateText').value.trim();
+  if(_contractTemplateMode === 'waiver'){
+    slingshotWaiverTemplate = text;
+    localStorage.setItem('pb_slingshot_waiver', text);
+    closeContractTemplate();
+    showToast('Slingshot waiver template saved');
+  } else {
+    contractTemplate = text;
+    localStorage.setItem('pb_contract_template', contractTemplate);
+    closeContractTemplate();
+    showToast('Contract template saved');
+  }
 }
 
 var _contractBookingId = null;
@@ -5684,8 +5806,12 @@ function openContract(id){
   _contractBookingId = id;
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   loadContractTemplate();
-  if(!contractTemplate){
-    if(confirm('No contract template set up yet.\nOpen the template editor now?')){ openContractTemplate(); }
+  _contractIsWaiver = (b.vehicle==='Polaris Slingshot' && b.type==='hourly');
+  var activeTemplate = _contractIsWaiver ? slingshotWaiverTemplate : contractTemplate;
+  $d('contractModalTitle').textContent = _contractIsWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
+  $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
+  if(!activeTemplate){
+    if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
     return;
   }
   var addonLines=[];
@@ -5717,7 +5843,7 @@ function openContract(id){
   var brokerLine     = b.broker
     ? '<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+b.broker+'</span></div>'
     : '';
-  var filled=contractTemplate
+  var filled=activeTemplate
     .replace(/\{\{customer_name\}\}/gi,      b.name||'')
     .replace(/\{\{customer_phone\}\}/gi,     b.phone||'')
     .replace(/\{\{customer_email\}\}/gi,     b.email||'')
