@@ -1268,24 +1268,6 @@ tr:hover td { background: var(--gold-faint); }
       </div>
     </div>
 
-    <div class="fsec" style="margin:18px 0 12px">📱 SMS & Email Automation</div>
-    <div class="fgrid">
-      <div class="fgroup ffull">
-        <div class="flabel">Messaging Worker URL</div>
-        <input type="url" class="finput" id="settMsgWorkerUrl" placeholder="https://pb-messaging.yourname.workers.dev">
-        <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker for Twilio SMS + SendGrid email. Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-messaging-worker.js</code> to get this URL.</div>
-      </div>
-      <div class="fgroup ffull">
-        <div class="flabel">Google Review Link</div>
-        <input type="url" class="finput" id="settGoogleReviewUrl" placeholder="https://g.page/r/your-business/review">
-        <div style="font-size:11px;color:var(--muted);margin-top:5px">Sent automatically 1 day after each trip ends.</div>
-      </div>
-      <div class="fgroup ffull">
-        <div class="flabel">Business Name (shown in messages)</div>
-        <input type="text" class="finput" id="settMsgFromName" placeholder="Prestige Black Rentals">
-      </div>
-    </div>
-
     <div class="fsec" style="margin:18px 0 12px">✍️ Owner Signature</div>
     <div class="fgrid">
       <div class="fgroup ffull">
@@ -1620,9 +1602,6 @@ var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
 var WORKER_URL   = localStorage.getItem('pb_worker_url')   || '';
 var OPENAI_KEY       = localStorage.getItem('pb_openai_key')       || '';
-var MSG_WORKER_URL   = localStorage.getItem('pb_msg_worker_url')   || '';
-var GOOGLE_REVIEW_URL= localStorage.getItem('pb_google_review_url')|| '';
-var MSG_FROM_NAME    = localStorage.getItem('pb_msg_from_name')    || 'Prestige Black Rentals';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
 
 // Merge two arrays by ID — newer _t wins for conflicts, items from both sides kept
@@ -3137,24 +3116,7 @@ function openBookingDetail(id){
     (insOk&&v.insCarrier?'<div class="detail-row"><span class="detail-label">Carrier</span><span class="detail-val">'+v.insCarrier+(v.insCoverage?' · '+v.insCoverage:'')+'</span></div>':'')+
 
     // Notes
-    (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0">'+b.notes+'</div>':'')+
-
-    // Messaging
-    '<div class="fsec">📱 Messages</div>'+
-    (function(){
-      var hasContact = (b.phone&&b.phone.replace(/\D/g,'').length>=10)||(b.email&&b.email.indexOf('@')>0);
-      if(!hasContact) return '<div style="font-size:12px;color:var(--muted);padding:4px 0">No phone or email on file — add contact info to enable automation.</div>';
-      var btnStyle='padding:3px 10px;font-size:10px;border-radius:6px;border:1px solid var(--gold-dim);color:var(--gold);background:transparent;cursor:pointer;margin-left:8px';
-      var fmtSent=function(ts){ if(!ts) return ''; var d=new Date(ts); return ' <span style="color:var(--muted);font-size:10px">'+d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>'; };
-      return '<div class="detail-row"><span class="detail-label">Confirmation</span><span class="detail-val">'+(b.confirmationSentAt?'✅ Sent'+fmtSent(b.confirmationSentAt):'<span style="color:var(--muted);font-size:11px">Not sent</span>')+
-        '<button style="'+btnStyle+'" onclick="sendMsg(bookings.find(function(x){return x.id===\''+b.id+'\';}),\'confirmation\',true);closeBookingDetail();alert(\'Confirmation sent!\')">Send</button></span></div>'+
-        '<div class="detail-row"><span class="detail-label">24hr Reminder</span><span class="detail-val">'+(b.reminderSentAt?'✅ Sent'+fmtSent(b.reminderSentAt):'<span style="color:var(--muted);font-size:11px">Not sent</span>')+
-        '<button style="'+btnStyle+'" onclick="sendMsg(bookings.find(function(x){return x.id===\''+b.id+'\';}),\'reminder\',true);closeBookingDetail();alert(\'Reminder sent!\')">Send</button></span></div>'+
-        '<div class="detail-row"><span class="detail-label">Post-Trip</span><span class="detail-val">'+(b.closeoutMsgSentAt?'✅ Sent'+fmtSent(b.closeoutMsgSentAt):'<span style="color:var(--muted);font-size:11px">Not sent</span>')+
-        '<button style="'+btnStyle+'" onclick="sendMsg(bookings.find(function(x){return x.id===\''+b.id+'\';}),\'closeout\',true);closeBookingDetail();alert(\'Post-trip message sent!\')">Send</button></span></div>'+
-        '<div class="detail-row"><span class="detail-label">Review Request</span><span class="detail-val">'+(b.reviewSentAt?'✅ Sent'+fmtSent(b.reviewSentAt):'<span style="color:var(--muted);font-size:11px">Not sent</span>')+
-        '<button style="'+btnStyle+'" onclick="sendMsg(bookings.find(function(x){return x.id===\''+b.id+'\';}),\'review\',true);closeBookingDetail();alert(\'Review request sent!\')">Send</button></span></div>';
-    })();
+    (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0">'+b.notes+'</div>':'');
 
   $d('bdBody').innerHTML=html;
   // Async-load photo thumbnails into the detail view
@@ -3564,10 +3526,8 @@ function saveBooking(){
     bookings.push(entry);
   }
 
-  var _wasNew = !editingId;
   save(); closeModal(); initSelects();
   syncToGCal(entry); // create or update Google Calendar event
-  if(_wasNew) sendMsg(entry,'confirmation');
   render();
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
@@ -3961,9 +3921,7 @@ function saveCloseOut(){
   bookings[idx].refundMethod     = $d('coRefundMethod').value;
   bookings[idx].checkOutPhotoIds = coWorkingPhotos.slice();
   bookings[idx]._t               = Date.now();
-  var _coBooking = bookings[idx];
   save();
-  sendMsg(_coBooking,'closeout');
   $d('closeOutModal').classList.remove('open');
   closeOutId = null;
   render();
@@ -4053,115 +4011,6 @@ function saveVerify(){
 }
 
 // ════════════════════════════════════════════════════════
-//  SMS / EMAIL AUTOMATION
-// ════════════════════════════════════════════════════════
-function buildMsgEmail(heading, subheading, rows, bodyHtml){
-  var fromName = MSG_FROM_NAME || 'Prestige Black Rentals';
-  var rowsHtml = rows.map(function(r){
-    return '<tr><td style="color:#999;font-size:12px;padding:5px 0;width:130px;vertical-align:top">'+r.label+'</td>'+
-           '<td style="font-size:13px;font-weight:600;color:#fff;padding:5px 0">'+r.val+'</td></tr>';
-  }).join('');
-  return '<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0a0a0a;font-family:sans-serif">'+
-    '<div style="max-width:520px;margin:0 auto;padding:32px 20px">'+
-    '<div style="text-align:center;margin-bottom:24px">'+
-      '<div style="font-size:28px;font-weight:900;color:#C9A962;letter-spacing:.06em">P</div>'+
-      '<div style="font-size:13px;font-weight:700;color:#C9A962;letter-spacing:.1em;text-transform:uppercase">'+fromName+'</div>'+
-    '</div>'+
-    '<div style="background:#111;border:1px solid rgba(201,169,98,.3);border-radius:14px;padding:28px">'+
-      '<h2 style="color:#C9A962;margin:0 0 4px;font-size:20px">'+heading+'</h2>'+
-      '<p style="color:#aaa;margin:0 0 20px;font-size:14px">'+subheading+'</p>'+
-      (rows.length?'<table style="width:100%;border-collapse:collapse">'+rowsHtml+'</table>':'')+
-      (bodyHtml?'<p style="color:#ccc;font-size:13px;line-height:1.7;margin-top:18px">'+bodyHtml+'</p>':'')+
-    '</div>'+
-    '<p style="text-align:center;color:#555;font-size:11px;margin-top:20px">'+fromName+' · Dallas, TX</p>'+
-    '</div></body></html>';
-}
-
-function sendMsg(b, type, manual){
-  if(!MSG_WORKER_URL && !manual) return;
-  var hasPhone = b.phone && b.phone.replace(/\D/g,'').length >= 10;
-  var hasEmail = b.email && b.email.indexOf('@') > 0;
-  if(!hasPhone && !hasEmail) return;
-
-  var firstName = (b.name||'').split(' ')[0] || b.name;
-  var fromName  = MSG_FROM_NAME || 'Prestige Black Rentals';
-  var pickDate  = fmtDate(b.pickupDate||b.date);
-  var pickTime  = b.pickupTime ? ' @ '+fmtTime(b.pickupTime) : '';
-  var balance   = $$(getRemainingBalance(b));
-  var total     = $$(totalRevenue(b));
-  var reviewUrl = GOOGLE_REVIEW_URL||'';
-  var dropDate  = b.dropoffDate ? fmtDate(b.dropoffDate) : '';
-
-  var smsBody, emailSubject, emailHtml;
-
-  if(type==='confirmation'){
-    smsBody = 'Hi '+firstName+'! Your '+b.vehicle+' rental is confirmed for '+pickDate+(pickTime?pickTime:'')+'. Total: '+total+'. Remaining balance: '+balance+' due at pickup. — '+fromName;
-    emailSubject = 'Booking Confirmed — '+b.vehicle+' on '+pickDate;
-    emailHtml = buildMsgEmail('Booking Confirmed! 🚗','Hi '+firstName+', your reservation is locked in.',[
-      {label:'Vehicle', val:b.vehicle},
-      {label:'Pickup', val:pickDate+(pickTime?pickTime:'')},
-      {label:'Duration', val:b.days+' '+(b.type==='hourly'?'hr':'day')+(b.days!==1?'s':'')},
-      {label:'Total', val:total},
-      {label:'Date Lock Paid', val:$$(b.dateLock!=null?b.dateLock:100)},
-      {label:'Remaining Balance', val:balance+' due at pickup'},
-    ].concat(b.address?[{label:'Address',val:b.address}]:[]), null);
-  } else if(type==='reminder'){
-    smsBody = 'Hi '+firstName+'! Reminder: your '+b.vehicle+' pickup is tomorrow'+(pickTime?pickTime:'')+'. Remaining balance '+balance+' due at pickup. — '+fromName;
-    emailSubject = 'Reminder: Your '+b.vehicle+' pickup is tomorrow!';
-    emailHtml = buildMsgEmail('Pickup Tomorrow! 📅','Hi '+firstName+', your trip is almost here.',[
-      {label:'Vehicle', val:b.vehicle},
-      {label:'Pickup', val:pickDate+(pickTime?pickTime:'')},
-      {label:'Remaining Balance', val:balance+' due at pickup'},
-    ].concat(b.address?[{label:'Address',val:b.address}]:[]), null);
-  } else if(type==='closeout'){
-    smsBody = 'Hi '+firstName+'! Thanks for choosing '+fromName+'! Hope you loved the '+b.vehicle+'. Look out for a Google review request from us — it means a lot! 🙏';
-    emailSubject = 'Thank you, '+firstName+'! — '+fromName;
-    emailHtml = buildMsgEmail('Thank You! 🙏','We\'re so glad you chose us.',[], 'Hi '+firstName+', it was our absolute pleasure serving you with the '+b.vehicle+'. We hope the experience was everything you expected and more!<br><br>Keep an eye out — we\'ll be sending a Google review request shortly. Your feedback helps us grow!');
-  } else if(type==='review'){
-    var reviewLink = reviewUrl ? '<br><br><a href="'+reviewUrl+'" style="display:inline-block;background:#C9A962;color:#000;font-weight:800;padding:12px 28px;border-radius:8px;text-decoration:none;font-size:14px;letter-spacing:.04em">⭐ Leave a Review</a>' : '';
-    smsBody = 'Hi '+firstName+'! ⭐ We loved having you! Would you mind leaving us a quick Google review?'+(reviewUrl?' '+reviewUrl:'')+' It means the world to us! — '+fromName;
-    emailSubject = 'Would you leave us a quick review?';
-    emailHtml = buildMsgEmail('We\'d Love Your Review! ⭐','Hi '+firstName+', your opinion matters.',[], 'Thank you again for choosing Prestige Black Rentals for your '+b.vehicle+' experience! Would you take 30 seconds to leave us a Google review? It helps other customers find us and means everything to our team.'+reviewLink);
-  }
-
-  if(!MSG_WORKER_URL){ return; } // manual call with no worker — do nothing
-
-  if(hasPhone && smsBody){
-    fetch(MSG_WORKER_URL+'/send-sms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.phone,body:smsBody})}).catch(function(){});
-  }
-  if(hasEmail && emailSubject){
-    fetch(MSG_WORKER_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:emailSubject,html:emailHtml})}).catch(function(){});
-  }
-
-  // Mark sent on booking
-  var idx=bookings.findIndex(function(x){return x.id===b.id;});
-  if(idx!==-1){
-    var field = type==='confirmation'?'confirmationSentAt':type==='reminder'?'reminderSentAt':type==='closeout'?'closeoutMsgSentAt':'reviewSentAt';
-    bookings[idx][field]=Date.now();
-    save();
-  }
-}
-
-function autoCheckMessages(){
-  if(!MSG_WORKER_URL) return;
-  var today = dateStr(new Date());
-  var tomorrow = dateStr(addDays(new Date(),1));
-  bookings.filter(function(b){ return !b._deleted; }).forEach(function(b){
-    var pickup = b.pickupDate || b.date;
-    // 24-hour pickup reminder
-    if(pickup===tomorrow && !b.reminderSentAt && (b.status==='confirmed'||b.status==='pending')){
-      sendMsg(b,'reminder');
-    }
-    // Google review 1 day after trip ends
-    var endDate = b.dropoffDate || dateStr(addDays(new Date((b.pickupDate||b.date)+'T00:00:00'), Math.max(1,Number(b.days)||1)));
-    var reviewDate = dateStr(addDays(new Date(endDate+'T00:00:00'),1));
-    if(reviewDate<=today && !b.reviewSentAt && (b.status==='completed'||b.closeoutMsgSentAt)){
-      sendMsg(b,'review');
-    }
-  });
-}
-
-// ════════════════════════════════════════════════════════
 //  SETTINGS
 // ════════════════════════════════════════════════════════
 var OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
@@ -4169,9 +4018,6 @@ var OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
 function openSettings(){
   $d('settWorkerUrl').value = WORKER_URL;
   $d('settOpenAiKey').value    = OPENAI_KEY;
-  $d('settMsgWorkerUrl').value  = MSG_WORKER_URL;
-  $d('settGoogleReviewUrl').value= GOOGLE_REVIEW_URL;
-  $d('settMsgFromName').value   = MSG_FROM_NAME;
   _refreshSigPreview(OWNER_SIGNATURE);
   $d('settingsModal').classList.add('open');
 }
@@ -4179,14 +4025,8 @@ function closeSettings(){ $d('settingsModal').classList.remove('open'); }
 function saveSettings(){
   WORKER_URL = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
   OPENAI_KEY        = ($d('settOpenAiKey').value||'').trim();
-  MSG_WORKER_URL    = ($d('settMsgWorkerUrl').value||'').trim().replace(/\/$/,'');
-  GOOGLE_REVIEW_URL = ($d('settGoogleReviewUrl').value||'').trim();
-  MSG_FROM_NAME     = ($d('settMsgFromName').value||'').trim() || 'Prestige Black Rentals';
   localStorage.setItem('pb_worker_url',        WORKER_URL);
   localStorage.setItem('pb_openai_key',        OPENAI_KEY);
-  localStorage.setItem('pb_msg_worker_url',    MSG_WORKER_URL);
-  localStorage.setItem('pb_google_review_url', GOOGLE_REVIEW_URL);
-  localStorage.setItem('pb_msg_from_name',     MSG_FROM_NAME);
   // signature saved live via loadSigPreview; persist current value
   localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
   closeSettings();
@@ -5516,7 +5356,6 @@ function afterCloudLoad(ok){
   if(activeTab==='fleet')     renderFleetTab();
   if(activeTab==='customers') renderCustomersTab();
   if(activeTab==='brokers')   renderBrokerTab();
-  autoCheckMessages();
 }
 
 // Pull from cloud — always wins over local data
@@ -5528,8 +5367,6 @@ cloudLoad(function(ok) {
 document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && FIREBASE_URL) {
     cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
-  } else if (document.visibilityState === 'visible') {
-    autoCheckMessages();
   }
 });
 // Auto-pull every 15 seconds so all changes propagate to every active device
