@@ -106,9 +106,11 @@ tr:hover td { background: var(--gold-faint); }
 .daily      { background: rgba(201,169,98,.15); color: var(--gold); }
 .hourly     { background: rgba(100,180,255,.15); color: var(--blue); }
 .chauffeur  { background: rgba(124,252,152,.15); color: var(--green); }
-.completed  { background: rgba(124,252,152,.12); color: var(--green); }
-.pending    { background: rgba(255,200,0,.12);   color: #ffc800; }
-.cancelled  { background: rgba(255,92,92,.12);   color: var(--red); }
+.completed   { background: rgba(124,252,152,.12); color: var(--green); }
+.confirmed   { background: rgba(59,130,246,.12);  color: var(--blue); }
+.in-progress { background: rgba(168,85,247,.12);  color: #a855f7; }
+.pending     { background: rgba(255,200,0,.12);   color: #ffc800; }
+.cancelled   { background: rgba(255,92,92,.12);   color: var(--red); }
 .pos { color: var(--green); font-weight: 700; }
 .neg { color: var(--red);   font-weight: 700; }
 
@@ -595,6 +597,7 @@ tr:hover td { background: var(--gold-faint); }
     <div class="fg"><div class="fl">Status</div>
       <select class="fi" id="filterStatus" onchange="filterChange()">
         <option value="">All</option><option value="completed">Completed</option>
+        <option value="confirmed">Confirmed</option><option value="in-progress">In Progress</option>
         <option value="pending">Pending</option><option value="cancelled">Cancelled</option>
       </select></div>
       <div class="fg"><div class="fl">Source</div>
@@ -842,6 +845,8 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup"><div class="flabel">Status</div>
         <select class="finput" id="fStatus">
           <option value="pending">Pending</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="in-progress">In Progress</option>
           <option value="completed">Completed</option>
           <option value="cancelled">Cancelled</option>
         </select></div>
@@ -2751,7 +2756,7 @@ function countdownLabel(dateStr){
 //  TAB SWITCHING
 // ════════════════════════════════════════════════════════
 function switchTab(name){
-  activeTab=name;
+  activeTab=name; _bPage=0;
   document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
   $d('tab-'+name).classList.add('active');
@@ -3135,6 +3140,7 @@ function tripCard(b, showCountdown){
   // Feature 2: repeat customer badge
   var repeatSet=buildRepeatSet();
   var repeatBadge=isRepeat(b,repeatSet)?'<span class="repeat-badge" title="Returning Customer">🔄</span>':'';
+  var webBadge=b._fromWeb?'<span style="background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.3);border-radius:5px;padding:1px 7px;font-size:10px;font-weight:800;margin-left:4px">🌐 WEB</span>':'';
 
   // Feature 6: quick status buttons
   var statusBtn='';
@@ -3174,7 +3180,7 @@ function tripCard(b, showCountdown){
     '<div>'+
       '<div class="trip-vehicle">'+vImgHtml+b.vehicle+'</div>'+
       pdLine+
-      '<div class="trip-customer">'+b.name+repeatBadge+(b.phone?' · '+b.phone:'')+' '+verBadges+'</div>'+
+      '<div class="trip-customer">'+b.name+repeatBadge+webBadge+(b.phone?' · '+b.phone:'')+' '+verBadges+'</div>'+
       '<div style="margin-top:5px"><span class="badge '+b.type+'">'+b.type+'</span> <span class="badge '+b.status+'">'+b.status+'</span></div>'+
       (addonsArr.length?'<div class="trip-extras">'+addonsArr.map(function(a){return'<span class="extra-chip">'+a+'</span>';}).join('')+'</div>':'')+
       (b.depositKept?'<div class="trip-extras"><span class="extra-chip" style="background:rgba(168,85,247,.15);color:#a855f7">🔒 Kept '+$$(b.depositKept)+'</span></div>':'')+
@@ -3313,7 +3319,10 @@ function openBookingDetail(id){
       (b.fuelOut?'<div class="detail-row"><span class="detail-label">Fuel at Drop-off</span><span class="detail-val">'+(b.fuelIn?b.fuelIn+' → ':'')+b.fuelOut+'</span></div>':'')+
       (b.condOut?'<div class="detail-row"><span class="detail-label">Condition at Drop-off</span><span class="detail-val">'+(b.condIn?b.condIn+' → ':'')+b.condOut+'</span></div>':'')+
       (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+b.closeOutNotes+'</span></div>':'')+
+      (b.fuelCharge>0?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">⛽ Fuel Charge</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.fuelCharge)+'</span></div>':'')+
+      (b.mileageCharge>0?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">🛣 Mileage Overage</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.mileageCharge)+'</span></div>':'')+
       (b.refundSent?'<div class="detail-row"><span class="detail-label">Refund</span><span class="detail-val" style="color:var(--green)">✅ Sent'+(b.refundDate?' on '+fmtDate(b.refundDate):'')+(b.refundMethod?' via '+b.refundMethod:'')+'</span></div>':'')+
+      (b.claimStatus?'<div class="detail-row"><span class="detail-label">Claim Status</span><span class="detail-val">'+b.claimStatus+(b.claimRecovered?' · Recovered: '+$$(b.claimRecovered):'')+(b.claimNotes?' · '+b.claimNotes:'')+'</span></div>':'')+
       (b.damage&&b.damage.flagged?'<div class="detail-row"><span class="detail-label" style="color:#ef4444">🚨 Damage</span><span class="detail-val" style="color:#ef4444;font-weight:700">'+(b.damage.type||'Flagged')+(b.damage.responsible?' · '+b.damage.responsible:'')+(b.damage.estimate?' · Est. '+$$(b.damage.estimate):'')+(b.damage.desc?'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+b.damage.desc+'</div>':'')+'</span></div>':'')+
       (b.checkOutPhotoIds&&b.checkOutPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkOutPhotoIds.length+')</span><span class="detail-val"><div id="bdCoPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
@@ -3776,6 +3785,8 @@ function saveBooking(){
       if(ex.claimStatus)        entry.claimStatus        = ex.claimStatus;
       if(ex.claimRecovered)     entry.claimRecovered     = ex.claimRecovered;
       if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
+      if(ex.fuelCharge)         entry.fuelCharge         = ex.fuelCharge;
+      if(ex.mileageCharge)      entry.mileageCharge      = ex.mileageCharge;
       // Audit trail: record which fields changed
       var auditFields=['date','name','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
       var changes=[];
@@ -4253,6 +4264,14 @@ function saveCloseOut(){
   bookings[idx].refundDate       = $d('coRefundDate').value;
   bookings[idx].refundMethod     = $d('coRefundMethod').value;
   bookings[idx].checkOutPhotoIds = coWorkingPhotos.slice();
+  // Calculate and persist fuel charge + mileage overage for reporting
+  var _fIn=fuelToNum(bookings[idx].fuelIn||''), _fOut=fuelToNum($d('coFuelOut').value||'');
+  bookings[idx].fuelCharge = (_fIn>=0&&_fOut>=0&&_fIn>_fOut) ? Math.ceil((_fIn-_fOut)/2)*30 : 0;
+  var _oIn=Number(bookings[idx].odomIn)||0, _oOut=parseFloat($d('coOdomOut').value)||0;
+  var _driven=(_oIn&&_oOut&&_oOut>_oIn)?(_oOut-_oIn):0;
+  var _allowed=Number(bookings[idx].includedMiles)||0, _rate=Number(bookings[idx].overageRate)||0;
+  var _hasUnlim=Number(bookings[idx].unlimited)>0;
+  bookings[idx].mileageCharge = (!_hasUnlim&&_driven&&_allowed&&_rate&&_driven>_allowed) ? Math.round((_driven-_allowed)*_rate) : 0;
   bookings[idx].damage = $d('coDamageFlagged').checked ? {
     flagged: true,
     type:        $d('coDamageType').value,
@@ -4776,7 +4795,7 @@ function dismissToast(){
 function exportCSV(){
   // Feature 12: record export date
   try{ localStorage.setItem('pb_last_export',todayStr()); }catch(e){}
-  var cols=['Date','Customer','Phone','Email','Vehicle','Type','Days','Base Revenue','Add-ons','Total Revenue','Net Revenue','Deposit','Date Lock','Remaining Balance','Balance Paid','Payment Method','Broker','Broker Fee','Source','Status','Pickup Date','Dropoff Date','Address','Notes','Cost','Odometer In','Odometer Out','Damage'];
+  var cols=['Date','Customer','Phone','Email','Vehicle','Type','Days','Base Revenue','Add-ons','Total Revenue','Net Revenue','Deposit','Date Lock','Remaining Balance','Balance Paid','Payment Method','Broker','Broker Fee','Source','Status','Pickup Date','Dropoff Date','Address','Notes','Cost','Odometer In','Fuel In','Odometer Out','Fuel Out','Condition In','Condition Out','Fuel Charge','Mileage Charge','Refund Sent','Refund Date','Refund Method','Damage','Claim Status','Claim Recovered','Claim Notes'];
   var rows=bookings.filter(function(b){return !b._deleted;}).map(function(b){
     return [
       b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
@@ -4786,8 +4805,11 @@ function exportCSV(){
       b.broker||'',b.brokerFee||0,b.source||'',b.status,
       b.pickupDate||'',b.dropoffDate||'',b.address||'',
       (b.notes||'').replace(/,/g,';'),b.cost||0,
-      b.odomIn||'',b.odomOut||'',
-      b.damage&&b.damage.flagged?(b.damage.type||'Yes'):''
+      b.odomIn||'',b.fuelIn||'',b.odomOut||'',b.fuelOut||'',
+      b.condIn||'',b.condOut||'',b.fuelCharge||0,b.mileageCharge||0,
+      b.refundSent?'Yes':'',b.refundDate||'',b.refundMethod||'',
+      b.damage&&b.damage.flagged?(b.damage.type||'Yes'):'',
+      b.claimStatus||'',b.claimRecovered||'',b.claimNotes||''
     ].map(function(v){ return '"'+String(v).replace(/"/g,'""')+'"'; }).join(',');
   });
   var csv=[cols.map(function(c){return '"'+c+'"';}).join(',')].concat(rows).join('\n');
@@ -4856,7 +4878,9 @@ function generateInvoice(id){
     '<div class="inv-sec">Charges</div>'+
     '<div class="inv-row"><span class="inv-lbl">Base '+(b.type==='daily'?'Rental':b.type==='hourly'?'Hourly Rate':'Service Fee')+'</span><span class="inv-val">'+$$(baseRev)+'</span></div>'+
     addons.map(function(a){ return '<div class="inv-row"><span class="inv-lbl">'+a.lbl+'</span><span class="inv-val">'+$$(a.val)+'</span></div>'; }).join('')+
-    '<div class="inv-total"><span>TOTAL</span><span>'+$$(totalRevenue(b))+'</span></div>'+
+    (Number(b.mileageCharge)>0?'<div class="inv-row"><span class="inv-lbl">🛣 Mileage Overage</span><span class="inv-val">'+$$(b.mileageCharge)+'</span></div>':'')+
+    (Number(b.fuelCharge)>0?'<div class="inv-row"><span class="inv-lbl">⛽ Fuel Charge</span><span class="inv-val">'+$$(b.fuelCharge)+'</span></div>':'')+
+    '<div class="inv-total"><span>TOTAL</span><span>'+$$(totalRevenue(b)+(Number(b.mileageCharge)||0)+(Number(b.fuelCharge)||0))+'</span></div>'+
     (b.deposit?'<div class="inv-row" style="margin-top:6px;color:#666;font-size:12px"><span class="inv-lbl">Security Deposit</span><span class="inv-val">'+$$(b.deposit)+'</span></div>':'')+
     (b.notes?'<div class="inv-sec">Notes</div><div style="font-size:13px;color:#666">'+b.notes+'</div>':'')+
     '<div class="inv-foot">Thank you for choosing Prestige Black Rentals · Dallas, TX</div>'+
@@ -5426,7 +5450,9 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
   <div class="fr"><span class="fl">Security Deposit:</span><span class="fv">{{deposit_amount}} &nbsp;<em style="font-weight:400;font-size:11px">(refundable upon trip completion and inspection)</em></span></div>
   <div class="fr"><span class="fl">Total Due:</span><span class="fv" style="font-weight:700">{{total_revenue}}</span></div>
   <div class="fr"><span class="fl">Balance Due at Pickup:</span><span class="fv">{{balance_due}}</span></div>
-  <div class="fr"><span class="fl">Refuel Fee:</span><span class="fv">$30 per quarter tank</span></div>
+  <div class="fr"><span class="fl">Refuel Fee:</span><span class="fv">$30 per quarter tank short of pickup level</span></div>
+  <p class="note">{{mileage_policy}}</p>
+  <p class="note">{{fuel_policy}}</p>
   <p class="note">Payment is due in advance of the rental period unless otherwise agreed in writing.</p>
 
   <!-- 5. CONDITION AND INSPECTION -->
@@ -5635,7 +5661,11 @@ function openContract(id){
     .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE
       ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">'
       : '')
-    .replace(/\{\{customer_signature\}\}/gi, b.customerSig ? '<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">' : '_______________________________');
+    .replace(/\{\{customer_signature\}\}/gi, b.customerSig ? '<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">' : '_______________________________')
+    .replace(/\{\{mileage_policy\}\}/gi, b.includedMiles
+      ? 'Mileage: This rental includes '+Number(b.includedMiles).toLocaleString()+' miles per day. Miles driven beyond the included amount will be charged at $'+( b.overageRate||'0' )+' per mile.'
+      : 'Mileage: This rental includes unlimited mileage at no additional per-mile charge.')
+    .replace(/\{\{fuel_policy\}\}/gi, 'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.');
   $d('contractFilled').value=filled;
   // If template is HTML, show iframe preview
   var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
