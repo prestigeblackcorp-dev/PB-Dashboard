@@ -1011,6 +1011,7 @@ tr:hover td { background: var(--gold-faint); }
       <button class="modal-close" onclick="closeCheckIn()">✕</button>
     </div>
     <div id="ciSummary" style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);border-radius:10px;padding:12px 16px;margin-bottom:18px;font-size:13px;line-height:1.8"></div>
+    <div id="ciVerifyWarn" style="display:none;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.4);border-radius:10px;padding:10px 14px;font-size:12px;font-weight:700;color:#fbbf24;line-height:1.8;margin-bottom:12px"></div>
     <div class="fgrid">
       <div class="fsec ffull">Odometer</div>
       <div class="fgroup ffull">
@@ -1022,7 +1023,15 @@ tr:hover td { background: var(--gold-faint); }
         <div class="flabel">Fuel at Pickup</div>
         <select class="finput" id="ciFuelIn">
           <option value="">Not recorded</option>
-          <option>Full</option><option>3/4</option><option>1/2</option><option>1/4</option><option>Empty</option>
+          <option>Full</option>
+          <option>7/8</option>
+          <option>3/4</option>
+          <option>5/8</option>
+          <option>1/2</option>
+          <option>3/8</option>
+          <option>1/4</option>
+          <option>1/8</option>
+          <option>Empty</option>
         </select>
       </div>
       <div class="fsec ffull">Vehicle Condition</div>
@@ -1138,11 +1147,21 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fsec ffull">Fuel Level</div>
       <div class="fgroup ffull">
         <div class="flabel">Fuel at Drop-off</div>
-        <select class="finput" id="coFuelOut">
+        <select class="finput" id="coFuelOut" oninput="coCalcFuel()">
           <option value="">Not recorded</option>
-          <option>Full</option><option>3/4</option><option>1/2</option><option>1/4</option><option>Empty</option>
+          <option>Full</option>
+          <option>7/8</option>
+          <option>3/4</option>
+          <option>5/8</option>
+          <option>1/2</option>
+          <option>3/8</option>
+          <option>1/4</option>
+          <option>1/8</option>
+          <option>Empty</option>
         </select>
+        <div class="fhint" id="coFuelHint" style="color:var(--gold);margin-top:4px"></div>
       </div>
+      <div class="ffull" id="coFuelRow" style="display:none;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.3);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap;margin-top:6px"></div>
 
       <div class="fsec ffull">Vehicle Condition</div>
       <div class="fgroup ffull">
@@ -1174,6 +1193,27 @@ tr:hover td { background: var(--gold-faint); }
       <div class="ffull" id="coOverageRow" style="display:none;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.3);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap"></div>
 
       <div class="ffull" id="coProfitSummary" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap;margin-top:2px"></div>
+
+      <div class="fsec ffull">Damage Claim</div>
+      <div class="fgroup ffull">
+        <div class="flabel">Claim Status</div>
+        <select class="finput" id="coClaimStatus">
+          <option value="">No claim filed</option>
+          <option value="filed">Filed with insurance</option>
+          <option value="pending">Pending review</option>
+          <option value="approved">Approved</option>
+          <option value="paid">Paid / Recovered</option>
+          <option value="denied">Denied</option>
+        </select>
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Amount Recovered ($)</div>
+        <input type="number" class="finput" id="coClaimRecovered" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Claim Notes</div>
+        <input type="text" class="finput" id="coClaimNotes" placeholder="Claim #, insurer, notes…">
+      </div>
 
       <div class="fsec ffull" style="margin-top:4px">Post-Trip Photos</div>
       <div class="fgroup ffull">
@@ -3733,6 +3773,9 @@ function saveBooking(){
       if(ex.refundSent)         entry.refundSent         = ex.refundSent;
       if(ex.refundDate)         entry.refundDate         = ex.refundDate;
       if(ex.refundMethod)       entry.refundMethod       = ex.refundMethod;
+      if(ex.claimStatus)        entry.claimStatus        = ex.claimStatus;
+      if(ex.claimRecovered)     entry.claimRecovered     = ex.claimRecovered;
+      if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
       // Audit trail: record which fields changed
       var auditFields=['date','name','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
       var changes=[];
@@ -3975,6 +4018,19 @@ function openCheckIn(id){
     'Pickup: <strong>'+(b.pickupDate?fmtDate(b.pickupDate)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):''):fmtDate(b.date))+'</strong><br>'+
     'Revenue: <strong>'+$$(totalRevenue(b))+'</strong> &nbsp;·&nbsp; <span class="badge '+b.status+'">'+b.status+'</span>';
   updatePhotoSyncHints();
+  // Verification + signature warnings
+  var warnEl=$d('ciVerifyWarn');
+  if(warnEl){
+    var warns=[];
+    if(!b.verify||b.verify.status!=='verified') warns.push('⚠ ID not verified — run Verify before handing over keys');
+    if(!b.customerSig) warns.push('⚠ No signed contract — open Contract and get customer signature first');
+    if(warns.length){
+      warnEl.innerHTML=warns.map(function(w){return '<div>'+w+'</div>';}).join('');
+      warnEl.style.display='';
+    } else {
+      warnEl.style.display='none';
+    }
+  }
   $d('checkInModal').classList.add('open');
 }
 
@@ -4030,6 +4086,9 @@ function openCloseOut(id){
   $d('coCost').value = Number(b.cost)||0;
   $d('coOdomOut').value = b.odomOut||'';
   $d('coFuelOut').value = b.fuelOut||'';
+  $d('coClaimStatus').value    = b.claimStatus||'';
+  $d('coClaimRecovered').value = b.claimRecovered||'';
+  $d('coClaimNotes').value     = b.claimNotes||'';
   $d('coCondOut').value = b.condOut||'';
   $d('coRefundSent').checked = !!b.refundSent;
   $d('coRefundDate').value = b.refundDate||'';
@@ -4058,6 +4117,7 @@ function openCloseOut(id){
   updatePhotoSyncHints();
   $d('closeOutModal').classList.add('open');
   coCalcMiles();
+  coCalcFuel();
   coUpdateProfitSummary();
 }
 
@@ -4107,6 +4167,42 @@ function coCalcMiles(){
       overRow.style.display='none';
     }
   }
+  coCalcFuel();
+  coUpdateProfitSummary();
+}
+function fuelToNum(val){
+  var map={'Full':8,'7/8':7,'3/4':6,'5/8':5,'1/2':4,'3/8':3,'1/4':2,'1/8':1,'Empty':0};
+  return map.hasOwnProperty(val) ? map[val] : -1;
+}
+function fuelLabel(val){ return val||'—'; }
+function coCalcFuel(){
+  var b=bookings.find(function(x){return x.id===closeOutId;});
+  if(!b) return;
+  var inVal=b.fuelIn||'';
+  var outVal=$d('coFuelOut').value||'';
+  var hint=$d('coFuelHint');
+  var row=$d('coFuelRow');
+  if(hint) hint.textContent = inVal ? 'Sent out at: '+inVal+(outVal?' → Returned: '+outVal:'') : '';
+  if(!row) return;
+  var inNum=fuelToNum(inVal), outNum=fuelToNum(outVal);
+  if(inNum<0||outNum<0||!inVal||!outVal){ row.style.display='none'; coUpdateProfitSummary(); return; }
+  var diff=inNum-outNum; // eighths short
+  if(diff<=0){
+    row.style.display='flex';
+    row.style.background='rgba(124,252,152,.07)';
+    row.style.borderColor='rgba(124,252,152,.3)';
+    row.innerHTML='<span style="color:var(--green)">✅ Fuel OK</span><span>Returned '+fuelLabel(outVal)+' (sent out '+fuelLabel(inVal)+') — no fuel charge</span>';
+  } else {
+    var quarters=diff/2; // eighths ÷ 2 = quarters
+    var charge=Math.ceil(quarters)*30; // $30 per quarter, round up
+    row.style.display='flex';
+    row.style.background='rgba(255,92,92,.07)';
+    row.style.borderColor='rgba(255,92,92,.3)';
+    row.innerHTML='<span>Sent out: <b>'+fuelLabel(inVal)+'</b></span>'+
+      '<span>Returned: <b style="color:var(--red)">'+fuelLabel(outVal)+'</b></span>'+
+      '<span>Short by: <b style="color:var(--red)">'+diff+'/8 tank ('+quarters+' qtr)</b></span>'+
+      '<span>Fuel charge: <b style="color:var(--red)">'+$$(charge)+'</b> @ $30/qtr</span>';
+  }
   coUpdateProfitSummary();
 }
 function coUpdateProfitSummary(){
@@ -4149,6 +4245,9 @@ function saveCloseOut(){
   bookings[idx].closeOutNotes    = $d('coNotes').value.trim();
   bookings[idx].odomOut          = parseFloat($d('coOdomOut').value)||0;
   bookings[idx].fuelOut          = $d('coFuelOut').value;
+  bookings[idx].claimStatus      = $d('coClaimStatus').value;
+  bookings[idx].claimRecovered   = parseFloat($d('coClaimRecovered').value)||0;
+  bookings[idx].claimNotes       = $d('coClaimNotes').value.trim();
   bookings[idx].condOut          = $d('coCondOut').value;
   bookings[idx].refundSent       = $d('coRefundSent').checked;
   bookings[idx].refundDate       = $d('coRefundDate').value;
@@ -4866,7 +4965,7 @@ function editRemainingBalance(id){
 function markBalancePaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   var cur=getRemainingBalance(b);
-  var method=prompt('Payment method (Cash, Zelle, CashApp, Card, etc.):','Cash');
+  var method=prompt('Payment method (Zelle, Cash App, Venmo, PayPal, Cash, Card, Bank Transfer, Other):','Cash');
   if(method===null) return;
   var amt=prompt('Amount collected:',cur);
   if(amt===null) return;
