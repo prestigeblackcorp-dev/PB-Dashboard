@@ -535,6 +535,15 @@ tr:hover td { background: var(--gold-faint); }
     <iframe id="contractPreviewFrame" style="width:100%;height:560px;border:1px solid var(--border);border-radius:10px;background:#fff;display:none" scrolling="yes"></iframe>
     <!-- Raw / plain-text fallback -->
     <textarea id="contractFilled" class="finput" rows="20" style="font-family:monospace;font-size:12px;line-height:1.7;resize:vertical"></textarea>
+    <div style="margin:14px 0 0">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Customer Signature</div>
+      <canvas id="custSigCanvas" width="480" height="110" style="width:100%;max-width:480px;height:110px;border:1px dashed var(--border);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button class="btn btn-sm" onclick="clearCustSig()">✕ Clear</button>
+        <button class="btn btn-sm btn-gold" onclick="saveCustSig()">💾 Save Signature</button>
+        <span id="custSigStatus" style="font-size:11px;color:var(--muted);align-self:center"></span>
+      </div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-sm" onclick="copyContract()" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📋 Copy Text</button>
       <button class="btn btn-sm" onclick="printContract()">🖨️ Print / PDF</button>
@@ -573,6 +582,12 @@ tr:hover td { background: var(--gold-faint); }
       <select class="fi" id="filterStatus" onchange="render()">
         <option value="">All</option><option value="completed">Completed</option>
         <option value="pending">Pending</option><option value="cancelled">Cancelled</option>
+      </select></div>
+      <div class="fg"><div class="fl">Source</div>
+      <select class="fi" id="filterSource" onchange="render()">
+        <option value="">All Sources</option>
+        <option>Instagram</option><option>Turo</option><option>HyreCar</option>
+        <option>Website</option><option>Referral</option><option>Repeat</option><option>Walk-in</option><option>Other</option>
       </select></div>
     <div class="fg"><div class="fl">Search</div>
       <input type="text" class="fi" id="filterSearch" placeholder="Name, phone, vehicle, broker…" oninput="render()" style="min-width:200px"></div>
@@ -713,6 +728,12 @@ tr:hover td { background: var(--gold-faint); }
       <button class="btn btn-gold btn-sm" onclick="openMaintenanceModal()">+ Log Service</button>
     </div>
     <div id="fleetAlerts" style="margin-bottom:12px"></div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--muted);font-weight:700">Check availability on:</div>
+      <input type="date" class="fi" id="availCheckDate" oninput="renderAvailBadges()" style="max-width:160px">
+      <button class="btn btn-sm" onclick="$d('availCheckDate').value='';renderAvailBadges()" style="font-size:11px">Clear</button>
+      <div id="availBadgesRow" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+    </div>
     <div class="chart-card" style="margin-bottom:16px">
       <div class="chart-ttl">Vehicle Utilization — Last 90 Days</div>
       <div class="heatmap-wrap" id="utilizationHeatmap"></div>
@@ -1046,6 +1067,46 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup ffull">
         <div class="flabel">Close-Out Notes</div>
         <textarea class="finput ffull" id="coNotes" rows="2" placeholder="Any damage, fees, or notes…" style="resize:vertical"></textarea>
+      </div>
+      <div class="fgroup ffull" style="margin-top:4px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:700">
+          <input type="checkbox" id="coDamageFlagged" onchange="toggleDamageSection()"> 🚨 Flag Damage / Incident
+        </label>
+      </div>
+      <div id="damageSection" style="display:none;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:14px;margin-top:4px;width:100%">
+        <div class="fgrid">
+          <div class="fgroup">
+            <div class="flabel">Damage Type</div>
+            <select class="finput" id="coDamageType">
+              <option value="">— Select —</option>
+              <option>Scratch / Scuff</option>
+              <option>Dent</option>
+              <option>Glass Damage</option>
+              <option>Interior Damage</option>
+              <option>Mechanical</option>
+              <option>Theft / Missing Item</option>
+              <option>Accident</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Responsible Party</div>
+            <select class="finput" id="coDamageResponsible">
+              <option value="">— Select —</option>
+              <option>Renter</option>
+              <option>Normal Wear</option>
+              <option>Unknown</option>
+            </select>
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Repair Estimate ($)</div>
+            <input type="number" class="finput" id="coDamageEstimate" min="0" step="1" placeholder="0">
+          </div>
+          <div class="fgroup ffull">
+            <div class="flabel">Damage Description</div>
+            <textarea class="finput ffull" id="coDamageDesc" rows="2" placeholder="Describe the damage in detail…" style="resize:vertical"></textarea>
+          </div>
+        </div>
       </div>
 
       <div class="fsec ffull">Mileage</div>
@@ -1452,6 +1513,16 @@ tr:hover td { background: var(--gold-faint); }
         <div class="flabel">Image URL (optional)</div>
         <input type="text" class="finput" id="vImage" placeholder="Paste image URL or leave blank">
       </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Block Dates (out of service / personal use)</div>
+        <div id="blockedRangesList" style="margin-bottom:8px"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div><div class="flabel" style="font-size:10px">From</div><input type="date" class="finput" id="vBlockStart" style="max-width:140px"></div>
+          <div><div class="flabel" style="font-size:10px">To</div><input type="date" class="finput" id="vBlockEnd" style="max-width:140px"></div>
+          <div style="flex:1"><div class="flabel" style="font-size:10px">Reason</div><input type="text" class="finput" id="vBlockReason" placeholder="Maintenance, personal use…"></div>
+          <button class="btn btn-sm btn-gold" onclick="addBlockedRange()" style="white-space:nowrap;align-self:flex-end">+ Add Block</button>
+        </div>
+      </div>
     </div>
     <div class="factions">
       <button class="btn" onclick="closeVehicleModal()">Close</button>
@@ -1759,7 +1830,7 @@ function loadCustomVehicles(){
     var customs = JSON.parse(raw);
     customs.forEach(function(v){
       if(!VEHICLE_COSTS[v.name]){
-        VEHICLE_COSTS[v.name] = { rate:v.rate||0, deposit:v.deposit||0, weekly:v.weekly||0, image:v.image||'' };
+        VEHICLE_COSTS[v.name] = { rate:v.rate||0, deposit:v.deposit||0, weekly:v.weekly||0, image:v.image||'', blockedRanges:v.blockedRanges||[] };
         ALL_VEHICLES.push(v.name);
         if(v.chauffeur) CHAUFFEUR_VEHICLES.push(v.name);
       } else {
@@ -1768,6 +1839,7 @@ function loadCustomVehicles(){
         if(v.deposit !== undefined) VEHICLE_COSTS[v.name].deposit = v.deposit;
         if(v.weekly  !== undefined) VEHICLE_COSTS[v.name].weekly  = v.weekly;
         if(v.image   !== undefined) VEHICLE_COSTS[v.name].image   = v.image;
+        if(v.blockedRanges !== undefined) VEHICLE_COSTS[v.name].blockedRanges = v.blockedRanges;
       }
     });
   } catch(e){}
@@ -1776,7 +1848,8 @@ function saveCustomVehicles(){
   var customs = ALL_VEHICLES.map(function(v){
     var vc = VEHICLE_COSTS[v]||{};
     return { name:v, chauffeur: CHAUFFEUR_VEHICLES.indexOf(v)!==-1,
-             rate:vc.rate||0, deposit:vc.deposit||0, weekly:vc.weekly||0, image:vc.image||'' };
+             rate:vc.rate||0, deposit:vc.deposit||0, weekly:vc.weekly||0, image:vc.image||'',
+             blockedRanges:vc.blockedRanges||[] };
   });
   try{ localStorage.setItem('pb_custom_vehicles', JSON.stringify(customs)); }catch(e){}
   cloudSave();
@@ -1803,6 +1876,8 @@ function resetVehForm(){
   $d('vType').value='rental';
   $d('vRate').value=''; $d('vDeposit').value=''; $d('vWeekly').value='';
   $d('vImage').value='';
+  _editingBlockedRanges=[];
+  renderBlockedRangesList();
   $d('vFormTitle').textContent='Add New Vehicle';
   $d('vSaveBtn').textContent='+ Add Vehicle';
   $d('vCancelEdit').style.display='none';
@@ -1840,6 +1915,34 @@ function renderVehicleList(){
   $d('vehList').innerHTML = html || '<div style="color:var(--muted);font-size:13px;padding:10px">No vehicles found.</div>';
 }
 
+var _editingBlockedRanges = [];
+
+function renderBlockedRangesList(){
+  var el=$d('blockedRangesList'); if(!el) return;
+  if(!_editingBlockedRanges.length){ el.innerHTML='<div style="font-size:11px;color:var(--muted)">No dates blocked.</div>'; return; }
+  el.innerHTML=_editingBlockedRanges.map(function(r,i){
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px">'+
+      '<span style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;color:#ef4444">'+
+        fmtDate(r.start)+' → '+fmtDate(r.end)+(r.reason?' · '+r.reason:'')+'</span>'+
+      '<button onclick="removeBlockedRange('+i+')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 4px">✕</button>'+
+    '</div>';
+  }).join('');
+}
+
+function addBlockedRange(){
+  var s=$d('vBlockStart').value, e=$d('vBlockEnd').value, r=($d('vBlockReason').value||'').trim();
+  if(!s||!e){ alert('Please select both start and end dates.'); return; }
+  if(s>e){ alert('Start date must be before end date.'); return; }
+  _editingBlockedRanges.push({start:s,end:e,reason:r});
+  $d('vBlockStart').value=''; $d('vBlockEnd').value=''; $d('vBlockReason').value='';
+  renderBlockedRangesList();
+}
+
+function removeBlockedRange(i){
+  _editingBlockedRanges.splice(i,1);
+  renderBlockedRangesList();
+}
+
 function editVehicle(name){
   editingVehicle = name;
   var vc = VEHICLE_COSTS[name]||{};
@@ -1851,6 +1954,8 @@ function editVehicle(name){
   $d('vDeposit').value = vc.deposit || '';
   $d('vWeekly').value  = vc.weekly  || '';
   $d('vImage').value   = vc.image   || '';
+  _editingBlockedRanges = (vc.blockedRanges||[]).slice();
+  renderBlockedRangesList();
   $d('vFormTitle').textContent = 'Edit Vehicle';
   $d('vSaveBtn').textContent = '✓ Update Vehicle';
   $d('vCancelEdit').style.display = 'inline-flex';
@@ -1868,6 +1973,7 @@ function saveVehicle(){
 
   var pricing = { rate:rate, deposit:deposit, image:image };
   if(weekly) pricing.weekly = weekly;
+  pricing.blockedRanges = _editingBlockedRanges.slice();
 
   if(editingVehicle){
     var oldName = editingVehicle;
@@ -2575,7 +2681,7 @@ function switchTab(name){
 // ════════════════════════════════════════════════════════
 function getFiltered(){
   var from=$d('filterFrom').value, to=$d('filterTo').value;
-  var veh=$d('filterVehicle').value, typ=$d('filterType').value, sta=$d('filterStatus').value;
+  var veh=$d('filterVehicle').value, typ=$d('filterType').value, sta=$d('filterStatus').value, src=$d('filterSource')?$d('filterSource').value:'';
   var q=($d('filterSearch')?$d('filterSearch').value.trim().toLowerCase():'');
   return bookings.filter(function(b){
     if(b._deleted) return false;
@@ -2584,6 +2690,7 @@ function getFiltered(){
     if(veh  && b.vehicle!==veh) return false;
     if(typ  && b.type!==typ)    return false;
     if(sta  && b.status!==sta)  return false;
+    if(src && (b.source||'')!==src) return false;
     if(q){
       var hay=[b.name,b.phone,b.email,b.vehicle,b.broker,b.source,b.address,b.notes].join(' ').toLowerCase();
       if(hay.indexOf(q)===-1) return false;
@@ -2592,7 +2699,7 @@ function getFiltered(){
   });
 }
 function clearFilters(){
-  ['filterFrom','filterTo','filterVehicle','filterType','filterStatus','filterSearch'].forEach(function(id){ if($d(id)) $d(id).value=''; });
+  ['filterFrom','filterTo','filterVehicle','filterType','filterStatus','filterSource','filterSearch'].forEach(function(id){ if($d(id)) $d(id).value=''; });
   render();
 }
 
@@ -3069,6 +3176,7 @@ function openBookingDetail(id){
     '<div class="detail-row"><span class="detail-label">Remaining Balance</span><span class="detail-val" style="color:'+(getRemainingBalance(b)>0?'var(--red)':'var(--green)')+'">'+$$(getRemainingBalance(b))+
       ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\');closeBookingDetail()" style="padding:2px 8px;font-size:10px;margin-left:6px">✏ Update</button>'+
     '</span></div>'+
+    (b.balancePaidAt?'<div class="detail-row"><span class="detail-label" style="color:var(--green)">Balance Paid</span><span class="detail-val" style="color:var(--green)">✅ '+$$(b.balancePaidAmount||0)+(b.balancePaidMethod?' via '+b.balancePaidMethod:'')+' <span style="color:var(--muted);font-size:10px">'+new Date(b.balancePaidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span></span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Security Deposit</span><span class="detail-val">'+$$(b.deposit)+'</span></div>'+
     (Number(b.depositKept)?'<div class="detail-row"><span class="detail-label">Deposit Kept</span><span class="detail-val" style="color:var(--green)">'+$$(b.depositKept)+'</span></div>':'')+
     (Number(b.deposit)?'<div class="detail-row"><span class="detail-label">Deposit Returned</span><span class="detail-val">'+$$(Math.max(0,(Number(b.deposit)||0)-(Number(b.depositKept)||0)))+'</span></div>':'')+
@@ -3095,6 +3203,7 @@ function openBookingDetail(id){
       (b.condOut?'<div class="detail-row"><span class="detail-label">Condition at Drop-off</span><span class="detail-val">'+(b.condIn?b.condIn+' → ':'')+b.condOut+'</span></div>':'')+
       (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+b.closeOutNotes+'</span></div>':'')+
       (b.refundSent?'<div class="detail-row"><span class="detail-label">Refund</span><span class="detail-val" style="color:var(--green)">✅ Sent'+(b.refundDate?' on '+fmtDate(b.refundDate):'')+(b.refundMethod?' via '+b.refundMethod:'')+'</span></div>':'')+
+      (b.damage&&b.damage.flagged?'<div class="detail-row"><span class="detail-label" style="color:#ef4444">🚨 Damage</span><span class="detail-val" style="color:#ef4444;font-weight:700">'+(b.damage.type||'Flagged')+(b.damage.responsible?' · '+b.damage.responsible:'')+(b.damage.estimate?' · Est. '+$$(b.damage.estimate):'')+(b.damage.desc?'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+b.damage.desc+'</div>':'')+'</span></div>':'')+
       (b.checkOutPhotoIds&&b.checkOutPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkOutPhotoIds.length+')</span><span class="detail-val"><div id="bdCoPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
 
@@ -3385,6 +3494,10 @@ function toggleAddon(inputId, defaultPrice, checked){
 }
 
 function onDepositChange(){}
+function toggleDamageSection(){
+  var cb=$d('coDamageFlagged'), sec=$d('damageSection');
+  if(cb&&sec) sec.style.display=cb.checked?'':'none';
+}
 
 function updateLiveTotal(){
   var base   = parseFloat($d('fRevenue').value)||0;
@@ -3794,6 +3907,13 @@ function openCloseOut(id){
   $d('coKept').value = kept;
   $d('coReturned').value = Math.max(0, collected - kept);
   $d('coNotes').value = b.closeOutNotes||'';
+  var dmg=b.damage||{};
+  $d('coDamageFlagged').checked=!!dmg.flagged;
+  toggleDamageSection();
+  $d('coDamageType').value=dmg.type||'';
+  $d('coDamageResponsible').value=dmg.responsible||'';
+  $d('coDamageEstimate').value=dmg.estimate||'';
+  $d('coDamageDesc').value=dmg.desc||'';
   $d('coCost').value = Number(b.cost)||0;
   $d('coOdomOut').value = b.odomOut||'';
   $d('coFuelOut').value = b.fuelOut||'';
@@ -3920,6 +4040,14 @@ function saveCloseOut(){
   bookings[idx].refundDate       = $d('coRefundDate').value;
   bookings[idx].refundMethod     = $d('coRefundMethod').value;
   bookings[idx].checkOutPhotoIds = coWorkingPhotos.slice();
+  bookings[idx].damage = $d('coDamageFlagged').checked ? {
+    flagged: true,
+    type:        $d('coDamageType').value,
+    responsible: $d('coDamageResponsible').value,
+    estimate:    parseFloat($d('coDamageEstimate').value)||0,
+    desc:        $d('coDamageDesc').value.trim(),
+    reportedAt:  bookings[idx].damage&&bookings[idx].damage.reportedAt ? bookings[idx].damage.reportedAt : Date.now()
+  } : {flagged:false};
   bookings[idx]._t               = Date.now();
   save();
   $d('closeOutModal').classList.remove('open');
@@ -4435,24 +4563,28 @@ function dismissToast(){
 function exportCSV(){
   // Feature 12: record export date
   try{ localStorage.setItem('pb_last_export',todayStr()); }catch(e){}
-  var cols=['date','name','phone','email','vehicle','type','days','revenue','deposit',
-            'broker','brokerFee','brokerFeeTotal','source','loyaltyDiscount',
-            'includedMiles','overageRate',
-            'address','delivery','unlimited','pet','photo','champagne','decor','bouquet',
-            'cost','status','notes'];
-  var rows=[cols.join(',')];
-  bookings.filter(function(b){return !b._deleted;}).forEach(function(b){
-    rows.push(cols.map(function(c){
-      var v;
-      if(c==='brokerFeeTotal') v=String(((Number(b.brokerFee)||0)*(Number(b.days)||1)));
-      else v=b[c]==null?'':String(b[c]);
-      return v.includes(',')||v.includes('"')?'"'+v.replace(/"/g,'""')+'"':v;
-    }).join(','));
+  var cols=['Date','Customer','Phone','Email','Vehicle','Type','Days','Base Revenue','Add-ons','Total Revenue','Net Revenue','Deposit','Date Lock','Remaining Balance','Balance Paid','Payment Method','Broker','Broker Fee','Source','Status','Pickup Date','Dropoff Date','Address','Notes','Cost','Odometer In','Odometer Out','Damage'];
+  var rows=bookings.filter(function(b){return !b._deleted;}).map(function(b){
+    return [
+      b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
+      b.revenue||0,getAddons(b),totalRevenue(b),netRevenue(b),
+      b.deposit||0,b.dateLock||0,getRemainingBalance(b),
+      b.balancePaidAmount||'',b.balancePaidMethod||'',
+      b.broker||'',b.brokerFee||0,b.source||'',b.status,
+      b.pickupDate||'',b.dropoffDate||'',b.address||'',
+      (b.notes||'').replace(/,/g,';'),b.cost||0,
+      b.odomIn||'',b.odomOut||'',
+      b.damage&&b.damage.flagged?(b.damage.type||'Yes'):''
+    ].map(function(v){ return '"'+String(v).replace(/"/g,'""')+'"'; }).join(',');
   });
+  var csv=[cols.map(function(c){return '"'+c+'"';}).join(',')].concat(rows).join('\n');
+  var blob=new Blob([csv],{type:'text/csv'});
+  var url=URL.createObjectURL(blob);
   var a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
-  a.download='prestige-black-'+todayStr()+'.csv';
-  a.click();
+  a.href=url; a.download='prestige-black-bookings-'+dateStr(new Date())+'.csv';
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+  toast('Exported '+bookings.filter(function(b){return !b._deleted;}).length+' bookings to CSV');
 }
 function importCSV(){ $d('csvFile').click(); }
 function handleCSVImport(e){
@@ -4551,6 +4683,7 @@ function renderOutstanding(){
   var active=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'; });
   // Balance due = remainingBalance field if set, else revenue - dateLock
   var balanceDue=active.filter(function(b){
+    if(b.balancePaidAt) return false;
     var bal=getRemainingBalance(b);
     return bal>0 && (b.status==='confirmed'||b.status==='completed'||b.status==='pending');
   }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
@@ -4567,8 +4700,13 @@ function renderOutstanding(){
       '<td>'+b.vehicle+'</td>'+
       '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
       '<td style="color:var(--green)">'+$$(lock)+'</td>'+
-      '<td style="color:var(--red);font-weight:700">'+$$(bal)+
-        ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px">✏</button>'+
+      '<td style="color:'+(b.balancePaidAt?'var(--green)':'var(--red)')+';font-weight:700">'+
+        (b.balancePaidAt?
+          '✅ Paid '+$$(b.balancePaidAmount||0)+(b.balancePaidMethod?' via '+b.balancePaidMethod:''):
+          $$(bal)+
+          ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px">✏</button>'+
+          ' <button class="btn btn-sm" onclick="markBalancePaid(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:2px;border-color:var(--green);color:var(--green)">✅ Paid</button>'
+        )+
       '</td>'+
       '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
       '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
@@ -4610,6 +4748,25 @@ function editRemainingBalance(id){
   save();
   renderOutstanding();
   toast(b.name+' remaining balance updated to $'+num);
+}
+function markBalancePaid(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
+  var cur=getRemainingBalance(b);
+  var method=prompt('Payment method (Cash, Zelle, CashApp, Card, etc.):','Cash');
+  if(method===null) return;
+  var amt=prompt('Amount collected:',cur);
+  if(amt===null) return;
+  var num=parseFloat(amt);
+  if(isNaN(num)||num<0){ alert('Invalid amount.'); return; }
+  b.balancePaidAt=Date.now();
+  b.balancePaidAmount=num;
+  b.balancePaidMethod=method.trim();
+  b.remainingBalance=0;
+  b._t=Date.now();
+  save();
+  renderOutstanding();
+  render();
+  toast(b.name+' — balance of $'+num+' marked paid via '+method+'.');
 }
 
 // ════════════════════════════════════════════════════════
@@ -4722,6 +4879,29 @@ function renderHeatmap(){
 // ════════════════════════════════════════════════════════
 //  FLEET TAB  (feature 9)
 // ════════════════════════════════════════════════════════
+function renderAvailBadges(){
+  var el=$d('availBadgesRow'); if(!el) return;
+  var availDate=$d('availCheckDate')?$d('availCheckDate').value:'';
+  if(!availDate){ el.innerHTML=''; return; }
+  el.innerHTML=ALL_VEHICLES.map(function(v){
+    var isBooked=bookings.some(function(b){
+      if(b._deleted||b.status==='cancelled'||b.vehicle!==v) return false;
+      var start=b.pickupDate||b.date;
+      var end=b.dropoffDate||dateStr(addDays(new Date(start+'T00:00:00'),Math.max(1,Number(b.days)||1)-1));
+      return availDate>=start && availDate<=end;
+    });
+    var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
+      return availDate>=r.start && availDate<=r.end;
+    });
+    var badge=isBlocked
+      ?'<span style="font-size:10px;font-weight:800;color:#ef4444;background:rgba(239,68,68,.15);padding:3px 10px;border-radius:20px;border:1px solid rgba(239,68,68,.3)">🚫 '+v+' BLOCKED</span>'
+      :isBooked
+      ?'<span style="font-size:10px;font-weight:800;color:#f97316;background:rgba(249,115,22,.15);padding:3px 10px;border-radius:20px;border:1px solid rgba(249,115,22,.3)">📅 '+v+' BOOKED</span>'
+      :'<span style="font-size:10px;font-weight:800;color:#22c55e;background:rgba(34,197,94,.15);padding:3px 10px;border-radius:20px;border:1px solid rgba(34,197,94,.3)">✅ '+v+' AVAIL</span>';
+    return badge;
+  }).join('');
+}
+
 function renderFleetTab(){
   renderHeatmap();
   var records=maintenance.filter(function(m){return !m._deleted;}).sort(function(a,b){return b.date.localeCompare(a.date);});
@@ -5084,7 +5264,7 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
       <div class="sig-label" style="margin-top:4px">Date: {{today}}</div>
     </div>
     <div class="sig-box">
-      <div class="sig-line"></div>
+      <div class="sig-line">{{customer_signature}}</div>
       <div class="sig-label"><strong>Renter:</strong> {{customer_name}}</div>
       <div class="sig-label" style="margin-top:4px">Date: ___________________</div>
     </div>
@@ -5123,7 +5303,46 @@ function saveContractTemplate(){
   showToast('Contract template saved');
 }
 
+var _contractBookingId = null;
+var _custSigDrawing = false;
+
+function initCustSigCanvas(){
+  var cv=$d('custSigCanvas'); if(!cv) return;
+  var ctx=cv.getContext('2d');
+  ctx.strokeStyle='#111'; ctx.lineWidth=2; ctx.lineCap='round'; ctx.lineJoin='round';
+  function pos(e){
+    var r=cv.getBoundingClientRect();
+    var t=e.touches?e.touches[0]:e;
+    return {x:(t.clientX-r.left)*(cv.width/r.width), y:(t.clientY-r.top)*(cv.height/r.height)};
+  }
+  cv.onmousedown=cv.ontouchstart=function(e){ e.preventDefault(); _custSigDrawing=true; var p=pos(e); ctx.beginPath(); ctx.moveTo(p.x,p.y); };
+  cv.onmousemove=cv.ontouchmove=function(e){ e.preventDefault(); if(!_custSigDrawing) return; var p=pos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); };
+  cv.onmouseup=cv.ontouchend=function(){ _custSigDrawing=false; };
+  cv.onmouseleave=function(){ _custSigDrawing=false; };
+  if(_contractBookingId){
+    var b=bookings.find(function(x){return x.id===_contractBookingId;});
+    if(b&&b.customerSig){
+      var img=new Image(); img.onload=function(){ctx.drawImage(img,0,0,cv.width,cv.height);}; img.src=b.customerSig;
+      $d('custSigStatus').textContent='Saved signature loaded';
+    }
+  }
+}
+function clearCustSig(){
+  var cv=$d('custSigCanvas'); if(!cv) return;
+  cv.getContext('2d').clearRect(0,0,cv.width,cv.height);
+  $d('custSigStatus').textContent='';
+}
+function saveCustSig(){
+  var cv=$d('custSigCanvas'); if(!cv||!_contractBookingId) return;
+  var dataUrl=cv.toDataURL('image/png');
+  var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
+  if(idx!==-1){ bookings[idx].customerSig=dataUrl; bookings[idx]._t=Date.now(); save(); }
+  $d('custSigStatus').textContent='✅ Saved!';
+  setTimeout(function(){ if($d('custSigStatus')) $d('custSigStatus').textContent=''; },2000);
+}
+
 function openContract(id){
+  _contractBookingId = id;
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   loadContractTemplate();
   if(!contractTemplate){
@@ -5202,7 +5421,8 @@ function openContract(id){
     .replace(/\{\{remaining_balance\}\}/gi,  b.remainingBalance!=null?'$'+(Number(b.remainingBalance)||0):'$'+(rev-(Number(b.dateLock)||100)))
     .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE
       ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">'
-      : '');
+      : '')
+    .replace(/\{\{customer_signature\}\}/gi, b.customerSig ? '<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">' : '_______________________________');
   $d('contractFilled').value=filled;
   // If template is HTML, show iframe preview
   var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
@@ -5241,6 +5461,7 @@ function openContract(id){
     window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(body);
   };
   $d('contractModal').classList.add('open');
+  setTimeout(initCustSigCanvas, 50);
 }
 
 function closeContract(){
