@@ -34,7 +34,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 
 /* ── Tabs ── */
 .tab-bar { background: #0e0e0e; border-bottom: 1px solid var(--border); padding: 0 24px;
-  display: flex; gap: 0; overflow-x: auto; position: sticky; top: 61px; z-index: 190; }
+  display: flex; gap: 0; overflow-x: auto; position: sticky; top: max(61px, calc(env(safe-area-inset-top) + 47px)); z-index: 190; }
 .tab-btn { padding: 13px 20px; background: none; border: none; color: var(--muted);
   font-size: 13px; font-weight: 700; letter-spacing: .04em; cursor: pointer;
   border-bottom: 2px solid transparent; white-space: nowrap; transition: color .15s, border-color .15s; }
@@ -194,7 +194,7 @@ tr:hover td { background: var(--gold-faint); }
 .modal.open { display: flex; }
 .modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.75); backdrop-filter: blur(10px); }
 .modal-card { position: relative; z-index: 1; background: #111; border: 1px solid var(--gold-dim);
-  border-radius: 20px; padding: 22px; width: 100%; max-width: 620px; max-height: 93vh;
+  border-radius: 20px; padding: 22px; padding-bottom: max(22px, env(safe-area-inset-bottom)); width: 100%; max-width: 620px; max-height: 93vh;
   overflow-y: auto; margin: 12px; }
 .modal-title { font-size: 17px; font-weight: 900; margin-bottom: 18px; display: flex; align-items: center; justify-content: space-between; }
 .modal-close { background: none; border: 1px solid var(--border); border-radius: 10px;
@@ -568,7 +568,7 @@ tr:hover td { background: var(--gold-faint); }
     </div>
     <div id="contractHeader"></div>
     <!-- Rendered HTML preview -->
-    <iframe id="contractPreviewFrame" style="width:100%;height:560px;border:1px solid var(--border);border-radius:10px;background:#fff;display:none" scrolling="yes"></iframe>
+    <iframe id="contractPreviewFrame" sandbox="allow-same-origin allow-scripts" style="width:100%;height:560px;border:1px solid var(--border);border-radius:10px;background:#fff;display:none" scrolling="yes"></iframe>
     <!-- Raw / plain-text fallback -->
     <textarea id="contractFilled" class="finput" rows="20" style="font-family:monospace;font-size:12px;line-height:1.7;resize:vertical"></textarea>
     <div style="margin:14px 0 0">
@@ -1793,6 +1793,7 @@ function mergeArray(local, cloud) {
 function cloudSave() {
   if (!FIREBASE_URL || _cloudLoading) return;
   if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
+  if (_cloudLoading) { _offlinePending = true; return; }
   setSyncStatus('syncing');
   var data = {
     bookings: bookings, expenses: expenses, incomes: incomes,
@@ -1832,6 +1833,7 @@ function cloudLoad(callback) {
         if (Array.isArray(data.bookings)) {
           var merged = mergeArray(bookings, data.bookings);
           if (merged.length !== data.bookings.length) needsPush = true;
+          if (!needsPush && merged.some(function(m){ return !data.bookings.find(function(c){ return c.id===m.id&&c._t===m._t; }); })) needsPush = true;
           bookings = merged;
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
         }
@@ -2094,6 +2096,9 @@ function saveVehicle(){
       // update all existing bookings and expenses to the new name
       bookings.forEach(function(b){ if(b.vehicle===oldName) b.vehicle=newName; });
       expenses.forEach(function(e){ if(e.vehicle===oldName) e.vehicle=newName; });
+      maintenance.forEach(function(m){ if(m.vehicle===oldName) m.vehicle=newName; });
+      incomes.forEach(function(inc){ if(inc.vehicle===oldName) inc.vehicle=newName; });
+      saveMaintData(); saveIncomes();
       save(); saveExpenses();
     } else {
       VEHICLE_COSTS[oldName] = pricing;
@@ -2909,7 +2914,7 @@ function renderCharts(filtered){
   // Monthly trend
   var mR={},mC={};
   active.forEach(function(b){
-    var m=(b.date||'').substring(0,7); if(!m) return;
+    var m=((b.pickupDate||b.date)||'').substring(0,7); if(!m) return;
     mR[m]=(mR[m]||0)+totalRevenue(b);
     mC[m]=(mC[m]||0)+getEstCost(b);
   });
@@ -3111,10 +3116,12 @@ function renderUpcoming(){
     else groups[3].items.push(b);
   });
 
+  _repeatSetCache=buildRepeatSet();
   $d('upcomingList').innerHTML=groups.filter(function(g){return g.items.length;}).map(function(g){
     return '<div class="trip-group"><div class="trip-group-label">'+g.label+'  ('+g.items.length+')</div>'+
       g.items.map(function(b){ return tripCard(b,true); }).join('')+'</div>';
   }).join('')||'<div style="padding:40px;text-align:center;color:var(--muted)">No upcoming bookings</div>';
+  _repeatSetCache=null;
 }
 
 // ════════════════════════════════════════════════════════
@@ -3139,11 +3146,13 @@ function renderPrevious(){
     months[key].items.push(b);
   });
 
+  _repeatSetCache=buildRepeatSet();
   $d('previousList').innerHTML=Object.keys(months).sort(function(a,b){return b.localeCompare(a);}).map(function(k){
     var g=months[k];
     return '<div class="trip-group"><div class="trip-group-label">'+g.label+'  ('+g.items.length+')</div>'+
       g.items.map(function(b){ return tripCard(b,false); }).join('')+'</div>';
   }).join('')||'<div style="padding:40px;text-align:center;color:var(--muted)">No previous bookings</div>';
+  _repeatSetCache=null;
 }
 
 function tripCard(b, showCountdown){
@@ -3174,7 +3183,7 @@ function tripCard(b, showCountdown){
                 (insOk?'<span title="Insurance Verified">🛡✅</span>':'');
 
   // Feature 2: repeat customer badge
-  var repeatSet=buildRepeatSet();
+  var repeatSet=_repeatSetCache||buildRepeatSet();
   var repeatBadge=isRepeat(b,repeatSet)?'<span class="repeat-badge" title="Returning Customer">🔄</span>':'';
   var webBadge=b._fromWeb?'<span style="background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.3);border-radius:5px;padding:1px 7px;font-size:10px;font-weight:800;margin-left:4px">🌐 WEB</span>':'';
 
@@ -3246,7 +3255,7 @@ function tripCard(b, showCountdown){
 //  CURRENT TRIPS TAB
 // ════════════════════════════════════════════════════════
 function isCurrentTrip(b){
-  if(b.status==='cancelled') return false;
+  if(b.status==='cancelled'||b.status==='completed') return false;
   var today=todayStr();
   var start=b.pickupDate||b.date;
   var end=b.dropoffDate||dateStr(addDays(new Date(start+'T00:00:00'), Math.max(1, Number(b.days)||1)));
@@ -3277,6 +3286,7 @@ function renderCurrent(){
   var returns=current.filter(function(b){ return tripEndDate(b)===today; }).sort(sortByTime);
   var active=current.filter(function(b){ return tripEndDate(b)!==today; }).sort(sortByTime);
 
+  _repeatSetCache=buildRepeatSet();
   var html='';
   if(returns.length){
     html+='<div class="trip-group">'+
@@ -3291,6 +3301,7 @@ function renderCurrent(){
       '</div>';
   }
   $d('currentList').innerHTML=html;
+  _repeatSetCache=null;
 }
 
 // ════════════════════════════════════════════════════════
@@ -3610,7 +3621,7 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fDays').value     = b?b.days    : 1;
   $d('fRevenue').value          = b?b.revenue      : '';
   $d('fDateLock').value         = b?(b.dateLock!=null?b.dateLock:100):100;
-  var rbEl=$d('fRemainingBalance'); rbEl._manual=false;
+  var rbEl=$d('fRemainingBalance'); rbEl._manual=(b&&b.remainingBalance!=null);
   rbEl.value = b?(b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock!=null?b.dateLock:100)||100))):'';;
   $d('fDeposit').value          = b?b.deposit      : 0;
 
@@ -4095,6 +4106,7 @@ function openCheckIn(id){
   if(warnEl){
     var warns=[];
     if(!b.verify||!b.verify.idVerified) warns.push('⚠ ID not verified — run Verify before handing over keys');
+    if(!b.verify||!b.verify.insVerified) warns.push('⚠ Insurance not verified — confirm active coverage before handover');
     if(!b.customerSig) warns.push('⚠ No signed contract — open Contract and get customer signature first');
     if(warns.length){
       warnEl.innerHTML=warns.map(function(w){return '<div>'+w+'</div>';}).join('');
@@ -4126,6 +4138,7 @@ function saveCheckIn(){
   bookings[idx].condIn          = $d('ciCondIn').value;
   bookings[idx].checkInNotes    = $d('ciNotes').value.trim();
   bookings[idx].checkInPhotoIds = ciWorkingPhotos.slice();
+  if(bookings[idx].status==='confirmed'||bookings[idx].status==='pending') bookings[idx].status='in-progress';
   bookings[idx]._t              = Date.now();
   save();
   $d('checkInModal').classList.remove('open');
@@ -4182,9 +4195,9 @@ function openCloseOut(id){
     '<div style="background:rgba(255,200,0,.06);border:1px solid rgba(255,200,0,.2);border-radius:10px;padding:8px 14px;font-size:12px;color:var(--muted)">⚠ No check-in recorded — open Check In first to log pickup odometer, fuel &amp; condition.</div>';
   $d('coSummary').innerHTML =
     '<strong>'+b.vehicle+'</strong> &nbsp;·&nbsp; '+b.name+'<br>'+
-    'Trip date: <strong>'+b.date+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(totalRevenue(b))+'</strong>'+
+    'Pickup: <strong>'+fmtDate(b.pickupDate||b.date)+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(totalRevenue(b))+'</strong>'+
     (b.broker?' &nbsp;·&nbsp; Broker: <strong>'+b.broker+'</strong>':'')+
-    (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$(b.brokerFee)+'</strong>':'')+
+    (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'</strong>':'')+
     '<br>Deposit collected: <strong>'+$$(collected)+'</strong>';
   updatePhotoSyncHints();
   $d('closeOutModal').classList.add('open');
@@ -4342,6 +4355,7 @@ function saveCloseOut(){
     desc:        $d('coDamageDesc').value.trim(),
     reportedAt:  bookings[idx].damage&&bookings[idx].damage.reportedAt ? bookings[idx].damage.reportedAt : Date.now()
   } : {flagged:false};
+  if(bookings[idx].status!=='cancelled') bookings[idx].status='completed';
   bookings[idx]._t               = Date.now();
   save();
   $d('closeOutModal').classList.remove('open');
@@ -4623,18 +4637,19 @@ function renderTodayBanner(){
 // ════════════════════════════════════════════════════════
 //  FEATURE 2: REPEAT CUSTOMER DETECTION
 // ════════════════════════════════════════════════════════
+var _repeatSetCache=null;
 function buildRepeatSet(){
   var phones={}, emails={};
   bookings.forEach(function(b){
     if(b._deleted) return;
-    if(b.phone){ phones[b.phone]=(phones[b.phone]||0)+1; }
-    if(b.email){ emails[b.email]=(emails[b.email]||0)+1; }
+    if(b.phone){ var p=(b.phone||'').replace(/\D/g,''); if(p) phones[p]=(phones[p]||0)+1; }
+    if(b.email){ var e=(b.email||'').toLowerCase().trim(); if(e) emails[e]=(emails[e]||0)+1; }
   });
   return { phones:phones, emails:emails };
 }
 function isRepeat(b, repeatSet){
-  if(b.phone && (repeatSet.phones[b.phone]||0)>1) return true;
-  if(b.email && (repeatSet.emails[b.email]||0)>1) return true;
+  if(b.phone){ var p=(b.phone||'').replace(/\D/g,''); if(p&&(repeatSet.phones[p]||0)>1) return true; }
+  if(b.email){ var e=(b.email||'').toLowerCase().trim(); if(e&&(repeatSet.emails[e]||0)>1) return true; }
   return false;
 }
 function checkReturningCustomer(){
@@ -4891,15 +4906,36 @@ function handleCSVImport(e){
   reader.onload=function(ev){
     var lines=ev.target.result.split('\n').filter(function(l){return l.trim();});
     if(lines.length<2){alert('CSV appears empty.');return;}
-    var headers=lines[0].split(',').map(function(h){return h.trim().replace(/"/g,'');});
-    var imported=0;
+    // Parse quoted CSV correctly (handles commas inside quoted fields)
+    function parseCSVLine(line){
+      var out=[],cur='',inQ=false;
+      for(var c=0;c<line.length;c++){
+        var ch=line[c];
+        if(ch==='"'&&line[c+1]==='"'){ cur+='"'; c++; }
+        else if(ch==='"'){ inQ=!inQ; }
+        else if(ch===','&&!inQ){ out.push(cur); cur=''; }
+        else cur+=ch;
+      }
+      out.push(cur); return out;
+    }
+    var headers=parseCSVLine(lines[0]).map(function(h){return h.trim().toLowerCase();});
+    var imported=0, skipped=0;
+    var existingIds=bookings.reduce(function(m,b){m[b.id]=true;return m;},{});
     for(var i=1;i<lines.length;i++){
-      var cols=lines[i].split(',');
-      var obj={id:'imp'+Date.now()+i};
-      headers.forEach(function(h,idx){obj[h]=(cols[idx]||'').trim().replace(/"/g,'');});
-      ['revenue','deposit','delivery','unlimited','pet','photo','champagne','decor','bouquet','cost','days']
+      var cols=parseCSVLine(lines[i]);
+      var obj={};
+      headers.forEach(function(h,idx){ obj[h]=(cols[idx]||'').trim(); });
+      // Map canonical lowercase header names to booking field names
+      if(!obj.date&&obj['date']) obj.date=obj['date'];
+      if(obj['pickup date']) obj.pickupDate=obj['pickup date'];
+      if(obj['dropoff date']) obj.dropoffDate=obj['dropoff date'];
+      // Use exported id for dedup; generate new one only if absent or already exists
+      var csvId=obj.id||'';
+      if(!csvId||existingIds[csvId]){ obj.id='imp'+Date.now()+i; }
+      ['revenue','deposit','delivery','unlimited','pet','photo','champagne','decor','bouquet','cost','days','brokerFee','dateLock','loyaltyDiscount','includedMiles','overageRate']
         .forEach(function(k){if(obj[k]!==undefined) obj[k]=parseFloat(obj[k])||0;});
-      if(obj.date){ obj._t=Date.now()+i; obj.createdAt=obj.createdAt||Date.now(); if(!obj.id) obj.id='imp'+Date.now()+i; bookings.push(obj); imported++; }
+      if(obj.date){ obj._t=Date.now()+i; obj.createdAt=obj.createdAt||Date.now(); existingIds[obj.id]=true; bookings.push(obj); imported++; }
+      else skipped++;
     }
     save(); initSelects(); render(); alert('Imported '+imported+' booking(s).');
   };
@@ -5033,7 +5069,7 @@ function renderOutstanding(){
 function getRemainingBalance(b){
   if(b.remainingBalance!=null) return Number(b.remainingBalance)||0;
   var lock=Number(b.dateLock)||0;
-  return Math.max(0,(Number(b.revenue)||0)-lock);
+  return Math.max(0,totalRevenue(b)-lock);
 }
 
 function editRemainingBalance(id){
@@ -5075,7 +5111,7 @@ function markBalancePaid(id){
 function renderTaxTab(){
   var el=$d('taxContent'); if(!el) return;
   var years=new Set();
-  bookings.forEach(function(b){ if(!b._deleted&&b.date) years.add(b.date.substring(0,4)); });
+  bookings.forEach(function(b){ if(!b._deleted) { var d=b.pickupDate||b.date; if(d) years.add(d.substring(0,4)); } });
   expenses.forEach(function(e){ if(!e._deleted&&e.date) years.add(e.date.substring(0,4)); });
   incomes.forEach(function(i){ if(!i._deleted&&i.fromDate) years.add(i.fromDate.substring(0,4)); });
   var sortedYears=Array.from(years).sort(function(a,b){return b-a;});
@@ -5088,8 +5124,9 @@ function renderTaxTab(){
       var qs=(q-1)*3+1, qe=q*3;
       var qBk=bookings.filter(function(b){
         if(b._deleted||b.status==='cancelled') return false;
-        var m=parseInt((b.date||'').substring(5,7),10);
-        return (b.date||'').substring(0,4)===yr&&m>=qs&&m<=qe;
+        var d=b.pickupDate||b.date||'';
+        var m=parseInt(d.substring(5,7),10);
+        return d.substring(0,4)===yr&&m>=qs&&m<=qe;
       });
       var qEx=expenses.filter(function(e){
         if(e._deleted) return false;
@@ -5187,7 +5224,7 @@ function renderAvailBadges(){
     var isBooked=bookings.some(function(b){
       if(b._deleted||b.status==='cancelled'||b.vehicle!==v) return false;
       var start=b.pickupDate||b.date;
-      var end=b.dropoffDate||dateStr(addDays(new Date(start+'T00:00:00'),Math.max(1,Number(b.days)||1)-1));
+      var end=tripEndDate(b);
       return availDate>=start && availDate<=end;
     });
     var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
@@ -5345,7 +5382,7 @@ function renderBrokerTab(){
         '<td>'+fmtDate(r.lastDate)+'</td>'+
       '</tr>';
     }).join(''):
-    '<tr class="empty-row"><td colspan="7">No broker bookings yet.</td></tr>';
+    '<tr class="empty-row"><td colspan="8">No broker bookings yet.</td></tr>';
     $d('brokerMeta').textContent=rows.length+' partner'+(rows.length===1?'':'s');
   }
 
@@ -5659,7 +5696,7 @@ function openContract(id){
   if(Number(b.champagne)) addonLines.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addonLines.push('Decor ($'+b.decor+')');
   if(Number(b.bouquet))   addonLines.push('Flower Bouquet ($'+b.bouquet+')');
-  var rev=Number(b.revenue)||0, dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
+  var rev=totalRevenue(b), dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
   var days=Number(b.days)||1;
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
