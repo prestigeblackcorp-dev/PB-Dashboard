@@ -25,7 +25,7 @@
 body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
 
 /* ── Header ── */
-.header { background: #111; border-bottom: 1px solid var(--gold-dim); padding: 14px 24px;
+.header { background: #111; border-bottom: 1px solid var(--gold-dim); padding: 14px 24px; padding-top: max(14px, env(safe-area-inset-top));
   display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
   position: sticky; top: 0; z-index: 200; }
 .header-brand { font-size: 17px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; color: var(--gold); }
@@ -623,8 +623,9 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fg"><div class="fl">Source</div>
       <select class="fi" id="filterSource" onchange="filterChange()">
         <option value="">All Sources</option>
-        <option>Instagram</option><option>Turo</option><option>HyreCar</option>
-        <option>Website</option><option>Referral</option><option>Repeat</option><option>Walk-in</option><option>Other</option>
+        <option>Direct</option><option>Instagram</option><option>TikTok</option><option>Facebook</option>
+        <option>Google</option><option>Turo</option><option>HyreCar</option><option>Website</option>
+        <option>Referral</option><option>Broker / Partner</option><option>Repeat Customer</option><option>Walk-in</option><option>Other</option>
       </select></div>
     <div class="fg"><div class="fl">Search</div>
       <input type="text" class="fi" id="filterSearch" placeholder="Name, phone, vehicle, broker…" oninput="filterChange()" style="min-width:200px"></div>
@@ -973,15 +974,18 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup"><div class="flabel">How did they find us?</div>
         <select class="finput" id="fSource">
           <option value="">— Select source —</option>
-          <option>Direct / Referral</option>
+          <option>Direct</option>
           <option>Instagram</option>
           <option>TikTok</option>
           <option>Facebook</option>
           <option>Google</option>
           <option>Turo</option>
           <option>HyreCar</option>
+          <option>Website</option>
+          <option>Referral</option>
           <option>Broker / Partner</option>
           <option>Repeat Customer</option>
+          <option>Walk-in</option>
           <option>Other</option>
         </select></div>
       <div class="fgroup"><div class="flabel">Loyalty Discount ($)</div>
@@ -1000,7 +1004,7 @@ tr:hover td { background: var(--gold-faint); }
         <datalist id="brokerList"></datalist></div>
       <div class="fgroup"><div class="flabel">Broker Fee ($ / day)</div>
         <input type="number" class="finput" id="fBrokerFee" min="0" step="0.01" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
-      <div class="ffull" id="brokerCalcRow" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;display:flex;gap:18px;flex-wrap:wrap"></div>
+      <div class="ffull" id="brokerCalcRow" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;gap:18px;flex-wrap:wrap"></div>
     </div>
     <div class="factions">
       <button class="btn btn-danger btn-sm" id="deleteBtn" onclick="deleteBookingModal()" style="display:none;margin-right:auto">Delete</button>
@@ -2526,7 +2530,7 @@ function buildGCalEvent(b){
 
 function syncToGCal(b){
   if(!gcalAccessToken) return;
-  if(b.status !== 'confirmed' && b.status !== 'completed'){ removeFromGCal(b); return; }
+  if(b.status !== 'confirmed' && b.status !== 'completed' && b.status !== 'in-progress'){ removeFromGCal(b); return; }
   var event = buildGCalEvent(b);
   var p;
   if(b.gcalEventId){
@@ -2551,7 +2555,7 @@ function removeFromGCal(b){
 
 function syncAllToGCal(){
   if(!gcalAccessToken){ alert('Connect Google Calendar first.'); return; }
-  var toSync = bookings.filter(function(b){ return !b._deleted && (b.status === 'confirmed' || b.status === 'completed'); });
+  var toSync = bookings.filter(function(b){ return !b._deleted && (b.status === 'confirmed' || b.status === 'completed' || b.status === 'in-progress'); });
   if(!toSync.length){ alert('No active bookings to sync.'); return; }
   // Stagger requests slightly to avoid rate limits
   toSync.forEach(function(b, i){
@@ -2636,10 +2640,14 @@ function save(){
   cloudSave();
 }
 function promptClearAll(){
-  var pin = prompt('Enter PIN to clear all data:');
-  if(pin === null) return;
-  if(pin !== '2312'){ alert('Incorrect PIN.'); return; }
-  if(!confirm('DELETE ALL bookings, expenses, income, and maintenance? This cannot be undone.')) return;
+  var storedPin=localStorage.getItem('pb_lock_pin');
+  var confirmWord = prompt('Type DELETE to confirm clearing all data'+(storedPin?' and enter your PIN when prompted':'')+'.\n\nThis cannot be undone.');
+  if(confirmWord === null || confirmWord.trim().toUpperCase() !== 'DELETE'){ alert('Cancelled — you must type DELETE to confirm.'); return; }
+  if(storedPin){
+    var entered = prompt('Enter your PIN:');
+    if(entered === null || entered.trim() !== storedPin){ alert('Incorrect PIN.'); return; }
+  }
+  if(!confirm('FINAL WARNING: Delete all bookings, expenses, income, and maintenance?')) return;
   clearAllData();
 }
 
@@ -2802,8 +2810,9 @@ function getFiltered(){
   var q=($d('filterSearch')?$d('filterSearch').value.trim().toLowerCase():'');
   return bookings.filter(function(b){
     if(b._deleted) return false;
-    if(from && b.date<from) return false;
-    if(to   && b.date>to)   return false;
+    var bDate=b.pickupDate||b.date;
+    if(from && bDate<from) return false;
+    if(to   && bDate>to)   return false;
     if(veh  && b.vehicle!==veh) return false;
     if(typ  && b.type!==typ)    return false;
     if(sta  && b.status!==sta)  return false;
@@ -2986,7 +2995,7 @@ function renderVehicleTable(filtered){
 // ════════════════════════════════════════════════════════
 //  BOOKINGS TABLE
 // ════════════════════════════════════════════════════════
-function sortB(k){ if(bSortKey===k) bSortAsc=!bSortAsc; else{bSortKey=k;bSortAsc=false;} render(); }
+function sortB(k){ if(bSortKey===k) bSortAsc=!bSortAsc; else{bSortKey=k;bSortAsc=false;} _bPage=0; render(); }
 
 function filterChange(){ _bPage=0; render(); }
 function changeBPage(delta){ _bPage+=delta; render(); }
@@ -3125,7 +3134,7 @@ function renderPrevious(){
   var now=new Date(); now.setHours(0,0,0,0);
   var months={};
   prev.forEach(function(b){
-    var d=new Date((b.pickupDate||b.date)+'T00:00:00');
+    var d=new Date(tripEndDate(b)+'T00:00:00');
     var key=d.getFullYear()+'-'+pad(d.getMonth()+1);
     var label=d.toLocaleString('en-US',{month:'long',year:'numeric'});
     if(!months[key]) months[key]={label:label,items:[]};
@@ -3965,13 +3974,14 @@ function dbDeletePhoto(id,cb){
     if(db){
       var tx=db.transaction('photos','readwrite');
       tx.objectStore('photos').delete(id);
-    }
+      tx.oncomplete=function(){ if(cb) cb(); };
+      tx.onerror=function(){ if(cb) cb(); };
+    } else { if(cb) cb(); }
   });
   var base=_photoBase();
   if(base){
     fetch(base+id+'.json',{method:'DELETE'}).catch(function(){});
   }
-  if(cb) cb();
 }
 function compressImage(file,cb){
   var reader=new FileReader();
@@ -4080,7 +4090,7 @@ function openCheckIn(id){
   var warnEl=$d('ciVerifyWarn');
   if(warnEl){
     var warns=[];
-    if(!b.verify||b.verify.status!=='verified') warns.push('⚠ ID not verified — run Verify before handing over keys');
+    if(!b.verify||!b.verify.idVerified) warns.push('⚠ ID not verified — run Verify before handing over keys');
     if(!b.customerSig) warns.push('⚠ No signed contract — open Contract and get customer signature first');
     if(warns.length){
       warnEl.innerHTML=warns.map(function(w){return '<div>'+w+'</div>';}).join('');
@@ -4240,10 +4250,11 @@ function coCalcFuel(){
   var outVal=$d('coFuelOut').value||'';
   var hint=$d('coFuelHint');
   var row=$d('coFuelRow');
-  if(hint) hint.textContent = inVal ? 'Sent out at: '+inVal+(outVal?' → Returned: '+outVal:'') : '';
+  if(hint) hint.textContent = inVal ? 'Sent out at: '+inVal+(outVal?' → Returned: '+outVal:'') : '⚠ No check-in fuel recorded — charge cannot be calculated';
   if(!row) return;
   var inNum=fuelToNum(inVal), outNum=fuelToNum(outVal);
-  if(inNum<0||outNum<0||!inVal||!outVal){ row.style.display='none'; coUpdateProfitSummary(); return; }
+  if(!inVal){ row.style.display='flex'; row.style.background='rgba(249,115,22,.07)'; row.style.borderColor='rgba(249,115,22,.3)'; row.innerHTML='<span style="color:#f97316">⚠ Check-in fuel level was not recorded. Open Check In to log it before closing out.</span>'; coUpdateProfitSummary(); return; }
+  if(inNum<0||outNum<0||!outVal){ row.style.display='none'; coUpdateProfitSummary(); return; }
   var diff=inNum-outNum; // eighths short
   if(diff<=0){
     row.style.display='flex';
@@ -4258,7 +4269,7 @@ function coCalcFuel(){
     row.style.borderColor='rgba(255,92,92,.3)';
     row.innerHTML='<span>Sent out: <b>'+fuelLabel(inVal)+'</b></span>'+
       '<span>Returned: <b style="color:var(--red)">'+fuelLabel(outVal)+'</b></span>'+
-      '<span>Short by: <b style="color:var(--red)">'+diff+'/8 tank ('+quarters+' qtr)</b></span>'+
+      '<span>Short by: <b style="color:var(--red)">'+diff+'/8 tank ('+Math.ceil(quarters)+' qtr)</b></span>'+
       '<span>Fuel charge: <b style="color:var(--red)">'+$$(charge)+'</b> @ $30/qtr</span>';
   }
   coUpdateProfitSummary();
@@ -4588,7 +4599,7 @@ function scanInsuranceCard(input){
 // ════════════════════════════════════════════════════════
 function renderTodayBanner(){
   var today=todayStr();
-  var todays=bookings.filter(function(b){ return !b._deleted && b.date===today && b.status!=='cancelled'; });
+  var todays=bookings.filter(function(b){ return !b._deleted && (b.pickupDate||b.date)===today && b.status!=='cancelled'; });
   var banner=$d('todayBanner');
   if(!todays.length){ banner.classList.remove('visible'); return; }
   banner.classList.add('visible');
@@ -4718,7 +4729,7 @@ function duplicateBooking(id){
   $d('fBrokerFee').value        = b.brokerFee||0;
   $d('fDateLock').value         = b.dateLock!=null?b.dateLock:100;
   $d('fRemainingBalance').value = b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock!=null?b.dateLock:100)));
-  updateBrokerCalc(); updateMileageHint(); updateMaintWarning();
+  updateBrokerCalc(); updateLiveTotal(); updateRemainingBalance(); updateMileageHint(); updateMaintWarning();
   $d('modal').classList.add('open');
   checkReturningCustomer();
 }
@@ -4946,7 +4957,7 @@ function renderForecast(){
   var tod=todayStr();
   function fr(days){
     var lim=dateStr(addDays(new Date(tod+'T00:00:00'),days));
-    var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>tod&&(b.pickupDate||b.date)<=lim; });
+    var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>=tod&&(b.pickupDate||b.date)<=lim; });
     return {count:bks.length, rev:bks.reduce(function(s,b){return s+totalRevenue(b);},0)};
   }
   var f30=fr(30),f60=fr(60),f90=fr(90);
@@ -5643,7 +5654,7 @@ function openContract(id){
   if(Number(b.champagne)) addonLines.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addonLines.push('Decor ($'+b.decor+')');
   if(Number(b.bouquet))   addonLines.push('Flower Bouquet ($'+b.bouquet+')');
-  var rev=Number(b.revenue)||0, dep=Number(b.deposit)||0, bal=Math.max(0,rev-dep);
+  var rev=Number(b.revenue)||0, dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
   var days=Number(b.days)||1;
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
@@ -5704,11 +5715,12 @@ function openContract(id){
     .replace(/\{\{pet_fee\}\}/gi,            petFee)
     .replace(/\{\{odometer_in\}\}/gi,        odomIn)
     .replace(/\{\{date_lock\}\}/gi,          b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100')
-    .replace(/\{\{remaining_balance\}\}/gi,  b.remainingBalance!=null?'$'+(Number(b.remainingBalance)||0):'$'+(rev-(Number(b.dateLock)||100)))
     .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE
       ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">'
       : '')
     .replace(/\{\{customer_signature\}\}/gi, b.customerSig ? '<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">' : '_______________________________')
+    .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee ? '$'+b.brokerFee+'/day' : 'N/A')
+    .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0, getRemainingBalance(b)))
     .replace(/\{\{mileage_policy\}\}/gi, b.includedMiles
       ? 'Mileage: This rental includes '+Number(b.includedMiles).toLocaleString()+' miles per day. Miles driven beyond the included amount will be charged at $'+( b.overageRate||'0' )+' per mile.'
       : 'Mileage: This rental includes unlimited mileage at no additional per-mile charge.')
@@ -5912,7 +5924,7 @@ function updateOnlineStatus(){
   if(!badge) return;
   if(navigator.onLine){
     badge.style.display='none';
-    if(_offlinePending){ _offlinePending=false; cloudSave(); }
+    if(_offlinePending){ cloudSave(); } // cloudSave clears _offlinePending on success
   } else {
     badge.style.display='';
   }
