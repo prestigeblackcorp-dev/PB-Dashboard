@@ -773,11 +773,13 @@ tr:hover td { background: var(--gold-faint); }
       <button class="btn btn-gold btn-sm" onclick="openMaintenanceModal()">+ Log Service</button>
     </div>
     <div id="fleetAlerts" style="margin-bottom:12px"></div>
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-      <div style="font-size:12px;color:var(--muted);font-weight:700">Check availability on:</div>
-      <input type="date" class="fi" id="availCheckDate" oninput="renderAvailBadges()" style="max-width:160px">
-      <button class="btn btn-sm" onclick="$d('availCheckDate').value='';renderAvailBadges()" style="font-size:11px">Clear</button>
-      <div id="availBadgesRow" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+    <div style="background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div style="font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--gold)">Fleet Availability</div>
+        <input type="date" class="finput" id="availCheckDate" oninput="renderAvailBadges()" style="max-width:168px;padding:6px 10px;font-size:12px">
+        <button class="btn btn-sm" onclick="$d('availCheckDate').value='';renderAvailBadges()" style="font-size:11px;padding:4px 12px">Clear</button>
+      </div>
+      <div id="availBadgesRow"></div>
     </div>
     <div class="chart-card" style="margin-bottom:16px">
       <div class="chart-ttl">Vehicle Utilization — Last 90 Days</div>
@@ -2755,7 +2757,8 @@ function getTotalExpenses(from, to){
   }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
 }
 function getAddons(b){
-  return (Number(b.delivery)||0)+(Number(b.unlimited)||0)+(Number(b.pet)||0)+
+  var days=Math.max(1,Number(b.days)||1);
+  return (Number(b.delivery)||0)+(Number(b.unlimited)||0)*days+(Number(b.pet)||0)+
          (Number(b.photo)||0)+(Number(b.champagne)||0)+(Number(b.decor)||0)+(Number(b.bouquet)||0);
 }
 function getProfit(b){ return totalRevenue(b)-getEstCost(b); }
@@ -3018,7 +3021,7 @@ function renderBookingsTable(filtered){
   if(_bPage<0) _bPage=0;
   var page=sorted.slice(_bPage*PAGE_SIZE, (_bPage+1)*PAGE_SIZE);
   $d('bookingMeta').textContent=filtered.length+' booking'+(filtered.length!==1?'s':'')+
-    ' — Revenue: '+$$(sumK(filtered.filter(function(b){return b.status!=='cancelled';}), 'revenue'))+
+    ' — Revenue: '+$$(filtered.filter(function(b){return b.status!=='cancelled';}).reduce(function(s,b){return s+totalRevenue(b);},0))+
     (totalPages>1?' — Page '+(_bPage+1)+'/'+totalPages:'');
   var tbody=document.querySelector('#bookingsTable tbody');
   if(!sorted.length){ tbody.innerHTML='<tr class="empty-row"><td colspan="23">No bookings</td></tr>';
@@ -3040,11 +3043,11 @@ function renderBookingsTable(filtered){
     var kept=Number(b.depositKept)||0, returned=Math.max(0,(Number(b.deposit)||0)-kept);
     // Feature 4: orange warning row for zero-deposit non-cancelled bookings
     var noDeposit=(Number(b.deposit)||0)===0 && b.status!=='cancelled';
-    var tblBalanceDue=Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0));
-    var hasTblBalance=tblBalanceDue>0&&(b.status==='confirmed'||b.status==='completed');
+    var tblBalanceDue=!b.balancePaidAt?getRemainingBalance(b):0;
+    var hasTblBalance=tblBalanceDue>0&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress');
     var rowCls=noDeposit?' class="deposit-warning"':'';
     return '<tr'+rowCls+'>'+
-      '<td>'+fmtDate(b.date)+'</td>'+
+      '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
       '<td style="font-weight:600">'+b.name+'</td>'+
       '<td>'+b.vehicle+'</td>'+
       '<td><span class="badge '+b.type+'">'+b.type+'</span></td>'+
@@ -3207,8 +3210,8 @@ function tripCard(b, showCountdown){
     '<div style="margin-top:4px"><span class="deposit-chip">⚠️ No deposit collected</span></div>':'';
 
   // Unpaid balance flag — shown when booking is confirmed/completed with balance still owed
-  var balanceDue=Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0));
-  var unpaidChip=(balanceDue>0&&(b.status==='confirmed'||b.status==='completed'))?
+  var balanceDue=getRemainingBalance(b);
+  var unpaidChip=(balanceDue>0&&!b.balancePaidAt&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress'))?
     '<div style="margin-top:4px"><span style="background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">💵 Balance Due: '+$$(balanceDue)+'</span></div>':'';
 
   // Pickup/dropoff line
@@ -3699,8 +3702,10 @@ function toggleDamageSection(){
 
 function updateLiveTotal(){
   var base   = parseFloat($d('fRevenue').value)||0;
-  var addons = ['fDelivery','fUnlimited','fPet','fPhoto','fChampagne','fDecor','fBouquet']
-    .reduce(function(s,id){ return s+(parseFloat($d(id)?$d(id).value:0)||0); },0);
+  var days   = Math.max(1,parseFloat($d('fDays').value)||1);
+  var addons = ['fDelivery','fPet','fPhoto','fChampagne','fDecor','fBouquet']
+    .reduce(function(s,id){ return s+(parseFloat($d(id)?$d(id).value:0)||0); },0)
+    + (parseFloat($d('fUnlimited')?$d('fUnlimited').value:0)||0)*days;
   var total  = base + addons;
   var row    = $d('liveTotalRow');
   if(!row) return;
@@ -3929,7 +3934,9 @@ function saveBooking(){
       if(ex.claimRecovered)     entry.claimRecovered     = ex.claimRecovered;
       if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
       if(ex.fuelCharge)         entry.fuelCharge         = ex.fuelCharge;
-      if(ex.mileageCharge)      entry.mileageCharge      = ex.mileageCharge;
+      if(ex.mileageCharge)     entry.mileageCharge      = ex.mileageCharge;
+      if(ex._fromWeb)          entry._fromWeb           = ex._fromWeb;
+      if(ex.addlIncome)        entry.addlIncome         = ex.addlIncome;
       // Audit trail: record which fields changed
       var auditFields=['date','name','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
       var changes=[];
@@ -4945,10 +4952,10 @@ function dismissToast(){
 function exportCSV(){
   // Feature 12: record export date
   try{ localStorage.setItem('pb_last_export',todayStr()); }catch(e){}
-  var cols=['Date','Customer','Phone','Email','Vehicle','Type','Days','Base Revenue','Add-ons','Total Revenue','Net Revenue','Deposit','Date Lock','Remaining Balance','Balance Paid','Payment Method','Broker','Broker Fee','Source','Status','Pickup Date','Dropoff Date','Address','Notes','Cost','Odometer In','Fuel In','Odometer Out','Fuel Out','Condition In','Condition Out','Fuel Charge','Mileage Charge','Refund Sent','Refund Date','Refund Method','Damage','Claim Status','Claim Recovered','Claim Notes'];
+  var cols=['ID','Date','Customer','Phone','Email','Vehicle','Type','Days','Base Revenue','Add-ons','Total Revenue','Net Revenue','Deposit','Date Lock','Remaining Balance','Balance Paid','Payment Method','Broker','Broker Fee','Source','Status','Pickup Date','Dropoff Date','Address','Notes','Cost','Odometer In','Fuel In','Odometer Out','Fuel Out','Condition In','Condition Out','Fuel Charge','Mileage Charge','Refund Sent','Refund Date','Refund Method','Damage','Claim Status','Claim Recovered','Claim Notes'];
   var rows=bookings.filter(function(b){return !b._deleted;}).map(function(b){
     return [
-      b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
+      b.id,b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
       b.revenue||0,getAddons(b),totalRevenue(b),netRevenue(b),
       b.deposit||0,b.dateLock||0,getRemainingBalance(b),
       b.balancePaidAmount||'',b.balancePaidMethod||'',
@@ -4997,14 +5004,22 @@ function handleCSVImport(e){
       var cols=parseCSVLine(lines[i]);
       var obj={};
       headers.forEach(function(h,idx){ obj[h]=(cols[idx]||'').trim(); });
-      // Map canonical lowercase header names to booking field names
-      if(!obj.date&&obj['date']) obj.date=obj['date'];
-      if(obj['pickup date']) obj.pickupDate=obj['pickup date'];
-      if(obj['dropoff date']) obj.dropoffDate=obj['dropoff date'];
+      // Map exported column names → booking field names
+      var cm={'pickup date':'pickupDate','dropoff date':'dropoffDate','base revenue':'revenue',
+              'customer':'name','date lock':'dateLock','remaining balance':'remainingBalance',
+              'broker fee':'brokerFee','balance paid':'balancePaidAmount',
+              'payment method':'balancePaidMethod','fuel charge':'fuelCharge',
+              'mileage charge':'mileageCharge','refund sent':'refundSent',
+              'refund date':'refundDate','refund method':'refundMethod',
+              'claim status':'claimStatus','claim recovered':'claimRecovered',
+              'claim notes':'claimNotes','odometer in':'odomIn','fuel in':'fuelIn',
+              'odometer out':'odomOut','fuel out':'fuelOut','condition in':'condIn',
+              'condition out':'condOut'};
+      Object.keys(cm).forEach(function(h){ if(obj[h]!==undefined&&obj[cm[h]]===undefined) obj[cm[h]]=obj[h]; });
       // Use exported id for dedup; generate new one only if absent or already exists
       var csvId=obj.id||'';
       if(!csvId||existingIds[csvId]){ obj.id='imp'+Date.now()+i; }
-      ['revenue','deposit','delivery','unlimited','pet','photo','champagne','decor','bouquet','cost','days','brokerFee','dateLock','loyaltyDiscount','includedMiles','overageRate']
+      ['revenue','deposit','delivery','unlimited','pet','photo','champagne','decor','bouquet','cost','days','brokerFee','dateLock','loyaltyDiscount','includedMiles','overageRate','remainingBalance','fuelCharge','mileageCharge','claimRecovered']
         .forEach(function(k){if(obj[k]!==undefined) obj[k]=parseFloat(obj[k])||0;});
       if(obj.date){ obj._t=Date.now()+i; obj.createdAt=obj.createdAt||Date.now(); existingIds[obj.id]=true; bookings.push(obj); imported++; }
       else skipped++;
@@ -5095,7 +5110,11 @@ function renderOutstanding(){
     var bal=getRemainingBalance(b);
     return bal>0 && (b.status==='confirmed'||b.status==='completed'||b.status==='pending');
   }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
+  var balanceDueIds=balanceDue.reduce(function(m,b){m[b.id]=true;return m;},{});
   var noLock=active.filter(function(b){
+    if(balanceDueIds[b.id]) return false;
+    if(b.status==='in-progress'||b.status==='completed') return false;
+    if(b.vehicle==='Polaris Slingshot'&&b.type==='hourly') return false;
     return (Number(b.dateLock)||0)===0&&(Number(b.remainingBalance)||0)===0&&(Number(b.deposit)||0)===0;
   }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
   var html='';
@@ -5292,23 +5311,38 @@ function renderAvailBadges(){
   var el=$d('availBadgesRow'); if(!el) return;
   var availDate=$d('availCheckDate')?$d('availCheckDate').value:'';
   if(!availDate){ el.innerHTML=''; return; }
-  el.innerHTML=ALL_VEHICLES.map(function(v){
-    var isBooked=bookings.some(function(b){
-      if(b._deleted||b.status==='cancelled'||b.vehicle!==v) return false;
-      var start=b.pickupDate||b.date;
-      var end=tripEndDate(b);
-      return availDate>=start && availDate<=end;
-    });
-    var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
-      return availDate>=r.start && availDate<=r.end;
-    });
-    var badge=isBlocked
-      ?'<span style="font-size:10px;font-weight:800;color:#ef4444;background:rgba(239,68,68,.15);padding:3px 10px;border-radius:20px;border:1px solid rgba(239,68,68,.3)">🚫 '+v+' BLOCKED</span>'
-      :isBooked
-      ?'<span style="font-size:10px;font-weight:800;color:#f97316;background:rgba(249,115,22,.15);padding:3px 10px;border-radius:20px;border:1px solid rgba(249,115,22,.3)">📅 '+v+' BOOKED</span>'
-      :'<span style="font-size:10px;font-weight:800;color:#22c55e;background:rgba(34,197,94,.15);padding:3px 10px;border-radius:20px;border:1px solid rgba(34,197,94,.3)">✅ '+v+' AVAIL</span>';
-    return badge;
-  }).join('');
+  el.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px">'+
+    ALL_VEHICLES.map(function(v){
+      var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
+        return availDate>=r.start&&availDate<=r.end;
+      });
+      var isBooked=false, returningB=null;
+      bookings.forEach(function(b){
+        if(b._deleted||b.status==='cancelled'||b.vehicle!==v) return;
+        var start=b.pickupDate||b.date;
+        var end=tripEndDate(b);
+        if(availDate>=start&&availDate<=end){
+          if(end===availDate&&start<availDate&&!isBooked){ returningB=b; }
+          else { isBooked=true; returningB=null; }
+        }
+      });
+      var bg,clr,bdr,icon,label,sub='';
+      if(isBlocked){
+        bg='rgba(239,68,68,.1)';clr='#ef4444';bdr='rgba(239,68,68,.25)';icon='🚫';label='Blocked';
+      } else if(isBooked){
+        bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='📅';label='Booked';
+      } else if(returningB){
+        bg='rgba(251,191,36,.1)';clr='#f59e0b';bdr='rgba(251,191,36,.3)';icon='🔁';label='Returns';
+        sub=returningB.dropoffTime?'at '+fmtTime(returningB.dropoffTime):'today';
+      } else {
+        bg='rgba(34,197,94,.1)';clr='#22c55e';bdr='rgba(34,197,94,.25)';icon='✅';label='Available';
+      }
+      return '<div style="background:'+bg+';border:1px solid '+bdr+';border-radius:10px;padding:10px 12px">'+
+        '<div style="font-size:10px;font-weight:800;color:'+clr+';letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px">'+icon+' '+label+'</div>'+
+        '<div style="font-size:12px;font-weight:700;color:var(--text);line-height:1.3">'+v+'</div>'+
+        (sub?'<div style="font-size:11px;color:'+clr+';margin-top:2px">'+sub+'</div>':'')+
+        '</div>';
+    }).join('')+'</div>';
 }
 
 function renderFleetTab(){
