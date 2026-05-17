@@ -524,6 +524,7 @@ tr:hover td { background: rgba(255,255,255,.02); }
   <button class="tab-btn" onclick="switchTab('current')">🚗 Current</button>
   <button class="tab-btn" onclick="switchTab('previous')">🕐 Previous</button>
   <button class="tab-btn" onclick="switchTab('calendar')">🗓 Calendar</button>
+  <button class="tab-btn" onclick="switchTab('cancelled')">🚫 Cancelled</button>
   <button class="tab-btn" onclick="switchTab('tax')">💰 Tax</button>
   <button class="tab-btn" onclick="switchTab('fleet')">🔧 Fleet</button>
   <button class="tab-btn" onclick="switchTab('customers')">👤 Customers</button>
@@ -789,6 +790,13 @@ tr:hover td { background: rgba(255,255,255,.02); }
     <div style="margin-left:auto;font-size:11px;color:var(--muted)">Click a cell to add a booking for that vehicle & date</div>
   </div>
   <div class="cal-wrap" id="calendarWrap"></div>
+</div>
+
+<!-- ═══ TAB: CANCELLED ═══ -->
+<div id="tab-cancelled" class="tab-panel">
+  <div class="main">
+    <div id="cancelledList"></div>
+  </div>
 </div>
 
 <!-- ═══ TAB: TAX SUMMARY ═══ -->
@@ -2448,6 +2456,7 @@ function saveExpense(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
 }
 function deleteExpense(){
   var id=$d('expId').value; if(!id) return;
@@ -2458,6 +2467,7 @@ function deleteExpense(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
 }
 
 // ════════════════════════════════════════════════════════
@@ -2628,6 +2638,7 @@ function saveIncome(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
 }
 
 function deleteIncome(){
@@ -2638,6 +2649,7 @@ function deleteIncome(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
 }
 
 function renderIncomeList(){
@@ -2949,6 +2961,7 @@ function clearAllData(){
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='cancelled')  renderCancelled();
   if(activeTab==='calendar')  renderCalendar();
 }
 
@@ -3067,12 +3080,13 @@ function switchTab(name){
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
   $d('tab-'+name).classList.add('active');
   var btns=document.querySelectorAll('.tab-btn');
-  var map={overview:0,upcoming:1,current:2,previous:3,calendar:4,tax:5,fleet:6,customers:7,brokers:8};
+  var map={overview:0,upcoming:1,current:2,previous:3,calendar:4,cancelled:5,tax:6,fleet:7,customers:8,brokers:9};
   if(btns[map[name]]) btns[map[name]].classList.add('active');
   if(name==='calendar')   renderCalendar();
   else if(name==='upcoming')  renderUpcoming();
   else if(name==='current')   renderCurrent();
   else if(name==='previous')  renderPrevious();
+  else if(name==='cancelled') renderCancelled();
   else if(name==='tax')       renderTaxTab();
   else if(name==='fleet')     renderFleetTab();
   else if(name==='customers') renderCustomersTab();
@@ -3414,8 +3428,8 @@ function renderPrevious(){
   var today=todayStr();
   var prev=bookings.filter(function(b){
     if(b._deleted) return false;
-    // Include anything past its end date OR explicitly marked completed/cancelled
-    return tripEndDate(b)<today || b.status==='completed' || b.status==='cancelled';
+    // Include anything past its end date OR explicitly marked completed (never cancelled)
+    return tripEndDate(b)<today || b.status==='completed';
   }).sort(function(a,b){
     return tripEndDate(b).localeCompare(tripEndDate(a));
   });
@@ -3436,6 +3450,46 @@ function renderPrevious(){
     return '<div class="trip-group"><div class="trip-group-label">'+g.label+'  ('+g.items.length+')</div>'+
       g.items.map(function(b){ return tripCard(b,false); }).join('')+'</div>';
   }).join('')||'<div style="padding:40px;text-align:center;color:var(--muted)">No previous bookings</div>';
+  _repeatSetCache=null;
+}
+
+// ════════════════════════════════════════════════════════
+//  CANCELLED TRIPS
+// ════════════════════════════════════════════════════════
+function renderCancelled(){
+  var cancelled=bookings.filter(function(b){
+    return !b._deleted && b.status==='cancelled';
+  }).sort(function(a,b){
+    return (b.pickupDate||b.date).localeCompare(a.pickupDate||a.date);
+  });
+
+  if(!cancelled.length){
+    $d('cancelledList').innerHTML='<div style="padding:60px;text-align:center;color:var(--muted);font-size:15px">No cancelled bookings</div>';
+    return;
+  }
+
+  // Group by month of pickup date
+  var months={};
+  cancelled.forEach(function(b){
+    var d=new Date((b.pickupDate||b.date)+'T00:00:00');
+    var key=d.getFullYear()+'-'+pad(d.getMonth()+1);
+    var label=d.toLocaleString('en-US',{month:'long',year:'numeric'});
+    if(!months[key]) months[key]={label:label,items:[]};
+    months[key].items.push(b);
+  });
+
+  var keptTotal=cancelled.reduce(function(s,b){ return s+(Number(b.depositKept)||0); },0);
+  var kpiHtml=keptTotal>0
+    ? '<div class="kpi-grid" style="margin-bottom:16px"><div class="kpi"><div class="kpi-label">Deposit Kept</div><div class="kpi-val">'+$$(keptTotal)+'</div><div class="kpi-sub">Across all cancelled bookings</div></div></div>'
+    : '';
+
+  _repeatSetCache=buildRepeatSet();
+  $d('cancelledList').innerHTML=kpiHtml+
+    Object.keys(months).sort(function(a,b){return b.localeCompare(a);}).map(function(k){
+      var g=months[k];
+      return '<div class="trip-group"><div class="trip-group-label">'+g.label+'  ('+g.items.length+')</div>'+
+        g.items.map(function(b){ return tripCard(b,false); }).join('')+'</div>';
+    }).join('');
   _repeatSetCache=null;
 }
 
@@ -4375,6 +4429,7 @@ function saveBooking(){
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='cancelled')  renderCancelled();
   if(activeTab==='calendar')  renderCalendar();
 }
 
@@ -4390,6 +4445,7 @@ function confirmDelete(id){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
   if(activeTab==='calendar') renderCalendar();
 }
 
@@ -4643,6 +4699,7 @@ function saveCheckIn(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
 }
 
 var closeOutId = null;
@@ -4867,6 +4924,7 @@ function saveCloseOut(){
   render();
   renderCurrent();
   renderPrevious();
+  renderCancelled();
   switchTab('previous');
 }
 
@@ -4950,6 +5008,7 @@ function saveVerify(){
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
 }
 
 // ════════════════════════════════════════════════════════
@@ -5465,6 +5524,7 @@ function quickStatus(id, newStatus){
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='cancelled')  renderCancelled();
   if(activeTab==='calendar')  renderCalendar();
 }
 
