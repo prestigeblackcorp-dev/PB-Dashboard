@@ -2029,6 +2029,7 @@ function mergeArray(local, cloud) {
   return result;
 }
 
+var _cloudSaveRetries = 0;
 function cloudSave() {
   if (!FIREBASE_URL || _cloudLoading) return;
   if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
@@ -2054,14 +2055,18 @@ function cloudSave() {
     if (r.ok) {
       setSyncStatus('ok');
       _offlinePending = false;
+      _cloudSaveRetries = 0;
       localStorage.setItem('pb_last_cloud_save', Date.now().toString());
     } else {
       setSyncStatus('error');
-      setTimeout(cloudSave, 5000);
+      // M2: cap retries at 5 — after that show persistent error instead of looping forever
+      if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
+      else { _cloudSaveRetries = 0; setSyncStatus('error'); }
     }
   }).catch(function() {
     setSyncStatus('error');
-    setTimeout(cloudSave, 5000);
+    if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
+    else { _cloudSaveRetries = 0; }
   });
 }
 
@@ -2074,22 +2079,23 @@ function cloudLoad(callback) {
       if (data && typeof data === 'object') {
         _cloudLoading = true;
         var needsPush = false;
+        var merged; // L2: declare once at top of block
 
         if (Array.isArray(data.bookings)) {
-          var merged = mergeArray(bookings, data.bookings);
+          merged = mergeArray(bookings, data.bookings);
           if (merged.length !== data.bookings.length) needsPush = true;
           if (!needsPush && merged.some(function(m){ return !data.bookings.find(function(c){ return c.id===m.id&&c._t===m._t; }); })) needsPush = true;
           bookings = merged;
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
         }
         if (Array.isArray(data.expenses)) {
-          var merged = mergeArray(expenses, data.expenses);
+          merged = mergeArray(expenses, data.expenses);
           if (merged.length !== data.expenses.length) needsPush = true;
           expenses = merged;
           try { localStorage.setItem('pb_expenses', JSON.stringify(expenses)); } catch(e) {}
         }
         if (Array.isArray(data.incomes)) {
-          var merged = mergeArray(incomes, data.incomes);
+          merged = mergeArray(incomes, data.incomes);
           if (merged.length !== data.incomes.length) needsPush = true;
           incomes = merged;
           try { localStorage.setItem('pb_incomes', JSON.stringify(incomes)); } catch(e) {}
@@ -2103,7 +2109,7 @@ function cloudLoad(callback) {
           loadBudgets();
         }
         if (Array.isArray(data.maintenance)) {
-          var merged = mergeArray(maintenance, data.maintenance);
+          merged = mergeArray(maintenance, data.maintenance);
           if (merged.length !== data.maintenance.length) needsPush = true;
           maintenance = merged;
           try { localStorage.setItem('pb_maintenance', JSON.stringify(maintenance)); } catch(e) {}
@@ -2144,6 +2150,8 @@ function cloudLoad(callback) {
     }).catch(function() {
       _cloudLoading = false;
       setSyncStatus('error');
+      // H2: don't let a failed load trigger cloudSave — that would overwrite newer cloud data with stale local
+      _offlinePending = false;
       if (callback) callback(false);
     });
 }
@@ -3053,7 +3061,8 @@ function getBookingDates(b){
     var cur = new Date(start);
     while(dateStr(cur) <= b.dropoffDate){ res.push(dateStr(cur)); cur = addDays(cur,1); }
   } else {
-    var days = (b.type==='daily') ? Math.max(1, Number(b.days)||1) : 1;
+    // M4: chauffeur/hourly with days>1 should occupy multiple calendar days
+    var days = Math.max(1, Number(b.days)||1);
     for(var i=0;i<days;i++) res.push(dateStr(addDays(start,i)));
   }
   return res.length ? res : [startStr];
@@ -3339,7 +3348,7 @@ function renderBookingsTable(filtered){
       '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
       '<td style="font-weight:600">'+esc(b.name)+'</td>'+
       '<td>'+esc(b.vehicle)+'</td>'+
-      '<td><span class="badge '+b.type+'">'+b.type+'</span></td>'+
+      '<td><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span></td>'+
       '<td>'+b.days+'</td>'+
       '<td style="color:'+GOLD+';font-weight:700">'+$$(b.revenue)+(hasTblBalance?'<br><span style="font-size:10px;color:var(--red);font-weight:700">💵 −'+$$(tblBalanceDue)+' due</span>':'')+'</td>'+
       '<td>'+(b.deposit?$$(b.deposit):(noDeposit?'<span style="color:#f97316;font-weight:700">⚠ $0</span>':'—'))+'</td>'+
@@ -3357,7 +3366,7 @@ function renderBookingsTable(filtered){
       '<td class="'+pc+'">'+$$(profit)+'</td>'+
       '<td>'+(b.broker?'<span style="font-size:11px;background:rgba(201,169,98,.15);color:var(--gold);padding:2px 7px;border-radius:5px;font-weight:700">'+esc(b.broker)+'</span>':'—')+'</td>'+
       '<td style="font-size:11px;color:var(--muted)">'+esc(b.source||'—')+'</td>'+
-      '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
+      '<td><span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></td>'+
       '<td style="display:flex;gap:5px">'+
         '<button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button>'+
         '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\''+b.id+'\')">Del</button>'+
@@ -3428,8 +3437,10 @@ function renderPrevious(){
   var today=todayStr();
   var prev=bookings.filter(function(b){
     if(b._deleted) return false;
-    // Include anything past its end date OR explicitly marked completed (never cancelled)
-    return tripEndDate(b)<today || b.status==='completed';
+    // Include past bookings and completed ones (never cancelled, never future-completed)
+    if(b.status==='cancelled') return false;
+    if(b.status==='completed') return tripEndDate(b)<=today;
+    return tripEndDate(b)<today;
   }).sort(function(a,b){
     return tripEndDate(b).localeCompare(tripEndDate(a));
   });
@@ -3561,10 +3572,10 @@ function tripCard(b, showCountdown){
   return '<div class="trip-card" style="cursor:pointer" onclick="openBookingDetail(\''+b.id+'\')">'+
     '<div>'+dateColHtml+'</div>'+
     '<div>'+
-      '<div class="trip-vehicle">'+vImgHtml+b.vehicle+'</div>'+
+      '<div class="trip-vehicle">'+vImgHtml+esc(b.vehicle)+'</div>'+
       pdLine+
       '<div class="trip-customer">'+esc(b.name)+repeatBadge+webBadge+(b.phone?' · '+esc(b.phone):'')+' '+verBadges+'</div>'+
-      '<div style="margin-top:5px"><span class="badge '+b.type+'">'+b.type+'</span> <span class="badge '+b.status+'">'+b.status+'</span></div>'+
+      '<div style="margin-top:5px"><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span> <span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></div>'+
       (addonsArr.length?'<div class="trip-extras">'+addonsArr.map(function(a){return'<span class="extra-chip">'+a+'</span>';}).join('')+'</div>':'')+
       (b.depositKept?'<div class="trip-extras"><span class="extra-chip" style="background:rgba(168,85,247,.15);color:#a855f7">🔒 Kept '+$$(b.depositKept)+'</span></div>':'')+
       noDepositChip+
@@ -3610,7 +3621,8 @@ function tripEndDate(b){
   var start=b.pickupDate||b.date;
   if(b.dropoffDate) return b.dropoffDate;
   if(b.type==='hourly'||b.type==='chauffeur') return start;
-  return dateStr(addDays(new Date(start+'T00:00:00'), Math.max(1, Number(b.days)||1)));
+  // M1: days=1 means the rental ends on its start date (not start+1); days=3 ends on start+2
+  return dateStr(addDays(new Date(start+'T00:00:00'), Math.max(0, (Number(b.days)||1) - 1)));
 }
 
 function sortByTime(a,b){
@@ -3718,21 +3730,21 @@ function openBookingDetail(id){
     '<div class="detail-row"><span class="detail-label">Remaining Balance</span><span class="detail-val" style="color:'+(getRemainingBalance(b)>0?'var(--red)':'var(--green)')+'">'+$$(getRemainingBalance(b))+
       ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\');closeBookingDetail()" style="padding:2px 8px;font-size:10px;margin-left:6px">✏ Update</button>'+
     '</span></div>'+
-    (b.balancePaidAt?'<div class="detail-row"><span class="detail-label" style="color:var(--green)">Balance Paid</span><span class="detail-val" style="color:var(--green)">✅ '+$$(b.balancePaidAmount||0)+(b.balancePaidMethod?' via '+b.balancePaidMethod:'')+' <span style="color:var(--muted);font-size:10px">'+new Date(b.balancePaidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span></span></div>':'')+
+    (b.balancePaidAt?'<div class="detail-row"><span class="detail-label" style="color:var(--green)">Balance Paid</span><span class="detail-val" style="color:var(--green)">✅ '+$$(b.balancePaidAmount||0)+(b.balancePaidMethod?' via '+esc(b.balancePaidMethod):'')+' <span style="color:var(--muted);font-size:10px">'+new Date(b.balancePaidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span></span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Security Deposit</span><span class="detail-val">'+$$(b.deposit)+'</span></div>'+
     (Number(b.depositKept)?'<div class="detail-row"><span class="detail-label">Deposit Kept</span><span class="detail-val" style="color:var(--green)">'+$$(b.depositKept)+'</span></div>':'')+
     (Number(b.deposit)?'<div class="detail-row"><span class="detail-label">Deposit Returned</span><span class="detail-val">'+$$(Math.max(0,(Number(b.deposit)||0)-(Number(b.depositKept)||0)))+'</span></div>':'')+
     '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">Add-ons</div>'+
     addonsHtml+
-    (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' — '+b.addlIncome.desc:'')+'</span></div>':'')+
+    (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' — '+esc(b.addlIncome.desc):'')+'</span></div>':'')+
 
     // Check-In
     (b.odomIn||b.fuelIn||b.condIn||b.checkInNotes||(b.checkInPhotoIds&&b.checkInPhotoIds.length)?
       '<div class="fsec">Check-In</div>'+
       (b.odomIn?'<div class="detail-row"><span class="detail-label">Odometer (Pickup)</span><span class="detail-val">'+Number(b.odomIn).toLocaleString()+' mi</span></div>':'')+
-      (b.fuelIn?'<div class="detail-row"><span class="detail-label">Fuel at Pickup</span><span class="detail-val">'+b.fuelIn+'</span></div>':'')+
-      (b.condIn?'<div class="detail-row"><span class="detail-label">Condition at Pickup</span><span class="detail-val">'+b.condIn+'</span></div>':'')+
-      (b.checkInNotes?'<div class="detail-row"><span class="detail-label">Pre-Trip Notes</span><span class="detail-val">'+b.checkInNotes+'</span></div>':'')+
+      (b.fuelIn?'<div class="detail-row"><span class="detail-label">Fuel at Pickup</span><span class="detail-val">'+esc(b.fuelIn)+'</span></div>':'')+
+      (b.condIn?'<div class="detail-row"><span class="detail-label">Condition at Pickup</span><span class="detail-val">'+esc(b.condIn)+'</span></div>':'')+
+      (b.checkInNotes?'<div class="detail-row"><span class="detail-label">Pre-Trip Notes</span><span class="detail-val">'+esc(b.checkInNotes)+'</span></div>':'')+
       (b.checkInPhotoIds&&b.checkInPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkInPhotoIds.length+')</span><span class="detail-val"><div id="bdCiPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
 
@@ -3741,14 +3753,14 @@ function openBookingDetail(id){
       '<div class="fsec">Close-Out</div>'+
       (b.cost?'<div class="detail-row"><span class="detail-label">Booking Cost</span><span class="detail-val">'+$$(b.cost)+'</span></div>':'')+
       (b.odomOut?'<div class="detail-row"><span class="detail-label">Odometer (Drop-off)</span><span class="detail-val">'+Number(b.odomOut).toLocaleString()+' mi'+(b.odomIn&&b.odomOut>b.odomIn?' — '+((b.odomOut-b.odomIn).toLocaleString())+' driven':'')+'</span></div>':'')+
-      (b.fuelOut?'<div class="detail-row"><span class="detail-label">Fuel at Drop-off</span><span class="detail-val">'+(b.fuelIn?b.fuelIn+' → ':'')+b.fuelOut+'</span></div>':'')+
-      (b.condOut?'<div class="detail-row"><span class="detail-label">Condition at Drop-off</span><span class="detail-val">'+(b.condIn?b.condIn+' → ':'')+b.condOut+'</span></div>':'')+
-      (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+b.closeOutNotes+'</span></div>':'')+
+      (b.fuelOut?'<div class="detail-row"><span class="detail-label">Fuel at Drop-off</span><span class="detail-val">'+(b.fuelIn?esc(b.fuelIn)+' → ':'')+esc(b.fuelOut)+'</span></div>':'')+
+      (b.condOut?'<div class="detail-row"><span class="detail-label">Condition at Drop-off</span><span class="detail-val">'+(b.condIn?esc(b.condIn)+' → ':'')+esc(b.condOut)+'</span></div>':'')+
+      (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+esc(b.closeOutNotes)+'</span></div>':'')+
       (b.fuelCharge>0?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">⛽ Fuel Charge</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.fuelCharge)+'</span></div>':'')+
       (b.mileageCharge>0?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">🛣 Mileage Overage</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.mileageCharge)+'</span></div>':'')+
-      (b.refundSent?'<div class="detail-row"><span class="detail-label">Refund</span><span class="detail-val" style="color:var(--green)">✅ Sent'+(b.refundDate?' on '+fmtDate(b.refundDate):'')+(b.refundMethod?' via '+b.refundMethod:'')+'</span></div>':'')+
-      (b.claimStatus?'<div class="detail-row"><span class="detail-label">Claim Status</span><span class="detail-val">'+b.claimStatus+(b.claimRecovered?' · Recovered: '+$$(b.claimRecovered):'')+(b.claimNotes?' · '+b.claimNotes:'')+'</span></div>':'')+
-      (b.damage&&b.damage.flagged?'<div class="detail-row"><span class="detail-label" style="color:#ef4444">🚨 Damage</span><span class="detail-val" style="color:#ef4444;font-weight:700">'+(b.damage.type||'Flagged')+(b.damage.responsible?' · '+b.damage.responsible:'')+(b.damage.estimate?' · Est. '+$$(b.damage.estimate):'')+(b.damage.desc?'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+b.damage.desc+'</div>':'')+'</span></div>':'')+
+      (b.refundSent?'<div class="detail-row"><span class="detail-label">Refund</span><span class="detail-val" style="color:var(--green)">✅ Sent'+(b.refundDate?' on '+fmtDate(b.refundDate):'')+(b.refundMethod?' via '+esc(b.refundMethod):'')+'</span></div>':'')+
+      (b.claimStatus?'<div class="detail-row"><span class="detail-label">Claim Status</span><span class="detail-val">'+esc(b.claimStatus)+(b.claimRecovered?' · Recovered: '+$$(b.claimRecovered):'')+(b.claimNotes?' · '+esc(b.claimNotes):'')+'</span></div>':'')+
+      (b.damage&&b.damage.flagged?'<div class="detail-row"><span class="detail-label" style="color:#ef4444">🚨 Damage</span><span class="detail-val" style="color:#ef4444;font-weight:700">'+esc(b.damage.type||'Flagged')+(b.damage.responsible?' · '+esc(b.damage.responsible):'')+(b.damage.estimate?' · Est. '+$$(b.damage.estimate):'')+(b.damage.desc?'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+esc(b.damage.desc)+'</div>':'')+'</span></div>':'')+
       (b.checkOutPhotoIds&&b.checkOutPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkOutPhotoIds.length+')</span><span class="detail-val"><div id="bdCoPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
     : '')+
 
@@ -4741,15 +4753,15 @@ function openCloseOut(id){
     '<div style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);border-radius:10px;padding:10px 14px;font-size:12px;line-height:2">'+
     '<div style="font-weight:700;color:#60a5fa;margin-bottom:2px">🚗 Check-In Recorded</div>'+
     (b.odomIn?'<span style="color:var(--muted)">Odometer:</span> <strong>'+Number(b.odomIn).toLocaleString()+' mi</strong> &nbsp; ':'')+
-    (b.fuelIn?'<span style="color:var(--muted)">Fuel:</span> <strong>'+b.fuelIn+'</strong> &nbsp; ':'')+
-    (b.condIn?'<span style="color:var(--muted)">Condition:</span> <strong>'+b.condIn+'</strong>':'')+
-    (b.checkInNotes?'<div style="margin-top:2px;color:var(--muted)">Notes: <span style="color:var(--text)">'+b.checkInNotes+'</span></div>':'')+
+    (b.fuelIn?'<span style="color:var(--muted)">Fuel:</span> <strong>'+esc(b.fuelIn)+'</strong> &nbsp; ':'')+
+    (b.condIn?'<span style="color:var(--muted)">Condition:</span> <strong>'+esc(b.condIn)+'</strong>':'')+
+    (b.checkInNotes?'<div style="margin-top:2px;color:var(--muted)">Notes: <span style="color:var(--text)">'+esc(b.checkInNotes)+'</span></div>':'')+
     '</div>' :
     '<div style="background:rgba(255,200,0,.06);border:1px solid rgba(255,200,0,.2);border-radius:10px;padding:8px 14px;font-size:12px;color:var(--muted)">⚠ No check-in recorded — open Check In first to log pickup odometer, fuel &amp; condition.</div>';
   $d('coSummary').innerHTML =
-    '<strong>'+b.vehicle+'</strong> &nbsp;·&nbsp; '+b.name+'<br>'+
+    '<strong>'+esc(b.vehicle)+'</strong> &nbsp;·&nbsp; '+esc(b.name)+'<br>'+
     'Pickup: <strong>'+fmtDate(b.pickupDate||b.date)+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(totalRevenue(b))+'</strong>'+
-    (b.broker?' &nbsp;·&nbsp; Broker: <strong>'+b.broker+'</strong>':'')+
+    (b.broker?' &nbsp;·&nbsp; Broker: <strong>'+esc(b.broker)+'</strong>':'')+
     (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'</strong>':'')+
     '<br>Deposit collected: <strong>'+$$(collected)+'</strong>';
   updatePhotoSyncHints();
@@ -5324,7 +5336,7 @@ var _repeatSetCache=null;
 function buildRepeatSet(){
   var phones={}, emails={};
   bookings.forEach(function(b){
-    if(b._deleted) return;
+    if(b._deleted || b.status==='cancelled') return;
     if(b.phone){ var p=(b.phone||'').replace(/\D/g,''); if(p) phones[p]=(phones[p]||0)+1; }
     if(b.email){ var e=(b.email||'').toLowerCase().trim(); if(e) emails[e]=(emails[e]||0)+1; }
   });
@@ -5893,7 +5905,7 @@ function renderOutstanding(){
           ' <button class="btn btn-sm" onclick="markBalancePaid(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:2px;border-color:var(--green);color:var(--green)">✅ Paid</button>'
         )+
       '</td>'+
-      '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
+      '<td><span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></td>'+
       '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
     '</tr>';
   }
@@ -6219,13 +6231,13 @@ function removeBdBlock(idx){
 }
 
 function saveBdBlocks(v){
-  // Persist via the vehicle custom data store
+  // C1: must use pb_custom_vehicles — same key loadCustomVehicles() reads from
   try {
-    var stored=JSON.parse(localStorage.getItem('pb_vehicles')||'[]');
+    var stored=JSON.parse(localStorage.getItem('pb_custom_vehicles')||'[]');
     var vi=stored.findIndex(function(x){ return x.name===v; });
     if(vi!==-1){ stored[vi].blockedRanges=VEHICLE_COSTS[v].blockedRanges; }
     else { stored.push({ name:v, blockedRanges:VEHICLE_COSTS[v].blockedRanges }); }
-    localStorage.setItem('pb_vehicles', JSON.stringify(stored));
+    localStorage.setItem('pb_custom_vehicles', JSON.stringify(stored));
   } catch(e){}
 }
 
@@ -6448,9 +6460,9 @@ function openCustomerProfile(enc){
       return '<tr>'+
         '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
         '<td>'+b.vehicle+'</td>'+
-        '<td><span class="badge '+b.type+'">'+b.type+'</span></td>'+
+        '<td><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span></td>'+
         '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
-        '<td><span class="badge '+b.status+'">'+b.status+'</span></td>'+
+        '<td><span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></td>'+
         '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\');closeCustomerModal()">Edit</button></td>'+
       '</tr>';
     }).join('')+
@@ -6980,10 +6992,10 @@ function openContract(id){
     .replace(/\{\{overage_display\}\}/gi,    sr(overageDisplay))
     .replace(/\{\{unlimited_fee\}\}/gi,      sr(unlimitedFee))
     .replace(/\{\{unlimited_total\}\}/gi,    sr(b.unlimited ? '$'+((Number(b.unlimited)||0)*(Number(b.days)||1)).toFixed(2) : 'N/A'))
-    .replace(/\{\{delivery_fee\}\}/gi,       deliveryFee)
-    .replace(/\{\{pet_fee\}\}/gi,            petFee)
-    .replace(/\{\{odometer_in\}\}/gi,        odomIn)
-    .replace(/\{\{date_lock\}\}/gi,          b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100')
+    .replace(/\{\{delivery_fee\}\}/gi,       sr(deliveryFee))
+    .replace(/\{\{pet_fee\}\}/gi,            sr(petFee))
+    .replace(/\{\{odometer_in\}\}/gi,        sr(odomIn))
+    .replace(/\{\{date_lock\}\}/gi,          sr(b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
     .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE
       ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">'
       : '')
@@ -7081,9 +7093,13 @@ function printContract(){
   var text=$d('contractFilled').value;
   var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
   if(isHtml){
+    // M10: use srcdoc iframe instead of document.write to avoid XSS via user contract data
     var w=window.open('','_blank','width=900,height=700');
-    w.document.write(text);
-    w.document.close();
+    var iframe=w.document.createElement('iframe');
+    iframe.style.cssText='width:100%;height:100%;border:none;';
+    w.document.body.style.margin='0';
+    w.document.body.appendChild(iframe);
+    iframe.srcdoc=text;
     w.focus();
     setTimeout(function(){ w.print(); },600);
   } else {
