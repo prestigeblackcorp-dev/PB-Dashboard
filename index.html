@@ -699,7 +699,7 @@ tr:hover td { background: var(--gold-faint); }
       </div>
     </div>
     <div class="tbl-card">
-      <div class="tbl-head"><div class="tbl-title">All Bookings</div><div class="tbl-meta" id="bookingMeta"></div></div>
+      <div class="tbl-head"><div class="tbl-title">All Bookings</div><div class="tbl-meta" id="bookingMeta"></div><button class="btn btn-sm" onclick="bulkConfirmPending()" style="border-color:rgba(34,197,94,.4);color:var(--green);white-space:nowrap">✅ Confirm All Pending</button></div>
       <div class="tbl-wrap">
         <table id="bookingsTable">
           <thead><tr>
@@ -1165,7 +1165,8 @@ tr:hover td { background: var(--gold-faint); }
       <button class="modal-close" onclick="closeBookingDetail()">✕</button>
     </div>
     <div id="bdBody"></div>
-    <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end">
+    <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="btn btn-sm" id="bdReminderBtn" onclick="" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📨 Remind</button>
       <button class="btn" id="bdInvoiceBtn" onclick="">📄 Invoice</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">✏ Edit</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
@@ -1542,7 +1543,7 @@ tr:hover td { background: var(--gold-faint); }
 
 <!-- ═══ SETTINGS MODAL ═══ -->
 <div class="modal" id="settingsModal">
-  <div class="modal-bg" onclick="closeSettings()"></div>
+  <div class="modal-bg" onclick="closeSettingsGuard()"></div>
   <div class="modal-card" style="max-width:540px">
     <div class="modal-title">
       <span>⚙️ Settings & Integrations</span>
@@ -1620,15 +1621,25 @@ tr:hover td { background: var(--gold-faint); }
       <button class="btn btn-sm" onclick="openRecentlyDeleted()" style="border-color:#3b82f6;color:#3b82f6">View Deleted Bookings</button>
     </div>
 
+    <div style="background:rgba(100,180,255,.07);border:1px solid rgba(100,180,255,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
+      <div style="font-size:12px;font-weight:800;color:rgba(100,180,255,.9);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">🏍 Contract Templates</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Edit the rental agreement and Slingshot liability waiver templates used in contracts.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" onclick="closeSettings();openContractTemplate('')" style="border-color:rgba(100,180,255,.4);color:rgba(100,180,255,.9)">✏ Rental Agreement</button>
+        <button class="btn btn-sm" onclick="closeSettings();openContractTemplate('waiver')" style="border-color:rgba(100,180,255,.4);color:rgba(100,180,255,.9)">🏍 Slingshot Waiver</button>
+      </div>
+    </div>
+
     <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
       <div style="font-size:12px;font-weight:800;color:#ef4444;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Danger Zone</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Permanently deletes all bookings, expenses, income, and maintenance records from this device and Firebase. This cannot be undone.</div>
       <button class="btn btn-sm" onclick="promptClearAll()" style="border-color:#ef4444;color:#ef4444">🗑 Clear All Data</button>
     </div>
 
-    <div style="display:flex;gap:10px;margin-top:20px">
+    <div id="settUnsavedBanner" style="display:none;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.4);border-radius:8px;padding:8px 12px;font-size:12px;color:#fbbf24;margin-top:12px">⚠ Unsaved changes — click Save Settings to apply</div>
+    <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn btn-gold" style="flex:1" onclick="saveSettings()">Save Settings</button>
-      <button class="btn" onclick="closeSettings()">Cancel</button>
+      <button class="btn" onclick="closeSettingsGuard()">Cancel</button>
     </div>
   </div>
 </div>
@@ -2122,7 +2133,9 @@ function setSyncStatus(status) {
   var dot = $d('syncDot');
   if (!dot) return;
   var colors = { ok:'var(--green)', syncing:'#fbbf24', error:'var(--red)', off:'var(--muted)' };
-  var labels = { ok:'● Synced', syncing:'● Syncing…', error:'● Sync error — tap to reconnect', off:'● Tap to set up sync' };
+  var now = new Date();
+  var timeStr = now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  var labels = { ok:'● Synced '+timeStr, syncing:'● Syncing…', error:'● Sync error — tap to reconnect', off:'● Tap to set up sync' };
   dot.style.color = colors[status] || colors.off;
   dot.textContent = labels[status] || labels.off;
   updatePhotoSyncHints();
@@ -3565,6 +3578,15 @@ function openBookingDetail(id){
   $d('bdTitle').textContent=b.vehicle+' — '+b.name;
   $d('bdEditBtn').onclick=function(){ closeBookingDetail(); openModal(b.id); };
   $d('bdInvoiceBtn').onclick=function(){ generateInvoice(b.id); };
+  var reminderBtn=$d('bdReminderBtn');
+  if(reminderBtn){
+    if(b.email&&MESSAGING_URL){
+      reminderBtn.style.display='';
+      reminderBtn.onclick=function(){ sendPickupReminder(b.id); };
+    } else {
+      reminderBtn.style.display='none';
+    }
+  }
 
   var v=b.verify||{};
   var idOk=v.idVerified, insOk=v.insVerified;
@@ -3674,7 +3696,19 @@ function openBookingDetail(id){
       '</div>' : '')+
 
     // Notes
-    (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0">'+b.notes+'</div>':'');
+    (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0">'+b.notes+'</div>':'')+
+
+    // Change history
+    (b._history&&b._history.length?
+      '<div class="fsec" style="margin-top:12px">📋 Change History</div>'+
+      '<div style="font-size:11px;color:var(--muted)">'+
+      b._history.slice().reverse().map(function(h){
+        return '<div style="padding:5px 0;border-bottom:1px solid var(--border)">'+
+          '<span style="color:var(--text);font-weight:600">'+new Date(h.at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</span> · '+
+          h.changes.join(', ')+'</div>';
+      }).join('')+
+      '</div>'
+    : '');
 
   $d('bdBody').innerHTML=html;
   // Async-load photo thumbnails into the detail view
@@ -4168,6 +4202,23 @@ function saveBooking(){
   if(dep<0)    { alert('Deposit cannot be negative.'); return; }
   if(daysVal<=0){ alert('Duration must be at least 1.'); return; }
   if(pickupD && dropoffD && dropoffD < pickupD){ alert('Drop-off date cannot be before pickup date.'); return; }
+  // Date conflict check — same vehicle, overlapping dates
+  var checkPickup=$d('fPickupDate').value||date;
+  var checkDropoff=$d('fDropoffDate').value||checkPickup;
+  var dateConflicts=bookings.filter(function(b){
+    if(b._deleted||b.status==='cancelled') return false;
+    if(editingId&&b.id===editingId) return false;
+    if(b.vehicle!==vehicle) return false;
+    var bP=b.pickupDate||b.date; var bD=b.dropoffDate||bP;
+    return !(checkDropoff<bP||checkPickup>bD);
+  });
+  if(dateConflicts.length){
+    var dcMsg='⚠️ Vehicle conflict for '+vehicle+':\n\n'+
+      dateConflicts.map(function(c){ return '• '+c.name+' — '+(c.pickupDate||c.date)+' to '+(c.dropoffDate||c.pickupDate||c.date)+' ('+c.status+')'; }).join('\n')+
+      '\n\nSave booking anyway?';
+    if(!confirm(dcMsg)) return;
+  }
+
   var maintConflicts=checkMaintenanceConflict(vehicle, date, $d('fDropoffDate').value);
   var _maintAcknowledged=false;
   if(maintConflicts.length){
@@ -4758,6 +4809,7 @@ function saveCloseOut(){
   if(bookings[idx].status!=='cancelled'){
     bookings[idx].status='completed';
     sendReviewRequest(bookings[idx]);
+    sendReceiptEmail(bookings[idx]);
   }
   bookings[idx]._t               = Date.now();
   save();
@@ -4856,15 +4908,26 @@ function saveVerify(){
 // ════════════════════════════════════════════════════════
 var OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
 
+var _settingsDirty = false;
+function _markSettingsDirty(){ _settingsDirty=true; var b=$d('settUnsavedBanner'); if(b) b.style.display=''; }
 function openSettings(){
   $d('settWorkerUrl').value    = WORKER_URL;
   $d('settMessagingUrl').value = MESSAGING_URL;
   $d('settReviewUrl').value    = REVIEW_URL;
   $d('settOpenAiKey').value    = OPENAI_KEY;
   _refreshSigPreview(OWNER_SIGNATURE);
+  _settingsDirty = false;
+  var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
+  ['settWorkerUrl','settMessagingUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
+    var el=$d(id); if(el) el.oninput=_markSettingsDirty;
+  });
   $d('settingsModal').classList.add('open');
 }
-function closeSettings(){ $d('settingsModal').classList.remove('open'); }
+function closeSettings(){ _settingsDirty=false; $d('settingsModal').classList.remove('open'); }
+function closeSettingsGuard(){
+  if(_settingsDirty && !confirm('You have unsaved changes. Close without saving?')) return;
+  closeSettings();
+}
 function openRecentlyDeleted(){
   var cutoff=Date.now()-(30*24*60*60*1000);
   var deleted=bookings.filter(function(b){ return b._deleted && b._t && b._t>=cutoff; })
@@ -4961,6 +5024,7 @@ function saveSettings(){
   cloudSave();
   // signature saved live via loadSigPreview; persist current value
   localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
+  _settingsDirty = false;
   closeSettings();
   toast('Settings saved.');
 }
@@ -5210,11 +5274,99 @@ function sendReviewRequest(b){
   }).catch(function(){});
 }
 
+function sendConfirmationEmail(b){
+  if(!MESSAGING_URL||!b||!b.email) return;
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:b.email,
+      subject:'Your booking is confirmed — '+b.vehicle,
+      html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+        '<h2 style="color:#b8982e">You\'re confirmed, '+firstName+'! 🎉</h2>'+
+        '<p style="font-size:15px;line-height:1.6">Your booking for the <strong>'+b.vehicle+'</strong> on <strong>'+(b.pickupDate||b.date)+'</strong> is officially confirmed.</p>'+
+        (b.pickupTime?'<p style="font-size:15px">Pickup time: <strong>'+b.pickupTime+'</strong></p>':'')+
+        '<p style="font-size:15px;line-height:1.6">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
+        '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+    })
+  }).catch(function(){});
+}
+
+function sendPickupReminder(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b) return;
+  if(!MESSAGING_URL||!b.email){ showToast('No email or messaging worker configured'); return; }
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:b.email,
+      subject:'Reminder: Your rental is coming up — '+b.vehicle,
+      html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+        '<h2 style="color:#b8982e">See you soon, '+firstName+'! 🚗</h2>'+
+        '<p style="font-size:15px;line-height:1.6">Just a reminder that your <strong>'+b.vehicle+'</strong> rental is coming up on <strong>'+(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+b.pickupTime+'</strong>':'')+'. We\'re looking forward to it!</p>'+
+        '<p style="font-size:15px;line-height:1.6">If you have any questions or need to make changes, text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
+        '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+    })
+  }).then(function(r){ showToast(r.ok?'Reminder sent ✅':'Failed to send reminder'); })
+    .catch(function(){ showToast('Failed to send reminder'); });
+}
+
+function sendReceiptEmail(b){
+  if(!MESSAGING_URL||!b||!b.email) return;
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  var addons=[];
+  if(Number(b.delivery)>0) addons.push({label:'Delivery',val:b.delivery});
+  if(Number(b.unlimited)>0) addons.push({label:'Unlimited Miles',val:b.unlimited});
+  if(Number(b.pet)>0) addons.push({label:'Pet Fee',val:b.pet});
+  if(Number(b.photo)>0) addons.push({label:'Photo Package',val:b.photo});
+  if(Number(b.champagne)>0) addons.push({label:'Champagne',val:b.champagne});
+  if(Number(b.decor)>0) addons.push({label:'Decor',val:b.decor});
+  if(Number(b.bouquet)>0) addons.push({label:'Bouquet',val:b.bouquet});
+  var rows='<tr><td style="padding:6px 0;color:#555;width:160px">Vehicle</td><td style="padding:6px 0;font-weight:600">'+b.vehicle+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Pickup</td><td style="padding:6px 0">'+(b.pickupDate||b.date)+(b.pickupTime?' @ '+b.pickupTime:'')+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+(b.dropoffDate||'—')+(b.dropoffTime?' @ '+b.dropoffTime:'')+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Duration</td><td style="padding:6px 0">'+b.days+' day'+(b.days!==1?'s':'')+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Base Rate</td><td style="padding:6px 0">'+$$(b.revenue)+'</td></tr>'+
+    addons.map(function(a){ return '<tr><td style="padding:6px 0;color:#555">'+a.label+'</td><td style="padding:6px 0">'+$$(a.val)+'</td></tr>'; }).join('')+
+    '<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(totalRevenue(b))+'</td></tr>'+
+    (Number(b.dateLock)?'<tr><td style="padding:6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:b.email,
+      subject:'Your Prestige Black receipt — '+b.vehicle,
+      html:'<div style="font-family:sans-serif;max-width:540px;color:#111">'+
+        '<h2 style="color:#b8982e">Thanks for renting with us, '+firstName+'! 🙏🏾</h2>'+
+        '<p style="font-size:15px;line-height:1.6">Here\'s a summary of your rental:</p>'+
+        '<table style="width:100%;border-collapse:collapse;font-size:14px;margin:12px 0">'+rows+'</table>'+
+        '<p style="font-size:13px;color:#777;margin-top:20px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+    })
+  }).catch(function(){});
+}
+
+function bulkConfirmPending(){
+  var pending=bookings.filter(function(b){return !b._deleted&&b.status==='pending';});
+  if(!pending.length){ showToast('No pending bookings to confirm'); return; }
+  if(!confirm('Confirm all '+pending.length+' pending booking'+(pending.length===1?'':'s')+'?')) return;
+  pending.forEach(function(b){
+    var idx=bookings.findIndex(function(x){return x.id===b.id;});
+    if(idx!==-1){
+      bookings[idx].status='confirmed';
+      bookings[idx]._t=Date.now();
+      sendConfirmationEmail(bookings[idx]);
+    }
+  });
+  save(); render();
+  showToast('✅ '+pending.length+' booking'+(pending.length===1?'':'s')+' confirmed');
+}
+
 function quickStatus(id, newStatus){
   var idx=bookings.findIndex(function(b){return b.id===id;});
   if(idx===-1) return;
   bookings[idx].status=newStatus;
   if(newStatus==='completed') sendReviewRequest(bookings[idx]);
+  if(newStatus==='confirmed') sendConfirmationEmail(bookings[idx]);
   save();
   syncToGCal(bookings[idx]);
   render();
@@ -6114,6 +6266,12 @@ function openCustomerProfile(enc){
   var spent=nonCancelled.reduce(function(s,b){return s+totalRevenue(b);},0);
   var net=nonCancelled.reduce(function(s,b){return s+netRevenue(b);},0);
   var active=nonCancelled.length;
+  // Preferred vehicle (most booked)
+  var vehCount={};
+  nonCancelled.forEach(function(b){ vehCount[b.vehicle]=(vehCount[b.vehicle]||0)+1; });
+  var prefVeh=Object.keys(vehCount).sort(function(a,b){return vehCount[b]-vehCount[a];})[0]||'—';
+  var totalDays=nonCancelled.reduce(function(s,b){return s+(Number(b.days)||1);},0);
+  var firstDate=bks.length?fmtDate(bks[bks.length-1].date):'—';
   var vehs=Array.from(new Set(bks.map(function(b){return b.vehicle;}))).join(', ');
   $d('custModalTitle').textContent=first.name;
   $d('custModalBody').innerHTML=
@@ -6121,9 +6279,14 @@ function openCustomerProfile(enc){
       '<div class="cust-stat"><div class="cust-stat-val">'+bks.length+'</div><div class="cust-stat-lbl">Bookings</div></div>'+
       '<div class="cust-stat"><div class="cust-stat-val">'+$$(spent)+'</div><div class="cust-stat-lbl">Total Spent</div></div>'+
       '<div class="cust-stat" style="color:var(--green)"><div class="cust-stat-val">'+$$(net)+'</div><div class="cust-stat-lbl">Net Revenue</div></div>'+
-      '<div class="cust-stat"><div class="cust-stat-val">'+$$(active?net/active:0)+'</div><div class="cust-stat-lbl">Avg Net/Booking</div></div>'+
+      '<div class="cust-stat"><div class="cust-stat-val">'+totalDays+'</div><div class="cust-stat-lbl">Days Rented</div></div>'+
     '</div>'+
-    '<div style="font-size:12px;color:var(--muted);margin-bottom:14px">Vehicles: <strong style="color:var(--text)">'+vehs+'</strong>'+
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+
+      '🚗 Preferred: <strong style="color:var(--gold)">'+prefVeh+'</strong>'+
+      ' &nbsp;·&nbsp; First booking: <strong style="color:var(--text)">'+firstDate+'</strong>'+
+      (active>1?' &nbsp;·&nbsp; <span style="color:var(--green);font-weight:700">🔄 Repeat customer</span>':'')+
+    '</div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:14px">Vehicles rented: <strong style="color:var(--text)">'+vehs+'</strong>'+
       (first.phone?' &nbsp;·&nbsp; 📞 <strong>'+first.phone+'</strong>':'')+
       (first.email?' &nbsp;·&nbsp; ✉ <strong>'+first.email+'</strong>':'')+
     '</div>'+
