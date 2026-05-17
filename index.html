@@ -1566,6 +1566,11 @@ tr:hover td { background: var(--gold-faint); }
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for sending emails (review requests, etc.). Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-messaging-worker.js</code> to get this URL.</div>
       </div>
       <div class="fgroup ffull">
+        <div class="flabel">Google Review URL</div>
+        <input type="url" class="finput" id="settReviewUrl" placeholder="https://g.page/r/…/review">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Sent to customers after trip is marked complete. Find yours at business.google.com.</div>
+      </div>
+      <div class="fgroup ffull">
         <div class="flabel">OpenAI API Key</div>
         <input type="password" class="finput" id="settOpenAiKey" placeholder="sk-…">
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Used for AI insurance card scanning (~$0.01/scan with GPT-4o). Get one at platform.openai.com.</div>
@@ -1962,6 +1967,7 @@ var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
 var WORKER_URL     = localStorage.getItem('pb_worker_url')     || '';
 var MESSAGING_URL  = localStorage.getItem('pb_messaging_url')  || '';
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
+var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
 var _offlinePending = false; // queues a cloudSave for when we come back online
 
@@ -1999,6 +2005,8 @@ function cloudSave() {
     slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
     owner_signature: OWNER_SIGNATURE || '',
     messaging_url: MESSAGING_URL || '',
+    worker_url: WORKER_URL || '',
+    review_url: REVIEW_URL || '',
     savedAt: Date.now()
   };
   fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data.json', {
@@ -2073,10 +2081,20 @@ function cloudLoad(callback) {
         if (data.owner_signature && typeof data.owner_signature === 'string' && data.owner_signature.length > 10) {
           OWNER_SIGNATURE = data.owner_signature;
           try { localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE); } catch(e) {}
+        } else if (OWNER_SIGNATURE && (!data.owner_signature || data.owner_signature.length <= 10)) {
+          needsPush = true; // local has signature Firebase doesn't — push it
         }
-        if (data.messaging_url && typeof data.messaging_url === 'string') {
+        if (data.messaging_url && typeof data.messaging_url === 'string' && data.messaging_url.length > 5) {
           MESSAGING_URL = data.messaging_url;
           try { localStorage.setItem('pb_messaging_url', MESSAGING_URL); } catch(e) {}
+        }
+        if (data.worker_url && typeof data.worker_url === 'string' && data.worker_url.length > 5) {
+          WORKER_URL = data.worker_url;
+          try { localStorage.setItem('pb_worker_url', WORKER_URL); } catch(e) {}
+        }
+        if (data.review_url && typeof data.review_url === 'string' && data.review_url.length > 5) {
+          REVIEW_URL = data.review_url;
+          try { localStorage.setItem('pb_review_url', REVIEW_URL); } catch(e) {}
         }
         _cloudLoading = false;
         // If local had items cloud didn't, push merged result so all devices get it
@@ -2387,6 +2405,14 @@ function saveExpense(){
   var idx = expenses.findIndex(function(e){return e.id===entry.id;});
   if(idx!==-1) expenses[idx]=entry; else expenses.push(entry);
   saveExpenses(); closeExpenseModal(); render(); renderExpenseLog();
+  // Budget warning
+  var cat=entry.category;
+  var bgt=budgets[cat]||0;
+  if(bgt>0){
+    var ym=entry.date.substring(0,7);
+    var spent=expenses.filter(function(e){return !e._deleted&&e.category===cat&&(e.date||'').substring(0,7)===ym;}).reduce(function(s,e){return s+(e.amount||0);},0);
+    if(spent>bgt) showToast('⚠️ '+cat+' budget exceeded — $'+Math.round(spent)+' of $'+Math.round(bgt)+' this month');
+  }
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
   if(activeTab==='previous') renderPrevious();
@@ -3932,7 +3958,7 @@ function toggleAddon(inputId, defaultPrice, checked){
   updateRemainingBalance();
 }
 
-function onDepositChange(){}
+function onDepositChange(){ updateLiveTotal(); updateRemainingBalance(); }
 function toggleBalancePaidFields(){
   var chk=$d('fBalancePaidChk'), fields=$d('fBalancePaidFields');
   if(fields) fields.style.display=chk&&chk.checked?'contents':'none';
@@ -4825,6 +4851,7 @@ var OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
 function openSettings(){
   $d('settWorkerUrl').value    = WORKER_URL;
   $d('settMessagingUrl').value = MESSAGING_URL;
+  $d('settReviewUrl').value    = REVIEW_URL;
   $d('settOpenAiKey').value    = OPENAI_KEY;
   _refreshSigPreview(OWNER_SIGNATURE);
   $d('settingsModal').classList.add('open');
@@ -4881,10 +4908,13 @@ function testWorkerUrl(){
 function saveSettings(){
   WORKER_URL    = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
   MESSAGING_URL = ($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
+  REVIEW_URL    = ($d('settReviewUrl').value||'').trim() || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
   OPENAI_KEY    = ($d('settOpenAiKey').value||'').trim();
   localStorage.setItem('pb_worker_url',    WORKER_URL);
   localStorage.setItem('pb_messaging_url', MESSAGING_URL);
+  localStorage.setItem('pb_review_url',    REVIEW_URL);
   localStorage.setItem('pb_openai_key',    OPENAI_KEY);
+  cloudSave();
   // signature saved live via loadSigPreview; persist current value
   localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
   closeSettings();
@@ -5129,7 +5159,7 @@ function sendReviewRequest(b){
         '<div style="font-family:sans-serif;max-width:520px;color:#111">'+
         '<h2 style="color:#b8982e">Thank you, '+firstName+'! 🙏🏾</h2>'+
         '<p style="font-size:15px;line-height:1.6">If we did a good job for you, please take a quick second to leave us a 5⭐️ review. We appreciate you!</p>'+
-        '<a href="https://g.page/r/CbWVnx8A8oUZEAE/review" style="display:inline-block;margin-top:12px;padding:12px 24px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Leave a Google Review ⭐</a>'+
+        '<a href="'+(REVIEW_URL||'https://g.page/r/CbWVnx8A8oUZEAE/review')+'" style="display:inline-block;margin-top:12px;padding:12px 24px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Leave a Google Review ⭐</a>'+
         '<p style="margin-top:24px;font-size:12px;color:#888">Prestige Black Rentals · Dallas–Fort Worth</p>'+
         '</div>'
     })
@@ -6633,13 +6663,22 @@ function openContract(id){
   emailBtn.textContent=emailAddr?'✉ Send to '+emailAddr:'✉ Send Email';
   emailBtn.onclick=function(){
     var subj='Rental Agreement — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
-    // Email gets plain text version
-    var body=$d('contractFilled').value;
-    if(body.trim().toLowerCase().startsWith('<!doctype')||body.trim().startsWith('<html')){
-      var tmp=document.createElement('div'); tmp.innerHTML=body;
-      body=tmp.innerText||tmp.textContent||'';
+    var rawBody=$d('contractFilled').value||'';
+    var isHtml=rawBody.trim().toLowerCase().startsWith('<!doctype')||rawBody.trim().startsWith('<')||rawBody.includes('<div');
+    if(MESSAGING_URL && emailAddr){
+      var htmlBody=isHtml?rawBody:('<pre style="font-family:sans-serif;white-space:pre-wrap">'+rawBody+'</pre>');
+      fetch(MESSAGING_URL+'/send-email',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})
+      }).then(function(r){
+        if(r.ok){ showToast('Contract sent to '+emailAddr); }
+        else{ showToast('Email failed — opening mail app instead'); window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); }
+      }).catch(function(){ window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); });
+    } else {
+      var plainBody=isHtml?(function(){var t=document.createElement('div');t.innerHTML=rawBody;return t.innerText||t.textContent||'';}()):rawBody;
+      window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(plainBody);
     }
-    window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(body);
   };
   $d('contractModal').classList.add('open');
   setTimeout(initCustSigCanvas, 50);
