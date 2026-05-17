@@ -1561,6 +1561,11 @@ tr:hover td { background: var(--gold-faint); }
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for Stripe Identity. Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-verification-worker.js</code> to get this URL.</div>
       </div>
       <div class="fgroup ffull">
+        <div class="flabel">Messaging Worker URL</div>
+        <input type="url" class="finput" id="settMessagingUrl" placeholder="https://pb-messaging.yourname.workers.dev">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for sending emails (review requests, etc.). Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-messaging-worker.js</code> to get this URL.</div>
+      </div>
+      <div class="fgroup ffull">
         <div class="flabel">OpenAI API Key</div>
         <input type="password" class="finput" id="settOpenAiKey" placeholder="sk-…">
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Used for AI insurance card scanning (~$0.01/scan with GPT-4o). Get one at platform.openai.com.</div>
@@ -1954,8 +1959,9 @@ var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
 //  CLOUD SYNC
 // ════════════════════════════════════════════════════════
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
-var WORKER_URL   = localStorage.getItem('pb_worker_url')   || '';
-var OPENAI_KEY       = localStorage.getItem('pb_openai_key')       || '';
+var WORKER_URL     = localStorage.getItem('pb_worker_url')     || '';
+var MESSAGING_URL  = localStorage.getItem('pb_messaging_url')  || '';
+var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
 var _offlinePending = false; // queues a cloudSave for when we come back online
 
@@ -4710,7 +4716,10 @@ function saveCloseOut(){
     desc:        $d('coDamageDesc').value.trim(),
     reportedAt:  bookings[idx].damage&&bookings[idx].damage.reportedAt ? bookings[idx].damage.reportedAt : Date.now()
   } : {flagged:false};
-  if(bookings[idx].status!=='cancelled') bookings[idx].status='completed';
+  if(bookings[idx].status!=='cancelled'){
+    bookings[idx].status='completed';
+    sendReviewRequest(bookings[idx]);
+  }
   bookings[idx]._t               = Date.now();
   save();
   $d('closeOutModal').classList.remove('open');
@@ -4809,7 +4818,8 @@ function saveVerify(){
 var OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
 
 function openSettings(){
-  $d('settWorkerUrl').value = WORKER_URL;
+  $d('settWorkerUrl').value    = WORKER_URL;
+  $d('settMessagingUrl').value = MESSAGING_URL;
   $d('settOpenAiKey').value    = OPENAI_KEY;
   _refreshSigPreview(OWNER_SIGNATURE);
   $d('settingsModal').classList.add('open');
@@ -4864,10 +4874,12 @@ function testWorkerUrl(){
     });
 }
 function saveSettings(){
-  WORKER_URL = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
-  OPENAI_KEY        = ($d('settOpenAiKey').value||'').trim();
-  localStorage.setItem('pb_worker_url',        WORKER_URL);
-  localStorage.setItem('pb_openai_key',        OPENAI_KEY);
+  WORKER_URL    = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
+  MESSAGING_URL = ($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
+  OPENAI_KEY    = ($d('settOpenAiKey').value||'').trim();
+  localStorage.setItem('pb_worker_url',    WORKER_URL);
+  localStorage.setItem('pb_messaging_url', MESSAGING_URL);
+  localStorage.setItem('pb_openai_key',    OPENAI_KEY);
   // signature saved live via loadSigPreview; persist current value
   localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
   closeSettings();
@@ -5099,10 +5111,31 @@ function getVehicleUtilization(vehicleName){
 // ════════════════════════════════════════════════════════
 //  FEATURE 6: QUICK STATUS WORKFLOW
 // ════════════════════════════════════════════════════════
+function sendReviewRequest(b){
+  if(!MESSAGING_URL || !b || !b.email) return;
+  var firstName = (b.name||'').split(' ')[0] || 'there';
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to: b.email,
+      subject: 'How was your experience with Prestige Black? ⭐',
+      html:
+        '<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+        '<h2 style="color:#b8982e">Thank you, '+firstName+'! 🙏🏾</h2>'+
+        '<p style="font-size:15px;line-height:1.6">If we did a good job for you, please take a quick second to leave us a 5⭐️ review. We appreciate you!</p>'+
+        '<a href="https://g.page/r/CbWVnx8A8oUZEAE/review" style="display:inline-block;margin-top:12px;padding:12px 24px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Leave a Google Review ⭐</a>'+
+        '<p style="margin-top:24px;font-size:12px;color:#888">Prestige Black Rentals · Dallas–Fort Worth</p>'+
+        '</div>'
+    })
+  }).catch(function(){});
+}
+
 function quickStatus(id, newStatus){
   var idx=bookings.findIndex(function(b){return b.id===id;});
   if(idx===-1) return;
   bookings[idx].status=newStatus;
+  if(newStatus==='completed') sendReviewRequest(bookings[idx]);
   save();
   syncToGCal(bookings[idx]);
   render();
