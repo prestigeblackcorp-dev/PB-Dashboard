@@ -886,11 +886,11 @@ tr:hover td { background: var(--gold-faint); }
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Date</div>
-        <input type="date" class="finput" id="fDropoffDate" oninput="updateMaintWarning();validateDropoffDate()">
+        <input type="date" class="finput" id="fDropoffDate" oninput="this._manual=!!this.value;updateMaintWarning();validateDropoffDate()">
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Time</div>
-        <input type="time" class="finput" id="fDropoffTime">
+        <input type="time" class="finput" id="fDropoffTime" oninput="this._manual=!!this.value">
       </div>
 
       <div class="fsec">Revenue</div>
@@ -918,7 +918,7 @@ tr:hover td { background: var(--gold-faint); }
           <div style="font-size:16px;font-weight:900;color:var(--gold)">Total: <span id="liveTotalVal">$0</span></div>
         </div>
       </div>
-      <div class="fgroup" id="fDepositGroup"><div class="flabel">Security Deposit / Hold ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0"></div>
+      <div class="fgroup" id="fDepositGroup"><div class="flabel">Security Deposit / Hold ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0" oninput="this._manual=!!this.value"></div>
 
       <div class="fgroup"><div class="flabel">Pickup / Drop-off Address</div>
         <input type="text" class="finput ffull" id="fAddress" placeholder="e.g. DFW Airport or customer address"></div>
@@ -3637,6 +3637,9 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fPickupTime').value  = b?(b.pickupTime||'')  : '';
   $d('fDropoffDate').value = b?(b.dropoffDate||'') : '';
   $d('fDropoffTime').value = b?(b.dropoffTime||'') : '';
+  $d('fDropoffDate')._manual = !!(b && b.dropoffDate);
+  $d('fDropoffTime')._manual = !!(b && b.dropoffTime);
+  $d('fDeposit')._manual     = !!b;
 
   // Addons
   setAddon('chkDelivery',  'fDelivery',  b?b.delivery:0);
@@ -3740,7 +3743,7 @@ function updateBrokerCalc(){
 function onVehicleChange(){
   var v=$d('fVehicle').value;
   var vc=VEHICLE_COSTS[v];
-  if(vc && vc.deposit) $d('fDeposit').value=vc.deposit;
+  if(vc && vc.deposit && !$d('fDeposit')._manual) $d('fDeposit').value=vc.deposit;
   if(CHAUFFEUR_VEHICLES.indexOf(v)!==-1) $d('fType').value='chauffeur';
   // Auto-fill mileage from website policy
   var vm=VEHICLE_MILEAGE[v];
@@ -3764,7 +3767,7 @@ function onPickupDateChange(){
 function onPickupTimeChange(){
   var pt=$d('fPickupTime').value;
   var dt=$d('fDropoffTime');
-  if(pt && !dt.value){ dt.value=pt; }
+  if(pt && !dt._manual && !dt.value){ dt.value=pt; }
   autoFillDropoff();
 }
 function validateDropoffDate(){
@@ -3772,6 +3775,7 @@ function validateDropoffDate(){
   var dDate=$d('fDropoffDate').value;
   if(pDate && dDate && dDate<pDate){
     $d('fDropoffDate').value=pDate;
+    $d('fDropoffDate')._manual=false;
     showToast('Return date cannot be before pickup — adjusted');
   }
 }
@@ -3780,28 +3784,29 @@ function autoFillDropoff(){
   var pDate=$d('fPickupDate').value;
   var pTime=$d('fPickupTime').value;
   var days=parseInt($d('fDays').value)||1;
+  var ddEl=$d('fDropoffDate'), dtEl=$d('fDropoffTime');
   if(type==='hourly'){
-    if(pTime){
+    if(pTime && !dtEl._manual){
       var parts=pTime.split(':');
       var startMin=parseInt(parts[0])*60+parseInt(parts[1]);
       var endMin=startMin+days*60;
       var endH=Math.floor(endMin/60)%24;
       var endM=endMin%60;
-      $d('fDropoffTime').value=pad(endH)+':'+pad(endM);
-      if(pDate){
+      dtEl.value=pad(endH)+':'+pad(endM);
+      if(pDate && !ddEl._manual){
         var extra=Math.floor(endMin/(24*60));
         var d=new Date(pDate+'T00:00:00');
         d.setDate(d.getDate()+extra);
-        $d('fDropoffDate').value=dateStr(d);
+        ddEl.value=dateStr(d);
       }
     }
   } else if(type==='daily'||type==='chauffeur'){
-    if(pDate){
+    if(pDate && !ddEl._manual){
       var d=new Date(pDate+'T00:00:00');
       d.setDate(d.getDate()+days);
-      $d('fDropoffDate').value=dateStr(d);
+      ddEl.value=dateStr(d);
     }
-    if(pTime && !$d('fDropoffTime').value){ $d('fDropoffTime').value=pTime; }
+    if(pTime && !dtEl._manual && !dtEl.value){ dtEl.value=pTime; }
   }
 }
 function checkSlingshotHourly(){
