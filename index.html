@@ -4317,19 +4317,30 @@ function saveBooking(){
   if(dep<0)    { alert('Deposit cannot be negative.'); return; }
   if(daysVal<=0){ alert('Duration must be at least 1.'); return; }
   if(pickupD && dropoffD && dropoffD < pickupD){ alert('Drop-off date cannot be before pickup date.'); return; }
-  // Date conflict check — same vehicle, overlapping dates
+  // Conflict check — same vehicle, overlapping datetimes with 2-hour buffer
   var checkPickup=$d('fPickupDate').value||date;
+  var checkPickupTime=$d('fPickupTime').value||'00:00';
   var checkDropoff=$d('fDropoffDate').value||checkPickup;
+  var checkDropoffTime=$d('fDropoffTime').value||'23:59';
+  var BUFFER_MS=2*60*60*1000;
+  var dtToMs=function(d,t){ return new Date(d+'T'+(t||'00:00').substring(0,5)+':00').getTime(); };
+  var newStart=dtToMs(checkPickup,checkPickupTime);
+  var newEnd=dtToMs(checkDropoff,checkDropoffTime);
   var dateConflicts=bookings.filter(function(b){
     if(b._deleted||b.status==='cancelled') return false;
     if(editingId&&b.id===editingId) return false;
     if(b.vehicle!==vehicle) return false;
-    var bP=b.pickupDate||b.date; var bD=b.dropoffDate||bP;
-    return !(checkDropoff<bP||checkPickup>bD);
+    var bStart=dtToMs(b.pickupDate||b.date,b.pickupTime);
+    var bEnd=dtToMs(b.dropoffDate||b.pickupDate||b.date,b.dropoffTime||'23:59');
+    return newStart < bEnd+BUFFER_MS && newEnd > bStart-BUFFER_MS;
   });
   if(dateConflicts.length){
-    var dcMsg='⚠️ Vehicle conflict for '+vehicle+':\n\n'+
-      dateConflicts.map(function(c){ return '• '+c.name+' — '+(c.pickupDate||c.date)+' to '+(c.dropoffDate||c.pickupDate||c.date)+' ('+c.status+')'; }).join('\n')+
+    var dcMsg='⚠️ Vehicle conflict for '+vehicle+' (includes 2-hr buffer):\n\n'+
+      dateConflicts.map(function(c){
+        var st=(c.pickupDate||c.date)+(c.pickupTime?' @ '+c.pickupTime:'');
+        var en=(c.dropoffDate||c.pickupDate||c.date)+(c.dropoffTime?' @ '+c.dropoffTime:'');
+        return '• '+c.name+' — '+st+' to '+en+' ('+c.status+')';
+      }).join('\n')+
       '\n\nSave booking anyway?';
     if(!confirm(dcMsg)) return;
   }
@@ -5837,7 +5848,10 @@ function generateInvoice(id){
     (Number(b.mileageCharge)>0?'<div class="inv-row"><span class="inv-lbl">🛣 Mileage Overage</span><span class="inv-val">'+$$(b.mileageCharge)+'</span></div>':'')+
     (Number(b.fuelCharge)>0?'<div class="inv-row"><span class="inv-lbl">⛽ Fuel Charge</span><span class="inv-val">'+$$(b.fuelCharge)+'</span></div>':'')+
     '<div class="inv-total"><span>TOTAL</span><span>'+$$(totalRevenue(b)+(Number(b.mileageCharge)||0)+(Number(b.fuelCharge)||0))+'</span></div>'+
-    (b.deposit?'<div class="inv-row" style="margin-top:6px;color:#666;font-size:12px"><span class="inv-lbl">Security Deposit</span><span class="inv-val">'+$$(b.deposit)+'</span></div>':'')+
+    (b.deposit?'<div class="inv-row" style="margin-top:6px;color:#666;font-size:12px"><span class="inv-lbl">Security Deposit Collected</span><span class="inv-val">'+$$(b.deposit)+'</span></div>':'')+
+    (b.deposit&&b.depositKept!=null?'<div class="inv-row" style="color:#666;font-size:12px"><span class="inv-lbl">Deposit Kept</span><span class="inv-val">'+$$(b.depositKept||0)+'</span></div>':'')+
+    (b.deposit&&b.depositKept!=null?'<div class="inv-row" style="color:#666;font-size:12px"><span class="inv-lbl">Deposit Returned</span><span class="inv-val">'+$$(Math.max(0,(Number(b.deposit)||0)-(Number(b.depositKept)||0)))+'</span></div>':'')+
+    (b.refundSent?'<div class="inv-row" style="color:#16a34a;font-size:12px"><span class="inv-lbl">Refund Sent</span><span class="inv-val">✅'+(b.refundDate?' '+fmtDate(b.refundDate):'')+(b.refundMethod?' via '+esc(b.refundMethod):'')+'</span></div>':'')+
     (b.notes?'<div class="inv-sec">Notes</div><div style="font-size:13px;color:#666;white-space:pre-wrap">'+esc(b.notes)+'</div>':'')+
     '<div class="inv-foot">Thank you for choosing Prestige Black Rentals · Dallas, TX</div>'+
     '</div>';
