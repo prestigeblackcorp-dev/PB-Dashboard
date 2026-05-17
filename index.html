@@ -857,13 +857,13 @@ tr:hover td { background: var(--gold-faint); }
         <select class="finput" id="fVehicle" onchange="onVehicleChange();updateMaintWarning()"><option value="">Select vehicle</option></select></div>
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
-        <select class="finput" id="fType" onchange="checkSlingshotHourly()">
+        <select class="finput" id="fType" onchange="checkSlingshotHourly();autoFillDropoff()">
           <option value="daily">Daily Rental</option>
           <option value="hourly">Hourly Booking</option>
           <option value="chauffeur">Chauffeur Service</option>
         </select></div>
       <div class="fgroup"><div class="flabel">Days / Hours</div>
-        <input type="number" class="finput" id="fDays" min="1" value="1" onchange="onVehicleChange();updateBrokerCalc();updateMileageHint()"></div>
+        <input type="number" class="finput" id="fDays" min="1" value="1" onchange="onVehicleChange();updateBrokerCalc();updateMileageHint();autoFillDropoff()"></div>
       <div class="fgroup"><div class="flabel">Status</div>
         <select class="finput" id="fStatus">
           <option value="pending">Pending</option>
@@ -877,15 +877,15 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fsec" style="grid-column:1/-1">Pickup &amp; Drop-off</div>
       <div class="fgroup">
         <div class="flabel">Pickup Date</div>
-        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value;updateMaintWarning()">
+        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value;updateMaintWarning();onPickupDateChange()">
       </div>
       <div class="fgroup">
         <div class="flabel">Pickup Time</div>
-        <input type="time" class="finput" id="fPickupTime">
+        <input type="time" class="finput" id="fPickupTime" oninput="onPickupTimeChange()">
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Date</div>
-        <input type="date" class="finput" id="fDropoffDate" oninput="updateMaintWarning()">
+        <input type="date" class="finput" id="fDropoffDate" oninput="updateMaintWarning();validateDropoffDate()">
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Time</div>
@@ -3752,6 +3752,56 @@ function onVehicleChange(){
   updateMileageHint();
   updateBrokerCalc();
   checkSlingshotHourly();
+}
+function onPickupDateChange(){
+  var pDate=$d('fPickupDate').value;
+  var dd=$d('fDropoffDate');
+  if(pDate){ dd.min=pDate; }
+  if(dd.value && pDate && dd.value<pDate){ dd.value=pDate; }
+  autoFillDropoff();
+}
+function onPickupTimeChange(){
+  var pt=$d('fPickupTime').value;
+  var dt=$d('fDropoffTime');
+  if(pt && !dt.value){ dt.value=pt; }
+  autoFillDropoff();
+}
+function validateDropoffDate(){
+  var pDate=$d('fPickupDate').value;
+  var dDate=$d('fDropoffDate').value;
+  if(pDate && dDate && dDate<pDate){
+    $d('fDropoffDate').value=pDate;
+    showToast('Return date cannot be before pickup — adjusted');
+  }
+}
+function autoFillDropoff(){
+  var type=$d('fType').value;
+  var pDate=$d('fPickupDate').value;
+  var pTime=$d('fPickupTime').value;
+  var days=parseInt($d('fDays').value)||1;
+  if(type==='hourly'){
+    if(pTime){
+      var parts=pTime.split(':');
+      var startMin=parseInt(parts[0])*60+parseInt(parts[1]);
+      var endMin=startMin+days*60;
+      var endH=Math.floor(endMin/60)%24;
+      var endM=endMin%60;
+      $d('fDropoffTime').value=pad(endH)+':'+pad(endM);
+      if(pDate){
+        var extra=Math.floor(endMin/(24*60));
+        var d=new Date(pDate+'T00:00:00');
+        d.setDate(d.getDate()+extra);
+        $d('fDropoffDate').value=dateStr(d);
+      }
+    }
+  } else if(type==='daily'||type==='chauffeur'){
+    if(pDate){
+      var d=new Date(pDate+'T00:00:00');
+      d.setDate(d.getDate()+days);
+      $d('fDropoffDate').value=dateStr(d);
+    }
+    if(pTime && !$d('fDropoffTime').value){ $d('fDropoffTime').value=pTime; }
+  }
 }
 function checkSlingshotHourly(){
   var isSH = $d('fVehicle').value==='Polaris Slingshot' && $d('fType').value==='hourly';
