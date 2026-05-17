@@ -5111,10 +5111,21 @@ function sendStripeVerification(){
   .then(function(data){
     if(!data.url||!data.id) throw new Error(data.error||'No URL returned from worker');
     $d('vStripeBtn').disabled=false;
-    $d('vStripeStatus').innerHTML='<a href="'+data.url+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy & text to customer &nbsp;<button class="btn btn-sm" style="padding:3px 8px;font-size:11px" onclick="navigator.clipboard.writeText(\''+data.url+'\').then(function(){toast(\'Link copied!\');})">Copy</button>';
+    var _vUrl=data.url;
+    var vStatusEl=$d('vStripeStatus');
+    vStatusEl.innerHTML='<a href="'+_vUrl+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; text to customer &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
+    $d('vCopyBtn').onclick=function(){ navigator.clipboard.writeText(_vUrl).then(function(){ showToast('Link copied!'); }); };
     toast('Verification link created — polling for result…');
     clearVerificationPoll();
+    var _pollCount=0;
+    var MAX_POLLS=120; // 10 minutes at 5s intervals
     _verifyPollTimer=setInterval(function(){
+      if(++_pollCount>MAX_POLLS){
+        clearVerificationPoll();
+        $d('vStripeStatus').textContent='⏱ Verification timed out. Ask customer to retry.';
+        $d('vStripeStatus').style.color='var(--muted)';
+        return;
+      }
       fetch(WORKER_URL+'/check-verification?session_id='+data.id)
       .then(function(r){ return r.json(); })
       .then(function(session){
@@ -6851,49 +6862,51 @@ function openContract(id){
   var brokerLine     = b.broker
     ? '<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+b.broker+'</span></div>'
     : '';
+  // Use function replacers so customer data containing $& $1 etc. isn't misinterpreted by JS replace
+  function sr(v){ return function(){ return v; }; }
   var filled=activeTemplate
-    .replace(/\{\{customer_name\}\}/gi,      b.name||'')
-    .replace(/\{\{customer_phone\}\}/gi,     b.phone||'')
-    .replace(/\{\{customer_email\}\}/gi,     b.email||'')
-    .replace(/\{\{vehicle\}\}/gi,            b.vehicle||'')
-    .replace(/\{\{rental_type\}\}/gi,        rentalType)
-    .replace(/\{\{booking_date\}\}/gi,       fmtDateFull(b.date))
-    .replace(/\{\{pickup_date\}\}/gi,        pickupDateFmt)
-    .replace(/\{\{return_date\}\}/gi,        returnDateFmt)
-    .replace(/\{\{pickup_time\}\}/gi,        b.pickupTime?fmtTime(b.pickupTime):'')
-    .replace(/\{\{dropoff_date\}\}/gi,       returnDateFmt)
-    .replace(/\{\{dropoff_time\}\}/gi,       b.dropoffTime?fmtTime(b.dropoffTime):'')
-    .replace(/\{\{pickup_time_display\}\}/gi, pickupTimeTxt)
-    .replace(/\{\{dropoff_time_display\}\}/gi,dropoffTimeTxt)
-    .replace(/\{\{days\}\}/gi,               String(days))
-    .replace(/\{\{total_revenue\}\}/gi,      '$'+rev.toLocaleString())
-    .replace(/\{\{deposit_amount\}\}/gi,     '$'+dep.toLocaleString())
-    .replace(/\{\{balance_due\}\}/gi,        '$'+bal.toLocaleString())
-    .replace(/\{\{pickup_address\}\}/gi,     b.address||'')
-    .replace(/\{\{addons\}\}/gi,             addonLines.length?addonLines.join(', '):'None')
-    .replace(/\{\{invoice_number\}\}/gi,     '#PBR-'+b.id.slice(-6).toUpperCase())
-    .replace(/\{\{notes\}\}/gi,              b.notes||'')
-    .replace(/\{\{today\}\}/gi,              todayFmt)
-    .replace(/\{\{broker\}\}/gi,             b.broker||'')
-    .replace(/\{\{broker_line\}\}/gi,        brokerLine)
-    .replace(/\{\{net_revenue\}\}/gi,        '$'+(netRevenue(b)))
-    .replace(/\{\{included_miles\}\}/gi,     b.includedMiles?String(b.includedMiles):'Unlimited')
-    .replace(/\{\{overage_rate\}\}/gi,       b.overageRate?'$'+b.overageRate+'/mi':'N/A')
-    .replace(/\{\{source\}\}/gi,             b.source||'')
-    .replace(/\{\{loyalty_discount\}\}/gi,   b.loyaltyDiscount?'$'+b.loyaltyDiscount:'')
-    .replace(/\{\{license_number\}\}/gi,     licNum)
-    .replace(/\{\{license_state\}\}/gi,      licState)
-    .replace(/\{\{license_address\}\}/gi,    licAddress)
-    .replace(/\{\{vehicle_year\}\}/gi,       vehicleYear)
-    .replace(/\{\{vehicle_make\}\}/gi,       vehicleMake)
-    .replace(/\{\{vehicle_model\}\}/gi,      vehicleModel)
-    .replace(/\{\{vehicle_color\}\}/gi,      vehicleColor)
-    .replace(/\{\{vehicle_vin\}\}/gi,        vehicleVin)
-    .replace(/\{\{daily_rate\}\}/gi,         dailyRate)
-    .replace(/\{\{mileage_limit_display\}\}/gi, milesDisplay)
-    .replace(/\{\{overage_display\}\}/gi,    overageDisplay)
-    .replace(/\{\{unlimited_fee\}\}/gi,      unlimitedFee)
-    .replace(/\{\{unlimited_total\}\}/gi,    b.unlimited ? '$'+((Number(b.unlimited)||0)*(Number(b.days)||1)).toFixed(2) : 'N/A')
+    .replace(/\{\{customer_name\}\}/gi,      sr(b.name||''))
+    .replace(/\{\{customer_phone\}\}/gi,     sr(b.phone||''))
+    .replace(/\{\{customer_email\}\}/gi,     sr(b.email||''))
+    .replace(/\{\{vehicle\}\}/gi,            sr(b.vehicle||''))
+    .replace(/\{\{rental_type\}\}/gi,        sr(rentalType))
+    .replace(/\{\{booking_date\}\}/gi,       sr(fmtDateFull(b.date)))
+    .replace(/\{\{pickup_date\}\}/gi,        sr(pickupDateFmt))
+    .replace(/\{\{return_date\}\}/gi,        sr(returnDateFmt))
+    .replace(/\{\{pickup_time\}\}/gi,        sr(b.pickupTime?fmtTime(b.pickupTime):''))
+    .replace(/\{\{dropoff_date\}\}/gi,       sr(returnDateFmt))
+    .replace(/\{\{dropoff_time\}\}/gi,       sr(b.dropoffTime?fmtTime(b.dropoffTime):''))
+    .replace(/\{\{pickup_time_display\}\}/gi, sr(pickupTimeTxt))
+    .replace(/\{\{dropoff_time_display\}\}/gi,sr(dropoffTimeTxt))
+    .replace(/\{\{days\}\}/gi,               sr(String(days)))
+    .replace(/\{\{total_revenue\}\}/gi,      sr('$'+rev.toLocaleString()))
+    .replace(/\{\{deposit_amount\}\}/gi,     sr('$'+dep.toLocaleString()))
+    .replace(/\{\{balance_due\}\}/gi,        sr('$'+bal.toLocaleString()))
+    .replace(/\{\{pickup_address\}\}/gi,     sr(b.address||''))
+    .replace(/\{\{addons\}\}/gi,             sr(addonLines.length?addonLines.join(', '):'None'))
+    .replace(/\{\{invoice_number\}\}/gi,     sr('#PBR-'+b.id.slice(-6).toUpperCase()))
+    .replace(/\{\{notes\}\}/gi,              sr(b.notes||''))
+    .replace(/\{\{today\}\}/gi,              sr(todayFmt))
+    .replace(/\{\{broker\}\}/gi,             sr(b.broker||''))
+    .replace(/\{\{broker_line\}\}/gi,        sr(brokerLine))
+    .replace(/\{\{net_revenue\}\}/gi,        sr('$'+(netRevenue(b))))
+    .replace(/\{\{included_miles\}\}/gi,     sr(b.includedMiles?String(b.includedMiles):'Unlimited'))
+    .replace(/\{\{overage_rate\}\}/gi,       sr(b.overageRate?'$'+b.overageRate+'/mi':'N/A'))
+    .replace(/\{\{source\}\}/gi,             sr(b.source||''))
+    .replace(/\{\{loyalty_discount\}\}/gi,   sr(b.loyaltyDiscount?'$'+b.loyaltyDiscount:''))
+    .replace(/\{\{license_number\}\}/gi,     sr(licNum))
+    .replace(/\{\{license_state\}\}/gi,      sr(licState))
+    .replace(/\{\{license_address\}\}/gi,    sr(licAddress))
+    .replace(/\{\{vehicle_year\}\}/gi,       sr(vehicleYear))
+    .replace(/\{\{vehicle_make\}\}/gi,       sr(vehicleMake))
+    .replace(/\{\{vehicle_model\}\}/gi,      sr(vehicleModel))
+    .replace(/\{\{vehicle_color\}\}/gi,      sr(vehicleColor))
+    .replace(/\{\{vehicle_vin\}\}/gi,        sr(vehicleVin))
+    .replace(/\{\{daily_rate\}\}/gi,         sr(dailyRate))
+    .replace(/\{\{mileage_limit_display\}\}/gi, sr(milesDisplay))
+    .replace(/\{\{overage_display\}\}/gi,    sr(overageDisplay))
+    .replace(/\{\{unlimited_fee\}\}/gi,      sr(unlimitedFee))
+    .replace(/\{\{unlimited_total\}\}/gi,    sr(b.unlimited ? '$'+((Number(b.unlimited)||0)*(Number(b.days)||1)).toFixed(2) : 'N/A'))
     .replace(/\{\{delivery_fee\}\}/gi,       deliveryFee)
     .replace(/\{\{pet_fee\}\}/gi,            petFee)
     .replace(/\{\{odometer_in\}\}/gi,        odomIn)
