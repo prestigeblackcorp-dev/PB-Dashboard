@@ -3830,8 +3830,10 @@ function updateLiveTotal(){
 
 function updateRemainingBalance(force){
   var base   = parseFloat($d('fRevenue').value)||0;
-  var addons = ['fDelivery','fUnlimited','fPet','fPhoto','fChampagne','fDecor','fBouquet']
-    .reduce(function(s,id){ return s+(parseFloat($d(id)?$d(id).value:0)||0); },0);
+  var days   = Math.max(1,parseFloat($d('fDays').value)||1);
+  var addons = ['fDelivery','fPet','fPhoto','fChampagne','fDecor','fBouquet']
+    .reduce(function(s,id){ return s+(parseFloat($d(id)?$d(id).value:0)||0); },0)
+    + (parseFloat($d('fUnlimited')?$d('fUnlimited').value:0)||0)*days;
   var total  = base + addons;
   var lock   = parseFloat($d('fDateLock').value)||0;
   var rb     = $d('fRemainingBalance');
@@ -5067,15 +5069,18 @@ function dismissToast(){
 function exportCSV(){
   // Feature 12: record export date
   try{ localStorage.setItem('pb_last_export',todayStr()); }catch(e){}
-  var cols=['ID','Date','Customer','Phone','Email','Vehicle','Type','Days','Base Revenue','Add-ons','Total Revenue','Net Revenue','Deposit','Date Lock','Remaining Balance','Balance Paid','Payment Method','Broker','Broker Fee','Source','Status','Pickup Date','Dropoff Date','Address','Notes','Cost','Odometer In','Fuel In','Odometer Out','Fuel Out','Condition In','Condition Out','Fuel Charge','Mileage Charge','Refund Sent','Refund Date','Refund Method','Damage','Claim Status','Claim Recovered','Claim Notes'];
+  var cols=['ID','Date','Customer','Phone','Email','Vehicle','Type','Days','Base Revenue','Delivery','Unlimited','Pet','Photo','Champagne','Decor','Bouquet','Add-ons','Total Revenue','Net Revenue','Deposit','Date Lock','Remaining Balance','Balance Paid','Payment Method','Broker','Broker Fee','Loyalty Discount','Included Miles','Overage Rate','Source','Status','Pickup Date','Pickup Time','Dropoff Date','Dropoff Time','Address','Notes','Cost','Odometer In','Fuel In','Odometer Out','Fuel Out','Condition In','Condition Out','Fuel Charge','Mileage Charge','Refund Sent','Refund Date','Refund Method','Damage','Claim Status','Claim Recovered','Claim Notes'];
   var rows=bookings.filter(function(b){return !b._deleted;}).map(function(b){
     return [
       b.id,b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
-      b.revenue||0,getAddons(b),totalRevenue(b),netRevenue(b),
+      b.revenue||0,
+      b.delivery||0,b.unlimited||0,b.pet||0,b.photo||0,b.champagne||0,b.decor||0,b.bouquet||0,
+      getAddons(b),totalRevenue(b),netRevenue(b),
       b.deposit||0,b.dateLock||0,getRemainingBalance(b),
       b.balancePaidAmount||'',b.balancePaidMethod||'',
-      b.broker||'',b.brokerFee||0,b.source||'',b.status,
-      b.pickupDate||'',b.dropoffDate||'',b.address||'',
+      b.broker||'',b.brokerFee||0,b.loyaltyDiscount||0,
+      b.includedMiles||'',b.overageRate||'',b.source||'',b.status,
+      b.pickupDate||'',b.pickupTime||'',b.dropoffDate||'',b.dropoffTime||'',b.address||'',
       (b.notes||'').replace(/,/g,';'),b.cost||0,
       b.odomIn||'',b.fuelIn||'',b.odomOut||'',b.fuelOut||'',
       b.condIn||'',b.condOut||'',b.fuelCharge||0,b.mileageCharge||0,
@@ -5120,12 +5125,15 @@ function handleCSVImport(e){
       var obj={};
       headers.forEach(function(h,idx){ obj[h]=(cols[idx]||'').trim(); });
       // Map exported column names → booking field names
-      var cm={'pickup date':'pickupDate','dropoff date':'dropoffDate','base revenue':'revenue',
-              'customer':'name','date lock':'dateLock','remaining balance':'remainingBalance',
-              'broker fee':'brokerFee','balance paid':'balancePaidAmount',
-              'payment method':'balancePaidMethod','fuel charge':'fuelCharge',
-              'mileage charge':'mileageCharge','refund sent':'refundSent',
-              'refund date':'refundDate','refund method':'refundMethod',
+      var cm={'pickup date':'pickupDate','pickup time':'pickupTime',
+              'dropoff date':'dropoffDate','dropoff time':'dropoffTime',
+              'base revenue':'revenue','customer':'name',
+              'date lock':'dateLock','remaining balance':'remainingBalance',
+              'broker fee':'brokerFee','loyalty discount':'loyaltyDiscount',
+              'included miles':'includedMiles','overage rate':'overageRate',
+              'balance paid':'balancePaidAmount','payment method':'balancePaidMethod',
+              'fuel charge':'fuelCharge','mileage charge':'mileageCharge',
+              'refund sent':'refundSent','refund date':'refundDate','refund method':'refundMethod',
               'claim status':'claimStatus','claim recovered':'claimRecovered',
               'claim notes':'claimNotes','odometer in':'odomIn','fuel in':'fuelIn',
               'odometer out':'odomOut','fuel out':'fuelOut','condition in':'condIn',
@@ -5612,16 +5620,17 @@ function renderFleetTab(){
     el.innerHTML='<div class="tbl-card"><div style="padding:40px;text-align:center;color:var(--muted)">No service records yet. Tap "+ Log Service" to add one.</div></div>';
     return;
   }
-  el.innerHTML=ALL_VEHICLES.filter(function(v){return byV[v]&&byV[v].length;}).map(function(v){
-    var recs=byV[v];
+  el.innerHTML=ALL_VEHICLES.map(function(v){
+    var recs=byV[v]||[];
     var total=recs.reduce(function(s,r){return s+(Number(r.cost)||0);},0);
     var safe=v.replace(/'/g,"\\'");
     return '<div class="tbl-card" style="margin-bottom:16px">'+
       '<div class="tbl-head">'+
         '<div class="tbl-title">'+v+'</div>'+
-        '<div class="tbl-meta">'+recs.length+' records · '+$$(total)+'</div>'+
+        '<div class="tbl-meta">'+(recs.length?recs.length+' records · '+$$(total):'No records yet')+'</div>'+
         '<button class="btn btn-sm btn-gold" style="margin-left:auto" onclick="openMaintenanceModal(null,\''+safe+'\')">+ Log</button>'+
       '</div>'+
+      (!recs.length ? '<div style="padding:14px 18px;font-size:12px;color:var(--muted)">No service records. Click + Log to add the first one.</div>' :
       '<div class="tbl-wrap"><table><thead><tr>'+
         '<th>Date</th><th>Service</th><th>Mileage</th><th>Cost</th><th>Next Due</th><th>Notes</th><th></th>'+
       '</tr></thead><tbody>'+
@@ -5639,8 +5648,9 @@ function renderFleetTab(){
           '<td><button class="btn btn-sm" onclick="openMaintenanceModal(\''+r.id+'\')">Edit</button></td>'+
           '</tr>';
       }).join('')+
-      '</tbody></table></div></div>';
-  }).join('')||'<div class="tbl-card"><div style="padding:40px;text-align:center;color:var(--muted)">No service records yet.</div></div>';
+      '</tbody></table></div>')+
+      '</div>';
+  }).join('');
 }
 
 // ════════════════════════════════════════════════════════
