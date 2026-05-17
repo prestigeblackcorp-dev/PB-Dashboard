@@ -1,5 +1,5 @@
-const CACHE = 'pb-v1';
-const ASSETS = ['./', './index.html'];
+const CACHE = 'pb-v3';
+const ASSETS = ['./index.html', './icon.png'];
 
 self.addEventListener('install', function(e) {
   e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(ASSETS); }));
@@ -15,6 +15,7 @@ self.addEventListener('activate', function(e) {
 
 self.addEventListener('fetch', function(e) {
   if(e.request.method !== 'GET') return;
+  // Always try network first, fall back to cache
   e.respondWith(
     fetch(e.request).then(function(res){
       var clone = res.clone();
