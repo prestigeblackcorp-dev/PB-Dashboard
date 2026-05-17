@@ -1101,7 +1101,7 @@ tr:hover td { background: var(--gold-faint); }
           <option>Walk-in</option>
           <option>Other</option>
         </select></div>
-      <div class="fgroup"><div class="flabel">Loyalty Discount ($)</div>
+      <div class="fgroup"><div class="flabel">Loyalty Discount ($) <span style="font-size:10px;color:var(--muted);font-weight:400">one-time, whole booking</span></div>
         <input type="number" class="finput" id="fLoyaltyDiscount" min="0" step="1" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
 
       <div id="fMileageSection" style="display:contents">
@@ -1117,7 +1117,7 @@ tr:hover td { background: var(--gold-faint); }
       <div class="fgroup"><div class="flabel">Broker Name</div>
         <input type="text" class="finput" id="fBroker" list="brokerList" placeholder="Name or company" oninput="updateBrokerCalc()">
         <datalist id="brokerList"></datalist></div>
-      <div class="fgroup"><div class="flabel">Broker Fee ($ / day)</div>
+      <div class="fgroup"><div class="flabel" id="fBrokerFeeLabel">Broker Fee ($ / day)</div>
         <input type="number" class="finput" id="fBrokerFee" min="0" step="0.01" value="0" placeholder="0" oninput="updateBrokerCalc()"></div>
       <div class="ffull" id="brokerCalcRow" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;gap:18px;flex-wrap:wrap"></div>
 
@@ -2822,7 +2822,7 @@ function removeFromGCal(b){
 
 function syncAllToGCal(){
   if(!gcalAccessToken){ alert('Connect Google Calendar first.'); return; }
-  var toSync = bookings.filter(function(b){ return !b._deleted && (b.status === 'confirmed' || b.status === 'completed' || b.status === 'in-progress'); });
+  var toSync = bookings.filter(function(b){ return !b._deleted && b.status !== 'cancelled'; });
   if(!toSync.length){ alert('No active bookings to sync.'); return; }
   // Stagger requests slightly to avoid rate limits
   toSync.forEach(function(b, i){
@@ -2988,7 +2988,7 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -3222,12 +3222,19 @@ function renderVehicleTable(filtered){
   var from=$d('filterFrom').value, to=$d('filterTo').value;
   var map={};
   active.forEach(function(b){
-    if(!map[b.vehicle]) map[b.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0};
+    if(!map[b.vehicle]) map[b.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
     map[b.vehicle].bookings++;
-    map[b.vehicle].revenue  +=totalRevenue(b);
-    map[b.vehicle].deposits +=(Number(b.deposit)||0);
-    map[b.vehicle].addons   +=getAddons(b);
-    map[b.vehicle].cost     +=getEstCost(b);
+    map[b.vehicle].revenue    +=totalRevenue(b);
+    map[b.vehicle].deposits   +=(Number(b.deposit)||0);
+    map[b.vehicle].addons     +=getAddons(b);
+    map[b.vehicle].cost       +=getEstCost(b);
+    map[b.vehicle].extraIncome+=(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0);
+  });
+  // Add standalone income entries linked to vehicles
+  incomes.filter(function(i){return !i._deleted&&i.vehicle;}).forEach(function(i){
+    if(!map[i.vehicle]) return;
+    map[i.vehicle].extraIncome+=(Number(i.amount)||0);
+    map[i.vehicle].revenue    +=(Number(i.amount)||0);
   });
   var rows=Object.keys(map).map(function(v){
     var d=map[v];
@@ -3695,6 +3702,23 @@ function openBookingDetail(id){
         '<img src="'+b.customerSig+'" style="max-height:60px;max-width:260px;object-fit:contain;display:block">'+
       '</div>' : '')+
 
+    // Resend emails
+    ((b.email&&MESSAGING_URL)?
+      '<div class="fsec" style="margin-top:12px">📧 Emails</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+
+        '<button class="btn btn-sm" onclick="sendConfirmationEmail(bookings.find(function(x){return x.id===\''+b.id+'\';}));showToast(\'Confirmation resent ✅\')" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
+        (WORKER_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
+        '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">📨 Send Reminder</button>'+
+      '</div>'
+    : '')+
+
+    // Web booking missing fields notice
+    (b._fromWeb&&(!b.address||!b.broker)?
+      '<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:8px 12px;font-size:12px;color:#fbbf24;margin-bottom:8px">'+
+        '🌐 Web booking — edit to fill in: '+((!b.address)?'address ':'')+((!b.broker)?'broker/partner':'')+
+      '</div>'
+    : '')+
+
     // Notes
     (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0">'+b.notes+'</div>':'')+
 
@@ -3859,6 +3883,7 @@ function renderCalendar(){
       var blockedBanner=blockedRange
         ? '<div class="cal-block-blocked" title="'+(blockedRange.reason||'Blocked')+'">🚫 '+(blockedRange.reason||'Blocked')+'</div>'
         : '';
+      var overlapWarn=bkgs.length>1?'<div style="font-size:9px;color:#ef4444;font-weight:700;padding:2px 4px;background:rgba(239,68,68,.15);border-radius:4px;margin-bottom:2px">⚠ '+bkgs.length+' bookings overlap</div>':'';
       var blocks=bkgs.slice(0,3).map(function(b){
         var hasPhoto=Number(b.photo)>0;
         var typeCls=b.type;
@@ -3877,7 +3902,7 @@ function renderCalendar(){
       }).join('');
       var more=bkgs.length>3?'<div class="cal-more">+' +(bkgs.length-3)+' more</div>':'';
       return '<td class="'+cellCls+'" onclick="calCellClick(\''+safe_v+'\',\''+d+'\')" title="Add booking for '+vehicle+'">'+
-        blockedBanner+blocks+more+
+        blockedBanner+overlapWarn+blocks+more+
         '<span class="cal-add-hint">+</span>'+
         '</td>';
     }).join('');
@@ -4025,7 +4050,7 @@ function updateLiveTotal(){
   $d('liveTotalVal').textContent   = $$(total);
 }
 
-function updateRemainingBalance(force){
+function updateRemainingBalance(force){force=true; // always recalc when revenue changes
   var base   = parseFloat($d('fRevenue').value)||0;
   var days   = Math.max(1,parseFloat($d('fDays').value)||1);
   var addons = ['fDelivery','fPet','fPhoto','fChampagne','fDecor','fBouquet']
@@ -4041,6 +4066,9 @@ function updateRemainingBalance(force){
 }
 
 function updateBrokerCalc(){
+  var type=$d('fType')?$d('fType').value:'daily';
+  var unit=(type==='hourly'||type==='chauffeur')?'hr':'day';
+  var lbl=$d('fBrokerFeeLabel'); if(lbl) lbl.textContent='Broker Fee ($ / '+unit+')';
   var rev=parseFloat($d('fRevenue')?$d('fRevenue').value:0)||0;
   var ratePerDay=parseFloat($d('fBrokerFee')?$d('fBrokerFee').value:0)||0;
   var days=parseFloat($d('fDays')?$d('fDays').value:1)||1;
@@ -5274,6 +5302,31 @@ function sendReviewRequest(b){
   }).catch(function(){});
 }
 
+function resendVerificationEmail(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b||!WORKER_URL||!b.email) return;
+  fetch(WORKER_URL+'/create-verification',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({bookingId:id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.url){ showToast('Could not create verify session'); return; }
+    var firstName=(b.name||'').split(' ')[0]||'there';
+    fetch(MESSAGING_URL+'/send-email',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        to:b.email,
+        subject:'Action needed — Verify your ID for Prestige Black',
+        html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+          '<h2 style="color:#b8982e">Hi '+firstName+', one quick step! ✅</h2>'+
+          '<p style="font-size:15px;line-height:1.6">To complete your booking for the <strong>'+(b.vehicle||'')+'</strong>, please verify your ID — it takes about 60 seconds.</p>'+
+          '<a href="'+d.url+'" style="display:inline-block;margin-top:12px;padding:12px 24px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Verify My ID →</a>'+
+          '<p style="margin-top:20px;font-size:13px;color:#777">Questions? Text us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
+          '<p style="font-size:12px;color:#888;margin-top:16px">Booking ID: '+id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+      })
+    }).then(function(r){showToast(r.ok?'Verify link resent ✅':'Failed to send email');}).catch(function(){showToast('Failed to send email');});
+  }).catch(function(){showToast('Could not reach verify worker');});
+}
+
 function sendConfirmationEmail(b){
   if(!MESSAGING_URL||!b||!b.email) return;
   var firstName=(b.name||'').split(' ')[0]||'there';
@@ -5285,7 +5338,7 @@ function sendConfirmationEmail(b){
       html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
         '<h2 style="color:#b8982e">You\'re confirmed, '+firstName+'! 🎉</h2>'+
         '<p style="font-size:15px;line-height:1.6">Your booking for the <strong>'+b.vehicle+'</strong> on <strong>'+(b.pickupDate||b.date)+'</strong> is officially confirmed.</p>'+
-        (b.pickupTime?'<p style="font-size:15px">Pickup time: <strong>'+b.pickupTime+'</strong></p>':'')+
+        (b.pickupTime?'<p style="font-size:15px">Pickup time: <strong>'+fmtTime(b.pickupTime)+'</strong></p>':'')+
         '<p style="font-size:15px;line-height:1.6">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
         '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
@@ -5304,7 +5357,7 @@ function sendPickupReminder(id){
       subject:'Reminder: Your rental is coming up — '+b.vehicle,
       html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
         '<h2 style="color:#b8982e">See you soon, '+firstName+'! 🚗</h2>'+
-        '<p style="font-size:15px;line-height:1.6">Just a reminder that your <strong>'+b.vehicle+'</strong> rental is coming up on <strong>'+(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+b.pickupTime+'</strong>':'')+'. We\'re looking forward to it!</p>'+
+        '<p style="font-size:15px;line-height:1.6">Just a reminder that your <strong>'+b.vehicle+'</strong> rental is coming up on <strong>'+(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+'. We\'re looking forward to it!</p>'+
         '<p style="font-size:15px;line-height:1.6">If you have any questions or need to make changes, text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
         '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
@@ -5324,8 +5377,8 @@ function sendReceiptEmail(b){
   if(Number(b.decor)>0) addons.push({label:'Decor',val:b.decor});
   if(Number(b.bouquet)>0) addons.push({label:'Bouquet',val:b.bouquet});
   var rows='<tr><td style="padding:6px 0;color:#555;width:160px">Vehicle</td><td style="padding:6px 0;font-weight:600">'+b.vehicle+'</td></tr>'+
-    '<tr><td style="padding:6px 0;color:#555">Pickup</td><td style="padding:6px 0">'+(b.pickupDate||b.date)+(b.pickupTime?' @ '+b.pickupTime:'')+'</td></tr>'+
-    '<tr><td style="padding:6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+(b.dropoffDate||'—')+(b.dropoffTime?' @ '+b.dropoffTime:'')+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Pickup</td><td style="padding:6px 0">'+(b.pickupDate||b.date)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+(b.dropoffDate||'—')+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Duration</td><td style="padding:6px 0">'+b.days+' day'+(b.days!==1?'s':'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Base Rate</td><td style="padding:6px 0">'+$$(b.revenue)+'</td></tr>'+
     addons.map(function(a){ return '<tr><td style="padding:6px 0;color:#555">'+a.label+'</td><td style="padding:6px 0">'+$$(a.val)+'</td></tr>'; }).join('')+
@@ -5364,7 +5417,13 @@ function bulkConfirmPending(){
 function quickStatus(id, newStatus){
   var idx=bookings.findIndex(function(b){return b.id===id;});
   if(idx===-1) return;
+  var oldStatus=bookings[idx].status;
+  // Guard: warn when reverting a completed booking
+  if(oldStatus==='completed' && newStatus!=='completed'){
+    if(!confirm('This booking is already completed. Move it back to "'+newStatus+'"?')) return;
+  }
   bookings[idx].status=newStatus;
+  bookings[idx]._t=Date.now();
   if(newStatus==='completed') sendReviewRequest(bookings[idx]);
   if(newStatus==='confirmed') sendConfirmationEmail(bookings[idx]);
   save();
@@ -7040,6 +7099,23 @@ function setLockPin(){
   if(np){ localStorage.setItem('pb_lock_pin',np); toast('PIN lock enabled.'); }
   else  { localStorage.removeItem('pb_lock_pin'); toast('PIN lock disabled.'); }
 }
+
+// ── Auto-lock after 30 minutes of inactivity ─────────────────────────────────
+(function(){
+  var IDLE_MS = 30 * 60 * 1000; // 30 minutes
+  var _idleTimer;
+  function resetIdle(){
+    clearTimeout(_idleTimer);
+    _idleTimer = setTimeout(function(){
+      var pin = localStorage.getItem('pb_lock_pin');
+      if(pin){ lockApp(); }
+    }, IDLE_MS);
+  }
+  ['mousemove','keydown','touchstart','click','scroll'].forEach(function(ev){
+    document.addEventListener(ev, resetIdle, {passive:true});
+  });
+  resetIdle();
+})();
 
 // ════════════════════════════════════════════════════════
 //  ONLINE / OFFLINE DETECTION
