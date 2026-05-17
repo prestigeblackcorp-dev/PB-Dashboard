@@ -36,6 +36,10 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 /* ── Tabs ── */
 .tab-bar { background: #0e0e0e; border-bottom: 1px solid var(--border); padding: 0 24px;
   display: flex; gap: 0; overflow-x: auto; position: sticky; top: max(61px, calc(env(safe-area-inset-top) + 47px)); z-index: 190; }
+.fleet-stab-bar { display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--border); padding-bottom:0; }
+.fleet-stab { padding:8px 16px; background:none; border:none; border-bottom:2px solid transparent; color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; transition:color .15s,border-color .15s; white-space:nowrap; }
+.fleet-stab:hover { color:var(--text); }
+.fleet-stab.active { color:var(--gold); border-bottom-color:var(--gold); }
 .tab-btn { padding: 13px 20px; background: none; border: none; color: var(--muted);
   font-size: 13px; font-weight: 700; letter-spacing: .04em; cursor: pointer;
   border-bottom: 2px solid transparent; white-space: nowrap; transition: color .15s, border-color .15s; }
@@ -771,24 +775,100 @@ tr:hover td { background: var(--gold-faint); }
 <!-- ═══ TAB: FLEET MAINTENANCE ═══ -->
 <div id="tab-fleet" class="tab-panel">
   <div class="main">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase">Fleet &amp; Maintenance</div>
-      <button class="btn btn-gold btn-sm" onclick="openMaintenanceModal()">+ Log Service</button>
+
+    <!-- Fleet sub-tab bar -->
+    <div class="fleet-stab-bar">
+      <button class="fleet-stab active" id="fstab-overview" onclick="switchFleetTab('overview')">🚗 Overview</button>
+      <button class="fleet-stab" id="fstab-logmaint" onclick="switchFleetTab('logmaint')">🔧 Log Maintenance</button>
+      <button class="fleet-stab" id="fstab-blockdates" onclick="switchFleetTab('blockdates')">🚫 Block Dates</button>
     </div>
-    <div id="fleetAlerts" style="margin-bottom:12px"></div>
-    <div style="background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:16px">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-        <div style="font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--gold)">Fleet Availability</div>
-        <input type="date" class="finput" id="availCheckDate" oninput="renderAvailBadges()" style="max-width:168px;padding:6px 10px;font-size:12px">
-        <button class="btn btn-sm" onclick="$d('availCheckDate').value='';renderAvailBadges()" style="font-size:11px;padding:4px 12px">Clear</button>
+
+    <!-- ── OVERVIEW panel ── -->
+    <div id="fpanel-overview">
+      <div id="fleetAlerts" style="margin-bottom:12px"></div>
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <div style="font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--gold)">Fleet Availability</div>
+          <input type="date" class="finput" id="availCheckDate" oninput="renderAvailBadges()" style="max-width:168px;padding:6px 10px;font-size:12px">
+          <button class="btn btn-sm" onclick="$d('availCheckDate').value='';renderAvailBadges()" style="font-size:11px;padding:4px 12px">Clear</button>
+        </div>
+        <div id="availBadgesRow"></div>
       </div>
-      <div id="availBadgesRow"></div>
+      <div class="chart-card" style="margin-bottom:16px">
+        <div class="chart-ttl">Vehicle Utilization — Last 90 Days</div>
+        <div class="heatmap-wrap" id="utilizationHeatmap"></div>
+      </div>
+      <div id="fleetRecords"></div>
     </div>
-    <div class="chart-card" style="margin-bottom:16px">
-      <div class="chart-ttl">Vehicle Utilization — Last 90 Days</div>
-      <div class="heatmap-wrap" id="utilizationHeatmap"></div>
+
+    <!-- ── LOG MAINTENANCE panel ── -->
+    <div id="fpanel-logmaint" style="display:none">
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:20px 22px;max-width:600px">
+        <div style="font-size:13px;font-weight:800;color:var(--gold);margin-bottom:16px">🔧 Log Service Record</div>
+        <div class="fgrid">
+          <div class="fgroup">
+            <div class="flabel">Vehicle *</div>
+            <select class="finput" id="ilMaintVehicle"></select>
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Service Type *</div>
+            <select class="finput" id="ilMaintType">
+              <option>Oil Change</option><option>Tire Rotation</option><option>Tire Replacement</option>
+              <option>Detail / Wash</option><option>Registration</option><option>Inspection</option>
+              <option>Brake Service</option><option>Fluid Service</option><option>Battery</option><option>Other</option>
+            </select>
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Service Date *</div>
+            <input type="date" class="finput" id="ilMaintDate">
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Next Due Date</div>
+            <input type="date" class="finput" id="ilMaintNextDue">
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Cost ($)</div>
+            <input type="number" class="finput" id="ilMaintCost" min="0" step="0.01" placeholder="0.00">
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Mileage at Service</div>
+            <input type="number" class="finput" id="ilMaintMileage" min="0" placeholder="Miles">
+          </div>
+          <div class="fgroup ffull">
+            <div class="flabel">Notes</div>
+            <input type="text" class="finput" id="ilMaintNotes" placeholder="Optional details…">
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:18px">
+          <button class="btn" onclick="resetInlineMaint()">Clear</button>
+          <button class="btn btn-gold" style="flex:1" onclick="saveInlineMaint()">Save Record</button>
+        </div>
+        <div id="ilMaintMsg" style="margin-top:12px;font-size:12px;color:var(--green);display:none">✅ Record saved.</div>
+      </div>
     </div>
-    <div id="fleetRecords"></div>
+
+    <!-- ── BLOCK DATES panel ── -->
+    <div id="fpanel-blockdates" style="display:none">
+      <div style="background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:20px 22px;max-width:620px">
+        <div style="font-size:13px;font-weight:800;color:var(--gold);margin-bottom:16px">🚫 Block Vehicle Dates</div>
+        <div class="fgroup" style="margin-bottom:16px">
+          <div class="flabel">Vehicle</div>
+          <select class="finput" id="bdVehicle" onchange="renderBdBlocks()" style="max-width:280px"></select>
+        </div>
+        <div id="bdBlocksList" style="margin-bottom:14px"></div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px">
+          <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Add Block</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <div><div class="flabel" style="font-size:10px">From</div><input type="date" class="finput" id="bdStart" style="max-width:148px"></div>
+            <div><div class="flabel" style="font-size:10px">To</div><input type="date" class="finput" id="bdEnd" style="max-width:148px"></div>
+            <div style="flex:1;min-width:140px"><div class="flabel" style="font-size:10px">Reason</div><input type="text" class="finput" id="bdReason" placeholder="Maintenance, repair…"></div>
+            <button class="btn btn-gold btn-sm" onclick="addBdBlock()" style="white-space:nowrap;align-self:flex-end">+ Add</button>
+          </div>
+        </div>
+        <div id="bdMsg" style="margin-top:10px;font-size:12px;color:var(--green);display:none">✅ Saved.</div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -5373,6 +5453,132 @@ function renderAvailBadges(){
         (sub?'<div style="font-size:11px;color:'+clr+';margin-top:2px">'+sub+'</div>':'')+
         '</div>';
     }).join('')+'</div>';
+}
+
+// ════════════════════════════════════════════════════════
+//  FLEET SUB-TABS
+// ════════════════════════════════════════════════════════
+var activeFleetTab = 'overview';
+
+function switchFleetTab(name){
+  activeFleetTab = name;
+  ['overview','logmaint','blockdates'].forEach(function(t){
+    var btn=$d('fstab-'+t), panel=$d('fpanel-'+t);
+    if(btn) btn.classList.toggle('active', t===name);
+    if(panel) panel.style.display = t===name ? '' : 'none';
+  });
+  if(name==='logmaint') initInlineMaint();
+  if(name==='blockdates') initBdPanel();
+}
+
+// ── Inline Log Maintenance ──
+function initInlineMaint(){
+  var sel=$d('ilMaintVehicle');
+  if(!sel) return;
+  var cur=sel.value;
+  sel.innerHTML='';
+  ALL_VEHICLES.forEach(function(v){ var o=document.createElement('option'); o.value=o.textContent=v; sel.appendChild(o); });
+  if(cur) sel.value=cur;
+  if(!$d('ilMaintDate').value) $d('ilMaintDate').value=todayStr();
+  $d('ilMaintMsg').style.display='none';
+}
+
+function resetInlineMaint(){
+  $d('ilMaintVehicle').value = ALL_VEHICLES[0]||'';
+  $d('ilMaintType').value    = 'Oil Change';
+  $d('ilMaintDate').value    = todayStr();
+  $d('ilMaintNextDue').value = '';
+  $d('ilMaintCost').value    = '';
+  $d('ilMaintMileage').value = '';
+  $d('ilMaintNotes').value   = '';
+  $d('ilMaintMsg').style.display='none';
+}
+
+function saveInlineMaint(){
+  var vehicle=$d('ilMaintVehicle').value, date=$d('ilMaintDate').value;
+  if(!vehicle||!date){ showToast('Select a vehicle and date.'); return; }
+  maintenance.push({
+    id:          'm'+Date.now(),
+    vehicle:     vehicle,
+    serviceType: $d('ilMaintType').value,
+    date:        date,
+    nextDue:     $d('ilMaintNextDue').value,
+    cost:        parseFloat($d('ilMaintCost').value)||0,
+    mileage:     parseFloat($d('ilMaintMileage').value)||0,
+    notes:       $d('ilMaintNotes').value.trim(),
+    _t:          Date.now()
+  });
+  saveMaintData();
+  renderFleetTab();
+  var msg=$d('ilMaintMsg'); if(msg){ msg.style.display=''; setTimeout(function(){ msg.style.display='none'; },2500); }
+  resetInlineMaint();
+}
+
+// ── Block Dates ──
+function initBdPanel(){
+  var sel=$d('bdVehicle');
+  if(!sel) return;
+  var cur=sel.value;
+  sel.innerHTML='';
+  ALL_VEHICLES.forEach(function(v){ var o=document.createElement('option'); o.value=o.textContent=v; sel.appendChild(o); });
+  if(cur && ALL_VEHICLES.indexOf(cur)!==-1) sel.value=cur;
+  renderBdBlocks();
+}
+
+function renderBdBlocks(){
+  var v=$d('bdVehicle').value;
+  var ranges=(VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[];
+  var el=$d('bdBlocksList'); if(!el) return;
+  if(!ranges.length){
+    el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:4px 0">No dates blocked for this vehicle.</div>';
+    return;
+  }
+  el.innerHTML='<div style="display:flex;flex-direction:column;gap:6px">'+
+    ranges.map(function(r,i){
+      return '<div style="display:flex;align-items:center;gap:10px;background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:8px 12px">'+
+        '<div style="flex:1">'+
+          '<span style="font-size:12px;font-weight:700;color:var(--text)">'+fmtDate(r.start)+' → '+fmtDate(r.end)+'</span>'+
+          (r.reason?'<span style="font-size:11px;color:var(--muted);margin-left:8px">'+r.reason+'</span>':'')+
+        '</div>'+
+        '<button class="btn btn-danger btn-sm" onclick="removeBdBlock('+i+')" style="padding:3px 10px;font-size:11px">Remove</button>'+
+      '</div>';
+    }).join('')+
+  '</div>';
+}
+
+function addBdBlock(){
+  var v=$d('bdVehicle').value;
+  var start=$d('bdStart').value, end=$d('bdEnd').value;
+  if(!start||!end){ showToast('Select both From and To dates.'); return; }
+  if(end<start){ showToast('End date must be on or after start date.'); return; }
+  if(!VEHICLE_COSTS[v]) return;
+  if(!VEHICLE_COSTS[v].blockedRanges) VEHICLE_COSTS[v].blockedRanges=[];
+  VEHICLE_COSTS[v].blockedRanges.push({ start:start, end:end, reason:$d('bdReason').value.trim() });
+  saveBdBlocks(v);
+  $d('bdStart').value=''; $d('bdEnd').value=''; $d('bdReason').value='';
+  renderBdBlocks();
+  var msg=$d('bdMsg'); if(msg){ msg.style.display=''; setTimeout(function(){ msg.style.display='none'; },2000); }
+  if(activeTab==='calendar') renderCalendar();
+}
+
+function removeBdBlock(idx){
+  var v=$d('bdVehicle').value;
+  if(!VEHICLE_COSTS[v]||!VEHICLE_COSTS[v].blockedRanges) return;
+  VEHICLE_COSTS[v].blockedRanges.splice(idx,1);
+  saveBdBlocks(v);
+  renderBdBlocks();
+  if(activeTab==='calendar') renderCalendar();
+}
+
+function saveBdBlocks(v){
+  // Persist via the vehicle custom data store
+  try {
+    var stored=JSON.parse(localStorage.getItem('pb_vehicles')||'[]');
+    var vi=stored.findIndex(function(x){ return x.name===v; });
+    if(vi!==-1){ stored[vi].blockedRanges=VEHICLE_COSTS[v].blockedRanges; }
+    else { stored.push({ name:v, blockedRanges:VEHICLE_COSTS[v].blockedRanges }); }
+    localStorage.setItem('pb_vehicles', JSON.stringify(stored));
+  } catch(e){}
 }
 
 function renderFleetTab(){
