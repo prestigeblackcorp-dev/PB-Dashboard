@@ -306,15 +306,16 @@ tr:hover td { background: rgba(255,255,255,.02); }
 
 /* ── Feature 1: Today's Bookings Banner ── */
 #todayBanner { display:none; background:rgba(201,169,98,.06); border-bottom:1px solid var(--border);
-  padding:12px 24px; margin:0; }
+  padding:14px 24px; margin:0; }
 #todayBanner.visible { display:block; }
 .today-banner-title { font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
-  color:var(--gold); margin-bottom:10px; }
-.today-banner-items { display:flex; flex-wrap:wrap; gap:10px; }
-.today-banner-card { background:rgba(255,255,255,.04); border:1px solid var(--border); border-radius:16px;
-  padding:12px 16px; font-size:12px; min-width:220px; flex:1; box-shadow:var(--shadow-card); }
-.today-banner-vehicle { font-size:14px; font-weight:800; margin-bottom:4px; }
-.today-banner-customer { color:var(--muted); margin-bottom:6px; }
+  color:var(--gold); margin-bottom:12px; }
+.today-banner-items { display:flex; flex-direction:column; gap:10px; }
+.today-banner-card { background:rgba(255,255,255,.04); border:1px solid var(--border); border-radius:14px;
+  padding:12px 16px; font-size:12px; box-shadow:var(--shadow-card); cursor:pointer; transition:background .15s; }
+.today-banner-card:hover { background:rgba(255,255,255,.07); }
+.today-banner-vehicle { font-size:14px; font-weight:800; margin-bottom:3px; }
+.today-banner-customer { color:var(--muted); margin-bottom:4px; }
 .today-banner-revenue { color:var(--gold); font-weight:700; font-size:13px; }
 
 /* ── Feature 2: Returning customer badge ── */
@@ -5783,19 +5784,78 @@ function scanInsuranceCard(input){
 // ════════════════════════════════════════════════════════
 function renderTodayBanner(){
   var today=todayStr();
-  var todays=bookings.filter(function(b){ return !b._deleted && (b.pickupDate||b.date)===today && b.status!=='cancelled'; });
+  var todays=bookings.filter(function(b){
+    return !b._deleted && (b.pickupDate||b.date)===today && b.status!=='cancelled';
+  }).sort(function(a,b){
+    // Bookings with no time set go last
+    var ta=a.pickupTime||'99:99', tb=b.pickupTime||'99:99';
+    return ta<tb?-1:ta>tb?1:0;
+  });
   var banner=$d('todayBanner');
   if(!todays.length){ banner.classList.remove('visible'); return; }
   banner.classList.add('visible');
+  var dayLabel=new Date(today+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  $d('todayBanner').querySelector('.today-banner-title').textContent='📅 '+dayLabel+' · '+todays.length+' booking'+(todays.length!==1?'s':'');
   $d('todayBannerItems').innerHTML=todays.map(function(b){
     var idOk=b.verify&&b.verify.idVerified;
     var insOk=b.verify&&b.verify.insVerified;
     var verBadges=(idOk?' 🪪✅':'')+(insOk?' 🛡✅':'');
-    return '<div class="today-banner-card">'+
-      '<div class="today-banner-vehicle">'+esc(b.vehicle)+'</div>'+
-      '<div class="today-banner-customer">'+esc(b.name)+verBadges+(b.phone?' · '+esc(b.phone):'')+'</div>'+
-      '<div style="margin-bottom:5px"><span class="badge '+b.type+'">'+b.type+'</span> <span class="badge '+b.status+'">'+b.status+'</span></div>'+
-      '<div class="today-banner-revenue">'+$$(totalRevenue(b))+'</div>'+
+
+    // Time range
+    var timeStr=b.pickupTime?fmtTime(b.pickupTime):'No time set';
+    var toTimeStr=b.dropoffTime?' → '+fmtTime(b.dropoffTime):'';
+    var returnsStr=(!b.dropoffDate||b.dropoffDate===today)?'':'<span style="font-size:10px;color:var(--muted);margin-left:6px">returns '+fmtDate(b.dropoffDate)+'</span>';
+
+    // Duration label
+    var isHr=b.type==='hourly'||b.type==='chauffeur';
+    var dur=(b.days||1)+(isHr?' hr':' day'+(b.days!==1?'s':''));
+
+    // Address
+    var addrHtml='';
+    if(b.type==='chauffeur'&&(b.pickupAddress||b.dropoffAddress)){
+      addrHtml=(b.pickupAddress?'<span>📍 '+esc(b.pickupAddress)+'</span>':'')+
+               (b.dropoffAddress?'<span style="margin-left:10px">🏁 '+esc(b.dropoffAddress)+'</span>':'');
+      addrHtml='<div style="font-size:11px;color:var(--muted);margin-top:5px">'+addrHtml+'</div>';
+    } else if(b.address){
+      addrHtml='<div style="font-size:11px;color:var(--muted);margin-top:5px">📍 '+esc(b.address)+'</div>';
+    }
+
+    // Balance
+    var bal=getRemainingBalance(b);
+    var balHtml=bal>0
+      ?'<span style="color:var(--red);font-size:12px;font-weight:600">Due: '+$$(bal)+'</span>'
+      :'<span style="color:var(--green);font-size:12px;font-weight:600">Paid ✓</span>';
+
+    // Deposit
+    var depHtml=Number(b.deposit)>0
+      ?'<span style="font-size:11px;color:var(--muted)">Deposit: '+$$(b.deposit)+'</span>':'';
+
+    // Notes
+    var notesHtml=b.notes
+      ?'<div style="font-size:11px;color:var(--muted);margin-top:5px;font-style:italic">🗒 '+esc(b.notes.length>80?b.notes.slice(0,80)+'…':b.notes)+'</div>':'';
+
+    return '<div class="today-banner-card" onclick="openBookingDetail(\''+b.id+'\')">'+
+      // Row 1: time + badges
+      '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:7px">'+
+        '<div style="font-size:12px;font-weight:700;color:var(--gold)">⏰ '+timeStr+toTimeStr+returnsStr+'</div>'+
+        '<div style="display:flex;gap:5px;flex-shrink:0"><span class="badge '+b.type+'">'+b.type+'</span><span class="badge '+b.status+'">'+b.status+'</span></div>'+
+      '</div>'+
+      // Row 2: vehicle + duration
+      '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">'+
+        '<div class="today-banner-vehicle">'+esc(b.vehicle)+'</div>'+
+        '<div style="font-size:11px;color:var(--muted)">'+dur+'</div>'+
+      '</div>'+
+      // Row 3: customer + phone
+      '<div class="today-banner-customer">'+esc(b.name)+verBadges+(b.phone?' · <a href="tel:'+esc(b.phone)+'" onclick="event.stopPropagation()" style="color:var(--gold);text-decoration:none">'+esc(b.phone)+'</a>':'')+'</div>'+
+      // Address row
+      addrHtml+
+      // Row 4: revenue + balance + deposit
+      '<div style="display:flex;align-items:center;gap:14px;margin-top:8px;flex-wrap:wrap">'+
+        '<span class="today-banner-revenue">'+$$(totalRevenue(b))+'</span>'+
+        balHtml+
+        depHtml+
+      '</div>'+
+      notesHtml+
     '</div>';
   }).join('');
 }
