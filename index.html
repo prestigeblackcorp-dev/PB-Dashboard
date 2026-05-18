@@ -2374,7 +2374,7 @@ function cloudSave() {
       localStorage.setItem('pb_last_cloud_save', Date.now().toString());
     } else {
       setSyncStatus('error');
-      // M2: cap retries at 5 — after that show persistent error instead of looping forever
+      // cap retries at 5 — after that show persistent error instead of looping forever
       if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
       else { _cloudSaveRetries = 0; setSyncStatus('error'); }
     }
@@ -2394,7 +2394,7 @@ function cloudLoad(callback) {
       if (data && typeof data === 'object') {
         _cloudLoading = true;
         var needsPush = false;
-        var merged; // L2: declare once at top of block
+        var merged;
 
         if (data.bookings && typeof data.bookings === 'object') {
           // Handle both array (dashboard saves) and object/map (website worker writes individual keys)
@@ -2469,73 +2469,12 @@ function cloudLoad(callback) {
     }).catch(function() {
       _cloudLoading = false;
       setSyncStatus('error');
-      // H2: don't let a failed load trigger cloudSave — that would overwrite newer cloud data with stale local
+      // don't let a failed load trigger cloudSave — that would overwrite newer cloud data with stale local
       _offlinePending = false;
       if (callback) callback(false);
     });
 }
 
-// ── Web Bookings Import ────────────────────────────────────
-// Polls /web_bookings.json, imports new entries with status based on payment method
-function loadWebBookings(){
-  if(!FIREBASE_URL) return;
-  fetch(FIREBASE_URL.replace(/\/$/, '')+'/web_bookings.json?_='+Date.now(),{cache:'no-store'})
-    .then(function(r){ return r.json(); })
-    .then(function(data){
-      if(!data||typeof data!=='object') return;
-      var imported=false;
-      Object.keys(data).forEach(function(webId){
-        var wb=data[webId];
-        if(!wb||wb._deleted) return;
-        if(bookings.find(function(b){ return b._webId===webId; })) return;
-        var pm=(wb.paymentMethod||'').toLowerCase();
-        var status=pm.indexOf('zelle')!==-1?'pending':'confirmed';
-        var entry={
-          id:'b'+Date.now()+Math.random().toString(36).slice(2,6),
-          _webId:webId, _fromWeb:true,
-          date:wb.pickupDate||wb.date||todayStr(),
-          pickupDate:wb.pickupDate||wb.date||todayStr(),
-          pickupTime:wb.pickupTime||'',
-          dropoffDate:wb.dropoffDate||wb.pickupDate||wb.date||'',
-          dropoffTime:wb.dropoffTime||'',
-          name:wb.name||wb.customerName||'',
-          phone:wb.phone||wb.phoneNumber||'',
-          email:wb.email||'',
-          vehicle:wb.vehicle||wb.vehicleName||'',
-          type:wb.type||wb.bookingType||'daily',
-          days:parseFloat(wb.days||wb.duration)||1,
-          revenue:parseFloat(wb.revenue||wb.totalRevenue||wb.amount)||0,
-          deposit:parseFloat(wb.deposit)||0,
-          dateLock:100,
-          remainingBalance:parseFloat(wb.remainingBalance)||0,
-          address:wb.address||wb.pickupAddress||'',
-          pickupAddress:wb.pickupAddress||'',
-          dropoffAddress:wb.dropoffAddress||'',
-          status:status,
-          paymentMethod:wb.paymentMethod||'',
-          notes:wb.notes||'',
-          delivery:parseFloat(wb.delivery)||0,
-          unlimited:parseFloat(wb.unlimited)||0,
-          pet:parseFloat(wb.pet)||0,
-          photo:parseFloat(wb.photo)||0,
-          champagne:parseFloat(wb.champagne)||0,
-          decor:parseFloat(wb.decor)||0,
-          bouquet:parseFloat(wb.bouquet)||0,
-          source:'website',
-          createdAt:wb.createdAt||Date.now(),
-          _t:Date.now(),
-        };
-        bookings.push(entry);
-        imported=true;
-      });
-      if(imported){
-        try{ localStorage.setItem('pb_dash_v2',JSON.stringify(bookings)); }catch(e){}
-        cloudSave();
-        afterCloudLoad(true);
-        showToast('🌐 New web bookings imported!');
-      }
-    }).catch(function(){});
-}
 
 function setSyncStatus(status) {
   var dot = $d('syncDot');
@@ -2547,6 +2486,7 @@ function setSyncStatus(status) {
   dot.style.color = colors[status] || colors.off;
   dot.textContent = labels[status] || labels.off;
   updatePhotoSyncHints();
+  stickyTabFix();
 }
 function updatePhotoSyncHints(){
   var connected = !!FIREBASE_URL;
@@ -3451,7 +3391,7 @@ function getBookingDates(b){
     var cur = new Date(start);
     while(dateStr(cur) <= b.dropoffDate){ res.push(dateStr(cur)); cur = addDays(cur,1); }
   } else {
-    // M4: chauffeur/hourly with days>1 should occupy multiple calendar days
+    // chauffeur/hourly with days>1 occupies multiple calendar days
     var days = Math.max(1, Number(b.days)||1);
     for(var i=0;i<days;i++) res.push(dateStr(addDays(start,i)));
   }
@@ -3732,7 +3672,7 @@ function renderBookingsTable(filtered){
     var del=Number(b.delivery)||0, unl=Number(b.unlimited)||0, pet=Number(b.pet)||0;
     var photo=Number(b.photo)||0, champ=Number(b.champagne)||0, decor=Number(b.decor)||0, bouq=Number(b.bouquet)||0;
     var kept=Number(b.depositKept)||0, returned=Math.max(0,(Number(b.deposit)||0)-kept);
-    // Feature 4: orange warning row for zero-deposit non-cancelled bookings
+    // orange warning row for zero-deposit non-cancelled bookings
     var noDeposit=(Number(b.deposit)||0)===0 && b.status!=='cancelled';
     var tblBalanceDue=!b.balancePaidAt?getRemainingBalance(b):0;
     var hasTblBalance=tblBalanceDue>0&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress');
@@ -4024,7 +3964,7 @@ function tripEndDate(b){
   var start=b.pickupDate||b.date;
   if(b.dropoffDate) return b.dropoffDate;
   if(b.type==='hourly'||b.type==='chauffeur') return start;
-  // M1: days=1 means the rental ends on its start date (not start+1); days=3 ends on start+2
+  // days=1 means the rental ends on its start date (not start+1); days=3 ends on start+2
   return dateStr(addDays(new Date(start+'T00:00:00'), Math.max(0, (Number(b.days)||1) - 1)));
 }
 
@@ -5077,6 +5017,7 @@ function handleCiPhotos(input){
   });
 }
 function deleteCiPhoto(id){
+  delete _photoMemCache[id];
   ciWorkingPhotos=ciWorkingPhotos.filter(function(x){return x!==id;});
   renderPhotoGrid('ciPhotoGrid',ciWorkingPhotos,'deleteCiPhoto');
 }
@@ -5094,6 +5035,7 @@ function handleCoPhotos(input){
   });
 }
 function deleteCoPhoto(id){
+  delete _photoMemCache[id];
   coWorkingPhotos=coWorkingPhotos.filter(function(x){return x!==id;});
   renderPhotoGrid('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
 }
@@ -5136,9 +5078,9 @@ function openCheckIn(id){
 }
 
 function closeCheckIn(){
-  // Delete any newly added photos that won't be saved
+  // Delete any newly added photos that won't be saved, and evict from memory cache
   ciWorkingPhotos.filter(function(id){return ciOriginalPhotos.indexOf(id)===-1;})
-    .forEach(function(id){dbDeletePhoto(id);});
+    .forEach(function(id){ dbDeletePhoto(id); delete _photoMemCache[id]; });
   $d('checkInModal').classList.remove('open');
   checkInId=null;
 }
@@ -5362,9 +5304,9 @@ function coUpdateProfitSummary(){
 }
 
 function closeCloseOut(){
-  // Delete any newly added photos that won't be saved
+  // Delete any newly added photos that won't be saved, and evict from memory cache
   coWorkingPhotos.filter(function(id){return coOriginalPhotos.indexOf(id)===-1;})
-    .forEach(function(id){dbDeletePhoto(id);});
+    .forEach(function(id){ dbDeletePhoto(id); delete _photoMemCache[id]; });
   $d('closeOutModal').classList.remove('open');
   closeOutId = null;
 }
@@ -5373,10 +5315,12 @@ function saveCloseOut(){
   if(!closeOutId) return;
   var idx = bookings.findIndex(function(b){ return b.id===closeOutId; });
   if(idx===-1) return;
+  var collected = parseFloat($d('coCollected').value)||0;
+  var kept = parseFloat($d('coKept').value)||0;
+  if(kept > collected){ alert('Amount kept ($'+kept.toFixed(2)+') cannot exceed deposit collected ($'+collected.toFixed(2)+').'); return; }
   // Delete photos removed during this session
   coOriginalPhotos.filter(function(id){return coWorkingPhotos.indexOf(id)===-1;})
     .forEach(function(id){dbDeletePhoto(id);});
-  var kept = parseFloat($d('coKept').value)||0;
   bookings[idx].depositKept      = kept;
   bookings[idx].cost             = parseFloat($d('coCost').value)||0;
   bookings[idx].closeOutNotes    = $d('coNotes').value.trim();
@@ -6424,7 +6368,7 @@ function renderForecast(){
   var el=$d('forecastSection'); if(!el) return;
   var tod=todayStr();
   function fr(days){
-    var lim=dateStr(addDays(new Date(tod+'T00:00:00'),days));
+    var lim=dateStr(addDays(new Date(tod+'T00:00:00'),days-1));
     var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>=tod&&(b.pickupDate||b.date)<=lim; });
     return {count:bks.length, rev:bks.reduce(function(s,b){return s+totalRevenue(b);},0)};
   }
@@ -6500,7 +6444,8 @@ function renderOutstanding(){
 function getRemainingBalance(b){
   if(b.remainingBalance!=null) return Number(b.remainingBalance)||0;
   var lock=Number(b.dateLock)||0;
-  return Math.max(0,totalRevenue(b)-lock);
+  var dep=Number(b.deposit)||0;
+  return Math.max(0,totalRevenue(b)+dep-lock);
 }
 
 function editRemainingBalance(id){
@@ -7590,7 +7535,7 @@ function openContract(id){
     .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE
       ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">'
       : '')
-    .replace(/\{\{customer_signature\}\}/gi, b.customerSig ? '<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">' : '_______________________________')
+    .replace(/\{\{customer_signature\}\}/gi, (b.customerSig&&b.customerSig.startsWith('data:image/')) ? '<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">' : '_______________________________')
     .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee ? '$'+b.brokerFee+'/day' : 'N/A')
     .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0, getRemainingBalance(b)))
     .replace(/\{\{mileage_policy\}\}/gi, b.includedMiles
@@ -7868,13 +7813,11 @@ function afterCloudLoad(ok){
 cloudLoad(function(ok) {
   afterCloudLoad(ok);
   setSyncStatus(FIREBASE_URL ? (ok ? 'ok' : 'error') : 'off');
-  if(ok) loadWebBookings();
 });
 // Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
 document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && FIREBASE_URL) {
     cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
-    loadWebBookings();
   }
 });
 // Auto-pull every 15 seconds so all changes propagate to every active device
@@ -7883,10 +7826,6 @@ setInterval(function() {
     cloudLoad(function(ok) { afterCloudLoad(ok); });
   }
 }, 15000);
-// Poll web bookings every 60 seconds for new site submissions
-setInterval(function() {
-  if (FIREBASE_URL && document.visibilityState === 'visible') loadWebBookings();
-}, 60000);
 </script>
 </body>
 </html>
