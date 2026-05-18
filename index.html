@@ -5704,6 +5704,48 @@ function sendStripeVerification(){
     var vStatusEl=$d('vStripeStatus');
     vStatusEl.innerHTML='<a href="'+_vUrl+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; text to customer &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
     $d('vCopyBtn').onclick=function(){ navigator.clipboard.writeText(_vUrl).then(function(){ showToast('Link copied!'); }); };
+    // Auto-email the customer the verification link + trip details
+    if(MESSAGING_URL && b && b.email){
+      var _firstName=(b.name||'').split(' ')[0]||'there';
+      var _rev=totalRevenue(b);
+      var _addons=[];
+      if(Number(b.photo))     _addons.push('Photoshoot ($'+b.photo+')');
+      if(Number(b.champagne)) _addons.push('Champagne ($'+b.champagne+')');
+      if(Number(b.decor))     _addons.push('Decor ($'+b.decor+')');
+      if(Number(b.bouquet))   _addons.push('Bouquet ($'+b.bouquet+')');
+      if(Number(b.delivery))  _addons.push('Delivery ($'+b.delivery+')');
+      if(Number(b.unlimited)) _addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+      if(Number(b.pet))       _addons.push('Pet Fee ($'+b.pet+')');
+      var _detailRows=
+        '<tr><td style="padding:6px 12px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+        '<tr><td style="padding:6px 12px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+
+          (b.address?'<br><span style="color:#555;font-size:13px">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+        (b.dropoffDate?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
+        (b.dropoffAddress?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off Location</td><td style="padding:6px 0">📍 '+esc(b.dropoffAddress)+'</td></tr>':'')+
+        '<tr><td style="padding:6px 12px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+        (_addons.length?'<tr><td style="padding:6px 12px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+_addons.join('<br>')+'</td></tr>':'')+
+        '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(_rev)+'</td></tr>'+
+        (Number(b.dateLock)?'<tr><td style="padding:6px 12px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
+      fetch(MESSAGING_URL+'/send-email',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          to:b.email,
+          subject:'Action Required: Verify your ID — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')',
+          html:'<div style="font-family:sans-serif;max-width:560px;color:#111">'+
+            '<h2 style="color:#b8982e">Hi '+_firstName+', one quick step! ✅</h2>'+
+            '<p style="font-size:15px;line-height:1.6">To finalize your upcoming rental, we need to verify your ID — it takes less than 60 seconds.</p>'+
+            '<a href="'+_vUrl+'" style="display:inline-block;margin:16px 0;padding:14px 28px;background:#635bff;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:.01em">Verify My ID →</a>'+
+            '<div style="margin:24px 0;background:#f7f7f7;border-radius:10px;padding:18px">'+
+            '<div style="font-weight:700;font-size:14px;margin-bottom:10px;color:#333">📋 Your Booking Details</div>'+
+            '<table style="width:100%;border-collapse:collapse;font-size:14px">'+_detailRows+'</table></div>'+
+            '<p style="font-size:14px;line-height:1.6;color:#444">If you have any questions or need to make changes, text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:600">(214) 207-2481</a>.</p>'+
+            '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+        })
+      }).then(function(r){
+        if(r.ok){ showToast('Verification link emailed to '+b.email); }
+        else { showToast('Link created — could not email customer (check messaging worker)'); }
+      }).catch(function(){ showToast('Link created — email send failed'); });
+    }
     toast('Verification link created — polling for result…');
     clearVerificationPoll();
     var _pollCount=0;
@@ -7680,23 +7722,61 @@ function sendSignedCopyToClient(){
   if(!_contractBookingId) return;
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
   if(!b.customerSig){ showToast('No signature saved yet — have the client sign first'); return; }
-  _renderContractContent(); // ensure preview reflects latest signature
-  var emailAddr=b.email||'';
+  if(!b.email){ showToast('No email on file for this booking'); return; }
+  if(!MESSAGING_URL){ showToast('Messaging worker not configured — go to ⚙ Settings to add it'); return; }
+  var firstName=(b.name||'').split(' ')[0]||'there';
   var docType=_contractIsWaiver?'Liability Waiver':'Rental Agreement';
   var subj='Your Signed '+docType+' — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
-  var rawBody=$d('contractFilled').value||'';
-  var isH=rawBody.trim().toLowerCase().startsWith('<!doctype')||rawBody.trim().startsWith('<')||rawBody.includes('<div');
-  if(MESSAGING_URL&&emailAddr){
-    var htmlBody=isH?rawBody:('<pre style="font-family:sans-serif;white-space:pre-wrap">'+rawBody+'</pre>');
-    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})})
-      .then(function(r){ if(r.ok){showToast('Signed copy sent to '+emailAddr);}else{showToast('Email failed — opening mail app');window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody);} })
-      .catch(function(){ window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); });
-  } else if(emailAddr){
-    var plainBody=isH?(function(){var t=document.createElement('div');t.innerHTML=rawBody;return t.innerText||t.textContent||'';}()):rawBody;
-    window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(plainBody);
-  } else {
-    showToast('No email on file for this booking — add one to send the signed copy');
-  }
+  var rev=totalRevenue(b), dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
+  var addons=[];
+  if(Number(b.photo))     addons.push({l:'Photoshoot',v:b.photo});
+  if(Number(b.champagne)) addons.push({l:'Champagne',v:b.champagne});
+  if(Number(b.decor))     addons.push({l:'Decor',v:b.decor});
+  if(Number(b.bouquet))   addons.push({l:'Bouquet',v:b.bouquet});
+  if(Number(b.delivery))  addons.push({l:'Delivery',v:b.delivery});
+  if(Number(b.unlimited)) addons.push({l:'Unlimited Miles',v:b.unlimited});
+  if(Number(b.pet))       addons.push({l:'Pet Fee',v:b.pet});
+  var rows=
+    '<tr><td style="padding:6px 12px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+    '<tr><td style="padding:6px 12px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+
+      (b.address?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+    (b.dropoffDate?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+
+      (b.dropoffAddress?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.dropoffAddress)+'</span>':'')+'</td></tr>':'')+
+    '<tr><td style="padding:6px 12px 6px 0;color:#555">Type</td><td style="padding:6px 0">'+(b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service')+'</td></tr>'+
+    (b.type==='daily'?'<tr><td style="padding:6px 12px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+b.days+' day'+(b.days!==1?'s':'')+'</td></tr>':'')+
+    addons.map(function(a){ return '<tr><td style="padding:4px 12px 4px 0;color:#555">'+a.l+'</td><td style="padding:4px 0">'+$$(a.v)+'</td></tr>'; }).join('')+
+    '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
+    (dep?'<tr><td style="padding:4px 12px 4px 0;color:#555">Deposit Paid</td><td style="padding:4px 0;color:#22c55e">'+$$(dep)+'</td></tr>':'')+
+    (bal?'<tr><td style="padding:4px 12px 4px 0;color:#555">Balance Due</td><td style="padding:4px 0;color:#f97316;font-weight:600">'+$$(bal)+'</td></tr>':'');
+  var signedOn=new Date().toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true});
+  var html=
+    '<div style="font-family:sans-serif;max-width:560px;color:#111">'+
+    '<h2 style="color:#b8982e">Your Signed '+docType+' 📝</h2>'+
+    '<p style="font-size:15px;line-height:1.6">Hi '+firstName+', your '+docType.toLowerCase()+' with Prestige Black Rentals has been signed and recorded. Keep this email for your records.</p>'+
+    '<div style="margin:20px 0;background:#f7f7f7;border-radius:10px;padding:18px">'+
+    '<div style="font-weight:700;font-size:14px;margin-bottom:10px;color:#333">📋 Booking Details</div>'+
+    '<table style="width:100%;border-collapse:collapse;font-size:14px">'+rows+'</table></div>'+
+    '<div style="margin:20px 0">'+
+    '<div style="font-size:13px;font-weight:700;color:#555;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Your Signature</div>'+
+    '<div style="border:1px solid #e5e5e5;border-radius:8px;padding:10px 14px;display:inline-block;background:#fff">'+
+    '<img src="'+b.customerSig+'" style="max-height:60px;max-width:280px;display:block">'+
+    '</div>'+
+    '<div style="font-size:11px;color:#999;margin-top:5px">Signed '+signedOn+'</div></div>'+
+    '<p style="font-size:14px;line-height:1.6;color:#444">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:600">(214) 207-2481</a>.</p>'+
+    '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>';
+  var ssb=$d('contractSendSignedBtn');
+  if(ssb){ ssb.disabled=true; ssb.textContent='Sending…'; }
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({to:b.email,subject:subj,html:html})
+  }).then(function(r){
+    if(ssb){ ssb.disabled=false; ssb.textContent='📧 Send Signed Copy to Client'; }
+    if(r.ok){ showToast('Signed '+docType.toLowerCase()+' sent to '+b.email+' ✅'); }
+    else { showToast('Email send failed — check your messaging worker'); }
+  }).catch(function(){
+    if(ssb){ ssb.disabled=false; ssb.textContent='📧 Send Signed Copy to Client'; }
+    showToast('Email send failed — check your messaging worker');
+  });
 }
 
 function closeContract(){
