@@ -504,7 +504,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 }
 .kpi::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,rgba(201,169,98,.3),transparent); pointer-events:none; }
 .kpi:hover { box-shadow: var(--card-hover-glow); transform: translateY(-2px); }
-.kpi-val { font-size: 28px; background: var(--gold-shine); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.kpi-val { font-size: 28px; background: var(--gold-shine); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; overflow-wrap: break-word; word-break: break-word; line-height: 1.15; }
 .kpi.green .kpi-val { background: linear-gradient(135deg,#22c55e,#4ade80); -webkit-background-clip: text; background-clip: text; }
 .kpi.red   .kpi-val { background: linear-gradient(135deg,#ef4444,#f87171); -webkit-background-clip: text; background-clip: text; }
 .kpi.blue  .kpi-val { background: linear-gradient(135deg,#3b82f6,#60a5fa); -webkit-background-clip: text; background-clip: text; }
@@ -1291,7 +1291,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <select class="finput" id="fVehicle" onchange="onVehicleChange();updateMaintWarning()"><option value="">Select vehicle</option></select></div>
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
-        <select class="finput" id="fType" onchange="checkSlingshotHourly();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal()">
+        <select class="finput" id="fType" onchange="checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal()">
           <option value="daily">Daily Rental</option>
           <option value="hourly">Hourly Booking</option>
           <option value="chauffeur">Chauffeur Service</option>
@@ -1327,7 +1327,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
 
       <div class="fsec">Revenue</div>
-      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="updateBrokerCalc();updateLiveTotal();updateRemainingBalance()"></div>
+      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="this._manual=true;updateBrokerCalc();updateLiveTotal();updateRemainingBalance()"></div>
       <div class="fgroup"><div class="flabel">Date Lock / Booking Fee ($)</div><input type="number" class="finput" id="fDateLock" min="0" step="1" value="100" oninput="updateRemainingBalance()" title="Upfront fee paid to hold the date — subtracted from total"></div>
       <div class="fgroup ffull" style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;gap:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -1353,8 +1353,12 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
       <div class="fgroup" id="fDepositGroup"><div class="flabel">Security Deposit / Hold ($)</div><input type="number" class="finput" id="fDeposit" min="0" step="1" value="0" oninput="this._manual=!!this.value"></div>
 
-      <div class="fgroup"><div class="flabel">Pickup / Drop-off Address</div>
+      <div class="fgroup" id="fAddressGroup"><div class="flabel">Pickup / Drop-off Address</div>
         <input type="text" class="finput ffull" id="fAddress" placeholder="e.g. DFW Airport or customer address"></div>
+      <div class="fgroup" id="fPickupAddressGroup" style="display:none"><div class="flabel">Pickup Address</div>
+        <input type="text" class="finput ffull" id="fPickupAddress" placeholder="e.g. DFW Airport Terminal A"></div>
+      <div class="fgroup" id="fDropoffAddressGroup" style="display:none"><div class="flabel">Drop-off Address</div>
+        <input type="text" class="finput ffull" id="fDropoffAddress" placeholder="e.g. 123 Main St, Dallas TX"></div>
 
 
       <div class="fsec">Extras & Add-ons</div>
@@ -2467,6 +2471,68 @@ function cloudLoad(callback) {
     });
 }
 
+// ── Web Bookings Import ────────────────────────────────────
+// Polls /web_bookings.json, imports new entries with status based on payment method
+function loadWebBookings(){
+  if(!FIREBASE_URL) return;
+  fetch(FIREBASE_URL.replace(/\/$/, '')+'/web_bookings.json?_='+Date.now(),{cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      if(!data||typeof data!=='object') return;
+      var imported=false;
+      Object.keys(data).forEach(function(webId){
+        var wb=data[webId];
+        if(!wb||wb._deleted) return;
+        if(bookings.find(function(b){ return b._webId===webId; })) return;
+        var pm=(wb.paymentMethod||'').toLowerCase();
+        var status=pm.indexOf('zelle')!==-1?'pending':'confirmed';
+        var entry={
+          id:'b'+Date.now()+Math.random().toString(36).slice(2,6),
+          _webId:webId, _fromWeb:true,
+          date:wb.pickupDate||wb.date||todayStr(),
+          pickupDate:wb.pickupDate||wb.date||todayStr(),
+          pickupTime:wb.pickupTime||'',
+          dropoffDate:wb.dropoffDate||wb.pickupDate||wb.date||'',
+          dropoffTime:wb.dropoffTime||'',
+          name:wb.name||wb.customerName||'',
+          phone:wb.phone||wb.phoneNumber||'',
+          email:wb.email||'',
+          vehicle:wb.vehicle||wb.vehicleName||'',
+          type:wb.type||wb.bookingType||'daily',
+          days:parseFloat(wb.days||wb.duration)||1,
+          revenue:parseFloat(wb.revenue||wb.totalRevenue||wb.amount)||0,
+          deposit:parseFloat(wb.deposit)||0,
+          dateLock:100,
+          remainingBalance:parseFloat(wb.remainingBalance)||0,
+          address:wb.address||wb.pickupAddress||'',
+          pickupAddress:wb.pickupAddress||'',
+          dropoffAddress:wb.dropoffAddress||'',
+          status:status,
+          paymentMethod:wb.paymentMethod||'',
+          notes:wb.notes||'',
+          delivery:parseFloat(wb.delivery)||0,
+          unlimited:parseFloat(wb.unlimited)||0,
+          pet:parseFloat(wb.pet)||0,
+          photo:parseFloat(wb.photo)||0,
+          champagne:parseFloat(wb.champagne)||0,
+          decor:parseFloat(wb.decor)||0,
+          bouquet:parseFloat(wb.bouquet)||0,
+          source:'website',
+          createdAt:wb.createdAt||Date.now(),
+          _t:Date.now(),
+        };
+        bookings.push(entry);
+        imported=true;
+      });
+      if(imported){
+        try{ localStorage.setItem('pb_dash_v2',JSON.stringify(bookings)); }catch(e){}
+        cloudSave();
+        afterCloudLoad(true);
+        showToast('🌐 New web bookings imported!');
+      }
+    }).catch(function(){});
+}
+
 function setSyncStatus(status) {
   var dot = $d('syncDot');
   if (!dot) return;
@@ -3505,13 +3571,16 @@ function renderKPIs(filtered, containerId){
     {label:'Net to PBR',            val:$$(netBookingRev+otherIncome-totalCost), sub:'After broker fees & discounts',     cls:netBookingRev+otherIncome-totalCost>=0?'green':'red'},
     {label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Loyalty discounts: '+$$(totalLoyaltyDisc),           cls:'red'},
   ];
-  // Feature 4: uncollected deposits card — only on overview
+  // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
     cards.push({label:'⚠ Uncollected Deposits', val:uncollected, sub:'Confirmed/pending, $0 deposit', cls: uncollected>0?'red':''});
+    var remainBalSum = active.reduce(function(s,b){ return s+(Number(b.remainingBalance)||0); },0);
+    cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'':'green'});
   }
 
   $d(containerId).innerHTML=cards.map(function(k){
-    return '<div class="kpi '+k.cls+'"><div class="kpi-label">'+k.label+'</div><div class="kpi-val">'+k.val+'</div><div class="kpi-sub">'+k.sub+'</div></div>';
+    var vs=String(k.val), fs=vs.length>10?'font-size:15px':vs.length>8?'font-size:20px':'';
+    return '<div class="kpi '+k.cls+'"><div class="kpi-label">'+k.label+'</div><div class="kpi-val"'+(fs?' style="'+fs+'"':'')+'>'+k.val+'</div><div class="kpi-sub">'+k.sub+'</div></div>';
   }).join('');
 }
 
@@ -4375,6 +4444,9 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fDeposit').value          = b?b.deposit      : 0;
 
   $d('fAddress').value  = b?b.address : '';
+  if($d('fPickupAddress'))  $d('fPickupAddress').value  = b?(b.pickupAddress||''):'';
+  if($d('fDropoffAddress')) $d('fDropoffAddress').value = b?(b.dropoffAddress||''):'';
+  $d('fRevenue')._manual = !!b;
   $d('fStatus').value   = b?b.status  : 'pending';
   $d('fNotes').value    = b?b.notes   : '';
 
@@ -4479,10 +4551,11 @@ function updateRemainingBalance(force){force=true; // always recalc when revenue
     + (parseFloat($d('fUnlimited')?$d('fUnlimited').value:0)||0)*days;
   var total  = base + addons;
   var lock   = parseFloat($d('fDateLock').value)||0;
+  var dep    = parseFloat($d('fDeposit')?$d('fDeposit').value:0)||0;
   var rb     = $d('fRemainingBalance');
   if(force){ rb._manual=false; }
   if(!rb._manual){
-    rb.value = Math.max(0, total - lock);
+    rb.value = Math.max(0, total - lock - dep);
   }
 }
 
@@ -4517,9 +4590,15 @@ function onVehicleChange(){
   var vm=VEHICLE_MILEAGE[v];
   var days=parseFloat($d('fDays').value)||1;
   if(vm){
-    // Only auto-fill if field is empty or was previously auto-filled (not manually edited)
     if(!$d('fIncludedMiles')._manual) $d('fIncludedMiles').value=vm.miles*days;
     if(!$d('fOverageRate')._manual)   $d('fOverageRate').value=vm.overage;
+  }
+  // Auto-populate revenue from rate × days (unless user has manually typed a value)
+  var type=$d('fType')?$d('fType').value:'daily';
+  if(vc && vc.rate && !$d('fRevenue')._manual && type!=='chauffeur'){
+    $d('fRevenue').value = vc.rate * days;
+    updateLiveTotal();
+    updateRemainingBalance(true);
   }
   updateMileageHint();
   updateBrokerCalc();
@@ -4615,6 +4694,11 @@ function checkSlingshotHourly(){
   if(ms) ms.style.display = hideMileage ? 'none' : 'contents';
   if(hideDeposit) $d('fDeposit').value=0;
   if(hideMileage){ $d('fIncludedMiles').value=''; $d('fOverageRate').value=''; }
+  // Show separate pickup/dropoff address fields for chauffeur only
+  var ag=$d('fAddressGroup'), pg=$d('fPickupAddressGroup'), dg2=$d('fDropoffAddressGroup');
+  if(ag)  ag.style.display  = isChauffeur ? 'none' : '';
+  if(pg)  pg.style.display  = isChauffeur ? '' : 'none';
+  if(dg2) dg2.style.display = isChauffeur ? '' : 'none';
 }
 function updateMileageHint(){
   var v=$d('fVehicle').value;
@@ -4651,12 +4735,15 @@ function saveBooking(){
   if(dep<0)    { alert('Deposit cannot be negative.'); return; }
   if(daysVal<=0){ alert('Duration must be at least 1.'); return; }
   if(pickupD && dropoffD && dropoffD < pickupD){ alert('Drop-off date cannot be before pickup date.'); return; }
-  // Conflict check — same vehicle, overlapping datetimes with 2-hour buffer
+  // Conflict check — same vehicle, overlapping datetimes with per-vehicle buffer
   var checkPickup=$d('fPickupDate').value||date;
   var checkPickupTime=$d('fPickupTime').value||'00:00';
   var checkDropoff=$d('fDropoffDate').value||checkPickup;
   var checkDropoffTime=$d('fDropoffTime').value||'23:59';
-  var BUFFER_MS=2*60*60*1000;
+  var _bType=$d('fType').value;
+  var _isSling=vehicle==='Polaris Slingshot';
+  var BUFFER_MS=_isSling&&_bType==='hourly' ? 0 : _isSling&&_bType==='daily' ? 15*60*1000 : 2*60*60*1000;
+  var _bufLabel=_isSling&&_bType==='hourly'?'no buffer':_isSling&&_bType==='daily'?'15-min buffer':'2-hr buffer';
   var dtToMs=function(d,t){ return new Date(d+'T'+(t||'00:00').substring(0,5)+':00').getTime(); };
   var newStart=dtToMs(checkPickup,checkPickupTime);
   var newEnd=dtToMs(checkDropoff,checkDropoffTime);
@@ -4669,7 +4756,7 @@ function saveBooking(){
     return newStart < bEnd+BUFFER_MS && newEnd > bStart-BUFFER_MS;
   });
   if(dateConflicts.length){
-    var dcMsg='⚠️ Vehicle conflict for '+vehicle+' (includes 2-hr buffer):\n\n'+
+    var dcMsg='⚠️ Vehicle conflict for '+vehicle+' ('+_bufLabel+'):\n\n'+
       dateConflicts.map(function(c){
         var st=(c.pickupDate||c.date)+(c.pickupTime?' @ '+c.pickupTime:'');
         var en=(c.dropoffDate||c.pickupDate||c.date)+(c.dropoffTime?' @ '+c.dropoffTime:'');
@@ -4703,7 +4790,11 @@ function saveBooking(){
     dateLock:         parseFloat($d('fDateLock').value)||0,
     remainingBalance: parseFloat($d('fRemainingBalance').value)||0,
 
-    address:      $d('fAddress').value.trim(),
+    address:      ($d('fType').value==='chauffeur'&&$d('fPickupAddress')&&($d('fPickupAddress').value.trim()||$d('fDropoffAddress').value.trim()))
+                    ? 'Pickup: '+$d('fPickupAddress').value.trim()+' → Dropoff: '+$d('fDropoffAddress').value.trim()
+                    : $d('fAddress').value.trim(),
+    pickupAddress:  $d('fPickupAddress')  ? $d('fPickupAddress').value.trim()  : '',
+    dropoffAddress: $d('fDropoffAddress') ? $d('fDropoffAddress').value.trim() : '',
     pickupDate:   $d('fPickupDate').value,
     pickupTime:   $d('fPickupTime').value,
     dropoffDate:  $d('fDropoffDate').value,
@@ -4954,17 +5045,30 @@ function viewPhoto(photoId){
 // Working lists — photos staged during modal edit, committed on Save
 var ciWorkingPhotos=[], ciOriginalPhotos=[];
 var coWorkingPhotos=[], coOriginalPhotos=[];
+// In-memory photo cache: id → dataUrl — lets us render immediately without re-reading IndexedDB
+var _photoMemCache={};
 
+function _renderPhotoGridFromCache(containerId,photoIds,deleteFn){
+  var el=$d(containerId); if(!el) return;
+  if(!photoIds||!photoIds.length){el.innerHTML='';return;}
+  el.innerHTML=photoIds.map(function(id){
+    var src=_photoMemCache[id]; if(!src) return '';
+    return '<div style="position:relative;display:inline-block">'+
+      '<img src="'+src+'" style="width:82px;height:82px;object-fit:cover;border-radius:8px;border:1px solid var(--gold-dim);cursor:pointer" onclick="viewPhoto(\''+id+'\')">'+
+      '<button onclick="'+deleteFn+'(\''+id+'\')" style="position:absolute;top:-7px;right:-7px;background:#ef4444;border:none;border-radius:50%;width:20px;height:20px;color:#fff;font-size:12px;cursor:pointer;line-height:20px;text-align:center;padding:0">✕</button>'+
+    '</div>';
+  }).join('');
+}
 function handleCiPhotos(input){
   var files=Array.from(input.files); input.value='';
   files.forEach(function(file){
     compressImage(file,function(dataUrl){
       if(!dataUrl) return;
       var id='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
-      dbSavePhoto(id,dataUrl,function(){
-        ciWorkingPhotos.push(id);
-        renderPhotoGrid('ciPhotoGrid',ciWorkingPhotos,'deleteCiPhoto');
-      });
+      _photoMemCache[id]=dataUrl;
+      ciWorkingPhotos.push(id);
+      _renderPhotoGridFromCache('ciPhotoGrid',ciWorkingPhotos,'deleteCiPhoto');
+      dbSavePhoto(id,dataUrl,function(){});
     });
   });
 }
@@ -4978,10 +5082,10 @@ function handleCoPhotos(input){
     compressImage(file,function(dataUrl){
       if(!dataUrl) return;
       var id='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
-      dbSavePhoto(id,dataUrl,function(){
-        coWorkingPhotos.push(id);
-        renderPhotoGrid('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
-      });
+      _photoMemCache[id]=dataUrl;
+      coWorkingPhotos.push(id);
+      _renderPhotoGridFromCache('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
+      dbSavePhoto(id,dataUrl,function(){});
     });
   });
 }
@@ -5108,7 +5212,8 @@ function openCloseOut(id){
     'Pickup: <strong>'+fmtDate(b.pickupDate||b.date)+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(totalRevenue(b))+'</strong>'+
     (b.broker?' &nbsp;·&nbsp; Broker: <strong>'+esc(b.broker)+'</strong>':'')+
     (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'</strong>':'')+
-    '<br>Deposit collected: <strong>'+$$(collected)+'</strong>';
+    (!(b.type==='chauffeur'||(b.vehicle==='Polaris Slingshot'&&b.type==='hourly'))
+      ? '<br>Deposit collected: <strong>'+$$(collected)+'</strong>' : '');
   updatePhotoSyncHints();
   $d('closeOutModal').classList.add('open');
   // Trigger full recalc so overage row and charges populate from saved data
@@ -5979,6 +6084,8 @@ function duplicateBooking(id){
   $d('fRevenue').value=b.revenue||'';
   $d('fDeposit').value=b.deposit||0;
   $d('fAddress').value=b.address||'';
+  if($d('fPickupAddress'))  $d('fPickupAddress').value  = b.pickupAddress||'';
+  if($d('fDropoffAddress')) $d('fDropoffAddress').value = b.dropoffAddress||'';
   $d('fStatus').value='pending';
   $d('fNotes').value=b.notes||'';
   $d('fPickupDate').value=b.pickupDate||'';
@@ -6540,36 +6647,57 @@ function renderAvailBadges(){
   var el=$d('availBadgesRow'); if(!el) return;
   var availDate=$d('availCheckDate')?$d('availCheckDate').value:'';
   if(!availDate){ el.innerHTML=''; return; }
-  el.innerHTML='<div style="display:grid;width:100%;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px">'+
+  el.innerHTML='<div style="display:grid;width:100%;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:8px">'+
     ALL_VEHICLES.map(function(v){
       var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
         return availDate>=r.start&&availDate<=r.end;
       });
+      var dayBookings=bookings.filter(function(b){
+        if(b._deleted||b.status==='cancelled'||b.vehicle!==v) return false;
+        var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
+        return availDate>=start&&availDate<=end;
+      });
+      var hasHourly=dayBookings.some(function(b){ return b.type==='hourly'; });
       var isBooked=false, returningB=null;
-      bookings.forEach(function(b){
-        if(b._deleted||b.status==='cancelled'||b.vehicle!==v) return;
-        var start=b.pickupDate||b.date;
-        var end=tripEndDate(b);
-        if(availDate>=start&&availDate<=end){
-          if(end===availDate&&start<availDate&&!isBooked){ returningB=b; }
-          else { isBooked=true; returningB=null; }
-        }
+      dayBookings.forEach(function(b){
+        var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
+        if(end===availDate&&start<availDate&&!isBooked){ returningB=b; }
+        else { isBooked=true; returningB=null; }
       });
       var bg,clr,bdr,icon,label,sub='';
       if(isBlocked){
         bg='rgba(239,68,68,.1)';clr='#ef4444';bdr='rgba(239,68,68,.25)';icon='🚫';label='Blocked';
-      } else if(isBooked){
-        bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='📅';label='Booked';
+      } else if(isBooked||dayBookings.length){
+        // Compute free time windows for hourly or partial-day bookings
+        var intervals=dayBookings.map(function(b){
+          var st=(availDate===(b.pickupDate||b.date))?(b.pickupTime||'00:00'):'00:00';
+          var en=(availDate===(b.dropoffDate||b.pickupDate||b.date))?(b.dropoffTime||'23:59'):'23:59';
+          return [st,en];
+        }).sort(function(a,b){ return a[0]<b[0]?-1:1; });
+        var free=[],cur='00:00';
+        intervals.forEach(function(iv){
+          if(cur<iv[0]) free.push(fmtTime(cur)+' – '+fmtTime(iv[0]));
+          if(iv[1]>cur) cur=iv[1];
+        });
+        if(cur<'23:59') free.push('Free after '+fmtTime(cur));
+        if(hasHourly&&free.length){
+          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';
+          sub=free.join(' · ');
+        } else {
+          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='📅';label='Booked';
+          if(cur<'23:59') sub='Free after '+fmtTime(cur);
+        }
       } else if(returningB){
         bg='rgba(251,191,36,.1)';clr='#f59e0b';bdr='rgba(251,191,36,.3)';icon='🔁';label='Returns';
         sub=returningB.dropoffTime?'at '+fmtTime(returningB.dropoffTime):'today';
       } else {
         bg='rgba(34,197,94,.1)';clr='#22c55e';bdr='rgba(34,197,94,.25)';icon='✅';label='Available';
+        sub='All day free';
       }
       return '<div style="background:'+bg+';border:1px solid '+bdr+';border-radius:10px;padding:10px 12px">'+
         '<div style="font-size:10px;font-weight:800;color:'+clr+';letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px">'+icon+' '+label+'</div>'+
         '<div style="font-size:12px;font-weight:700;color:var(--text);line-height:1.3">'+v+'</div>'+
-        (sub?'<div style="font-size:11px;color:'+clr+';margin-top:2px">'+sub+'</div>':'')+
+        (sub?'<div style="font-size:11px;color:'+clr+';margin-top:3px;line-height:1.4">'+sub+'</div>':'')+
         '</div>';
     }).join('')+'</div>';
 }
@@ -7736,11 +7864,13 @@ function afterCloudLoad(ok){
 cloudLoad(function(ok) {
   afterCloudLoad(ok);
   setSyncStatus(FIREBASE_URL ? (ok ? 'ok' : 'error') : 'off');
+  if(ok) loadWebBookings();
 });
 // Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
 document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && FIREBASE_URL) {
     cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
+    loadWebBookings();
   }
 });
 // Auto-pull every 15 seconds so all changes propagate to every active device
@@ -7749,6 +7879,10 @@ setInterval(function() {
     cloudLoad(function(ok) { afterCloudLoad(ok); });
   }
 }, 15000);
+// Poll web bookings every 60 seconds for new site submissions
+setInterval(function() {
+  if (FIREBASE_URL && document.visibilityState === 'visible') loadWebBookings();
+}, 60000);
 </script>
 </body>
 </html>
