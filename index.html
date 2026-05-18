@@ -369,7 +369,7 @@ tr:hover td { background: rgba(255,255,255,.02); }
   padding:3px 10px; font-size:10px; font-weight:700; display:inline-block; margin-top:4px; }
 
 /* ── Feature 12: Toast notification ── */
-#backupToast { position:fixed; bottom:24px; right:24px; z-index:9998;
+#backupToast { position:fixed; bottom:max(100px, calc(env(safe-area-inset-bottom, 0px) + 88px)); right:24px; z-index:9998;
   background:var(--card2); border:1px solid var(--border); border-radius:18px;
   padding:16px 20px; max-width:320px; box-shadow:0 12px 48px rgba(0,0,0,.7);
   display:none; }
@@ -2332,7 +2332,7 @@ function mergeArray(local, cloud) {
     } else {
       var lt = Number(map[item.id]._t) || Number(map[item.id].createdAt) || 0;
       var ct = Number(item._t)         || Number(item.createdAt)         || 0;
-      if (ct >= lt) map[item.id] = item;
+      if (ct > lt) map[item.id] = item;
     }
   });
   var result = [];
@@ -2831,9 +2831,9 @@ function updateMaintWarning(){
     conflicts.map(function(m){
       var lines = [];
       if(m.date >= (pickup||'') && m.date <= (dropoff||pickup||''))
-        lines.push('<b>' + m.serviceType + '</b> scheduled on <b>' + fmtDate(m.date) + '</b>');
+        lines.push('<b>' + esc(m.serviceType) + '</b> scheduled on <b>' + fmtDate(m.date) + '</b>');
       if(m.nextDue && m.nextDue >= (pickup||'') && m.nextDue <= (dropoff||pickup||''))
-        lines.push('Next service due <b>' + fmtDate(m.nextDue) + '</b> (' + m.serviceType + ')');
+        lines.push('Next service due <b>' + fmtDate(m.nextDue) + '</b> (' + esc(m.serviceType) + ')');
       return lines.join(' · ');
     }).join('<br>') +
     '<div style="font-size:11px;color:rgba(255,200,0,.7);margin-top:4px">You can still save — but consider rescheduling.</div>' +
@@ -2988,12 +2988,12 @@ function renderIncomeList(){
       var timeStr = inc.startTime?(inc.startTime+(inc.endTime?' – '+inc.endTime:'')):'—';
       return '<tr>'+
         '<td>'+dateStr2+'</td>'+
-        '<td><strong>'+inc.description+'</strong></td>'+
-        '<td><span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);border:none">'+inc.category+'</span></td>'+
-        '<td>'+(inc.vehicle||'—')+'</td>'+
-        '<td style="white-space:nowrap">'+timeStr+'</td>'+
+        '<td><strong>'+esc(inc.description)+'</strong></td>'+
+        '<td><span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);border:none">'+esc(inc.category)+'</span></td>'+
+        '<td>'+esc(inc.vehicle||'—')+'</td>'+
+        '<td style="white-space:nowrap">'+esc(timeStr)+'</td>'+
         '<td style="color:var(--green);font-weight:800">'+$$(inc.amount)+'</td>'+
-        '<td style="color:var(--muted);font-size:12px">'+(inc.notes||'')+'</td>'+
+        '<td style="color:var(--muted);font-size:12px">'+esc(inc.notes||'')+'</td>'+
         '<td><button class="btn btn-sm" onclick="openIncomeModal(\''+inc.id+'\')">Edit</button></td>'+
         '</tr>';
     }).join('')+
@@ -3332,7 +3332,7 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -4103,11 +4103,11 @@ function openBookingDetail(id){
     // Verification
     '<div class="fsec">Verification</div>'+
     '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified':'🪪 Not verified')+'</span></div>'+
-    (idOk&&v.idName?'<div class="detail-row"><span class="detail-label">ID Name</span><span class="detail-val">'+v.idName+'</span></div>':'')+
-    (idOk&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+v.idType+(v.idNumber?' #'+v.idNumber:'')+'</span></div>':'')+
+    (idOk&&v.idName?'<div class="detail-row"><span class="detail-label">ID Name</span><span class="detail-val">'+esc(v.idName)+'</span></div>':'')+
+    (idOk&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+esc(v.idType)+(v.idNumber?' #'+esc(v.idNumber):'')+'</span></div>':'')+
     (b._maintConflictAck?'<div class="detail-row"><span class="detail-label" style="color:#f59e0b">⚠ Maint. Override</span><span class="detail-val" style="color:#f59e0b;font-size:11px">Saved despite maintenance conflict</span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Insurance</span><span class="detail-val">'+(insOk?'🛡✅ Verified':'🛡 Not verified')+'</span></div>'+
-    (insOk&&v.insCarrier?'<div class="detail-row"><span class="detail-label">Carrier</span><span class="detail-val">'+v.insCarrier+(v.insCoverage?' · '+v.insCoverage:'')+'</span></div>':'')+
+    (insOk&&v.insCarrier?'<div class="detail-row"><span class="detail-label">Carrier</span><span class="detail-val">'+esc(v.insCarrier)+(v.insCoverage?' · '+esc(v.insCoverage):'')+'</span></div>':'')+
 
     // Customer Signature
     (b.customerSig?
@@ -4143,7 +4143,7 @@ function openBookingDetail(id){
       b._history.slice().reverse().map(function(h){
         return '<div style="padding:5px 0;border-bottom:1px solid var(--border)">'+
           '<span style="color:var(--text);font-weight:600">'+new Date(h.at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</span> · '+
-          h.changes.join(', ')+'</div>';
+          esc(h.changes.join(', '))+'</div>';
       }).join('')+
       '</div>'
     : '');
@@ -4211,10 +4211,10 @@ function renderExpenseLog(){
     sorted.map(function(exp){
       return '<tr>'+
         '<td>'+fmtDate(exp.date)+'</td>'+
-        '<td><span class="badge" style="background:rgba(255,92,92,.12);color:var(--red)">'+exp.category+'</span></td>'+
-        '<td>'+(exp.vehicle||'—')+'</td>'+
+        '<td><span class="badge" style="background:rgba(255,92,92,.12);color:var(--red)">'+esc(exp.category)+'</span></td>'+
+        '<td>'+esc(exp.vehicle||'—')+'</td>'+
         '<td style="color:var(--red);font-weight:700">'+$$(exp.amount)+'</td>'+
-        '<td style="color:var(--muted);font-size:12px">'+(exp.notes||'')+'</td>'+
+        '<td style="color:var(--muted);font-size:12px">'+esc(exp.notes||'')+'</td>'+
         '<td><button class="btn btn-sm" onclick="openExpenseModal(\''+exp.id+'\')">Edit</button></td>'+
       '</tr>';
     }).join('')+
@@ -4683,7 +4683,7 @@ function saveBooking(){
   }
 
   var entry={
-    id:        editingId||('b'+Date.now()),
+    id:        editingId||('b'+Date.now()+Math.random().toString(36).slice(2,6)),
     date:      date,
     name:      name,
     phone:     $d('fPhone').value.trim(),
@@ -4755,7 +4755,7 @@ function saveBooking(){
       if(ex.claimStatus)        entry.claimStatus        = ex.claimStatus;
       if(ex.claimRecovered)     entry.claimRecovered     = ex.claimRecovered;
       if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
-      if(ex.fuelCharge)         entry.fuelCharge         = ex.fuelCharge;
+      if(ex.fuelCharge!=null)   entry.fuelCharge         = ex.fuelCharge;
       if(ex.mileageCharge)     entry.mileageCharge      = ex.mileageCharge;
       if(ex._fromWeb)          entry._fromWeb           = ex._fromWeb;
       // Audit trail: record which fields changed
@@ -5103,9 +5103,8 @@ function openCloseOut(id){
     (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'</strong>':'')+
     '<br>Deposit collected: <strong>'+$$(collected)+'</strong>';
   updatePhotoSyncHints();
-  // Trigger full recalc so overage row and charges populate from saved data
-  coCalcMiles();
   $d('closeOutModal').classList.add('open');
+  // Trigger full recalc so overage row and charges populate from saved data
   coCalcMiles();
   coCalcFuel();
   coUpdateProfitSummary();
@@ -5725,7 +5724,7 @@ function renderTodayBanner(){
   var today=todayStr();
   var todays=bookings.filter(function(b){ return !b._deleted && (b.pickupDate||b.date)===today && b.status!=='cancelled'; });
   var banner=$d('todayBanner');
-  if(!todays.length){ banner.classList.remove('visible'); return; }
+  if(!todays.length){ banner.classList.remove('visible'); stickyTabFix(); return; }
   banner.classList.add('visible');
   $d('todayBannerItems').innerHTML=todays.map(function(b){
     var idOk=b.verify&&b.verify.idVerified;
@@ -5738,6 +5737,7 @@ function renderTodayBanner(){
       '<div class="today-banner-revenue">'+$$(totalRevenue(b))+'</div>'+
     '</div>';
   }).join('');
+  stickyTabFix();
 }
 
 // ════════════════════════════════════════════════════════
@@ -6452,7 +6452,7 @@ function renderTaxTab(){
         var m=parseInt((i.fromDate||'').substring(5,7),10);
         return (i.fromDate||'').substring(0,4)===yr&&m>=qs&&m<=qe;
       });
-      var qRev=qBk.reduce(function(s,b){return s+netRevenue(b);},0);
+      var qRev=qBk.reduce(function(s,b){return s+totalRevenue(b);},0);
       var qOth=qIn.reduce(function(s,i){return s+(Number(i.amount)||0);},0);
       var qExp=qEx.reduce(function(s,e){return s+(Number(e.amount)||0);},0);
       var qNet=qRev+qOth-qExp;
@@ -6740,11 +6740,11 @@ function renderFleetTab(){
         var dueText=r.nextDue?(due?'⚠ '+fmtDate(r.nextDue):soon2?'⏰ '+fmtDate(r.nextDue):'✅ '+fmtDate(r.nextDue)):'—';
         return '<tr>'+
           '<td>'+fmtDate(r.date)+'</td>'+
-          '<td><span class="badge" style="background:rgba(100,180,255,.15);color:var(--blue)">'+r.serviceType+'</span></td>'+
+          '<td><span class="badge" style="background:rgba(100,180,255,.15);color:var(--blue)">'+esc(r.serviceType)+'</span></td>'+
           '<td>'+(r.mileage?r.mileage.toLocaleString()+' mi':'—')+'</td>'+
           '<td style="color:var(--red);font-weight:700">'+(r.cost?$$(r.cost):'—')+'</td>'+
           '<td class="'+dueCls+'">'+dueText+'</td>'+
-          '<td style="color:var(--muted);font-size:12px">'+(r.notes||'')+'</td>'+
+          '<td style="color:var(--muted);font-size:12px">'+esc(r.notes||'')+'</td>'+
           '<td><button class="btn btn-sm" onclick="openMaintenanceModal(\''+r.id+'\')">Edit</button></td>'+
           '</tr>';
       }).join('')+
@@ -6829,7 +6829,7 @@ function renderBrokerTab(){
       var net=r.gross-r.fees-r.loyalty;
       var avg=r.count?net/r.count:0;
       return '<tr>'+
-        '<td><b>'+r.name+'</b></td>'+
+        '<td><b>'+esc(r.name)+'</b></td>'+
         '<td>'+r.count+'</td>'+
         '<td>'+$$(r.gross)+'</td>'+
         '<td style="color:var(--red)">'+$$(r.fees)+'</td>'+
@@ -6898,13 +6898,13 @@ function openCustomerProfile(enc){
       '<div class="cust-stat"><div class="cust-stat-val">'+totalDays+'</div><div class="cust-stat-lbl">Days Rented</div></div>'+
     '</div>'+
     '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+
-      '🚗 Preferred: <strong style="color:var(--gold)">'+prefVeh+'</strong>'+
+      '🚗 Preferred: <strong style="color:var(--gold)">'+esc(prefVeh)+'</strong>'+
       ' &nbsp;·&nbsp; First booking: <strong style="color:var(--text)">'+firstDate+'</strong>'+
       (active>1?' &nbsp;·&nbsp; <span style="color:var(--green);font-weight:700">🔄 Repeat customer</span>':'')+
     '</div>'+
-    '<div style="font-size:12px;color:var(--muted);margin-bottom:14px">Vehicles rented: <strong style="color:var(--text)">'+vehs+'</strong>'+
-      (first.phone?' &nbsp;·&nbsp; 📞 <strong>'+first.phone+'</strong>':'')+
-      (first.email?' &nbsp;·&nbsp; ✉ <strong>'+first.email+'</strong>':'')+
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:14px">Vehicles rented: <strong style="color:var(--text)">'+esc(vehs)+'</strong>'+
+      (first.phone?' &nbsp;·&nbsp; 📞 <strong>'+esc(first.phone)+'</strong>':'')+
+      (first.email?' &nbsp;·&nbsp; ✉ <strong>'+esc(first.email)+'</strong>':'')+
     '</div>'+
     '<div class="tbl-wrap"><table><thead><tr>'+
       '<th>Date</th><th>Vehicle</th><th>Type</th><th>Revenue</th><th>Status</th><th></th>'+
@@ -7699,8 +7699,13 @@ window.addEventListener('offline', updateOnlineStatus);
 // Keep tab bar flush against the bottom of the sticky header on every device
 function stickyTabFix(){
   var hdr=$d('header')||document.querySelector('.header');
+  var banner=$d('todayBanner');
   var tb=document.querySelector('.tab-bar');
-  if(hdr&&tb) tb.style.top=hdr.getBoundingClientRect().height+'px';
+  if(hdr&&tb){
+    var hdrH=hdr.getBoundingClientRect().height;
+    var bannerH=(banner&&banner.classList.contains('visible'))?banner.getBoundingClientRect().height:0;
+    tb.style.top=(hdrH+bannerH)+'px';
+  }
 }
 stickyTabFix();
 window.addEventListener('resize', stickyTabFix);
@@ -7715,6 +7720,11 @@ setTimeout(hideSplash, 1300);
 function afterCloudLoad(ok){
   if(!ok) return;
   initSelects(); render(); renderIncomeList(); renderExpenseLog();
+  if(activeTab==='upcoming')  renderUpcoming();
+  if(activeTab==='current')   renderCurrent();
+  if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
+  if(activeTab==='calendar')  renderCalendar();
   if(activeTab==='tax')       renderTaxTab();
   if(activeTab==='fleet')     renderFleetTab();
   if(activeTab==='customers') renderCustomersTab();
