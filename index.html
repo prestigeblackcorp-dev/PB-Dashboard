@@ -3347,7 +3347,19 @@ function fmtDateFull(s){
 }
 function fmtTime(t){
   if(!t) return '';
-  var parts=t.split(':'), h=parseInt(parts[0],10), m=parts[1]||'00';
+  t=String(t).trim();
+  // iOS Safari / some mobile browsers return time input value as "1:30 AM" already
+  var hasPm=/pm/i.test(t), hasAm=/am/i.test(t);
+  // Strip any am/pm text so we can re-parse cleanly
+  var stripped=t.replace(/[aApP][mM]/g,'').trim();
+  var parts=stripped.split(':');
+  var h=parseInt(parts[0],10);
+  // Keep only digits in minutes
+  var m=(parts[1]||'00').replace(/\D/g,'').substring(0,2)||'00';
+  if(isNaN(h)) return t;
+  // Adjust hour if original already had am/pm indicator
+  if(hasPm && h<12) h+=12;
+  if(hasAm && h===12) h=0;
   var ampm=h>=12?'PM':'AM'; h=h%12||12;
   return h+':'+m+' '+ampm;
 }
@@ -3861,10 +3873,12 @@ function tripCard(b, showCountdown){
   if(b.bouquet)     addonsArr.push('💐 Bouquet '+$$(b.bouquet));
 
   // Date column = trip start date (pickup date or booking date)
-  var startD = new Date((b.pickupDate||b.date)+'T00:00:00');
+  var _rawDate=b.pickupDate||b.date||'';
+  var startD = _rawDate ? new Date(_rawDate+'T00:00:00') : null;
+  var _dateValid = startD && !isNaN(startD.getTime());
   var dateColHtml =
-    '<div class="trip-date-big">'+startD.getDate()+'</div>'+
-    '<div class="trip-date-sub">'+startD.toLocaleString('en-US',{weekday:'short'}).toUpperCase()+' • '+startD.toLocaleString('en-US',{month:'short'}).toUpperCase()+'</div>'+
+    '<div class="trip-date-big">'+(_dateValid?startD.getDate():'—')+'</div>'+
+    '<div class="trip-date-sub">'+(_dateValid?startD.toLocaleString('en-US',{weekday:'short'}).toUpperCase()+' • '+startD.toLocaleString('en-US',{month:'short'}).toUpperCase():'No date')+'</div>'+
     (b.pickupTime?'<div style="font-size:10px;color:var(--gold);margin-top:2px;white-space:nowrap">'+fmtTime(b.pickupTime)+'</div>':'');
 
   // Logged timestamp — small note shown on the card body
