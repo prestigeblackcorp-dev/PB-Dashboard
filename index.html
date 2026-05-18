@@ -1690,6 +1690,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 
       <div class="ffull" id="coOverageRow" style="display:none;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.3);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap"></div>
       <input type="hidden" id="coMileageCharge" value="0">
+      <input type="hidden" id="coFuelCharge" value="0">
 
       <div class="ffull" id="coProfitSummary" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap;margin-top:2px"></div>
 
@@ -5098,6 +5099,8 @@ function openCloseOut(id){
     (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'</strong>':'')+
     '<br>Deposit collected: <strong>'+$$(collected)+'</strong>';
   updatePhotoSyncHints();
+  // Trigger full recalc so overage row and charges populate from saved data
+  coCalcMiles();
   $d('closeOutModal').classList.add('open');
   coCalcMiles();
   coCalcFuel();
@@ -5178,11 +5181,13 @@ function coCalcFuel(){
   if(!inVal){ row.style.display='flex'; row.style.background='rgba(249,115,22,.07)'; row.style.borderColor='rgba(249,115,22,.3)'; row.innerHTML='<span style="color:#f97316">⚠ Check-in fuel level was not recorded. Open Check In to log it before closing out.</span>'; coUpdateProfitSummary(); return; }
   if(inNum<0||outNum<0||!outVal){ row.style.display='none'; coUpdateProfitSummary(); return; }
   var diff=inNum-outNum; // eighths short
+  var fuelChargeInput=$d('coFuelCharge');
   if(diff<=0){
     row.style.display='flex';
     row.style.background='rgba(124,252,152,.07)';
     row.style.borderColor='rgba(124,252,152,.3)';
     row.innerHTML='<span style="color:var(--green)">✅ Fuel OK</span><span>Returned '+fuelLabel(outVal)+' (sent out '+fuelLabel(inVal)+') — no fuel charge</span>';
+    if(fuelChargeInput) fuelChargeInput.value='0';
   } else {
     var quarters=diff/2; // eighths ÷ 2 = quarters
     var charge=Math.ceil(quarters)*30; // $30 per quarter, round up
@@ -5193,30 +5198,48 @@ function coCalcFuel(){
       '<span>Returned: <b style="color:var(--red)">'+fuelLabel(outVal)+'</b></span>'+
       '<span>Short by: <b style="color:var(--red)">'+diff+'/8 tank ('+Math.ceil(quarters)+' qtr)</b></span>'+
       '<span>Fuel charge: <b style="color:var(--red)">'+$$(charge)+'</b> @ $30/qtr</span>';
+    if(fuelChargeInput) fuelChargeInput.value=String(charge);
   }
   coUpdateProfitSummary();
 }
 function coUpdateProfitSummary(){
   var b=bookings.find(function(x){return x.id===closeOutId;});
   if(!b) return;
-  var rev=totalRevenue(b);
+  var baseRev=totalRevenue(b);
   var cost=parseFloat($d('coCost')?$d('coCost').value:0)||0;
   var brokerFee=(Number(b.brokerFee)||0)*(Number(b.days)||1);
   var loyaltyDisc=Number(b.loyaltyDiscount)||0;
+  // Mileage overage and fuel short charge are additional customer-owed amounts — they ADD to revenue
   var fuelCharge=parseFloat($d('coFuelCharge')?$d('coFuelCharge').value:0)||0;
   var mileCharge=parseFloat($d('coMileageCharge')?$d('coMileageCharge').value:0)||0;
-  var net=rev-cost-brokerFee-loyaltyDisc-fuelCharge-mileCharge;
+  var totalRev=baseRev+fuelCharge+mileCharge;
+  var net=totalRev-cost-brokerFee-loyaltyDisc;
+  var amtOwed=fuelCharge+mileCharge;
   var ps=$d('coProfitSummary');
   if(!ps) return;
   ps.style.display='flex';
-  ps.innerHTML='<b style="color:var(--gold);margin-right:4px">Trip Summary:</b>'+
-    '<span>Revenue: <b>'+$$(rev)+'</b></span>'+
-    (brokerFee?'<span>Broker Fee: <b style="color:var(--red)">−'+$$(brokerFee)+'</b></span>':'')+
+  // Build mileage detail string for display
+  var mileDetail='';
+  if(mileCharge>0){
+    var rentalDays=Number(b.days)||1;
+    var perDay=Number(b.includedMiles)||0;
+    var allowed=perDay*rentalDays;
+    var oIn=Number(b.odomIn)||0, oOut=parseFloat($d('coOdomOut')?$d('coOdomOut').value:0)||0;
+    var driven=(oIn&&oOut&&oOut>oIn)?(oOut-oIn):0;
+    var over=driven>allowed?(driven-allowed):0;
+    var rate=Number(b.overageRate)||0;
+    mileDetail=' <span style="color:var(--muted);font-size:11px">('+over.toLocaleString()+' mi over × $'+rate+'/mi)</span>';
+  }
+  ps.innerHTML=
+    '<b style="color:var(--gold);margin-right:4px">Trip Summary:</b>'+
+    '<span>Base Revenue: <b>'+$$(baseRev)+'</b></span>'+
+    (mileCharge?'<span>🛣 Mileage Overage: <b style="color:var(--red)">+'+$$(mileCharge)+'</b>'+mileDetail+'</span>':'')+
+    (fuelCharge?'<span>⛽ Fuel Charge: <b style="color:var(--red)">+'+$$(fuelCharge)+'</b></span>':'')+
+    (brokerFee?'<span>Broker Fee: <b style="color:var(--muted)">−'+$$(brokerFee)+'</b></span>':'')+
     (loyaltyDisc?'<span>Loyalty Disc: <b style="color:var(--blue)">−'+$$(loyaltyDisc)+'</b></span>':'')+
-    (cost?'<span>Booking Cost: <b style="color:var(--red)">−'+$$(cost)+'</b></span>':'')+
-    (fuelCharge?'<span>Fuel Charge: <b style="color:var(--red)">−'+$$(fuelCharge)+'</b></span>':'')+
-    (mileCharge?'<span>Mileage Overage: <b style="color:var(--red)">−'+$$(mileCharge)+'</b></span>':'')+
-    '<span>Net: <b style="color:var(--green)">'+$$(net)+'</b></span>';
+    (cost?'<span>Booking Cost: <b style="color:var(--muted)">−'+$$(cost)+'</b></span>':'')+
+    '<span style="border-left:1px solid rgba(255,255,255,.1);padding-left:10px;margin-left:4px">Net: <b style="color:var(--green)">'+$$(net)+'</b></span>'+
+    (amtOwed>0?'<span style="width:100%;margin-top:8px;padding:8px 12px;background:rgba(255,92,92,.1);border:1px solid rgba(255,92,92,.3);border-radius:8px;font-size:13px;font-weight:800;color:var(--red)">⚠ Additional Charges Owed by Customer: '+$$(amtOwed)+'</span>':'');
 }
 
 function closeCloseOut(){
