@@ -923,6 +923,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div style="display:flex;gap:8px;margin-top:6px">
         <button class="btn btn-sm" onclick="clearCustSig()">✕ Clear</button>
         <button class="btn btn-sm btn-gold" onclick="saveCustSig()">💾 Save Signature</button>
+        <button class="btn btn-sm" id="contractSendSignedBtn" onclick="sendSignedCopyToClient()" style="display:none;background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.5);color:#22c55e;font-weight:800">📧 Send Signed Copy to Client</button>
         <span id="custSigStatus" style="font-size:11px;color:var(--muted);align-self:center"></span>
       </div>
     </div>
@@ -7526,20 +7527,14 @@ function saveCustSig(){
   if(idx!==-1){ bookings[idx].customerSig=dataUrl; bookings[idx]._t=Date.now(); save(); }
   $d('custSigStatus').textContent='✅ Saved!';
   setTimeout(function(){ if($d('custSigStatus')) $d('custSigStatus').textContent=''; },2000);
+  // Refresh preview so signature appears embedded, and show "Send Signed Copy" button
+  _renderContractContent();
 }
 
-function openContract(id){
-  _contractBookingId = id;
-  var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
-  loadContractTemplate();
-  _contractIsWaiver = (b.vehicle==='Polaris Slingshot' && b.type==='hourly');
-  var activeTemplate = _contractIsWaiver ? slingshotWaiverTemplate : contractTemplate;
-  $d('contractModalTitle').textContent = _contractIsWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
-  $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
-  if(!activeTemplate){
-    if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
-    return;
-  }
+function _renderContractContent(){
+  var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
+  var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
+  if(!activeTemplate) return;
   var addonLines=[];
   if(Number(b.delivery))  addonLines.push('Delivery ($'+b.delivery+')');
   if(Number(b.unlimited)) addonLines.push('Unlimited Miles ($'+b.unlimited+'/day)');
@@ -7552,31 +7547,22 @@ function openContract(id){
   var days=Number(b.days)||1;
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
-  // Computed display values
-  var dailyRate = days ? '$'+(Math.round(rev/days*100)/100).toFixed(2) : 'N/A';
-  var pickupDateFmt  = b.pickupDate  ? fmtDateFull(b.pickupDate)  : (b.date ? fmtDateFull(b.date) : '');
-  var returnDateFmt  = b.dropoffDate ? fmtDateFull(b.dropoffDate) : '';
-  var pickupTimeTxt  = b.pickupTime  ? ' at '+fmtTime(b.pickupTime)  : '';
-  var dropoffTimeTxt = b.dropoffTime ? ' at '+fmtTime(b.dropoffTime) : '';
-  var milesDisplay   = b.includedMiles ? Number(b.includedMiles).toLocaleString()+' mi/day' : 'Unlimited';
-  var overageDisplay = b.overageRate  ? '$'+b.overageRate+'/mi over limit' : 'N/A';
-  var unlimitedFee   = b.unlimited    ? '$'+b.unlimited+'/day' : 'N/A';
-  var deliveryFee    = Number(b.delivery) ? '$'+b.delivery : 'N/A';
-  var petFee         = Number(b.pet)      ? '$'+b.pet      : 'N/A';
-  var odomIn         = b.odomIn ? Number(b.odomIn).toLocaleString()+' mi' : '';
-  var licNum         = (b.verify&&b.verify.idNumber)   || '';
-  var licState       = (b.verify&&b.verify.idState)    || '';
-  var licAddress     = (b.verify&&b.verify.idAddress)  || '';
-  var vInfo          = VEHICLE_INFO[b.vehicle] || {};
-  var vehicleYear    = vInfo.year  || '';
-  var vehicleMake    = vInfo.make  || '';
-  var vehicleModel   = vInfo.model || '';
-  var vehicleColor   = vInfo.color || '';
-  var vehicleVin     = vInfo.vin   || '';
-  var brokerLine     = b.broker
-    ? '<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(b.broker)+'</span></div>'
-    : '';
-  // Use function replacers so customer data containing $& $1 etc. isn't misinterpreted by JS replace
+  var dailyRate=days?'$'+(Math.round(rev/days*100)/100).toFixed(2):'N/A';
+  var pickupDateFmt=b.pickupDate?fmtDateFull(b.pickupDate):(b.date?fmtDateFull(b.date):'');
+  var returnDateFmt=b.dropoffDate?fmtDateFull(b.dropoffDate):'';
+  var pickupTimeTxt=b.pickupTime?' at '+fmtTime(b.pickupTime):'';
+  var dropoffTimeTxt=b.dropoffTime?' at '+fmtTime(b.dropoffTime):'';
+  var milesDisplay=b.includedMiles?Number(b.includedMiles).toLocaleString()+' mi/day':'Unlimited';
+  var overageDisplay=b.overageRate?'$'+b.overageRate+'/mi over limit':'N/A';
+  var unlimitedFee=b.unlimited?'$'+b.unlimited+'/day':'N/A';
+  var deliveryFee=Number(b.delivery)?'$'+b.delivery:'N/A';
+  var petFee=Number(b.pet)?'$'+b.pet:'N/A';
+  var odomIn=b.odomIn?Number(b.odomIn).toLocaleString()+' mi':'';
+  var licNum=(b.verify&&b.verify.idNumber)||'';
+  var licState=(b.verify&&b.verify.idState)||'';
+  var licAddress=(b.verify&&b.verify.idAddress)||'';
+  var vInfo=VEHICLE_INFO[b.vehicle]||{};
+  var brokerLine=b.broker?'<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(b.broker)+'</span></div>':'';
   function sr(v){ return function(){ return v; }; }
   var filled=activeTemplate
     .replace(/\{\{customer_name\}\}/gi,      sr(b.name||''))
@@ -7590,7 +7576,7 @@ function openContract(id){
     .replace(/\{\{pickup_time\}\}/gi,        sr(b.pickupTime?fmtTime(b.pickupTime):''))
     .replace(/\{\{dropoff_date\}\}/gi,       sr(returnDateFmt))
     .replace(/\{\{dropoff_time\}\}/gi,       sr(b.dropoffTime?fmtTime(b.dropoffTime):''))
-    .replace(/\{\{pickup_time_display\}\}/gi, sr(pickupTimeTxt))
+    .replace(/\{\{pickup_time_display\}\}/gi,sr(pickupTimeTxt))
     .replace(/\{\{dropoff_time_display\}\}/gi,sr(dropoffTimeTxt))
     .replace(/\{\{days\}\}/gi,               sr(String(days)))
     .replace(/\{\{total_revenue\}\}/gi,      sr('$'+rev.toLocaleString()))
@@ -7611,78 +7597,106 @@ function openContract(id){
     .replace(/\{\{license_number\}\}/gi,     sr(licNum))
     .replace(/\{\{license_state\}\}/gi,      sr(licState))
     .replace(/\{\{license_address\}\}/gi,    sr(licAddress))
-    .replace(/\{\{vehicle_year\}\}/gi,       sr(vehicleYear))
-    .replace(/\{\{vehicle_make\}\}/gi,       sr(vehicleMake))
-    .replace(/\{\{vehicle_model\}\}/gi,      sr(vehicleModel))
-    .replace(/\{\{vehicle_color\}\}/gi,      sr(vehicleColor))
-    .replace(/\{\{vehicle_vin\}\}/gi,        sr(vehicleVin))
+    .replace(/\{\{vehicle_year\}\}/gi,       sr(vInfo.year||''))
+    .replace(/\{\{vehicle_make\}\}/gi,       sr(vInfo.make||''))
+    .replace(/\{\{vehicle_model\}\}/gi,      sr(vInfo.model||''))
+    .replace(/\{\{vehicle_color\}\}/gi,      sr(vInfo.color||''))
+    .replace(/\{\{vehicle_vin\}\}/gi,        sr(vInfo.vin||''))
     .replace(/\{\{daily_rate\}\}/gi,         sr(dailyRate))
-    .replace(/\{\{mileage_limit_display\}\}/gi, sr(milesDisplay))
+    .replace(/\{\{mileage_limit_display\}\}/gi,sr(milesDisplay))
     .replace(/\{\{overage_display\}\}/gi,    sr(overageDisplay))
     .replace(/\{\{unlimited_fee\}\}/gi,      sr(unlimitedFee))
-    .replace(/\{\{unlimited_total\}\}/gi,    sr(b.unlimited ? '$'+((Number(b.unlimited)||0)*(Number(b.days)||1)).toFixed(2) : 'N/A'))
+    .replace(/\{\{unlimited_total\}\}/gi,    sr(b.unlimited?'$'+((Number(b.unlimited)||0)*(Number(b.days)||1)).toFixed(2):'N/A'))
     .replace(/\{\{delivery_fee\}\}/gi,       sr(deliveryFee))
     .replace(/\{\{pet_fee\}\}/gi,            sr(petFee))
     .replace(/\{\{odometer_in\}\}/gi,        sr(odomIn))
     .replace(/\{\{date_lock\}\}/gi,          sr(b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
-    .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE
-      ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">'
-      : '')
-    .replace(/\{\{customer_signature\}\}/gi, (b.customerSig&&b.customerSig.startsWith('data:image/')) ? '<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">' : '_______________________________')
-    .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee ? '$'+b.brokerFee+'/day' : 'N/A')
-    .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0, getRemainingBalance(b)))
-    .replace(/\{\{mileage_policy\}\}/gi, b.includedMiles
-      ? 'Mileage: This rental includes '+Number(b.includedMiles).toLocaleString()+' miles per day. Miles driven beyond the included amount will be charged at $'+( b.overageRate||'0' )+' per mile.'
-      : 'Mileage: This rental includes unlimited mileage at no additional per-mile charge.')
-    .replace(/\{\{fuel_policy\}\}/gi, 'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.');
+    .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE?'<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">':'')
+    .replace(/\{\{customer_signature\}\}/gi, (b.customerSig&&b.customerSig.startsWith('data:image/'))?'<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">':'_______________________________')
+    .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee?'$'+b.brokerFee+'/day':'N/A')
+    .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0,getRemainingBalance(b)))
+    .replace(/\{\{mileage_policy\}\}/gi,     b.includedMiles?'Mileage: This rental includes '+Number(b.includedMiles).toLocaleString()+' miles per day. Miles driven beyond the included amount will be charged at $'+(b.overageRate||'0')+' per mile.':'Mileage: This rental includes unlimited mileage at no additional per-mile charge.')
+    .replace(/\{\{fuel_policy\}\}/gi,        'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.');
   $d('contractFilled').value=filled;
-  // If template is HTML, show iframe preview
   var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
   var frame=$d('contractPreviewFrame');
   var rawToggle=$d('contractRawToggle');
   if(isHtml){
-    frame.style.display='';
-    $d('contractFilled').style.display='none';
-    rawToggle.style.display='';
-    rawToggle.textContent='👁 View Raw HTML';
-    rawToggle._showingRaw=false;
+    frame.style.display=''; $d('contractFilled').style.display='none';
+    rawToggle.style.display=''; rawToggle.textContent='👁 View Raw HTML'; rawToggle._showingRaw=false;
     frame.srcdoc=filled;
   } else {
-    frame.style.display='none';
-    $d('contractFilled').style.display='';
-    rawToggle.style.display='none';
+    frame.style.display='none'; $d('contractFilled').style.display=''; rawToggle.style.display='none';
   }
+  var rev2=totalRevenue(b);
   $d('contractHeader').innerHTML=
     '<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">'+
     '<strong>'+esc(b.vehicle)+'</strong> <span>'+esc(b.name)+'</span>'+
     (b.email?'<span style="color:var(--muted)">✉ '+esc(b.email)+'</span>':'')+
-    '<span style="color:var(--gold)">'+$$(rev)+'</span>'+
+    '<span style="color:var(--gold)">'+$$(rev2)+'</span>'+
     '<span style="color:var(--muted)">'+fmtDate(b.pickupDate||b.date)+'</span>'+
     '</div>';
   var emailAddr=b.email||'';
+  var docType=_contractIsWaiver?'Liability Waiver':'Rental Agreement';
   var emailBtn=$d('contractEmailBtn');
   emailBtn.textContent=emailAddr?'✉ Send to '+emailAddr:'✉ Send Email';
   emailBtn.onclick=function(){
-    var subj='Rental Agreement — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
+    var subj=docType+' — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
     var rawBody=$d('contractFilled').value||'';
-    var isHtml=rawBody.trim().toLowerCase().startsWith('<!doctype')||rawBody.trim().startsWith('<')||rawBody.includes('<div');
-    if(MESSAGING_URL && emailAddr){
-      var htmlBody=isHtml?rawBody:('<pre style="font-family:sans-serif;white-space:pre-wrap">'+rawBody+'</pre>');
-      fetch(MESSAGING_URL+'/send-email',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})
-      }).then(function(r){
-        if(r.ok){ showToast('Contract sent to '+emailAddr); }
-        else{ showToast('Email failed — opening mail app instead'); window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); }
-      }).catch(function(){ window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); });
+    var isH=rawBody.trim().toLowerCase().startsWith('<!doctype')||rawBody.trim().startsWith('<')||rawBody.includes('<div');
+    if(MESSAGING_URL&&emailAddr){
+      var htmlBody=isH?rawBody:('<pre style="font-family:sans-serif;white-space:pre-wrap">'+rawBody+'</pre>');
+      fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})})
+        .then(function(r){ if(r.ok){showToast(docType+' sent to '+emailAddr);}else{showToast('Email failed — opening mail app');window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody);} })
+        .catch(function(){ window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); });
     } else {
-      var plainBody=isHtml?(function(){var t=document.createElement('div');t.innerHTML=rawBody;return t.innerText||t.textContent||'';}()):rawBody;
+      var plainBody=isH?(function(){var t=document.createElement('div');t.innerHTML=rawBody;return t.innerText||t.textContent||'';}()):rawBody;
       window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(plainBody);
     }
   };
+  // Show "Send Signed Copy" button only when a signature is on file
+  var ssb=$d('contractSendSignedBtn');
+  if(ssb) ssb.style.display=(b.customerSig&&b.customerSig.startsWith('data:image/'))?'':'none';
+}
+
+function openContract(id){
+  _contractBookingId = id;
+  var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
+  loadContractTemplate();
+  _contractIsWaiver = (b.vehicle==='Polaris Slingshot' && b.type==='hourly');
+  $d('contractModalTitle').textContent = _contractIsWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
+  $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
+  var activeTemplate = _contractIsWaiver ? slingshotWaiverTemplate : contractTemplate;
+  if(!activeTemplate){
+    if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
+    return;
+  }
+  _renderContractContent();
   $d('contractModal').classList.add('open');
   setTimeout(initCustSigCanvas, 50);
+}
+
+function sendSignedCopyToClient(){
+  if(!_contractBookingId) return;
+  var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
+  if(!b.customerSig){ showToast('No signature saved yet — have the client sign first'); return; }
+  _renderContractContent(); // ensure preview reflects latest signature
+  var emailAddr=b.email||'';
+  var docType=_contractIsWaiver?'Liability Waiver':'Rental Agreement';
+  var subj='Your Signed '+docType+' — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
+  var rawBody=$d('contractFilled').value||'';
+  var isH=rawBody.trim().toLowerCase().startsWith('<!doctype')||rawBody.trim().startsWith('<')||rawBody.includes('<div');
+  if(MESSAGING_URL&&emailAddr){
+    var htmlBody=isH?rawBody:('<pre style="font-family:sans-serif;white-space:pre-wrap">'+rawBody+'</pre>');
+    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})})
+      .then(function(r){ if(r.ok){showToast('Signed copy sent to '+emailAddr);}else{showToast('Email failed — opening mail app');window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody);} })
+      .catch(function(){ window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); });
+  } else if(emailAddr){
+    var plainBody=isH?(function(){var t=document.createElement('div');t.innerHTML=rawBody;return t.innerText||t.textContent||'';}()):rawBody;
+    window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(plainBody);
+  } else {
+    showToast('No email on file for this booking — add one to send the signed copy');
+  }
 }
 
 function closeContract(){
