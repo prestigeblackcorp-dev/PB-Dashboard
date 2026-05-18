@@ -3331,6 +3331,12 @@ function toast(msg,dur){
 }
 function dateStr(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
 function addDays(d,n){ var x=new Date(d); x.setDate(x.getDate()+n); return x; }
+// Normalize any date string → YYYY-MM-DD (safe for string comparisons and new Date())
+function normDateStr(s){
+  if(!s) return '';
+  var d=parseLocalDate(s);
+  return (d&&!isNaN(d.getTime())) ? dateStr(d) : '';
+}
 function fmtDate(s){
   if(!s) return '';
   var p=s.split('-'); return p.length===3 ? p[1]+'/'+p[2]+'/'+p[0] : s;
@@ -3740,11 +3746,11 @@ function renderUpcoming(){
   var today=todayStr();
   var upcoming=bookings.filter(function(b){
     if(b._deleted||b.status==='cancelled'||b.status==='completed') return false;
-    var start=b.pickupDate||b.date;
-    return start>=today && !isCurrentTrip(b);
+    var start=normDateStr(b.pickupDate||b.date);
+    return !!start && start>=today && !isCurrentTrip(b);
   }).sort(function(a,b){
-    var aS=(a.pickupDate||a.date)+(a.pickupTime?'T'+a.pickupTime:'T00:00');
-    var bS=(b.pickupDate||b.date)+(b.pickupTime?'T'+b.pickupTime:'T00:00');
+    var aS=normDateStr(a.pickupDate||a.date)+(a.pickupTime?'T'+a.pickupTime:'T00:00');
+    var bS=normDateStr(b.pickupDate||b.date)+(b.pickupTime?'T'+b.pickupTime:'T00:00');
     return aS.localeCompare(bS);
   });
 
@@ -3772,7 +3778,7 @@ function renderUpcoming(){
   ];
   var now=new Date(); now.setHours(0,0,0,0);
   upcoming.forEach(function(b){
-    var d=new Date((b.pickupDate||b.date)+'T00:00:00');
+    var d=parseLocalDate(normDateStr(b.pickupDate||b.date))||now;
     var diff=Math.round((d-now)/(1000*60*60*24));
     if(diff<=7) groups[0].items.push(b);
     else if(diff<=14) groups[1].items.push(b);
@@ -3798,12 +3804,12 @@ function renderPrevious(){
   var today=todayStr();
   var prev=bookings.filter(function(b){
     if(b._deleted) return false;
-    // Include past bookings and completed ones (never cancelled, never future-completed)
     if(b.status==='cancelled') return false;
-    if(b.status==='completed') return tripEndDate(b)<=today;
-    return tripEndDate(b)<today;
+    var end=tripEndDate(b);
+    if(!end) return false;
+    if(b.status==='completed') return end<=today;
+    return end<today;
   }).sort(function(a,b){
-    // Completed trips float to top, sorted by when they were completed (most recent first)
     var aComp=a.status==='completed', bComp=b.status==='completed';
     if(aComp&&!bComp) return -1;
     if(!aComp&&bComp) return 1;
@@ -3816,7 +3822,7 @@ function renderPrevious(){
   var now=new Date(); now.setHours(0,0,0,0);
   var months={};
   prev.forEach(function(b){
-    var d=new Date(tripEndDate(b)+'T00:00:00');
+    var d=parseLocalDate(tripEndDate(b))||new Date();
     var key=d.getFullYear()+'-'+pad(d.getMonth()+1);
     var label=d.toLocaleString('en-US',{month:'long',year:'numeric'});
     if(!months[key]) months[key]={label:label,items:[]};
@@ -3839,7 +3845,7 @@ function renderCancelled(){
   var cancelled=bookings.filter(function(b){
     return !b._deleted && b.status==='cancelled';
   }).sort(function(a,b){
-    return (b.pickupDate||b.date).localeCompare(a.pickupDate||a.date);
+    return normDateStr(b.pickupDate||b.date).localeCompare(normDateStr(a.pickupDate||a.date));
   });
 
   if(!cancelled.length){
@@ -3976,9 +3982,9 @@ function tripCard(b, showCountdown){
 function isCurrentTrip(b){
   if(b.status==='cancelled'||b.status==='completed') return false;
   var today=todayStr();
-  var start=b.pickupDate||b.date;
+  var start=normDateStr(b.pickupDate||b.date);
   var end=tripEndDate(b);
-  if(start>today||end<today) return false;
+  if(!start||start>today||end<today) return false;
   // On pickup day: stay in Upcoming until 1 hour after the scheduled pickup time
   if(start===today){
     var parts=(b.pickupTime||'00:00').split(':');
@@ -3988,17 +3994,18 @@ function isCurrentTrip(b){
   return true;
 }
 function tripEndDate(b){
-  var start=b.pickupDate||b.date;
-  if(b.dropoffDate) return b.dropoffDate;
+  var start=normDateStr(b.pickupDate||b.date);
+  if(!start) return '';
+  if(b.dropoffDate) return normDateStr(b.dropoffDate)||start;
   if(b.type==='hourly'||b.type==='chauffeur') return start;
   // days=1 means the rental ends on its start date (not start+1); days=3 ends on start+2
-  return dateStr(addDays(new Date(start+'T00:00:00'), Math.max(0, (Number(b.days)||1) - 1)));
+  var sd=parseLocalDate(start);
+  return dateStr(addDays(sd, Math.max(0, (Number(b.days)||1) - 1)));
 }
 
 function sortByTime(a,b){
-  // Sort by pickup date then pickup time (earliest first)
-  var aS=(a.pickupDate||a.date)+(a.pickupTime?'T'+a.pickupTime:'T00:00');
-  var bS=(b.pickupDate||b.date)+(b.pickupTime?'T'+b.pickupTime:'T00:00');
+  var aS=normDateStr(a.pickupDate||a.date)+(a.pickupTime?'T'+a.pickupTime:'T00:00');
+  var bS=normDateStr(b.pickupDate||b.date)+(b.pickupTime?'T'+b.pickupTime:'T00:00');
   return aS.localeCompare(bS);
 }
 
