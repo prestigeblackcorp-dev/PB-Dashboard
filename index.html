@@ -6078,30 +6078,25 @@ function sendReviewRequest(b){
 
 function resendVerificationEmail(id){
   var b=bookings.find(function(x){return x.id===id;});
-  if(!b||!WORKER_URL||!b.email) return;
-  fetch(WORKER_URL+'/create-verification',{
+  if(!b){ showToast('Booking not found'); return; }
+  if(!MESSAGING_URL){ showToast('Worker URL not set — add it in ⚙ Settings'); return; }
+  if(!b.email){ showToast('No email on this booking'); return; }
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  fetch(MESSAGING_URL+'/send-email',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({bookingId:id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
-  }).then(function(r){return r.json();}).then(function(d){
-    if(!d||!d.url){ showToast('Could not create verify session'); return; }
-    var firstName=(b.name||'').split(' ')[0]||'there';
-    fetch(MESSAGING_URL+'/send-email',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        to:b.email,
-        subject:'Action needed — Verify your ID for Prestige Black',
-        html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
-          '<h2 style="color:#b8982e">Hi '+firstName+', one quick step! ✅</h2>'+
-          '<p style="font-size:15px;line-height:1.6">To complete your booking for the <strong>'+(b.vehicle||'')+'</strong>, please verify your ID — it takes about 60 seconds.</p>'+
-          '<a href="'+d.url+'" style="display:inline-block;margin-top:12px;padding:12px 24px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Verify My ID →</a>'+
-          '<p style="margin-top:20px;font-size:13px;color:#777">Questions? Text us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
-          '<p style="font-size:12px;color:#888;margin-top:16px">Booking ID: '+id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
-      })
-    }).then(function(r){
-      if(r.ok){ showToast('Verify link resent ✅'); }
-      else { r.text().then(function(t){ showToast('Failed to send verify email — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
-    }).catch(function(e){ showToast('Failed to send verify email — '+(e&&e.message?e.message:'network error')); });
-  }).catch(function(e){ showToast('Could not reach verify worker — '+(e&&e.message?e.message:'network error')); });
+    body:JSON.stringify({
+      to:b.email,
+      subject:'Action needed — Verify your ID for Prestige Black',
+      html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+        '<h2 style="color:#b8982e">Hi '+firstName+', one quick step! ✅</h2>'+
+        '<p style="font-size:15px;line-height:1.6">To complete your booking for the <strong>'+(b.vehicle||'')+'</strong>, we need to verify your ID before pickup.</p>'+
+        '<p style="font-size:15px;line-height:1.6">Please reply to this email or text us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a> and we\'ll send you a secure verification link right away.</p>'+
+        '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+    })
+  }).then(function(r){
+    if(r.ok){ showToast('Verification request sent ✅'); }
+    else { r.text().then(function(t){ showToast('Failed to send — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
+  }).catch(function(e){ showToast('Failed to send — '+(e&&e.message?e.message:'network error')); });
 }
 
 function resendConfirmationById(id){
