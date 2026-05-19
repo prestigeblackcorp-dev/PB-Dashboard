@@ -6828,8 +6828,10 @@ function renderAvailBadges(){
   var el=$d('availBadgesRow'); if(!el) return;
   var availDate=$d('availCheckDate')?$d('availCheckDate').value:'';
   if(!availDate){ el.innerHTML=''; return; }
+  var _cap={'Escalade Chauffeur':2,'Polaris Slingshot':2};
   el.innerHTML='<div style="display:grid;width:100%;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:8px">'+
     ALL_VEHICLES.map(function(v){
+      var capacity=_cap[v]||1;
       var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
         return availDate>=r.start&&availDate<=r.end;
       });
@@ -6839,17 +6841,53 @@ function renderAvailBadges(){
         return availDate>=start&&availDate<=end;
       });
       var hasHourly=dayBookings.some(function(b){ return b.type==='hourly'; });
-      var isBooked=false, returningB=null;
-      dayBookings.forEach(function(b){
-        var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
-        if(end===availDate&&start<availDate&&!isBooked){ returningB=b; }
-        else { isBooked=true; returningB=null; }
-      });
+      var returningB=null;
+      if(dayBookings.length<capacity){
+        dayBookings.forEach(function(b){
+          var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
+          if(end===availDate&&start<availDate) returningB=b;
+        });
+      }
       var bg,clr,bdr,icon,label,sub='';
       if(isBlocked){
         bg='rgba(239,68,68,.1)';clr='#ef4444';bdr='rgba(239,68,68,.25)';icon='🚫';label='Blocked';
-      } else if(isBooked||dayBookings.length){
-        // Compute free time windows for hourly or partial-day bookings
+      } else if(dayBookings.length>=capacity){
+        // Fully booked — all slots taken
+        bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='📅';
+        if(capacity>1){
+          label='Full '+dayBookings.length+'/'+capacity;
+          sub=dayBookings.map(function(b,i){
+            var st=b.pickupTime?fmtTime(b.pickupTime):'start';
+            var en=b.dropoffTime?fmtTime(b.dropoffTime):'end';
+            return (i+1)+'. '+(b.name||'').split(' ')[0]+' '+st+'–'+en;
+          }).join(' · ');
+        } else {
+          label='Booked';
+          var intervals=dayBookings.map(function(b){
+            var st=(availDate===(b.pickupDate||b.date))?(b.pickupTime||'00:00'):'00:00';
+            var en=(availDate===(b.dropoffDate||b.pickupDate||b.date))?(b.dropoffTime||'23:59'):'23:59';
+            return [st,en];
+          }).sort(function(a,b){ return a[0]<b[0]?-1:1; });
+          var free=[],cur='00:00';
+          intervals.forEach(function(iv){
+            if(cur<iv[0]) free.push(fmtTime(cur)+' – '+fmtTime(iv[0]));
+            if(iv[1]>cur) cur=iv[1];
+          });
+          if(cur<'23:59') free.push('Free after '+fmtTime(cur));
+          if(hasHourly&&free.length){ icon='⏱';label='Partial';sub=free.join(' · '); }
+          else if(cur<'23:59') sub='Free after '+fmtTime(cur);
+        }
+      } else if(dayBookings.length>0&&capacity>1){
+        // Partial capacity — some slots taken, still bookable
+        bg='rgba(251,191,36,.1)';clr='#f59e0b';bdr='rgba(251,191,36,.3)';icon='½';
+        label=dayBookings.length+'/'+capacity+' Booked';
+        sub=dayBookings.map(function(b,i){
+          var st=b.pickupTime?fmtTime(b.pickupTime):'start';
+          var en=b.dropoffTime?fmtTime(b.dropoffTime):'end';
+          return (i+1)+'. '+(b.name||'').split(' ')[0]+' '+st+'–'+en;
+        }).join(' · ');
+      } else if(dayBookings.length>0){
+        // Single-capacity, has bookings
         var intervals=dayBookings.map(function(b){
           var st=(availDate===(b.pickupDate||b.date))?(b.pickupTime||'00:00'):'00:00';
           var en=(availDate===(b.dropoffDate||b.pickupDate||b.date))?(b.dropoffTime||'23:59'):'23:59';
@@ -6862,8 +6900,7 @@ function renderAvailBadges(){
         });
         if(cur<'23:59') free.push('Free after '+fmtTime(cur));
         if(hasHourly&&free.length){
-          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';
-          sub=free.join(' · ');
+          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';sub=free.join(' · ');
         } else {
           bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='📅';label='Booked';
           if(cur<'23:59') sub='Free after '+fmtTime(cur);
@@ -6873,7 +6910,7 @@ function renderAvailBadges(){
         sub=returningB.dropoffTime?'at '+fmtTime(returningB.dropoffTime):'today';
       } else {
         bg='rgba(34,197,94,.1)';clr='#22c55e';bdr='rgba(34,197,94,.25)';icon='✅';label='Available';
-        sub='All day free';
+        sub=capacity>1?'All '+capacity+' slots free':'All day free';
       }
       return '<div style="background:'+bg+';border:1px solid '+bdr+';border-radius:10px;padding:10px 12px">'+
         '<div style="font-size:10px;font-weight:800;color:'+clr+';letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px">'+icon+' '+label+'</div>'+
