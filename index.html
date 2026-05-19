@@ -7745,6 +7745,19 @@ function saveCustSig(){
 
 function _renderContractContent(){
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
+  // Always use freshest signature — cloudLoad may have set it after page init
+  if(!OWNER_SIGNATURE) OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
+  // If still empty and Firebase is configured, pull it now then re-render
+  if(!OWNER_SIGNATURE && FIREBASE_URL){
+    fetch(FIREBASE_URL.replace(/\/$/,'')+'/pb_data/owner_signature.json',{cache:'no-store'})
+      .then(function(r){return r.json();}).then(function(sig){
+        if(sig&&typeof sig==='string'&&sig.length>10){
+          OWNER_SIGNATURE=sig;
+          try{localStorage.setItem('pb_owner_signature',OWNER_SIGNATURE);}catch(e){}
+          _renderContractContent();
+        }
+      }).catch(function(){});
+  }
   var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
   if(!activeTemplate) return;
   var addonLines=[];
