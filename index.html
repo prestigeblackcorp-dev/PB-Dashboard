@@ -11,7 +11,32 @@
 <meta name="theme-color" content="#0a0a0a">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
-<script>if('serviceWorker' in navigator){ window.addEventListener('load',function(){ navigator.serviceWorker.register('sw.js'); }); }</script>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js').then(function(reg){
+      // Force update check on every page load — bypasses Safari's 24-hr throttle
+      reg.update();
+      // When a new SW is found and finishes installing, reload to get fresh HTML
+      reg.addEventListener('updatefound', function(){
+        var next = reg.installing;
+        if(!next) return;
+        next.addEventListener('statechange', function(){
+          if(next.state === 'activated') window.location.reload();
+        });
+      });
+    });
+    // If a new SW takes control mid-session, reload once
+    var reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function(){
+      if(!reloading){ reloading = true; window.location.reload(); }
+    });
+  });
+}
+</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" onload="initGCal()" async defer></script>
 <style>
@@ -311,9 +336,10 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .today-banner-title { font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
   color:var(--gold); margin-bottom:12px; }
 .today-banner-items { display:flex; flex-direction:column; gap:10px; }
-.today-banner-card { background:rgba(255,255,255,.04); border:1px solid var(--border); border-radius:14px;
-  padding:12px 16px; font-size:12px; box-shadow:var(--shadow-card); cursor:pointer; transition:background .15s; }
-.today-banner-card:hover { background:rgba(255,255,255,.07); }
+.today-banner-card { display:block; width:100%; text-align:left; background:rgba(255,255,255,.04); border:1px solid var(--border); border-radius:14px;
+  padding:12px 16px; font-size:12px; color:inherit; box-shadow:var(--shadow-card); cursor:pointer; transition:background .15s;
+  touch-action:manipulation; -webkit-tap-highlight-color:rgba(201,169,98,.15); user-select:none; }
+.today-banner-card:hover, .today-banner-card:focus { background:rgba(255,255,255,.07); outline:none; }
 .today-banner-vehicle { font-size:14px; font-weight:800; margin-bottom:3px; }
 .today-banner-customer { color:var(--muted); margin-bottom:4px; }
 .today-banner-revenue { color:var(--gold); font-weight:700; font-size:13px; }
@@ -1502,6 +1528,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end;flex-wrap:wrap">
       <button class="btn btn-sm" id="bdReminderBtn" onclick="" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📨 Remind</button>
       <button class="btn" id="bdInvoiceBtn" onclick="">📄 Invoice</button>
+      <button class="btn" id="bdContractBtn" onclick="">📝 Contract</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">✏ Edit</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
     </div>
@@ -1966,6 +1993,11 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
     </div>
 
+    <div style="margin-top:12px">
+      <label style="font-size:12px;color:var(--muted)">Self-Employment Tax Rate (%)</label>
+      <input type="number" id="settTaxRate" min="0" max="60" step="0.1" value="25" style="width:100px;padding:6px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);margin-top:4px">
+    </div>
+
     <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
       <div style="font-size:12px;font-weight:800;color:#ef4444;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Danger Zone</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Permanently deletes all bookings, expenses, income, and maintenance records from this device and Firebase. This cannot be undone.</div>
@@ -2246,8 +2278,8 @@ var VEHICLE_COSTS = {
   "Porsche Boxster S":  { rate:300,  deposit:500,  weekly:1250 },
   "C300":               { rate:200,  deposit:500,  weekly:1250 },
   "Accord":             { rate:85,   deposit:200,  weekly:455  },
-  "Lambo Huracan":      { rate:1200, deposit:1000              },
-  "Lambo Urus":         { rate:1200, deposit:1000              },
+  "Lambo Huracan":      { rate:1350, deposit:1000              },
+  "Lambo Urus":         { rate:1350, deposit:1000              },
   "Escalade Rental":    { rate:500,  deposit:500               },
   "G Wagon":            { rate:650,  deposit:500               },
   "Polaris Slingshot":  { rate:300,  deposit:250,  weekly:1500 },
@@ -2320,7 +2352,8 @@ var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
 // ════════════════════════════════════════════════════════
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
 var WORKER_URL     = localStorage.getItem('pb_worker_url')     || '';
-var MESSAGING_URL  = localStorage.getItem('pb_messaging_url')  || '';
+var MESSAGING_URL  = localStorage.getItem('pb_messaging_url')  || localStorage.getItem('pb_worker_url') || '';
+var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) || 25;
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
@@ -2347,44 +2380,59 @@ function mergeArray(local, cloud) {
 }
 
 var _cloudSaveRetries = 0;
+var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
 function cloudSave() {
   if (!FIREBASE_URL || _cloudLoading) return;
   if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
   if (_cloudLoading) { _offlinePending = true; return; }
   setSyncStatus('syncing');
-  var data = {
-    bookings: bookings, expenses: expenses, incomes: incomes,
-    maintenance: maintenance,
-    custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
-    budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
-    contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
-    slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
-    owner_signature: OWNER_SIGNATURE || '',
-    messaging_url: MESSAGING_URL || '',
-    worker_url: WORKER_URL || '',
-    review_url: REVIEW_URL || '',
-    savedAt: Date.now()
-  };
-  fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data.json', {
-    method: 'PUT', body: JSON.stringify(data),
-    headers: { 'Content-Type': 'application/json' }
-  }).then(function(r) {
-    if (r.ok) {
-      setSyncStatus('ok');
-      _offlinePending = false;
-      _cloudSaveRetries = 0;
-      localStorage.setItem('pb_last_cloud_save', Date.now().toString());
-    } else {
-      setSyncStatus('error');
-      // cap retries at 5 — after that show persistent error instead of looping forever
-      if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
-      else { _cloudSaveRetries = 0; setSyncStatus('error'); }
-    }
-  }).catch(function() {
-    setSyncStatus('error');
-    if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
-    else { _cloudSaveRetries = 0; }
-  });
+  // Staleness check: read remote _t before writing to detect concurrent saves from another device
+  fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data/savedAt.json?_=' + Date.now(), { cache: 'no-store' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .catch(function(){ return null; })
+    .then(function(remoteSavedAt){
+      var remoteT = Number(remoteSavedAt) || 0;
+      if (remoteT > _lastSavedAt && _lastSavedAt > 0) {
+        // Another device saved more recently — refresh instead of overwriting
+        showToast('⚠ Another device saved recently — refreshing...');
+        loadFromFirebase();
+        return;
+      }
+      var data = {
+        bookings: bookings, expenses: expenses, incomes: incomes,
+        maintenance: maintenance,
+        custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
+        budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
+        contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
+        slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
+        owner_signature: OWNER_SIGNATURE || '',
+        messaging_url: MESSAGING_URL || '',
+        worker_url: WORKER_URL || '',
+        review_url: REVIEW_URL || '',
+        savedAt: Date.now()
+      };
+      fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data.json', {
+        method: 'PUT', body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json' }
+      }).then(function(r) {
+        if (r.ok) {
+          setSyncStatus('ok');
+          _offlinePending = false;
+          _cloudSaveRetries = 0;
+          _lastSavedAt = data.savedAt;
+          localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString());
+        } else {
+          setSyncStatus('error');
+          // cap retries at 5 — after that show persistent error instead of looping forever
+          if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
+          else { _cloudSaveRetries = 0; setSyncStatus('error'); }
+        }
+      }).catch(function() {
+        setSyncStatus('error');
+        if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
+        else { _cloudSaveRetries = 0; }
+      });
+    });
 }
 
 function cloudLoad(callback) {
@@ -2815,9 +2863,22 @@ function saveMaintData(){
   cloudSave();
 }
 // Returns array of conflicting maintenance records for a vehicle + date range
-function checkMaintenanceConflict(vehicle, pickupDate, dropoffDate){
+function checkDashboardBlockedRanges(vehicle, pickupDate, dropoffDate, excludeId) {
+  var vc = VEHICLE_COSTS && VEHICLE_COSTS[vehicle];
+  if(!vc || !Array.isArray(vc.blockedRanges) || !vc.blockedRanges.length) return null;
+  var toMs = function(d){ return new Date((d||'')+'T00:00:00').getTime(); };
+  var newStart = toMs(pickupDate), newEnd = toMs(dropoffDate||pickupDate);
+  for(var i=0;i<vc.blockedRanges.length;i++){
+    var r=vc.blockedRanges[i]; if(!r||!r.start||!r.end) continue;
+    var rS=toMs(r.start),rE=toMs(r.end);
+    if(newStart<=rE&&newEnd>=rS) return r.start+(r.end!==r.start?' – '+r.end:'')+( r.reason?' ('+r.reason+')':'');
+  }
+  return null;
+}
+
+function checkMaintenanceConflict(vehicle, pickupDate, dropoffDate, b){
   if(!vehicle || !pickupDate) return [];
-  var end = dropoffDate || pickupDate;
+  var end = (b ? tripEndDate(b) : null) || dropoffDate || pickupDate;
   return maintenance.filter(function(m){
     if(m._deleted || m.vehicle !== vehicle) return false;
     // Service date falls within booking window
@@ -3174,7 +3235,10 @@ function syncToGCal(b){
       }
     });
   }
-  p.catch(function(err){ console.warn('GCal sync failed:', err); });
+  p.catch(function(err){
+    console.error('GCal sync failed:', err);
+    showToast('Google Calendar sync failed — check connection', 'error');
+  });
 }
 
 function removeFromGCal(b){
@@ -3355,12 +3419,14 @@ function parseLocalDate(s){
 }
 function fmtDateShort(s){
   if(!s) return '';
-  var d=new Date(s+'T00:00:00');
+  var d=parseLocalDate(s);
+  if(!d||isNaN(d.getTime())) return '';
   return d.toLocaleString('en-US',{month:'short',day:'numeric'});
 }
 function fmtDateFull(s){
   if(!s) return '';
-  var d=new Date(s+'T00:00:00');
+  var d=parseLocalDate(s);
+  if(!d||isNaN(d.getTime())) return '';
   return d.toLocaleString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
 }
 function fmtTime(t){
@@ -3416,7 +3482,8 @@ function getProfit(b){ return totalRevenue(b)-getEstCost(b); }
 // Days a booking occupies (for calendar spanning)
 function getBookingDates(b){
   var startStr = b.pickupDate  || b.date;
-  var start    = new Date(startStr+'T00:00:00');
+  var start    = parseLocalDate(startStr);
+  if(!start) return [startStr];
   var res      = [];
   if(b.dropoffDate){
     var cur = new Date(start);
@@ -3431,7 +3498,8 @@ function getBookingDates(b){
 
 function countdownLabel(dateStr){
   var today=new Date(); today.setHours(0,0,0,0);
-  var target=new Date(dateStr+'T00:00:00');
+  var target=parseLocalDate(dateStr);
+  if(!target||isNaN(target.getTime())) return {text:'',cls:''};
   var diff=Math.round((target-today)/(1000*60*60*24));
   if(diff===0) return {text:'Today!',cls:'countdown-soon'};
   if(diff===1) return {text:'Tomorrow',cls:'countdown-soon'};
@@ -3748,7 +3816,13 @@ function renderUpcoming(){
   var upcoming=bookings.filter(function(b){
     if(b._deleted||b.status==='cancelled'||b.status==='completed') return false;
     var start=normDateStr(b.pickupDate||b.date);
-    return !!start && start>=today && !isCurrentTrip(b);
+    if(!start) return false;
+    if(start > today) return true;  // future trips always in upcoming
+    if(start < today) return false; // past start dates never in upcoming
+    // start === today: stay in upcoming until 1 hour after scheduled pickup
+    var parts=(b.pickupTime||'00:00').split(':');
+    var pickup=new Date(); pickup.setHours(parseInt(parts[0])||0,parseInt(parts[1])||0,0,0);
+    return Date.now() < pickup.getTime() + 60*60*1000;
   }).sort(function(a,b){
     var aS=normDateStr(a.pickupDate||a.date)+(a.pickupTime?'T'+a.pickupTime:'T00:00');
     var bS=normDateStr(b.pickupDate||b.date)+(b.pickupTime?'T'+b.pickupTime:'T00:00');
@@ -3857,7 +3931,7 @@ function renderCancelled(){
   // Group by month of pickup date
   var months={};
   cancelled.forEach(function(b){
-    var d=new Date((b.pickupDate||b.date)+'T00:00:00');
+    var d=parseLocalDate(b.pickupDate||b.date)||new Date();
     var key=d.getFullYear()+'-'+pad(d.getMonth()+1);
     var label=d.toLocaleString('en-US',{month:'long',year:'numeric'});
     if(!months[key]) months[key]={label:label,items:[]};
@@ -3986,11 +4060,11 @@ function isCurrentTrip(b){
   var start=normDateStr(b.pickupDate||b.date);
   var end=tripEndDate(b);
   if(!start||start>today||end<today) return false;
-  // On pickup day: stay in Upcoming until 1 hour after the scheduled pickup time
+  // On pickup day: enter Current at the scheduled pickup time (overlap with Upcoming until +1hr)
   if(start===today){
     var parts=(b.pickupTime||'00:00').split(':');
     var pickup=new Date(); pickup.setHours(parseInt(parts[0])||0,parseInt(parts[1])||0,0,0);
-    if(Date.now() < pickup.getTime()+60*60*1000) return false;
+    if(Date.now() < pickup.getTime()) return false; // before pickup: upcoming only
   }
   return true;
 }
@@ -4054,6 +4128,12 @@ function openBookingDetail(id){
   $d('bdTitle').textContent=b.vehicle+' — '+b.name;
   $d('bdEditBtn').onclick=function(){ closeBookingDetail(); openModal(b.id); };
   $d('bdInvoiceBtn').onclick=function(){ generateInvoice(b.id); };
+  var bdContractBtn=$d('bdContractBtn');
+  if(bdContractBtn){
+    var isWaiverType=(b.vehicle==='Polaris Slingshot'&&b.type==='hourly');
+    bdContractBtn.textContent=isWaiverType?'⚠ Waiver':'📝 Contract';
+    bdContractBtn.onclick=function(){ closeBookingDetail(); openContract(b.id); };
+  }
   var reminderBtn=$d('bdReminderBtn');
   if(reminderBtn){
     if(b.email&&MESSAGING_URL){
@@ -4082,7 +4162,7 @@ function openBookingDetail(id){
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">'+
       '<span class="badge '+b.type+'">'+b.type+'</span>'+
       '<span class="badge '+b.status+'">'+b.status+'</span>'+
-      (b.date?'<span style="font-size:12px;color:var(--muted)">'+fmtDateFull(b.date)+'</span>':'')+
+      (fmtDateFull(b.pickupDate||b.date)?'<span style="font-size:12px;color:var(--muted)">'+fmtDateFull(b.pickupDate||b.date)+'</span>':'')+
     '</div>'+
 
     // Customer
@@ -4175,7 +4255,7 @@ function openBookingDetail(id){
     ((b.email&&MESSAGING_URL)?
       '<div class="fsec" style="margin-top:12px">📧 Emails</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+
-        '<button class="btn btn-sm" onclick="sendConfirmationEmail(bookings.find(function(x){return x.id===\''+b.id+'\';}));showToast(\'Confirmation resent ✅\')" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
+        '<button class="btn btn-sm" onclick="sendConfirmationEmail(bookings.find(function(x){return x.id===\''+b.id+'\'}),true)" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
         (WORKER_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">📨 Send Reminder</button>'+
       '</div>'
@@ -4731,7 +4811,7 @@ function saveBooking(){
     if(editingId&&b.id===editingId) return false;
     if(b.vehicle!==vehicle) return false;
     var bStart=dtToMs(b.pickupDate||b.date,b.pickupTime);
-    var bEnd=dtToMs(b.dropoffDate||b.pickupDate||b.date,b.dropoffTime||'23:59');
+    var bEnd=dtToMs(tripEndDate(b)||b.dropoffDate||b.pickupDate||b.date,b.dropoffTime||'23:59');
     return newStart < bEnd+BUFFER_MS && newEnd > bStart-BUFFER_MS;
   });
   if(dateConflicts.length){
@@ -4743,6 +4823,12 @@ function saveBooking(){
       }).join('\n')+
       '\n\nSave booking anyway?';
     if(!confirm(dcMsg)) return;
+  }
+
+  // Check vehicle blocked ranges before saving
+  var blockedConflict=checkDashboardBlockedRanges(vehicle, checkPickup, checkDropoff, editingId);
+  if(blockedConflict){
+    if(!confirm(vehicle+' is blocked for '+blockedConflict+'. Continue anyway?')) return;
   }
 
   var maintConflicts=checkMaintenanceConflict(vehicle, date, $d('fDropoffDate').value);
@@ -4913,7 +4999,10 @@ function dbSavePhoto(id,dataUrl,cb){
   var base=_photoBase();
   if(base){
     fetch(base+id+'.json',{method:'PUT',body:JSON.stringify(dataUrl),headers:{'Content-Type':'application/json'}})
-      .catch(function(){});
+      .catch(function(err){
+        console.error('Firebase photo sync failed:', err);
+        try{ localStorage.setItem('pb_photo_sync_pending_'+id, '1'); }catch(e){}
+      });
   }
 }
 
@@ -4974,7 +5063,10 @@ function dbDeletePhoto(id,cb){
   });
   var base=_photoBase();
   if(base){
-    fetch(base+id+'.json',{method:'DELETE'}).catch(function(){});
+    fetch(base+id+'.json',{method:'DELETE'}).catch(function(err){
+      console.error('Firebase photo delete failed:', err);
+      try{ localStorage.setItem('pb_photo_sync_pending_'+id, 'delete'); }catch(e){}
+    });
   }
 }
 function compressImage(file,cb){
@@ -5540,6 +5632,7 @@ function openSettings(){
   $d('settMessagingUrl').value = MESSAGING_URL;
   $d('settReviewUrl').value    = REVIEW_URL;
   $d('settOpenAiKey').value    = OPENAI_KEY;
+  $d('settTaxRate').value      = SELF_EMPLOYMENT_TAX_RATE;
   _refreshSigPreview(OWNER_SIGNATURE);
   _settingsDirty = false;
   var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
@@ -5642,10 +5735,12 @@ function saveSettings(){
   MESSAGING_URL = ($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
   REVIEW_URL    = ($d('settReviewUrl').value||'').trim() || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
   OPENAI_KEY    = ($d('settOpenAiKey').value||'').trim();
+  SELF_EMPLOYMENT_TAX_RATE = parseFloat($d('settTaxRate').value) || 25;
   localStorage.setItem('pb_worker_url',    WORKER_URL);
   localStorage.setItem('pb_messaging_url', MESSAGING_URL);
   localStorage.setItem('pb_review_url',    REVIEW_URL);
   localStorage.setItem('pb_openai_key',    OPENAI_KEY);
+  localStorage.setItem('pb_tax_rate',      SELF_EMPLOYMENT_TAX_RATE);
   cloudSave();
   // signature saved live via loadSigPreview; persist current value
   localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
@@ -5909,7 +6004,7 @@ function renderTodayBanner(){
     var notesHtml=b.notes
       ?'<div style="font-size:11px;color:var(--muted);margin-top:5px;font-style:italic">🗒 '+esc(b.notes.length>80?b.notes.slice(0,80)+'…':b.notes)+'</div>':'';
 
-    return '<div class="today-banner-card" onclick="openBookingDetail(\''+b.id+'\')">'+
+    return '<button class="today-banner-card" onclick="openBookingDetail(\''+b.id+'\')" type="button">'+
       // Row 1: time + badges
       '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:7px">'+
         '<div style="font-size:12px;font-weight:700;color:var(--gold)">⏰ '+timeStr+toTimeStr+returnsStr+'</div>'+
@@ -5931,7 +6026,7 @@ function renderTodayBanner(){
         depHtml+
       '</div>'+
       notesHtml+
-    '</div>';
+    '</button>';
   }).join('');
 }
 
@@ -6032,12 +6127,15 @@ function resendVerificationEmail(id){
           '<p style="margin-top:20px;font-size:13px;color:#777">Questions? Text us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
           '<p style="font-size:12px;color:#888;margin-top:16px">Booking ID: '+id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
       })
-    }).then(function(r){showToast(r.ok?'Verify link resent ✅':'Failed to send email');}).catch(function(){showToast('Failed to send email');});
-  }).catch(function(){showToast('Could not reach verify worker');});
+    }).then(function(r){
+      if(r.ok){ showToast('Verify link resent ✅'); }
+      else { r.text().then(function(t){ showToast('Failed to send verify email — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
+    }).catch(function(e){ showToast('Failed to send verify email — '+(e&&e.message?e.message:'network error')); });
+  }).catch(function(e){ showToast('Could not reach verify worker — '+(e&&e.message?e.message:'network error')); });
 }
 
-function sendConfirmationEmail(b){
-  if(!MESSAGING_URL||!b||!b.email) return;
+function sendConfirmationEmail(b, showFeedback){
+  if(!MESSAGING_URL||!b||!b.email) { if(showFeedback) showToast('No email or messaging worker configured'); return; }
   var firstName=(b.name||'').split(' ')[0]||'there';
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',headers:{'Content-Type':'application/json'},
@@ -6051,13 +6149,19 @@ function sendConfirmationEmail(b){
         '<p style="font-size:15px;line-height:1.6">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
         '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
-  }).catch(function(){});
+  }).then(function(r){
+    if(!showFeedback) return;
+    if(r.ok){ showToast('Confirmation sent ✅'); }
+    else { r.text().then(function(t){ showToast('Failed to send confirmation — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
+  }).catch(function(e){ if(showFeedback) showToast('Failed to send confirmation — '+(e&&e.message?e.message:'network error')); });
 }
 
 function sendPickupReminder(id){
   var b=bookings.find(function(x){return x.id===id;});
-  if(!b) return;
-  if(!MESSAGING_URL||!b.email){ showToast('No email or messaging worker configured'); return; }
+  if(!b){ showToast('Booking not found: '+id); return; }
+  if(!MESSAGING_URL){ showToast('MESSAGING_URL not set — add Worker URL in Settings'); return; }
+  if(!b.email){ showToast('No email on this booking'); return; }
+  showToast('Sending to: '+MESSAGING_URL.slice(0,40)+'…');
   var firstName=(b.name||'').split(' ')[0]||'there';
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',headers:{'Content-Type':'application/json'},
@@ -6070,8 +6174,10 @@ function sendPickupReminder(id){
         '<p style="font-size:15px;line-height:1.6">If you have any questions or need to make changes, text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
         '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
-  }).then(function(r){ showToast(r.ok?'Reminder sent ✅':'Failed to send reminder'); })
-    .catch(function(){ showToast('Failed to send reminder'); });
+  }).then(function(r){
+    if(r.ok){ showToast('Reminder sent ✅'); }
+    else { r.text().then(function(t){ showToast('Failed to send reminder — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
+  }).catch(function(e){ showToast('Failed to send reminder — '+(e&&e.message?e.message:'network error')); });
 }
 
 function sendReceiptEmail(b){
@@ -6663,27 +6769,27 @@ function renderTaxTab(){
           '<div class="tax-q-net" style="color:'+pc+'">'+$$(qNet)+'</div>'+
         '</div>'+
         '<div class="tbl-wrap"><table style="font-size:12px"><thead><tr>'+
-          '<th>Booking Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax (25%)</th>'+
+          '<th>Booking Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax ('+SELF_EMPLOYMENT_TAX_RATE+'%)</th>'+
         '</tr></thead><tbody><tr>'+
           '<td style="color:var(--gold);font-weight:700">'+$$(qRev)+'</td>'+
           '<td style="color:var(--green)">'+$$(qOth)+'</td>'+
           '<td style="font-weight:700">'+$$(qRev+qOth)+'</td>'+
           '<td style="color:var(--red)">'+$$(qExp)+'</td>'+
           '<td style="font-weight:900;color:'+pc+'">'+$$(qNet)+'</td>'+
-          '<td style="color:#fbbf24">'+$$(Math.max(0,qNet*.25))+'</td>'+
+          '<td style="color:#fbbf24">'+$$(Math.max(0,qNet*(SELF_EMPLOYMENT_TAX_RATE/100)))+'</td>'+
         '</tr></tbody></table></div></div>';
     });
     var annNet=annRev+annOth-annExp, annPc=annNet>=0?'var(--green)':'var(--red)';
     html+='<div class="tbl-card" style="margin-bottom:20px"><div class="tbl-head"><div class="tbl-title">'+yr+' Annual Summary</div></div>'+
       '<div class="tbl-wrap"><table style="font-size:13px"><thead><tr>'+
-        '<th>Total Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax (25%)</th>'+
+        '<th>Total Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax ('+SELF_EMPLOYMENT_TAX_RATE+'%)</th>'+
       '</tr></thead><tbody><tr>'+
         '<td style="color:var(--gold);font-weight:800">'+$$(annRev)+'</td>'+
         '<td style="color:var(--green)">'+$$(annOth)+'</td>'+
         '<td style="font-weight:800">'+$$(annRev+annOth)+'</td>'+
         '<td style="color:var(--red)">'+$$(annExp)+'</td>'+
         '<td style="font-weight:900;color:'+annPc+'">'+$$(annNet)+'</td>'+
-        '<td style="color:#fbbf24;font-weight:700">'+$$(Math.max(0,annNet*.25))+'</td>'+
+        '<td style="color:#fbbf24;font-weight:700">'+$$(Math.max(0,annNet*(SELF_EMPLOYMENT_TAX_RATE/100)))+'</td>'+
       '</tr></tbody></table></div></div>';
   });
   el.innerHTML=html;
@@ -6911,6 +7017,8 @@ function saveBdBlocks(v){
     else { stored.push({ name:v, blockedRanges:VEHICLE_COSTS[v].blockedRanges }); }
     localStorage.setItem('pb_custom_vehicles', JSON.stringify(stored));
   } catch(e){}
+  // Push to Firebase so booking worker can enforce blocked dates
+  cloudSave();
 }
 
 function renderFleetTab(){
@@ -7302,7 +7410,7 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
     </div>
     <div>
       <div class="sig-line">{{customer_signature}}</div>
-      <div class="sig-label">Date: {{today}}</div>
+      <div class="sig-label">Date: {{customer_signed_date}}</div>
       <div class="sig-label" style="margin-top:4px">Printed Name: {{customer_name}}</div>
     </div>
   </div>
@@ -7484,7 +7592,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
     </div>
     <div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:14px">
       <span style="white-space:nowrap">Date:</span>
-      <div class="date-line">&nbsp;</div>
+      <div class="date-line">{{customer_signed_date}}</div>
     </div>
     <div style="display:flex;align-items:flex-end;gap:8px">
       <span class="bold" style="white-space:nowrap">Printed Name:</span>
@@ -7501,7 +7609,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
     </div>
     <div style="display:flex;align-items:flex-end;gap:8px">
       <span style="white-space:nowrap">Date:</span>
-      <div class="date-line">&nbsp;</div>
+      <div class="date-line">{{today}}</div>
     </div>
   </div>
 
@@ -7557,7 +7665,11 @@ var _contractBookingId = null;
 var _custSigDrawing = false;
 
 function initCustSigCanvas(){
-  var cv=$d('custSigCanvas'); if(!cv) return;
+  // Replace canvas with a clone to remove any previously stacked event listeners
+  var oldCanvas=$d('custSigCanvas');
+  if(!oldCanvas) return;
+  var cv=oldCanvas.cloneNode(true);
+  oldCanvas.parentNode.replaceChild(cv, oldCanvas);
   var ctx=cv.getContext('2d');
   ctx.strokeStyle='#111'; ctx.lineWidth=2; ctx.lineCap='round'; ctx.lineJoin='round';
   function pos(e){
@@ -7586,11 +7698,22 @@ function saveCustSig(){
   var cv=$d('custSigCanvas'); if(!cv||!_contractBookingId) return;
   var dataUrl=cv.toDataURL('image/png');
   var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
-  if(idx!==-1){ bookings[idx].customerSig=dataUrl; bookings[idx]._t=Date.now(); save(); }
+  if(idx!==-1){
+    var t2=new Date();
+    bookings[idx].customerSig=dataUrl;
+    bookings[idx].customerSigDate=(t2.getMonth()+1)+'/'+t2.getDate()+'/'+t2.getFullYear();
+    bookings[idx]._t=Date.now();
+    save();
+  }
   $d('custSigStatus').textContent='✅ Saved!';
   setTimeout(function(){ if($d('custSigStatus')) $d('custSigStatus').textContent=''; },2000);
   // Refresh preview so signature appears embedded, and show "Send Signed Copy" button
   _renderContractContent();
+  // Auto-send signed copy to customer if email + messaging worker are available
+  var b=bookings[idx];
+  if(b&&b.email&&MESSAGING_URL){
+    setTimeout(function(){ sendSignedCopyToClient(); },400);
+  }
 }
 
 function _renderContractContent(){
@@ -7610,8 +7733,8 @@ function _renderContractContent(){
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
   var dailyRate=days?'$'+(Math.round(rev/days*100)/100).toFixed(2):'N/A';
-  var pickupDateFmt=b.pickupDate?fmtDateFull(b.pickupDate):(b.date?fmtDateFull(b.date):'');
-  var returnDateFmt=b.dropoffDate?fmtDateFull(b.dropoffDate):'';
+  var pickupDateFmt=fmtDateFull(b.pickupDate||b.date||'');
+  var returnDateFmt=fmtDateFull(b.dropoffDate||tripEndDate(b)||'');
   var pickupTimeTxt=b.pickupTime?' at '+fmtTime(b.pickupTime):'';
   var dropoffTimeTxt=b.dropoffTime?' at '+fmtTime(b.dropoffTime):'';
   var milesDisplay=b.includedMiles?Number(b.includedMiles).toLocaleString()+' mi/day':'Unlimited';
@@ -7668,13 +7791,14 @@ function _renderContractContent(){
     .replace(/\{\{mileage_limit_display\}\}/gi,sr(milesDisplay))
     .replace(/\{\{overage_display\}\}/gi,    sr(overageDisplay))
     .replace(/\{\{unlimited_fee\}\}/gi,      sr(unlimitedFee))
-    .replace(/\{\{unlimited_total\}\}/gi,    sr(b.unlimited?'$'+((Number(b.unlimited)||0)*(Number(b.days)||1)).toFixed(2):'N/A'))
+    .replace(/\{\{unlimited_total\}\}/gi,    sr(b.unlimited?'$'+((Number(b.unlimited)||0)*Math.max(1,Number(b.days)||1)).toFixed(2):'N/A')) // uses same days calc as getAddons()
     .replace(/\{\{delivery_fee\}\}/gi,       sr(deliveryFee))
     .replace(/\{\{pet_fee\}\}/gi,            sr(petFee))
     .replace(/\{\{odometer_in\}\}/gi,        sr(odomIn))
     .replace(/\{\{date_lock\}\}/gi,          sr(b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
-    .replace(/\{\{owner_signature\}\}/gi,    OWNER_SIGNATURE?'<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">':'')
-    .replace(/\{\{customer_signature\}\}/gi, (b.customerSig&&b.customerSig.startsWith('data:image/'))?'<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">':'_______________________________')
+    .replace(/\{\{owner_signature\}\}/gi,      OWNER_SIGNATURE?'<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:220px;object-fit:contain;display:block;margin-bottom:4px">':'<span style="color:#aaa;font-size:11px;font-style:italic">not yet signed</span>')
+    .replace(/\{\{customer_signature\}\}/gi,   (b.customerSig&&b.customerSig.startsWith('data:image/'))?'<img src="'+b.customerSig+'" style="height:50px;max-width:240px;object-fit:contain">':'_______________________________')
+    .replace(/\{\{customer_signed_date\}\}/gi, sr(b.customerSigDate||todayFmt))
     .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee?'$'+b.brokerFee+'/day':'N/A')
     .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0,getRemainingBalance(b)))
     .replace(/\{\{mileage_policy\}\}/gi,     b.includedMiles?'Mileage: This rental includes '+Number(b.includedMiles).toLocaleString()+' miles per day. Miles driven beyond the included amount will be charged at $'+(b.overageRate||'0')+' per mile.':'Mileage: This rental includes unlimited mileage at no additional per-mile charge.')
@@ -7796,7 +7920,11 @@ function sendSignedCopyToClient(){
     body:JSON.stringify({to:b.email,subject:subj,html:html})
   }).then(function(r){
     if(ssb){ ssb.disabled=false; ssb.textContent='📧 Send Signed Copy to Client'; }
-    if(r.ok){ showToast('Signed '+docType.toLowerCase()+' sent to '+b.email+' ✅'); }
+    if(r.ok){
+      showToast('Signed '+docType.toLowerCase()+' sent to '+b.email+' ✅');
+      var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
+      if(idx!==-1){ bookings[idx].signedCopySentAt=Date.now(); save(); }
+    }
     else { showToast('Email send failed — check your messaging worker'); }
   }).catch(function(){
     if(ssb){ ssb.disabled=false; ssb.textContent='📧 Send Signed Copy to Client'; }
@@ -7934,7 +8062,7 @@ function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='non
 function unlockApp(){
   var pin=localStorage.getItem('pb_lock_pin');
   var entered=($d('lockPinInput').value||'').trim();
-  if(!pin || entered===pin){
+  if(!pin || _hashPin(entered)===pin){
     sessionStorage.setItem('pb_unlocked','1');
     hideLockScreen();
     $d('lockPinInput').value='';
@@ -7949,12 +8077,13 @@ function lockApp(){
   sessionStorage.removeItem('pb_unlocked');
   showLockScreen();
 }
+var _hashPin = function(p){ return btoa('pb:'+p+':rentals'); };
 function setLockPin(){
   var pin=localStorage.getItem('pb_lock_pin')||'';
-  var np=prompt('Set a PIN to lock the dashboard on new sessions.\nLeave blank to disable PIN lock.\nCurrent: '+(pin?'Set ('+pin.length+' chars)':'None'), '');
+  var np=prompt('Set a PIN to lock the dashboard on new sessions.\nLeave blank to disable PIN lock.\nCurrent: '+(pin?'Set':'None'), '');
   if(np===null) return;
   np=np.trim();
-  if(np){ localStorage.setItem('pb_lock_pin',np); toast('PIN lock enabled.'); }
+  if(np){ localStorage.setItem('pb_lock_pin',_hashPin(np)); toast('PIN lock enabled.'); }
   else  { localStorage.removeItem('pb_lock_pin'); toast('PIN lock disabled.'); }
 }
 
@@ -7983,6 +8112,9 @@ function updateOnlineStatus(){
   if(!badge) return;
   if(navigator.onLine){
     badge.style.display='none';
+    // M14: cloudSave() always reads from the current in-memory bookings/expenses/etc. arrays,
+    // so calling it here on reconnect is safe — it will push the latest state, not a stale closure.
+    // _offlinePending is cleared inside cloudSave() on a successful PUT response.
     if(_offlinePending){ cloudSave(); } // cloudSave clears _offlinePending on success
   } else {
     badge.style.display='';
