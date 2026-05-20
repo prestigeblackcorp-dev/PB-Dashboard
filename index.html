@@ -4806,6 +4806,7 @@ function saveBooking(){
   var checkDropoffTime=$d('fDropoffTime').value||'23:59';
   var _bType=$d('fType').value;
   var _isSling=vehicle==='Polaris Slingshot';
+  var _vehicleCap=(vehicle==='Polaris Slingshot'||CHAUFFEUR_VEHICLES.indexOf(vehicle)!==-1)?2:1;
   var BUFFER_MS=_isSling&&_bType==='hourly' ? 0 : _isSling&&_bType==='daily' ? 15*60*1000 : 2*60*60*1000;
   var _bufLabel=_isSling&&_bType==='hourly'?'no buffer':_isSling&&_bType==='daily'?'15-min buffer':'2-hr buffer';
   var dtToMs=function(d,t){ return new Date(d+'T'+(t||'00:00').substring(0,5)+':00').getTime(); };
@@ -4819,7 +4820,7 @@ function saveBooking(){
     var bEnd=dtToMs(tripEndDate(b)||b.dropoffDate||b.pickupDate||b.date,b.dropoffTime||'23:59');
     return newStart < bEnd+BUFFER_MS && newEnd > bStart-BUFFER_MS;
   });
-  if(dateConflicts.length){
+  if(dateConflicts.length>=_vehicleCap){
     var dcMsg='⚠️ Vehicle conflict for '+vehicle+' ('+_bufLabel+'):\n\n'+
       dateConflicts.map(function(c){
         var st=(c.pickupDate||c.date)+(c.pickupTime?' @ '+c.pickupTime:'');
@@ -6987,12 +6988,16 @@ function renderHeatmap(){
 // ════════════════════════════════════════════════════════
 //  FLEET TAB  (feature 9)
 // ════════════════════════════════════════════════════════
+function vehicleCapacity(v){
+  return (v==='Polaris Slingshot'||CHAUFFEUR_VEHICLES.indexOf(v)!==-1)?2:1;
+}
 function renderAvailBadges(){
   var el=$d('availBadgesRow'); if(!el) return;
   var availDate=$d('availCheckDate')?$d('availCheckDate').value:'';
   if(!availDate){ el.innerHTML=''; return; }
   el.innerHTML='<div style="display:grid;width:100%;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:8px">'+
     ALL_VEHICLES.map(function(v){
+      var cap=vehicleCapacity(v);
       var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
         return availDate>=r.start&&availDate<=r.end;
       });
@@ -7001,7 +7006,7 @@ function renderAvailBadges(){
         var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
         return availDate>=start&&availDate<=end;
       });
-      var hasHourly=dayBookings.some(function(b){ return b.type==='hourly'; });
+      var hasHourly=dayBookings.some(function(b){ return b.type==='hourly'||b.type==='chauffeur'; });
       var isBooked=false, returningB=null;
       dayBookings.forEach(function(b){
         var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
@@ -7011,8 +7016,48 @@ function renderAvailBadges(){
       var bg,clr,bdr,icon,label,sub='';
       if(isBlocked){
         bg='rgba(239,68,68,.1)';clr='#ef4444';bdr='rgba(239,68,68,.25)';icon='🚫';label='Blocked';
+      } else if(cap>=2&&dayBookings.length){
+        // Capacity-2 vehicles: event-based concurrent slot counting
+        var evts=[];
+        dayBookings.forEach(function(b){
+          var st=(availDate===(b.pickupDate||b.date))?(b.pickupTime||'00:00'):'00:00';
+          var en=(availDate===(b.dropoffDate||b.pickupDate||b.date))?(b.dropoffTime||'23:59'):'23:59';
+          evts.push({t:st,d:+1}); evts.push({t:en,d:-1});
+        });
+        // At same time: release (-1) before acquire (+1) so capacity is freed first
+        evts.sort(function(a,b){ return a.t!==b.t?a.t.localeCompare(b.t):a.d-b.d; });
+        var cnt=0,maxConc=0,winStart='00:00',free=[];
+        evts.forEach(function(ev){
+          if(ev.d===+1){
+            // About to acquire a slot — if this pushes us to capacity, close the free window
+            if(cnt<cap&&cnt+1>=cap&&winStart!==null&&ev.t>winStart){
+              free.push(fmtTime(winStart)+' – '+fmtTime(ev.t));
+              winStart=null;
+            }
+            cnt++; if(cnt>maxConc) maxConc=cnt;
+          } else {
+            var wasAtCap=cnt>=cap;
+            cnt--;
+            // Just dropped below capacity — start a new free window
+            if(wasAtCap&&cnt<cap) winStart=ev.t;
+          }
+        });
+        if(winStart!==null&&winStart<'23:59') free.push('Free after '+fmtTime(winStart));
+        if(maxConc<cap){
+          // Never hit full capacity — at least one slot open all day
+          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';
+          sub=dayBookings.length+'/'+cap+' slots taken — other open all day';
+        } else if(free.length){
+          // Hit capacity at some point but has gaps
+          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';
+          sub='Open: '+free.join(' · ');
+        } else {
+          // Both slots filled the entire day
+          bg='rgba(239,68,68,.1)';clr='#ef4444';bdr='rgba(239,68,68,.25)';icon='📅';label='Booked';
+          sub='Both slots full';
+        }
       } else if(isBooked||dayBookings.length){
-        // Compute free time windows for hourly or partial-day bookings
+        // Capacity-1 vehicles: original interval merge logic
         var intervals=dayBookings.map(function(b){
           var st=(availDate===(b.pickupDate||b.date))?(b.pickupTime||'00:00'):'00:00';
           var en=(availDate===(b.dropoffDate||b.pickupDate||b.date))?(b.dropoffTime||'23:59'):'23:59';
