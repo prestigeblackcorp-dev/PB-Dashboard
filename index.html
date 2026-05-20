@@ -6137,42 +6137,53 @@ function sendReviewRequest(b){
 
 function resendVerificationEmail(id){
   var b=bookings.find(function(x){return x.id===id;});
-  if(!b||!MESSAGING_URL||!b.email){ showToast('No email or messaging worker configured'); return; }
-  var firstName=(b.name||'').split(' ')[0]||'there';
-  var addons=[];
-  if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
-  if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
-  if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
-  if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
-  if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
-  if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
-  if(Number(b.pet))       addons.push('Pet Fee ($'+b.pet+')');
-  var rev=totalRevenue(b);
-  var detailRows=
-    '<tr><td style="padding:6px 14px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
-    '<tr><td style="padding:6px 14px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+(b.address?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
-    (b.dropoffDate?'<tr><td style="padding:6px 14px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
-    '<tr><td style="padding:6px 14px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
-    (addons.length?'<tr><td style="padding:6px 14px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+addons.join('<br>')+'</td></tr>':'')+
-    '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
-    (Number(b.dateLock)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
-  fetch(MESSAGING_URL+'/send-email',{
+  if(!b||!b.email){ showToast('No email on this booking'); return; }
+  if(!WORKER_URL){ showToast('Worker URL not set — check Settings'); return; }
+  if(!MESSAGING_URL){ showToast('Messaging URL not set — check Settings'); return; }
+  showToast('Creating new verify link…');
+  fetch(WORKER_URL+'/create-verification',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      to:b.email,
-      subject:'Your Prestige Black Booking — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
-      html:'<div style="font-family:sans-serif;max-width:560px;color:#111">'+
-        '<h2 style="color:#b8982e">Hi '+firstName+', here\'s your booking summary!</h2>'+
-        '<p style="font-size:15px;line-height:1.6">Here are the details for your upcoming rental with Prestige Black:</p>'+
-        '<div style="background:#f7f7f7;border-radius:10px;padding:18px;margin:18px 0">'+
-        '<table style="width:100%;border-collapse:collapse;font-size:14px">'+detailRows+'</table></div>'+
-        '<p style="font-size:14px;line-height:1.6;color:#444">Questions or need to make changes? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:600">(214) 207-2481</a>.</p>'+
-        '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
-    })
-  }).then(function(r){
-    if(r.ok){ showToast('Booking summary resent to '+b.email+' ✅'); }
-    else { r.text().then(function(t){ showToast('Failed to send email — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
-  }).catch(function(e){ showToast('Failed to send email — '+(e&&e.message?e.message:'network error')); });
+    body:JSON.stringify({bookingId:id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.url){ showToast('Could not create verify session'); return; }
+    var firstName=(b.name||'').split(' ')[0]||'there';
+    var addons=[];
+    if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
+    if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
+    if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+    if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
+    if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
+    if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+    if(Number(b.pet))       addons.push('Pet Fee ($'+b.pet+')');
+    var rev=totalRevenue(b);
+    var detailRows=
+      '<tr><td style="padding:6px 14px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+      '<tr><td style="padding:6px 14px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+(b.address?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+      (b.dropoffDate?'<tr><td style="padding:6px 14px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
+      '<tr><td style="padding:6px 14px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+      (addons.length?'<tr><td style="padding:6px 14px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+addons.join('<br>')+'</td></tr>':'')+
+      '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
+      (Number(b.dateLock)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
+    fetch(MESSAGING_URL+'/send-email',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        to:b.email,
+        subject:'Action Required: Verify your ID — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
+        html:'<div style="font-family:sans-serif;max-width:560px;color:#111">'+
+          '<h2 style="color:#b8982e">Hi '+firstName+', one quick step! ✅</h2>'+
+          '<p style="font-size:15px;line-height:1.6">To finalize your upcoming rental, we need to verify your ID — it takes less than 60 seconds.</p>'+
+          '<a href="'+d.url+'" style="display:inline-block;margin:16px 0;padding:14px 28px;background:#635bff;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:.01em">Verify My ID →</a>'+
+          '<div style="margin:24px 0;background:#f7f7f7;border-radius:10px;padding:18px">'+
+          '<div style="font-weight:700;font-size:14px;margin-bottom:10px;color:#333">📋 Your Booking Details</div>'+
+          '<table style="width:100%;border-collapse:collapse;font-size:14px">'+detailRows+'</table></div>'+
+          '<p style="font-size:14px;line-height:1.6;color:#444">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:600">(214) 207-2481</a>.</p>'+
+          '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+      })
+    }).then(function(r){
+      if(r.ok){ showToast('Verify link resent to '+b.email+' ✅'); }
+      else { r.text().then(function(t){ showToast('Failed to send — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
+    }).catch(function(e){ showToast('Failed to send — '+(e&&e.message?e.message:'network error')); });
+  }).catch(function(e){ showToast('Could not create verify session — '+(e&&e.message?e.message:'network error')); });
 }
 
 function sendConfirmationEmail(b, showFeedback){
