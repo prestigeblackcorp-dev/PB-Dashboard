@@ -1925,6 +1925,20 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for Stripe Identity. Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-verification-worker.js</code> to get this URL.</div>
       </div>
       <div class="fgroup ffull">
+        <div class="flabel">Messaging Worker URL</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="url" class="finput" id="settMessagingUrl" placeholder="https://pb-messaging.yourname.workers.dev" style="flex:1">
+          <button class="btn btn-sm" onclick="testMessagingUrl()" style="white-space:nowrap">🔌 Test</button>
+        </div>
+        <div id="settMessagingStatus" style="font-size:11px;margin-top:4px;display:none"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for sending emails (review requests, etc.). Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-messaging-worker.js</code> to get this URL.</div>
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Owner Notification Email</div>
+        <input type="email" class="finput" id="settOwnerEmail" placeholder="you@example.com">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Receives new booking alerts and ID verification emails. Leave blank to disable.</div>
+      </div>
+      <div class="fgroup ffull">
         <div class="flabel">Google Review URL</div>
         <input type="url" class="finput" id="settReviewUrl" placeholder="https://g.page/r/…/review">
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Sent to customers after trip is marked complete. Find yours at business.google.com.</div>
@@ -2342,11 +2356,12 @@ var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
 //  CLOUD SYNC
 // ════════════════════════════════════════════════════════
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
-var WORKER_URL     = localStorage.getItem('pb_worker_url') || localStorage.getItem('pb_messaging_url') || '';
-var MESSAGING_URL  = WORKER_URL;
+var WORKER_URL     = localStorage.getItem('pb_worker_url')     || '';
+var MESSAGING_URL  = localStorage.getItem('pb_messaging_url')  || localStorage.getItem('pb_worker_url') || '';
 var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) || 25;
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
+var OWNER_EMAIL    = localStorage.getItem('pb_owner_email')    || '';
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
 var _offlinePending = false; // queues a cloudSave for when we come back online
 
@@ -2399,9 +2414,8 @@ function cloudSave() {
         owner_signature: OWNER_SIGNATURE || '',
         messaging_url: MESSAGING_URL || '',
         worker_url: WORKER_URL || '',
+        owner_email: OWNER_EMAIL || '',
         review_url: REVIEW_URL || '',
-        openai_key: OPENAI_KEY || '',
-        tax_rate: SELF_EMPLOYMENT_TAX_RATE || 25,
         savedAt: Date.now()
       };
       fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data.json', {
@@ -2490,24 +2504,21 @@ function cloudLoad(callback) {
         } else if (OWNER_SIGNATURE && (!data.owner_signature || data.owner_signature.length <= 10)) {
           needsPush = true; // local has signature Firebase doesn't — push it
         }
-        var _wurl = (data.worker_url && data.worker_url.length > 5 ? data.worker_url : null)
-                 || (data.messaging_url && data.messaging_url.length > 5 ? data.messaging_url : null);
-        if (_wurl) {
-          WORKER_URL = _wurl.trim().replace(/\/$/,'');
-          MESSAGING_URL = WORKER_URL;
+        if (typeof data.messaging_url === 'string') {
+          MESSAGING_URL = data.messaging_url.trim().replace(/\/$/,'');
+          try { localStorage.setItem('pb_messaging_url', MESSAGING_URL); } catch(e) {}
+        }
+        if (data.worker_url && typeof data.worker_url === 'string' && data.worker_url.length > 5) {
+          WORKER_URL = data.worker_url;
           try { localStorage.setItem('pb_worker_url', WORKER_URL); } catch(e) {}
+        }
+        if (typeof data.owner_email === 'string') {
+          OWNER_EMAIL = data.owner_email.trim();
+          try { localStorage.setItem('pb_owner_email', OWNER_EMAIL); } catch(e) {}
         }
         if (data.review_url && typeof data.review_url === 'string' && data.review_url.length > 5) {
           REVIEW_URL = data.review_url;
           try { localStorage.setItem('pb_review_url', REVIEW_URL); } catch(e) {}
-        }
-        if (data.openai_key && typeof data.openai_key === 'string' && data.openai_key.length > 5) {
-          OPENAI_KEY = data.openai_key;
-          try { localStorage.setItem('pb_openai_key', OPENAI_KEY); } catch(e) {}
-        }
-        if (typeof data.tax_rate === 'number' && data.tax_rate > 0) {
-          SELF_EMPLOYMENT_TAX_RATE = data.tax_rate;
-          try { localStorage.setItem('pb_tax_rate', SELF_EMPLOYMENT_TAX_RATE); } catch(e) {}
         }
         _cloudLoading = false;
         // If local had items cloud didn't, push merged result so all devices get it
@@ -4255,8 +4266,8 @@ function openBookingDetail(id){
     ((b.email&&MESSAGING_URL)?
       '<div class="fsec" style="margin-top:12px">📧 Emails</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+
-        '<button class="btn btn-sm" onclick="resendConfirmationById(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
-        (WORKER_URL?'<button class="btn btn-sm" onclick="resendVerifyById(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
+        '<button class="btn btn-sm" onclick="sendConfirmationEmail(bookings.find(function(x){return x.id===\''+b.id+'\'}),true)" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
+        (WORKER_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">📨 Send Reminder</button>'+
       '</div>'
     : '')+
@@ -4803,8 +4814,6 @@ function saveBooking(){
   var _isSling=vehicle==='Polaris Slingshot';
   var BUFFER_MS=_isSling&&_bType==='hourly' ? 0 : _isSling&&_bType==='daily' ? 15*60*1000 : 2*60*60*1000;
   var _bufLabel=_isSling&&_bType==='hourly'?'no buffer':_isSling&&_bType==='daily'?'15-min buffer':'2-hr buffer';
-  var _vehicleCapacity={'Escalade Chauffeur':2,'Polaris Slingshot':2};
-  var _capacity=_vehicleCapacity[vehicle]||1;
   var dtToMs=function(d,t){ return new Date(d+'T'+(t||'00:00').substring(0,5)+':00').getTime(); };
   var newStart=dtToMs(checkPickup,checkPickupTime);
   var newEnd=dtToMs(checkDropoff,checkDropoffTime);
@@ -4816,7 +4825,7 @@ function saveBooking(){
     var bEnd=dtToMs(tripEndDate(b)||b.dropoffDate||b.pickupDate||b.date,b.dropoffTime||'23:59');
     return newStart < bEnd+BUFFER_MS && newEnd > bStart-BUFFER_MS;
   });
-  if(dateConflicts.length>=_capacity){
+  if(dateConflicts.length){
     var dcMsg='⚠️ Vehicle conflict for '+vehicle+' ('+_bufLabel+'):\n\n'+
       dateConflicts.map(function(c){
         var st=(c.pickupDate||c.date)+(c.pickupTime?' @ '+c.pickupTime:'');
@@ -4936,12 +4945,13 @@ function saveBooking(){
     }
   } else {
     bookings.push(entry);
+    // Fire owner notification and customer date-lock confirmation on new bookings only
+    sendOwnerBookingNotification(entry);
+    if(Number(entry.dateLock)) sendDateLockConfirmation(entry);
   }
 
   save(); closeModal(); initSelects();
   syncToGCal(entry); // create or update Google Calendar event
-  if(!editingId && entry.email && MESSAGING_URL) sendConfirmationEmail(entry);
-  if(editingId && entry.status==='completed' && ex && ex.status!=='completed') sendReviewRequest(entry);
   render();
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
@@ -5633,13 +5643,15 @@ document.addEventListener('click', function(e){
 
 function openSettings(){
   $d('settWorkerUrl').value    = WORKER_URL;
+  $d('settMessagingUrl').value = MESSAGING_URL;
+  $d('settOwnerEmail').value   = OWNER_EMAIL;
   $d('settReviewUrl').value    = REVIEW_URL;
   $d('settOpenAiKey').value    = OPENAI_KEY;
   $d('settTaxRate').value      = SELF_EMPLOYMENT_TAX_RATE;
   _refreshSigPreview(OWNER_SIGNATURE);
   _settingsDirty = false;
   var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
-  ['settWorkerUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
+  ['settWorkerUrl','settMessagingUrl','settOwnerEmail','settReviewUrl','settOpenAiKey'].forEach(function(id){
     var el=$d(id); if(el) el.oninput=_markSettingsDirty;
   });
   $d('settingsModal').classList.add('open');
@@ -5681,6 +5693,22 @@ function restoreBooking(id){
   openRecentlyDeleted();
   showToast('Booking restored.');
 }
+function testMessagingUrl(){
+  var url=($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
+  var statusEl=$d('settMessagingStatus');
+  if(!url){ statusEl.style.display=''; statusEl.style.color='#ef4444'; statusEl.textContent='Enter a Messaging Worker URL first.'; return; }
+  statusEl.style.display=''; statusEl.style.color='var(--muted)'; statusEl.textContent='Testing…';
+  fetch(url+'/send-email',{method:'OPTIONS'})
+    .then(function(r){
+      if(r.ok||r.status===204||r.status===200||r.status===405){
+        statusEl.style.color='var(--green)'; statusEl.textContent='✅ Worker reachable (status '+r.status+')';
+      } else {
+        statusEl.style.color='#ef4444'; statusEl.textContent='⚠ Worker responded with status '+r.status;
+      }
+    }).catch(function(){
+      statusEl.style.color='#ef4444'; statusEl.textContent='❌ Could not reach worker — check the URL or CORS settings.';
+    });
+}
 function testWorkerUrl(){
   var url=($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
   var statusEl=$d('settWorkerStatus');
@@ -5719,11 +5747,14 @@ function testOpenAiKey(){
 }
 function saveSettings(){
   WORKER_URL    = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
-  MESSAGING_URL = WORKER_URL;
+  MESSAGING_URL = ($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
+  OWNER_EMAIL   = ($d('settOwnerEmail').value||'').trim();
   REVIEW_URL    = ($d('settReviewUrl').value||'').trim() || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
   OPENAI_KEY    = ($d('settOpenAiKey').value||'').trim();
   SELF_EMPLOYMENT_TAX_RATE = parseFloat($d('settTaxRate').value) || 25;
   localStorage.setItem('pb_worker_url',    WORKER_URL);
+  localStorage.setItem('pb_messaging_url', MESSAGING_URL);
+  localStorage.setItem('pb_owner_email',   OWNER_EMAIL);
   localStorage.setItem('pb_review_url',    REVIEW_URL);
   localStorage.setItem('pb_openai_key',    OPENAI_KEY);
   localStorage.setItem('pb_tax_rate',      SELF_EMPLOYMENT_TAX_RATE);
@@ -5870,7 +5901,16 @@ function applyStripeVerification(session){
     var exp=doc.expiration_date;
     if(exp&&exp.year) $d('vIdExpiry').value=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
     if(doc.number) $d('vIdNumber').value=doc.number;
-    if(doc.address&&doc.address.state) $d('vIdState').value=doc.address.state;
+    if(doc.address){
+      var _a=doc.address, _addrParts=[];
+      if(_a.line1)       _addrParts.push(_a.line1);
+      if(_a.line2)       _addrParts.push(_a.line2);
+      if(_a.city)        _addrParts.push(_a.city);
+      if(_a.state)       _addrParts.push(_a.state);
+      if(_a.postal_code) _addrParts.push(_a.postal_code);
+      if(_addrParts.length) $d('vIdAddress').value=_addrParts.join(', ');
+      if(_a.state) $d('vIdState').value=_a.state;
+    }
     var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
     if(doc.type&&typeMap[doc.type]) $d('vIdType').value=typeMap[doc.type];
   }
@@ -5878,6 +5918,9 @@ function applyStripeVerification(session){
   $d('vStripeStatus').textContent='✅ Identity verified by Stripe!';
   $d('vStripeStatus').style.color='var(--green)';
   toast('✅ ID Verified via Stripe Identity!');
+  // Email owner with all extracted ID data + link to license photos in Stripe dashboard
+  var _vb=bookings.find(function(x){return x.id===verifyId;});
+  if(_vb) sendOwnerIdVerification(_vb, session.id||'');
 }
 
 // ════════════════════════════════════════════════════════
@@ -6089,42 +6132,49 @@ function sendReviewRequest(b){
         '<p style="margin-top:24px;font-size:12px;color:#888">Prestige Black Rentals · Dallas–Fort Worth</p>'+
         '</div>'
     })
-  }).then(function(r){
-    if(r.ok) showToast('Review request sent ✅');
   }).catch(function(){});
 }
 
 function resendVerificationEmail(id){
   var b=bookings.find(function(x){return x.id===id;});
-  if(!b){ showToast('Booking not found'); return; }
-  if(!MESSAGING_URL){ showToast('Worker URL not set — add it in ⚙ Settings'); return; }
-  if(!b.email){ showToast('No email on this booking'); return; }
+  if(!b||!MESSAGING_URL||!b.email){ showToast('No email or messaging worker configured'); return; }
   var firstName=(b.name||'').split(' ')[0]||'there';
+  var addons=[];
+  if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
+  if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
+  if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+  if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
+  if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
+  if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+  if(Number(b.pet))       addons.push('Pet Fee ($'+b.pet+')');
+  var rev=totalRevenue(b);
+  var detailRows=
+    '<tr><td style="padding:6px 14px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+    '<tr><td style="padding:6px 14px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+(b.address?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+    (b.dropoffDate?'<tr><td style="padding:6px 14px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
+    '<tr><td style="padding:6px 14px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+    (addons.length?'<tr><td style="padding:6px 14px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+addons.join('<br>')+'</td></tr>':'')+
+    '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
+    (Number(b.dateLock)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
       to:b.email,
-      subject:'Action needed — Verify your ID for Prestige Black',
-      html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
-        '<h2 style="color:#b8982e">Hi '+firstName+', one quick step! ✅</h2>'+
-        '<p style="font-size:15px;line-height:1.6">To complete your booking for the <strong>'+(b.vehicle||'')+'</strong>, we need to verify your ID before pickup.</p>'+
-        '<p style="font-size:15px;line-height:1.6">Please reply to this email or text us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a> and we\'ll send you a secure verification link right away.</p>'+
-        '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+      subject:'Your Prestige Black Booking — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
+      html:'<div style="font-family:sans-serif;max-width:560px;color:#111">'+
+        '<h2 style="color:#b8982e">Hi '+firstName+', here\'s your booking summary!</h2>'+
+        '<p style="font-size:15px;line-height:1.6">Here are the details for your upcoming rental with Prestige Black:</p>'+
+        '<div style="background:#f7f7f7;border-radius:10px;padding:18px;margin:18px 0">'+
+        '<table style="width:100%;border-collapse:collapse;font-size:14px">'+detailRows+'</table></div>'+
+        '<p style="font-size:14px;line-height:1.6;color:#444">Questions or need to make changes? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:600">(214) 207-2481</a>.</p>'+
+        '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
   }).then(function(r){
-    if(r.ok){ showToast('Verification request sent ✅'); }
-    else { r.text().then(function(t){ showToast('Failed to send — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
-  }).catch(function(e){ showToast('Failed to send — '+(e&&e.message?e.message:'network error')); });
+    if(r.ok){ showToast('Booking summary resent to '+b.email+' ✅'); }
+    else { r.text().then(function(t){ showToast('Failed to send email — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
+  }).catch(function(e){ showToast('Failed to send email — '+(e&&e.message?e.message:'network error')); });
 }
 
-function resendConfirmationById(id){
-  var bk=bookings.find(function(x){return x.id===id;});
-  if(!bk){ showToast('Booking not found'); return; }
-  sendConfirmationEmail(bk,true);
-}
-function resendVerifyById(id){
-  resendVerificationEmail(id);
-}
 function sendConfirmationEmail(b, showFeedback){
   if(!MESSAGING_URL||!b||!b.email) { if(showFeedback) showToast('No email or messaging worker configured'); return; }
   var firstName=(b.name||'').split(' ')[0]||'there';
@@ -6199,6 +6249,114 @@ function sendReceiptEmail(b){
         '<p style="font-size:15px;line-height:1.6">Here\'s a summary of your rental:</p>'+
         '<table style="width:100%;border-collapse:collapse;font-size:14px;margin:12px 0">'+rows+'</table>'+
         '<p style="font-size:13px;color:#777;margin-top:20px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+    })
+  }).catch(function(){});
+}
+
+// ── Owner notification: fires once on every new booking ───────────────────────
+function sendOwnerBookingNotification(b){
+  if(!MESSAGING_URL||!OWNER_EMAIL) return;
+  var addons=[];
+  if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
+  if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
+  if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+  if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
+  if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
+  if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+  if(Number(b.pet))       addons.push('Pet Fee ($'+b.pet+')');
+  var rev=totalRevenue(b);
+  var rows=
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee">Customer</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(b.name)+(b.phone?' · '+esc(b.phone):'')+(b.email?' · '+esc(b.email):'')+'</td></tr>'+
+    '<tr><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee">Vehicle</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(b.vehicle)+'</td></tr>'+
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee">Pickup</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+fmtDate(b.pickupDate||b.date)+(b.pickupTime?' at '+fmtTime(b.pickupTime):'')+(b.address?'<br>📍 '+esc(b.address):'')+'</td></tr>'+
+    (b.dropoffDate?'<tr><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee">Drop-off</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+(b.dropoffAddress?'<br>📍 '+esc(b.dropoffAddress):'')+'</td></tr>':'')+
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee">Duration</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+    (addons.length?'<tr><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee;vertical-align:top">Add-ons</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+addons.join('<br>')+'</td></tr>':'')+
+    (Number(b.dateLock)?'<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee">Date Lock Paid</td><td style="padding:7px 12px;border-bottom:1px solid #eee;color:#16a34a;font-weight:700">'+$$(b.dateLock)+'</td></tr>':'')+
+    (Number(b.deposit)?'<tr><td style="padding:7px 12px;font-weight:700;color:#333;border-bottom:1px solid #eee">Deposit</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+$$(b.deposit)+'</td></tr>':'')+
+    '<tr style="background:#f0fdf4"><td style="padding:8px 12px;font-weight:800;color:#111">Total Revenue</td><td style="padding:8px 12px;font-weight:800;color:#b8982e;font-size:16px">'+$$(rev)+'</td></tr>'+
+    (b.notes?'<tr><td style="padding:7px 12px;font-weight:700;color:#333;vertical-align:top">Notes</td><td style="padding:7px 12px;font-style:italic;color:#555">'+esc(b.notes)+'</td></tr>':'')+
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;color:#333">Status</td><td style="padding:7px 12px;text-transform:capitalize">'+esc(b.status||'pending')+'</td></tr>'+
+    '<tr><td style="padding:7px 12px;font-weight:700;color:#333">Source</td><td style="padding:7px 12px">'+esc(b.source||'—')+(b._fromWeb?' 🌐 Web':'')+'</td></tr>';
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:OWNER_EMAIL,
+      subject:'New Booking: '+esc(b.name)+' — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
+      html:'<div style="font-family:sans-serif;max-width:580px;color:#111">'+
+        '<div style="background:#b8982e;color:#fff;padding:14px 20px;border-radius:10px 10px 0 0;font-size:18px;font-weight:900;letter-spacing:.03em">🚗 New Booking — Prestige Black</div>'+
+        '<div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px;overflow:hidden">'+
+        '<table style="width:100%;border-collapse:collapse;font-size:14px">'+rows+'</table></div>'+
+        '<p style="font-size:11px;color:#999;margin-top:16px">Booking ID: '+b.id+' · '+new Date().toLocaleString('en-US',{timeZone:'America/Chicago'})+'</p></div>'
+    })
+  }).catch(function(){});
+}
+
+// ── Date-lock confirmation to customer: fires when new booking has dateLock > 0 ─
+function sendDateLockConfirmation(b){
+  if(!MESSAGING_URL||!b||!b.email||!Number(b.dateLock)) return;
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  var addons=[];
+  if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
+  if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
+  if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+  if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
+  if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
+  if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+  if(Number(b.pet))       addons.push('Pet Fee ($'+b.pet+')');
+  var rev=totalRevenue(b);
+  var detailRows=
+    '<tr><td style="padding:6px 14px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+    '<tr><td style="padding:6px 14px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+(b.address?'<br><span style="color:#555;font-size:13px">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+    (b.dropoffDate?'<tr><td style="padding:6px 14px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
+    '<tr><td style="padding:6px 14px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+    (addons.length?'<tr><td style="padding:6px 14px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+addons.join('<br>')+'</td></tr>':'')+
+    '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
+    '<tr style="background:#f0fdf4"><td style="padding:7px 14px 7px 0;font-weight:700;color:#16a34a">Date Lock Paid</td><td style="padding:7px 0;font-weight:700;color:#16a34a">'+$$(b.dateLock)+' ✅</td></tr>'+
+    (Number(b.remainingBalance)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Remaining Balance</td><td style="padding:6px 0;font-weight:600">'+$$(b.remainingBalance)+' due at pickup</td></tr>':'');
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:b.email,
+      subject:'Your date is locked in! — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
+      html:'<div style="font-family:sans-serif;max-width:560px;color:#111">'+
+        '<h2 style="color:#b8982e">You\'re all set, '+firstName+'! 🎉</h2>'+
+        '<p style="font-size:15px;line-height:1.6">Your date lock of <strong style="color:#16a34a">'+$$(b.dateLock)+'</strong> has been received and your booking is secured. Here\'s your booking breakdown:</p>'+
+        '<div style="background:#f7f7f7;border-radius:10px;padding:18px;margin:18px 0">'+
+        '<table style="width:100%;border-collapse:collapse;font-size:14px">'+detailRows+'</table></div>'+
+        '<p style="font-size:14px;line-height:1.6;color:#444">Questions or changes? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:600">(214) 207-2481</a>.</p>'+
+        '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+    })
+  }).then(function(r){
+    if(r.ok) showToast('Date lock confirmation sent to '+b.email);
+  }).catch(function(){});
+}
+
+// ── Owner ID verification alert: fires after Stripe verifies customer ──────────
+function sendOwnerIdVerification(b, sessionId){
+  if(!MESSAGING_URL||!OWNER_EMAIL||!b) return;
+  var v=b.verify||{};
+  var rows=
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">Customer</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(b.name)+(b.email?' · '+esc(b.email):'')+'</td></tr>'+
+    '<tr><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">Vehicle</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(b.vehicle)+'</td></tr>'+
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">ID Type</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(v.idType||'—')+'</td></tr>'+
+    '<tr><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">ID / License #</td><td style="padding:7px 12px;border-bottom:1px solid #eee;font-weight:700">'+esc(v.idNumber||'—')+'</td></tr>'+
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">Full Name on ID</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(v.idName||'—')+'</td></tr>'+
+    '<tr><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">Date of Birth</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(v.idDob||'—')+'</td></tr>'+
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">Home Address</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(v.idAddress||'—')+'</td></tr>'+
+    '<tr><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">State / Country</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(v.idState||'—')+'</td></tr>'+
+    '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">Expiration</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(v.idExpiry||'—')+'</td></tr>'+
+    (sessionId?'<tr><td style="padding:7px 12px;font-weight:700">License Photos</td><td style="padding:7px 12px"><a href="https://dashboard.stripe.com/identity/verification-sessions/'+sessionId+'" style="color:#635bff;font-weight:700">View in Stripe Dashboard →</a></td></tr>':'');
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:OWNER_EMAIL,
+      subject:'ID Verified: '+esc(b.name)+' — '+esc(b.vehicle),
+      html:'<div style="font-family:sans-serif;max-width:580px;color:#111">'+
+        '<div style="background:#635bff;color:#fff;padding:14px 20px;border-radius:10px 10px 0 0;font-size:17px;font-weight:900">✅ ID Verified — Prestige Black</div>'+
+        '<div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px;overflow:hidden">'+
+        '<table style="width:100%;border-collapse:collapse;font-size:14px">'+rows+'</table></div>'+
+        '<p style="font-size:12px;color:#999;margin-top:16px">Booking ID: '+b.id+' · Verified via Stripe Identity · Keep on file for insurance purposes.</p></div>'
     })
   }).catch(function(){});
 }
@@ -6828,10 +6986,8 @@ function renderAvailBadges(){
   var el=$d('availBadgesRow'); if(!el) return;
   var availDate=$d('availCheckDate')?$d('availCheckDate').value:'';
   if(!availDate){ el.innerHTML=''; return; }
-  var _cap={'Escalade Chauffeur':2,'Polaris Slingshot':2};
   el.innerHTML='<div style="display:grid;width:100%;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:8px">'+
     ALL_VEHICLES.map(function(v){
-      var capacity=_cap[v]||1;
       var isBlocked=((VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges)||[]).some(function(r){
         return availDate>=r.start&&availDate<=r.end;
       });
@@ -6841,53 +6997,17 @@ function renderAvailBadges(){
         return availDate>=start&&availDate<=end;
       });
       var hasHourly=dayBookings.some(function(b){ return b.type==='hourly'; });
-      var returningB=null;
-      if(dayBookings.length<capacity){
-        dayBookings.forEach(function(b){
-          var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
-          if(end===availDate&&start<availDate) returningB=b;
-        });
-      }
+      var isBooked=false, returningB=null;
+      dayBookings.forEach(function(b){
+        var start=b.pickupDate||b.date, end=tripEndDate(b)||start;
+        if(end===availDate&&start<availDate&&!isBooked){ returningB=b; }
+        else { isBooked=true; returningB=null; }
+      });
       var bg,clr,bdr,icon,label,sub='';
       if(isBlocked){
         bg='rgba(239,68,68,.1)';clr='#ef4444';bdr='rgba(239,68,68,.25)';icon='🚫';label='Blocked';
-      } else if(dayBookings.length>=capacity){
-        // Fully booked — all slots taken
-        bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='📅';
-        if(capacity>1){
-          label='Full '+dayBookings.length+'/'+capacity;
-          sub=dayBookings.map(function(b,i){
-            var st=b.pickupTime?fmtTime(b.pickupTime):'start';
-            var en=b.dropoffTime?fmtTime(b.dropoffTime):'end';
-            return (i+1)+'. '+(b.name||'').split(' ')[0]+' '+st+'–'+en;
-          }).join(' · ');
-        } else {
-          label='Booked';
-          var intervals=dayBookings.map(function(b){
-            var st=(availDate===(b.pickupDate||b.date))?(b.pickupTime||'00:00'):'00:00';
-            var en=(availDate===(b.dropoffDate||b.pickupDate||b.date))?(b.dropoffTime||'23:59'):'23:59';
-            return [st,en];
-          }).sort(function(a,b){ return a[0]<b[0]?-1:1; });
-          var free=[],cur='00:00';
-          intervals.forEach(function(iv){
-            if(cur<iv[0]) free.push(fmtTime(cur)+' – '+fmtTime(iv[0]));
-            if(iv[1]>cur) cur=iv[1];
-          });
-          if(cur<'23:59') free.push('Free after '+fmtTime(cur));
-          if(hasHourly&&free.length){ icon='⏱';label='Partial';sub=free.join(' · '); }
-          else if(cur<'23:59') sub='Free after '+fmtTime(cur);
-        }
-      } else if(dayBookings.length>0&&capacity>1){
-        // Partial capacity — some slots taken, still bookable
-        bg='rgba(251,191,36,.1)';clr='#f59e0b';bdr='rgba(251,191,36,.3)';icon='½';
-        label=dayBookings.length+'/'+capacity+' Booked';
-        sub=dayBookings.map(function(b,i){
-          var st=b.pickupTime?fmtTime(b.pickupTime):'start';
-          var en=b.dropoffTime?fmtTime(b.dropoffTime):'end';
-          return (i+1)+'. '+(b.name||'').split(' ')[0]+' '+st+'–'+en;
-        }).join(' · ');
-      } else if(dayBookings.length>0){
-        // Single-capacity, has bookings
+      } else if(isBooked||dayBookings.length){
+        // Compute free time windows for hourly or partial-day bookings
         var intervals=dayBookings.map(function(b){
           var st=(availDate===(b.pickupDate||b.date))?(b.pickupTime||'00:00'):'00:00';
           var en=(availDate===(b.dropoffDate||b.pickupDate||b.date))?(b.dropoffTime||'23:59'):'23:59';
@@ -6900,7 +7020,8 @@ function renderAvailBadges(){
         });
         if(cur<'23:59') free.push('Free after '+fmtTime(cur));
         if(hasHourly&&free.length){
-          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';sub=free.join(' · ');
+          bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';
+          sub=free.join(' · ');
         } else {
           bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='📅';label='Booked';
           if(cur<'23:59') sub='Free after '+fmtTime(cur);
@@ -6910,7 +7031,7 @@ function renderAvailBadges(){
         sub=returningB.dropoffTime?'at '+fmtTime(returningB.dropoffTime):'today';
       } else {
         bg='rgba(34,197,94,.1)';clr='#22c55e';bdr='rgba(34,197,94,.25)';icon='✅';label='Available';
-        sub=capacity>1?'All '+capacity+' slots free':'All day free';
+        sub='All day free';
       }
       return '<div style="background:'+bg+';border:1px solid '+bdr+';border-radius:10px;padding:10px 12px">'+
         '<div style="font-size:10px;font-weight:800;color:'+clr+';letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px">'+icon+' '+label+'</div>'+
@@ -7745,19 +7866,6 @@ function saveCustSig(){
 
 function _renderContractContent(){
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
-  // Always use freshest signature — cloudLoad may have set it after page init
-  if(!OWNER_SIGNATURE) OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
-  // If still empty and Firebase is configured, pull it now then re-render
-  if(!OWNER_SIGNATURE && FIREBASE_URL){
-    fetch(FIREBASE_URL.replace(/\/$/,'')+'/pb_data/owner_signature.json',{cache:'no-store'})
-      .then(function(r){return r.json();}).then(function(sig){
-        if(sig&&typeof sig==='string'&&sig.length>10){
-          OWNER_SIGNATURE=sig;
-          try{localStorage.setItem('pb_owner_signature',OWNER_SIGNATURE);}catch(e){}
-          _renderContractContent();
-        }
-      }).catch(function(){});
-  }
   var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
   if(!activeTemplate) return;
   var addonLines=[];
