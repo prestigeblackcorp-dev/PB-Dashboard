@@ -938,6 +938,15 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <span id="contractModalTitle">📝 Rental Agreement</span>
       <button class="modal-close" onclick="closeContract()">✕</button>
     </div>
+    <!-- Slingshot color picker (top) — separate from contractHeader so _renderContractContent can't overwrite it -->
+    <div id="contractColorBar" style="display:none;margin-bottom:10px;padding:10px 14px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:10px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Slingshot Color:</span>
+        <button id="slingshotBtnGreen" onclick="switchSlingshotColor('Green')" style="padding:6px 16px;border-radius:8px;border:2px solid #22c55e;background:rgba(34,197,94,.15);color:#22c55e;font-weight:800;font-size:13px;cursor:pointer">🟢 Green</button>
+        <button id="slingshotBtnWhite" onclick="switchSlingshotColor('White')" style="padding:6px 16px;border-radius:8px;border:2px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.5);font-weight:800;font-size:13px;cursor:pointer">⚪ White</button>
+        <span style="font-size:11px;color:var(--muted)">VIN &amp; color auto-fill on waiver</span>
+      </div>
+    </div>
     <div id="contractHeader"></div>
     <!-- Rendered HTML preview -->
     <iframe id="contractPreviewFrame" sandbox="allow-same-origin allow-scripts" style="width:100%;height:clamp(320px,50vh,560px);border:1px solid var(--border);border-radius:10px;background:#fff;display:none" scrolling="yes"></iframe>
@@ -8460,8 +8469,8 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
   <hr class="hr">
 
   <h2>2. Vehicle Description</h2>
-  <p>Vehicle: <span class="bold">Polaris Slingshot SL</span><br>
-  VIN: 57XAAPHD4S8167698<br>
+  <p>Vehicle: <span class="bold">Polaris Slingshot SL ({{vehicle_color}})</span><br>
+  VIN: <span class="bold">{{vehicle_vin}}</span><br>
   Rental Period: <span class="bold">{{days}} Hour(s) &mdash; {{pickup_date}}{{pickup_time_display}}</span></p>
 
   <hr class="hr">
@@ -8852,21 +8861,14 @@ function openContract(id){
   _slingshotColor = 'Green'; // default to Green each time waiver opens
   $d('contractModalTitle').textContent = _contractIsWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
   $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
-  // Color picker for Slingshot waivers — shown at top AND near signature
-  var hdr = $d('contractHeader');
+  // Color picker for Slingshot waivers — persistent divs not overwritten by _renderContractContent
+  var colorBar = $d('contractColorBar');
   var colorRow = $d('slingshotColorRow');
-  if(_contractIsWaiver){
-    hdr.innerHTML = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
-      +'<span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Slingshot Color:</span>'
-      +'<button id="slingshotBtnGreen" onclick="switchSlingshotColor(\'Green\')" style="padding:6px 16px;border-radius:8px;border:2px solid #22c55e;background:rgba(34,197,94,.15);color:#22c55e;font-weight:800;font-size:13px;cursor:pointer">🟢 Green</button>'
-      +'<button id="slingshotBtnWhite" onclick="switchSlingshotColor(\'White\')" style="padding:6px 16px;border-radius:8px;border:2px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.5);font-weight:800;font-size:13px;cursor:pointer">⚪ White</button>'
-      +'<span style="font-size:11px;color:var(--muted)">VIN auto-fills on waiver</span>'
-      +'</div>';
-    if(colorRow) colorRow.style.display = '';
-  } else {
-    hdr.innerHTML = '';
-    if(colorRow) colorRow.style.display = 'none';
-  }
+  var showColor = _contractIsWaiver;
+  if(colorBar) colorBar.style.display = showColor ? '' : 'none';
+  if(colorRow) colorRow.style.display = showColor ? '' : 'none';
+  // Reset button states to Green default
+  switchSlingshotColor('Green');
   var activeTemplate = _contractIsWaiver ? slingshotWaiverTemplate : contractTemplate;
   if(!activeTemplate){
     if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
