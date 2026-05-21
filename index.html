@@ -2013,6 +2013,11 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Receives new booking alerts and ID verification emails. Leave blank to disable.</div>
       </div>
       <div class="fgroup ffull">
+        <div class="flabel">Date Lock Payment Link ($100)</div>
+        <input type="url" class="finput" id="settDateLockUrl" placeholder="https://buy.stripe.com/…">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Stripe payment link for the $100 date lock fee. Included in booking confirmation emails so customers can pay immediately.</div>
+      </div>
+      <div class="fgroup ffull">
         <div class="flabel">Google Review URL</div>
         <input type="url" class="finput" id="settReviewUrl" placeholder="https://g.page/r/…/review">
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Sent to customers after trip is marked complete. Find yours at business.google.com.</div>
@@ -2463,6 +2468,7 @@ var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) |
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
 var OWNER_EMAIL    = localStorage.getItem('pb_owner_email')    || '';
+var DATE_LOCK_URL  = localStorage.getItem('pb_date_lock_url')  || '';
 var staffPins      = [];   // [{id,name,role,pin}]  role: 'full'|'checkin'|'readonly'
 var _currentUser   = 'owner';
 var _currentRole   = 'full'; // 'full'|'checkin'|'readonly'
@@ -5948,13 +5954,14 @@ function openSettings(){
   $d('settWorkerUrl').value    = WORKER_URL;
   $d('settMessagingUrl').value = MESSAGING_URL;
   $d('settOwnerEmail').value   = OWNER_EMAIL;
+  $d('settDateLockUrl').value  = DATE_LOCK_URL;
   $d('settReviewUrl').value    = REVIEW_URL;
   $d('settOpenAiKey').value    = OPENAI_KEY;
   $d('settTaxRate').value      = SELF_EMPLOYMENT_TAX_RATE;
   _refreshSigPreview(OWNER_SIGNATURE);
   _settingsDirty = false;
   var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
-  ['settWorkerUrl','settMessagingUrl','settOwnerEmail','settReviewUrl','settOpenAiKey'].forEach(function(id){
+  ['settWorkerUrl','settMessagingUrl','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
     var el=$d(id); if(el) el.oninput=_markSettingsDirty;
   });
   $d('settingsModal').classList.add('open');
@@ -6133,12 +6140,14 @@ function saveSettings(){
   WORKER_URL    = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
   MESSAGING_URL = ($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
   OWNER_EMAIL   = ($d('settOwnerEmail').value||'').trim();
+  DATE_LOCK_URL = ($d('settDateLockUrl').value||'').trim();
   REVIEW_URL    = ($d('settReviewUrl').value||'').trim() || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
   OPENAI_KEY    = ($d('settOpenAiKey').value||'').trim();
   SELF_EMPLOYMENT_TAX_RATE = parseFloat($d('settTaxRate').value) || 25;
   localStorage.setItem('pb_worker_url',    WORKER_URL);
   localStorage.setItem('pb_messaging_url', MESSAGING_URL);
   localStorage.setItem('pb_owner_email',   OWNER_EMAIL);
+  localStorage.setItem('pb_date_lock_url', DATE_LOCK_URL);
   localStorage.setItem('pb_review_url',    REVIEW_URL);
   localStorage.setItem('pb_openai_key',    OPENAI_KEY);
   localStorage.setItem('pb_tax_rate',      SELF_EMPLOYMENT_TAX_RATE);
@@ -6578,12 +6587,22 @@ function sendConfirmationEmail(b, showFeedback){
     body:JSON.stringify({
       to:b.email,
       subject:'Your booking is confirmed — '+b.vehicle,
-      html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
-        '<h2 style="color:#b8982e">You\'re confirmed, '+firstName+'! 🎉</h2>'+
-        '<p style="font-size:15px;line-height:1.6">Your booking for the <strong>'+b.vehicle+'</strong> on <strong>'+(b.pickupDate||b.date)+'</strong> is officially confirmed.</p>'+
-        (b.pickupTime?'<p style="font-size:15px">Pickup time: <strong>'+fmtTime(b.pickupTime)+'</strong></p>':'')+
-        '<p style="font-size:15px;line-height:1.6">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
-        '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+      html:(function(){
+        var dateLockPaid=Number(b.dateLock)>0;
+        var lockBlock=(!dateLockPaid&&DATE_LOCK_URL)?
+          '<div style="background:#fffbeb;border:1px solid #fbbf24;border-radius:10px;padding:14px 18px;margin:18px 0">'+
+          '<p style="font-size:15px;font-weight:700;color:#92400e;margin:0 0 8px">🔒 Secure your date — $100 Date Lock</p>'+
+          '<p style="font-size:14px;color:#78350f;margin:0 0 12px;line-height:1.5">Pay a $100 date lock fee to fully confirm your reservation. This amount is credited toward your total balance.</p>'+
+          '<a href="'+DATE_LOCK_URL+'" style="display:inline-block;background:#b8982e;color:#fff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:700;font-size:14px">💳 Pay $100 Date Lock</a>'+
+          '</div>':'';
+        return '<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+          '<h2 style="color:#b8982e">You\'re confirmed, '+esc(firstName)+'! 🎉</h2>'+
+          '<p style="font-size:15px;line-height:1.6">Your booking for the <strong>'+esc(b.vehicle)+'</strong> on <strong>'+(b.pickupDate||b.date)+'</strong> is officially confirmed.</p>'+
+          (b.pickupTime?'<p style="font-size:15px">Pickup time: <strong>'+fmtTime(b.pickupTime)+'</strong></p>':'')+
+          lockBlock+
+          '<p style="font-size:15px;line-height:1.6">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
+          '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>';
+      })()
     })
   }).then(function(r){
     if(!showFeedback) return;
