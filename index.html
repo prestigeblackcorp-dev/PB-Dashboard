@@ -7903,6 +7903,8 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
 var slingshotWaiverTemplate = '';
 var _contractTemplateMode = ''; // '' = contract, 'waiver' = slingshot waiver
 var _contractIsWaiver = false;  // tracks what's currently open in the contract view modal
+var _slingshotColor = 'Green'; // 'Green' or 'White' — color picker in waiver modal
+var SLINGSHOT_VINS = { Green: '57XAAPHD4S8167698', White: '57XAASHD6M8146678' };
 
 var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
 <html lang="en">
@@ -8227,7 +8229,11 @@ function _renderContractContent(){
   var licNum=(b.verify&&b.verify.idNumber)||'';
   var licState=(b.verify&&b.verify.idState)||'';
   var licAddress=(b.verify&&b.verify.idAddress)||'';
-  var vInfo=VEHICLE_INFO[b.vehicle]||{};
+  var vInfo=Object.assign({},VEHICLE_INFO[b.vehicle]||{});
+  if(_contractIsWaiver && b.vehicle==='Polaris Slingshot'){
+    vInfo.color = _slingshotColor;
+    vInfo.vin   = SLINGSHOT_VINS[_slingshotColor] || vInfo.vin;
+  }
   var brokerLine=b.broker?'<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(b.broker)+'</span></div>':'';
   function sr(v){ return function(){ return v; }; }
   var filled=activeTemplate
@@ -8336,8 +8342,21 @@ function openContract(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   loadContractTemplate();
   _contractIsWaiver = (b.vehicle==='Polaris Slingshot' && b.type==='hourly');
+  _slingshotColor = 'Green'; // default to Green each time waiver opens
   $d('contractModalTitle').textContent = _contractIsWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
   $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
+  // Color picker for Slingshot waivers
+  var hdr = $d('contractHeader');
+  if(_contractIsWaiver){
+    hdr.innerHTML = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
+      +'<span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Slingshot Color:</span>'
+      +'<button id="slingshotBtnGreen" onclick="switchSlingshotColor(\'Green\')" style="padding:6px 16px;border-radius:8px;border:2px solid #22c55e;background:rgba(34,197,94,.15);color:#22c55e;font-weight:800;font-size:13px;cursor:pointer">🟢 Green</button>'
+      +'<button id="slingshotBtnWhite" onclick="switchSlingshotColor(\'White\')" style="padding:6px 16px;border-radius:8px;border:2px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.5);font-weight:800;font-size:13px;cursor:pointer">⚪ White</button>'
+      +'<span style="font-size:11px;color:var(--muted)">VIN auto-fills on waiver</span>'
+      +'</div>';
+  } else {
+    hdr.innerHTML = '';
+  }
   var activeTemplate = _contractIsWaiver ? slingshotWaiverTemplate : contractTemplate;
   if(!activeTemplate){
     if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
@@ -8346,6 +8365,14 @@ function openContract(id){
   _renderContractContent();
   $d('contractModal').classList.add('open');
   setTimeout(initCustSigCanvas, 50);
+}
+
+function switchSlingshotColor(color){
+  _slingshotColor = color;
+  var gBtn = $d('slingshotBtnGreen'), wBtn = $d('slingshotBtnWhite');
+  if(gBtn) { gBtn.style.borderColor = color==='Green'?'#22c55e':'rgba(255,255,255,.2)'; gBtn.style.background = color==='Green'?'rgba(34,197,94,.15)':'transparent'; gBtn.style.color = color==='Green'?'#22c55e':'rgba(255,255,255,.5)'; }
+  if(wBtn) { wBtn.style.borderColor = color==='White'?'#e5e7eb':'rgba(255,255,255,.2)'; wBtn.style.background = color==='White'?'rgba(229,231,235,.12)':'transparent'; wBtn.style.color = color==='White'?'#e5e7eb':'rgba(255,255,255,.5)'; }
+  _renderContractContent();
 }
 
 function sendSignedCopyToClient(){
