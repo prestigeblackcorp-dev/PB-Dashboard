@@ -11,6 +11,7 @@
 <meta name="theme-color" content="#0a0a0a">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -728,6 +729,34 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 </head>
 <body>
 
+<!-- ═══ SIGNING MODE (shown when ?sign=BOOKINGID in URL) ═══ -->
+<div id="signingModeWrap" style="display:none;position:fixed;inset:0;z-index:9999;background:#0a0a0a;overflow-y:auto;padding:0">
+  <div style="max-width:720px;margin:0 auto;padding:24px 16px 40px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid rgba(255,255,255,.1)">
+      <div style="width:36px;height:36px;background:linear-gradient(135deg,#C9A962,#8b6914);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px">⬛</div>
+      <div>
+        <div style="font-size:16px;font-weight:800;color:#C9A962;letter-spacing:.03em">Prestige Black Rentals</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.4)">Contract Signing</div>
+      </div>
+    </div>
+    <div id="signingModeBody" style="color:rgba(255,255,255,.8);font-size:14px"></div>
+  </div>
+</div>
+
+<!-- ═══ PORTAL MODE (shown when ?portal=BOOKINGID in URL) ═══ -->
+<div id="portalModeWrap" style="display:none;position:fixed;inset:0;z-index:9999;background:#0a0a0a;overflow-y:auto;padding:0">
+  <div style="max-width:560px;margin:0 auto;padding:24px 16px 40px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid rgba(255,255,255,.1)">
+      <div style="width:36px;height:36px;background:linear-gradient(135deg,#C9A962,#8b6914);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px">⬛</div>
+      <div>
+        <div style="font-size:16px;font-weight:800;color:#C9A962;letter-spacing:.03em">Prestige Black Rentals</div>
+        <div style="font-size:12px;color:rgba(255,255,255,.4)">Booking Portal</div>
+      </div>
+    </div>
+    <div id="portalModeBody" style="color:rgba(255,255,255,.8);font-size:14px"></div>
+  </div>
+</div>
+
 <!-- ═══ HEADER ═══ -->
 <div class="header">
   <div>
@@ -985,6 +1014,14 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
           <button class="btn btn-sm btn-gold" onclick="saveCustSig()">💾 Save Signature</button>
           <span id="custSigStatus" style="font-size:11px;color:var(--muted)"></span>
         </div>
+        <!-- Remote signing link -->
+        <div style="margin-top:10px;padding:10px 12px;background:rgba(99,91,255,.06);border:1px dashed rgba(99,91,255,.3);border-radius:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Or send the customer a link to sign on their own device:</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="sendContractSigningLink()" style="border-color:rgba(99,91,255,.6);color:#9b8fff;font-weight:800">📲 Send Signing Link</button>
+            <span id="sigLinkStatus" style="font-size:11px;color:var(--muted)"></span>
+          </div>
+        </div>
         <!-- Upload signed contract returned by client -->
         <div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,.04);border:1px dashed var(--border);border-radius:8px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Or upload a signed contract returned by the client (image or PDF screenshot):</div>
@@ -1001,6 +1038,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-sm" onclick="copyContract()" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📋 Copy</button>
       <button class="btn btn-sm" onclick="printContract()">🖨 Print / PDF</button>
+      <button class="btn btn-sm" onclick="downloadContractPdf()" style="border-color:rgba(239,68,68,.4);color:#f87171">⬇ Download PDF</button>
       <button class="btn btn-gold btn-sm" id="contractEmailBtn">✉ Send via Email</button>
       <button class="btn btn-sm" id="contractRawToggle" onclick="toggleContractRaw()" style="display:none;border-color:var(--muted);color:var(--muted)">👁 Raw HTML</button>
       <button class="btn btn-sm" id="contractEditTemplateBtn" onclick="closeContract();openContractTemplate(_contractIsWaiver?'waiver':'')" style="margin-left:auto;border-color:var(--gold-dim);color:var(--gold)">✏ Edit Template</button>
@@ -1437,7 +1475,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div id="pricingRuleWarn" style="display:none;grid-column:1/-1;background:rgba(201,169,98,.09);border:1px solid rgba(201,169,98,.4);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7;color:var(--text)"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
-        <select class="finput" id="fType" onchange="checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal()">
+        <select class="finput" id="fType" onchange="checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal();updateTipVisibility()">
           <option value="daily">Daily Rental</option>
           <option value="hourly">Hourly Booking</option>
           <option value="chauffeur">Chauffeur Service</option>
@@ -1555,6 +1593,16 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div class="fgroup ffull"><div class="flabel">Notes</div>
         <input type="text" class="finput" id="fNotes" placeholder="Optional notes"></div>
 
+      <!-- Chauffeur Tip — shown only when type = chauffeur -->
+      <div id="fTipSection" style="display:none">
+        <div class="fsec ffull" style="margin-top:2px">Tip / Gratuity</div>
+        <div class="fgroup ffull">
+          <div class="flabel">Chauffeur Tip ($)</div>
+          <input type="number" class="finput" id="fTip" min="0" step="0.01" placeholder="0" oninput="updateLiveTotal()">
+          <div class="fhint">Optional gratuity for the driver — added to total revenue</div>
+        </div>
+      </div>
+
       <div class="fsec ffull">Additional Income</div>
       <div class="fgroup"><div class="flabel">Amount ($)</div>
         <input type="number" class="finput" id="fAddlIncomeAmt" min="0" step="0.01" placeholder="0" oninput="updateLiveTotal()"></div>
@@ -1646,6 +1694,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div id="bdBody"></div>
     <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end;flex-wrap:wrap">
       <button class="btn btn-sm" id="bdReminderBtn" onclick="" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📨 Remind</button>
+      <button class="btn btn-sm" id="bdPortalBtn" onclick="" style="border-color:rgba(99,91,255,.4);color:#9b8fff">🔗 Portal</button>
       <button class="btn" id="bdInvoiceBtn" onclick="">📄 Invoice</button>
       <button class="btn" id="bdContractBtn" onclick="">📝 Contract</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">✏ Edit</button>
@@ -1847,6 +1896,15 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <input type="hidden" id="coFuelCharge" value="0">
 
       <div class="ffull" id="coProfitSummary" style="display:none;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;font-size:13px;gap:14px;flex-wrap:wrap;margin-top:2px"></div>
+
+      <div class="fsec ffull">Late Return Fee</div>
+      <div class="fgroup ffull">
+        <div class="flabel">Actual Return Date &amp; Time</div>
+        <input type="datetime-local" class="finput" id="coActualReturn" oninput="coCalcLateReturn()">
+        <div class="fhint" id="coLateReturnHint" style="color:var(--gold)"></div>
+      </div>
+      <div id="coLateReturnRow" style="display:none;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.3);border-radius:10px;padding:10px 14px;font-size:13px;margin-top:4px;width:100%"></div>
+      <input type="hidden" id="coLateReturnFee" value="0">
 
       <div class="fsec ffull">Damage Claim</div>
       <div class="fgroup ffull">
@@ -3816,7 +3874,7 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.tip)||0)+(Number(b.lateReturnFee)||0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -4520,6 +4578,8 @@ function openBookingDetail(id){
     bdContractBtn.textContent=isWaiverType?'⚠ Waiver':'📝 Contract';
     bdContractBtn.onclick=function(){ closeBookingDetail(); openContract(b.id); };
   }
+  var bdPortalBtn=$d('bdPortalBtn');
+  if(bdPortalBtn){ bdPortalBtn.onclick=function(){ shareBookingPortal(b.id); }; }
   var reminderBtn=$d('bdReminderBtn');
   if(reminderBtn){
     if(b.email&&MESSAGING_URL){
@@ -4585,6 +4645,8 @@ function openBookingDetail(id){
     '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">Add-ons</div>'+
     addonsHtml+
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' — '+esc(b.addlIncome.desc):'')+'</span></div>':'')+
+    (Number(b.tip)?'<div class="detail-row"><span class="detail-label">💸 Tip / Gratuity</span><span class="detail-val" style="color:var(--green)">'+$$(b.tip)+'</span></div>':'')+
+    (Number(b.lateReturnFee)?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">🕒 Late Return Fee</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.lateReturnFee)+'</span></div>':'')+
 
     // Check-In
     (b.odomIn||b.fuelIn||b.condIn||b.checkInNotes||(b.checkInPhotoIds&&b.checkInPhotoIds.length)?
@@ -4924,6 +4986,8 @@ function openModal(id, vehiclePreset, datePreset){
   updateDurationLabel();
   $d('fAddlIncomeAmt').value  = b&&b.addlIncome ? (b.addlIncome.amount||'') : '';
   $d('fAddlIncomeDesc').value = b&&b.addlIncome ? (b.addlIncome.desc||'')  : '';
+  if($d('fTip')) $d('fTip').value = b ? (b.tip||0) : 0;
+  updateTipVisibility();
   // Balance Paid — only shown when editing an existing booking
   var bpSection=$d('fBalancePaidSection');
   if(bpSection) bpSection.style.display=id?'':'none';
@@ -5270,6 +5334,7 @@ function saveBooking(){
     addlIncome: (parseFloat($d('fAddlIncomeAmt').value)||0) > 0
       ? { amount: parseFloat($d('fAddlIncomeAmt').value), desc: $d('fAddlIncomeDesc').value.trim() }
       : null,
+    tip: ($d('fTip')&&$d('fType')&&$d('fType').value==='chauffeur') ? (parseFloat($d('fTip').value)||0) : 0,
     createdAt: editingId ? ((bookings.find(function(b){return b.id===editingId;})||{}).createdAt||Date.now()) : Date.now(),
     _t: Date.now(),
     _maintConflictAck: _maintAcknowledged || (editingId ? !!((bookings.find(function(b){return b.id===editingId;})||{})._maintConflictAck) : false),
@@ -5307,6 +5372,8 @@ function saveBooking(){
       if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
       if(ex.fuelCharge!=null)   entry.fuelCharge         = ex.fuelCharge;
       if(ex.mileageCharge)     entry.mileageCharge      = ex.mileageCharge;
+      if(ex.lateReturnFee)     entry.lateReturnFee      = ex.lateReturnFee;
+      if(ex.actualReturnTime)  entry.actualReturnTime   = ex.actualReturnTime;
       if(ex._fromWeb)          entry._fromWeb           = ex._fromWeb;
       // Audit trail: record which fields changed
       var auditFields=['date','name','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
@@ -5661,6 +5728,12 @@ function openCloseOut(id){
   $d('coRefundSent').checked = !!b.refundSent;
   $d('coRefundDate').value = b.refundDate||'';
   $d('coRefundMethod').value = b.refundMethod||'';
+  // Late return fee — pre-fill actual return if saved
+  if($d('coActualReturn')) $d('coActualReturn').value = b.actualReturnTime||'';
+  if($d('coLateReturnFee')) $d('coLateReturnFee').value = b.lateReturnFee||0;
+  if($d('coLateReturnHint')) $d('coLateReturnHint').textContent='';
+  if($d('coLateReturnRow')) $d('coLateReturnRow').style.display='none';
+  setTimeout(coCalcLateReturn, 50);
   coOriginalPhotos=(b.checkOutPhotoIds||[]).slice();
   coWorkingPhotos=coOriginalPhotos.slice();
   renderPhotoGrid('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
@@ -5849,6 +5922,8 @@ function saveCloseOut(){
   coOriginalPhotos.filter(function(id){return coWorkingPhotos.indexOf(id)===-1;})
     .forEach(function(id){dbDeletePhoto(id);});
   bookings[idx].depositKept      = kept;
+  bookings[idx].lateReturnFee    = parseFloat($d('coLateReturnFee').value)||0;
+  bookings[idx].actualReturnTime = $d('coActualReturn') ? $d('coActualReturn').value : '';
   bookings[idx].cost             = parseFloat($d('coCost').value)||0;
   bookings[idx].closeOutNotes    = $d('coNotes').value.trim();
   bookings[idx].odomOut          = parseFloat($d('coOdomOut').value)||0;
@@ -9191,6 +9266,379 @@ function printContract(){
 }
 
 // ════════════════════════════════════════════════════════
+//  PDF DOWNLOAD
+// ════════════════════════════════════════════════════════
+function downloadContractPdf(){
+  var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
+  var fname = 'contract' + (b ? '-'+b.name.replace(/\s+/g,'-').toLowerCase()+'-'+fmtDate(b.pickupDate||b.date).replace(/\//g,'-') : '') + '.pdf';
+  var text = $d('contractFilled').value;
+  if(!text.trim()){ toast('No contract to download'); return; }
+  if(typeof html2pdf === 'undefined'){
+    toast('PDF library not loaded — try Print / PDF instead'); printContract(); return;
+  }
+  var isHtml = text.trim().toLowerCase().startsWith('<!doctype') || text.trim().startsWith('<html');
+  var container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;color:#000;font-family:serif;font-size:13px;line-height:1.7;';
+  if(isHtml){
+    var inner = document.createElement('iframe');
+    inner.style.cssText = 'width:780px;border:none;';
+    inner.srcdoc = text;
+    container.appendChild(inner);
+    document.body.appendChild(container);
+    inner.onload = function(){
+      try{
+        var innerDoc = inner.contentDocument || inner.contentWindow.document;
+        var cloned = innerDoc.documentElement.cloneNode(true);
+        var tmp = document.createElement('div');
+        tmp.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;color:#000;font-family:serif';
+        tmp.innerHTML = cloned.outerHTML;
+        document.body.appendChild(tmp);
+        html2pdf().set({margin:[8,8,8,8],filename:fname,image:{type:'jpeg',quality:.95},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'mm',format:'letter',orientation:'portrait'}})
+          .from(tmp).save().then(function(){ document.body.removeChild(tmp); document.body.removeChild(container); });
+      } catch(ex){ document.body.removeChild(container); toast('PDF export failed — using print instead'); printContract(); }
+    };
+  } else {
+    container.style.whiteSpace = 'pre-wrap';
+    container.textContent = text;
+    document.body.appendChild(container);
+    html2pdf().set({margin:[12,12,12,12],filename:fname,image:{type:'jpeg',quality:.95},html2canvas:{scale:2},jsPDF:{unit:'mm',format:'letter',orientation:'portrait'}})
+      .from(container).save().then(function(){ document.body.removeChild(container); });
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  TIP / GRATUITY VISIBILITY
+// ════════════════════════════════════════════════════════
+function updateTipVisibility(){
+  var sec = $d('fTipSection');
+  if(!sec) return;
+  var type = $d('fType') ? $d('fType').value : '';
+  sec.style.display = (type === 'chauffeur') ? 'contents' : 'none';
+}
+
+// ════════════════════════════════════════════════════════
+//  LATE RETURN FEE CALC
+// ════════════════════════════════════════════════════════
+var LATE_RETURN_RATE = 75; // $/hr
+var LATE_RETURN_GRACE_HOURS = 1;
+
+function coCalcLateReturn(){
+  var b = closeOutId ? bookings.find(function(x){return x.id===closeOutId;}) : null;
+  if(!b){ return; }
+  var hint = $d('coLateReturnHint');
+  var row  = $d('coLateReturnRow');
+  var hidField = $d('coLateReturnFee');
+  var actualVal = $d('coActualReturn') ? $d('coActualReturn').value : '';
+  if(!actualVal){ if(hint) hint.textContent=''; if(row){ row.style.display='none'; } if(hidField) hidField.value=0; return; }
+  // Build scheduled end datetime
+  var schedDate = b.dropoffDate || b.pickupDate || b.date;
+  var schedTime = b.dropoffTime || '';
+  var schedDt = null;
+  if(schedDate){ schedDt = new Date(schedDate + (schedTime ? 'T'+schedTime : 'T12:00')); }
+  var actualDt = new Date(actualVal);
+  if(!schedDt || isNaN(schedDt) || isNaN(actualDt)){ if(hint) hint.textContent=''; if(row) row.style.display='none'; return; }
+  var diffMs = actualDt - schedDt;
+  var diffHrs = diffMs / 3600000;
+  if(diffHrs <= LATE_RETURN_GRACE_HOURS){
+    if(hint) hint.textContent = diffHrs > 0 ? Math.round(diffHrs*60)+' min late — within grace period (1 hr free)' : 'Returned on time ✅';
+    if(row) row.style.display='none';
+    if(hidField) hidField.value=0;
+    return;
+  }
+  var billableHrs = Math.ceil(diffHrs - LATE_RETURN_GRACE_HOURS);
+  var fee = billableHrs * LATE_RETURN_RATE;
+  if(hint) hint.textContent = Math.round(diffHrs*10)/10+' hrs late · '+billableHrs+' billable hr'+(billableHrs!==1?'s':'')+' (after 1 hr grace)';
+  if(hidField) hidField.value = fee;
+  if(row){
+    row.style.display='';
+    row.innerHTML = '🕒 <strong>Late Return Fee: <span style="color:#f87171">'+$$(fee)+'</span></strong> &nbsp;·&nbsp; '+billableHrs+' hr'+(billableHrs!==1?'s':'')+' × '+$$(LATE_RETURN_RATE)+'/hr after 1-hr grace period';
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  REMOTE CONTRACT SIGNING
+// ════════════════════════════════════════════════════════
+function sendContractSigningLink(){
+  if(!_contractBookingId){ toast('No booking selected'); return; }
+  var b = bookings.find(function(x){return x.id===_contractBookingId;});
+  if(!b){ toast('Booking not found'); return; }
+  var base = location.origin + location.pathname;
+  var url = base + '?sign=' + encodeURIComponent(_contractBookingId);
+  var sl = $d('sigLinkStatus');
+  // Try to email the link if we have email + messaging worker
+  if(b.email && MESSAGING_URL){
+    var firstName = (b.name||'').split(' ')[0]||'there';
+    var docType = (b.vehicle==='Polaris Slingshot'&&b.type==='hourly') ? 'Liability Waiver' : 'Rental Agreement';
+    var html =
+      '<div style="font-family:sans-serif;max-width:540px;color:#111">'+
+      '<h2 style="color:#b8982e">Your '+docType+' is Ready to Sign ✍️</h2>'+
+      '<p style="font-size:15px;line-height:1.6">Hi '+esc(firstName)+',<br>Please review and sign your '+docType.toLowerCase()+' for your upcoming rental of the <strong>'+esc(b.vehicle)+'</strong>'+
+      (b.pickupDate?' on <strong>'+fmtDate(b.pickupDate||b.date)+'</strong>':'')+'.</p>'+
+      '<div style="margin:24px 0;text-align:center">'+
+      '<a href="'+url+'" style="display:inline-block;padding:14px 28px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px">✍️ Sign My Contract</a></div>'+
+      '<p style="font-size:13px;color:#666">This link is for your rental agreement only. If you didn\'t expect this email, you can ignore it.</p>'+
+      '<p style="font-size:12px;color:#aaa;margin-top:20px;border-top:1px solid #eee;padding-top:12px">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</p></div>';
+    if(sl){ sl.textContent = 'Sending…'; }
+    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:'Please Sign Your '+docType+' — Prestige Black Rentals',html:html})})
+    .then(function(r){
+      if(r.ok){ toast('Signing link emailed to '+b.email+' ✅'); if(sl) sl.textContent='Sent to '+b.email; }
+      else { _fallbackCopySigLink(url, sl); }
+    }).catch(function(){ _fallbackCopySigLink(url, sl); });
+  } else {
+    _fallbackCopySigLink(url, sl);
+  }
+}
+
+function _fallbackCopySigLink(url, statusEl){
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(function(){ toast('Signing link copied to clipboard 📋'); if(statusEl) statusEl.textContent='Link copied!'; });
+  } else {
+    prompt('Copy this signing link and send it to your customer:', url);
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  CUSTOMER BOOKING PORTAL
+// ════════════════════════════════════════════════════════
+function shareBookingPortal(id){
+  var b = bookings.find(function(x){return x.id===id;});
+  if(!b){ toast('Booking not found'); return; }
+  var base = location.origin + location.pathname;
+  var url = base + '?portal=' + encodeURIComponent(id);
+  // Try to email or copy
+  if(b.email && MESSAGING_URL){
+    var firstName = (b.name||'').split(' ')[0]||'there';
+    var bal = Math.max(0, getRemainingBalance(b));
+    var contractStatus = (b.customerSig && b.customerSig.startsWith('data:image/')) ? '✅ Signed' : '⏳ Pending signature';
+    var html =
+      '<div style="font-family:sans-serif;max-width:540px;color:#111">'+
+      '<h2 style="color:#b8982e">Your Booking Portal 🔗</h2>'+
+      '<p style="font-size:15px;line-height:1.6">Hi '+esc(firstName)+', your booking portal is ready. Check your booking details, balance, and contract status anytime.</p>'+
+      '<div style="margin:24px 0;text-align:center">'+
+      '<a href="'+url+'" style="display:inline-block;padding:14px 28px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px">🔗 View My Booking</a></div>'+
+      '<div style="background:#f7f7f7;border-radius:10px;padding:16px;font-size:14px">'+
+      '<div><strong>Vehicle:</strong> '+esc(b.vehicle)+'</div>'+
+      '<div><strong>Date:</strong> '+fmtDate(b.pickupDate||b.date)+'</div>'+
+      (bal?'<div><strong>Balance Due:</strong> <span style="color:#b8982e">'+$$(bal)+'</span></div>':'')+
+      '<div><strong>Contract:</strong> '+contractStatus+'</div></div>'+
+      '<p style="font-size:12px;color:#aaa;margin-top:20px;border-top:1px solid #eee;padding-top:12px">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</p></div>';
+    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:'Your Booking Portal — Prestige Black Rentals',html:html})})
+    .then(function(r){ if(r.ok) toast('Portal link emailed to '+b.email+' ✅'); else _fallbackCopyPortalLink(url); })
+    .catch(function(){ _fallbackCopyPortalLink(url); });
+  } else {
+    _fallbackCopyPortalLink(url);
+  }
+}
+
+function _fallbackCopyPortalLink(url){
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(function(){ toast('Portal link copied to clipboard 📋'); });
+  } else {
+    prompt('Copy this portal link and send it to your customer:', url);
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  SIGNING MODE — load on page init when ?sign= present
+// ════════════════════════════════════════════════════════
+function _initSigningMode(bookingId){
+  var wrap = $d('signingModeWrap');
+  var body = $d('signingModeBody');
+  if(!wrap||!body) return;
+  wrap.style.display='';
+  // Hide the normal dashboard so only the signing view is shown
+  document.querySelectorAll('.header,.tab-bar,#offlineBadge,#lockScreen,#splash').forEach(function(el){if(el)el.style.display='none';});
+  body.innerHTML='<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Loading your contract…</div>';
+  var workerUrl = 'https://pb-booking.prestigeblackcorp.workers.dev';
+  fetch(workerUrl+'/sync/load?_='+Date.now(),{cache:'no-store'})
+  .then(function(r){return r.ok?r.json():null;})
+  .then(function(data){
+    if(!data||!data.bookings){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load booking. Please contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
+    var bk = (data.bookings||[]).find(function(x){return x.id===bookingId&&!x._deleted;});
+    if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired or been revoked.</div>'; return; }
+    if(bk.customerSig&&bk.customerSig.startsWith('data:image/')){
+      body.innerHTML='<div style="text-align:center;padding:30px">'+
+        '<div style="font-size:48px;margin-bottom:12px">✅</div>'+
+        '<div style="font-size:18px;font-weight:700;color:#22c55e;margin-bottom:8px">Already Signed!</div>'+
+        '<div style="color:rgba(255,255,255,.5);font-size:14px">Your contract has been signed on '+(bk.customerSigDate||'file')+'. Thank you, '+esc((bk.name||'').split(' ')[0])+'!</div>'+
+        '<div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,.3)">Questions? Call us at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div></div>';
+      return;
+    }
+    // Render the contract
+    var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+    if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
+    // Basic token substitution
+    var today=new Date(); var tStr=(today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
+    var rev=((Number(bk.revenue)||0)+((bk.addlIncome&&bk.addlIncome.amount)?Number(bk.addlIncome.amount):0)).toFixed(2);
+    var dep=Number(bk.deposit)||0; var bal=Math.max(0,Number(rev)-dep);
+    tmpl=tmpl.replace(/\{\{today\}\}/gi,tStr)
+      .replace(/\{\{customer_name\}\}/gi,esc(bk.name||''))
+      .replace(/\{\{customer_email\}\}/gi,esc(bk.email||''))
+      .replace(/\{\{vehicle\}\}/gi,esc(bk.vehicle||''))
+      .replace(/\{\{vehicle_model\}\}/gi,esc(bk.vehicle||''))
+      .replace(/\{\{vehicle_color\}\}/gi,'')
+      .replace(/\{\{vehicle_vin\}\}/gi,'')
+      .replace(/\{\{rental_type\}\}/gi,bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service')
+      .replace(/\{\{pickup_date\}\}/gi,fmtDate(bk.pickupDate||bk.date))
+      .replace(/\{\{pickup_time\}\}/gi,bk.pickupTime?fmtTime(bk.pickupTime):'')
+      .replace(/\{\{dropoff_date\}\}/gi,bk.dropoffDate?fmtDate(bk.dropoffDate):'')
+      .replace(/\{\{dropoff_time\}\}/gi,bk.dropoffTime?fmtTime(bk.dropoffTime):'')
+      .replace(/\{\{days\}\}/gi,String(bk.days||1))
+      .replace(/\{\{total_revenue\}\}/gi,'$'+Number(rev).toLocaleString('en-US',{minimumFractionDigits:2}))
+      .replace(/\{\{deposit_amount\}\}/gi,'$'+dep.toLocaleString('en-US',{minimumFractionDigits:2}))
+      .replace(/\{\{balance_due\}\}/gi,'$'+bal.toLocaleString('en-US',{minimumFractionDigits:2}))
+      .replace(/\{\{address\}\}/gi,esc(bk.address||''))
+      .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
+      .replace(/\{\{customer_signature\}\}/gi,'<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>')
+      .replace(/\{\{customer_signed_date\}\}/gi,'<span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>');
+    var isHtml = tmpl.trim().toLowerCase().startsWith('<!doctype')||tmpl.trim().startsWith('<html');
+    body.innerHTML =
+      '<div id="smContractWrap" style="border:1px solid rgba(255,255,255,.1);border-radius:12px;overflow:hidden;margin-bottom:20px;background:#fff">'+
+      (isHtml ? '<iframe id="smContractFrame" sandbox="allow-same-origin allow-scripts" style="width:100%;height:600px;border:none" scrolling="yes"></iframe>'
+               : '<div style="padding:24px;font-family:serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap">'+tmpl+'</div>')+
+      '</div>'+
+      '<div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:16px;margin-bottom:16px">'+
+      '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Your Signature</div>'+
+      '<canvas id="smSigCanvas" width="480" height="110" style="width:100%;max-width:480px;height:110px;border:1px dashed rgba(255,255,255,.2);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>'+
+      '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'+
+      '<button onclick="_smClearSig()" style="padding:6px 14px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:transparent;color:rgba(255,255,255,.7);cursor:pointer;font-size:13px">✕ Clear</button>'+
+      '<button onclick="_smSubmitSig(\''+bookingId+'\')" id="smSubmitBtn" style="padding:6px 18px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:14px">✍️ Sign & Submit</button>'+
+      '</div>'+
+      '<div id="smSigMsg" style="font-size:12px;color:rgba(255,255,255,.4);margin-top:8px">By signing, you agree to the terms of the rental agreement above.</div>'+
+      '</div>';
+    if(isHtml){
+      var frame=document.getElementById('smContractFrame');
+      if(frame) frame.srcdoc=tmpl;
+    }
+    // Store data for submit closure
+    window._smData = data;
+    window._smBookings = data.bookings;
+    _smInitCanvas();
+  }).catch(function(err){
+    body.innerHTML='<div style="color:#f87171;padding:20px">Network error loading contract. Please try again or contact (214) 207-2481.<br><small style="opacity:.5">'+err+'</small></div>';
+  });
+}
+
+function _smInitCanvas(){
+  var c=document.getElementById('smSigCanvas'); if(!c) return;
+  var ctx=c.getContext('2d'); var drawing=false; var lastX=0,lastY=0;
+  ctx.lineWidth=2.5; ctx.lineCap='round'; ctx.strokeStyle='#000';
+  function getPos(e){ var r=c.getBoundingClientRect(); var t=e.touches?e.touches[0]:e; return{x:(t.clientX-r.left)*(c.width/r.width),y:(t.clientY-r.top)*(c.height/r.height)}; }
+  c.addEventListener('mousedown',function(e){drawing=true;var p=getPos(e);lastX=p.x;lastY=p.y;});
+  c.addEventListener('mousemove',function(e){if(!drawing)return;var p=getPos(e);ctx.beginPath();ctx.moveTo(lastX,lastY);ctx.lineTo(p.x,p.y);ctx.stroke();lastX=p.x;lastY=p.y;});
+  c.addEventListener('mouseup',function(){drawing=false;});
+  c.addEventListener('touchstart',function(e){e.preventDefault();drawing=true;var p=getPos(e);lastX=p.x;lastY=p.y;},{passive:false});
+  c.addEventListener('touchmove',function(e){e.preventDefault();if(!drawing)return;var p=getPos(e);ctx.beginPath();ctx.moveTo(lastX,lastY);ctx.lineTo(p.x,p.y);ctx.stroke();lastX=p.x;lastY=p.y;},{passive:false});
+  c.addEventListener('touchend',function(){drawing=false;});
+}
+
+function _smClearSig(){
+  var c=document.getElementById('smSigCanvas'); if(!c) return;
+  c.getContext('2d').clearRect(0,0,c.width,c.height);
+}
+
+function _smSubmitSig(bookingId){
+  var data = window._smData;
+  var allBookings = window._smBookings;
+  if(!data||!allBookings){ document.getElementById('smSigMsg').textContent='Error: data not loaded. Please refresh.'; return; }
+  var c=document.getElementById('smSigCanvas'); if(!c) return;
+  var ctx=c.getContext('2d');
+  var px=ctx.getImageData(0,0,c.width,c.height).data;
+  var hasInk=false; for(var i=3;i<px.length;i+=4){if(px[i]>10){hasInk=true;break;}}
+  if(!hasInk){ document.getElementById('smSigMsg').textContent='Please sign above before submitting.'; return; }
+  var btn=document.getElementById('smSubmitBtn'); if(btn){btn.disabled=true;btn.textContent='Saving…';}
+  var sig=c.toDataURL('image/png');
+  var t=new Date(); var sigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+  var idx=allBookings.findIndex(function(x){return x.id===bookingId;});
+  if(idx===-1){ document.getElementById('smSigMsg').style.color='#f87171'; document.getElementById('smSigMsg').textContent='Booking not found. Please contact (214) 207-2481.'; return; }
+  allBookings[idx].customerSig=sig;
+  allBookings[idx].customerSigDate=sigDate;
+  allBookings[idx]._t=Date.now();
+  var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
+  var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
+  fetch(workerUrl+'/sync/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)})
+  .then(function(r){return r.json();})
+  .then(function(res){
+    if(res&&res.ok){
+      document.getElementById('signingModeBody').innerHTML=
+        '<div style="text-align:center;padding:40px">'+
+        '<div style="font-size:60px;margin-bottom:16px">✅</div>'+
+        '<div style="font-size:22px;font-weight:800;color:#22c55e;margin-bottom:10px">Signed Successfully!</div>'+
+        '<div style="color:rgba(255,255,255,.6);font-size:15px;margin-bottom:20px">Thank you, '+esc((allBookings[idx].name||'').split(' ')[0])+'! Your contract has been signed and recorded.</div>'+
+        '<div style="background:rgba(255,255,255,.05);border-radius:10px;padding:16px;display:inline-block;text-align:left;min-width:220px">'+
+        '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Your Signature</div>'+
+        '<img src="'+sig+'" style="max-height:60px;max-width:240px;display:block;background:#fff;padding:6px;border-radius:6px">'+
+        '<div style="font-size:11px;color:rgba(255,255,255,.3);margin-top:6px">Signed '+sigDate+'</div>'+
+        '</div>'+
+        '<div style="margin-top:24px;font-size:13px;color:rgba(255,255,255,.4)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div></div>';
+    } else {
+      if(btn){btn.disabled=false;btn.textContent='✍️ Sign & Submit';}
+      document.getElementById('smSigMsg').style.color='#f87171';
+      document.getElementById('smSigMsg').textContent='Save failed — please try again or contact us.';
+    }
+  }).catch(function(){
+    if(btn){btn.disabled=false;btn.textContent='✍️ Sign & Submit';}
+    document.getElementById('smSigMsg').style.color='#f87171';
+    document.getElementById('smSigMsg').textContent='Network error — please try again.';
+  });
+}
+
+// ════════════════════════════════════════════════════════
+//  PORTAL MODE — load on page init when ?portal= present
+// ════════════════════════════════════════════════════════
+function _initPortalMode(bookingId){
+  var wrap=$d('portalModeWrap'); var body=$d('portalModeBody');
+  if(!wrap||!body) return;
+  wrap.style.display='';
+  document.querySelectorAll('.header,.tab-bar,#offlineBadge,#lockScreen,#splash').forEach(function(el){if(el)el.style.display='none';});
+  body.innerHTML='<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Loading your booking…</div>';
+  var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
+  fetch(workerUrl+'/sync/load?_='+Date.now(),{cache:'no-store'})
+  .then(function(r){return r.ok?r.json():null;})
+  .then(function(data){
+    if(!data||!data.bookings){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load booking. Please contact (214) 207-2481.</div>'; return; }
+    var bk=(data.bookings||[]).find(function(x){return x.id===bookingId&&!x._deleted;});
+    if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired.</div>'; return; }
+    var dep=Number(bk.deposit)||0;
+    var rev=Number(bk.revenue)||0;
+    var addons=((bk.photo||0)+(bk.champagne||0)+(bk.decor||0)+(bk.bouquet||0)+(bk.delivery||0)+(Number(bk.unlimited)||0)*(Number(bk.days)||1)+(bk.pet||0));
+    var total=rev+addons+(bk.addlIncome&&bk.addlIncome.amount?Number(bk.addlIncome.amount):0);
+    var bal=Math.max(0,total-dep-(Number(bk.dateLock)||0));
+    var contractStatus=(bk.customerSig&&bk.customerSig.startsWith('data:image/'))?'<span style="color:#22c55e;font-weight:700">✅ Signed</span>':'<span style="color:#f97316;font-weight:700">⏳ Awaiting signature</span>';
+    var statusColor=bk.status==='confirmed'?'#22c55e':bk.status==='pending'?'#f97316':bk.status==='completed'?'#60a5fa':'#ef4444';
+    var signingUrl=(location.origin+location.pathname+'?sign='+encodeURIComponent(bookingId));
+    body.innerHTML=
+      '<div style="background:rgba(201,169,98,.08);border:1px solid rgba(201,169,98,.25);border-radius:14px;padding:20px;margin-bottom:16px">'+
+      '<div style="font-size:20px;font-weight:800;color:#C9A962;margin-bottom:4px">'+esc(bk.vehicle)+'</div>'+
+      '<div style="font-size:14px;color:rgba(255,255,255,.6)">Booking for <strong style="color:rgba(255,255,255,.85)">'+esc(bk.name)+'</strong></div>'+
+      '<div style="margin-top:10px;display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;background:'+statusColor+'22;color:'+statusColor+'">'+esc(bk.status||'pending')+'</div>'+
+      '</div>'+
+      '<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:12px;overflow:hidden;margin-bottom:14px">'+
+      _portalRow('📅 Pickup','<strong>'+fmtDate(bk.pickupDate||bk.date)+'</strong>'+(bk.pickupTime?' at '+fmtTime(bk.pickupTime):'')+(bk.address?'<br><span style="font-size:12px;color:rgba(255,255,255,.5)">📍 '+esc(bk.address)+'</span>':''))+
+      (bk.dropoffDate?_portalRow('🏁 Drop-off',fmtDate(bk.dropoffDate)+(bk.dropoffTime?' at '+fmtTime(bk.dropoffTime):'')+(bk.dropoffAddress?'<br><span style="font-size:12px;color:rgba(255,255,255,.5)">📍 '+esc(bk.dropoffAddress)+'</span>':'')):'')+
+      _portalRow('🚗 Type',bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service')+
+      _portalRow('⏱ Duration',bk.days+' '+(bk.type==='hourly'||bk.type==='chauffeur'?'hr':'day')+(bk.days!==1?'s':''))+
+      _portalRow('💰 Total','<strong style="color:#C9A962">$'+total.toLocaleString('en-US',{minimumFractionDigits:2})+'</strong>')+
+      (dep?_portalRow('🔒 Deposit','$'+dep.toLocaleString('en-US',{minimumFractionDigits:2}))+
+      (Number(bk.dateLock)?_portalRow('📅 Date Lock','$'+(Number(bk.dateLock)||0).toLocaleString('en-US',{minimumFractionDigits:2})):'')+
+      (bal>0?_portalRow('💳 Balance Due','<strong style="color:#f97316">$'+bal.toLocaleString('en-US',{minimumFractionDigits:2})+'</strong>'):''):'')+
+      _portalRow('📝 Contract',contractStatus)+
+      '</div>'+
+      (!(bk.customerSig&&bk.customerSig.startsWith('data:image/'))?
+        '<a href="'+signingUrl+'" style="display:block;text-align:center;padding:14px;background:#C9A962;color:#000;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;margin-bottom:14px">✍️ Sign My Contract</a>':'')+
+      '<div style="font-size:12px;color:rgba(255,255,255,.3);text-align:center;margin-top:16px">Booking #PBR-'+esc(bk.id.slice(-6).toUpperCase())+' · Questions? <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>';
+  }).catch(function(err){
+    body.innerHTML='<div style="color:#f87171;padding:20px">Network error. Please refresh or call (214) 207-2481.<br><small style="opacity:.5">'+err+'</small></div>';
+  });
+}
+
+function _portalRow(label, val){
+  return '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.06)">'+
+    '<div style="font-size:13px;color:rgba(255,255,255,.45);white-space:nowrap;padding-right:12px">'+label+'</div>'+
+    '<div style="font-size:13px;color:rgba(255,255,255,.85);text-align:right">'+val+'</div></div>';
+}
+
+// ════════════════════════════════════════════════════════
 //  OVERVIEW RENDER
 // ════════════════════════════════════════════════════════
 function render(){
@@ -9570,11 +10018,30 @@ window.addEventListener('resize', stickyTabFix);
 // Re-run after fonts/layout settle
 setTimeout(stickyTabFix, 200);
 
-// Load local data first for instant display
-loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules(); loadStaffPins();
-initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
-updateSyncUI(); updateOnlineStatus(); initLock();
-setTimeout(hideSplash, 1300);
+// ── URL-param special modes (signing / portal) ──────────────────────────
+(function(){
+  var sp = new URLSearchParams(location.search);
+  var signId   = sp.get('sign');
+  var portalId = sp.get('portal');
+  if(signId||portalId){
+    // Don't run the full dashboard init; just show the special view
+    document.addEventListener('DOMContentLoaded', function(){
+      if(signId)   _initSigningMode(signId);
+      if(portalId) _initPortalMode(portalId);
+    });
+    // If DOM is already loaded, fire immediately
+    if(document.readyState!=='loading'){
+      if(signId)   _initSigningMode(signId);
+      if(portalId) _initPortalMode(portalId);
+    }
+    return; // Skip dashboard init
+  }
+  // Normal dashboard init
+  loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules(); loadStaffPins();
+  initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
+  updateSyncUI(); updateOnlineStatus(); initLock();
+  setTimeout(hideSplash, 1300);
+})();
 function afterCloudLoad(ok){
   if(!ok) return;
   initSelects(); render(); renderIncomeList(); renderExpenseLog();
@@ -9589,23 +10056,26 @@ function afterCloudLoad(ok){
   if(activeTab==='brokers')   renderBrokerTab();
 }
 
-// Pull from cloud — always wins over local data
-cloudLoad(function(ok) {
-  afterCloudLoad(ok);
-  setSyncStatus(WORKER_URL ? (ok ? 'ok' : 'error') : 'off');
-});
-// Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
-document.addEventListener('visibilitychange', function() {
-  if (document.visibilityState === 'visible' && WORKER_URL) {
-    cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
-  }
-});
-// Auto-pull every 15 seconds so all changes propagate to every active device
-setInterval(function() {
-  if (WORKER_URL && document.visibilityState === 'visible') {
-    cloudLoad(function(ok) { afterCloudLoad(ok); });
-  }
-}, 15000);
+// Only run cloud polling in normal dashboard mode (not signing/portal mode)
+if(!(new URLSearchParams(location.search).get('sign'))&&!(new URLSearchParams(location.search).get('portal'))){
+  // Pull from cloud — always wins over local data
+  cloudLoad(function(ok) {
+    afterCloudLoad(ok);
+    setSyncStatus(WORKER_URL ? (ok ? 'ok' : 'error') : 'off');
+  });
+  // Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible' && WORKER_URL) {
+      cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
+    }
+  });
+  // Auto-pull every 15 seconds so all changes propagate to every active device
+  setInterval(function() {
+    if (WORKER_URL && document.visibilityState === 'visible') {
+      cloudLoad(function(ok) { afterCloudLoad(ok); });
+    }
+  }, 15000);
+}
 </script>
 </body>
 </html>
