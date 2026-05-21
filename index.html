@@ -827,7 +827,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 </div>
 
 <!-- ═══ TOAST ═══ -->
-<div id="pbToast" style="position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(80px);z-index:9999;background:#1e1e1e;color:#fff;border:1px solid var(--gold-dim);border-radius:12px;padding:11px 22px;font-size:13px;font-weight:600;pointer-events:none;opacity:0;transition:opacity .25s,transform .25s;white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,.6)"></div>
+<div id="pbToast" style="position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(80px);z-index:19999;background:#1e1e1e;color:#fff;border:1px solid var(--gold-dim);border-radius:12px;padding:11px 22px;font-size:13px;font-weight:600;pointer-events:none;opacity:0;transition:opacity .25s,transform .25s;white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,.6)"></div>
 
 <!-- ═══ TODAY'S BOOKINGS BANNER (Feature 1) ═══ -->
 <div id="todayBanner">
@@ -6622,6 +6622,24 @@ function sendConfirmationEmail(b, showFeedback){
       subject:'Your booking is confirmed — '+b.vehicle,
       html:(function(){
         var dateLockPaid=Number(b.dateLock)>0;
+        // Build booking details table
+        var addons=[];
+        if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
+        if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
+        if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+        if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
+        if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
+        if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+        if(Number(b.pet))       addons.push('Pet Fee ($'+b.pet+')');
+        var rev=totalRevenue(b);
+        var detailRows=
+          '<tr><td style="padding:6px 14px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+          '<tr><td style="padding:6px 14px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+(b.address?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+          (b.dropoffDate?'<tr><td style="padding:6px 14px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
+          '<tr><td style="padding:6px 14px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?b.days+' hour'+(b.days!==1?'s':''):b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+          (addons.length?'<tr><td style="padding:6px 14px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+addons.join('<br>')+'</td></tr>':'')+
+          '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
+          (dateLockPaid?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
         var lockBlock=(!dateLockPaid&&DATE_LOCK_URL&&!b._fromWeb&&b.status==='pending')?
           '<div style="background:#fffbeb;border:1px solid #fbbf24;border-radius:10px;padding:16px 20px;margin:18px 0">'+
             '<p style="font-size:15px;font-weight:700;color:#92400e;margin:0 0 6px">🔒 Secure your date — $100 Date Lock</p>'+
@@ -6643,13 +6661,16 @@ function sendConfirmationEmail(b, showFeedback){
             '</table>'+
             '<p style="font-size:12px;color:#92400e;margin:0">If paying by Zelle, please text us at (214) 207-2481 after sending so we can confirm your reservation.</p>'+
           '</div>':'';
-        return '<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+        return '<div style="font-family:sans-serif;max-width:560px;color:#111">'+
           '<h2 style="color:#b8982e">You\'re confirmed, '+esc(firstName)+'! 🎉</h2>'+
-          '<p style="font-size:15px;line-height:1.6">Your booking for the <strong>'+esc(b.vehicle)+'</strong> on <strong>'+(b.pickupDate||b.date)+'</strong> is officially confirmed.</p>'+
-          (b.pickupTime?'<p style="font-size:15px">Pickup time: <strong>'+fmtTime(b.pickupTime)+'</strong></p>':'')+
+          '<p style="font-size:15px;line-height:1.6">Your reservation for the <strong>'+esc(b.vehicle)+'</strong> is all set. Here\'s a summary of your booking:</p>'+
           lockBlock+
+          '<div style="margin:20px 0;background:#f7f7f7;border-radius:10px;padding:18px">'+
+            '<div style="font-weight:700;font-size:14px;margin-bottom:10px;color:#333">📋 Booking Details</div>'+
+            '<table style="width:100%;border-collapse:collapse;font-size:14px">'+detailRows+'</table>'+
+          '</div>'+
           '<p style="font-size:15px;line-height:1.6">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
-          '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>';
+          '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>';
       })()
     })
   }).then(function(r){
