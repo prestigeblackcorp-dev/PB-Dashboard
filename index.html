@@ -1990,13 +1990,22 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div class="fsec" style="margin-bottom:12px">🔐 Verification Services</div>
     <div class="fgrid">
       <div class="fgroup ffull">
-        <div class="flabel">ID Verification Worker URL</div>
+        <div class="flabel">Booking Worker URL (Firebase Sync)</div>
         <div style="display:flex;gap:8px;align-items:center">
-          <input type="url" class="finput" id="settWorkerUrl" placeholder="https://your-worker.your-subdomain.workers.dev" style="flex:1">
+          <input type="url" class="finput" id="settWorkerUrl" placeholder="https://pb-booking.yourname.workers.dev" style="flex:1">
           <button class="btn btn-sm" onclick="testWorkerUrl()" style="white-space:nowrap">🔌 Test</button>
         </div>
         <div id="settWorkerStatus" style="font-size:11px;margin-top:4px;display:none"></div>
-        <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for Stripe Identity. Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-verification-worker.js</code> to get this URL.</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for Firebase sync and booking actions. Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-booking-worker.js</code> to get this URL.</div>
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">ID Verification Worker URL</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="url" class="finput" id="settVerifyUrl" placeholder="https://pb-verify.yourname.workers.dev" style="flex:1">
+          <button class="btn btn-sm" onclick="testVerifyUrl()" style="white-space:nowrap">🔌 Test</button>
+        </div>
+        <div id="settVerifyStatus" style="font-size:11px;margin-top:4px;display:none"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for Stripe Identity verification. Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-verification-worker.js</code> to get this URL.</div>
       </div>
       <div class="fgroup ffull">
         <div class="flabel">Messaging Worker URL</div>
@@ -2464,6 +2473,7 @@ var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
 var WORKER_URL     = localStorage.getItem('pb_worker_url')     || '';
 var MESSAGING_URL  = localStorage.getItem('pb_messaging_url')  || localStorage.getItem('pb_worker_url') || '';
+var VERIFY_URL     = localStorage.getItem('pb_verify_url')     || '';
 var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) || 25;
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
@@ -4577,7 +4587,7 @@ function openBookingDetail(id){
       '<div class="fsec" style="margin-top:12px">📧 Emails</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+
         '<button class="btn btn-sm" onclick="confirmResendConfirmation(\''+b.id+'\')" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
-        (WORKER_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
+        (VERIFY_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">📨 Send Reminder</button>'+
         (WORKER_URL&&(b.status==='confirmed'||b.status==='active')?'<button class="btn btn-sm" onclick="sendExtensionLink(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">🔗 Send Extension Link</button>':'')+'</div>'
     : '')+
@@ -5970,6 +5980,7 @@ function openSettings(){
   if(_currentRole&&_currentRole!=='full'){ showToast('⛔ Settings restricted to owner access'); return; }
   renderStaffPinList();
   $d('settWorkerUrl').value    = WORKER_URL;
+  $d('settVerifyUrl').value    = VERIFY_URL;
   $d('settMessagingUrl').value = MESSAGING_URL;
   $d('settOwnerEmail').value   = OWNER_EMAIL;
   $d('settDateLockUrl').value  = DATE_LOCK_URL;
@@ -5979,7 +5990,7 @@ function openSettings(){
   _refreshSigPreview(OWNER_SIGNATURE);
   _settingsDirty = false;
   var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
-  ['settWorkerUrl','settMessagingUrl','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
+  ['settWorkerUrl','settVerifyUrl','settMessagingUrl','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
     var el=$d(id); if(el) el.oninput=_markSettingsDirty;
   });
   $d('settingsModal').classList.add('open');
@@ -6123,10 +6134,26 @@ function testWorkerUrl(){
   var statusEl=$d('settWorkerStatus');
   if(!url){ statusEl.style.display=''; statusEl.style.color='#ef4444'; statusEl.textContent='Enter a Worker URL first.'; return; }
   statusEl.style.display=''; statusEl.style.color='var(--muted)'; statusEl.textContent='Testing…';
-  fetch(url+'/create-verification',{method:'OPTIONS'})
+  fetch(url+'/sync/savedAt?_=test',{cache:'no-store'})
     .then(function(r){
       if(r.ok||r.status===204||r.status===200||r.status===405){
         statusEl.style.color='var(--green)'; statusEl.textContent='✅ Worker reachable (status '+r.status+')';
+      } else {
+        statusEl.style.color='#ef4444'; statusEl.textContent='⚠ Worker responded with status '+r.status;
+      }
+    }).catch(function(){
+      statusEl.style.color='#ef4444'; statusEl.textContent='❌ Could not reach worker — check the URL or CORS settings.';
+    });
+}
+function testVerifyUrl(){
+  var url=($d('settVerifyUrl').value||'').trim().replace(/\/$/,'');
+  var statusEl=$d('settVerifyStatus');
+  if(!url){ statusEl.style.display=''; statusEl.style.color='#ef4444'; statusEl.textContent='Enter a Verification Worker URL first.'; return; }
+  statusEl.style.display=''; statusEl.style.color='var(--muted)'; statusEl.textContent='Testing…';
+  fetch(url+'/create-verification',{method:'OPTIONS'})
+    .then(function(r){
+      if(r.ok||r.status===204||r.status===200||r.status===405){
+        statusEl.style.color='var(--green)'; statusEl.textContent='✅ Verification worker reachable (status '+r.status+')';
       } else {
         statusEl.style.color='#ef4444'; statusEl.textContent='⚠ Worker responded with status '+r.status;
       }
@@ -6156,6 +6183,7 @@ function testOpenAiKey(){
 }
 function saveSettings(){
   WORKER_URL    = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
+  VERIFY_URL    = ($d('settVerifyUrl').value||'').trim().replace(/\/$/,'');
   MESSAGING_URL = ($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
   OWNER_EMAIL   = ($d('settOwnerEmail').value||'').trim();
   DATE_LOCK_URL = ($d('settDateLockUrl').value||'').trim();
@@ -6163,6 +6191,7 @@ function saveSettings(){
   OPENAI_KEY    = ($d('settOpenAiKey').value||'').trim();
   SELF_EMPLOYMENT_TAX_RATE = parseFloat($d('settTaxRate').value) || 25;
   localStorage.setItem('pb_worker_url',    WORKER_URL);
+  localStorage.setItem('pb_verify_url',    VERIFY_URL);
   localStorage.setItem('pb_messaging_url', MESSAGING_URL);
   localStorage.setItem('pb_owner_email',   OWNER_EMAIL);
   localStorage.setItem('pb_date_lock_url', DATE_LOCK_URL);
@@ -6209,12 +6238,12 @@ function clearVerificationPoll(){
 }
 
 function sendStripeVerification(){
-  if(!WORKER_URL){ openSettings(); return; }
+  if(!VERIFY_URL){ openSettings(); return; }
   var b=bookings.find(function(x){ return x.id===verifyId; });
   $d('vStripeBtn').disabled=true;
   $d('vStripeStatus').style.color='';
   $d('vStripeStatus').textContent='Creating session…';
-  fetch(WORKER_URL+'/create-verification',{
+  fetch(VERIFY_URL+'/create-verification',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({bookingId:verifyId, returnUrl:window.location.href, customerName:b?b.name:''})
@@ -6280,7 +6309,7 @@ function sendStripeVerification(){
         $d('vStripeStatus').style.color='var(--muted)';
         return;
       }
-      fetch(WORKER_URL+'/check-verification?session_id='+data.id)
+      fetch(VERIFY_URL+'/check-verification?session_id='+data.id)
       .then(function(r){ return r.json(); })
       .then(function(session){
         if(session.status==='verified'){
@@ -6548,7 +6577,7 @@ function sendReviewRequest(b){
 
 // Auto-trigger verification — skips if already verified, no email, or Worker not configured
 function autoSendVerification(b){
-  if(!b||!b.email||!WORKER_URL||!MESSAGING_URL) return;
+  if(!b||!b.email||!VERIFY_URL||!MESSAGING_URL) return;
   if(b.verify&&b.verify.idVerified) return; // already verified
   resendVerificationEmail(b.id, true); // skip confirm — auto-triggered
 }
@@ -6557,10 +6586,10 @@ function resendVerificationEmail(id, skipConfirm){
   var b=bookings.find(function(x){return x.id===id;});
   if(!b||!b.email){ showToast('No email on this booking'); return; }
   if(!skipConfirm && !confirm('Send ID verification link to '+b.email+'?')) return;
-  if(!WORKER_URL){ showToast('Worker URL not set — check Settings'); return; }
+  if(!VERIFY_URL){ showToast('Verification Worker URL not set — check Settings'); return; }
   if(!MESSAGING_URL){ showToast('Messaging URL not set — check Settings'); return; }
   showToast('Creating new verify link…');
-  fetch(WORKER_URL+'/create-verification',{
+  fetch(VERIFY_URL+'/create-verification',{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({bookingId:id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
   }).then(function(r){return r.json();}).then(function(d){
