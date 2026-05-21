@@ -749,7 +749,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
           <button class="hbg-item hbg-item-gold" onclick="openContractTemplate();closeHamburger()">📝 Contract Template</button>
           <button class="hbg-item" onclick="openContractTemplate('waiver');closeHamburger()">🏍 Slingshot Waiver</button>
           <div class="hbg-divider"></div>
-          <button class="hbg-item" onclick="openSettings();closeHamburger()">⚙️ Settings</button>
+          <button class="hbg-item" id="hbg-btn-settings" onclick="openSettings();closeHamburger()">⚙️ Settings</button>
         </div>
       </div>
     <div style="display:flex;align-items:center;gap:12px">
@@ -3561,11 +3561,14 @@ function save(){
   }catch(e){}
   cloudSave();
 }
-function promptClearAll(){
+async function promptClearAll(){
   var storedPin=localStorage.getItem('pb_lock_pin');
   if(storedPin){
     var entered=prompt('Enter PIN to clear all data:');
-    if(entered===null||entered.trim()!==storedPin){ alert('Incorrect PIN.'); return; }
+    if(entered===null) return;
+    var h=await _hashPin(entered.trim());
+    var match=(_isLegacyHash(storedPin)&&storedPin===btoa('pb:'+entered.trim()+':rentals'))||h===storedPin;
+    if(!match){ alert('Incorrect PIN.'); return; }
   }
   if(!confirm('DELETE ALL bookings, expenses, income, and maintenance? This cannot be undone.')) return;
   clearAllData();
@@ -5862,6 +5865,7 @@ document.addEventListener('click', function(e){
 });
 
 function openSettings(){
+  if(_currentRole&&_currentRole!=='full'){ showToast('⛔ Settings restricted to owner access'); return; }
   renderStaffPinList();
   $d('settWorkerUrl').value    = WORKER_URL;
   $d('settMessagingUrl').value = MESSAGING_URL;
@@ -8754,12 +8758,22 @@ function showLockScreen(){
   setTimeout(function(){ var inp=$d('lockPinInput'); if(inp) inp.focus(); },100);
 }
 function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='none'; }
-function unlockApp(){
-  var pin=localStorage.getItem('pb_lock_pin');
+async function unlockApp(){
+  var storedPin=localStorage.getItem('pb_lock_pin');
   var entered=($d('lockPinInput').value||'').trim();
-  var ownerMatch=!pin||_hashPin(entered)===pin||entered===pin;
+  var hashed=await _hashPin(entered);
+  // Check owner PIN
+  var ownerMatch=false;
+  if(!storedPin){
+    ownerMatch=true;
+  } else if(_isLegacyHash(storedPin)&&storedPin===btoa('pb:'+entered+':rentals')){
+    // Migrate legacy btoa hash → SHA-256
+    localStorage.setItem('pb_lock_pin',hashed);
+    ownerMatch=true;
+  } else {
+    ownerMatch=(hashed===storedPin);
+  }
   if(ownerMatch){
-    if(pin&&entered===pin&&_hashPin(entered)!==pin) localStorage.setItem('pb_lock_pin',_hashPin(entered));
     _appUnlocked=true; _currentUser='owner'; _currentRole='full';
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
@@ -8767,7 +8781,15 @@ function unlockApp(){
     return;
   }
   // Check staff PINs
-  var staff=staffPins.find(function(s){ return s.pin&&(_hashPin(entered)===s.pin||entered===s.pin); });
+  var staff=null;
+  for(var i=0;i<staffPins.length;i++){
+    var s=staffPins[i];
+    if(!s.pin) continue;
+    if(_isLegacyHash(s.pin)&&s.pin===btoa('pb:'+entered+':rentals')){
+      s.pin=hashed; saveStaffPinsLocal(); staff=s; break;
+    }
+    if(s.pin===hashed){ staff=s; break; }
+  }
   if(staff){
     _appUnlocked=true; _currentUser=staff.name; _currentRole=staff.role||'checkin';
     hideLockScreen();
@@ -8783,13 +8805,21 @@ function lockApp(){
   _appUnlocked = false;
   showLockScreen();
 }
-var _hashPin = function(p){ return btoa('pb:'+p+':rentals'); };
-function setLockPin(){
+// SHA-256 PIN hash — returns a Promise<hex string>
+// Legacy btoa hashes (length ≠ 64) are auto-migrated on successful unlock
+async function _hashPin(p){
+  try{
+    var buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('pb:'+p+':rentals'));
+    return Array.from(new Uint8Array(buf)).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+  }catch(e){ return btoa('pb:'+p+':rentals'); } // fallback (very old browsers)
+}
+function _isLegacyHash(h){ return h&&h.length!==64; }
+async function setLockPin(){
   var pin=localStorage.getItem('pb_lock_pin')||'';
   var np=prompt('Set a PIN to lock the dashboard on new sessions.\nLeave blank to disable PIN lock.\nCurrent: '+(pin?'Set':'None'), '');
   if(np===null) return;
   np=np.trim();
-  if(np){ localStorage.setItem('pb_lock_pin',_hashPin(np)); toast('PIN lock enabled.'); }
+  if(np){ localStorage.setItem('pb_lock_pin',await _hashPin(np)); toast('PIN lock enabled.'); }
   else  { localStorage.removeItem('pb_lock_pin'); toast('PIN lock disabled.'); }
 }
 
@@ -8837,7 +8867,7 @@ function toggleStaffPinVis(){
   if(inp.type==='password'){ inp.type='text'; btn.textContent='🙈'; }
   else { inp.type='password'; btn.textContent='👁'; }
 }
-function saveStaffMember(){
+async function saveStaffMember(){
   var name=($d('staffNameInput').value||'').trim();
   var role=$d('staffRoleInput').value||'checkin';
   var pin=($d('staffPinInput').value||'').trim();
@@ -8846,11 +8876,11 @@ function saveStaffMember(){
   if(!existing&&!pin){ showToast('PIN is required for new staff members'); $d('staffPinInput').focus(); return; }
   if(existing){
     existing.name=name; existing.role=role;
-    if(pin) existing.pin=_hashPin(pin);
+    if(pin) existing.pin=await _hashPin(pin);
     saveStaffPinsLocal(); renderStaffPinList(); closeStaffPinModal();
     showToast('Staff member updated ✅');
   } else {
-    staffPins.push({id:'sp'+Date.now(), name:name, role:role, pin:_hashPin(pin)});
+    staffPins.push({id:'sp'+Date.now(), name:name, role:role, pin:await _hashPin(pin)});
     saveStaffPinsLocal(); renderStaffPinList(); closeStaffPinModal();
     showToast('Staff member added ✅');
   }
@@ -8865,8 +8895,8 @@ function deleteStaffMember(id){
 function applyRoleUI(){
   var isCheckin=_currentRole==='checkin'||_currentRole==='readonly';
   var isReadOnly=_currentRole==='readonly';
-  // Hide financial tabs for non-full roles
-  ['tab-btn-expenses','tab-btn-income','tab-btn-budgets'].forEach(function(id){
+  // Hide financial tabs + Settings for non-full roles
+  ['tab-btn-expenses','tab-btn-income','tab-btn-budgets','hbg-btn-settings'].forEach(function(id){
     var el=$d(id); if(el) el.style.display=isCheckin?'none':'';
   });
   // Show role banner
