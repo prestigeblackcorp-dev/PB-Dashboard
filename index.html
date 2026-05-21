@@ -969,6 +969,17 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <button class="btn btn-sm" id="contractSendSignedBtn" onclick="sendSignedCopyToClient()" style="display:none;background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.5);color:#22c55e;font-weight:800">📧 Send Signed Copy to Client</button>
         <span id="custSigStatus" style="font-size:11px;color:var(--muted)"></span>
       </div>
+      <!-- Upload signed contract returned by client -->
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,.04);border:1px dashed var(--border);border-radius:8px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Or upload a signed contract returned by the client (image or PDF screenshot):</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border:1px solid var(--gold-dim);border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;color:var(--gold)">
+            📎 Upload Signed Doc
+            <input type="file" accept="image/*" style="display:none" onchange="uploadSignedContract(this)">
+          </label>
+          <span id="uploadSigStatus" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+      </div>
     </div>
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-sm" onclick="copyContract()" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📋 Copy</button>
@@ -4334,8 +4345,10 @@ function tripCard(b, showCountdown){
 
   var idOk=b.verify&&b.verify.idVerified;
   var insOk=b.verify&&b.verify.insVerified;
+  var contractSigned=!!(b.customerSig&&b.customerSig.startsWith('data:image/'));
   var verBadges=(idOk?'<span title="ID Verified">🪪✅</span>':'')+
-                (insOk?'<span title="Insurance Verified">🛡✅</span>':'');
+                (insOk?'<span title="Insurance Verified">🛡✅</span>':'')+
+                (contractSigned?'<span title="Contract Signed">📝✅</span>':'');
 
   // Feature 2: repeat customer badge
   var repeatSet=_repeatSetCache||buildRepeatSet();
@@ -6504,7 +6517,7 @@ function renderTodayBanner(){
   $d('todayBannerItems').innerHTML=todays.map(function(b){
     var idOk=b.verify&&b.verify.idVerified;
     var insOk=b.verify&&b.verify.insVerified;
-    var verBadges=(idOk?' 🪪✅':'')+(insOk?' 🛡✅':'');
+    var verBadges=(idOk?' 🪪✅':'')+(insOk?' 🛡✅':'')+((b.customerSig&&b.customerSig.startsWith('data:image/'))?' 📝✅':'');
 
     // Time range
     var timeStr=b.pickupTime?fmtTime(b.pickupTime):'No time set';
@@ -8766,6 +8779,27 @@ function saveCustSig(){
   if(b&&b.email&&MESSAGING_URL){
     setTimeout(function(){ sendSignedCopyToClient(); },400);
   }
+}
+
+function uploadSignedContract(input){
+  var file=input.files[0]; if(!file||!_contractBookingId) return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var dataUrl=e.target.result;
+    var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
+    if(idx===-1){ toast('Booking not found'); return; }
+    var t=new Date();
+    bookings[idx].customerSig=dataUrl;
+    bookings[idx].customerSigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+    bookings[idx]._t=Date.now();
+    save();
+    _renderContractContent();
+    var s=$d('uploadSigStatus'); if(s) s.textContent='✅ Signed document stored';
+    setTimeout(function(){ var s=$d('uploadSigStatus'); if(s) s.textContent=''; },3000);
+    var ssb=$d('contractSendSignedBtn'); if(ssb) ssb.style.display='';
+    toast('📝 Signed contract saved to booking');
+  };
+  reader.readAsDataURL(file);
 }
 
 function _renderContractContent(){
