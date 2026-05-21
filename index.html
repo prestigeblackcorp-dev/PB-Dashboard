@@ -1156,10 +1156,12 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="fleet-stab" id="fstab-blockdates" onclick="switchFleetTab('blockdates')">🚫 Block Dates</button>
       <button class="fleet-stab" id="fstab-waitlist" onclick="switchFleetTab('waitlist')">📋 Waitlist</button>
       <button class="fleet-stab" id="fstab-pricing" onclick="switchFleetTab('pricing')">⚡ Pricing Rules</button>
+      <button class="fleet-stab" id="fstab-demand" onclick="switchFleetTab('demand')">📊 Demand</button>
     </div>
 
     <!-- ── OVERVIEW panel ── -->
     <div id="fpanel-overview">
+      <div id="fleetPnL" style="margin-bottom:16px"></div>
       <div id="fleetAlerts" style="margin-bottom:12px"></div>
       <div class="chart-card" style="margin-bottom:16px">
         <div class="chart-ttl">Vehicle Utilization — Last 90 Days</div>
@@ -1256,6 +1258,10 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <!-- ── PRICING RULES panel ── -->
     <div id="fpanel-pricing" style="display:none">
       <div id="pricingRulesContent"></div>
+    </div>
+
+    <div id="fpanel-demand" style="display:none">
+      <div id="demandHeatmapContent"></div>
     </div>
 
   </div>
@@ -1998,6 +2004,13 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="btn btn-sm" onclick="setLockPin()" style="border-color:var(--gold-dim);color:var(--gold)">Set / Change PIN</button>
     </div>
 
+    <div style="background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
+      <div style="font-size:12px;font-weight:800;color:#a78bfa;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">👥 Staff Access</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Add staff PINs with limited roles. <strong>Check-in Only</strong>: can manage bookings but can't see revenue or finances. <strong>Read Only</strong>: view bookings only.</div>
+      <div id="staffPinList" style="margin-bottom:10px"></div>
+      <button class="btn btn-sm" onclick="openAddStaffModal()" style="border-color:rgba(139,92,246,.4);color:#a78bfa">+ Add Staff Member</button>
+    </div>
+
     <div style="background:rgba(59,130,246,.07);border:1px solid rgba(59,130,246,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
       <div style="font-size:12px;font-weight:800;color:#3b82f6;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">🗃 Recently Deleted</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Bookings deleted in the last 30 days can be restored. Older deletions are permanent.</div>
@@ -2377,6 +2390,9 @@ var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) |
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
 var OWNER_EMAIL    = localStorage.getItem('pb_owner_email')    || '';
+var staffPins      = [];   // [{id,name,role,pin}]  role: 'full'|'checkin'|'readonly'
+var _currentUser   = 'owner';
+var _currentRole   = 'full'; // 'full'|'checkin'|'readonly'
 var _cloudLoading = false; // guard: prevent cloudLoad from triggering cloudSave
 var _offlinePending = false; // queues a cloudSave for when we come back online
 
@@ -5074,7 +5090,7 @@ function saveBooking(){
       var changes=[];
       auditFields.forEach(function(f){ if(String(ex[f]||'')!==String(entry[f]||'')) changes.push(f+': '+JSON.stringify(ex[f]||'')+'→'+JSON.stringify(entry[f]||'')); });
       if(changes.length){
-        entry._history=(ex._history||[]).concat([{at:Date.now(),by:'owner',changes:changes}]);
+        entry._history=(ex._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:changes}]);
       } else {
         if(ex._history) entry._history=ex._history;
       }
@@ -5787,6 +5803,7 @@ document.addEventListener('click', function(e){
 });
 
 function openSettings(){
+  renderStaffPinList();
   $d('settWorkerUrl').value    = WORKER_URL;
   $d('settMessagingUrl').value = MESSAGING_URL;
   $d('settOwnerEmail').value   = OWNER_EMAIL;
@@ -6570,6 +6587,10 @@ function quickStatus(id, newStatus){
   if(newStatus==='completed') sendReviewRequest(bookings[idx]);
   if(newStatus==='confirmed') sendConfirmationEmail(bookings[idx]);
   if(newStatus==='cancelled') checkWaitlistOnCancel(bookings[idx]);
+  if(oldStatus!==newStatus){
+    var histEntry={at:Date.now(),by:_currentUser||'owner',changes:['status: "'+oldStatus+'"→"'+newStatus+'"']};
+    bookings[idx]._history=(bookings[idx]._history||[]).concat([histEntry]);
+  }
   save();
   syncToGCal(bookings[idx]);
   render();
@@ -7272,7 +7293,7 @@ var activeFleetTab = 'overview';
 
 function switchFleetTab(name){
   activeFleetTab = name;
-  ['overview','availability','logmaint','blockdates','waitlist','pricing'].forEach(function(t){
+  ['overview','availability','logmaint','blockdates','waitlist','pricing','demand'].forEach(function(t){
     var btn=$d('fstab-'+t), panel=$d('fpanel-'+t);
     if(btn) btn.classList.toggle('active', t===name);
     if(panel) panel.style.display = t===name ? '' : 'none';
@@ -7280,6 +7301,7 @@ function switchFleetTab(name){
   if(name==='logmaint') initInlineMaint();
   if(name==='blockdates') initBdPanel();
   if(name==='waitlist') renderWaitlistPanel();
+  if(name==='demand') renderDemandHeatmap();
   if(name==='pricing') renderPricingRulesPanel();
 }
 
@@ -7396,6 +7418,7 @@ function saveBdBlocks(v){
 }
 
 function renderFleetTab(){
+  renderVehiclePnL();
   renderHeatmap();
   var records=maintenance.filter(function(m){return !m._deleted;}).sort(function(a,b){return b.date.localeCompare(a.date);});
   var tod=todayStr(), soon=dateStr(addDays(new Date(),30));
@@ -8594,18 +8617,27 @@ function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='non
 function unlockApp(){
   var pin=localStorage.getItem('pb_lock_pin');
   var entered=($d('lockPinInput').value||'').trim();
-  var match=!pin||_hashPin(entered)===pin||entered===pin;
-  if(match){
+  var ownerMatch=!pin||_hashPin(entered)===pin||entered===pin;
+  if(ownerMatch){
     if(pin&&entered===pin&&_hashPin(entered)!==pin) localStorage.setItem('pb_lock_pin',_hashPin(entered));
-    _appUnlocked = true;
+    _appUnlocked=true; _currentUser='owner'; _currentRole='full';
     hideLockScreen();
-    $d('lockPinInput').value='';
-    $d('lockError').textContent='';
-  } else {
-    $d('lockError').textContent='Incorrect PIN. Try again.';
-    $d('lockPinInput').value='';
-    $d('lockPinInput').focus();
+    $d('lockPinInput').value=''; $d('lockError').textContent='';
+    applyRoleUI();
+    return;
   }
+  // Check staff PINs
+  var staff=staffPins.find(function(s){ return s.pin&&(_hashPin(entered)===s.pin||entered===s.pin); });
+  if(staff){
+    _appUnlocked=true; _currentUser=staff.name; _currentRole=staff.role||'checkin';
+    hideLockScreen();
+    $d('lockPinInput').value=''; $d('lockError').textContent='';
+    applyRoleUI();
+    showToast('Welcome, '+staff.name+' ('+(_currentRole==='checkin'?'Check-in Access':_currentRole==='readonly'?'Read Only':'Full Access')+')');
+    return;
+  }
+  $d('lockError').textContent='Incorrect PIN. Try again.';
+  $d('lockPinInput').value=''; $d('lockPinInput').focus();
 }
 function lockApp(){
   _appUnlocked = false;
@@ -8619,6 +8651,182 @@ function setLockPin(){
   np=np.trim();
   if(np){ localStorage.setItem('pb_lock_pin',_hashPin(np)); toast('PIN lock enabled.'); }
   else  { localStorage.removeItem('pb_lock_pin'); toast('PIN lock disabled.'); }
+}
+
+// ── Staff PINs ───────────────────────────────────────────────────────────────
+function loadStaffPins(){
+  try { var r=localStorage.getItem('pb_staff_pins'); if(r) staffPins=JSON.parse(r); } catch(e){ staffPins=[]; }
+}
+function saveStaffPinsLocal(){
+  try { localStorage.setItem('pb_staff_pins', JSON.stringify(staffPins)); } catch(e){}
+}
+function renderStaffPinList(){
+  var el=$d('staffPinList'); if(!el) return;
+  if(!staffPins.length){ el.innerHTML='<div style="font-size:12px;color:var(--muted)">No staff members added yet.</div>'; return; }
+  el.innerHTML=staffPins.map(function(s){
+    var roleLabel=s.role==='full'?'Full Access':s.role==='readonly'?'Read Only':'Check-in Only';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">'+
+      '<span style="flex:1;font-weight:600">'+esc(s.name)+'</span>'+
+      '<span style="background:rgba(139,92,246,.15);color:#a78bfa;border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">'+roleLabel+'</span>'+
+      '<button class="btn btn-sm" onclick="editStaffMember(\''+s.id+'\')" style="padding:3px 8px;font-size:11px">Edit</button>'+
+      '<button class="btn btn-sm" onclick="deleteStaffMember(\''+s.id+'\')" style="padding:3px 8px;font-size:11px;border-color:rgba(239,68,68,.4);color:#ef4444">✕</button>'+
+    '</div>';
+  }).join('');
+}
+function openAddStaffModal(editId){
+  var existing=editId?staffPins.find(function(s){return s.id===editId;}):null;
+  var name=prompt('Staff member name:'+(existing?' ('+existing.name+')':''), existing?existing.name:'');
+  if(!name||!name.trim()) return;
+  var roleStr=prompt('Role:\n1 = Check-in Only (can manage bookings, no financials)\n2 = Full Access (same as owner)\n3 = Read Only (view only)', existing?(existing.role==='full'?'2':existing.role==='readonly'?'3':'1'):'1');
+  if(!roleStr||roleStr===null) return;
+  var role=roleStr==='2'?'full':roleStr==='3'?'readonly':'checkin';
+  var np=prompt('Set PIN for '+name.trim()+' (leave blank to keep existing if editing):', '');
+  if(np===null) return;
+  np=np.trim();
+  if(!existing&&!np){ showToast('PIN is required for new staff members'); return; }
+  if(existing&&!np){
+    existing.name=name.trim(); existing.role=role;
+    saveStaffPinsLocal(); renderStaffPinList();
+    showToast('Staff member updated'); return;
+  }
+  if(existing){
+    existing.name=name.trim(); existing.role=role; existing.pin=_hashPin(np);
+    saveStaffPinsLocal(); renderStaffPinList(); showToast('Staff member updated'); return;
+  }
+  staffPins.push({id:'sp'+Date.now(),name:name.trim(),role:role,pin:_hashPin(np)});
+  saveStaffPinsLocal(); renderStaffPinList(); showToast('Staff member added ✅');
+}
+function editStaffMember(id){ openAddStaffModal(id); }
+function deleteStaffMember(id){
+  if(!confirm('Remove this staff member?')) return;
+  staffPins=staffPins.filter(function(s){return s.id!==id;});
+  saveStaffPinsLocal(); renderStaffPinList(); showToast('Staff member removed');
+}
+function applyRoleUI(){
+  var isCheckin=_currentRole==='checkin'||_currentRole==='readonly';
+  var isReadOnly=_currentRole==='readonly';
+  // Hide financial tabs for non-full roles
+  ['tab-btn-expenses','tab-btn-income','tab-btn-budgets'].forEach(function(id){
+    var el=$d(id); if(el) el.style.display=isCheckin?'none':'';
+  });
+  // Show role banner
+  var existing=$d('_roleBanner');
+  if(isCheckin){
+    if(!existing){
+      existing=document.createElement('div');
+      existing.id='_roleBanner';
+      existing.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9998;background:#7c3aed;color:#fff;text-align:center;font-size:12px;font-weight:700;padding:4px;letter-spacing:.04em';
+      document.body.appendChild(existing);
+    }
+    existing.textContent='Logged in as '+_currentUser+' · '+(isReadOnly?'Read Only':'Check-in Only')+' Access';
+  } else if(existing) { existing.remove(); }
+}
+
+// ── Vehicle P&L cards ────────────────────────────────────────────────────────
+function renderVehiclePnL(){
+  var el=$d('fleetPnL'); if(!el) return;
+  var today=new Date(); today.setHours(0,0,0,0);
+  var d90=new Date(today); d90.setDate(d90.getDate()-90);
+  var d90str=dateStr(d90);
+  var cards=ALL_VEHICLES.map(function(v){
+    var vBookings=bookings.filter(function(b){ return !b._deleted&&b.vehicle===v&&b.status!=='cancelled'; });
+    var rev=vBookings.reduce(function(s,b){ return s+totalRevenue(b); },0);
+    var maintCost=maintenance.filter(function(m){ return !m._deleted&&m.vehicle===v; }).reduce(function(s,m){ return s+(Number(m.cost)||0); },0);
+    var expCost=expenses.filter(function(e){ return !e._deleted&&(e.vehicle===v||(e.description||'').toLowerCase().indexOf(v.toLowerCase())!==-1); }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
+    var totalCost=maintCost+expCost;
+    var net=rev-totalCost;
+    // Utilization last 90 days
+    var bookedDays=0;
+    var d=new Date(d90);
+    while(d<=today){
+      var ds=dateStr(d);
+      var booked=vBookings.some(function(b){
+        var s=b.pickupDate||b.date, e=b.dropoffDate||s;
+        return ds>=s&&ds<=e;
+      });
+      if(booked) bookedDays++;
+      d.setDate(d.getDate()+1);
+    }
+    var util=Math.round(bookedDays/90*100);
+    if(!rev&&!maintCost&&!expCost) return null;
+    var netColor=net>=0?'var(--green)':'var(--red)';
+    return '<div class="kpi" style="min-width:160px">'+
+      '<div class="kpi-label" style="white-space:normal;line-height:1.3">'+esc(v)+'</div>'+
+      '<div style="margin-top:6px;font-size:12px;line-height:1.8">'+
+        '<div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Revenue</span><span style="font-weight:700;color:var(--gold)">'+$$(rev)+'</span></div>'+
+        '<div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Expenses</span><span style="font-weight:700;color:var(--red)">'+$$(totalCost)+'</span></div>'+
+        '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:4px;margin-top:2px"><span style="color:var(--muted)">Net</span><span style="font-weight:800;color:'+netColor+'">'+$$(net)+'</span></div>'+
+        '<div style="margin-top:4px;font-size:11px;color:var(--muted)">Utilization (90d): <strong style="color:var(--text)">'+util+'%</strong></div>'+
+      '</div>'+
+    '</div>';
+  }).filter(Boolean);
+  if(!cards.length){ el.innerHTML=''; return; }
+  el.innerHTML='<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Vehicle P&L</div>'+
+    '<div class="kpi-grid">'+cards.join('')+'</div>';
+}
+
+// ── Peak demand heatmap ──────────────────────────────────────────────────────
+function renderDemandHeatmap(){
+  var el=$d('demandHeatmapContent'); if(!el) return;
+  // Day-of-week breakdown
+  var dowCounts=[0,0,0,0,0,0,0]; // Sun-Sat
+  var dateCounts={}; // dateStr -> count
+  bookings.forEach(function(b){
+    if(b._deleted||b.status==='cancelled') return;
+    getBookingDates(b).forEach(function(ds){
+      dateCounts[ds]=(dateCounts[ds]||0)+1;
+      var day=new Date(ds+'T00:00:00').getDay();
+      dowCounts[day]++;
+    });
+  });
+  var dowNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var maxDow=Math.max.apply(null,dowCounts)||1;
+  var dowHtml='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px">'+
+    dowCounts.map(function(c,i){
+      var pct=Math.round(c/maxDow*100);
+      var isWknd=(i===0||i===5||i===6);
+      return '<div style="text-align:center;flex:1;min-width:44px">'+
+        '<div style="height:80px;display:flex;align-items:flex-end;justify-content:center;margin-bottom:4px">'+
+          '<div style="width:32px;background:'+(isWknd?'#C9A962':'rgba(201,169,98,.45)')+';border-radius:4px 4px 0 0;height:'+Math.max(4,pct)+'%"></div>'+
+        '</div>'+
+        '<div style="font-size:11px;font-weight:700;color:'+(isWknd?'var(--gold)':'var(--muted)')+'">'+dowNames[i]+'</div>'+
+        '<div style="font-size:10px;color:var(--muted)">'+c+'</div>'+
+      '</div>';
+    }).join('')+
+  '</div>';
+  // 12-month calendar grid
+  var today=new Date(); today.setHours(0,0,0,0);
+  var maxCount=Math.max.apply(null,Object.values(dateCounts).concat([1]));
+  var calHtml='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">';
+  for(var m=11;m>=0;m--){
+    var dt=new Date(today.getFullYear(),today.getMonth()-m,1);
+    var yr=dt.getFullYear(), mo=dt.getMonth();
+    var monthName=dt.toLocaleString('default',{month:'long',year:'numeric'});
+    var firstDay=new Date(yr,mo,1).getDay();
+    var daysInMonth=new Date(yr,mo+1,0).getDate();
+    calHtml+='<div style="background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:12px">'+
+      '<div style="font-size:11px;font-weight:800;color:var(--gold);margin-bottom:8px;letter-spacing:.04em">'+monthName.toUpperCase()+'</div>'+
+      '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:10px;text-align:center;margin-bottom:4px">'+
+      ['S','M','T','W','T','F','S'].map(function(d){return '<div style="color:var(--muted);padding:2px">'+d+'</div>';}).join('')+
+      '</div>'+
+      '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;">';
+    for(var pad=0;pad<firstDay;pad++) calHtml+='<div></div>';
+    for(var day=1;day<=daysInMonth;day++){
+      var ds=(yr+'-'+String(mo+1).padStart(2,'0')+'-'+String(day).padStart(2,'0'));
+      var cnt=dateCounts[ds]||0;
+      var intensity=cnt?Math.min(1,cnt/maxCount):0;
+      var alpha=cnt?Math.max(0.15,intensity):0;
+      var isTod=ds===dateStr(today);
+      calHtml+='<div title="'+ds+(cnt?' · '+cnt+' booking'+(cnt>1?'s':''):'')+'" style="aspect-ratio:1;border-radius:3px;background:'+(cnt?'rgba(201,169,98,'+alpha.toFixed(2)+')':'var(--surface)')+';display:flex;align-items:center;justify-content:center;font-size:9px;color:'+(cnt?'var(--text)':'var(--muted)')+';font-weight:'+(cnt?'700':'400')+';outline:'+(isTod?'1px solid var(--gold)':'none')+'">'+day+'</div>';
+    }
+    calHtml+='</div></div>';
+  }
+  calHtml+='</div>';
+  el.innerHTML='<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Day of Week Demand (All Time)</div>'+
+    dowHtml+
+    '<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">Booking Density — Last 12 Months</div>'+
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Darker gold = more bookings on that date. Use this to spot high-demand periods and price ahead of them.</div>'+
+    calHtml;
 }
 
 // ── Auto-lock after 30 minutes of inactivity ─────────────────────────────────
@@ -8669,7 +8877,7 @@ window.addEventListener('resize', stickyTabFix);
 setTimeout(stickyTabFix, 200);
 
 // Load local data first for instant display
-loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules();
+loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules(); loadStaffPins();
 initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
 updateSyncUI(); updateOnlineStatus(); initLock();
 setTimeout(hideSplash, 1300);
