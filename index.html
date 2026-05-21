@@ -4405,7 +4405,7 @@ function openBookingDetail(id){
         '<button class="btn btn-sm" onclick="sendConfirmationEmail(bookings.find(function(x){return x.id===\''+b.id+'\'}),true)" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
         (WORKER_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">📨 Send Reminder</button>'+
-      '</div>'
+        (WORKER_URL&&(b.status==='confirmed'||b.status==='active')?'<button class="btn btn-sm" onclick="sendExtensionLink(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">🔗 Send Extension Link</button>':'')+'</div>'
     : '')+
 
     // Web booking missing fields notice
@@ -6374,6 +6374,29 @@ function sendPickupReminder(id){
     if(r.ok){ showToast('Reminder sent ✅'); }
     else { r.text().then(function(t){ showToast('Failed to send reminder — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
   }).catch(function(e){ showToast('Failed to send reminder — '+(e&&e.message?e.message:'network error')); });
+}
+
+function sendExtensionLink(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b){ showToast('Booking not found'); return; }
+  if(!WORKER_URL){ showToast('Worker URL not set — check Settings'); return; }
+  if(!b.email){ showToast('No email on this booking — add customer email first'); return; }
+  var dailyRate = b.days && Number(b.days)>0 ? Math.round((Number(b.revenue)||0) / Number(b.days)) : 0;
+  if(!dailyRate){
+    var rateStr=prompt('Enter daily rate for the extension (e.g. 350):','');
+    if(!rateStr) return;
+    dailyRate=parseFloat(rateStr)||0;
+    if(!dailyRate||dailyRate<1){ showToast('Invalid daily rate'); return; }
+  }
+  showToast('Sending extension link…');
+  fetch(WORKER_URL+'/extend/create-token',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ bookingId: b.id, dailyRate: dailyRate })
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d.success){ showToast('🔗 Extension link sent to '+b.email+' ✅'); }
+    else { showToast('Error: '+(d.error||'Could not send link')); }
+  }).catch(function(e){ showToast('Network error — '+(e&&e.message?e.message:'check connection')); });
 }
 
 function sendReceiptEmail(b){
