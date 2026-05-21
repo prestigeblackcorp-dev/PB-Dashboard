@@ -1503,12 +1503,19 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Date</div>
-        <input type="date" class="finput" id="fDropoffDate" oninput="this._manual=!!this.value;updateMaintWarning();updatePricingRuleWarning();validateDropoffDate()">
+        <input type="date" class="finput" id="fDropoffDate" oninput="this._manual=!!this.value;updateMaintWarning();updatePricingRuleWarning();validateDropoffDate();fCalcLateReturn()">
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Time</div>
-        <input type="time" class="finput" id="fDropoffTime" oninput="this._manual=!!this.value">
+        <input type="time" class="finput" id="fDropoffTime" oninput="this._manual=!!this.value;fCalcLateReturn()">
       </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Actual Return Date &amp; Time <span style="font-size:10px;font-weight:400;color:var(--muted)">(fill in if returned late — auto-calculates $75/hr fee after 1-hr grace)</span></div>
+        <input type="datetime-local" class="finput" id="fActualReturn" oninput="fCalcLateReturn()">
+        <div class="fhint" id="fLateReturnHint" style="color:var(--gold)"></div>
+      </div>
+      <div id="fLateReturnRow" style="display:none;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.3);border-radius:10px;padding:10px 14px;font-size:13px;margin-top:-4px;width:100%"></div>
+      <input type="hidden" id="fLateReturnFee" value="0">
 
       <div class="fsec">Revenue</div>
       <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="this._manual=true;updateBrokerCalc();updateLiveTotal();updateRemainingBalance()"></div>
@@ -4987,6 +4994,11 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fAddlIncomeAmt').value  = b&&b.addlIncome ? (b.addlIncome.amount||'') : '';
   $d('fAddlIncomeDesc').value = b&&b.addlIncome ? (b.addlIncome.desc||'')  : '';
   if($d('fTip')) $d('fTip').value = b ? (b.tip||0) : 0;
+  if($d('fActualReturn')) $d('fActualReturn').value = b ? (b.actualReturnTime||'') : '';
+  if($d('fLateReturnFee')) $d('fLateReturnFee').value = b ? (b.lateReturnFee||0) : 0;
+  if($d('fLateReturnHint')) $d('fLateReturnHint').textContent = '';
+  if($d('fLateReturnRow')) $d('fLateReturnRow').style.display = 'none';
+  setTimeout(fCalcLateReturn, 50);
   updateTipVisibility();
   // Balance Paid — only shown when editing an existing booking
   var bpSection=$d('fBalancePaidSection');
@@ -5335,6 +5347,8 @@ function saveBooking(){
       ? { amount: parseFloat($d('fAddlIncomeAmt').value), desc: $d('fAddlIncomeDesc').value.trim() }
       : null,
     tip: ($d('fTip')&&$d('fType')&&$d('fType').value==='chauffeur') ? (parseFloat($d('fTip').value)||0) : 0,
+    lateReturnFee:   $d('fLateReturnFee') ? (parseFloat($d('fLateReturnFee').value)||0) : 0,
+    actualReturnTime: $d('fActualReturn') ? ($d('fActualReturn').value||'') : '',
     createdAt: editingId ? ((bookings.find(function(b){return b.id===editingId;})||{}).createdAt||Date.now()) : Date.now(),
     _t: Date.now(),
     _maintConflictAck: _maintAcknowledged || (editingId ? !!((bookings.find(function(b){return b.id===editingId;})||{})._maintConflictAck) : false),
@@ -5372,8 +5386,7 @@ function saveBooking(){
       if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
       if(ex.fuelCharge!=null)   entry.fuelCharge         = ex.fuelCharge;
       if(ex.mileageCharge)     entry.mileageCharge      = ex.mileageCharge;
-      if(ex.lateReturnFee)     entry.lateReturnFee      = ex.lateReturnFee;
-      if(ex.actualReturnTime)  entry.actualReturnTime   = ex.actualReturnTime;
+      // lateReturnFee + actualReturnTime come from the booking form fields (not preserved from ex)
       if(ex._fromWeb)          entry._fromWeb           = ex._fromWeb;
       // Audit trail: record which fields changed
       var auditFields=['date','name','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
@@ -9322,37 +9335,51 @@ function updateTipVisibility(){
 var LATE_RETURN_RATE = 75; // $/hr
 var LATE_RETURN_GRACE_HOURS = 1;
 
+// Shared late-return calculation used by both booking form and close-out modal
+function _calcLateReturnFee(scheduledDateStr, scheduledTimeStr, actualDateTimeStr, hintEl, rowEl, hiddenEl){
+  if(!hintEl||!rowEl||!hiddenEl) return;
+  if(!actualDateTimeStr){ hintEl.textContent=''; rowEl.style.display='none'; hiddenEl.value=0; return; }
+  if(!scheduledDateStr){ hintEl.textContent=''; rowEl.style.display='none'; hiddenEl.value=0; return; }
+  var schedDt = new Date(scheduledDateStr + (scheduledTimeStr ? 'T'+scheduledTimeStr : 'T12:00'));
+  var actualDt = new Date(actualDateTimeStr);
+  if(isNaN(schedDt)||isNaN(actualDt)){ hintEl.textContent=''; rowEl.style.display='none'; return; }
+  var diffMs = actualDt - schedDt;
+  var diffHrs = diffMs / 3600000;
+  if(diffHrs <= LATE_RETURN_GRACE_HOURS){
+    hintEl.textContent = diffHrs > 0 ? Math.round(diffHrs*60)+' min late — within 1-hr grace period (no charge)' : 'Returned on time ✅';
+    rowEl.style.display='none'; hiddenEl.value=0; return;
+  }
+  var billableHrs = Math.ceil(diffHrs - LATE_RETURN_GRACE_HOURS);
+  var fee = billableHrs * LATE_RETURN_RATE;
+  hintEl.textContent = Math.round(diffHrs*10)/10+' hrs late · '+billableHrs+' billable hr'+(billableHrs!==1?'s':'')+' (after 1-hr grace)';
+  hiddenEl.value = fee;
+  rowEl.style.display='';
+  rowEl.innerHTML = '🕒 <strong>Late Return Fee: <span style="color:#f87171">'+$$(fee)+'</span></strong> &nbsp;·&nbsp; '+billableHrs+' hr'+(billableHrs!==1?'s':'')+' × '+$$(LATE_RETURN_RATE)+'/hr after 1-hr grace period';
+}
+
+// Booking-form version
+function fCalcLateReturn(){
+  _calcLateReturnFee(
+    $d('fDropoffDate') ? $d('fDropoffDate').value : '',
+    $d('fDropoffTime') ? $d('fDropoffTime').value : '',
+    $d('fActualReturn') ? $d('fActualReturn').value : '',
+    $d('fLateReturnHint'), $d('fLateReturnRow'), $d('fLateReturnFee')
+  );
+}
+
+// Close-out modal version
 function coCalcLateReturn(){
   var b = closeOutId ? bookings.find(function(x){return x.id===closeOutId;}) : null;
   if(!b){ return; }
   var hint = $d('coLateReturnHint');
   var row  = $d('coLateReturnRow');
-  var hidField = $d('coLateReturnFee');
-  var actualVal = $d('coActualReturn') ? $d('coActualReturn').value : '';
-  if(!actualVal){ if(hint) hint.textContent=''; if(row){ row.style.display='none'; } if(hidField) hidField.value=0; return; }
-  // Build scheduled end datetime
   var schedDate = b.dropoffDate || b.pickupDate || b.date;
   var schedTime = b.dropoffTime || '';
-  var schedDt = null;
-  if(schedDate){ schedDt = new Date(schedDate + (schedTime ? 'T'+schedTime : 'T12:00')); }
-  var actualDt = new Date(actualVal);
-  if(!schedDt || isNaN(schedDt) || isNaN(actualDt)){ if(hint) hint.textContent=''; if(row) row.style.display='none'; return; }
-  var diffMs = actualDt - schedDt;
-  var diffHrs = diffMs / 3600000;
-  if(diffHrs <= LATE_RETURN_GRACE_HOURS){
-    if(hint) hint.textContent = diffHrs > 0 ? Math.round(diffHrs*60)+' min late — within grace period (1 hr free)' : 'Returned on time ✅';
-    if(row) row.style.display='none';
-    if(hidField) hidField.value=0;
-    return;
-  }
-  var billableHrs = Math.ceil(diffHrs - LATE_RETURN_GRACE_HOURS);
-  var fee = billableHrs * LATE_RETURN_RATE;
-  if(hint) hint.textContent = Math.round(diffHrs*10)/10+' hrs late · '+billableHrs+' billable hr'+(billableHrs!==1?'s':'')+' (after 1 hr grace)';
-  if(hidField) hidField.value = fee;
-  if(row){
-    row.style.display='';
-    row.innerHTML = '🕒 <strong>Late Return Fee: <span style="color:#f87171">'+$$(fee)+'</span></strong> &nbsp;·&nbsp; '+billableHrs+' hr'+(billableHrs!==1?'s':'')+' × '+$$(LATE_RETURN_RATE)+'/hr after 1-hr grace period';
-  }
+  _calcLateReturnFee(
+    schedDate, schedTime,
+    $d('coActualReturn') ? $d('coActualReturn').value : '',
+    $d('coLateReturnHint'), $d('coLateReturnRow'), $d('coLateReturnFee')
+  );
 }
 
 // ════════════════════════════════════════════════════════
