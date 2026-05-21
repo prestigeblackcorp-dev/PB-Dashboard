@@ -2264,6 +2264,10 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div class="flabel">Weekly Rate ($) — optional</div>
         <input type="number" class="finput" id="vWeekly" min="0" step="1" placeholder="0">
       </div>
+      <div class="fgroup">
+        <div class="flabel">Oil Change Interval (miles)</div>
+        <input type="number" class="finput" id="vServiceMiles" min="0" step="500" placeholder="e.g. 5000">
+      </div>
       <div class="fgroup ffull">
         <div class="flabel">Image URL (optional)</div>
         <input type="text" class="finput" id="vImage" placeholder="Paste image URL or leave blank">
@@ -2741,6 +2745,7 @@ function resetVehForm(){
   $d('vName').value=''; $d('vName').readOnly=false;
   $d('vType').value='rental';
   $d('vRate').value=''; $d('vDeposit').value=''; $d('vWeekly').value='';
+  $d('vServiceMiles').value='';
   $d('vImage').value='';
   _editingBlockedRanges=[];
   renderBlockedRangesList();
@@ -2816,10 +2821,11 @@ function editVehicle(name){
   $d('vName').value = name;
   $d('vName').readOnly = false;
   $d('vType').value = isCh ? 'chauffeur' : 'rental';
-  $d('vRate').value    = vc.rate    || '';
-  $d('vDeposit').value = vc.deposit || '';
-  $d('vWeekly').value  = vc.weekly  || '';
-  $d('vImage').value   = vc.image   || '';
+  $d('vRate').value         = vc.rate             || '';
+  $d('vDeposit').value      = vc.deposit          || '';
+  $d('vWeekly').value       = vc.weekly           || '';
+  $d('vServiceMiles').value = vc.serviceIntervalMiles || '';
+  $d('vImage').value        = vc.image            || '';
   _editingBlockedRanges = (vc.blockedRanges||[]).slice();
   renderBlockedRangesList();
   $d('vFormTitle').textContent = 'Edit Vehicle';
@@ -2837,8 +2843,10 @@ function saveVehicle(){
   var image   = $d('vImage').value.trim();
   if(!newName){ alert('Enter a vehicle name.'); return; }
 
+  var serviceIntervalMiles = parseInt($d('vServiceMiles').value)||0;
   var pricing = { rate:rate, deposit:deposit, image:image };
   if(weekly) pricing.weekly = weekly;
+  if(serviceIntervalMiles) pricing.serviceIntervalMiles = serviceIntervalMiles;
   pricing.blockedRanges = _editingBlockedRanges.slice();
 
   if(editingVehicle){
@@ -4268,6 +4276,7 @@ function tripCard(b, showCountdown){
       (b.depositKept?'<div class="trip-extras"><span class="extra-chip" style="background:rgba(168,85,247,.15);color:#a855f7">🔒 Kept '+$$(b.depositKept)+'</span></div>':'')+
       noDepositChip+
       unpaidChip+
+      (b.damage&&b.damage.flagged?'<div style="margin-top:4px"><span style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">🚨 Damage Flagged</span></div>':'')+
       loggedLine+
     '</div>'+
     '<div>'+
@@ -5731,6 +5740,7 @@ function saveCloseOut(){
     bookings[idx]._completedAt = Date.now();
     sendReviewRequest(bookings[idx]);
     sendReceiptEmail(bookings[idx]);
+    sendCloseOutOverageSummary(bookings[idx]);
   }
   bookings[idx]._t               = Date.now();
   save();
@@ -6601,6 +6611,36 @@ function sendReceiptEmail(b){
         '<p style="font-size:15px;line-height:1.6">Here\'s a summary of your rental:</p>'+
         '<table style="width:100%;border-collapse:collapse;font-size:14px;margin:12px 0">'+rows+'</table>'+
         '<p style="font-size:13px;color:#777;margin-top:20px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+    })
+  }).catch(function(){});
+}
+
+// ── Close-out overage summary — sent to customer when mileage/fuel/deposit charges apply ──
+function sendCloseOutOverageSummary(b){
+  if(!MESSAGING_URL||!b||!b.email) return;
+  var mileage=Number(b.mileageCharge)||0;
+  var fuel=Number(b.fuelCharge)||0;
+  var kept=Number(b.depositKept)||0;
+  if(!mileage&&!fuel&&!kept) return;
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  var rows='';
+  if(mileage>0) rows+='<tr><td style="padding:6px 0;color:#555">🛣 Mileage Overage</td><td style="padding:6px 0;font-weight:700;color:#ef4444">'+$$(mileage)+'</td></tr>';
+  if(fuel>0)    rows+='<tr><td style="padding:6px 0;color:#555">⛽ Fuel Charge</td><td style="padding:6px 0;font-weight:700;color:#ef4444">'+$$(fuel)+'</td></tr>';
+  if(kept>0)    rows+='<tr><td style="padding:6px 0;color:#555">🔒 Deposit Withheld</td><td style="padding:6px 0;font-weight:700;color:#ef4444">'+$$(kept)+'</td></tr>';
+  var total=mileage+fuel+kept;
+  rows+='<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Additional Charges Total</td><td style="padding:8px 0;font-weight:700;color:#ef4444">'+$$(total)+'</td></tr>';
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:b.email,
+      subject:'Close-out charges — your '+b.vehicle+' rental',
+      html:'<div style="font-family:sans-serif;max-width:540px;color:#111">'+
+        '<h2 style="color:#b8982e">Rental Close-Out Summary</h2>'+
+        '<p style="font-size:15px;line-height:1.6">Hi '+esc(firstName)+', here\'s a breakdown of the additional charges applied at close-out for your <strong>'+esc(b.vehicle)+'</strong> rental ('+esc(b.pickupDate||b.date||'')+(b.dropoffDate&&b.dropoffDate!==(b.pickupDate||b.date)?' – '+esc(b.dropoffDate):'')+')</p>'+
+        '<table style="width:100%;border-collapse:collapse;font-size:14px;margin:12px 0">'+rows+'</table>'+
+        (b.closeOutNotes?'<p style="font-size:13px;color:#555;margin-top:16px"><strong>Notes:</strong> '+esc(b.closeOutNotes)+'</p>':'')+
+        '<p style="font-size:13px;color:#555;margin-top:16px">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
+        '<p style="font-size:12px;color:#aaa;margin-top:20px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
   }).catch(function(){});
 }
@@ -7578,19 +7618,52 @@ function renderFleetTab(){
   renderHeatmap();
   var records=maintenance.filter(function(m){return !m._deleted;}).sort(function(a,b){return b.date.localeCompare(a.date);});
   var tod=todayStr(), soon=dateStr(addDays(new Date(),30));
-  // Alerts
+  // Date-based alerts
   var alerts=maintenance.filter(function(m){ return !m._deleted&&m.nextDue&&m.nextDue<=soon; });
+  // Mileage-based alerts
+  var mileageAlerts=[];
+  ALL_VEHICLES.forEach(function(v){
+    var vc=VEHICLE_COSTS[v]||{};
+    var interval=vc.serviceIntervalMiles||0;
+    if(!interval) return;
+    // Last service mileage for this vehicle
+    var vRecs=records.filter(function(r){ return r.vehicle===v&&r.mileage>0; });
+    if(!vRecs.length) return;
+    vRecs.sort(function(a,b){ return (b.mileage||0)-(a.mileage||0); });
+    var lastMileage=vRecs[0].mileage;
+    // Latest odometer from completed bookings
+    var latestOdom=0;
+    bookings.forEach(function(b){
+      if(b.vehicle===v&&!b._deleted&&b.odomOut&&b.odomOut>latestOdom) latestOdom=b.odomOut;
+    });
+    var currentMiles=latestOdom||lastMileage;
+    var milesSince=currentMiles-lastMileage;
+    var pct=milesSince/interval;
+    if(pct>=1){
+      mileageAlerts.push({vehicle:v,label:'Oil Change OVERDUE',sub:'+'+(milesSince).toLocaleString()+' mi since last service (interval: '+interval.toLocaleString()+' mi)',overdue:true});
+    } else if(pct>=0.8){
+      mileageAlerts.push({vehicle:v,label:'Oil Change Due Soon',sub:'+'+(milesSince).toLocaleString()+' mi driven · '+(interval-milesSince).toLocaleString()+' mi remaining',overdue:false});
+    }
+  });
   var aEl=$d('fleetAlerts');
   if(aEl){
-    aEl.innerHTML=alerts.length?'<div class="kpi-grid" style="margin-bottom:4px">'+
-      alerts.map(function(m){
-        var due=m.nextDue<=tod;
-        return '<div class="kpi '+(due?'red':'')+'">'+
-          '<div class="kpi-label">'+m.vehicle+'</div>'+
-          '<div class="kpi-val" style="font-size:15px">'+(due?'⚠ OVERDUE':'⏰ Due Soon')+'</div>'+
-          '<div class="kpi-sub">'+m.serviceType+' · '+fmtDate(m.nextDue)+'</div>'+
-          '</div>';
-      }).join('')+'</div>':'';
+    var dateHtml=alerts.map(function(m){
+      var due=m.nextDue<=tod;
+      return '<div class="kpi '+(due?'red':'')+'">'+
+        '<div class="kpi-label">'+esc(m.vehicle)+'</div>'+
+        '<div class="kpi-val" style="font-size:15px">'+(due?'⚠ OVERDUE':'⏰ Due Soon')+'</div>'+
+        '<div class="kpi-sub">'+esc(m.serviceType)+' · '+fmtDate(m.nextDue)+'</div>'+
+        '</div>';
+    }).join('');
+    var mileHtml=mileageAlerts.map(function(a){
+      return '<div class="kpi '+(a.overdue?'red':'')+'">'+
+        '<div class="kpi-label">🔧 '+esc(a.vehicle)+'</div>'+
+        '<div class="kpi-val" style="font-size:15px">'+esc(a.label)+'</div>'+
+        '<div class="kpi-sub">'+esc(a.sub)+'</div>'+
+        '</div>';
+    }).join('');
+    var allHtml=dateHtml+mileHtml;
+    aEl.innerHTML=allHtml?'<div class="kpi-grid" style="margin-bottom:4px">'+allHtml+'</div>':'';
   }
   // Group by vehicle
   var byV={};
