@@ -3508,13 +3508,26 @@ function buildGCalEvent(b){
   };
 }
 
-function syncToGCal(b){
+function syncToGCal(b, _isRetry){
   if(!gcalAccessToken) return;
   if(b.status === 'cancelled' || b._deleted){ removeFromGCal(b); return; }
   var event = buildGCalEvent(b);
   var p;
-  if(b.gcalEventId){
-    p = gcalFetch('PATCH', '/events/' + b.gcalEventId, event);
+  if(b.gcalEventId && !_isRetry){
+    p = gcalFetch('PATCH', '/events/' + b.gcalEventId, event)
+      .catch(function(err){
+        // If event was deleted from Google, clear the stale ID and create fresh
+        var msg = String(err && err.message || err);
+        if(msg.indexOf('404') !== -1 || msg.indexOf('410') !== -1 || msg.toLowerCase().indexOf('not found') !== -1 || msg.toLowerCase().indexOf('deleted') !== -1){
+          var idx = bookings.findIndex(function(x){ return x.id===b.id; });
+          if(idx !== -1){ bookings[idx].gcalEventId = null; save(); b = bookings[idx]; }
+          else { b.gcalEventId = null; }
+          syncToGCal(b, true); // retry as new POST
+        } else {
+          console.error('GCal PATCH failed:', err);
+          showToast('Google Calendar sync failed — '+msg);
+        }
+      });
   } else {
     p = gcalFetch('POST', '/events', event).then(function(data){
       if(data && data.id){
@@ -3522,12 +3535,11 @@ function syncToGCal(b){
         if(idx !== -1){ bookings[idx].gcalEventId = data.id; save(); }
         b.gcalEventId = data.id;
       }
+    }).catch(function(err){
+      console.error('GCal POST failed:', err);
+      showToast('Google Calendar sync failed — '+(err&&err.message||err));
     });
   }
-  p.catch(function(err){
-    console.error('GCal sync failed:', err);
-    showToast('Google Calendar sync failed — check connection', 'error');
-  });
 }
 
 function removeFromGCal(b){
