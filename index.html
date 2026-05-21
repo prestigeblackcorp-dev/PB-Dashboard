@@ -962,22 +962,39 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     </div>
     <div style="margin:14px 0 0">
       <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Customer Signature</div>
-      <canvas id="custSigCanvas" width="480" height="110" style="width:100%;max-width:480px;height:110px;border:1px dashed var(--border);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-sm" onclick="clearCustSig()">✕ Clear</button>
-        <button class="btn btn-sm btn-gold" onclick="saveCustSig()">💾 Save Signature</button>
-        <button class="btn btn-sm" id="contractSendSignedBtn" onclick="sendSignedCopyToClient()" style="display:none;background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.5);color:#22c55e;font-weight:800">📧 Send Signed Copy to Client</button>
-        <span id="custSigStatus" style="font-size:11px;color:var(--muted)"></span>
+
+      <!-- LOCKED: shown once a signature/document is on file -->
+      <div id="sigLockView" style="display:none;padding:12px 14px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.25);border-radius:10px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:15px">🔒</span>
+          <span style="font-size:12px;font-weight:800;color:#22c55e;text-transform:uppercase;letter-spacing:.05em">Contract Signed</span>
+          <span id="sigLockDate" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+        <img id="sigLockPreview" src="" style="max-height:90px;max-width:100%;object-fit:contain;display:block;border:1px solid var(--border);border-radius:6px;background:#fff;padding:4px">
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-sm" id="contractSendSignedBtn" onclick="sendSignedCopyToClient()" style="background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.5);color:#22c55e;font-weight:800">📧 Send Signed Copy to Client</button>
+          <button class="btn btn-sm" style="border-color:var(--red);color:var(--red);font-size:11px" onclick="overrideCustSig()">🔓 Override</button>
+        </div>
       </div>
-      <!-- Upload signed contract returned by client -->
-      <div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,.04);border:1px dashed var(--border);border-radius:8px">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Or upload a signed contract returned by the client (image or PDF screenshot):</div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <label style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border:1px solid var(--gold-dim);border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;color:var(--gold)">
-            📎 Upload Signed Doc
-            <input type="file" accept="image/*" style="display:none" onchange="uploadSignedContract(this)">
-          </label>
-          <span id="uploadSigStatus" style="font-size:11px;color:var(--muted)"></span>
+
+      <!-- EDIT: shown when no signature on file -->
+      <div id="sigEditView">
+        <canvas id="custSigCanvas" width="480" height="110" style="width:100%;max-width:480px;height:110px;border:1px dashed var(--border);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-sm" onclick="clearCustSig()">✕ Clear</button>
+          <button class="btn btn-sm btn-gold" onclick="saveCustSig()">💾 Save Signature</button>
+          <span id="custSigStatus" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+        <!-- Upload signed contract returned by client -->
+        <div style="margin-top:10px;padding:10px 12px;background:rgba(255,255,255,.04);border:1px dashed var(--border);border-radius:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Or upload a signed contract returned by the client (image or PDF screenshot):</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <label style="display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border:1px solid var(--gold-dim);border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;color:var(--gold)">
+              📎 Upload Signed Doc
+              <input type="file" accept="image/*" style="display:none" onchange="uploadSignedContract(this)">
+            </label>
+            <span id="uploadSigStatus" style="font-size:11px;color:var(--muted)"></span>
+          </div>
         </div>
       </div>
     </div>
@@ -8730,7 +8747,23 @@ var _contractBookingId = null;
 var _custSigDrawing = false;
 
 function initCustSigCanvas(){
-  // Replace canvas with a clone to remove any previously stacked event listeners
+  var lockView=$d('sigLockView'), editView=$d('sigEditView');
+  // If booking already has a signature, show locked view — no editing allowed
+  if(_contractBookingId){
+    var b=bookings.find(function(x){return x.id===_contractBookingId;});
+    if(b&&b.customerSig&&b.customerSig.startsWith('data:image/')){
+      if(lockView) lockView.style.display='';
+      if(editView) editView.style.display='none';
+      var preview=$d('sigLockPreview');
+      if(preview) preview.src=b.customerSig;
+      var dateEl=$d('sigLockDate');
+      if(dateEl) dateEl.textContent=b.customerSigDate?'· Signed '+b.customerSigDate:'';
+      return; // skip canvas init entirely
+    }
+  }
+  // No signature yet — show editable canvas
+  if(lockView) lockView.style.display='none';
+  if(editView) editView.style.display='';
   var oldCanvas=$d('custSigCanvas');
   if(!oldCanvas) return;
   var cv=oldCanvas.cloneNode(true);
@@ -8746,13 +8779,18 @@ function initCustSigCanvas(){
   cv.onmousemove=cv.ontouchmove=function(e){ e.preventDefault(); if(!_custSigDrawing) return; var p=pos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); };
   cv.onmouseup=cv.ontouchend=function(){ _custSigDrawing=false; };
   cv.onmouseleave=function(){ _custSigDrawing=false; };
-  if(_contractBookingId){
-    var b=bookings.find(function(x){return x.id===_contractBookingId;});
-    if(b&&b.customerSig){
-      var img=new Image(); img.onload=function(){ctx.drawImage(img,0,0,cv.width,cv.height);}; img.src=b.customerSig;
-      $d('custSigStatus').textContent='Saved signature loaded';
-    }
-  }
+}
+function overrideCustSig(){
+  if(!confirm('Remove the stored signature and unlock the contract for editing?\nThis cannot be undone.')) return;
+  var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
+  if(idx===-1) return;
+  delete bookings[idx].customerSig;
+  delete bookings[idx].customerSigDate;
+  bookings[idx]._t=Date.now();
+  save();
+  _renderContractContent();
+  initCustSigCanvas();
+  toast('🔓 Signature removed — contract unlocked');
 }
 function clearCustSig(){
   var cv=$d('custSigCanvas'); if(!cv) return;
@@ -8770,9 +8808,8 @@ function saveCustSig(){
     bookings[idx]._t=Date.now();
     save();
   }
-  $d('custSigStatus').textContent='✅ Saved!';
-  setTimeout(function(){ if($d('custSigStatus')) $d('custSigStatus').textContent=''; },2000);
-  // Refresh preview so signature appears embedded, and show "Send Signed Copy" button
+  // Switch to locked view immediately
+  initCustSigCanvas();
   _renderContractContent();
   // Auto-send signed copy to customer if email + messaging worker are available
   var b=bookings[idx];
@@ -8793,10 +8830,8 @@ function uploadSignedContract(input){
     bookings[idx].customerSigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
     bookings[idx]._t=Date.now();
     save();
+    initCustSigCanvas();
     _renderContractContent();
-    var s=$d('uploadSigStatus'); if(s) s.textContent='✅ Signed document stored';
-    setTimeout(function(){ var s=$d('uploadSigStatus'); if(s) s.textContent=''; },3000);
-    var ssb=$d('contractSendSignedBtn'); if(ssb) ssb.style.display='';
     toast('📝 Signed contract saved to booking');
   };
   reader.readAsDataURL(file);
