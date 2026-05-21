@@ -2548,7 +2548,8 @@ function cloudSave() {
         budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
         contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
         slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
-        owner_signature: OWNER_SIGNATURE || '',
+        // Only write owner_signature when non-empty OR when user explicitly cleared it
+        ...(OWNER_SIGNATURE || _sigCleared ? { owner_signature: OWNER_SIGNATURE } : {}),
         messaging_url: MESSAGING_URL || '',
         worker_url: WORKER_URL || '',
         owner_email: OWNER_EMAIL || '',
@@ -5954,6 +5955,7 @@ function saveVerify(){
 //  SETTINGS
 // ════════════════════════════════════════════════════════
 var OWNER_SIGNATURE = localStorage.getItem('pb_owner_signature') || '';
+var _sigCleared = false; // set true only during explicit clearSignature() cloudSave
 
 var _settingsDirty = false;
 function _markSettingsDirty(){ _settingsDirty=true; var b=$d('settUnsavedBanner'); if(b) b.style.display=''; }
@@ -6244,7 +6246,9 @@ function clearSignature(){
   OWNER_SIGNATURE = '';
   _refreshSigPreview('');
   try { localStorage.removeItem('pb_owner_signature'); } catch(ex){}
+  _sigCleared = true; // flag so cloudSave sends the empty string explicitly
   cloudSave();
+  _sigCleared = false;
 }
 function _refreshSigPreview(src){
   var img = $d('settSigPreview'), empty = $d('settSigEmpty');
@@ -8973,6 +8977,7 @@ function openContract(id){
     return;
   }
   _renderContractContent();
+  if(!OWNER_SIGNATURE) toast('⚠ No representative signature — go to ⚙ Settings → Owner Signature to upload');
   $d('contractModal').classList.add('open');
   setTimeout(initCustSigCanvas, 50);
 }
