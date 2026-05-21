@@ -1475,7 +1475,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div id="pricingRuleWarn" style="display:none;grid-column:1/-1;background:rgba(201,169,98,.09);border:1px solid rgba(201,169,98,.4);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7;color:var(--text)"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
-        <select class="finput" id="fType" onchange="checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal();updateTipVisibility()">
+        <select class="finput" id="fType" onchange="checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal();updateTipVisibility();updateWeekdayDiscountHint()">
           <option value="daily">Daily Rental</option>
           <option value="hourly">Hourly Booking</option>
           <option value="chauffeur">Chauffeur Service</option>
@@ -1495,7 +1495,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div class="fsec" style="grid-column:1/-1">Pickup &amp; Drop-off</div>
       <div class="fgroup">
         <div class="flabel">Pickup Date</div>
-        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value;updateMaintWarning();updatePricingRuleWarning();onPickupDateChange()">
+        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value;updateMaintWarning();updatePricingRuleWarning();onPickupDateChange();updateWeekdayDiscountHint()">
       </div>
       <div class="fgroup">
         <div class="flabel">Pickup Time</div>
@@ -1518,7 +1518,12 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <input type="hidden" id="fLateReturnFee" value="0">
 
       <div class="fsec">Revenue</div>
-      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="this._manual=true;updateBrokerCalc();updateLiveTotal();updateRemainingBalance()"></div>
+      <div id="weekdayDiscountBanner" style="display:none;grid-column:1/-1;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);border-radius:10px;padding:10px 14px;font-size:13px;display:none;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:16px">📅</span>
+        <span id="weekdayDiscountLabel" style="flex:1;color:rgba(255,255,255,.85)"></span>
+        <button type="button" class="btn btn-sm" onclick="applyWeekdayDiscount()" style="border-color:rgba(59,130,246,.6);color:#60a5fa;white-space:nowrap;font-weight:800">Apply 10% Off</button>
+      </div>
+      <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="this._manual=true;updateBrokerCalc();updateLiveTotal();updateRemainingBalance();fCalcLateReturn();updateWeekdayDiscountHint()"></div>
       <div class="fgroup"><div class="flabel">Date Lock / Booking Fee ($)</div><input type="number" class="finput" id="fDateLock" min="0" step="1" value="100" oninput="updateRemainingBalance()" title="Upfront fee paid to hold the date — subtracted from total"></div>
       <div class="fgroup ffull" style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;gap:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -4628,7 +4633,7 @@ function openBookingDetail(id){
     // Booking
     '<div class="fsec">Booking</div>'+
     '<div class="detail-row"><span class="detail-label">Booking Date</span><span class="detail-val">'+fmtDate(b.date)+'</span></div>'+
-    (b.pickupDate?'<div class="detail-row"><span class="detail-label">Pickup</span><span class="detail-val">'+fmtDate(b.pickupDate)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</span></div>':'')+
+    (b.pickupDate?'<div class="detail-row"><span class="detail-label">Pickup</span><span class="detail-val">'+fmtDate(b.pickupDate)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+(_isWeekdayDiscount&&_isWeekdayDiscount(b.pickupDate)&&b.type==='daily'?' <span style="background:rgba(59,130,246,.15);color:#60a5fa;border-radius:5px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:4px">MON–THU RATE</span>':'')+'</span></div>':'')+
     (b.dropoffDate?'<div class="detail-row"><span class="detail-label">Drop-off</span><span class="detail-val">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Duration</span><span class="detail-val">'+b.days+' '+((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+(b.days!==1?'s':'')+'</span></div>'+
 
@@ -5000,6 +5005,7 @@ function openModal(id, vehiclePreset, datePreset){
   if($d('fLateReturnRow')) $d('fLateReturnRow').style.display = 'none';
   setTimeout(fCalcLateReturn, 50);
   updateTipVisibility();
+  updateWeekdayDiscountHint();
   // Balance Paid — only shown when editing an existing booking
   var bpSection=$d('fBalancePaidSection');
   if(bpSection) bpSection.style.display=id?'':'none';
@@ -9330,13 +9336,64 @@ function updateTipVisibility(){
 }
 
 // ════════════════════════════════════════════════════════
+//  MON–THU WEEKDAY DISCOUNT (10% OFF DAILY RATE)
+// ════════════════════════════════════════════════════════
+var WEEKDAY_DISCOUNT_DAYS = [1,2,3,4]; // Mon=1 … Thu=4
+var WEEKDAY_DISCOUNT_PCT  = 10;
+
+function _isWeekdayDiscount(dateStr){
+  if(!dateStr) return false;
+  var d = new Date(dateStr + 'T12:00'); // noon local to avoid DST edge
+  return WEEKDAY_DISCOUNT_DAYS.indexOf(d.getDay()) !== -1;
+}
+
+function updateWeekdayDiscountHint(){
+  var banner = $d('weekdayDiscountBanner');
+  var label  = $d('weekdayDiscountLabel');
+  if(!banner||!label) return;
+  var type     = $d('fType') ? $d('fType').value : 'daily';
+  var pickup   = $d('fPickupDate') ? $d('fPickupDate').value : '';
+  var rev      = parseFloat($d('fRevenue') ? $d('fRevenue').value : 0) || 0;
+  var days     = Math.max(1, parseFloat($d('fDays') ? $d('fDays').value : 1) || 1);
+  var isDaily  = (type === 'daily');
+  var isWkday  = _isWeekdayDiscount(pickup);
+  if(!isDaily || !isWkday || !rev){
+    banner.style.display = 'none';
+    return;
+  }
+  var dailyRate   = rev / days;
+  var discounted  = Math.round(dailyRate * (1 - WEEKDAY_DISCOUNT_PCT / 100));
+  var newTotal    = discounted * days;
+  var dayNames    = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var pickup_day  = dayNames[new Date(pickup+'T12:00').getDay()];
+  label.textContent = pickup_day+' pickup — weekday rate: '+$$(dailyRate)+'/day × '+days+' day'+(days!==1?'s':'')+' → '+$$(newTotal)+' with 10% off';
+  banner.style.display = 'flex';
+}
+
+function applyWeekdayDiscount(){
+  var rev  = parseFloat($d('fRevenue') ? $d('fRevenue').value : 0) || 0;
+  var days = Math.max(1, parseFloat($d('fDays') ? $d('fDays').value : 1) || 1);
+  if(!rev){ showToast('Enter a revenue amount first'); return; }
+  var dailyRate  = rev / days;
+  var newTotal   = Math.round(dailyRate * (1 - WEEKDAY_DISCOUNT_PCT / 100)) * days;
+  $d('fRevenue').value = newTotal;
+  $d('fRevenue')._manual = true;
+  updateBrokerCalc(); updateLiveTotal(); updateRemainingBalance(); fCalcLateReturn();
+  // Dismiss banner (discount already baked in now)
+  var banner = $d('weekdayDiscountBanner');
+  if(banner) banner.style.display = 'none';
+  showToast('💙 10% weekday discount applied — new total: '+$$(newTotal));
+}
+
+// ════════════════════════════════════════════════════════
 //  LATE RETURN FEE CALC
 // ════════════════════════════════════════════════════════
 var LATE_RETURN_RATE = 75; // $/hr
 var LATE_RETURN_GRACE_HOURS = 1;
 
 // Shared late-return calculation used by both booking form and close-out modal
-function _calcLateReturnFee(scheduledDateStr, scheduledTimeStr, actualDateTimeStr, hintEl, rowEl, hiddenEl){
+// dailyRate: the vehicle's effective per-day rate (used to cap hourly fee at day rate)
+function _calcLateReturnFee(scheduledDateStr, scheduledTimeStr, actualDateTimeStr, hintEl, rowEl, hiddenEl, dailyRate){
   if(!hintEl||!rowEl||!hiddenEl) return;
   if(!actualDateTimeStr){ hintEl.textContent=''; rowEl.style.display='none'; hiddenEl.value=0; return; }
   if(!scheduledDateStr){ hintEl.textContent=''; rowEl.style.display='none'; hiddenEl.value=0; return; }
@@ -9349,21 +9406,34 @@ function _calcLateReturnFee(scheduledDateStr, scheduledTimeStr, actualDateTimeSt
     hintEl.textContent = diffHrs > 0 ? Math.round(diffHrs*60)+' min late — within 1-hr grace period (no charge)' : 'Returned on time ✅';
     rowEl.style.display='none'; hiddenEl.value=0; return;
   }
-  var billableHrs = Math.ceil(diffHrs - LATE_RETURN_GRACE_HOURS);
-  var fee = billableHrs * LATE_RETURN_RATE;
-  hintEl.textContent = Math.round(diffHrs*10)/10+' hrs late · '+billableHrs+' billable hr'+(billableHrs!==1?'s':'')+' (after 1-hr grace)';
+  var billableHrs = diffHrs - LATE_RETURN_GRACE_HOURS; // fractional hours
+  var billableHrsCeil = Math.ceil(billableHrs);
+  var hourlyFee = billableHrsCeil * LATE_RETURN_RATE;
+  var fee = hourlyFee;
+  var feeNote = billableHrsCeil+' hr'+(billableHrsCeil!==1?'s':'')+' × '+$$(LATE_RETURN_RATE)+'/hr after 1-hr grace';
+  // Cap: once hourly fee ≥ daily rate, just charge full-day increments
+  if(dailyRate && dailyRate > 0 && hourlyFee >= dailyRate){
+    var extraDays = Math.ceil(billableHrs / 24);
+    fee = extraDays * dailyRate;
+    feeNote = extraDays+' extra day'+(extraDays!==1?'s':'')+' @ '+$$(dailyRate)+'/day (hourly rate would exceed daily)';
+  }
+  hintEl.textContent = Math.round(diffHrs*10)/10+' hrs late · '+feeNote;
   hiddenEl.value = fee;
   rowEl.style.display='';
-  rowEl.innerHTML = '🕒 <strong>Late Return Fee: <span style="color:#f87171">'+$$(fee)+'</span></strong> &nbsp;·&nbsp; '+billableHrs+' hr'+(billableHrs!==1?'s':'')+' × '+$$(LATE_RETURN_RATE)+'/hr after 1-hr grace period';
+  rowEl.innerHTML = '🕒 <strong>Late Return Fee: <span style="color:#f87171">'+$$(fee)+'</span></strong> &nbsp;·&nbsp; <span style="font-size:12px;opacity:.8">'+feeNote+'</span>';
 }
 
 // Booking-form version
 function fCalcLateReturn(){
+  var rev      = parseFloat($d('fRevenue') ? $d('fRevenue').value : 0) || 0;
+  var days     = Math.max(1, parseFloat($d('fDays') ? $d('fDays').value : 1) || 1);
+  var dailyRate = rev ? rev / days : 0;
   _calcLateReturnFee(
     $d('fDropoffDate') ? $d('fDropoffDate').value : '',
     $d('fDropoffTime') ? $d('fDropoffTime').value : '',
     $d('fActualReturn') ? $d('fActualReturn').value : '',
-    $d('fLateReturnHint'), $d('fLateReturnRow'), $d('fLateReturnFee')
+    $d('fLateReturnHint'), $d('fLateReturnRow'), $d('fLateReturnFee'),
+    dailyRate
   );
 }
 
@@ -9371,14 +9441,14 @@ function fCalcLateReturn(){
 function coCalcLateReturn(){
   var b = closeOutId ? bookings.find(function(x){return x.id===closeOutId;}) : null;
   if(!b){ return; }
-  var hint = $d('coLateReturnHint');
-  var row  = $d('coLateReturnRow');
   var schedDate = b.dropoffDate || b.pickupDate || b.date;
   var schedTime = b.dropoffTime || '';
+  var dailyRate = (Number(b.revenue)||0) / Math.max(1, Number(b.days)||1);
   _calcLateReturnFee(
     schedDate, schedTime,
     $d('coActualReturn') ? $d('coActualReturn').value : '',
-    $d('coLateReturnHint'), $d('coLateReturnRow'), $d('coLateReturnFee')
+    $d('coLateReturnHint'), $d('coLateReturnRow'), $d('coLateReturnFee'),
+    dailyRate
   );
 }
 
