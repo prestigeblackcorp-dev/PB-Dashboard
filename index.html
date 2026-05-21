@@ -2646,10 +2646,17 @@ function cloudLoad(callback) {
         if (data.contractTemplate && typeof data.contractTemplate === 'string' && data.contractTemplate.length > 10) {
           contractTemplate = data.contractTemplate;
           try { localStorage.setItem('pb_contract_template', contractTemplate); } catch(e) {}
+          var _preContract = contractTemplate;
+          if(typeof _migrateContractTemplate === 'function') _migrateContractTemplate();
+          if(contractTemplate !== _preContract) needsPush = true;
         }
         if (data.slingshotWaiverTemplate && typeof data.slingshotWaiverTemplate === 'string' && data.slingshotWaiverTemplate.length > 10) {
           slingshotWaiverTemplate = data.slingshotWaiverTemplate;
           try { localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); } catch(e) {}
+          // Migrate any old hardcoded template coming from Firebase, then push the clean version back
+          var _preSync = slingshotWaiverTemplate;
+          if(typeof _migrateWaiverTemplate === 'function') _migrateWaiverTemplate();
+          if(slingshotWaiverTemplate !== _preSync) needsPush = true;
         }
         if (data.owner_signature && typeof data.owner_signature === 'string' && data.owner_signature.length > 10) {
           OWNER_SIGNATURE = data.owner_signature;
@@ -8416,7 +8423,10 @@ var slingshotWaiverTemplate = '';
 var _contractTemplateMode = ''; // '' = contract, 'waiver' = slingshot waiver
 var _contractIsWaiver = false;  // tracks what's currently open in the contract view modal
 var _slingshotColor = 'Green'; // 'Green' or 'White' — color picker in waiver modal
-var SLINGSHOT_VINS = { Green: '57XAAPHD4S8167698', White: '57XAASHD6M8146678' };
+var SLINGSHOT_SPECS = {
+  Green: { vin: '57XAAPHD4S8167698', model: 'Slingshot SL' },
+  White: { vin: '57XAASHD6M8146678', model: 'Slingshot S'  }
+};
 
 var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
 <html lang="en">
@@ -8469,14 +8479,14 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
   <hr class="hr">
 
   <h2>2. Vehicle Description</h2>
-  <p>Vehicle: <span class="bold">Polaris Slingshot SL ({{vehicle_color}})</span><br>
+  <p>Vehicle: <span class="bold">Polaris {{vehicle_model}} ({{vehicle_color}})</span><br>
   VIN: <span class="bold">{{vehicle_vin}}</span><br>
   Rental Period: <span class="bold">{{days}} Hour(s) &mdash; {{pickup_date}}{{pickup_time_display}}</span></p>
 
   <hr class="hr">
 
   <h2>3. Assumption of Risk</h2>
-  <p>Renter acknowledges and agrees that operating a <span class="bold">Polaris Slingshot SL</span>, which is a three-wheeled, open-air vehicle, involves <span class="bold">inherent risks</span>, including but not limited to:</p>
+  <p>Renter acknowledges and agrees that operating a <span class="bold">Polaris {{vehicle_model}}</span>, which is a three-wheeled, open-air vehicle, involves <span class="bold">inherent risks</span>, including but not limited to:</p>
   <ul>
     <li>Loss of control</li>
     <li>Collision with other vehicles or objects</li>
@@ -8508,7 +8518,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
     <li>Property damage</li>
     <li>Financial loss</li>
   </ul>
-  <p>arising out of or related to the rental or use of the Polaris Slingshot SL.</p>
+  <p>arising out of or related to the rental or use of the Polaris {{vehicle_model}}.</p>
 
   <hr class="hr">
 
@@ -8623,6 +8633,45 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
 function loadContractTemplate(){
   contractTemplate = localStorage.getItem('pb_contract_template') || DEFAULT_CONTRACT_TEMPLATE;
   slingshotWaiverTemplate = localStorage.getItem('pb_slingshot_waiver') || DEFAULT_SLINGSHOT_WAIVER_TEMPLATE;
+  _migrateContractTemplate();
+  _migrateWaiverTemplate();
+}
+
+function _migrateContractTemplate(){
+  if(!contractTemplate || contractTemplate === DEFAULT_CONTRACT_TEMPLATE) return;
+  var stale =
+    contractTemplate.indexOf('{{owner_signature}}') === -1 ||
+    (function(){
+      var ownerIdx = contractTemplate.indexOf('{{owner_signature}}');
+      var bodyEnd  = contractTemplate.indexOf('</body>');
+      return ownerIdx !== -1 && bodyEnd !== -1 && ownerIdx > bodyEnd;
+    })();
+  if(stale){
+    contractTemplate = DEFAULT_CONTRACT_TEMPLATE;
+    try{ localStorage.setItem('pb_contract_template', contractTemplate); }catch(e){}
+  }
+}
+
+function _migrateWaiverTemplate(){
+  if(!slingshotWaiverTemplate || slingshotWaiverTemplate === DEFAULT_SLINGSHOT_WAIVER_TEMPLATE) return;
+  // If the stored template has any old hardcoded values or is missing required placeholders,
+  // replace it entirely with the current default (user has never customized the template).
+  var stale =
+    slingshotWaiverTemplate.indexOf('57XAAPHD4S8167698') !== -1 ||    // old hardcoded Green VIN
+    slingshotWaiverTemplate.indexOf('{{vehicle_model}}')  === -1 ||    // missing model placeholder
+    slingshotWaiverTemplate.indexOf('{{vehicle_color}}')  === -1 ||    // missing color placeholder
+    slingshotWaiverTemplate.indexOf('{{vehicle_vin}}')    === -1 ||    // missing VIN placeholder
+    // owner_signature block is outside </body> (appended after </html> by old auto-patch)
+    (function(){
+      var ownerIdx = slingshotWaiverTemplate.indexOf('{{owner_signature}}');
+      var bodyEnd  = slingshotWaiverTemplate.indexOf('</body>');
+      return ownerIdx !== -1 && bodyEnd !== -1 && ownerIdx > bodyEnd;
+    })() ||
+    slingshotWaiverTemplate.indexOf('{{owner_signature}}') === -1;     // missing entirely
+  if(stale){
+    slingshotWaiverTemplate = DEFAULT_SLINGSHOT_WAIVER_TEMPLATE;
+    try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){}
+  }
 }
 
 function openContractTemplate(mode){
@@ -8719,6 +8768,53 @@ function _renderContractContent(){
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
   var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
   if(!activeTemplate) return;
+
+  // ── Render-time template fixes (run every render regardless of what's stored) ─────────────
+  // 1. Waiver: replace any remaining hardcoded Slingshot VIN / model / color
+  if(_contractIsWaiver){
+    activeTemplate = activeTemplate
+      .replace(/57XAAPHD4S8167698/g, '{{vehicle_vin}}')
+      .replace(/57XAASHD6M8146678/g, '{{vehicle_vin}}')
+      .replace(/Slingshot SL \(Green\)/g,           '{{vehicle_model}} ({{vehicle_color}})')
+      .replace(/Slingshot SL \(White\)/g,           '{{vehicle_model}} ({{vehicle_color}})')
+      .replace(/Slingshot SL \(\{\{vehicle_color\}\}\)/g, '{{vehicle_model}} ({{vehicle_color}})')
+      .replace(/Slingshot SL(?! \(\{\{vehicle_color)/g,  '{{vehicle_model}}');
+  }
+
+  // 2. All templates: ensure owner signature block with name + date is inside </body>
+  //    (old auto-patch dumped it after </html>; old templates may not have it at all)
+  var _ownerIdx  = activeTemplate.indexOf('{{owner_signature}}');
+  var _bodyClose = activeTemplate.indexOf('</body>');
+  var _sigBlockMissing = _ownerIdx === -1 ||
+                         (_bodyClose !== -1 && _ownerIdx > _bodyClose);
+  if(_sigBlockMissing){
+    // Strip anything that was appended after </html>
+    var _htmlClose = activeTemplate.indexOf('</html>');
+    if(_htmlClose !== -1 && activeTemplate.slice(_htmlClose + 7).trim().length > 0){
+      activeTemplate = activeTemplate.slice(0, _htmlClose + 7);
+      _bodyClose = activeTemplate.indexOf('</body>');
+    }
+    var _sigHtml =
+      '<hr style="border:none;border-top:1.5px solid #888;margin:28px 0 20px">' +
+      '<div style="display:flex;gap:28px;flex-wrap:wrap;margin-top:8px">' +
+        '<div style="flex:1;min-width:200px">' +
+          '<div style="border-bottom:1.5px solid #888;min-height:54px;margin-bottom:6px;display:flex;align-items:flex-end;padding-bottom:3px">{{owner_signature}}</div>' +
+          '<div style="font-size:11px;margin-bottom:3px">Date: {{today}}</div>' +
+          '<div style="font-size:11px">Printed Name: Jalen Nguyen on behalf of Prestige Black Corp.</div>' +
+        '</div>' +
+        '<div style="flex:1;min-width:200px">' +
+          '<div style="border-bottom:1.5px solid #888;min-height:54px;margin-bottom:6px;display:flex;align-items:flex-end;padding-bottom:3px">{{customer_signature}}</div>' +
+          '<div style="font-size:11px;margin-bottom:3px">Date: {{customer_signed_date}}</div>' +
+          '<div style="font-size:11px">Printed Name: {{customer_name}}</div>' +
+        '</div>' +
+      '</div>';
+    if(_bodyClose !== -1){
+      activeTemplate = activeTemplate.replace('</body>', _sigHtml + '\n</body>');
+    } else {
+      activeTemplate += _sigHtml;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────────────────────
   var addonLines=[];
   if(Number(b.delivery))  addonLines.push('Delivery ($'+b.delivery+')');
   if(Number(b.unlimited)) addonLines.push('Unlimited Miles ($'+b.unlimited+'/day)');
@@ -8747,8 +8843,10 @@ function _renderContractContent(){
   var licAddress=(b.verify&&b.verify.idAddress)||'';
   var vInfo=Object.assign({},VEHICLE_INFO[b.vehicle]||{});
   if(_contractIsWaiver && b.vehicle==='Polaris Slingshot'){
+    var _ss = SLINGSHOT_SPECS[_slingshotColor] || {};
     vInfo.color = _slingshotColor;
-    vInfo.vin   = SLINGSHOT_VINS[_slingshotColor] || vInfo.vin;
+    vInfo.vin   = _ss.vin   || vInfo.vin;
+    vInfo.model = _ss.model || vInfo.model;
   }
   var brokerLine=b.broker?'<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(b.broker)+'</span></div>':'';
   function sr(v){ return function(){ return v; }; }
@@ -8873,13 +8971,6 @@ function openContract(id){
   if(!activeTemplate){
     if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
     return;
-  }
-  // Auto-patch stored templates missing {{owner_signature}} placeholder
-  if(activeTemplate.indexOf('{{owner_signature}}')===-1){
-    var sigPatch = '\n<div style="margin-top:14px"><div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:6px"><span style="white-space:nowrap;font-weight:700">Representative Signature:</span><div style="flex:1;border-bottom:1px solid #999;min-width:120px">{{owner_signature}}</div></div><div style="font-size:13px;margin-bottom:4px">Printed Name: Jalen Nguyen on behalf of Prestige Black Corp.</div></div>';
-    if(_contractIsWaiver){ slingshotWaiverTemplate += sigPatch; try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){} }
-    else { contractTemplate += sigPatch; try{ localStorage.setItem('pb_contract_template', contractTemplate); }catch(e){} }
-    showToast('Template updated — owner signature block added');
   }
   _renderContractContent();
   $d('contractModal').classList.add('open');
