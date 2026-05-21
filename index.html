@@ -5240,12 +5240,17 @@ function saveBooking(){
         if(ex._history) entry._history=ex._history;
       }
       bookings[idx]=entry;
+      // Date lock just paid on an existing booking → send verification
+      if(!Number(ex.dateLock) && Number(entry.dateLock)) autoSendVerification(entry);
     }
   } else {
     bookings.push(entry);
     // Fire owner notification and customer date-lock confirmation on new bookings only
     sendOwnerBookingNotification(entry);
-    if(Number(entry.dateLock)) sendDateLockConfirmation(entry);
+    if(Number(entry.dateLock)){
+      sendDateLockConfirmation(entry);
+      autoSendVerification(entry);
+    }
   }
 
   save(); closeModal(); initSelects();
@@ -6528,6 +6533,13 @@ function sendReviewRequest(b){
   }).catch(function(){});
 }
 
+// Auto-trigger verification — skips if already verified, no email, or Worker not configured
+function autoSendVerification(b){
+  if(!b||!b.email||!WORKER_URL||!MESSAGING_URL) return;
+  if(b.verify&&b.verify.idVerified) return; // already verified
+  resendVerificationEmail(b.id);
+}
+
 function resendVerificationEmail(id){
   var b=bookings.find(function(x){return x.id===id;});
   if(!b||!b.email){ showToast('No email on this booking'); return; }
@@ -6853,6 +6865,7 @@ function bulkConfirmPending(){
       bookings[idx].status='confirmed';
       bookings[idx]._t=Date.now();
       sendConfirmationEmail(bookings[idx]);
+      autoSendVerification(bookings[idx]);
     }
   });
   save(); render();
@@ -6871,7 +6884,7 @@ function quickStatus(id, newStatus){
   bookings[idx]._t=Date.now();
   if(newStatus==='completed'){ bookings[idx]._completedAt=Date.now(); }
   if(newStatus==='completed') sendReviewRequest(bookings[idx]);
-  if(newStatus==='confirmed') sendConfirmationEmail(bookings[idx]);
+  if(newStatus==='confirmed'){ sendConfirmationEmail(bookings[idx]); autoSendVerification(bookings[idx]); }
   if(newStatus==='cancelled') checkWaitlistOnCancel(bookings[idx]);
   if(oldStatus!==newStatus){
     var histEntry={at:Date.now(),by:_currentUser||'owner',changes:['status: "'+oldStatus+'"→"'+newStatus+'"']};
