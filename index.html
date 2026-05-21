@@ -2269,8 +2269,20 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <input type="number" class="finput" id="vServiceMiles" min="0" step="500" placeholder="e.g. 5000">
       </div>
       <div class="fgroup ffull">
-        <div class="flabel">Image URL (optional)</div>
-        <input type="text" class="finput" id="vImage" placeholder="Paste image URL or leave blank">
+        <div class="flabel">Vehicle Image</div>
+        <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+          <div id="vImagePreview" style="display:none;width:80px;height:80px;border-radius:10px;overflow:hidden;border:1px solid var(--gold-dim);flex-shrink:0">
+            <img id="vImagePreviewImg" src="" style="width:100%;height:100%;object-fit:cover">
+          </div>
+          <div style="flex:1;min-width:160px">
+            <label class="btn btn-sm" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;margin-bottom:8px">
+              📷 Upload Photo
+              <input type="file" id="vImageFile" accept="image/*" style="display:none" onchange="onVehicleImageUpload(this)">
+            </label>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px">— or paste a URL —</div>
+            <input type="text" class="finput" id="vImage" placeholder="https://…" oninput="onVehicleImageUrlInput(this.value)">
+          </div>
+        </div>
       </div>
       <div class="fgroup ffull">
         <div class="flabel">Block Dates (out of service / personal use)</div>
@@ -2741,12 +2753,40 @@ function closeVehicleModal(){
   editingVehicle = null;
   resetVehForm();
 }
+var _vImageData = null; // holds compressed base64 from upload; null = use URL field
+
+function _setVehicleImagePreview(src){
+  var prev=$d('vImagePreview'), img=$d('vImagePreviewImg');
+  if(!prev||!img) return;
+  if(src){ img.src=src; prev.style.display='block'; }
+  else    { img.src=''; prev.style.display='none'; }
+}
+
+function onVehicleImageUpload(input){
+  var file=input.files&&input.files[0];
+  if(!file) return;
+  compressImage(file,function(dataUrl){
+    if(!dataUrl) return;
+    _vImageData=dataUrl;
+    $d('vImage').value='';
+    _setVehicleImagePreview(dataUrl);
+  });
+}
+
+function onVehicleImageUrlInput(val){
+  _vImageData=null;
+  _setVehicleImagePreview(val.trim()||null);
+}
+
 function resetVehForm(){
   $d('vName').value=''; $d('vName').readOnly=false;
   $d('vType').value='rental';
   $d('vRate').value=''; $d('vDeposit').value=''; $d('vWeekly').value='';
   $d('vServiceMiles').value='';
   $d('vImage').value='';
+  _vImageData=null;
+  _setVehicleImagePreview(null);
+  var fi=$d('vImageFile'); if(fi) fi.value='';
   _editingBlockedRanges=[];
   renderBlockedRangesList();
   $d('vFormTitle').textContent='Add New Vehicle';
@@ -2825,7 +2865,16 @@ function editVehicle(name){
   $d('vDeposit').value      = vc.deposit          || '';
   $d('vWeekly').value       = vc.weekly           || '';
   $d('vServiceMiles').value = vc.serviceIntervalMiles || '';
-  $d('vImage').value        = vc.image            || '';
+  var img = vc.image || '';
+  if(img.startsWith('data:')){
+    _vImageData = img;
+    $d('vImage').value = '';
+    _setVehicleImagePreview(img);
+  } else {
+    _vImageData = null;
+    $d('vImage').value = img;
+    _setVehicleImagePreview(img||null);
+  }
   _editingBlockedRanges = (vc.blockedRanges||[]).slice();
   renderBlockedRangesList();
   $d('vFormTitle').textContent = 'Edit Vehicle';
@@ -2844,6 +2893,7 @@ function saveVehicle(){
   if(!newName){ alert('Enter a vehicle name.'); return; }
 
   var serviceIntervalMiles = parseInt($d('vServiceMiles').value)||0;
+  image = _vImageData || image; // prefer uploaded base64 over URL field
   var pricing = { rate:rate, deposit:deposit, image:image };
   if(weekly) pricing.weekly = weekly;
   if(serviceIntervalMiles) pricing.serviceIntervalMiles = serviceIntervalMiles;
