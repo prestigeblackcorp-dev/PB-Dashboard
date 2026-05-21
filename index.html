@@ -2215,6 +2215,15 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="btn btn-sm" onclick="promptClearAll()" style="border-color:#ef4444;color:#ef4444">🗑 Clear All Data</button>
     </div>
 
+    <!-- Sent Notification Log -->
+    <div style="margin-top:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:800;color:var(--muted);letter-spacing:.06em;text-transform:uppercase">📬 Sent Notifications</div>
+        <button class="btn btn-sm" onclick="clearNotifLog()" style="font-size:10px;padding:3px 10px;border-color:rgba(239,68,68,.4);color:#f87171">Clear</button>
+      </div>
+      <div id="notifLogList" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;font-size:12px;background:var(--surface)"></div>
+    </div>
+
     <div id="settUnsavedBanner" style="display:none;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.4);border-radius:8px;padding:8px 12px;font-size:12px;color:#fbbf24;margin-top:12px">⚠ Unsaved changes — click Save Settings to apply</div>
     <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn btn-gold" style="flex:1" onclick="saveSettings()">Save Settings</button>
@@ -2583,6 +2592,16 @@ var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) |
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
 var OWNER_EMAIL    = localStorage.getItem('pb_owner_email')    || '';
+
+// ── Sent notification log ──────────────────────────────────────────────────────
+var _notifLog = [];
+function loadNotifLog(){ try { var r=localStorage.getItem('pb_notif_log'); if(r) _notifLog=JSON.parse(r); } catch(e){ _notifLog=[]; } }
+function _saveNotifLog(){ try { localStorage.setItem('pb_notif_log', JSON.stringify(_notifLog.slice(0,200))); } catch(e){} }
+function logNotif(type, label, to, bookingId){
+  _notifLog.unshift({ at:Date.now(), type:type, label:label, to:to||'', bookingId:bookingId||'' });
+  if(_notifLog.length>200) _notifLog=_notifLog.slice(0,200);
+  _saveNotifLog();
+}
 var DATE_LOCK_URL  = localStorage.getItem('pb_date_lock_url')  || 'https://book.stripe.com/9B614f3b1eqgaKmewAgUM0i';
 var staffPins      = [];   // [{id,name,role,pin}]  role: 'full'|'checkin'|'readonly'
 var _currentUser   = 'owner';
@@ -6114,6 +6133,7 @@ document.addEventListener('click', function(e){
 
 function openSettings(){
   if(_currentRole&&_currentRole!=='full'){ showToast('⛔ Settings restricted to owner access'); return; }
+  loadNotifLog();
   renderStaffPinList();
   $d('settWorkerUrl').value    = WORKER_URL;
   $d('settVerifyUrl').value    = VERIFY_URL;
@@ -6124,6 +6144,7 @@ function openSettings(){
   $d('settOpenAiKey').value    = OPENAI_KEY;
   $d('settTaxRate').value      = SELF_EMPLOYMENT_TAX_RATE;
   _refreshSigPreview(OWNER_SIGNATURE);
+  renderNotifLog();
   _settingsDirty = false;
   var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
   ['settWorkerUrl','settVerifyUrl','settMessagingUrl','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
@@ -6135,6 +6156,39 @@ function closeSettings(){ _settingsDirty=false; $d('settingsModal').classList.re
 function closeSettingsGuard(){
   if(_settingsDirty && !confirm('You have unsaved changes. Close without saving?')) return;
   closeSettings();
+}
+function renderNotifLog(){
+  var el=$d('notifLogList'); if(!el) return;
+  if(!_notifLog.length){
+    el.innerHTML='<div style="padding:14px 16px;color:var(--muted);text-align:center;font-size:12px">No notifications sent yet</div>';
+    return;
+  }
+  var typeIcons={ review:'⭐', verification:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗' };
+  el.innerHTML = _notifLog.map(function(n, i){
+    var dt=new Date(n.at);
+    var dateStr=dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    var timeStr=dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+    var icon=typeIcons[n.type]||'📨';
+    var ref=n.bookingId?'<span style="color:var(--muted);font-size:10px">PBR-'+n.bookingId.slice(-6).toUpperCase()+'</span>':'';
+    var to=n.to?'<span style="color:var(--muted)"> → '+esc(n.to)+'</span>':'';
+    return '<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;'+(i<_notifLog.length-1?'border-bottom:1px solid var(--border)':'')+'">'+
+      '<span style="font-size:14px;line-height:1.4">'+icon+'</span>'+
+      '<div style="flex:1;min-width:0">'+
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+
+          '<span style="font-weight:600;color:rgba(255,255,255,.85)">'+esc(n.label)+'</span>'+
+          ref+
+        '</div>'+
+        '<div style="margin-top:2px;color:var(--muted)">'+to+'</div>'+
+      '</div>'+
+      '<div style="white-space:nowrap;color:var(--muted);font-size:10px;text-align:right">'+dateStr+'<br>'+timeStr+'</div>'+
+    '</div>';
+  }).join('');
+}
+function clearNotifLog(){
+  if(!confirm('Clear all sent notification history?')) return;
+  _notifLog=[];
+  _saveNotifLog();
+  renderNotifLog();
 }
 function openRecentlyDeleted(){
   var cutoff=Date.now()-(30*24*60*60*1000);
@@ -6748,7 +6802,7 @@ function sendReviewRequest(b){
         '<p style="margin-top:24px;font-size:12px;color:#888">Prestige Black Rentals · Dallas–Fort Worth</p>'+
         '</div>'
     })
-  }).catch(function(){});
+  }).then(function(r){ if(r&&r.ok) logNotif('review','Review Request',b.email,b.id); }).catch(function(){});
 }
 
 // Auto-trigger verification — skips if already verified, no email, or Worker not configured
@@ -6804,7 +6858,7 @@ function resendVerificationEmail(id, skipConfirm){
           '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
       })
     }).then(function(r){
-      if(r.ok){ showToast('Verify link resent to '+b.email+' ✅'); }
+      if(r.ok){ showToast('Verify link resent to '+b.email+' ✅'); logNotif('verification','ID Verification Link',b.email,b.id); }
       else { r.text().then(function(t){ showToast('Failed to send — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
     }).catch(function(e){ showToast('Failed to send — '+(e&&e.message?e.message:'network error')); });
   }).catch(function(e){ showToast('Could not create verify session — '+(e&&e.message?e.message:'network error')); });
@@ -6879,6 +6933,7 @@ function sendConfirmationEmail(b, showFeedback){
       })()
     })
   }).then(function(r){
+    if(r.ok){ logNotif('confirmation','Booking Confirmation',b.email,b.id); }
     if(!showFeedback) return;
     if(r.ok){ showToast('Confirmation sent ✅'); }
     else { r.text().then(function(t){ showToast('Failed to send confirmation — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
@@ -6903,7 +6958,7 @@ function sendPickupReminder(id){
         '<p style="font-size:12px;color:#888;margin-top:24px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
   }).then(function(r){
-    if(r.ok){ showToast('Reminder sent ✅'); }
+    if(r.ok){ showToast('Reminder sent ✅'); logNotif('reminder','Pickup Reminder',b.email,b.id); }
     else { r.text().then(function(t){ showToast('Failed to send reminder — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
   }).catch(function(e){ showToast('Failed to send reminder — '+(e&&e.message?e.message:'network error')); });
 }
@@ -6961,7 +7016,7 @@ function sendReceiptEmail(b){
         '<table style="width:100%;border-collapse:collapse;font-size:14px;margin:12px 0">'+rows+'</table>'+
         '<p style="font-size:13px;color:#777;margin-top:20px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
-  }).catch(function(){});
+  }).then(function(r){ if(r&&r.ok) logNotif('receipt','Receipt / Close-Out',b.email,b.id); }).catch(function(){});
 }
 
 // ── Close-out overage summary — sent to customer when mileage/fuel/deposit charges apply ──
@@ -6991,7 +7046,7 @@ function sendCloseOutOverageSummary(b){
         '<p style="font-size:13px;color:#555;margin-top:16px">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a>.</p>'+
         '<p style="font-size:12px;color:#aaa;margin-top:20px">Booking ID: '+b.id+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
-  }).catch(function(){});
+  }).then(function(r){ if(r&&r.ok) logNotif('closeout','Close-Out Overage Summary',b.email,b.id); }).catch(function(){});
 }
 
 // ── Owner notification: fires once on every new booking ───────────────────────
@@ -7030,7 +7085,7 @@ function sendOwnerBookingNotification(b){
         '<table style="width:100%;border-collapse:collapse;font-size:14px">'+rows+'</table></div>'+
         '<p style="font-size:11px;color:#999;margin-top:16px">Booking ID: '+b.id+' · '+new Date().toLocaleString('en-US',{timeZone:'America/Chicago'})+'</p></div>'
     })
-  }).catch(function(){});
+  }).then(function(r){ if(r&&r.ok) logNotif('owner','Owner New Booking Alert',OWNER_EMAIL,b.id); }).catch(function(){});
 }
 
 // ── Date-lock confirmation to customer: fires when new booking has dateLock > 0 ─
@@ -7069,7 +7124,7 @@ function sendDateLockConfirmation(b){
         '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
     })
   }).then(function(r){
-    if(r.ok) showToast('Date lock confirmation sent to '+b.email);
+    if(r.ok){ showToast('Date lock confirmation sent to '+b.email); logNotif('datelock','Date Lock Confirmation',b.email,b.id); }
   }).catch(function(){});
 }
 
@@ -9204,6 +9259,7 @@ function sendSignedCopyToClient(){
     if(ssb){ ssb.disabled=false; ssb.textContent='📧 Send Signed Copy to Client'; }
     if(r.ok){
       showToast('Signed '+docType.toLowerCase()+' sent to '+b.email+' ✅');
+      logNotif('signedcopy','Signed Contract Copy',b.email,b.id);
       var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
       if(idx!==-1){ bookings[idx].signedCopySentAt=Date.now(); save(); }
     }
@@ -9457,7 +9513,7 @@ function sendContractSigningLink(){
     if(sl){ sl.textContent = 'Sending…'; }
     fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:'Please Sign Your '+docType+' — Prestige Black Rentals',html:html})})
     .then(function(r){
-      if(r.ok){ toast('Signing link emailed to '+b.email+' ✅'); if(sl) sl.textContent='Sent to '+b.email; }
+      if(r.ok){ toast('Signing link emailed to '+b.email+' ✅'); if(sl) sl.textContent='Sent to '+b.email; logNotif('signing','Contract Signing Link',b.email,b.id); }
       else { _fallbackCopySigLink(url, sl); }
     }).catch(function(){ _fallbackCopySigLink(url, sl); });
   } else {
@@ -9499,7 +9555,7 @@ function shareBookingPortal(id){
       '<div><strong>Contract:</strong> '+contractStatus+'</div></div>'+
       '<p style="font-size:12px;color:#aaa;margin-top:20px;border-top:1px solid #eee;padding-top:12px">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</p></div>';
     fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:'Your Booking Portal — Prestige Black Rentals',html:html})})
-    .then(function(r){ if(r.ok) toast('Portal link emailed to '+b.email+' ✅'); else _fallbackCopyPortalLink(url); })
+    .then(function(r){ if(r.ok){ toast('Portal link emailed to '+b.email+' ✅'); logNotif('portal','Booking Portal Link',b.email,b.id); } else _fallbackCopyPortalLink(url); })
     .catch(function(){ _fallbackCopyPortalLink(url); });
   } else {
     _fallbackCopyPortalLink(url);
@@ -10113,6 +10169,7 @@ setTimeout(stickyTabFix, 200);
     return; // Skip dashboard init
   }
   // Normal dashboard init
+  loadNotifLog();
   loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules(); loadStaffPins();
   initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
   updateSyncUI(); updateOnlineStatus(); initLock();
