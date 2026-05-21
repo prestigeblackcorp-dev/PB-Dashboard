@@ -1007,6 +1007,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 
   <div class="main">
     <div class="chart-card" id="forecastSection" style="padding:16px 18px"></div>
+    <div id="openClaimsSection" style="margin-bottom:16px"></div>
     <div class="kpi-grid" id="kpiGrid"></div>
     <div class="budget-section" id="budgetSection"></div>
     <div class="charts-row">
@@ -1153,6 +1154,8 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="fleet-stab" id="fstab-availability" onclick="switchFleetTab('availability')">📅 Availability</button>
       <button class="fleet-stab" id="fstab-logmaint" onclick="switchFleetTab('logmaint')">🔧 Log Maintenance</button>
       <button class="fleet-stab" id="fstab-blockdates" onclick="switchFleetTab('blockdates')">🚫 Block Dates</button>
+      <button class="fleet-stab" id="fstab-waitlist" onclick="switchFleetTab('waitlist')">📋 Waitlist</button>
+      <button class="fleet-stab" id="fstab-pricing" onclick="switchFleetTab('pricing')">⚡ Pricing Rules</button>
     </div>
 
     <!-- ── OVERVIEW panel ── -->
@@ -1245,6 +1248,16 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
     </div>
 
+    <!-- ── WAITLIST panel ── -->
+    <div id="fpanel-waitlist" style="display:none">
+      <div id="waitlistContent"></div>
+    </div>
+
+    <!-- ── PRICING RULES panel ── -->
+    <div id="fpanel-pricing" style="display:none">
+      <div id="pricingRulesContent"></div>
+    </div>
+
   </div>
 </div>
 
@@ -1318,6 +1331,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div class="fgroup"><div class="flabel">Vehicle *</div>
         <select class="finput" id="fVehicle" onchange="onVehicleChange();updateMaintWarning()"><option value="">Select vehicle</option></select></div>
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
+      <div id="pricingRuleWarn" style="display:none;grid-column:1/-1;background:rgba(201,169,98,.09);border:1px solid rgba(201,169,98,.4);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7;color:var(--text)"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
         <select class="finput" id="fType" onchange="checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal()">
           <option value="daily">Daily Rental</option>
@@ -1339,7 +1353,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div class="fsec" style="grid-column:1/-1">Pickup &amp; Drop-off</div>
       <div class="fgroup">
         <div class="flabel">Pickup Date</div>
-        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value;updateMaintWarning();onPickupDateChange()">
+        <input type="date" class="finput" id="fPickupDate" oninput="$d('fDate').value=this.value;updateMaintWarning();updatePricingRuleWarning();onPickupDateChange()">
       </div>
       <div class="fgroup">
         <div class="flabel">Pickup Time</div>
@@ -1347,7 +1361,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Date</div>
-        <input type="date" class="finput" id="fDropoffDate" oninput="this._manual=!!this.value;updateMaintWarning();validateDropoffDate()">
+        <input type="date" class="finput" id="fDropoffDate" oninput="this._manual=!!this.value;updateMaintWarning();updatePricingRuleWarning();validateDropoffDate()">
       </div>
       <div class="fgroup">
         <div class="flabel">Drop-off Time</div>
@@ -2406,7 +2420,7 @@ function cloudSave() {
       }
       var data = {
         bookings: bookings, expenses: expenses, incomes: incomes,
-        maintenance: maintenance,
+        maintenance: maintenance, waitlist: waitlist, pricingRules: pricingRules,
         custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
         budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
         contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
@@ -2489,6 +2503,22 @@ function cloudLoad(callback) {
           if (merged.length !== data.maintenance.length) needsPush = true;
           maintenance = merged;
           try { localStorage.setItem('pb_maintenance', JSON.stringify(maintenance)); } catch(e) {}
+        }
+        if (data.waitlist) {
+          // Worker writes individual keys (object map); cloudSave writes array
+          var cloudWaitlist = Array.isArray(data.waitlist)
+            ? data.waitlist
+            : Object.values(data.waitlist).filter(Boolean);
+          merged = mergeArray(waitlist, cloudWaitlist);
+          if (merged.length !== cloudWaitlist.length) needsPush = true;
+          waitlist = merged;
+          try { localStorage.setItem('pb_waitlist', JSON.stringify(waitlist)); } catch(e) {}
+        }
+        if (Array.isArray(data.pricingRules)) {
+          merged = mergeArray(pricingRules, data.pricingRules);
+          if (merged.length !== data.pricingRules.length) needsPush = true;
+          pricingRules = merged;
+          try { localStorage.setItem('pb_pricing_rules', JSON.stringify(pricingRules)); } catch(e) {}
         }
         if (data.contractTemplate && typeof data.contractTemplate === 'string' && data.contractTemplate.length > 10) {
           contractTemplate = data.contractTemplate;
@@ -2986,6 +3016,118 @@ function loadIncomes(){
 function saveIncomes(){
   try { localStorage.setItem('pb_incomes', JSON.stringify(incomes)); } catch(e){}
   cloudSave();
+}
+
+// ════════════════════════════════════════════════════════
+//  WAITLIST
+// ════════════════════════════════════════════════════════
+var waitlist = [];
+function loadWaitlist(){
+  try { var r=localStorage.getItem('pb_waitlist'); if(r) waitlist=JSON.parse(r); } catch(e){ waitlist=[]; }
+}
+function saveWaitlist(){
+  try { localStorage.setItem('pb_waitlist', JSON.stringify(waitlist)); } catch(e){}
+  cloudSave();
+}
+function deleteWaitlistEntry(id){
+  if(!confirm('Remove this waitlist entry?')) return;
+  var idx=waitlist.findIndex(function(w){return w.id===id;});
+  if(idx!==-1){ waitlist[idx]._deleted=true; waitlist[idx]._t=Date.now(); }
+  saveWaitlist();
+  renderFleetTab();
+}
+// Called after a booking is cancelled — finds matching waitlist entries and offers to notify
+function checkWaitlistOnCancel(booking){
+  if(!booking) return;
+  var veh=booking.vehicle;
+  var start=booking.pickupDate||booking.date;
+  var end=booking.dropoffDate||start;
+  var matches=waitlist.filter(function(w){
+    if(w._deleted||w.notified) return false;
+    if(w.vehicle!==veh) return false;
+    // date overlap
+    var wS=w.startDate, wE=w.endDate||wS;
+    return wS<=end && wE>=start;
+  });
+  if(!matches.length) return;
+  var doNotify=confirm('📋 '+matches.length+' person'+(matches.length>1?'s are':' is')+' on the waitlist for '+veh+' around those dates.\nSend availability email now?');
+  if(!doNotify) return;
+  matches.forEach(function(w){
+    sendWaitlistNotification(w, booking);
+    var idx=waitlist.findIndex(function(x){return x.id===w.id;});
+    if(idx!==-1){ waitlist[idx].notified=true; waitlist[idx]._t=Date.now(); }
+  });
+  saveWaitlist();
+  showToast('✅ Waitlist notifications sent');
+}
+function sendWaitlistNotification(entry, cancelledBooking){
+  var RESEND_KEY=localStorage.getItem('pb_resend_key')||'';
+  if(!RESEND_KEY||!entry.email) return;
+  var veh=entry.vehicle;
+  var dates=entry.startDate+(entry.endDate&&entry.endDate!==entry.startDate?' – '+entry.endDate:'');
+  fetch('https://api.resend.com/emails',{method:'POST',headers:{'Authorization':'Bearer '+RESEND_KEY,'Content-Type':'application/json'},body:JSON.stringify({
+    from:'Prestige Black Rentals <noreply@prestigeblackrentals.com>',
+    to:[entry.email],
+    subject:'Good news — '+veh+' just became available!',
+    html:'<div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#0d0d12;color:#f0f0f4;padding:32px;border-radius:12px">'+
+      '<h2 style="color:#C9A962;margin:0 0 16px">A Spot Just Opened Up 🎉</h2>'+
+      '<p style="line-height:1.7">Hi '+esc(entry.name)+',</p>'+
+      '<p style="line-height:1.7">You joined the waitlist for the <strong>'+esc(veh)+'</strong> on <strong>'+esc(dates)+'</strong>. A booking just cancelled — the vehicle is now available.</p>'+
+      '<p style="line-height:1.7"><a href="https://prestigeblackrentals.com/pages/book-now" style="display:inline-block;background:#C9A962;color:#000;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:700;margin:8px 0">Book Now</a></p>'+
+      '<p style="font-size:12px;color:#888;margin-top:24px">Spots fill fast. If you have questions, reply to this email or call us directly.</p>'+
+      '<p style="font-size:11px;color:#555;margin-top:8px">Prestige Black Rentals · Dallas, TX</p>'+
+    '</div>'
+  })}).catch(function(){});
+}
+
+// ════════════════════════════════════════════════════════
+//  PRICING RULES
+// ════════════════════════════════════════════════════════
+var pricingRules = [];
+function loadPricingRules(){
+  try {
+    var r=localStorage.getItem('pb_pricing_rules');
+    if(r) pricingRules=JSON.parse(r);
+  } catch(e){ pricingRules=[]; }
+  // Seed World Cup rule if not already present
+  if(!pricingRules.find(function(r){ return r.id==='worldcup2026'; })){
+    pricingRules.push({
+      id:'worldcup2026', name:'FIFA World Cup 2026',
+      startDate:'2026-06-11', endDate:'2026-07-14',
+      priceMultiplier:2, mileageMultiplier:2,
+      active:true,
+      note:'FIFA World Cup 2026 — all rates and mileage overage doubled',
+      _t: Date.now()
+    });
+    try { localStorage.setItem('pb_pricing_rules', JSON.stringify(pricingRules)); } catch(e){}
+  }
+}
+function savePricingRules(){
+  try { localStorage.setItem('pb_pricing_rules', JSON.stringify(pricingRules)); } catch(e){}
+  cloudSave();
+}
+// Returns the first active rule overlapping [startDate, endDate], or null
+function getActivePricingRule(startDate, endDate){
+  if(!startDate) return null;
+  var end=endDate||startDate;
+  return pricingRules.find(function(r){
+    return r.active && !r._deleted && r.startDate<=end && r.endDate>=startDate;
+  })||null;
+}
+// Updates the pricing-rule warning banner in the booking form
+function updatePricingRuleWarning(){
+  var el=$d('pricingRuleWarn'); if(!el) return;
+  var pickup=$d('fPickupDate')?$d('fPickupDate').value:'';
+  var dropoff=$d('fDropoffDate')?$d('fDropoffDate').value:'';
+  var rule=getActivePricingRule(pickup, dropoff||pickup);
+  if(!rule){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.innerHTML='<div style="display:flex;align-items:flex-start;gap:10px">'+
+    '<span style="font-size:18px;line-height:1">⚡</span>'+
+    '<div><div style="font-weight:700;color:#C9A962;margin-bottom:4px">'+esc(rule.name)+' Pricing Active</div>'+
+    '<div>Base rate ×'+rule.priceMultiplier+' &nbsp;·&nbsp; Mileage overage ×'+rule.mileageMultiplier+'</div>'+
+    '<div style="font-size:11px;color:rgba(201,169,98,.7);margin-top:3px">'+esc(rule.startDate)+' – '+esc(rule.endDate)+(rule.note?' · '+esc(rule.note):'')+'</div>'+
+    '</div></div>';
 }
 
 function openIncomeModal(id){
@@ -4962,6 +5104,7 @@ function confirmDelete(id){
   if(toDelete) removeFromGCal(toDelete);
   var idx=bookings.findIndex(function(b){return b.id===id;});
   if(idx!==-1){ bookings[idx]._deleted=true; bookings[idx]._t=Date.now(); }
+  if(toDelete && toDelete.status!=='cancelled') checkWaitlistOnCancel(toDelete);
   save(); closeModal(); initSelects();
   render();
   if(activeTab==='upcoming') renderUpcoming();
@@ -5321,7 +5464,9 @@ function coCalcMiles(){
   var _vm=VEHICLE_MILEAGE[b.vehicle]||{};
   var perDay=Number(b.includedMiles)||(_vm.miles||0);
   var allowed=perDay*rentalDays;
-  var rate=Number(b.overageRate)||(_vm.overage||0);
+  var _baseRate=Number(b.overageRate)||(_vm.overage||0);
+  var _prule=getActivePricingRule(b.pickupDate||b.date, b.dropoffDate||b.pickupDate||b.date);
+  var rate=_prule?(_baseRate*_prule.mileageMultiplier):_baseRate;
   var hasUnlimited=Number(b.unlimited)>0;
   var overRow=$d('coOverageRow');
   var mileChargeInput=$d('coMileageCharge');
@@ -5477,7 +5622,10 @@ function saveCloseOut(){
   bookings[idx].fuelCharge = (_fIn>=0&&_fOut>=0&&_fIn>_fOut) ? Math.ceil((_fIn-_fOut)/2)*30 : 0;
   var _oIn=Number(bookings[idx].odomIn)||0, _oOut=parseFloat($d('coOdomOut').value)||0;
   var _driven=(_oIn&&_oOut&&_oOut>_oIn)?(_oOut-_oIn):0;
-  var _days=Number(bookings[idx].days)||1, _vm2=VEHICLE_MILEAGE[bookings[idx].vehicle]||{}, _allowed=(Number(bookings[idx].includedMiles)||(_vm2.miles||0))*_days, _rate=Number(bookings[idx].overageRate)||(_vm2.overage||0);
+  var _days=Number(bookings[idx].days)||1, _vm2=VEHICLE_MILEAGE[bookings[idx].vehicle]||{}, _allowed=(Number(bookings[idx].includedMiles)||(_vm2.miles||0))*_days;
+  var _baseRate2=Number(bookings[idx].overageRate)||(_vm2.overage||0);
+  var _prule2=getActivePricingRule(bookings[idx].pickupDate||bookings[idx].date, bookings[idx].dropoffDate||bookings[idx].pickupDate||bookings[idx].date);
+  var _rate=_prule2?(_baseRate2*_prule2.mileageMultiplier):_baseRate2;
   var _hasUnlim=Number(bookings[idx].unlimited)>0;
   bookings[idx].mileageCharge = (!_hasUnlim&&_driven&&_allowed&&_rate&&_driven>_allowed) ? Math.round((_driven-_allowed)*_rate) : 0;
   bookings[idx].damage = $d('coDamageFlagged').checked ? {
@@ -6398,6 +6546,7 @@ function quickStatus(id, newStatus){
   if(newStatus==='completed'){ bookings[idx]._completedAt=Date.now(); }
   if(newStatus==='completed') sendReviewRequest(bookings[idx]);
   if(newStatus==='confirmed') sendConfirmationEmail(bookings[idx]);
+  if(newStatus==='cancelled') checkWaitlistOnCancel(bookings[idx]);
   save();
   syncToGCal(bookings[idx]);
   render();
@@ -6456,7 +6605,7 @@ function duplicateBooking(id){
   $d('fDateLock').value         = b.dateLock!=null?b.dateLock:100;
   var _rbEl=$d('fRemainingBalance'); _rbEl._manual=false;
   _rbEl.value = b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock!=null?b.dateLock:100)));
-  updateBrokerCalc(); updateLiveTotal(); updateRemainingBalance(); updateMileageHint(); updateMaintWarning();
+  updateBrokerCalc(); updateLiveTotal(); updateRemainingBalance(); updateMileageHint(); updateMaintWarning(); updatePricingRuleWarning();
   $d('modal').classList.add('open');
   checkReturningCustomer();
 }
@@ -7100,13 +7249,15 @@ var activeFleetTab = 'overview';
 
 function switchFleetTab(name){
   activeFleetTab = name;
-  ['overview','availability','logmaint','blockdates'].forEach(function(t){
+  ['overview','availability','logmaint','blockdates','waitlist','pricing'].forEach(function(t){
     var btn=$d('fstab-'+t), panel=$d('fpanel-'+t);
     if(btn) btn.classList.toggle('active', t===name);
     if(panel) panel.style.display = t===name ? '' : 'none';
   });
   if(name==='logmaint') initInlineMaint();
   if(name==='blockdates') initBdPanel();
+  if(name==='waitlist') renderWaitlistPanel();
+  if(name==='pricing') renderPricingRulesPanel();
 }
 
 // ── Inline Log Maintenance ──
@@ -7278,6 +7429,136 @@ function renderFleetTab(){
       '</tbody></table></div>')+
       '</div>';
   }).join('');
+}
+
+// ════════════════════════════════════════════════════════
+//  WAITLIST TAB PANEL
+// ════════════════════════════════════════════════════════
+function renderWaitlistPanel(){
+  var el=$d('waitlistContent'); if(!el) return;
+  var active=waitlist.filter(function(w){return !w._deleted;}).sort(function(a,b){return b.createdAt-a.createdAt;});
+  if(!active.length){
+    el.innerHTML='<div class="tbl-card"><div style="padding:40px;text-align:center;color:var(--muted)">No waitlist entries. Customers are added automatically from the booking form when a vehicle is fully booked.</div></div>';
+    return;
+  }
+  var byVehicle={};
+  active.forEach(function(w){ if(!byVehicle[w.vehicle]) byVehicle[w.vehicle]=[]; byVehicle[w.vehicle].push(w); });
+  el.innerHTML=Object.keys(byVehicle).map(function(veh){
+    var entries=byVehicle[veh];
+    return '<div class="tbl-card" style="margin-bottom:16px">'+
+      '<div class="tbl-head">'+
+        '<div class="tbl-title">'+esc(veh)+'</div>'+
+        '<div class="tbl-meta">'+entries.length+' on waitlist</div>'+
+      '</div>'+
+      '<div class="tbl-wrap"><table><thead><tr>'+
+        '<th>Name</th><th>Email</th><th>Phone</th><th>Dates Wanted</th><th>Added</th><th>Status</th><th></th>'+
+      '</tr></thead><tbody>'+
+      entries.map(function(w){
+        var dates=w.startDate+(w.endDate&&w.endDate!==w.startDate?' – '+w.endDate:'');
+        return '<tr style="'+(w.notified?'opacity:.55':'')+'">'+
+          '<td style="font-weight:700">'+esc(w.name)+'</td>'+
+          '<td><a href="mailto:'+esc(w.email||'')+'">'+esc(w.email||'—')+'</a></td>'+
+          '<td>'+esc(w.phone||'—')+'</td>'+
+          '<td>'+esc(dates)+'</td>'+
+          '<td>'+fmtDate(new Date(w.createdAt).toISOString().slice(0,10))+'</td>'+
+          '<td>'+(w.notified?'<span style="color:var(--green);font-size:12px">✅ Notified</span>':'<span style="color:var(--gold);font-size:12px">⏳ Waiting</span>')+'</td>'+
+          '<td style="display:flex;gap:6px">'+
+            (!w.notified?'<button class="btn btn-sm btn-gold" onclick="manualNotifyWaitlist(\''+w.id+'\')">Notify</button>':'')+
+            '<button class="btn btn-sm btn-danger" onclick="deleteWaitlistEntry(\''+w.id+'\')">✕</button>'+
+          '</td>'+
+        '</tr>';
+      }).join('')+
+      '</tbody></table></div></div>';
+  }).join('');
+}
+function manualNotifyWaitlist(id){
+  var w=waitlist.find(function(x){return x.id===id;});
+  if(!w||!w.email){ showToast('No email on this entry'); return; }
+  sendWaitlistNotification(w, null);
+  var idx=waitlist.findIndex(function(x){return x.id===id;});
+  if(idx!==-1){ waitlist[idx].notified=true; waitlist[idx]._t=Date.now(); }
+  saveWaitlist();
+  renderWaitlistPanel();
+  showToast('✅ Notification sent to '+w.email);
+}
+
+// ════════════════════════════════════════════════════════
+//  PRICING RULES TAB PANEL
+// ════════════════════════════════════════════════════════
+function renderPricingRulesPanel(){
+  var el=$d('pricingRulesContent'); if(!el) return;
+  var active=pricingRules.filter(function(r){return !r._deleted;});
+  var claimPipeline=['none','reported','estimate_sent','filed','approved','settled','denied'];
+  el.innerHTML='<div class="tbl-card">'+
+    '<div class="tbl-head">'+
+      '<div class="tbl-title">⚡ Pricing Rules</div>'+
+      '<div class="tbl-meta">Auto-applied to bookings and web form on matching dates</div>'+
+    '</div>'+
+    (!active.length?'<div style="padding:32px;text-align:center;color:var(--muted)">No rules configured.</div>':
+    '<div class="tbl-wrap"><table><thead><tr>'+
+      '<th>Rule Name</th><th>Start Date</th><th>End Date</th><th>Price ×</th><th>Mileage Overage ×</th><th>Status</th><th>Notes</th><th></th>'+
+    '</tr></thead><tbody>'+
+    active.map(function(r){
+      return '<tr>'+
+        '<td style="font-weight:700;color:var(--gold)">'+esc(r.name)+'</td>'+
+        '<td>'+fmtDate(r.startDate)+'</td>'+
+        '<td>'+fmtDate(r.endDate)+'</td>'+
+        '<td style="color:var(--gold);font-weight:700">×'+r.priceMultiplier+'</td>'+
+        '<td style="color:var(--blue);font-weight:700">×'+r.mileageMultiplier+'</td>'+
+        '<td>'+(r.active?'<span style="color:var(--green)">● Active</span>':'<span style="color:var(--muted)">○ Inactive</span>')+'</td>'+
+        '<td style="color:var(--muted);font-size:12px">'+esc(r.note||'')+'</td>'+
+        '<td><button class="btn btn-sm" onclick="togglePricingRule(\''+r.id+'\')">'+( r.active?'Disable':'Enable')+'</button></td>'+
+      '</tr>';
+    }).join('')+
+    '</tbody></table></div>') +
+  '</div>';
+}
+function togglePricingRule(id){
+  var idx=pricingRules.findIndex(function(r){return r.id===id;});
+  if(idx===-1) return;
+  pricingRules[idx].active=!pricingRules[idx].active;
+  pricingRules[idx]._t=Date.now();
+  savePricingRules();
+  renderPricingRulesPanel();
+}
+
+// ════════════════════════════════════════════════════════
+//  DAMAGE CLAIM PIPELINE — Overview section
+// ════════════════════════════════════════════════════════
+var CLAIM_STAGES=['reported','filed','pending','approved','paid','denied'];
+var CLAIM_LABELS={'':'No Claim','reported':'Reported','filed':'Filed','pending':'Pending Review','approved':'Approved','paid':'Paid / Recovered','denied':'Denied'};
+function renderOpenClaims(){
+  var el=$d('openClaimsSection'); if(!el) return;
+  var open=bookings.filter(function(b){
+    return !b._deleted && b.damage && b.damage.flagged && (!b.claimStatus || (b.claimStatus!=='paid'&&b.claimStatus!=='denied'));
+  }).sort(function(a,b){ return (b.damage.reportedAt||0)-(a.damage.reportedAt||0); });
+  if(!open.length){ el.innerHTML=''; return; }
+  var STAGE_COLOR={'reported':'rgba(255,200,0,.15)','filed':'rgba(100,160,255,.15)','pending':'rgba(201,169,98,.15)','approved':'rgba(100,220,100,.15)','paid':'rgba(100,220,100,.2)','denied':'rgba(255,92,92,.15)'};
+  var STAGE_TEXT={'reported':'#ffc800','filed':'#60a5fa','pending':'#C9A962','approved':'#4ade80','paid':'#4ade80','denied':'#f87171'};
+  el.innerHTML='<div class="tbl-card" style="border-color:rgba(239,68,68,.25)">'+
+    '<div class="tbl-head">'+
+      '<div class="tbl-title" style="color:#f87171">🚨 Open Damage Claims ('+open.length+')</div>'+
+    '</div>'+
+    '<div class="tbl-wrap"><table><thead><tr>'+
+      '<th>Customer</th><th>Vehicle</th><th>Trip Date</th><th>Damage Type</th><th>Estimate</th><th>Claim Stage</th><th>Recovered</th><th></th>'+
+    '</tr></thead><tbody>'+
+    open.map(function(b){
+      var dmg=b.damage||{};
+      var stage=b.claimStatus||'reported';
+      var color=STAGE_TEXT[stage]||'var(--muted)';
+      var bg=STAGE_COLOR[stage]||'transparent';
+      return '<tr>'+
+        '<td style="font-weight:700">'+esc(b.name)+'</td>'+
+        '<td>'+esc(b.vehicle)+'</td>'+
+        '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
+        '<td><span class="badge" style="background:rgba(239,68,68,.15);color:#f87171">'+esc(dmg.type||'Damage')+'</span></td>'+
+        '<td style="font-weight:700">'+$$(dmg.estimate||0)+'</td>'+
+        '<td><span class="badge" style="background:'+bg+';color:'+color+'">'+esc(CLAIM_LABELS[stage]||stage)+'</span></td>'+
+        '<td>'+(b.claimRecovered?$$(b.claimRecovered):'—')+'</td>'+
+        '<td><button class="btn btn-sm" onclick="openCloseOut(\''+b.id+'\')">Update</button></td>'+
+      '</tr>';
+    }).join('')+
+    '</tbody></table></div></div>';
 }
 
 // ════════════════════════════════════════════════════════
@@ -8194,6 +8475,7 @@ function printContract(){
 function render(){
   var filtered=getFiltered();
   renderForecast();
+  renderOpenClaims();
   renderKPIs(filtered,'kpiGrid');
   renderBudgetSection();
   renderCharts(filtered);
@@ -8337,7 +8619,7 @@ window.addEventListener('resize', stickyTabFix);
 setTimeout(stickyTabFix, 200);
 
 // Load local data first for instant display
-loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate();
+loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules();
 initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
 updateSyncUI(); updateOnlineStatus(); initLock();
 setTimeout(hideSplash, 1300);
