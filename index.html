@@ -6332,15 +6332,18 @@ function sendStripeVerification(){
 
 function applyStripeVerification(session){
   var doc=session.last_verification_report&&session.last_verification_report.document;
+
+  // ── 1. Build extracted fields from Stripe report ──────────────────────────
+  var extracted = { idVerified: true, verifiedAt: new Date().toISOString() };
   if(doc){
     var first=(doc.name&&doc.name.first_name)||'';
     var last=(doc.name&&doc.name.last_name)||'';
-    if(first||last) $d('vIdName').value=(first+' '+last).trim();
+    if(first||last) extracted.idName=(first+' '+last).trim();
     var dob=doc.dob;
-    if(dob&&dob.year) $d('vIdDob').value=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
+    if(dob&&dob.year) extracted.idDob=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
     var exp=doc.expiration_date;
-    if(exp&&exp.year) $d('vIdExpiry').value=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
-    if(doc.number) $d('vIdNumber').value=doc.number;
+    if(exp&&exp.year) extracted.idExpiry=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
+    if(doc.number) extracted.idNumber=doc.number;
     if(doc.address){
       var _a=doc.address, _addrParts=[];
       if(_a.line1)       _addrParts.push(_a.line1);
@@ -6348,18 +6351,53 @@ function applyStripeVerification(session){
       if(_a.city)        _addrParts.push(_a.city);
       if(_a.state)       _addrParts.push(_a.state);
       if(_a.postal_code) _addrParts.push(_a.postal_code);
-      if(_addrParts.length) $d('vIdAddress').value=_addrParts.join(', ');
-      if(_a.state) $d('vIdState').value=_a.state;
+      if(_addrParts.length) extracted.idAddress=_addrParts.join(', ');
+      if(_a.state) extracted.idState=_a.state;
     }
     var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
-    if(doc.type&&typeMap[doc.type]) $d('vIdType').value=typeMap[doc.type];
+    if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
   }
-  $d('vIdVerified').checked=true;
-  $d('vStripeStatus').textContent='✅ Identity verified by Stripe!';
+
+  // ── 2. Populate form fields so owner can see what was captured ───────────
+  if(extracted.idName)    $d('vIdName').value    = extracted.idName;
+  if(extracted.idDob)     $d('vIdDob').value     = extracted.idDob;
+  if(extracted.idExpiry)  $d('vIdExpiry').value  = extracted.idExpiry;
+  if(extracted.idNumber)  $d('vIdNumber').value  = extracted.idNumber;
+  if(extracted.idAddress) $d('vIdAddress').value = extracted.idAddress;
+  if(extracted.idState)   $d('vIdState').value   = extracted.idState;
+  if(extracted.idType)    $d('vIdType').value    = extracted.idType;
+  $d('vIdVerified').checked = true;
+
+  // ── 3. Auto-save directly to booking — don't wait for owner to click Save ─
+  var idx = bookings.findIndex(function(x){ return x.id===verifyId; });
+  if(idx !== -1){
+    var existing = bookings[idx].verify || {};
+    // Merge: keep any existing insurance/card fields, overlay Stripe ID fields
+    bookings[idx].verify = Object.assign({}, existing, extracted);
+
+    // ── 4. Auto-confirm if still pending ───────────────────────────────────
+    if(bookings[idx].status === 'pending'){
+      bookings[idx].status = 'confirmed';
+      bookings[idx]._t = Date.now();
+      sendConfirmationEmail(bookings[idx]);
+      var histEntry={at:Date.now(),by:_currentUser||'owner',changes:['status: "pending"→"confirmed" (auto after ID verified)']};
+      bookings[idx]._history=(bookings[idx]._history||[]).concat([histEntry]);
+    }
+
+    save();
+    renderTodayBanner();
+    if(activeTab==='upcoming')  renderUpcoming();
+    if(activeTab==='current')   renderCurrent();
+    if(activeTab==='previous')  renderPrevious();
+    if(activeTab==='cancelled') renderCancelled();
+  }
+
+  $d('vStripeStatus').textContent='✅ Identity verified & saved!';
   $d('vStripeStatus').style.color='var(--green)';
-  toast('✅ ID Verified via Stripe Identity!');
-  // Email owner with all extracted ID data + link to license photos in Stripe dashboard
-  var _vb=bookings.find(function(x){return x.id===verifyId;});
+  toast('✅ ID Verified — fields saved, booking confirmed');
+
+  // ── 5. Email owner with extracted ID data + Stripe dashboard link ─────────
+  var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===verifyId;});
   if(_vb) sendOwnerIdVerification(_vb, session.id||'');
 }
 
