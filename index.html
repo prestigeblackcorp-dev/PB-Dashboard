@@ -4576,7 +4576,7 @@ function openBookingDetail(id){
     ((b.email&&MESSAGING_URL)?
       '<div class="fsec" style="margin-top:12px">📧 Emails</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+
-        '<button class="btn btn-sm" onclick="sendConfirmationEmail(bookings.find(function(x){return x.id===\''+b.id+'\'}),true)" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
+        '<button class="btn btn-sm" onclick="confirmResendConfirmation(\''+b.id+'\')" style="border-color:rgba(100,180,255,.4);color:var(--blue)">↺ Resend Confirmation</button>'+
         (WORKER_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">↺ Resend Verify Link</button>':'')+
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">📨 Send Reminder</button>'+
         (WORKER_URL&&(b.status==='confirmed'||b.status==='active')?'<button class="btn btn-sm" onclick="sendExtensionLink(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">🔗 Send Extension Link</button>':'')+'</div>'
@@ -6550,12 +6550,13 @@ function sendReviewRequest(b){
 function autoSendVerification(b){
   if(!b||!b.email||!WORKER_URL||!MESSAGING_URL) return;
   if(b.verify&&b.verify.idVerified) return; // already verified
-  resendVerificationEmail(b.id);
+  resendVerificationEmail(b.id, true); // skip confirm — auto-triggered
 }
 
-function resendVerificationEmail(id){
+function resendVerificationEmail(id, skipConfirm){
   var b=bookings.find(function(x){return x.id===id;});
   if(!b||!b.email){ showToast('No email on this booking'); return; }
+  if(!skipConfirm && !confirm('Send ID verification link to '+b.email+'?')) return;
   if(!WORKER_URL){ showToast('Worker URL not set — check Settings'); return; }
   if(!MESSAGING_URL){ showToast('Messaging URL not set — check Settings'); return; }
   showToast('Creating new verify link…');
@@ -6602,6 +6603,13 @@ function resendVerificationEmail(id){
       else { r.text().then(function(t){ showToast('Failed to send — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
     }).catch(function(e){ showToast('Failed to send — '+(e&&e.message?e.message:'network error')); });
   }).catch(function(e){ showToast('Could not create verify session — '+(e&&e.message?e.message:'network error')); });
+}
+
+function confirmResendConfirmation(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b||!b.email){ showToast('No email on this booking'); return; }
+  if(!confirm('Resend confirmation email to '+b.email+'?')) return;
+  sendConfirmationEmail(b, true);
 }
 
 function sendConfirmationEmail(b, showFeedback){
