@@ -2478,12 +2478,12 @@ function mergeArray(local, cloud) {
 var _cloudSaveRetries = 0;
 var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
 function cloudSave() {
-  if (!FIREBASE_URL || _cloudLoading) return;
+  if (!WORKER_URL || _cloudLoading) return;
   if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
   if (_cloudLoading) { _offlinePending = true; return; }
   setSyncStatus('syncing');
-  // Staleness check: read remote _t before writing to detect concurrent saves from another device
-  fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data/savedAt.json?_=' + Date.now(), { cache: 'no-store' })
+  // Staleness check via Worker so Firebase rules can be locked
+  fetch(WORKER_URL + '/sync/savedAt?_=' + Date.now(), { cache: 'no-store' })
     .then(function(r){ return r.ok ? r.json() : null; })
     .catch(function(){ return null; })
     .then(function(remoteSavedAt){
@@ -2508,11 +2508,12 @@ function cloudSave() {
         review_url: REVIEW_URL || '',
         savedAt: Date.now()
       };
-      fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data.json', {
-        method: 'PUT', body: JSON.stringify(data),
+      fetch(WORKER_URL + '/sync/save', {
+        method: 'POST', body: JSON.stringify(data),
         headers: { 'Content-Type': 'application/json' }
-      }).then(function(r) {
-        if (r.ok) {
+      }).then(function(r){ return r.json(); })
+      .then(function(res) {
+        if (res && res.ok) {
           setSyncStatus('ok');
           _offlinePending = false;
           _cloudSaveRetries = 0;
@@ -2520,7 +2521,6 @@ function cloudSave() {
           localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString());
         } else {
           setSyncStatus('error');
-          // cap retries at 5 — after that show persistent error instead of looping forever
           if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
           else { _cloudSaveRetries = 0; setSyncStatus('error'); }
         }
@@ -2533,9 +2533,9 @@ function cloudSave() {
 }
 
 function cloudLoad(callback) {
-  if (!FIREBASE_URL) { if (callback) callback(false); return; }
+  if (!WORKER_URL) { if (callback) callback(false); return; }
   setSyncStatus('syncing');
-  fetch(FIREBASE_URL.replace(/\/$/, '') + '/pb_data.json?_=' + Date.now(), { cache: 'no-store' })
+  fetch(WORKER_URL + '/sync/load?_=' + Date.now(), { cache: 'no-store' })
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data && typeof data === 'object') {
@@ -2656,47 +2656,37 @@ function setSyncStatus(status) {
   stickyTabFix();
 }
 function updatePhotoSyncHints(){
-  var connected = !!FIREBASE_URL;
+  var connected = !!WORKER_URL;
   var msg = connected
     ? '<span style="color:var(--green)">☁ Connected — photos sync across all devices</span>'
-    : '<span style="color:#f97316">⚠ Not connected — photos saved on this device only. Tap <strong>Sync</strong> in the header to connect.</span>';
+    : '<span style="color:#f97316">⚠ Not connected — photos saved on this device only. Set your Worker URL in Settings to enable sync.</span>';
   var ci = $d('ciPhotoSyncHint'); if(ci) ci.innerHTML = msg;
   var co = $d('coPhotoSyncHint'); if(co) co.innerHTML = msg;
 }
 
 function openSyncSetup() {
-  var current = FIREBASE_URL ? 'Connected to:\n' + FIREBASE_URL + '\n\n' : '⚠️ NOT connected on this device.\n\n';
-  var url = prompt(current + 'Paste your Firebase Realtime Database URL to connect.\nLeave blank to disconnect.\n\n(e.g. https://YOUR-PROJECT-default-rtdb.firebaseio.com)', FIREBASE_URL || '');
-  if (url === null) return;
-  url = url.trim().replace(/\/$/, '');
-  FIREBASE_URL = url;
-  if (url) {
-    localStorage.setItem('pb_firebase_url', url);
-    updateSyncUI();
-    cloudLoad(function(ok) {
-      afterCloudLoad(ok);
-      if (!ok) alert('❌ Could not connect.\n\nCheck:\n1. URL is correct\n2. Firebase rules are set to public:\n{\n  "rules": { ".read": true, ".write": true }\n}');
-    });
-  } else {
-    localStorage.removeItem('pb_firebase_url');
-    setSyncStatus('off');
-    updateSyncUI();
+  if (!WORKER_URL) {
+    alert('⚙️ Sync runs through your Cloudflare Worker.\n\nGo to Settings → Worker URL to configure it, then sync will activate automatically.');
+    openSettings();
+    return;
   }
+  // Worker URL is set — just trigger a pull
+  forcePull();
 }
 
 function forcePull() {
-  if (!FIREBASE_URL) { openSyncSetup(); return; }
+  if (!WORKER_URL) { openSyncSetup(); return; }
   setSyncStatus('syncing');
   cloudLoad(function(ok) {
     afterCloudLoad(ok);
-    if (!ok) alert('Could not reach Firebase. Check your internet connection.');
+    if (!ok) alert('Could not reach the Worker. Check your internet connection and Worker URL in Settings.');
   });
 }
 
 function updateSyncUI() {
   var pull = $d('forcePullBtn');
-  if (pull) pull.style.display = FIREBASE_URL ? '' : 'none';
-  setSyncStatus(FIREBASE_URL ? 'syncing' : 'off');
+  if (pull) pull.style.display = WORKER_URL ? '' : 'none';
+  setSyncStatus(WORKER_URL ? 'syncing' : 'off');
 }
 
 function loadCustomVehicles(){
@@ -3580,16 +3570,17 @@ function clearAllData(){
   try{ localStorage.setItem('pb_expenses',    JSON.stringify([])); }catch(e){}
   try{ localStorage.setItem('pb_incomes',     JSON.stringify([])); }catch(e){}
   try{ localStorage.setItem('pb_maintenance', JSON.stringify([])); }catch(e){}
-  // Force-push cleared state to Firebase so all devices see it immediately
-  if(FIREBASE_URL){
+  // Force-push cleared state through Worker so all devices see it immediately
+  if(WORKER_URL){
     var data = { bookings:[], expenses:[], incomes:[], maintenance:[],
       custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles')||'[]'),
       budgets: JSON.parse(localStorage.getItem('pb_budgets')||'{}'),
       savedAt: Date.now() };
-    fetch(FIREBASE_URL.replace(/\/$/,'')+'/pb_data.json',{
-      method:'PUT', body:JSON.stringify(data),
+    fetch(WORKER_URL+'/sync/save',{
+      method:'POST', body:JSON.stringify(data),
       headers:{'Content-Type':'application/json'}
-    }).then(function(r){ setSyncStatus(r.ok?'ok':'error'); })
+    }).then(function(r){ return r.json(); })
+      .then(function(res){ setSyncStatus(res&&res.ok?'ok':'error'); })
       .catch(function(){ setSyncStatus('error'); });
   }
   initSelects(); render(); renderExpenseLog(); renderIncomeList();
@@ -9088,17 +9079,17 @@ function afterCloudLoad(ok){
 // Pull from cloud — always wins over local data
 cloudLoad(function(ok) {
   afterCloudLoad(ok);
-  setSyncStatus(FIREBASE_URL ? (ok ? 'ok' : 'error') : 'off');
+  setSyncStatus(WORKER_URL ? (ok ? 'ok' : 'error') : 'off');
 });
 // Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
 document.addEventListener('visibilitychange', function() {
-  if (document.visibilityState === 'visible' && FIREBASE_URL) {
+  if (document.visibilityState === 'visible' && WORKER_URL) {
     cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
   }
 });
 // Auto-pull every 15 seconds so all changes propagate to every active device
 setInterval(function() {
-  if (FIREBASE_URL && document.visibilityState === 'visible') {
+  if (WORKER_URL && document.visibilityState === 'visible') {
     cloudLoad(function(ok) { afterCloudLoad(ok); });
   }
 }, 15000);
