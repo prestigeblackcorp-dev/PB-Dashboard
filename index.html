@@ -1002,6 +1002,22 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
   </div>
 </div>
 
+<!-- ═══ AUDIT LOG MODAL ═══ -->
+<div class="modal" id="auditLogModal">
+  <div class="modal-bg" onclick="closeAuditLog()"></div>
+  <div class="modal-card" style="max-width:720px;max-height:82vh;display:flex;flex-direction:column">
+    <div class="modal-title" style="flex-shrink:0">
+      <span>📋 Audit Log</span>
+      <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
+        <input id="auditSearch" type="text" placeholder="Search by name, vehicle, field…" oninput="renderAuditLog()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;width:200px">
+        <button class="modal-close" onclick="closeAuditLog()">✕</button>
+      </div>
+    </div>
+    <div style="font-size:12px;color:var(--muted);padding:0 0 10px;flex-shrink:0" id="auditLogMeta"></div>
+    <div id="auditLogBody" style="overflow-y:auto;flex:1"></div>
+  </div>
+</div>
+
 <!-- ═══ BACKUP TOAST (Feature 12) ═══ -->
 <div id="backupToast">
   <div class="toast-title">📤 Backup Reminder</div>
@@ -2052,6 +2068,12 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div style="font-size:12px;font-weight:800;color:#3b82f6;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">🗃 Recently Deleted</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Bookings deleted in the last 30 days can be restored. Older deletions are permanent.</div>
       <button class="btn btn-sm" onclick="openRecentlyDeleted()" style="border-color:#3b82f6;color:#3b82f6">View Deleted Bookings</button>
+    </div>
+
+    <div style="background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.25);border-radius:10px;padding:14px 16px;margin-top:14px">
+      <div style="font-size:12px;font-weight:800;color:var(--green);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">📋 Audit Log</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Full chronological history of every booking change — who made it, when, and what changed.</div>
+      <button class="btn btn-sm" onclick="openAuditLog()" style="border-color:rgba(34,197,94,.4);color:var(--green)">View Audit Log</button>
     </div>
 
     <div style="background:rgba(100,180,255,.07);border:1px solid rgba(100,180,255,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
@@ -5883,6 +5905,87 @@ function openRecentlyDeleted(){
   $d('recentlyDeletedModal').classList.add('open');
 }
 function closeRecentlyDeleted(){ $d('recentlyDeletedModal').classList.remove('open'); }
+
+// ── Audit Log ────────────────────────────────────────────────────────────────
+function openAuditLog(){
+  $d('auditLogModal').classList.add('open');
+  $d('auditSearch').value = '';
+  renderAuditLog();
+}
+function closeAuditLog(){ $d('auditLogModal').classList.remove('open'); }
+function renderAuditLog(){
+  var q = ($d('auditSearch').value||'').trim().toLowerCase();
+  // Collect all history entries across all bookings
+  var entries = [];
+  bookings.forEach(function(b){
+    if(!b._history||!b._history.length) return;
+    b._history.forEach(function(h){
+      entries.push({
+        at:        h.at,
+        by:        h.by||'owner',
+        changes:   h.changes||[],
+        bookingId: b.id,
+        customer:  b.name||'',
+        vehicle:   b.vehicle||'',
+        date:      b.pickupDate||b.date||''
+      });
+    });
+  });
+  // Sort newest first
+  entries.sort(function(a,b){ return b.at - a.at; });
+  // Filter by search
+  if(q){
+    entries = entries.filter(function(e){
+      return (e.customer.toLowerCase().indexOf(q)!==-1) ||
+             (e.vehicle.toLowerCase().indexOf(q)!==-1)  ||
+             (e.by.toLowerCase().indexOf(q)!==-1)        ||
+             e.changes.some(function(c){ return c.toLowerCase().indexOf(q)!==-1; });
+    });
+  }
+  var meta = $d('auditLogMeta');
+  var body = $d('auditLogBody');
+  if(meta) meta.textContent = entries.length + ' entr' + (entries.length===1?'y':'ies') + (q?' matching "'+q+'"':'') + ' across all bookings';
+  if(!entries.length){
+    body.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">No audit entries found'+(q?' for that search':'')+'.</div>';
+    return;
+  }
+  var html = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:2px solid var(--border)">'+
+    '<th style="padding:8px 10px;text-align:left;color:var(--muted);font-weight:700;white-space:nowrap">Date &amp; Time</th>'+
+    '<th style="padding:8px 10px;text-align:left;color:var(--muted);font-weight:700">By</th>'+
+    '<th style="padding:8px 10px;text-align:left;color:var(--muted);font-weight:700">Booking</th>'+
+    '<th style="padding:8px 10px;text-align:left;color:var(--muted);font-weight:700">Changes</th>'+
+    '</tr></thead><tbody>';
+  entries.forEach(function(e){
+    var dt = new Date(e.at);
+    var dtStr = dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) + ' ' +
+                dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+    var byColor = e.by==='owner' ? 'var(--gold)' : '#a78bfa';
+    var changesHtml = e.changes.map(function(c){
+      // Format "field: "old"→"new"" more readably
+      var parts = c.match(/^(.+?):\s*"?(.*?)"?\s*→\s*"?(.*?)"?$/);
+      if(parts){
+        return '<div style="padding:1px 0"><span style="color:var(--muted)">'+esc(parts[1])+':</span> '+
+          '<span style="color:var(--red);text-decoration:line-through">'+esc(parts[2]||'—')+'</span>'+
+          ' <span style="color:var(--muted)">→</span> '+
+          '<span style="color:var(--green)">'+esc(parts[3]||'—')+'</span></div>';
+      }
+      return '<div style="padding:1px 0;color:var(--text)">'+esc(c)+'</div>';
+    }).join('');
+    html += '<tr style="border-bottom:1px solid var(--border);vertical-align:top">'+
+      '<td style="padding:8px 10px;white-space:nowrap;color:var(--muted)">'+esc(dtStr)+'</td>'+
+      '<td style="padding:8px 10px;white-space:nowrap"><span style="font-weight:700;color:'+byColor+'">'+esc(e.by)+'</span></td>'+
+      '<td style="padding:8px 10px">'+
+        '<div style="font-weight:700;color:var(--text)">'+esc(e.customer)+'</div>'+
+        '<div style="color:var(--muted);font-size:11px">'+esc(e.vehicle)+(e.date?' · '+fmtDate(e.date):'')+'</div>'+
+        '<div><button class="btn btn-sm" onclick="closeAuditLog();openBookingDetail(\''+e.bookingId+'\')" style="margin-top:4px;padding:2px 8px;font-size:10px">View</button></div>'+
+      '</td>'+
+      '<td style="padding:8px 10px;line-height:1.6">'+changesHtml+'</td>'+
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  body.innerHTML = html;
+}
+
 function restoreBooking(id){
   var idx=bookings.findIndex(function(b){return b.id===id;});
   if(idx===-1) return;
