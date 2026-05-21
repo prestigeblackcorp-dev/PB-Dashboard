@@ -965,6 +965,43 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
   </div>
 </div>
 
+<!-- ═══ STAFF PIN MODAL ═══ -->
+<div class="modal" id="staffPinModal">
+  <div class="modal-bg" onclick="closeStaffPinModal()"></div>
+  <div class="modal-card" style="max-width:420px">
+    <div class="modal-title">
+      <span id="staffModalTitle">👤 Add Staff Member</span>
+      <button class="modal-close" onclick="closeStaffPinModal()">✕</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:4px">
+      <div class="fgroup">
+        <div class="flabel">Full Name</div>
+        <input class="finput" id="staffNameInput" type="text" placeholder="e.g. Marcus" autocomplete="off">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Role</div>
+        <select class="finput" id="staffRoleInput">
+          <option value="checkin">Check-in Only — manage bookings, no financials</option>
+          <option value="full">Full Access — same as owner</option>
+          <option value="readonly">Read Only — view bookings only</option>
+        </select>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" id="staffPinLabel">PIN</div>
+        <div style="position:relative">
+          <input class="finput" id="staffPinInput" type="password" inputmode="numeric" maxlength="10" placeholder="Enter PIN" autocomplete="new-password" style="padding-right:44px">
+          <button type="button" onclick="toggleStaffPinVis()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px" id="staffPinVisBtn">👁</button>
+        </div>
+        <div id="staffPinHint" style="font-size:11px;color:var(--muted);margin-top:4px">Leave blank when editing to keep the existing PIN unchanged.</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:18px">
+      <button class="btn" onclick="closeStaffPinModal()" style="flex:1">Cancel</button>
+      <button class="btn btn-gold" onclick="saveStaffMember()" style="flex:2">Save Staff Member</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ BACKUP TOAST (Feature 12) ═══ -->
 <div id="backupToast">
   <div class="toast-title">📤 Backup Reminder</div>
@@ -8673,33 +8710,53 @@ function renderStaffPinList(){
     '</div>';
   }).join('');
 }
+var _editingStaffId = null;
 function openAddStaffModal(editId){
-  var existing=editId?staffPins.find(function(s){return s.id===editId;}):null;
-  var name=prompt('Staff member name:'+(existing?' ('+existing.name+')':''), existing?existing.name:'');
-  if(!name||!name.trim()) return;
-  var roleStr=prompt('Role:\n1 = Check-in Only (can manage bookings, no financials)\n2 = Full Access (same as owner)\n3 = Read Only (view only)', existing?(existing.role==='full'?'2':existing.role==='readonly'?'3':'1'):'1');
-  if(!roleStr||roleStr===null) return;
-  var role=roleStr==='2'?'full':roleStr==='3'?'readonly':'checkin';
-  var np=prompt('Set PIN for '+name.trim()+' (leave blank to keep existing if editing):', '');
-  if(np===null) return;
-  np=np.trim();
-  if(!existing&&!np){ showToast('PIN is required for new staff members'); return; }
-  if(existing&&!np){
-    existing.name=name.trim(); existing.role=role;
-    saveStaffPinsLocal(); renderStaffPinList();
-    showToast('Staff member updated'); return;
-  }
+  _editingStaffId = editId || null;
+  var existing = editId ? staffPins.find(function(s){return s.id===editId;}) : null;
+  $d('staffModalTitle').textContent = existing ? '✏ Edit Staff Member' : '👤 Add Staff Member';
+  $d('staffNameInput').value  = existing ? existing.name : '';
+  $d('staffRoleInput').value  = existing ? (existing.role||'checkin') : 'checkin';
+  $d('staffPinInput').value   = '';
+  $d('staffPinInput').type    = 'password';
+  $d('staffPinVisBtn').textContent = '👁';
+  $d('staffPinLabel').textContent  = existing ? 'PIN (leave blank to keep current)' : 'PIN';
+  $d('staffPinHint').style.display = existing ? '' : 'none';
+  $d('staffPinModal').classList.add('open');
+  setTimeout(function(){ $d('staffNameInput').focus(); }, 80);
+}
+function closeStaffPinModal(){
+  $d('staffPinModal').classList.remove('open');
+  _editingStaffId = null;
+}
+function toggleStaffPinVis(){
+  var inp=$d('staffPinInput'), btn=$d('staffPinVisBtn');
+  if(inp.type==='password'){ inp.type='text'; btn.textContent='🙈'; }
+  else { inp.type='password'; btn.textContent='👁'; }
+}
+function saveStaffMember(){
+  var name=($d('staffNameInput').value||'').trim();
+  var role=$d('staffRoleInput').value||'checkin';
+  var pin=($d('staffPinInput').value||'').trim();
+  if(!name){ showToast('Name is required'); $d('staffNameInput').focus(); return; }
+  var existing=_editingStaffId?staffPins.find(function(s){return s.id===_editingStaffId;}):null;
+  if(!existing&&!pin){ showToast('PIN is required for new staff members'); $d('staffPinInput').focus(); return; }
   if(existing){
-    existing.name=name.trim(); existing.role=role; existing.pin=_hashPin(np);
-    saveStaffPinsLocal(); renderStaffPinList(); showToast('Staff member updated'); return;
+    existing.name=name; existing.role=role;
+    if(pin) existing.pin=_hashPin(pin);
+    saveStaffPinsLocal(); renderStaffPinList(); closeStaffPinModal();
+    showToast('Staff member updated ✅');
+  } else {
+    staffPins.push({id:'sp'+Date.now(), name:name, role:role, pin:_hashPin(pin)});
+    saveStaffPinsLocal(); renderStaffPinList(); closeStaffPinModal();
+    showToast('Staff member added ✅');
   }
-  staffPins.push({id:'sp'+Date.now(),name:name.trim(),role:role,pin:_hashPin(np)});
-  saveStaffPinsLocal(); renderStaffPinList(); showToast('Staff member added ✅');
 }
 function editStaffMember(id){ openAddStaffModal(id); }
 function deleteStaffMember(id){
-  if(!confirm('Remove this staff member?')) return;
-  staffPins=staffPins.filter(function(s){return s.id!==id;});
+  var s=staffPins.find(function(x){return x.id===id;});
+  if(!s||!confirm('Remove '+s.name+' from staff access?')) return;
+  staffPins=staffPins.filter(function(x){return x.id!==id;});
   saveStaffPinsLocal(); renderStaffPinList(); showToast('Staff member removed');
 }
 function applyRoleUI(){
