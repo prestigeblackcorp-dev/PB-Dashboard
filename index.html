@@ -3480,19 +3480,20 @@ function buildGCalEvent(b){
 
   // GCal rule: start and end MUST use the same format (both date or both dateTime)
   var eventStart, eventEnd;
+  // Compute end date — prefer dropoffDate, then fall back to days offset
+  var spanDays = (b.type==='daily') ? Math.max(1, Number(b.days)||1) : 1;
+  var resolvedEndDate = endDate
+    || dateStr(addDays(new Date(startDate+'T00:00:00'), spanDays > 1 ? spanDays - 1 : 0));
+
   if(startTime || endTime){
     // Timed event — both use dateTime
     var sTime = startTime || '08:00';
     var eTime = endTime   || startTime || '09:00';
-    var eDate = endDate   || startDate;
-    eventStart = { dateTime: startDate+'T'+sTime+':00', timeZone: tz };
-    eventEnd   = { dateTime: eDate+'T'+eTime+':00',     timeZone: tz };
+    eventStart = { dateTime: startDate+'T'+sTime+':00',       timeZone: tz };
+    eventEnd   = { dateTime: resolvedEndDate+'T'+eTime+':00', timeZone: tz };
   } else {
-    // All-day event — both use date (GCal end is exclusive so +1 day)
-    var spanDays = (b.type==='daily') ? Math.max(1, Number(b.days)||1) : 1;
-    var eDate = endDate
-      ? dateStr(addDays(new Date(endDate+'T00:00:00'), 1))
-      : dateStr(addDays(new Date(startDate+'T00:00:00'), spanDays));
+    // All-day event — GCal end is exclusive so add 1 day
+    var eDate = dateStr(addDays(new Date(resolvedEndDate+'T00:00:00'), 1));
     eventStart = { date: startDate };
     eventEnd   = { date: eDate };
   }
@@ -3509,7 +3510,7 @@ function buildGCalEvent(b){
 
 function syncToGCal(b){
   if(!gcalAccessToken) return;
-  if(b.status !== 'confirmed' && b.status !== 'completed' && b.status !== 'in-progress'){ removeFromGCal(b); return; }
+  if(b.status === 'cancelled' || b._deleted){ removeFromGCal(b); return; }
   var event = buildGCalEvent(b);
   var p;
   if(b.gcalEventId){
