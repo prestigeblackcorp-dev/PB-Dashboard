@@ -4246,7 +4246,7 @@ function renderBookingsTable(filtered){
       '<td>'+esc(b.vehicle)+'</td>'+
       '<td><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span></td>'+
       '<td>'+b.days+'</td>'+
-      '<td style="color:'+GOLD+';font-weight:700">'+$$(b.revenue)+(hasTblBalance?'<br><span style="font-size:10px;color:var(--red);font-weight:700">💵 −'+$$(tblBalanceDue)+' due</span>':'')+'</td>'+
+      '<td style="color:'+GOLD+';font-weight:700">'+$$(totalRevenue(b))+(hasTblBalance?'<br><span style="font-size:10px;color:var(--red);font-weight:700">💵 −'+$$(tblBalanceDue)+' due</span>':'')+'</td>'+
       '<td>'+(b.deposit?$$(b.deposit):(noDeposit?'<span style="color:#f97316;font-weight:700">⚠ $0</span>':'—'))+'</td>'+
       '<td class="'+(kept?'pos':'')+'">'+  (kept?$$(kept):'—')+'</td>'+
       '<td class="'+(returned?'neg':'')+'">'+  (b.deposit?(returned?$$(returned):'$0'):'—')+'</td>'+
@@ -4938,7 +4938,7 @@ function renderCalendar(){
         else if(b.source) chips.push('<span class="cal-chip source" title="Source: '+esc(b.source)+'">'+esc(b.source.split(' ')[0])+'</span>');
         return '<div class="cal-block '+b.type+(hasPhoto?' has-photo':'')+'" onclick="event.stopPropagation();openModal(\''+b.id+'\')">'+
           '<div class="cal-block-name">'+esc(b.name.split(' ')[0])+'</div>'+
-          '<div class="cal-block-info">'+b.days+(b.type==='hourly'?'hr':'d')+' · '+$$(b.revenue)+'</div>'+
+          '<div class="cal-block-info">'+b.days+(b.type==='hourly'?'hr':'d')+' · '+$$(totalRevenue(b))+'</div>'+
           (chips.length?'<div class="cal-block-chips">'+chips.join('')+'</div>':'')+
           '</div>';
       }).join('');
@@ -6264,7 +6264,7 @@ function openRecentlyDeleted(){
       return '<div style="display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px">'+
         '<div style="flex:1;min-width:0">'+
           '<div style="font-weight:700;font-size:13px">'+esc(b.name)+'</div>'+
-          '<div style="font-size:11px;color:var(--muted)">'+esc(b.vehicle)+' · '+(b.pickupDate||b.date)+' · '+$$(b.revenue||0)+'</div>'+
+          '<div style="font-size:11px;color:var(--muted)">'+esc(b.vehicle)+' · '+(b.pickupDate||b.date)+' · '+$$(totalRevenue(b))+'</div>'+
           '<div style="font-size:10px;color:var(--muted);margin-top:2px">Deleted '+new Date(b._t).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+'</div>'+
         '</div>'+
         '<button class="btn btn-sm" onclick="restoreBooking(\''+b.id+'\')" style="border-color:var(--green);color:var(--green);white-space:nowrap">↩ Restore</button>'+
@@ -7030,7 +7030,7 @@ function sendExtensionLink(id){
   if(!b){ showToast('Booking not found'); return; }
   if(!WORKER_URL){ showToast('Worker URL not set — check Settings'); return; }
   if(!b.email){ showToast('No email on this booking — add customer email first'); return; }
-  var dailyRate = b.days && Number(b.days)>0 ? Math.round((Number(b.revenue)||0) / Number(b.days)) : 0;
+  var dailyRate = b.days && Number(b.days)>0 ? Math.round(Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)) / Number(b.days)) : 0;
   if(!dailyRate){
     var rateStr=prompt('Enter daily rate for the extension (e.g. 350):','');
     if(!rateStr) return;
@@ -7063,7 +7063,7 @@ function sendReceiptEmail(b){
     '<tr><td style="padding:6px 0;color:#555">Pickup</td><td style="padding:6px 0">'+(b.pickupDate||b.date)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+(b.dropoffDate||'—')+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Duration</td><td style="padding:6px 0">'+b.days+' day'+(b.days!==1?'s':'')+'</td></tr>'+
-    '<tr><td style="padding:6px 0;color:#555">Base Rate</td><td style="padding:6px 0">'+$$(b.revenue)+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Base Rate</td><td style="padding:6px 0">'+$$(Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)))+'</td></tr>'+
     addons.map(function(a){ return '<tr><td style="padding:6px 0;color:#555">'+a.label+'</td><td style="padding:6px 0">'+$$(a.val)+'</td></tr>'; }).join('')+
     '<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(totalRevenue(b))+'</td></tr>'+
     (Number(b.dateLock)?'<tr><td style="padding:6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
@@ -7311,7 +7311,7 @@ function duplicateBooking(id){
   $d('fBrokerFee').value        = b.brokerFee||0;
   $d('fDateLock').value         = b.dateLock!=null?b.dateLock:100;
   var _rbEl=$d('fRemainingBalance'); _rbEl._manual=false;
-  _rbEl.value = b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock!=null?b.dateLock:100)));
+  _rbEl.value = b.remainingBalance!=null?b.remainingBalance:Math.max(0,totalRevenue(b)-(Number(b.dateLock!=null?b.dateLock:100)));
   updateBrokerCalc(); updateLiveTotal(); updateRemainingBalance(); updateMileageHint(); updateMaintWarning(); updatePricingRuleWarning();
   $d('modal').classList.add('open');
   checkReturningCustomer();
@@ -7440,7 +7440,7 @@ function exportCSV(){
   var rows=bookings.filter(function(b){return !b._deleted;}).map(function(b){
     return [
       b.id,b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
-      b.revenue||0,
+      Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)),
       b.delivery||0,b.unlimited||0,b.pet||0,b.photo||0,b.champagne||0,b.decor||0,b.bouquet||0,
       getAddons(b),totalRevenue(b),netRevenue(b),
       b.deposit||0,b.depositKept||0,b.dateLock||0,getRemainingBalance(b),
@@ -7539,7 +7539,7 @@ function generateInvoice(id){
   if(Number(b.champagne)) addons.push({lbl:'🥂 Champagne',val:b.champagne});
   if(Number(b.decor))     addons.push({lbl:'🎀 Decor',val:b.decor});
   if(Number(b.bouquet))   addons.push({lbl:'💐 Flower Bouquet',val:b.bouquet});
-  var baseRev = Number(b.revenue)||0;
+  var baseRev = Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b));
   var invNum  = '#PBR-'+b.id.slice(-6).toUpperCase();
   $d('invoicePrintArea').innerHTML=
     '<div class="inv-wrap">'+
@@ -9597,7 +9597,7 @@ function coCalcLateReturn(){
   if(!b){ return; }
   var schedDate = b.dropoffDate || b.pickupDate || b.date;
   var schedTime = b.dropoffTime || '';
-  var dailyRate = (Number(b.revenue)||0) / Math.max(1, Number(b.days)||1);
+  var dailyRate = Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)) / Math.max(1, Number(b.days)||1);
   _calcLateReturnFee(
     schedDate, schedTime,
     $d('coActualReturn') ? $d('coActualReturn').value : '',
