@@ -2592,6 +2592,7 @@ var GOOGLE_CLIENT_ID = '860890078603-3av9botn8r4lltj7cb7452s358npdo88.apps.googl
 var gcalTokenClient  = null;
 var gcalAccessToken  = null;
 var GCAL_CALENDAR_ID = 'primary'; // your main Google Calendar
+var _gcalPendingIds  = []; // booking IDs queued for GCal sync when token unavailable
 
 // ════════════════════════════════════════════════════════
 //  VEHICLE MANAGEMENT
@@ -3641,6 +3642,7 @@ function initGCal(){
       gcalAccessToken = resp.access_token;
       localStorage.setItem('pb_gcal_connected','1');
       updateGCalUI();
+      _drainGCalQueue(); // push any bookings queued while token was unavailable
     }
   });
   // Attempt silent reconnect if user was previously connected
@@ -3766,7 +3768,7 @@ function buildGCalEvent(b){
 }
 
 function syncToGCal(b, _isRetry){
-  if(!gcalAccessToken) return;
+  if(!gcalAccessToken){ _queueGCalSync(b); return; }
   if(b.status === 'cancelled' || b._deleted){ removeFromGCal(b); return; }
   var event = buildGCalEvent(b);
   var p;
@@ -3804,6 +3806,39 @@ function removeFromGCal(b){
   gcalFetch('DELETE', '/events/' + b.gcalEventId)
     .catch(function(err){ console.warn('GCal delete failed:', err); });
 }
+
+// ── GCal pending queue helpers ──────────────────────────────────────────────
+// Persists booking IDs to localStorage so they survive page reloads.
+// Drained automatically whenever gcalAccessToken becomes available.
+function _loadGCalPending(){
+  try{ _gcalPendingIds=JSON.parse(localStorage.getItem('pb_gcal_pending')||'[]'); }catch(e){ _gcalPendingIds=[]; }
+}
+function _saveGCalPending(){
+  try{ localStorage.setItem('pb_gcal_pending',JSON.stringify(_gcalPendingIds)); }catch(e){}
+}
+function _queueGCalSync(b){
+  if(!b||!b.id) return;
+  if(_gcalPendingIds.indexOf(b.id)===-1){
+    _gcalPendingIds.push(b.id);
+    _saveGCalPending();
+  }
+}
+function _drainGCalQueue(){
+  if(!gcalAccessToken||!_gcalPendingIds.length) return;
+  var ids=_gcalPendingIds.slice();
+  _gcalPendingIds=[];
+  _saveGCalPending();
+  var synced=0;
+  ids.forEach(function(id,i){
+    var b=bookings.find(function(x){ return x.id===id; });
+    if(!b) return; // booking deleted — skip
+    synced++;
+    setTimeout(function(){ syncToGCal(b); }, i*150);
+  });
+  if(synced) showToast('📅 Syncing '+synced+' queued booking'+(synced!==1?'s':'')+' to Google Calendar…');
+}
+// Load any queued IDs from a previous session on startup
+_loadGCalPending();
 
 function syncAllToGCal(){
   if(!gcalAccessToken){ alert('Connect Google Calendar first.'); return; }
