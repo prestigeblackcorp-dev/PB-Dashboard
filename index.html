@@ -4024,11 +4024,12 @@ function clearFilters(){
 // ════════════════════════════════════════════════════════
 function renderKPIs(filtered, containerId){
   var active   = filtered.filter(function(b){ return b.status!=='cancelled'; });
-  var baseBookingRev = sumK(active,'revenue');
-  var addons         = active.reduce(function(s,b){ return s+getAddons(b); },0);
-  var bookingRev     = baseBookingRev + addons; // base + all add-ons
+  // b.revenue already includes base + add-ons; totalRevenue also adds post-trip charges
+  var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0); // breakdown display only
+  var bookingRev   = active.reduce(function(s,b){ return s+totalRevenue(b); },0); // correct total
+  var pureBase     = sumK(active,'revenue') - addons; // base portion = revenue − addon amounts
   var deposits    = sumK(active,'deposit');
-  var depositKept = sumK(active,'depositKept');
+  var depositKept = sumK(active,'depositKept'); // already inside totalRevenue; kept for Deposits Kept card
   var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
   var totalBrokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*(Number(b.days)||1)); },0);
   var totalLoyaltyDisc = sumK(active,'loyaltyDiscount');
@@ -4045,7 +4046,8 @@ function renderKPIs(filtered, containerId){
     return true;
   }).reduce(function(s,inc){ return s+(Number(inc.amount)||0); }, 0);
 
-  var revenue   = bookingRev + otherIncome + depositKept;
+  // depositKept is already captured inside totalRevenue(b) — don't add again
+  var revenue   = bookingRev + otherIncome;
   var totalCost = bookingCost + loggedExp;
   var profit    = revenue - totalCost;
   var margin    = revenue>0 ? profit/revenue*100 : 0;
@@ -4060,7 +4062,7 @@ function renderKPIs(filtered, containerId){
   }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
   var netAfterCar = revenue - carPayments;
 
-  var revSub = 'Base: '+$$(baseBookingRev)+' · Add-ons: '+$$(addons)+' · Other: '+$$(otherIncome);
+  var revSub = 'Base: '+$$(pureBase)+' · Add-ons: '+$$(addons)+' · Other: '+$$(otherIncome);
 
   var cards = [
     {label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
@@ -4069,7 +4071,7 @@ function renderKPIs(filtered, containerId){
     {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
     {label:'Logged Expenses',       val:$$(loggedExp),          sub:$$(bookingCost)+' direct booking costs',               cls:'red'},
     {label:'Net Profit',            val:$$(profit),             sub:'Margin: '+pct(margin),                               cls:profit>=0?'green':'red'},
-    {label:'Avg / Booking',         val:$$(active.length?bookingRev/active.length:0), sub:'Base + add-ons, excl. cancelled', cls:''},
+    {label:'Avg / Booking',         val:$$(active.length?sumK(active,'revenue')/active.length:0), sub:'Avg revenue per booking, excl. cancelled', cls:''},
     {label:'Net After Car Payments',val:$$(netAfterCar),        sub:$$(carPayments)+' in car payments',                   cls:''},
     {label:'Net to PBR',            val:$$(netBookingRev+otherIncome-totalCost), sub:'After broker fees & discounts',     cls:netBookingRev+otherIncome-totalCost>=0?'green':'red'},
     {label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Loyalty discounts: '+$$(totalLoyaltyDisc),           cls:'red'},
