@@ -3909,7 +3909,7 @@ function fmtTime(t){
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
 function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
-function totalRevenue(b){ return Math.max(0,(Number(b.revenue)||0)-getDeposit(b))+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -4028,7 +4028,7 @@ function renderKPIs(filtered, containerId){
   // b.revenue already includes base + add-ons; totalRevenue also adds post-trip charges
   var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0); // breakdown display only
   var bookingRev   = active.reduce(function(s,b){ return s+totalRevenue(b); },0); // correct total
-  var pureBase     = sumK(active,'revenue') - active.reduce(function(s,b){return s+getDeposit(b);},0) - addons; // base = revenue − deposit − add-ons
+  var pureBase     = sumK(active,'revenue') - addons; // base = revenue − add-ons (deposit never in revenue)
   var deposits    = sumK(active,'deposit');
   var depositKept = sumK(active,'depositKept'); // already inside totalRevenue; kept for Deposits Kept card
   var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
@@ -4666,7 +4666,7 @@ function openBookingDetail(id){
 
     // Revenue
     '<div class="fsec">Revenue</div>'+
-    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(getAddons(b)?'<span style="font-size:10px;opacity:.7"> (base '+$$(Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)))+' + add-ons '+$$(getAddons(b))+')</span>':'')+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(getAddons(b)?'<span style="font-size:10px;opacity:.7"> (base '+$$(Math.max(0,(Number(b.revenue)||0)-getAddons(b)))+' + add-ons '+$$(getAddons(b))+')</span>':'')+'</span></div>'+
     (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+ ((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+' × '+(b.days||1)+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">−'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
@@ -5103,13 +5103,12 @@ function updateLiveTotal(){
 
 function updateRemainingBalance(force){force=true; // always recalc when revenue changes
   var rev    = parseFloat($d('fRevenue').value)||0;
-  var dep    = parseFloat($d('fDeposit')?$d('fDeposit').value:0)||0;
   var lock   = parseFloat($d('fDateLock').value)||0;
-  // revenue includes deposit; subtract both deposit and date lock to get true remaining rental balance
+  // revenue = rental charge only; remaining = revenue − date lock
   var rb     = $d('fRemainingBalance');
   if(force){ rb._manual=false; }
   if(!rb._manual){
-    rb.value = Math.max(0, rev - dep - lock);
+    rb.value = Math.max(0, rev - lock);
   }
 }
 
@@ -7030,7 +7029,7 @@ function sendExtensionLink(id){
   if(!b){ showToast('Booking not found'); return; }
   if(!WORKER_URL){ showToast('Worker URL not set — check Settings'); return; }
   if(!b.email){ showToast('No email on this booking — add customer email first'); return; }
-  var dailyRate = b.days && Number(b.days)>0 ? Math.round(Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)) / Number(b.days)) : 0;
+  var dailyRate = b.days && Number(b.days)>0 ? Math.round(Math.max(0,(Number(b.revenue)||0)-getAddons(b)) / Number(b.days)) : 0;
   if(!dailyRate){
     var rateStr=prompt('Enter daily rate for the extension (e.g. 350):','');
     if(!rateStr) return;
@@ -7063,7 +7062,7 @@ function sendReceiptEmail(b){
     '<tr><td style="padding:6px 0;color:#555">Pickup</td><td style="padding:6px 0">'+(b.pickupDate||b.date)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+(b.dropoffDate||'—')+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Duration</td><td style="padding:6px 0">'+b.days+' day'+(b.days!==1?'s':'')+'</td></tr>'+
-    '<tr><td style="padding:6px 0;color:#555">Base Rate</td><td style="padding:6px 0">'+$$(Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)))+'</td></tr>'+
+    '<tr><td style="padding:6px 0;color:#555">Base Rate</td><td style="padding:6px 0">'+$$(Math.max(0,(Number(b.revenue)||0)-getAddons(b)))+'</td></tr>'+
     addons.map(function(a){ return '<tr><td style="padding:6px 0;color:#555">'+a.label+'</td><td style="padding:6px 0">'+$$(a.val)+'</td></tr>'; }).join('')+
     '<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(totalRevenue(b))+'</td></tr>'+
     (Number(b.dateLock)?'<tr><td style="padding:6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
@@ -7440,7 +7439,7 @@ function exportCSV(){
   var rows=bookings.filter(function(b){return !b._deleted;}).map(function(b){
     return [
       b.id,b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
-      Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)),
+      Math.max(0,(Number(b.revenue)||0)-getAddons(b)),
       b.delivery||0,b.unlimited||0,b.pet||0,b.photo||0,b.champagne||0,b.decor||0,b.bouquet||0,
       getAddons(b),totalRevenue(b),netRevenue(b),
       b.deposit||0,b.depositKept||0,b.dateLock||0,getRemainingBalance(b),
@@ -7539,7 +7538,7 @@ function generateInvoice(id){
   if(Number(b.champagne)) addons.push({lbl:'🥂 Champagne',val:b.champagne});
   if(Number(b.decor))     addons.push({lbl:'🎀 Decor',val:b.decor});
   if(Number(b.bouquet))   addons.push({lbl:'💐 Flower Bouquet',val:b.bouquet});
-  var baseRev = Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b));
+  var baseRev = Math.max(0,(Number(b.revenue)||0)-getAddons(b));
   var invNum  = '#PBR-'+b.id.slice(-6).toUpperCase();
   $d('invoicePrintArea').innerHTML=
     '<div class="inv-wrap">'+
@@ -9045,8 +9044,8 @@ function _buildContractBreakdown(bk){
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
   var addonsTotal=unlimitedTot+deliveryAmt+petAmt+photoAmt+champagneAmt+decorAmt+bouquetAmt;
   var depositAmt=getDeposit(bk);
-  var rentalRev=Math.max(0,(Number(bk.revenue)||0)-depositAmt); // revenue minus deposit = true rental total
-  var baseRev=Math.max(0,rentalRev-addonsTotal);               // base = rental revenue minus add-ons
+  var rentalRev=Number(bk.revenue)||0;              // revenue = rental charge only (no deposit)
+  var baseRev=Math.max(0,rentalRev-addonsTotal);    // base = revenue minus add-ons
   var subtotal=rentalRev-loyaltyDisc;
   var dateLockAmt=Number(bk.dateLock)||0;
   var balanceDue=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,subtotal-dateLockAmt);
@@ -9597,7 +9596,7 @@ function coCalcLateReturn(){
   if(!b){ return; }
   var schedDate = b.dropoffDate || b.pickupDate || b.date;
   var schedTime = b.dropoffTime || '';
-  var dailyRate = Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)) / Math.max(1, Number(b.days)||1);
+  var dailyRate = Math.max(0,(Number(b.revenue)||0)-getAddons(b)) / Math.max(1, Number(b.days)||1);
   _calcLateReturnFee(
     schedDate, schedTime,
     $d('coActualReturn') ? $d('coActualReturn').value : '',
@@ -9923,8 +9922,7 @@ function _pCalcTotals(bk){
   var days=Math.max(1,Number(bk.days)||1);
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
   var dep=getDeposit(bk);
-  // revenue includes deposit — subtract it to get true rental total
-  var total=Math.max(0,rev-dep)-loyaltyDisc;
+  var total=rev-loyaltyDisc;  // revenue = rental charge only, never includes deposit
   var dateLock=Number(bk.dateLock)||0;
   var bal=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,total-dateLock);
   return {rev:rev,days:days,loyaltyDisc:loyaltyDisc,total:total,dep:dep,dateLock:dateLock,bal:bal};
