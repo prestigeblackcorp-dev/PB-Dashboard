@@ -5435,6 +5435,20 @@ function saveBooking(){
       if(!Number(ex.dateLock) && Number(entry.dateLock)) autoSendVerification(entry);
     }
   } else {
+    // NEW BOOKING — auto-carry verified ID from a past booking for the same customer
+    var _newEmail=(entry.email||'').toLowerCase().trim();
+    var _newPhone=(entry.phone||'').replace(/\D/g,'');
+    if(_newEmail||(_newPhone&&_newPhone.length>=10)){
+      var _pastVerified=bookings.filter(function(x){
+        if(x._deleted||!x.verify||!x.verify.idVerified) return false;
+        var xe=(x.email||'').toLowerCase().trim();
+        var xp=(x.phone||'').replace(/\D/g,'');
+        return (_newEmail&&xe&&_newEmail===xe)||(_newPhone&&_newPhone.length>=10&&xp&&_newPhone===xp);
+      }).sort(function(a,b){return ((b.verify&&b.verify.verifiedAt)||0)-((a.verify&&a.verify.verifiedAt)||0);});
+      if(_pastVerified.length){
+        entry.verify=Object.assign({},_pastVerified[0].verify,{idVerified:true,carriedFromBooking:_pastVerified[0].id});
+      }
+    }
     bookings.push(entry);
     // Fire owner notification and customer date-lock confirmation on new bookings only
     sendOwnerBookingNotification(entry);
@@ -6058,6 +6072,33 @@ function openVerify(id){
   $d('vInscanStatus').textContent = '';
   $d('vInscanStatus').style.color = '';
   $d('vStripeBtn').disabled = false;
+
+  // If this booking isn't yet verified, look for a past completed Stripe verification
+  // for the same customer (matched by email or phone) and pre-fill the fields
+  if(!v.idVerified){
+    var _ve=(b.email||'').toLowerCase().trim();
+    var _vp=(b.phone||'').replace(/\D/g,'');
+    var _past=bookings.filter(function(x){
+      if(x.id===id||x._deleted||!x.verify||!x.verify.idVerified||!x.verify.verifiedAt) return false;
+      var xe=(x.email||'').toLowerCase().trim();
+      var xp=(x.phone||'').replace(/\D/g,'');
+      return (_ve&&xe&&_ve===xe)||(_vp&&_vp.length>=10&&xp&&_vp===xp);
+    }).sort(function(a,b){ return ((b.verify&&b.verify.verifiedAt)||0)-((a.verify&&a.verify.verifiedAt)||0); });
+    if(_past.length){
+      var _pv=_past[0].verify;
+      if(_pv.idName)    $d('vIdName').value    = _pv.idName;
+      if(_pv.idDob)     $d('vIdDob').value     = _pv.idDob;
+      if(_pv.idType)    $d('vIdType').value    = _pv.idType;
+      if(_pv.idNumber)  $d('vIdNumber').value  = _pv.idNumber;
+      if(_pv.idState)   $d('vIdState').value   = _pv.idState;
+      if(_pv.idExpiry)  $d('vIdExpiry').value  = _pv.idExpiry;
+      if(_pv.idAddress) $d('vIdAddress').value = _pv.idAddress;
+      var _pvDate=_pv.verifiedAt?new Date(_pv.verifiedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'previously';
+      $d('vStripeStatus').textContent='📋 Pre-filled from Stripe verification on '+_pvDate+' — check ID # and expiry are still current, then save.';
+      $d('vStripeStatus').style.color='var(--gold)';
+    }
+  }
+
   $d('verifyModal').classList.add('open');
 }
 
@@ -9871,6 +9912,9 @@ function _portalRender(body,bookingId,bk){
       _portalRow('⏱ Duration',t.days+' '+durUnit+(t.days!==1?'s':''))+
       (curAddons.length?_portalRow('✨ Extras',curAddons.join(' · ')):'')+
       _portalRow('📝 Contract',hasSig?'<span style="color:#22c55e;font-weight:700">✅ Signed</span>':'<span style="color:#f97316">⏳ Not yet signed</span>')+
+      _portalRow('🪪 ID Verification',(bk.verify&&bk.verify.idVerified)?
+        '<span style="color:#22c55e;font-weight:700">✅ Verified</span>'+(bk.verify.idName?' <span style="color:rgba(255,255,255,.45);font-size:12px">'+esc(bk.verify.idName)+'</span>':''):
+        '<span style="color:rgba(255,255,255,.4)">Not yet completed</span>')+
     '</div>'+
 
     // ── Payment summary ──
