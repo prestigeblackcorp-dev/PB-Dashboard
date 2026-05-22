@@ -3908,7 +3908,7 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
+function totalRevenue(b){ return Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0))+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -4027,7 +4027,7 @@ function renderKPIs(filtered, containerId){
   // b.revenue already includes base + add-ons; totalRevenue also adds post-trip charges
   var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0); // breakdown display only
   var bookingRev   = active.reduce(function(s,b){ return s+totalRevenue(b); },0); // correct total
-  var pureBase     = sumK(active,'revenue') - addons; // base portion = revenue − addon amounts
+  var pureBase     = sumK(active,'revenue') - sumK(active,'deposit') - addons; // base = revenue − deposit − add-ons
   var deposits    = sumK(active,'deposit');
   var depositKept = sumK(active,'depositKept'); // already inside totalRevenue; kept for Deposits Kept card
   var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
@@ -5101,13 +5101,14 @@ function updateLiveTotal(){
 }
 
 function updateRemainingBalance(force){force=true; // always recalc when revenue changes
-  var base   = parseFloat($d('fRevenue').value)||0;
-  // revenue is all-in total; remaining = revenue − date lock (deposit is a separate hold)
+  var rev    = parseFloat($d('fRevenue').value)||0;
+  var dep    = parseFloat($d('fDeposit')?$d('fDeposit').value:0)||0;
   var lock   = parseFloat($d('fDateLock').value)||0;
+  // revenue includes deposit; subtract both deposit and date lock to get true remaining rental balance
   var rb     = $d('fRemainingBalance');
   if(force){ rb._manual=false; }
   if(!rb._manual){
-    rb.value = Math.max(0, base - lock);
+    rb.value = Math.max(0, rev - dep - lock);
   }
 }
 
@@ -7696,8 +7697,7 @@ function renderOutstanding(){
 function getRemainingBalance(b){
   if(b.remainingBalance!=null) return Number(b.remainingBalance)||0;
   var lock=Number(b.dateLock)||0;
-  var dep=Number(b.deposit)||0;
-  return Math.max(0,totalRevenue(b)+dep-lock);
+  return Math.max(0,totalRevenue(b)-lock);
 }
 
 function editRemainingBalance(id){
@@ -9043,12 +9043,12 @@ function _buildContractBreakdown(bk){
   var bouquetAmt=Number(bk.bouquet)||0;
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
   var addonsTotal=unlimitedTot+deliveryAmt+petAmt+photoAmt+champagneAmt+decorAmt+bouquetAmt;
-  var totalRev=Number(bk.revenue)||0;
-  var baseRev=Math.max(0,totalRev-addonsTotal); // pure base = revenue minus add-ons
-  var subtotal=totalRev-loyaltyDisc;            // total already inclusive; just subtract any discount
-  var dateLockAmt=Number(bk.dateLock)||0;
   var depositAmt=Number(bk.deposit)||0;
   if(!depositAmt&&bk.vehicle&&VEHICLE_COSTS[bk.vehicle]){depositAmt=Number(VEHICLE_COSTS[bk.vehicle].deposit)||0;}
+  var rentalRev=Math.max(0,(Number(bk.revenue)||0)-depositAmt); // revenue minus deposit = true rental total
+  var baseRev=Math.max(0,rentalRev-addonsTotal);               // base = rental revenue minus add-ons
+  var subtotal=rentalRev-loyaltyDisc;
+  var dateLockAmt=Number(bk.dateLock)||0;
   var balanceDue=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,subtotal-dateLockAmt);
   var dailyRateNum=days>0?baseRev/days:0;
   return {baseRev:baseRev,days:days,dailyRateNum:dailyRateNum,
@@ -9922,10 +9922,10 @@ function _pCalcTotals(bk){
   var rev=Number(bk.revenue)||0;
   var days=Math.max(1,Number(bk.days)||1);
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
-  // revenue already includes all add-ons — never add them on top
-  var total=rev-loyaltyDisc;
   var dep=Number(bk.deposit)||0;
   if(!dep&&bk.vehicle&&VEHICLE_COSTS[bk.vehicle]){dep=Number(VEHICLE_COSTS[bk.vehicle].deposit)||0;}
+  // revenue includes deposit — subtract it to get true rental total
+  var total=Math.max(0,rev-dep)-loyaltyDisc;
   var dateLock=Number(bk.dateLock)||0;
   var bal=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,total-dateLock);
   return {rev:rev,days:days,loyaltyDisc:loyaltyDisc,total:total,dep:dep,dateLock:dateLock,bal:bal};
