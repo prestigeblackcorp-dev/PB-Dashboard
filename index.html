@@ -9926,11 +9926,14 @@ function _pCalcTotals(bk){
     (Number(bk.pet)||0)+(bk.addlIncome&&bk.addlIncome.amount?Number(bk.addlIncome.amount):0)+
     (Number(bk.fuelCharge)||0)+(Number(bk.mileageCharge)||0)+(Number(bk.depositKept)||0)+
     (Number(bk.lateReturnFee)||0);
-  var total=rev+addonsAmt;
+  var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
+  var total=rev+addonsAmt-loyaltyDisc;
   var dep=Number(bk.deposit)||0;
+  if(!dep&&bk.vehicle&&VEHICLE_COSTS[bk.vehicle]){dep=Number(VEHICLE_COSTS[bk.vehicle].deposit)||0;}
   var dateLock=Number(bk.dateLock)||0;
-  var bal=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,total-dep-dateLock);
-  return {rev:rev,days:days,addonsAmt:addonsAmt,total:total,dep:dep,dateLock:dateLock,bal:bal};
+  // Balance = rental total minus date lock credit only (deposit is a separate refundable hold, not a rental payment)
+  var bal=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,total-dateLock);
+  return {rev:rev,days:days,addonsAmt:addonsAmt,loyaltyDisc:loyaltyDisc,total:total,dep:dep,dateLock:dateLock,bal:bal};
 }
 
 function _pIsUpcoming(bk){
@@ -10028,9 +10031,9 @@ function _portalRender(body,bookingId,bk){
     // ── Payment summary ──
     '<div style="background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;margin-bottom:14px">'+
       '<div style="padding:10px 16px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.28);border-bottom:1px solid rgba(255,255,255,.06)">Payment Summary</div>'+
-      _portalRow('💰 Total',pFmt(t.total))+
-      (t.dep?_portalRow('✅ Deposit Paid','<span style="color:#22c55e">−'+pFmt(t.dep)+'</span>'):'')+
-      (t.dateLock?_portalRow('✅ Date Lock','<span style="color:#22c55e">−'+pFmt(t.dateLock)+'</span>'):'')+
+      _portalRow('💰 Rental Total',pFmt(t.total))+
+      (t.loyaltyDisc>0?_portalRow('🎁 Loyalty Discount','<span style="color:#22c55e">−'+pFmt(t.loyaltyDisc)+'</span>'):'')+
+      (t.dateLock?_portalRow('✅ Date Lock Applied','<span style="color:#22c55e">−'+pFmt(t.dateLock)+'</span>'):'')+
       (t.bal>0?
         '<div style="display:flex;justify-content:space-between;align-items:center;padding:13px 16px;background:rgba(249,115,22,.08);border-top:1px solid rgba(249,115,22,.18)">'+
           '<div style="font-size:13px;font-weight:700;color:#fb923c">💳 Balance Due</div>'+
@@ -10040,6 +10043,10 @@ function _portalRender(body,bookingId,bk){
           '<div style="font-size:13px;color:rgba(255,255,255,.4)">Balance</div>'+
           '<div style="font-size:13px;font-weight:700;color:#22c55e">Paid in Full ✅</div>'+
         '</div>')+
+      (t.dep?'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-top:1px solid rgba(255,255,255,.06)">'+
+        '<div style="font-size:12px;color:rgba(255,255,255,.38)">🔒 Security Deposit Hold</div>'+
+        '<div style="font-size:12px;color:rgba(255,255,255,.45)">'+pFmt(t.dep)+' <em style="font-size:10px">(refundable)</em></div>'+
+      '</div>':'')+
     '</div>'+
 
     // ── Sign CTA (unsigned + upcoming) ──
