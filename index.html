@@ -8194,26 +8194,47 @@ function renderAvailBadges(){
           if(iv.en>slotEnds[target]) slotEnds[target]=iv.en;
         });
 
-        // Build available-only list for each slot
+        // Build available-only list for each slot + collect free window arrays for intersection
         var anyFree=false, allFull=true;
+        var slotFreeWindows=[];
         var slotLines=slotBookings.map(function(sbks,si){
+          var freeWins=[];
           if(!sbks.length){
             anyFree=true; allFull=false;
+            freeWins.push({st:'00:00',en:'23:59'});
+            slotFreeWindows.push(freeWins);
             return 'Unit '+(si+1)+': Free all day';
           }
           var cur='00:00', freeParts=[];
           sbks.forEach(function(iv){
-            if(cur<iv.st){ freeParts.push(fmtTime(cur)+'–'+fmtTime(iv.st)); anyFree=true; allFull=false; }
+            if(cur<iv.st){ freeParts.push(fmtTime(cur)+'–'+fmtTime(iv.st)); freeWins.push({st:cur,en:iv.st}); anyFree=true; allFull=false; }
             if(iv.en>cur) cur=iv.en;
           });
-          if(cur<'23:59'){ freeParts.push(fmtTime(cur)+'+'); anyFree=true; allFull=false; }
+          if(cur<'23:59'){ freeParts.push(fmtTime(cur)+'+'); freeWins.push({st:cur,en:'23:59'}); anyFree=true; allFull=false; }
+          slotFreeWindows.push(freeWins);
           if(!freeParts.length) return 'Unit '+(si+1)+': Fully booked';
           return 'Unit '+(si+1)+': '+freeParts.join(' · ');
         });
 
+        // Intersect all slots' free windows to find when BOTH are available
+        var bothFree=slotFreeWindows[0]?slotFreeWindows[0].slice():[];
+        for(var si=1;si<slotFreeWindows.length;si++){
+          var next=[];
+          bothFree.forEach(function(a){
+            (slotFreeWindows[si]||[]).forEach(function(b){
+              var s=a.st>b.st?a.st:b.st, e=a.en<b.en?a.en:b.en;
+              if(s<e) next.push({st:s,en:e});
+            });
+          });
+          bothFree=next;
+        }
+        var bothLine=bothFree.length
+          ? '<span style="opacity:.7">Both: '+bothFree.map(function(w){ return fmtTime(w.st)+(w.en==='23:59'?'+':'–'+fmtTime(w.en)); }).join(' · ')+'</span>'
+          : '<span style="opacity:.45">Both: None</span>';
+
         if(anyFree){
           bg='rgba(249,115,22,.1)';clr='#f97316';bdr='rgba(249,115,22,.25)';icon='⏱';label='Partial';
-          sub=slotLines.join('<br>');
+          sub=slotLines.join('<br>')+'<br>'+bothLine;
         } else {
           bg='rgba(239,68,68,.1)';clr='#ef4444';bdr='rgba(239,68,68,.25)';icon='📅';label='Booked';
           sub='Both units fully booked';
