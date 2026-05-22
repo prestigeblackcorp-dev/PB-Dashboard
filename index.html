@@ -3908,7 +3908,8 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
-function totalRevenue(b){ return Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0))+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
+function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
+function totalRevenue(b){ return Math.max(0,(Number(b.revenue)||0)-getDeposit(b))+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -4027,7 +4028,7 @@ function renderKPIs(filtered, containerId){
   // b.revenue already includes base + add-ons; totalRevenue also adds post-trip charges
   var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0); // breakdown display only
   var bookingRev   = active.reduce(function(s,b){ return s+totalRevenue(b); },0); // correct total
-  var pureBase     = sumK(active,'revenue') - sumK(active,'deposit') - addons; // base = revenue − deposit − add-ons
+  var pureBase     = sumK(active,'revenue') - active.reduce(function(s,b){return s+getDeposit(b);},0) - addons; // base = revenue − deposit − add-ons
   var deposits    = sumK(active,'deposit');
   var depositKept = sumK(active,'depositKept'); // already inside totalRevenue; kept for Deposits Kept card
   var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
@@ -4665,7 +4666,7 @@ function openBookingDetail(id){
 
     // Revenue
     '<div class="fsec">Revenue</div>'+
-    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(getAddons(b)?'<span style="font-size:10px;opacity:.7"> (base '+$$(Math.max(0,(Number(b.revenue)||0)-(Number(b.deposit)||0)-getAddons(b)))+' + add-ons '+$$(getAddons(b))+')</span>':'')+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(getAddons(b)?'<span style="font-size:10px;opacity:.7"> (base '+$$(Math.max(0,(Number(b.revenue)||0)-getDeposit(b)-getAddons(b)))+' + add-ons '+$$(getAddons(b))+')</span>':'')+'</span></div>'+
     (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+ ((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+' × '+(b.days||1)+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">−'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
@@ -9043,8 +9044,7 @@ function _buildContractBreakdown(bk){
   var bouquetAmt=Number(bk.bouquet)||0;
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
   var addonsTotal=unlimitedTot+deliveryAmt+petAmt+photoAmt+champagneAmt+decorAmt+bouquetAmt;
-  var depositAmt=Number(bk.deposit)||0;
-  if(!depositAmt&&bk.vehicle&&VEHICLE_COSTS[bk.vehicle]){depositAmt=Number(VEHICLE_COSTS[bk.vehicle].deposit)||0;}
+  var depositAmt=getDeposit(bk);
   var rentalRev=Math.max(0,(Number(bk.revenue)||0)-depositAmt); // revenue minus deposit = true rental total
   var baseRev=Math.max(0,rentalRev-addonsTotal);               // base = rental revenue minus add-ons
   var subtotal=rentalRev-loyaltyDisc;
@@ -9922,8 +9922,7 @@ function _pCalcTotals(bk){
   var rev=Number(bk.revenue)||0;
   var days=Math.max(1,Number(bk.days)||1);
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
-  var dep=Number(bk.deposit)||0;
-  if(!dep&&bk.vehicle&&VEHICLE_COSTS[bk.vehicle]){dep=Number(VEHICLE_COSTS[bk.vehicle].deposit)||0;}
+  var dep=getDeposit(bk);
   // revenue includes deposit — subtract it to get true rental total
   var total=Math.max(0,rev-dep)-loyaltyDisc;
   var dateLock=Number(bk.dateLock)||0;
