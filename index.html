@@ -3908,7 +3908,7 @@ function fmtTime(t){
   return h+':'+m+' '+ampm;
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -5089,28 +5089,23 @@ function updateLiveTotal(){
   var addons = ['fDelivery','fPet','fPhoto','fChampagne','fDecor','fBouquet']
     .reduce(function(s,id){ return s+(parseFloat($d(id)?$d(id).value:0)||0); },0)
     + (parseFloat($d('fUnlimited')?$d('fUnlimited').value:0)||0)*days;
-  var total  = base + addons;
+  // revenue already includes add-ons — total = what's in the revenue field
   var row    = $d('liveTotalRow');
   if(!row) return;
-  row.style.display = (base||addons) ? '' : 'none';
+  row.style.display = base ? '' : 'none';
   $d('liveTotalBase').textContent  = $$(base);
-  $d('liveTotalAddons').textContent= $$(addons);
-  $d('liveTotalVal').textContent   = $$(total);
+  $d('liveTotalAddons').textContent= addons>0?$$(addons)+' (included in total)':'$0.00';
+  $d('liveTotalVal').textContent   = $$(base);
 }
 
 function updateRemainingBalance(force){force=true; // always recalc when revenue changes
   var base   = parseFloat($d('fRevenue').value)||0;
-  var days   = Math.max(1,parseFloat($d('fDays').value)||1);
-  var addons = ['fDelivery','fPet','fPhoto','fChampagne','fDecor','fBouquet']
-    .reduce(function(s,id){ return s+(parseFloat($d(id)?$d(id).value:0)||0); },0)
-    + (parseFloat($d('fUnlimited')?$d('fUnlimited').value:0)||0)*days;
-  var total  = base + addons;
+  // revenue is all-in total; remaining = revenue − date lock (deposit is a separate hold)
   var lock   = parseFloat($d('fDateLock').value)||0;
-  var dep    = parseFloat($d('fDeposit')?$d('fDeposit').value:0)||0;
   var rb     = $d('fRemainingBalance');
   if(force){ rb._manual=false; }
   if(!rb._manual){
-    rb.value = Math.max(0, total + dep - lock);
+    rb.value = Math.max(0, base - lock);
   }
 }
 
@@ -9033,7 +9028,8 @@ function uploadSignedContract(input){
 
 // ─── Contract financial breakdown helpers (used by owner modal + signing mode) ────────────────
 function _buildContractBreakdown(bk){
-  var baseRev=Number(bk.revenue)||0;
+  // bk.revenue is the all-in total (already includes add-ons).
+  // Derive base = revenue − addon amounts so the itemized table still adds up correctly.
   var days=Math.max(1,Number(bk.days)||1);
   var unlimitedPD=Number(bk.unlimited)||0;
   var unlimitedTot=unlimitedPD*days;
@@ -9045,7 +9041,9 @@ function _buildContractBreakdown(bk){
   var bouquetAmt=Number(bk.bouquet)||0;
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
   var addonsTotal=unlimitedTot+deliveryAmt+petAmt+photoAmt+champagneAmt+decorAmt+bouquetAmt;
-  var subtotal=baseRev+addonsTotal-loyaltyDisc;
+  var totalRev=Number(bk.revenue)||0;
+  var baseRev=Math.max(0,totalRev-addonsTotal); // pure base = revenue minus add-ons
+  var subtotal=totalRev-loyaltyDisc;            // total already inclusive; just subtract any discount
   var dateLockAmt=Number(bk.dateLock)||0;
   var depositAmt=Number(bk.deposit)||0;
   if(!depositAmt&&bk.vehicle&&VEHICLE_COSTS[bk.vehicle]){depositAmt=Number(VEHICLE_COSTS[bk.vehicle].deposit)||0;}
@@ -9921,19 +9919,14 @@ function pFmt(n){ return '$'+(Number(n)||0).toLocaleString('en-US',{minimumFract
 function _pCalcTotals(bk){
   var rev=Number(bk.revenue)||0;
   var days=Math.max(1,Number(bk.days)||1);
-  var addonsAmt=(Number(bk.photo)||0)+(Number(bk.champagne)||0)+(Number(bk.decor)||0)+
-    (Number(bk.bouquet)||0)+(Number(bk.delivery)||0)+(Number(bk.unlimited)||0)*days+
-    (Number(bk.pet)||0)+(bk.addlIncome&&bk.addlIncome.amount?Number(bk.addlIncome.amount):0)+
-    (Number(bk.fuelCharge)||0)+(Number(bk.mileageCharge)||0)+(Number(bk.depositKept)||0)+
-    (Number(bk.lateReturnFee)||0);
   var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
-  var total=rev+addonsAmt-loyaltyDisc;
+  // revenue already includes all add-ons — never add them on top
+  var total=rev-loyaltyDisc;
   var dep=Number(bk.deposit)||0;
   if(!dep&&bk.vehicle&&VEHICLE_COSTS[bk.vehicle]){dep=Number(VEHICLE_COSTS[bk.vehicle].deposit)||0;}
   var dateLock=Number(bk.dateLock)||0;
-  // Balance = rental total minus date lock credit only (deposit is a separate refundable hold, not a rental payment)
   var bal=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,total-dateLock);
-  return {rev:rev,days:days,addonsAmt:addonsAmt,loyaltyDisc:loyaltyDisc,total:total,dep:dep,dateLock:dateLock,bal:bal};
+  return {rev:rev,days:days,loyaltyDisc:loyaltyDisc,total:total,dep:dep,dateLock:dateLock,bal:bal};
 }
 
 function _pIsUpcoming(bk){
