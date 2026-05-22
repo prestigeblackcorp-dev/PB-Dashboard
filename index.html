@@ -8583,13 +8583,9 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
 
   <!-- 4. RENTAL RATE AND FEES -->
   <h2>4. Rental Rate and Fees</h2>
-  <div class="fr"><span class="fl">Daily Rate:</span><span class="fv">{{daily_rate}} per day</span></div>
-  <div class="fr"><span class="fl">Mileage Limit:</span><span class="fv">{{mileage_limit_display}} miles per day</span></div>
-  <div class="fr"><span class="fl">Excess Mileage Fee:</span><span class="fv">{{overage_display}} per mile over limit</span></div>
-  <div class="fr"><span class="fl">Unlimited Mileage Fee:</span><span class="fv">{{unlimited_fee}} per day</span></div>
-  <div class="fr"><span class="fl">Delivery Fee:</span><span class="fv">{{delivery_fee}}</span></div>
-  <div class="fr"><span class="fl">Pet Fee:</span><span class="fv">{{pet_fee}}</span></div>
-  <div class="fr"><span class="fl">Security Deposit:</span><span class="fv">{{deposit_amount}} &nbsp;<em style="font-weight:400;color:#888">(refundable upon trip completion and inspection)</em></span></div>
+  {{breakdown_table}}
+  <div class="fr" style="margin-top:12px"><span class="fl">Security Deposit:</span><span class="fv">{{deposit_amount}} &nbsp;<em style="font-weight:400;color:#888">(refundable upon trip completion and inspection)</em></span></div>
+  <div class="fr"><span class="fl">Mileage Policy:</span><span class="fv">{{mileage_policy}}</span></div>
   <div class="fr"><span class="fl">Refuel Fee:</span><span class="fv">$30 per quarter tank short of pickup level</span></div>
   <p class="note" style="margin-top:8px">Payment is due in advance of the rental period unless otherwise agreed in writing.</p>
 
@@ -9035,6 +9031,54 @@ function uploadSignedContract(input){
   reader.readAsDataURL(file);
 }
 
+// ─── Contract financial breakdown helpers (used by owner modal + signing mode) ────────────────
+function _buildContractBreakdown(bk){
+  var baseRev=Number(bk.revenue)||0;
+  var days=Math.max(1,Number(bk.days)||1);
+  var unlimitedPD=Number(bk.unlimited)||0;
+  var unlimitedTot=unlimitedPD*days;
+  var deliveryAmt=Number(bk.delivery)||0;
+  var petAmt=Number(bk.pet)||0;
+  var photoAmt=Number(bk.photo)||0;
+  var champagneAmt=Number(bk.champagne)||0;
+  var decorAmt=Number(bk.decor)||0;
+  var bouquetAmt=Number(bk.bouquet)||0;
+  var loyaltyDisc=Number(bk.loyaltyDiscount)||0;
+  var addonsTotal=unlimitedTot+deliveryAmt+petAmt+photoAmt+champagneAmt+decorAmt+bouquetAmt;
+  var subtotal=baseRev+addonsTotal-loyaltyDisc;
+  var dateLockAmt=Number(bk.dateLock)||0;
+  var depositAmt=Number(bk.deposit)||0;
+  var balanceDue=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,subtotal-dateLockAmt);
+  var dailyRateNum=days>0?baseRev/days:0;
+  return {baseRev:baseRev,days:days,dailyRateNum:dailyRateNum,
+    unlimitedPD:unlimitedPD,unlimitedTot:unlimitedTot,
+    deliveryAmt:deliveryAmt,petAmt:petAmt,photoAmt:photoAmt,
+    champagneAmt:champagneAmt,decorAmt:decorAmt,bouquetAmt:bouquetAmt,
+    loyaltyDisc:loyaltyDisc,addonsTotal:addonsTotal,
+    subtotal:subtotal,dateLockAmt:dateLockAmt,depositAmt:depositAmt,balanceDue:balanceDue};
+}
+function _buildBreakdownTable(bk){
+  var bd=_buildContractBreakdown(bk);
+  var f=function(n){return '$'+(Math.round(n*100)/100).toFixed(2);};
+  var durLabel=bk.type==='hourly'||bk.type==='chauffeur'?'hr':'day';
+  var rows='';
+  rows+='<tr><td style="padding:4px 8px 4px 0">Base Rental ('+f(bd.dailyRateNum)+'/'+durLabel+' × '+bd.days+' '+durLabel+(bd.days!==1?'s':'')+')</td>'+'<td style="text-align:right;padding:4px 0;font-weight:700">'+f(bd.baseRev)+'</td></tr>';
+  if(bd.unlimitedPD>0)  rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Unlimited Mileage ('+f(bd.unlimitedPD)+'/day × '+bd.days+' day'+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0">'+f(bd.unlimitedTot)+'</td></tr>';
+  if(bd.deliveryAmt>0)  rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Delivery Fee</td><td style="text-align:right;padding:4px 0">'+f(bd.deliveryAmt)+'</td></tr>';
+  if(bd.petAmt>0)       rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Pet Fee</td><td style="text-align:right;padding:4px 0">'+f(bd.petAmt)+'</td></tr>';
+  if(bd.photoAmt>0)     rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Photo Package</td><td style="text-align:right;padding:4px 0">'+f(bd.photoAmt)+'</td></tr>';
+  if(bd.champagneAmt>0) rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Champagne</td><td style="text-align:right;padding:4px 0">'+f(bd.champagneAmt)+'</td></tr>';
+  if(bd.decorAmt>0)     rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Décor</td><td style="text-align:right;padding:4px 0">'+f(bd.decorAmt)+'</td></tr>';
+  if(bd.bouquetAmt>0)   rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Flower Bouquet</td><td style="text-align:right;padding:4px 0">'+f(bd.bouquetAmt)+'</td></tr>';
+  if(bd.loyaltyDisc>0)  rows+='<tr><td style="padding:4px 8px 4px 0;color:#22c55e">Loyalty Discount</td><td style="text-align:right;padding:4px 0;color:#22c55e">−'+f(bd.loyaltyDisc)+'</td></tr>';
+  rows+='<tr style="border-top:1.5px solid #888"><td style="padding:7px 8px 4px 0;font-weight:700">Rental Total</td><td style="text-align:right;padding:7px 0 4px;font-weight:700">'+f(bd.subtotal)+'</td></tr>';
+  if(bd.dateLockAmt>0)  rows+='<tr><td style="padding:4px 8px 4px 0;color:#888">Date Lock (credited toward balance)</td><td style="text-align:right;padding:4px 0;color:#888">−'+f(bd.dateLockAmt)+'</td></tr>';
+  if(bd.depositAmt>0)   rows+='<tr><td style="padding:4px 8px 4px 0;color:#888">Security Deposit (refundable)</td><td style="text-align:right;padding:4px 0;color:#888">'+f(bd.depositAmt)+'</td></tr>';
+  rows+='<tr style="border-top:1.5px solid #C9A962"><td style="padding:7px 8px 4px 0;font-weight:800;color:#C9A962">Balance Due</td><td style="text-align:right;padding:7px 0 4px;font-weight:800;color:#C9A962">'+f(bd.balanceDue)+'</td></tr>';
+  return '<table style="width:100%;border-collapse:collapse;font-size:11px;color:inherit"><tbody>'+rows+'</tbody></table>';
+}
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
 function _renderContractContent(){
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
   var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
@@ -9094,11 +9138,13 @@ function _renderContractContent(){
   if(Number(b.champagne)) addonLines.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addonLines.push('Decor ($'+b.decor+')');
   if(Number(b.bouquet))   addonLines.push('Flower Bouquet ($'+b.bouquet+')');
-  var rev=totalRevenue(b), dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
-  var days=Number(b.days)||1;
+  var _bd=_buildContractBreakdown(b);
+  var rev=totalRevenue(b), dep=_bd.depositAmt, bal=Math.max(0,getRemainingBalance(b));
+  var days=_bd.days;
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
-  var dailyRate=days?'$'+(Math.round(rev/days*100)/100).toFixed(2):'N/A';
+  // dailyRate = base rental per day (NOT totalRevenue/days — that incorrectly inflates rate with add-ons)
+  var dailyRate=days>0?'$'+_bd.dailyRateNum.toFixed(2):'N/A';
   var pickupDateFmt=fmtDateFull(b.pickupDate||b.date||'');
   var returnDateFmt=fmtDateFull(b.dropoffDate||tripEndDate(b)||'');
   var pickupTimeTxt=b.pickupTime?' at '+fmtTime(b.pickupTime):'';
@@ -9136,9 +9182,12 @@ function _renderContractContent(){
     .replace(/\{\{pickup_time_display\}\}/gi,sr(pickupTimeTxt))
     .replace(/\{\{dropoff_time_display\}\}/gi,sr(dropoffTimeTxt))
     .replace(/\{\{days\}\}/gi,               sr(String(days)))
-    .replace(/\{\{total_revenue\}\}/gi,      sr('$'+rev.toLocaleString()))
-    .replace(/\{\{deposit_amount\}\}/gi,     sr('$'+dep.toLocaleString()))
-    .replace(/\{\{balance_due\}\}/gi,        sr('$'+bal.toLocaleString()))
+    .replace(/\{\{total_revenue\}\}/gi,      sr('$'+_bd.subtotal.toFixed(2)))
+    .replace(/\{\{base_rental\}\}/gi,        sr('$'+_bd.baseRev.toFixed(2)))
+    .replace(/\{\{addons_total\}\}/gi,       sr('$'+_bd.addonsTotal.toFixed(2)))
+    .replace(/\{\{total_charges\}\}/gi,      sr('$'+_bd.subtotal.toFixed(2)))
+    .replace(/\{\{deposit_amount\}\}/gi,     sr('$'+dep.toFixed(2)))
+    .replace(/\{\{balance_due\}\}/gi,        sr('$'+_bd.balanceDue.toFixed(2)))
     .replace(/\{\{pickup_address\}\}/gi,     sr(b.address||''))
     .replace(/\{\{addons\}\}/gi,             sr(addonLines.length?addonLines.join(', '):'None'))
     .replace(/\{\{invoice_number\}\}/gi,     sr('#PBR-'+b.id.slice(-6).toUpperCase()))
@@ -9179,7 +9228,9 @@ function _renderContractContent(){
     .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee?'$'+b.brokerFee+'/day':'N/A')
     .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0,getRemainingBalance(b)))
     .replace(/\{\{mileage_policy\}\}/gi,     b.includedMiles?'Mileage: This rental includes '+Number(b.includedMiles).toLocaleString()+' miles per day. Miles driven beyond the included amount will be charged at $'+(b.overageRate||'0')+' per mile.':'Mileage: This rental includes unlimited mileage at no additional per-mile charge.')
-    .replace(/\{\{fuel_policy\}\}/gi,        'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.');
+    .replace(/\{\{fuel_policy\}\}/gi,        'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
+    .replace(/\{\{breakdown_table\}\}/gi,    sr(_buildBreakdownTable(b)))
+    .replace(/\{\{remaining_balance\}\}/gi,  sr('$'+_bd.balanceDue.toFixed(2)));
   $d('contractFilled').value=filled;
   var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
   var frame=$d('contractPreviewFrame');
@@ -9668,42 +9719,87 @@ function _initSigningMode(bookingId){
     // Render the contract
     var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
-    // Basic token substitution
+    // Comprehensive token substitution — mirrors _renderContractContent in the owner modal
     var today=new Date(); var tStr=(today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
-    var rev=((Number(bk.revenue)||0)+((bk.addlIncome&&bk.addlIncome.amount)?Number(bk.addlIncome.amount):0)).toFixed(2);
-    var dep=Number(bk.deposit)||0; var bal=Math.max(0,Number(rev)-dep);
+    var _sbd=_buildContractBreakdown(bk);
+    var _svInfo=Object.assign({},VEHICLE_INFO[bk.vehicle]||{});
+    var _sRentalType=bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
+    var _sPickupFull=fmtDateFull(bk.pickupDate||bk.date||'');
+    var _sReturnFull=fmtDateFull(bk.dropoffDate||'');
+    var _sMilesDisp=bk.includedMiles?Number(bk.includedMiles).toLocaleString()+' mi/day':'Unlimited';
+    var _sOverageDisp=bk.overageRate?'$'+bk.overageRate+'/mi over limit':'N/A';
+    var _sBrokerLine=bk.broker?'<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(bk.broker)+'</span></div>':'';
+    var _sMilagePol=bk.includedMiles?'Mileage: This rental includes '+Number(bk.includedMiles).toLocaleString()+' miles per day. Miles driven beyond the included amount will be charged at $'+(bk.overageRate||'0')+' per mile.':'Mileage: This rental includes unlimited mileage at no additional per-mile charge.';
+    var _sBdTable=_buildBreakdownTable(bk);
+    function _sr(v){return function(){return v;};}
     tmpl=tmpl.replace(/\{\{today\}\}/gi,tStr)
-      .replace(/\{\{customer_name\}\}/gi,esc(bk.name||''))
-      .replace(/\{\{customer_email\}\}/gi,esc(bk.email||''))
-      .replace(/\{\{vehicle\}\}/gi,esc(bk.vehicle||''))
-      .replace(/\{\{vehicle_model\}\}/gi,esc(bk.vehicle||''))
-      .replace(/\{\{vehicle_color\}\}/gi,'')
-      .replace(/\{\{vehicle_vin\}\}/gi,'')
-      .replace(/\{\{rental_type\}\}/gi,bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service')
-      .replace(/\{\{pickup_date\}\}/gi,fmtDate(bk.pickupDate||bk.date))
-      .replace(/\{\{pickup_time\}\}/gi,bk.pickupTime?fmtTime(bk.pickupTime):'')
-      .replace(/\{\{dropoff_date\}\}/gi,bk.dropoffDate?fmtDate(bk.dropoffDate):'')
-      .replace(/\{\{dropoff_time\}\}/gi,bk.dropoffTime?fmtTime(bk.dropoffTime):'')
-      .replace(/\{\{days\}\}/gi,String(bk.days||1))
-      .replace(/\{\{total_revenue\}\}/gi,'$'+Number(rev).toLocaleString('en-US',{minimumFractionDigits:2}))
-      .replace(/\{\{deposit_amount\}\}/gi,'$'+dep.toLocaleString('en-US',{minimumFractionDigits:2}))
-      .replace(/\{\{balance_due\}\}/gi,'$'+bal.toLocaleString('en-US',{minimumFractionDigits:2}))
-      .replace(/\{\{address\}\}/gi,esc(bk.address||''))
-      .replace(/\{\{license_number\}\}/gi,   esc((bk.verify&&bk.verify.idNumber)||''))
-      .replace(/\{\{license_state\}\}/gi,    esc((bk.verify&&bk.verify.idState)||''))
-      .replace(/\{\{license_address\}\}/gi,  esc((bk.verify&&bk.verify.idAddress)||''))
-      .replace(/\{\{customer_address\}\}/gi, esc((bk.verify&&bk.verify.idAddress)||''))
-      .replace(/\{\{verified_name\}\}/gi,    esc((bk.verify&&bk.verify.idName)||bk.name||''))
-      .replace(/\{\{customer_dob\}\}/gi,     esc((bk.verify&&bk.verify.idDob)?fmtDate(bk.verify.idDob):''))
-      .replace(/\{\{license_type\}\}/gi,     esc((bk.verify&&bk.verify.idType)||'Driver License'))
-      .replace(/\{\{license_expiry\}\}/gi,   esc((bk.verify&&bk.verify.idExpiry)?fmtDate(bk.verify.idExpiry):''))
-      .replace(/\{\{customer_phone\}\}/gi,   esc(bk.phone||''))
-      .replace(/\{\{pickup_address\}\}/gi,   esc(bk.address||''))
-      .replace(/\{\{invoice_number\}\}/gi,   esc('#PBR-'+bk.id.slice(-6).toUpperCase()))
-      .replace(/\{\{notes\}\}/gi,            esc(bk.notes||''))
-      .replace(/\{\{broker\}\}/gi,           esc(bk.broker||''))
-      .replace(/\{\{date_lock\}\}/gi,        '$'+(Number(bk.dateLock)||0))
-      .replace(/\{\{remaining_balance\}\}/gi,'$'+Math.max(0,(Number(bk.revenue)||0)-(Number(bk.deposit)||0)-(Number(bk.dateLock)||0)))
+      .replace(/\{\{customer_name\}\}/gi,_sr(esc(bk.name||'')))
+      .replace(/\{\{customer_email\}\}/gi,_sr(esc(bk.email||'')))
+      .replace(/\{\{customer_phone\}\}/gi,_sr(esc(bk.phone||'')))
+      .replace(/\{\{vehicle\}\}/gi,_sr(esc(bk.vehicle||'')))
+      .replace(/\{\{vehicle_make\}\}/gi,_sr(esc(_svInfo.make||'')))
+      .replace(/\{\{vehicle_model\}\}/gi,_sr(esc(_svInfo.model||bk.vehicle||'')))
+      .replace(/\{\{vehicle_year\}\}/gi,_sr(esc(_svInfo.year||'')))
+      .replace(/\{\{vehicle_color\}\}/gi,_sr(esc(_svInfo.color||'')))
+      .replace(/\{\{vehicle_vin\}\}/gi,_sr(esc(_svInfo.vin||'')))
+      .replace(/\{\{rental_type\}\}/gi,_sr(_sRentalType))
+      .replace(/\{\{booking_date\}\}/gi,_sr(fmtDateFull(bk.date||bk.pickupDate||'')))
+      .replace(/\{\{pickup_date\}\}/gi,_sr(_sPickupFull))
+      .replace(/\{\{return_date\}\}/gi,_sr(_sReturnFull))
+      .replace(/\{\{dropoff_date\}\}/gi,_sr(_sReturnFull))
+      .replace(/\{\{pickup_time\}\}/gi,_sr(bk.pickupTime?fmtTime(bk.pickupTime):''))
+      .replace(/\{\{dropoff_time\}\}/gi,_sr(bk.dropoffTime?fmtTime(bk.dropoffTime):''))
+      .replace(/\{\{pickup_time_display\}\}/gi,_sr(bk.pickupTime?' at '+fmtTime(bk.pickupTime):''))
+      .replace(/\{\{dropoff_time_display\}\}/gi,_sr(bk.dropoffTime?' at '+fmtTime(bk.dropoffTime):''))
+      .replace(/\{\{days\}\}/gi,_sr(String(_sbd.days)))
+      .replace(/\{\{daily_rate\}\}/gi,_sr(_sbd.days>0?'$'+_sbd.dailyRateNum.toFixed(2):'N/A'))
+      .replace(/\{\{base_rental\}\}/gi,_sr('$'+_sbd.baseRev.toFixed(2)))
+      .replace(/\{\{addons_total\}\}/gi,_sr('$'+_sbd.addonsTotal.toFixed(2)))
+      .replace(/\{\{total_charges\}\}/gi,_sr('$'+_sbd.subtotal.toFixed(2)))
+      .replace(/\{\{total_revenue\}\}/gi,_sr('$'+_sbd.subtotal.toFixed(2)))
+      .replace(/\{\{deposit_amount\}\}/gi,_sr('$'+_sbd.depositAmt.toFixed(2)))
+      .replace(/\{\{balance_due\}\}/gi,_sr('$'+_sbd.balanceDue.toFixed(2)))
+      .replace(/\{\{remaining_balance\}\}/gi,_sr('$'+_sbd.balanceDue.toFixed(2)))
+      .replace(/\{\{date_lock\}\}/gi,_sr('$'+_sbd.dateLockAmt.toFixed(2)))
+      .replace(/\{\{breakdown_table\}\}/gi,_sr(_sBdTable))
+      .replace(/\{\{addons\}\}/gi,_sr(
+        [bk.delivery&&Number(bk.delivery)?'Delivery ($'+bk.delivery+')':null,
+         bk.unlimited&&Number(bk.unlimited)?'Unlimited Miles ($'+bk.unlimited+'/day)':null,
+         bk.pet&&Number(bk.pet)?'Pet Fee ($'+bk.pet+')':null,
+         bk.photo&&Number(bk.photo)?'Photoshoot ($'+bk.photo+')':null,
+         bk.champagne&&Number(bk.champagne)?'Champagne ($'+bk.champagne+')':null,
+         bk.decor&&Number(bk.decor)?'Decor ($'+bk.decor+')':null,
+         bk.bouquet&&Number(bk.bouquet)?'Flower Bouquet ($'+bk.bouquet+')':null
+        ].filter(Boolean).join(', ')||'None'))
+      .replace(/\{\{invoice_number\}\}/gi,_sr('#PBR-'+bk.id.slice(-6).toUpperCase()))
+      .replace(/\{\{address\}\}/gi,_sr(esc(bk.address||'')))
+      .replace(/\{\{pickup_address\}\}/gi,_sr(esc(bk.address||'')))
+      .replace(/\{\{license_number\}\}/gi,_sr(esc((bk.verify&&bk.verify.idNumber)||'')))
+      .replace(/\{\{license_state\}\}/gi,_sr(esc((bk.verify&&bk.verify.idState)||'')))
+      .replace(/\{\{license_address\}\}/gi,_sr(esc((bk.verify&&bk.verify.idAddress)||'')))
+      .replace(/\{\{customer_address\}\}/gi,_sr(esc((bk.verify&&bk.verify.idAddress)||'')))
+      .replace(/\{\{verified_name\}\}/gi,_sr(esc((bk.verify&&bk.verify.idName)||bk.name||'')))
+      .replace(/\{\{customer_dob\}\}/gi,_sr(esc((bk.verify&&bk.verify.idDob)?fmtDate(bk.verify.idDob):'')))
+      .replace(/\{\{license_type\}\}/gi,_sr(esc((bk.verify&&bk.verify.idType)||'Driver License')))
+      .replace(/\{\{license_expiry\}\}/gi,_sr(esc((bk.verify&&bk.verify.idExpiry)?fmtDate(bk.verify.idExpiry):'')))
+      .replace(/\{\{notes\}\}/gi,_sr(esc(bk.notes||'')))
+      .replace(/\{\{broker\}\}/gi,_sr(esc(bk.broker||'')))
+      .replace(/\{\{broker_line\}\}/gi,_sr(_sBrokerLine))
+      .replace(/\{\{broker_fee_rate\}\}/gi,_sr(bk.brokerFee?'$'+bk.brokerFee+'/day':'N/A'))
+      .replace(/\{\{source\}\}/gi,_sr(esc(bk.source||'')))
+      .replace(/\{\{included_miles\}\}/gi,_sr(bk.includedMiles?String(bk.includedMiles):'Unlimited'))
+      .replace(/\{\{overage_rate\}\}/gi,_sr(bk.overageRate?'$'+bk.overageRate+'/mi':'N/A'))
+      .replace(/\{\{mileage_limit_display\}\}/gi,_sr(_sMilesDisp))
+      .replace(/\{\{overage_display\}\}/gi,_sr(_sOverageDisp))
+      .replace(/\{\{unlimited_fee\}\}/gi,_sr(bk.unlimited?'$'+bk.unlimited+'/day':'N/A'))
+      .replace(/\{\{unlimited_total\}\}/gi,_sr(bk.unlimited?'$'+(_sbd.unlimitedPD*_sbd.days).toFixed(2):'N/A'))
+      .replace(/\{\{delivery_fee\}\}/gi,_sr(Number(bk.delivery)?'$'+bk.delivery:'N/A'))
+      .replace(/\{\{pet_fee\}\}/gi,_sr(Number(bk.pet)?'$'+bk.pet:'N/A'))
+      .replace(/\{\{loyalty_discount\}\}/gi,_sr(bk.loyaltyDiscount?'$'+bk.loyaltyDiscount:''))
+      .replace(/\{\{odometer_in\}\}/gi,_sr(bk.odomIn?Number(bk.odomIn).toLocaleString()+' mi':''))
+      .replace(/\{\{mileage_policy\}\}/gi,_sr(_sMilagePol))
+      .replace(/\{\{fuel_policy\}\}/gi,'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
+      .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-(Number(bk.brokerFee)||0)*_sbd.days-(Number(bk.loyaltyDiscount)||0)).toFixed(2)))
       .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
       .replace(/\{\{customer_signature\}\}/gi,'<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>')
       .replace(/\{\{customer_signed_date\}\}/gi,'<span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>');
