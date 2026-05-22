@@ -5683,8 +5683,14 @@ function saveBooking(){
         if(ex._history) entry._history=ex._history;
       }
       bookings[idx]=entry;
-      // Date lock just paid on an existing booking → send verification
-      if(!Number(ex.dateLock) && Number(entry.dateLock)) autoSendVerification(entry);
+      // Status changed to confirmed via form → send confirmation email + verification
+      var _toConfirmed = ex.status !== 'confirmed' && entry.status === 'confirmed';
+      if(_toConfirmed){
+        sendConfirmationEmail(entry);
+        autoSendVerification(entry);
+      }
+      // Date lock just paid on an existing booking → send verification (skip if already sent above)
+      if(!Number(ex.dateLock) && Number(entry.dateLock) && !_toConfirmed) autoSendVerification(entry);
     }
   } else {
     // NEW BOOKING — auto-carry verified ID from a past booking for the same customer
@@ -5707,6 +5713,11 @@ function saveBooking(){
     if(Number(entry.dateLock)){
       sendDateLockConfirmation(entry);
       autoSendVerification(entry);
+    }
+    // Created straight to confirmed → send booking confirmation + verification (avoid double verify)
+    if(entry.status === 'confirmed'){
+      sendConfirmationEmail(entry);
+      if(!Number(entry.dateLock)) autoSendVerification(entry);
     }
   }
 
