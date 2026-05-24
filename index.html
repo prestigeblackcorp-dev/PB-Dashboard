@@ -6353,6 +6353,23 @@ function openVerify(id){
   $d('vInscanStatus').style.color = '';
   $d('vStripeBtn').disabled = false;
 
+  // Resume a pending Stripe poll if one was started for this booking
+  // (covers: owner closed the modal while waiting, or page was refreshed)
+  var _pendingSession = null;
+  try{ _pendingSession = localStorage.getItem('pb_pending_vsession_'+id); }catch(e){}
+  if(_pendingSession && !v.idVerified){
+    // Already polling this booking from before the modal was opened — just update status
+    if(_verifyPollBookingId === id && _verifyPollTimer){
+      $d('vStripeStatus').textContent = '⏳ Waiting for customer to complete verification…';
+      $d('vStripeStatus').style.color = 'var(--muted)';
+    } else {
+      // Poll was lost (modal closed or page refresh) — restart it from the saved session ID
+      $d('vStripeStatus').textContent = '⏳ Resuming verification check…';
+      $d('vStripeStatus').style.color = 'var(--muted)';
+      _startVerifyPoll(_pendingSession, id);
+    }
+  }
+
   // If this booking isn't yet verified, look for a past completed Stripe verification
   // for the same customer (matched by email or phone) and pre-fill the fields
   if(!v.idVerified){
@@ -6383,7 +6400,8 @@ function openVerify(id){
 }
 
 function closeVerify(){
-  clearVerificationPoll();
+  // Do NOT kill the poll here — let it keep running in the background so
+  // verification completes even when the owner dismisses the modal.
   $d('verifyModal').classList.remove('open');
   verifyId = null;
 }
@@ -6767,9 +6785,59 @@ function _refreshSigPreview(src){
 //  STRIPE IDENTITY VERIFICATION
 // ════════════════════════════════════════════════════════
 var _verifyPollTimer = null;
+var _verifyPollBookingId = null; // which booking the running poll belongs to
 
 function clearVerificationPoll(){
   if(_verifyPollTimer){ clearInterval(_verifyPollTimer); _verifyPollTimer=null; }
+  _verifyPollBookingId = null;
+}
+
+// Start (or resume) a poll for an existing Stripe session ID
+function _startVerifyPoll(sessionId, bookingId){
+  clearVerificationPoll();
+  if(!VERIFY_URL||!sessionId||!bookingId) return;
+  _verifyPollBookingId = bookingId;
+  var _pollCount = 0, MAX_POLLS = 120;
+  _verifyPollTimer = setInterval(function(){
+    if(++_pollCount > MAX_POLLS){
+      clearVerificationPoll();
+      try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
+      // If modal is open for this booking, show timeout
+      if(verifyId === bookingId){
+        $d('vStripeStatus').textContent = '⏱ Verification timed out. Ask customer to retry.';
+        $d('vStripeStatus').style.color = 'var(--muted)';
+      }
+      return;
+    }
+    fetch(VERIFY_URL+'/check-verification?session_id='+sessionId)
+    .then(function(r){ return r.json(); })
+    .then(function(session){
+      if(session.status==='verified'){
+        clearVerificationPoll();
+        try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
+        applyStripeVerification(session, bookingId);
+      } else if(session.status==='canceled'){
+        clearVerificationPoll();
+        try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
+        if(verifyId === bookingId){
+          $d('vStripeStatus').textContent = '❌ Verification was canceled by customer.';
+          $d('vStripeStatus').style.color = 'var(--red)';
+        }
+      } else if(session.status==='processing'){
+        if(verifyId === bookingId){
+          $d('vStripeStatus').textContent = '⏳ Stripe is processing the verification…';
+          $d('vStripeStatus').style.color = 'var(--muted)';
+        }
+      }
+      if(session.error){
+        clearVerificationPoll();
+        if(verifyId === bookingId){
+          $d('vStripeStatus').textContent = '❌ Worker error: '+session.error;
+          $d('vStripeStatus').style.color = 'var(--red)';
+        }
+      }
+    }).catch(function(err){ console.warn('Verify poll error:', err); });
+  }, 5000);
 }
 
 function sendStripeVerification(){
@@ -6840,41 +6908,11 @@ function sendStripeVerification(){
         else { showToast('Link created — could not email customer (check messaging worker)'); }
       }).catch(function(){ showToast('Link created — email send failed'); });
     }
+    // Save session ID to localStorage so poll can survive modal close / page refresh
+    try{ localStorage.setItem('pb_pending_vsession_'+verifyId, data.id); }catch(e){}
     toast('Verification link created — polling for result…');
-    clearVerificationPoll();
-    var _pollCount=0;
-    var MAX_POLLS=120; // 10 minutes at 5s intervals
-    _verifyPollTimer=setInterval(function(){
-      if(++_pollCount>MAX_POLLS){
-        clearVerificationPoll();
-        $d('vStripeStatus').textContent='⏱ Verification timed out. Ask customer to retry.';
-        $d('vStripeStatus').style.color='var(--muted)';
-        return;
-      }
-      fetch(VERIFY_URL+'/check-verification?session_id='+data.id)
-      .then(function(r){ return r.json(); })
-      .then(function(session){
-        if(session.status==='verified'){
-          clearVerificationPoll();
-          applyStripeVerification(session);
-        } else if(session.status==='canceled'){
-          clearVerificationPoll();
-          $d('vStripeStatus').textContent='❌ Verification was canceled by customer.';
-          $d('vStripeStatus').style.color='var(--red)';
-        } else if(session.status==='processing'){
-          // Let poll keep running — show status so owner knows it's in progress
-          $d('vStripeStatus').textContent='⏳ Stripe is processing the verification…';
-        }
-        if(session.error){
-          clearVerificationPoll();
-          $d('vStripeStatus').textContent='❌ Worker error: '+session.error;
-          $d('vStripeStatus').style.color='var(--red)';
-        }
-      }).catch(function(err){
-        // Don't kill the poll on a transient network error — just log
-        console.warn('Verify poll error:', err);
-      });
-    },5000);
+    // Start background poll — runs even if owner closes the modal
+    _startVerifyPoll(data.id, verifyId);
   })
   .catch(function(err){
     $d('vStripeBtn').disabled=false;
@@ -6883,7 +6921,10 @@ function sendStripeVerification(){
   });
 }
 
-function applyStripeVerification(session){
+function applyStripeVerification(session, bookingId){
+  // bookingId is passed explicitly from _startVerifyPoll so this works even
+  // when the verify modal is closed (verifyId would be null in that case).
+  var _bId = bookingId || verifyId;
   // Stripe Flow sessions expose extracted data in two places:
   //   • session.verified_outputs  — always present on verified sessions; no expansion needed
   //   • session.last_verification_report.document — only present for document-scan flows
@@ -6928,18 +6969,23 @@ function applyStripeVerification(session){
   var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
   if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
 
-  // ── 2. Populate form fields so owner can see what was captured ───────────
-  if(extracted.idName)    $d('vIdName').value    = extracted.idName;
-  if(extracted.idDob)     $d('vIdDob').value     = extracted.idDob;
-  if(extracted.idExpiry)  $d('vIdExpiry').value  = extracted.idExpiry;
-  if(extracted.idNumber)  $d('vIdNumber').value  = extracted.idNumber;
-  if(extracted.idAddress) $d('vIdAddress').value = extracted.idAddress;
-  if(extracted.idState)   $d('vIdState').value   = extracted.idState;
-  if(extracted.idType)    $d('vIdType').value    = extracted.idType;
-  $d('vIdVerified').checked = true;
+  // ── 2. Populate form fields — only if the modal is currently open for this booking ──
+  var _modalOpen = (verifyId === _bId && $d('verifyModal').classList.contains('open'));
+  if(_modalOpen){
+    if(extracted.idName)    $d('vIdName').value    = extracted.idName;
+    if(extracted.idDob)     $d('vIdDob').value     = extracted.idDob;
+    if(extracted.idExpiry)  $d('vIdExpiry').value  = extracted.idExpiry;
+    if(extracted.idNumber)  $d('vIdNumber').value  = extracted.idNumber;
+    if(extracted.idAddress) $d('vIdAddress').value = extracted.idAddress;
+    if(extracted.idState)   $d('vIdState').value   = extracted.idState;
+    if(extracted.idType)    $d('vIdType').value    = extracted.idType;
+    $d('vIdVerified').checked = true;
+    $d('vStripeStatus').textContent = '✅ Identity verified & saved!';
+    $d('vStripeStatus').style.color = 'var(--green)';
+  }
 
-  // ── 3. Auto-save directly to booking — don't wait for owner to click Save ─
-  var idx = bookings.findIndex(function(x){ return x.id===verifyId; });
+  // ── 3. Auto-save directly to booking — works regardless of modal state ────
+  var idx = bookings.findIndex(function(x){ return x.id===_bId; });
   if(idx !== -1){
     var existing = bookings[idx].verify || {};
     // Merge: keep any existing insurance/card fields, overlay Stripe ID fields
@@ -6962,12 +7008,10 @@ function applyStripeVerification(session){
     if(activeTab==='cancelled') renderCancelled();
   }
 
-  $d('vStripeStatus').textContent='✅ Identity verified & saved!';
-  $d('vStripeStatus').style.color='var(--green)';
-  toast('✅ ID Verified — fields saved, booking confirmed');
+  toast('✅ ID Verified — '+(_bId? (bookings.find(function(x){return x.id===_bId;})|| {}).name||'customer' : 'customer')+' verified & saved');
 
   // ── 5. Email owner with extracted ID data + Stripe dashboard link ─────────
-  var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===verifyId;});
+  var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===_bId;});
   if(_vb) sendOwnerIdVerification(_vb, session.id||'');
 }
 
