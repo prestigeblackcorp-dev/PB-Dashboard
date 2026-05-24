@@ -6813,10 +6813,119 @@ function _addVerifySession(bookingId, sessionId){
     var _ids=Array.isArray(_v.stripeSessionIds)?_v.stripeSessionIds.slice():[];
     if(_ids.indexOf(sessionId)===-1){
       _ids.push(sessionId);
-      bookings[_idx].verify=Object.assign({},_v,{stripeSessionIds:_ids});
+      // Stamp the first time a verify link was ever sent — used by nudge timer
+      var _now=Date.now();
+      bookings[_idx].verify=Object.assign({},_v,{
+        stripeSessionIds:_ids,
+        firstSentAt:_v.firstSentAt||_now
+      });
       save();
     }
   }
+}
+
+// ── Auto-scheduled email engine ───────────────────────────────────────────────
+// Runs on page load and every 30 minutes.  Uses localStorage flags so each
+// email fires at most once per booking, even if the dashboard is open all day.
+var _lastAutoRun = 0;
+function runAutoScheduledEmails(){
+  if(!MESSAGING_URL) return;
+  var _now = Date.now();
+  // Throttle: no more than once per 29 minutes (interval fires every 30 min)
+  if(_now - _lastAutoRun < 29*60*1000) return;
+  _lastAutoRun = _now;
+
+  bookings.forEach(function(b){
+    if(b._deleted) return;
+    if(!b.email) return;
+
+    // ── 1. 24-hour pickup reminder ──────────────────────────────────────────
+    // Fires for confirmed/active bookings whose pickup is 20–28 hours away.
+    // Window of 20–28h means a check every 30 min won't miss it, and running
+    // at page load won't double-fire if the dashboard was closed overnight.
+    if(b.status==='confirmed'||b.status==='active'){
+      var _pickup = b.pickupDate||b.date;
+      if(_pickup){
+        var _pd = parseLocalDate(_pickup);
+        if(_pd){
+          // Apply HH:MM pickup time if set (stored as 24h from <input type="time">)
+          if(b.pickupTime){
+            var _tm=String(b.pickupTime).split(':');
+            _pd.setHours(parseInt(_tm[0],10)||0, parseInt(_tm[1],10)||0, 0, 0);
+          }
+          var _hoursUntil = (_pd.getTime() - _now) / 3600000;
+          var _r24Key = 'pb_sent_24h_'+b.id;
+          if(_hoursUntil >= 20 && _hoursUntil <= 28 && !localStorage.getItem(_r24Key)){
+            localStorage.setItem(_r24Key, String(_now));
+            sendPickupReminder(b.id);
+          }
+        }
+      }
+    }
+
+    // ── 2. Incomplete verification nudge ────────────────────────────────────
+    // Fires once when a verify link was sent 2+ hours ago but customer hasn't
+    // completed it.  Clears on verified (see applyStripeVerification).
+    if(!b.verify||!b.verify.idVerified){
+      var _nudgeKey = 'pb_sent_nudge_'+b.id;
+      if(localStorage.getItem(_nudgeKey)) return; // already sent
+      if(!VERIFY_URL) return;
+      // Need at least one session sent
+      var _hasSids = (b.verify&&Array.isArray(b.verify.stripeSessionIds)&&b.verify.stripeSessionIds.length);
+      var _lsSids = [];
+      try{ _lsSids=JSON.parse(localStorage.getItem('pb_all_vsessions_'+b.id)||'[]'); }catch(e){}
+      if(!_hasSids && !_lsSids.length) return; // no link ever sent — skip
+      // Use firstSentAt stored in verify object (set by _addVerifySession)
+      var _sentAt = (b.verify&&b.verify.firstSentAt) ? b.verify.firstSentAt : 0;
+      if(!_sentAt) return; // no timestamp — can't judge
+      var _hoursSinceSent = (_now - _sentAt) / 3600000;
+      if(_hoursSinceSent >= 2){
+        localStorage.setItem(_nudgeKey, String(_now));
+        sendVerifyNudgeEmail(b);
+      }
+    }
+  });
+}
+
+// Gentle follow-up when customer received a verify link but hasn't completed it
+function sendVerifyNudgeEmail(b){
+  if(!MESSAGING_URL||!VERIFY_URL||!b||!b.email) return;
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  // Grab the most recent session ID to build a fresh link — or create a new one silently
+  var _allSids=[];
+  try{ _allSids=JSON.parse(localStorage.getItem('pb_all_vsessions_'+b.id)||'[]'); }catch(e){}
+  if(b.verify&&Array.isArray(b.verify.stripeSessionIds)){
+    b.verify.stripeSessionIds.forEach(function(s){ if(s&&_allSids.indexOf(s)===-1) _allSids.push(s); });
+  }
+  _allSids=_allSids.filter(function(s){ return s&&s.indexOf('vs_')===0; });
+
+  // Create a fresh session so the link is guaranteed to be valid
+  fetch(VERIFY_URL+'/create-verification',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({bookingId:b.id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(!d||!d.url||!d.id) return;
+    _addVerifySession(b.id, d.id);
+    var _url=d.url;
+    var _urlHtml=_url.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    fetch(MESSAGING_URL+'/send-email',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        to:b.email,
+        subject:'Quick reminder: your ID verification is still waiting — '+esc(b.vehicle),
+        html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+          '<h2 style="color:#b8982e">Hey '+esc(firstName)+', just checking in! 👋</h2>'+
+          '<p style="font-size:15px;line-height:1.6">We noticed your ID verification for the <strong>'+esc(b.vehicle)+'</strong> rental on <strong>'+fmtDateFull(b.pickupDate||b.date)+'</strong> hasn\'t been completed yet.</p>'+
+          '<p style="font-size:15px;line-height:1.6">It only takes about 60 seconds — just click the button below to finish:</p>'+
+          '<a href="'+_urlHtml+'" style="display:inline-block;margin:16px 0;padding:14px 28px;background:#635bff;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:.01em">Complete My Verification →</a>'+
+          '<p style="font-size:12px;color:#666;margin:0 0 16px;word-break:break-all">Or copy this link: <a href="'+_urlHtml+'" style="color:#635bff">'+esc(_url)+'</a></p>'+
+          '<p style="font-size:14px;line-height:1.6;color:#555">Need help? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:600">(214) 207-2481</a>.</p>'+
+          '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p></div>'
+      })
+    }).then(function(r){
+      if(r&&r.ok) logNotif('verify_nudge','ID Verification Nudge',b.email,b.id);
+    }).catch(function(){});
+  }).catch(function(){});
 }
 
 // Start (or resume) a poll for an existing Stripe session ID
@@ -7183,6 +7292,9 @@ function applyStripeVerification(session, bookingId){
     if(activeTab==='previous')  renderPrevious();
     if(activeTab==='cancelled') renderCancelled();
   }
+
+  // Clear nudge flag so a future booking for the same ID doesn't get stuck
+  try{ localStorage.removeItem('pb_sent_nudge_'+_bId); }catch(e){}
 
   showToast('✅ ID Verified — '+(_bId? (bookings.find(function(x){return x.id===_bId;})|| {}).name||'customer' : 'customer')+' verified & saved');
 
@@ -11584,6 +11696,8 @@ if(!(new URLSearchParams(location.search).get('sign'))&&!(new URLSearchParams(lo
   cloudLoad(function(ok) {
     afterCloudLoad(ok);
     setSyncStatus(WORKER_URL ? (ok ? 'ok' : 'error') : 'off');
+    // Run auto-scheduled emails once after initial load (data is fresh)
+    setTimeout(runAutoScheduledEmails, 3000);
   });
   // Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
   document.addEventListener('visibilitychange', function() {
@@ -11597,6 +11711,9 @@ if(!(new URLSearchParams(location.search).get('sign'))&&!(new URLSearchParams(lo
       cloudLoad(function(ok) { afterCloudLoad(ok); });
     }
   }, 15000);
+  // Auto-scheduled email check: 24hr pickup reminders + incomplete verify nudges
+  // Throttled internally to once per 29 min; interval fires every 30 min
+  setInterval(runAutoScheduledEmails, 30*60*1000);
 }
 </script>
 </body>
