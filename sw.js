@@ -1,8 +1,8 @@
-const CACHE = 'pb-v5';
-const ASSETS = ['./index.html', './icon.png'];
+const CACHE = 'pb-v6';
+const STATIC = ['./icon.png']; // only static assets — HTML is never cached
 
 self.addEventListener('install', function(e) {
-  e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(ASSETS); }));
+  e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(STATIC); }));
   self.skipWaiting();
 });
 
@@ -15,14 +15,31 @@ self.addEventListener('activate', function(e) {
 
 self.addEventListener('fetch', function(e) {
   if(e.request.method !== 'GET') return;
-  // Always try network first, fall back to cache
+  var url = new URL(e.request.url);
+
+  // HTML pages: always fetch fresh from network, no cache fallback
+  if(url.pathname.endsWith('.html') || url.pathname === '/' || url.pathname.endsWith('/')) {
+    e.respondWith(
+      fetch(e.request, { cache: 'no-store' }).catch(function(){
+        return new Response(
+          '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
+          '<body style="font-family:-apple-system,sans-serif;background:#111;color:#fff;padding:48px;text-align:center">' +
+          '<div style="color:#C9A962;font-size:22px;font-weight:900;margin-bottom:16px">PB Dashboard</div>' +
+          '<p style="opacity:.7">You\'re offline. Connect to the internet to access the dashboard.</p></body></html>',
+          { headers: { 'Content-Type': 'text/html' } }
+        );
+      })
+    );
+    return;
+  }
+
+  // Static assets: cache-first
   e.respondWith(
-    fetch(e.request).then(function(res){
-      var clone = res.clone();
-      caches.open(CACHE).then(function(c){ c.put(e.request, clone); });
-      return res;
-    }).catch(function(){
-      return caches.match(e.request);
+    caches.match(e.request).then(function(cached){
+      return cached || fetch(e.request).then(function(res){
+        caches.open(CACHE).then(function(c){ c.put(e.request, res.clone()); });
+        return res;
+      });
     })
   );
 });

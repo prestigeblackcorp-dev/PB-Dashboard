@@ -6854,8 +6854,19 @@ function sendStripeVerification(){
           clearVerificationPoll();
           $d('vStripeStatus').textContent='❌ Verification was canceled by customer.';
           $d('vStripeStatus').style.color='var(--red)';
+        } else if(session.status==='processing'){
+          // Let poll keep running — show status so owner knows it's in progress
+          $d('vStripeStatus').textContent='⏳ Stripe is processing the verification…';
         }
-      }).catch(function(){});
+        if(session.error){
+          clearVerificationPoll();
+          $d('vStripeStatus').textContent='❌ Worker error: '+session.error;
+          $d('vStripeStatus').style.color='var(--red)';
+        }
+      }).catch(function(err){
+        // Don't kill the poll on a transient network error — just log
+        console.warn('Verify poll error:', err);
+      });
     },5000);
   })
   .catch(function(err){
@@ -6866,32 +6877,49 @@ function sendStripeVerification(){
 }
 
 function applyStripeVerification(session){
-  var doc=session.last_verification_report&&session.last_verification_report.document;
+  // Stripe Flow sessions expose extracted data in two places:
+  //   • session.verified_outputs  — always present on verified sessions; no expansion needed
+  //   • session.last_verification_report.document — only present for document-scan flows
+  // We merge both so we get every available field regardless of flow type.
+  var vo  = session.verified_outputs || {};
+  var doc = (session.last_verification_report && session.last_verification_report.document) || {};
 
-  // ── 1. Build extracted fields from Stripe report ──────────────────────────
+  // ── 1. Build extracted fields ─────────────────────────────────────────────
   var extracted = { idVerified: true, verifiedAt: new Date().toISOString() };
-  if(doc){
-    var first=(doc.name&&doc.name.first_name)||'';
-    var last=(doc.name&&doc.name.last_name)||'';
-    if(first||last) extracted.idName=(first+' '+last).trim();
-    var dob=doc.dob;
-    if(dob&&dob.year) extracted.idDob=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
-    var exp=doc.expiration_date;
-    if(exp&&exp.year) extracted.idExpiry=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
-    if(doc.number) extracted.idNumber=doc.number;
-    if(doc.address){
-      var _a=doc.address, _addrParts=[];
-      if(_a.line1)       _addrParts.push(_a.line1);
-      if(_a.line2)       _addrParts.push(_a.line2);
-      if(_a.city)        _addrParts.push(_a.city);
-      if(_a.state)       _addrParts.push(_a.state);
-      if(_a.postal_code) _addrParts.push(_a.postal_code);
-      if(_addrParts.length) extracted.idAddress=_addrParts.join(', ');
-      if(_a.state) extracted.idState=_a.state;
-    }
-    var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
-    if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
+
+  // Name — verified_outputs has flat first_name/last_name; doc has name.first_name/last_name
+  var first = vo.first_name || (doc.name && doc.name.first_name) || '';
+  var last  = vo.last_name  || (doc.name && doc.name.last_name)  || '';
+  if(first||last) extracted.idName=(first+' '+last).trim();
+
+  // DOB — same shape in both (year/month/day object)
+  var dob = vo.dob || doc.dob;
+  if(dob&&dob.year) extracted.idDob=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
+
+  // Expiry — only in document report (not in verified_outputs)
+  var exp = doc.expiration_date;
+  if(exp&&exp.year) extracted.idExpiry=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
+
+  // ID / license number — verified_outputs.id_number or doc.number
+  var idNum = vo.id_number || doc.number;
+  if(idNum) extracted.idNumber=String(idNum);
+
+  // Address — same shape in both (line1/line2/city/state/postal_code)
+  var addr = vo.address || doc.address;
+  if(addr){
+    var _addrParts=[];
+    if(addr.line1)       _addrParts.push(addr.line1);
+    if(addr.line2)       _addrParts.push(addr.line2);
+    if(addr.city)        _addrParts.push(addr.city);
+    if(addr.state)       _addrParts.push(addr.state);
+    if(addr.postal_code) _addrParts.push(addr.postal_code);
+    if(_addrParts.length) extracted.idAddress=_addrParts.join(', ');
+    if(addr.state) extracted.idState=addr.state;
   }
+
+  // Document type — only in document report
+  var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
+  if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
 
   // ── 2. Populate form fields so owner can see what was captured ───────────
   if(extracted.idName)    $d('vIdName').value    = extracted.idName;
