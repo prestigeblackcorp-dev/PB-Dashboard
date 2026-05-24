@@ -6868,6 +6868,16 @@ function sendStripeVerification(){
     var vStatusEl=$d('vStripeStatus');
     vStatusEl.innerHTML='<a href="'+_vUrlHtml+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; text to customer &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
     $d('vCopyBtn').onclick=function(){ navigator.clipboard.writeText(_vUrl).then(function(){ showToast('Link copied!'); }); };
+    // Save session ID to localStorage so poll can survive modal close / page refresh
+    try{ localStorage.setItem('pb_pending_vsession_'+verifyId, data.id); }catch(e){}
+
+    // _afterEmailSent — called once the email resolves (success or fail), or immediately
+    // when there is no email to send. Shows the Check Status button only at that point.
+    function _afterEmailSent(){
+      var _ckBtn=$d('vCheckBtn'); if(_ckBtn) _ckBtn.style.display='';
+      _startVerifyPoll(data.id, verifyId);
+    }
+
     // Auto-email the customer the verification link + trip details
     if(MESSAGING_URL && b && b.email){
       var _firstName=(b.name||'').split(' ')[0]||'there';
@@ -6899,7 +6909,6 @@ function sendStripeVerification(){
             '<h2 style="color:#b8982e">Hi '+_firstName+', one quick step! ✅</h2>'+
             '<p style="font-size:15px;line-height:1.6">To finalize your upcoming rental, we need to verify your ID — it takes less than 60 seconds.</p>'+
             '<a href="'+_vUrlHtml+'" style="display:inline-block;margin:16px 0;padding:14px 28px;background:#635bff;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:.01em">Verify My ID →</a>'+
-            // Plain-text fallback in case the button doesn't render in the email client
             '<p style="font-size:12px;color:#666;margin:0 0 16px;word-break:break-all">Or copy this link: <a href="'+_vUrlHtml+'" style="color:#635bff">'+esc(_vUrl)+'</a></p>'+
             '<div style="margin:24px 0;background:#f7f7f7;border-radius:10px;padding:18px">'+
             '<div style="font-weight:700;font-size:14px;margin-bottom:10px;color:#333">📋 Your Booking Details</div>'+
@@ -6910,15 +6919,16 @@ function sendStripeVerification(){
       }).then(function(r){
         if(r.ok){ showToast('Verification link emailed to '+b.email); }
         else { showToast('Link created — could not email customer (check messaging worker)'); }
-      }).catch(function(){ showToast('Link created — email send failed'); });
+        _afterEmailSent();
+      }).catch(function(){
+        showToast('Link created — email send failed');
+        _afterEmailSent();
+      });
+    } else {
+      // No email address on file — show button immediately
+      toast('Verification link created — polling for result…');
+      _afterEmailSent();
     }
-    // Save session ID to localStorage so poll can survive modal close / page refresh
-    try{ localStorage.setItem('pb_pending_vsession_'+verifyId, data.id); }catch(e){}
-    toast('Verification link created — polling for result…');
-    // Start background poll — runs even if owner closes the modal
-    // Show the manual check button once a session is active
-    var _ckBtn=$d('vCheckBtn'); if(_ckBtn) _ckBtn.style.display='';
-    _startVerifyPoll(data.id, verifyId);
   })
   .catch(function(err){
     $d('vStripeBtn').disabled=false;
