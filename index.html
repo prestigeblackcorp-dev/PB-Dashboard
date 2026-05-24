@@ -7189,6 +7189,58 @@ function applyStripeVerification(session, bookingId){
   // ── 5. Email owner with extracted ID data + Stripe dashboard link ─────────
   var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===_bId;});
   if(_vb) sendOwnerIdVerification(_vb, session.id||'');
+
+  // ── 6. Email customer — "You're verified & all set" ───────────────────────
+  if(_vb) sendCustomerVerifiedEmail(_vb);
+}
+
+// Sent to customer immediately after Stripe confirms their ID.
+// They receive nothing else at this moment — this closes the loop.
+function sendCustomerVerifiedEmail(b){
+  if(!MESSAGING_URL||!b||!b.email) return;
+  var firstName=(b.name||'').split(' ')[0]||'there';
+  var addons=[];
+  if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
+  if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
+  if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+  if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
+  if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
+  if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+  if(Number(b.pet))       addons.push('Pet Fee ($'+b.pet+')');
+  var rev=totalRevenue(b);
+  var remaining=Math.max(0,rev-(Number(b.dateLock)||0));
+  var detailRows=
+    '<tr><td style="padding:7px 14px 7px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:7px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+    '<tr><td style="padding:7px 14px 7px 0;color:#555">Pickup</td><td style="padding:7px 0"><strong>'+fmtDateFull(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+(b.address?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+    (b.dropoffDate?'<tr><td style="padding:7px 14px 7px 0;color:#555">Drop-off</td><td style="padding:7px 0">'+fmtDateFull(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+(b.dropoffAddress?'<br><span style="font-size:13px;color:#555">📍 '+esc(b.dropoffAddress)+'</span>':'')+'</td></tr>':'')+
+    '<tr><td style="padding:7px 14px 7px 0;color:#555">Duration</td><td style="padding:7px 0">'+(b.type==='hourly'?b.days+' hour'+(b.days!==1?'s':''):b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+    (addons.length?'<tr><td style="padding:7px 14px 7px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:7px 0">'+addons.join('<br>')+'</td></tr>':'')+
+    '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 8px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
+    (Number(b.dateLock)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+' ✅</td></tr>':'')+
+    (remaining>0?'<tr><td style="padding:6px 14px 6px 0;color:#555">Remaining Balance</td><td style="padding:6px 0;font-weight:600">'+$$(remaining)+' due at pickup</td></tr>':'');
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      to:b.email,
+      subject:'You\'re verified & all set — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
+      html:'<div style="font-family:sans-serif;max-width:560px;color:#111">'+
+        '<div style="background:linear-gradient(135deg,#635bff,#4f46e5);color:#fff;padding:20px 24px;border-radius:12px 12px 0 0">'+
+          '<div style="font-size:22px;font-weight:900;letter-spacing:.01em">✅ You\'re verified!</div>'+
+          '<div style="font-size:14px;opacity:.85;margin-top:4px">Prestige Black Rentals</div>'+
+        '</div>'+
+        '<div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:24px">'+
+          '<p style="font-size:16px;font-weight:700;margin:0 0 6px">Hi '+esc(firstName)+' 🎉</p>'+
+          '<p style="font-size:15px;line-height:1.6;color:#333;margin:0 0 20px">Your ID has been verified and your booking is <strong>fully confirmed</strong>. You\'re all set — here\'s your complete rental summary:</p>'+
+          '<div style="background:#f7f7f7;border-radius:10px;padding:18px;margin-bottom:20px">'+
+            '<div style="font-weight:700;font-size:13px;color:#555;margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em">📋 Booking Summary</div>'+
+            '<table style="width:100%;border-collapse:collapse;font-size:14px">'+detailRows+'</table>'+
+          '</div>'+
+          '<p style="font-size:14px;line-height:1.6;color:#444;margin:0 0 6px">Questions or changes? Text or call us anytime:</p>'+
+          '<a href="tel:2142072481" style="display:inline-block;background:#b8982e;color:#fff;text-decoration:none;padding:10px 20px;border-radius:8px;font-weight:700;font-size:15px">(214) 207-2481</a>'+
+          '<p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:12px">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals · Dallas–Fort Worth</p>'+
+        '</div></div>'
+    })
+  }).then(function(r){ if(r&&r.ok) logNotif('customer_verified','Customer Verified Confirmation',b.email,b.id); }).catch(function(){});
 }
 
 // ════════════════════════════════════════════════════════
