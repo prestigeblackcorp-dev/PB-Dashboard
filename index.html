@@ -2115,7 +2115,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div class="fsec" style="margin-bottom:10px">🪪 Driver ID Verification</div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <button class="btn btn-sm" id="vStripeBtn" onclick="sendStripeVerification()" style="border-color:#635bff;color:#635bff;white-space:nowrap">📤 Send Stripe Verification Link</button>
-      <button class="btn btn-sm" id="vCheckBtn" onclick="checkVerifyNow()" style="display:none;border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap">🔍 Check Status</button>
+      <button class="btn btn-sm" id="vCheckBtn" onclick="checkVerifyNow()" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap">🔍 Check Status</button>
       <span id="vStripeStatus" style="font-size:12px;color:var(--muted)"></span>
     </div>
     <div class="fgrid">
@@ -6358,10 +6358,7 @@ function openVerify(id){
   // (covers: owner closed the modal while waiting, or page was refreshed)
   var _pendingSession = null;
   try{ _pendingSession = localStorage.getItem('pb_pending_vsession_'+id); }catch(e){}
-  var _ckBtn=$d('vCheckBtn'); if(_ckBtn) _ckBtn.style.display='none';
   if(_pendingSession && !v.idVerified){
-    // Show the manual check button whenever there's a pending session
-    if(_ckBtn) _ckBtn.style.display='';
     // Already polling this booking from before the modal was opened — just update status
     if(_verifyPollBookingId === id && _verifyPollTimer){
       $d('vStripeStatus').textContent = '⏳ Waiting for customer to complete verification…';
@@ -6872,9 +6869,8 @@ function sendStripeVerification(){
     try{ localStorage.setItem('pb_pending_vsession_'+verifyId, data.id); }catch(e){}
 
     // _afterEmailSent — called once the email resolves (success or fail), or immediately
-    // when there is no email to send. Shows the Check Status button only at that point.
+    // when there is no email to send. Starts the background poll at that point.
     function _afterEmailSent(){
-      var _ckBtn=$d('vCheckBtn'); if(_ckBtn) _ckBtn.style.display='';
       _startVerifyPoll(data.id, verifyId);
     }
 
@@ -6943,8 +6939,14 @@ function sendStripeVerification(){
 function checkVerifyNow(){
   if(!verifyId||!VERIFY_URL) return;
   var _sid=null;
+  // 1. Prefer the actively-pending session stored at link-send time
   try{ _sid=localStorage.getItem('pb_pending_vsession_'+verifyId); }catch(e){}
-  if(!_sid){ showToast('No active session for this booking — send verification link first.'); return; }
+  // 2. Fall back to the session ID saved when a previous verification completed
+  if(!_sid){
+    var _cb=bookings.find(function(x){ return x.id===verifyId; });
+    if(_cb && _cb.verify && _cb.verify.stripeSessionId) _sid=_cb.verify.stripeSessionId;
+  }
+  if(!_sid){ showToast('No Stripe session found — send a verification link first.'); return; }
   var _btn=$d('vCheckBtn');
   if(_btn){ _btn.disabled=true; _btn.textContent='Checking…'; }
   fetch(VERIFY_URL+'/check-verification?session_id='+_sid)
