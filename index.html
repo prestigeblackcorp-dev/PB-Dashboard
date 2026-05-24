@@ -10504,6 +10504,17 @@ function sendContractSigningLink(){
   if(!b){ toast('Booking not found'); return; }
   var base = location.origin + location.pathname;
   var url = base + '?sign=' + encodeURIComponent(_contractBookingId);
+  // Persist the selected Slingshot color to Firebase BEFORE sending the link.
+  // The signing page reads contractSentColor from the booking to render the correct
+  // vehicle color, VIN, and model — without this, it always defaults to Green.
+  if(b.vehicle==='Polaris Slingshot'){
+    var _sidx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
+    if(_sidx!==-1 && bookings[_sidx].contractSentColor!==_slingshotColor){
+      bookings[_sidx].contractSentColor=_slingshotColor;
+      bookings[_sidx]._t=Date.now();
+      save();
+    }
+  }
   var sl = $d('sigLinkStatus');
   // Try to email the link if we have email + messaging worker
   if(b.email && MESSAGING_URL){
@@ -10612,6 +10623,29 @@ function _initSigningMode(bookingId){
     var today=new Date(); var tStr=(today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
     var _sbd=_buildContractBreakdown(bk);
     var _svInfo=Object.assign({},VEHICLE_INFO[bk.vehicle]||{});
+    // For Slingshot waivers: apply the color/VIN/model that was active when the signing
+    // link was sent.  contractSentColor is written by sendContractSigningLink() before
+    // the email goes out so the customer always sees the correct vehicle.
+    if(bk.vehicle==='Polaris Slingshot'){
+      var _sentCol=bk.contractSentColor||'Green';
+      var _ssSpecs={
+        Green:{vin:'57XAAPHD4S8167698',model:'Slingshot SL'},
+        White:{vin:'57XAASHD6M8146678',model:'Slingshot S'}
+      };
+      var _ssSpec=_ssSpecs[_sentCol]||_ssSpecs.Green;
+      _svInfo.color=_sentCol;
+      _svInfo.vin  =_ssSpec.vin;
+      _svInfo.model=_ssSpec.model;
+      // Normalize any hardcoded color/VIN text baked into the stored template
+      // (same replacements _renderContractContent does on the owner side)
+      tmpl=tmpl
+        .replace(/57XAAPHD4S8167698/g,'{{vehicle_vin}}')
+        .replace(/57XAASHD6M8146678/g,'{{vehicle_vin}}')
+        .replace(/Slingshot SL \(Green\)/g,        '{{vehicle_model}} ({{vehicle_color}})')
+        .replace(/Slingshot SL \(White\)/g,         '{{vehicle_model}} ({{vehicle_color}})')
+        .replace(/Slingshot SL \(\{\{vehicle_color\}\}\)/g,'{{vehicle_model}} ({{vehicle_color}})')
+        .replace(/Slingshot SL(?! \(\{\{vehicle_color)/g, '{{vehicle_model}}');
+    }
     var _sRentalType=bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
     var _sPickupFull=fmtDateFull(bk.pickupDate||bk.date||'');
     var _sReturnFull=fmtDateFull(bk.dropoffDate||'');
@@ -10760,6 +10794,10 @@ function _smSubmitSig(bookingId){
   if(idx===-1){ document.getElementById('smSigMsg').style.color='#f87171'; document.getElementById('smSigMsg').textContent='Booking not found. Please contact (214) 207-2481.'; return; }
   allBookings[idx].customerSig=sig;
   allBookings[idx].customerSigDate=sigDate;
+  allBookings[idx].customerSigVehicle=allBookings[idx].vehicle||'';
+  if(allBookings[idx].vehicle==='Polaris Slingshot'&&allBookings[idx].contractSentColor){
+    allBookings[idx].customerSigColor=allBookings[idx].contractSentColor;
+  }
   allBookings[idx]._t=Date.now();
   var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
   var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
