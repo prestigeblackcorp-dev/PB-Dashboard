@@ -2115,6 +2115,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div class="fsec" style="margin-bottom:10px">🪪 Driver ID Verification</div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <button class="btn btn-sm" id="vStripeBtn" onclick="sendStripeVerification()" style="border-color:#635bff;color:#635bff;white-space:nowrap">📤 Send Stripe Verification Link</button>
+      <button class="btn btn-sm" id="vCheckBtn" onclick="checkVerifyNow()" style="display:none;border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap">🔍 Check Status</button>
       <span id="vStripeStatus" style="font-size:12px;color:var(--muted)"></span>
     </div>
     <div class="fgrid">
@@ -6357,7 +6358,10 @@ function openVerify(id){
   // (covers: owner closed the modal while waiting, or page was refreshed)
   var _pendingSession = null;
   try{ _pendingSession = localStorage.getItem('pb_pending_vsession_'+id); }catch(e){}
+  var _ckBtn=$d('vCheckBtn'); if(_ckBtn) _ckBtn.style.display='none';
   if(_pendingSession && !v.idVerified){
+    // Show the manual check button whenever there's a pending session
+    if(_ckBtn) _ckBtn.style.display='';
     // Already polling this booking from before the modal was opened — just update status
     if(_verifyPollBookingId === id && _verifyPollTimer){
       $d('vStripeStatus').textContent = '⏳ Waiting for customer to complete verification…';
@@ -6912,12 +6916,56 @@ function sendStripeVerification(){
     try{ localStorage.setItem('pb_pending_vsession_'+verifyId, data.id); }catch(e){}
     toast('Verification link created — polling for result…');
     // Start background poll — runs even if owner closes the modal
+    // Show the manual check button once a session is active
+    var _ckBtn=$d('vCheckBtn'); if(_ckBtn) _ckBtn.style.display='';
     _startVerifyPoll(data.id, verifyId);
   })
   .catch(function(err){
     $d('vStripeBtn').disabled=false;
     $d('vStripeStatus').textContent='❌ '+err.message;
     $d('vStripeStatus').style.color='var(--red)';
+  });
+}
+
+// Manual one-shot check — fires from the 🔍 Check Status button in the verify modal.
+// Shows a human-readable summary of exactly what Stripe returned so the owner can
+// diagnose issues without opening DevTools.
+function checkVerifyNow(){
+  if(!verifyId||!VERIFY_URL) return;
+  var _sid=null;
+  try{ _sid=localStorage.getItem('pb_pending_vsession_'+verifyId); }catch(e){}
+  if(!_sid){ showToast('No active session for this booking — send verification link first.'); return; }
+  var _btn=$d('vCheckBtn');
+  if(_btn){ _btn.disabled=true; _btn.textContent='Checking…'; }
+  fetch(VERIFY_URL+'/check-verification?session_id='+_sid)
+  .then(function(r){ return r.json(); })
+  .then(function(s){
+    if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+    console.log('[PB Verify] Manual check raw response:', JSON.stringify(s, null, 2));
+    if(s.error){ showToast('Worker error: '+s.error); return; }
+    var _vo=s.verified_outputs||{};
+    var _lvr=s.last_verification_report;
+    var _lvr_type=typeof _lvr;
+    var _doc=(_lvr&&_lvr_type==='object'&&_lvr.document)||{};
+    var lines=['Session: '+s.id,'Status: '+s.status];
+    if(s.status==='verified'){
+      lines.push('verified_outputs → first_name: '+(_vo.first_name||'(empty)')+', last_name: '+(_vo.last_name||'(empty)'));
+      lines.push('verified_outputs → dob: '+JSON.stringify(_vo.dob||null));
+      lines.push('verified_outputs → id_number: '+(_vo.id_number||'(empty)'));
+      lines.push('last_verification_report type: '+_lvr_type+(typeof _lvr==='string'?' [EXPAND NOT WORKING — redeploy worker with %5B%5D fix]':''));
+      if(typeof _lvr==='object'&&_lvr){
+        lines.push('document.first_name: '+(_doc.first_name||'(empty)'));
+        lines.push('document.type: '+(_doc.type||'(empty)'));
+        lines.push('document.number: '+(_doc.number||'(empty)'));
+        lines.push('document.dob: '+JSON.stringify(_doc.dob||null));
+      }
+      applyStripeVerification(s, verifyId);
+    }
+    alert('🔍 Stripe Verification Check\n\n'+lines.join('\n'));
+  })
+  .catch(function(err){
+    if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+    showToast('Check failed: '+err.message);
   });
 }
 
@@ -6942,9 +6990,10 @@ function applyStripeVerification(session, bookingId){
   // ── 1. Build extracted fields ─────────────────────────────────────────────
   var extracted = { idVerified: true, verifiedAt: new Date().toISOString(), stripeSessionId: session.id||'' };
 
-  // Name — verified_outputs has flat first_name/last_name; doc has name.first_name/last_name
-  var first = vo.first_name || (doc.name && doc.name.first_name) || '';
-  var last  = vo.last_name  || (doc.name && doc.name.last_name)  || '';
+  // Name — verified_outputs has flat first_name/last_name; Stripe VerificationReport.document
+  // also has first_name/last_name directly on the document object (NOT nested under doc.name).
+  var first = vo.first_name || doc.first_name || '';
+  var last  = vo.last_name  || doc.last_name  || '';
   if(first||last) extracted.idName=(first+' '+last).trim();
 
   // DOB — same shape in both (year/month/day object)
