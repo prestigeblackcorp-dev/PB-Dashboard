@@ -6828,10 +6828,13 @@ function _startVerifyPoll(sessionId, bookingId){
   _verifyPollTimer = setInterval(function(){
     if(++_pollCount > MAX_POLLS){
       clearVerificationPoll();
+      // Keep session in the all-sessions history so Check Status can still find it,
+      // then remove only the "pending" (auto-poll) key — the session is not gone.
+      _addVerifySession(bookingId, sessionId);
       try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
       // If modal is open for this booking, show timeout
       if(verifyId === bookingId){
-        $d('vStripeStatus').textContent = '⏱ Verification timed out. Ask customer to retry.';
+        $d('vStripeStatus').textContent = '⏱ Auto-poll stopped after 10 min — click 🔍 Check Status to check manually.';
         $d('vStripeStatus').style.color = 'var(--muted)';
       }
       return;
@@ -6974,7 +6977,7 @@ function checkVerifyNow(){
 
   // ── Gather every session ID ever created for this booking ──────────────────
   var _allSids = [];
-  // 1. localStorage all-sessions list (most complete; written at each link-send)
+  // 1. localStorage all-sessions list (written at each link-send; survives timeout)
   try{ _allSids = JSON.parse(localStorage.getItem('pb_all_vsessions_'+_checkBookingId)||'[]'); }catch(e){}
   // 2. Active pending session (may not be in the list yet if _addVerifySession raced)
   var _pending=null; try{ _pending=localStorage.getItem('pb_pending_vsession_'+_checkBookingId); }catch(e){}
@@ -6982,68 +6985,108 @@ function checkVerifyNow(){
   // 3. Booking verify data (Firebase-persisted; works on other devices / browsers)
   var _cb=bookings.find(function(x){ return x.id===_checkBookingId; });
   if(_cb && _cb.verify){
-    // Legacy single ID
     if(_cb.verify.stripeSessionId && _allSids.indexOf(_cb.verify.stripeSessionId)===-1)
       _allSids.push(_cb.verify.stripeSessionId);
-    // New array of all IDs
     if(Array.isArray(_cb.verify.stripeSessionIds))
       _cb.verify.stripeSessionIds.forEach(function(s){ if(s && _allSids.indexOf(s)===-1) _allSids.push(s); });
   }
   // Sanity-filter: only real Stripe session IDs
   _allSids = _allSids.filter(function(s){ return s && typeof s==='string' && s.indexOf('vs_')===0; });
 
-  if(!_allSids.length){ showToast('No Stripe sessions found — send a verification link first.'); return; }
-
   var _btn=$d('vCheckBtn');
   var _st=$d('vStripeStatus');
-  if(_btn){ _btn.disabled=true; _btn.textContent='Checking…'; }
-  if(_st){ _st.textContent='⏳ Checking '+_allSids.length+' session'+(_allSids.length!==1?'s':'')+'…'; _st.style.color='var(--muted)'; }
 
-  // ── Check every session in parallel ───────────────────────────────────────
-  Promise.all(_allSids.map(function(sid){
-    return fetch(VERIFY_URL+'/check-verification?session_id='+sid)
-      .then(function(r){ return r.json(); })
-      .catch(function(){ return {id:sid, status:'error', error:'network error'}; });
-  })).then(function(results){
-    if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
-    console.log('[PB Verify] All sessions checked:', JSON.stringify(results.map(function(s){ return {id:s.id,status:s.status}; })));
-
-    // Find the most recent verified session (last in array = newest link sent)
-    var _verified=null;
-    for(var i=results.length-1;i>=0;i--){
-      if(results[i].status==='verified'){ _verified=results[i]; break; }
+  // ── If nothing found locally, query Stripe directly by booking ID ──────────
+  // This recovers sessions from before the tracking code was deployed, after a poll
+  // timeout wiped localStorage, or when accessing from a different device/browser.
+  function _runChecks(sids){
+    if(!sids.length){
+      if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+      if(_st){ _st.textContent='❌ No sessions found on Stripe for this booking — send a new verification link.'; _st.style.color='var(--red)'; }
+      return;
     }
+    // Persist any newly-discovered IDs so they're cached for next time
+    sids.forEach(function(sid){ _addVerifySession(_checkBookingId, sid); });
 
-    if(_verified){
-      // Log diagnostics to console for debugging
-      var _vo=_verified.verified_outputs||{};
-      var _lvr=_verified.last_verification_report;
-      console.log('[PB Verify] verified_outputs:', JSON.stringify(_vo));
-      console.log('[PB Verify] last_verification_report type:', typeof _lvr, typeof _lvr==='string'?'[EXPAND BUG — deploy worker with %5B%5D fix]':'[OK]');
-      if(typeof _lvr==='object'&&_lvr) console.log('[PB Verify] document:', JSON.stringify(_lvr.document||{}));
-      applyStripeVerification(_verified, _checkBookingId);
-    } else {
-      // No verified session found — show best available status
-      var _anyProcessing=results.some(function(s){ return s.status==='processing'; });
-      var _anyPending=results.some(function(s){ return s.status==='requires_input'; });
-      var _allCanceled=results.every(function(s){ return s.status==='canceled'||s.status==='error'; });
-      if(_st){
-        if(_anyProcessing){
-          _st.textContent='⏳ Stripe is processing the verification — check again in a moment.';
-          _st.style.color='var(--muted)';
-        } else if(_allCanceled){
-          _st.textContent='❌ All '+_allSids.length+' verification link'+(_allSids.length!==1?'s':'')+' canceled. Send a new link to retry.';
-          _st.style.color='var(--red)';
-        } else {
-          _st.textContent='⏳ Waiting for customer to complete verification ('+_allSids.length+' link'+(_allSids.length!==1?'s':'')+' checked).';
-          _st.style.color='var(--muted)';
+    if(_st){ _st.textContent='⏳ Checking '+sids.length+' session'+(sids.length!==1?'s':'')+'…'; _st.style.color='var(--muted)'; }
+    Promise.all(sids.map(function(sid){
+      return fetch(VERIFY_URL+'/check-verification?session_id='+sid)
+        .then(function(r){ return r.json(); })
+        .catch(function(){ return {id:sid, status:'error', error:'network error'}; });
+    })).then(function(results){
+      if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+      console.log('[PB Verify] All sessions checked:', JSON.stringify(results.map(function(s){ return {id:s.id,status:s.status}; })));
+
+      // Find the most recent verified session (last = newest link sent)
+      var _verified=null;
+      for(var i=results.length-1;i>=0;i--){
+        if(results[i].status==='verified'){ _verified=results[i]; break; }
+      }
+      if(_verified){
+        var _vo=_verified.verified_outputs||{};
+        var _lvr=_verified.last_verification_report;
+        console.log('[PB Verify] verified_outputs:', JSON.stringify(_vo));
+        console.log('[PB Verify] last_verification_report type:', typeof _lvr, typeof _lvr==='string'?'[EXPAND BUG — redeploy worker with %5B%5D fix]':'[OK]');
+        if(typeof _lvr==='object'&&_lvr) console.log('[PB Verify] document:', JSON.stringify(_lvr.document||{}));
+        applyStripeVerification(_verified, _checkBookingId);
+      } else {
+        var _anyProcessing=results.some(function(s){ return s.status==='processing'; });
+        var _allCanceled=results.every(function(s){ return s.status==='canceled'||s.status==='error'; });
+        if(_st){
+          if(_anyProcessing){
+            _st.textContent='⏳ Stripe is processing the verification — check again in a moment.';
+            _st.style.color='var(--muted)';
+          } else if(_allCanceled){
+            _st.textContent='❌ All '+sids.length+' verification link'+(sids.length!==1?'s':'')+' canceled. Send a new link to retry.';
+            _st.style.color='var(--red)';
+          } else {
+            _st.textContent='⏳ Waiting for customer to complete verification ('+sids.length+' link'+(sids.length!==1?'s':'')+' checked).';
+            _st.style.color='var(--muted)';
+          }
         }
       }
-    }
-  }).catch(function(err){
-    if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
-    showToast('Check failed: '+err.message);
-  });
+    }).catch(function(err){
+      if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+      showToast('Check failed: '+err.message);
+    });
+  }
+
+  if(_btn){ _btn.disabled=true; _btn.textContent='Checking…'; }
+
+  if(_allSids.length){
+    // ── Local IDs found — check them all in parallel ───────────────────────
+    _runChecks(_allSids);
+  } else {
+    // ── Nothing in local storage or Firebase — query Stripe by booking ID ──
+    // Recovers sessions that predate the tracking code, were wiped after poll
+    // timeout, or were sent from a different browser / device.
+    if(_st){ _st.textContent='⏳ Searching Stripe for previous sessions…'; _st.style.color='var(--muted)'; }
+    fetch(VERIFY_URL+'/list-sessions?booking_id='+encodeURIComponent(_checkBookingId))
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(d.error || !d.sessions || !d.sessions.length){
+          if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+          if(_st){ _st.textContent='❌ No sessions found for this booking — send a new verification link.'; _st.style.color='var(--red)'; }
+          return;
+        }
+        var _cloudSids=d.sessions
+          .map(function(s){ return s.id; })
+          .filter(function(s){ return s && s.indexOf('vs_')===0; });
+        if(!_cloudSids.length){
+          if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+          if(_st){ _st.textContent='❌ No valid sessions found for this booking.'; _st.style.color='var(--red)'; }
+          return;
+        }
+        // Cache the cloud-discovered IDs locally + Firebase so next check is instant
+        _cloudSids.forEach(function(sid){ _addVerifySession(_checkBookingId, sid); });
+        _runChecks(_cloudSids);
+      })
+      .catch(function(err){
+        if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+        if(_st){ _st.textContent='❌ Could not reach verification server.'; _st.style.color='var(--red)'; }
+        showToast('Could not search Stripe sessions: '+err.message);
+      });
+  }
 }
 
 function applyStripeVerification(session, bookingId){
