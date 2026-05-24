@@ -6858,6 +6858,9 @@ function sendStripeVerification(){
   .then(function(r){ return r.json(); })
   .then(function(data){
     if(!data.url||!data.id) throw new Error(data.error||'No URL returned from worker');
+    // Capture verifyId NOW — owner may close modal before the async email resolves,
+    // which would set verifyId to null. The poll must still start for the right booking.
+    var _bookingId = verifyId;
     $d('vStripeBtn').disabled=false;
     var _vUrl=data.url;
     // HTML-encode for safe use inside href attributes (& → &amp; etc.)
@@ -6866,12 +6869,12 @@ function sendStripeVerification(){
     vStatusEl.innerHTML='<a href="'+_vUrlHtml+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; text to customer &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
     $d('vCopyBtn').onclick=function(){ navigator.clipboard.writeText(_vUrl).then(function(){ showToast('Link copied!'); }); };
     // Save session ID to localStorage so poll can survive modal close / page refresh
-    try{ localStorage.setItem('pb_pending_vsession_'+verifyId, data.id); }catch(e){}
+    try{ localStorage.setItem('pb_pending_vsession_'+_bookingId, data.id); }catch(e){}
 
     // _afterEmailSent — called once the email resolves (success or fail), or immediately
-    // when there is no email to send. Starts the background poll at that point.
+    // when there is no email to send. Starts the background poll using the captured booking ID.
     function _afterEmailSent(){
-      _startVerifyPoll(data.id, verifyId);
+      _startVerifyPoll(data.id, _bookingId);
     }
 
     // Auto-email the customer the verification link + trip details
@@ -6938,12 +6941,14 @@ function sendStripeVerification(){
 // diagnose issues without opening DevTools.
 function checkVerifyNow(){
   if(!verifyId||!VERIFY_URL) return;
+  // Capture verifyId now — it could change if modal closes before fetch returns
+  var _checkBookingId = verifyId;
   var _sid=null;
   // 1. Prefer the actively-pending session stored at link-send time
-  try{ _sid=localStorage.getItem('pb_pending_vsession_'+verifyId); }catch(e){}
+  try{ _sid=localStorage.getItem('pb_pending_vsession_'+_checkBookingId); }catch(e){}
   // 2. Fall back to the session ID saved when a previous verification completed
   if(!_sid){
-    var _cb=bookings.find(function(x){ return x.id===verifyId; });
+    var _cb=bookings.find(function(x){ return x.id===_checkBookingId; });
     if(_cb && _cb.verify && _cb.verify.stripeSessionId) _sid=_cb.verify.stripeSessionId;
   }
   if(!_sid){ showToast('No Stripe session found — send a verification link first.'); return; }
@@ -6954,26 +6959,31 @@ function checkVerifyNow(){
   .then(function(s){
     if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
     console.log('[PB Verify] Manual check raw response:', JSON.stringify(s, null, 2));
-    if(s.error){ showToast('Worker error: '+s.error); return; }
+    var _st=$d('vStripeStatus');
+    if(s.error){
+      if(_st){ _st.textContent='❌ Worker error: '+s.error; _st.style.color='var(--red)'; }
+      showToast('Worker error: '+s.error);
+      return;
+    }
     var _vo=s.verified_outputs||{};
     var _lvr=s.last_verification_report;
     var _lvr_type=typeof _lvr;
     var _doc=(_lvr&&_lvr_type==='object'&&_lvr.document)||{};
-    var lines=['Session: '+s.id,'Status: '+s.status];
+
     if(s.status==='verified'){
-      lines.push('verified_outputs → first_name: '+(_vo.first_name||'(empty)')+', last_name: '+(_vo.last_name||'(empty)'));
-      lines.push('verified_outputs → dob: '+JSON.stringify(_vo.dob||null));
-      lines.push('verified_outputs → id_number: '+(_vo.id_number||'(empty)'));
-      lines.push('last_verification_report type: '+_lvr_type+(typeof _lvr==='string'?' [EXPAND NOT WORKING — redeploy worker with %5B%5D fix]':''));
-      if(typeof _lvr==='object'&&_lvr){
-        lines.push('document.first_name: '+(_doc.first_name||'(empty)'));
-        lines.push('document.type: '+(_doc.type||'(empty)'));
-        lines.push('document.number: '+(_doc.number||'(empty)'));
-        lines.push('document.dob: '+JSON.stringify(_doc.dob||null));
-      }
-      applyStripeVerification(s, verifyId);
+      // Log diagnostic details to console instead of a blocking alert
+      console.log('[PB Verify] verified_outputs:', JSON.stringify(_vo));
+      console.log('[PB Verify] last_verification_report type:', _lvr_type, typeof _lvr==='string'?'[EXPAND BUG — deploy worker with %5B%5D fix]':'[OK]');
+      if(typeof _lvr==='object'&&_lvr) console.log('[PB Verify] document:', JSON.stringify(_doc));
+      applyStripeVerification(s, _checkBookingId);
+    } else if(s.status==='processing'){
+      if(_st){ _st.textContent='⏳ Stripe is still processing — check again in a moment.'; _st.style.color='var(--muted)'; }
+    } else if(s.status==='canceled'){
+      if(_st){ _st.textContent='❌ Verification was canceled. Send a new link to retry.'; _st.style.color='var(--red)'; }
+    } else {
+      // requires_input or other pending state
+      if(_st){ _st.textContent='⏳ Waiting for customer to complete verification… ('+s.status+')'; _st.style.color='var(--muted)'; }
     }
-    alert('🔍 Stripe Verification Check\n\n'+lines.join('\n'));
   })
   .catch(function(err){
     if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
@@ -7313,7 +7323,16 @@ function resendVerificationEmail(id, skipConfirm){
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({bookingId:id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
   }).then(function(r){return r.json();}).then(function(d){
-    if(!d||!d.url){ showToast('Could not create verify session'); return; }
+    if(!d||!d.url||!d.id){ showToast('Could not create verify session'); return; }
+    // Save new session ID so the poll and Check Status button are tied to this fresh link
+    try{ localStorage.setItem('pb_pending_vsession_'+id, d.id); }catch(e){}
+    // Restart background poll for the new session
+    if(typeof _startVerifyPoll === 'function') _startVerifyPoll(d.id, id);
+
+    // HTML-encode URL so & in Stripe URLs don't truncate the href
+    var _rUrl=d.url;
+    var _rUrlHtml=_rUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+
     var firstName=(b.name||'').split(' ')[0]||'there';
     var addons=[];
     if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
@@ -7336,11 +7355,12 @@ function resendVerificationEmail(id, skipConfirm){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         to:b.email,
-        subject:'Action Required: Verify your ID — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
+        subject:'Action Required: Verify your ID — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')',
         html:'<div style="font-family:sans-serif;max-width:560px;color:#111">'+
           '<h2 style="color:#b8982e">Hi '+firstName+', one quick step! ✅</h2>'+
           '<p style="font-size:15px;line-height:1.6">To finalize your upcoming rental, we need to verify your ID — it takes less than 60 seconds.</p>'+
-          '<a href="'+d.url+'" style="display:inline-block;margin:16px 0;padding:14px 28px;background:#635bff;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:.01em">Verify My ID →</a>'+
+          '<a href="'+_rUrlHtml+'" style="display:inline-block;margin:16px 0;padding:14px 28px;background:#635bff;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:.01em">Verify My ID →</a>'+
+          '<p style="font-size:12px;color:#666;margin:0 0 16px;word-break:break-all">Or copy this link: <a href="'+_rUrlHtml+'" style="color:#635bff">'+esc(_rUrl)+'</a></p>'+
           '<div style="margin:24px 0;background:#f7f7f7;border-radius:10px;padding:18px">'+
           '<div style="font-weight:700;font-size:14px;margin-bottom:10px;color:#333">📋 Your Booking Details</div>'+
           '<table style="width:100%;border-collapse:collapse;font-size:14px">'+detailRows+'</table></div>'+
