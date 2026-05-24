@@ -9823,19 +9823,21 @@ function printContract(){
   var text=$d('contractFilled').value;
   var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
   if(isHtml){
-    // M10: use srcdoc iframe instead of document.write to avoid XSS via user contract data
+    // Write directly to the new window — srcdoc+iframe approach prevents browsers from
+    // capturing iframe content (and embedded signature images) when printing the parent.
     var w=window.open('','_blank','width=900,height=700');
-    var iframe=w.document.createElement('iframe');
-    iframe.style.cssText='width:100%;height:100%;border:none;';
-    w.document.body.style.margin='0';
-    w.document.body.appendChild(iframe);
-    iframe.srcdoc=text;
+    if(!w){ showToast('Pop-up blocked — please allow pop-ups for this page and try again'); return; }
+    w.document.open();
+    w.document.write(text);
+    w.document.close();
     w.focus();
-    setTimeout(function(){ w.print(); },600);
+    // Small delay so images (data-URL signatures) finish painting before the dialog opens
+    setTimeout(function(){ w.print(); }, 800);
   } else {
+    // Plain-text template: `text` still contains HTML <img> tags for signatures,
+    // so insert as innerHTML (not escaped) so the signature images actually render.
     var el=$d('contractPrintArea');
-    el.innerHTML='<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap;max-width:700px;margin:0 auto">'+
-      text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
+    el.innerHTML='<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap;max-width:700px;margin:0 auto">'+text+'</div>';
     el.classList.add('pb-printable');
     window.print();
     setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; },1500);
