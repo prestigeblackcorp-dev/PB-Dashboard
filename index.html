@@ -6411,7 +6411,11 @@ function saveVerify(){
   if(!verifyId) return;
   var idx = bookings.findIndex(function(b){ return b.id===verifyId; });
   if(idx===-1) return;
-  bookings[idx].verify = {
+  // Merge with existing verify object so Stripe session tracking fields are never lost.
+  // stripeSessionId, stripeSessionIds, firstSentAt, carriedFromBooking, and the original
+  // Stripe verifiedAt are invisible in the form — a plain replace would wipe them from Firebase.
+  var _existing = bookings[idx].verify || {};
+  bookings[idx].verify = Object.assign({}, _existing, {
     idName:      $d('vIdName').value.trim(),
     idDob:       $d('vIdDob').value,
     idType:      $d('vIdType').value,
@@ -6431,8 +6435,9 @@ function saveVerify(){
     authAmount:  parseFloat($d('vAuthAmount').value)||0,
     authDate:    $d('vAuthDate').value,
     authStatus:  $d('vAuthStatus').value,
-    verifiedAt:  new Date().toISOString()
-  };
+    // Preserve original Stripe verifiedAt if already set; otherwise stamp now
+    verifiedAt:  _existing.verifiedAt || new Date().toISOString()
+  });
   save();
   closeVerify();
   renderTodayBanner();
@@ -6825,8 +6830,10 @@ function _addVerifySession(bookingId, sessionId){
 }
 
 // ── Auto-scheduled email engine ───────────────────────────────────────────────
-// Runs on page load and every 30 minutes.  Uses localStorage flags so each
-// email fires at most once per booking, even if the dashboard is open all day.
+// Runs on page load and every 30 minutes.  Acts as a fallback when the
+// Cloudflare scheduler worker is not deployed.  Uses localStorage flags
+// keyed identically to the scheduler's KV keys ('24h:id', 'nudge:id') so
+// both systems share the same dedup space — whichever fires first wins.
 var _lastAutoRun = 0;
 function runAutoScheduledEmails(){
   if(!MESSAGING_URL) return;
@@ -9733,6 +9740,18 @@ function saveContractTemplate(){
 var _contractBookingId = null;
 var _custSigDrawing = false;
 
+function _lockColorPicker(locked){
+  // Lock or unlock the Slingshot color buttons after a signature is saved.
+  // Prevents flipping color after the contract is already signed.
+  ['slingshotBtnGreen','slingshotBtnGreen2','slingshotBtnWhite','slingshotBtnWhite2'].forEach(function(id){
+    var btn=$d(id); if(!btn) return;
+    btn.disabled = locked;
+    btn.style.opacity = locked ? '0.4' : '1';
+    btn.style.cursor  = locked ? 'not-allowed' : 'pointer';
+    btn.title = locked ? 'Color locked — contract already signed. Click 🔓 Override to change.' : '';
+  });
+}
+
 function initCustSigCanvas(){
   var lockView=$d('sigLockView'), editView=$d('sigEditView');
   // If booking already has a signature, show locked view — no editing allowed
@@ -9745,6 +9764,12 @@ function initCustSigCanvas(){
       if(preview) preview.src=b.customerSig;
       var dateEl=$d('sigLockDate');
       if(dateEl) dateEl.textContent=b.customerSigDate?'· Signed '+b.customerSigDate:'';
+      // Restore the signed color so the contract re-renders correctly on reopen
+      if(b.customerSigColor && b.vehicle==='Polaris Slingshot'){
+        if(b.customerSigColor!==_slingshotColor) switchSlingshotColor(b.customerSigColor);
+      }
+      // Lock the color picker so it can't be changed after signing
+      _lockColorPicker(true);
       return; // skip canvas init entirely
     }
   }
@@ -9773,8 +9798,11 @@ function overrideCustSig(){
   if(idx===-1) return;
   delete bookings[idx].customerSig;
   delete bookings[idx].customerSigDate;
+  delete bookings[idx].customerSigVehicle;
+  delete bookings[idx].customerSigColor;
   bookings[idx]._t=Date.now();
   save();
+  _lockColorPicker(false); // re-enable color picker after override
   _renderContractContent();
   initCustSigCanvas();
   toast('🔓 Signature removed — contract unlocked');
@@ -9792,6 +9820,9 @@ function saveCustSig(){
     var t2=new Date();
     bookings[idx].customerSig=dataUrl;
     bookings[idx].customerSigDate=(t2.getMonth()+1)+'/'+t2.getDate()+'/'+t2.getFullYear();
+    // Log which vehicle + color (Slingshot) were active when the contract was signed
+    bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
+    if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
     bookings[idx]._t=Date.now();
     save();
   }
@@ -9815,6 +9846,8 @@ function uploadSignedContract(input){
     var t=new Date();
     bookings[idx].customerSig=dataUrl;
     bookings[idx].customerSigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+    bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
+    if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
     bookings[idx]._t=Date.now();
     save();
     initCustSigCanvas();
@@ -10085,7 +10118,8 @@ function openContract(id){
   var isDailySling = isSlingshot && b.type==='daily';
   // Daily Slingshot: start on contract (toggle available); hourly Slingshot: waiver only
   _contractIsWaiver = isSlingshot && !isDailySling;
-  _slingshotColor = 'Green'; // default to Green each time Slingshot opens
+  // Restore the color that was selected when the contract was signed (if any); else default Green
+  _slingshotColor = (isSlingshot && b.customerSigColor) ? b.customerSigColor : 'Green';
   $d('contractModalTitle').textContent = _contractIsWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
   $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
   // Color picker — show for any Slingshot (needed for waiver portion on daily too)
@@ -10253,17 +10287,38 @@ function copyContract(){
 function printContract(){
   var text=$d('contractFilled').value;
   var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
+
+  // Helper: inject HTML into the current page and print (mobile-safe; no popup needed)
+  function _printInPage(html){
+    var el=$d('contractPrintArea');
+    // Extract <style> and <body> content so signatures + contract styles render correctly
+    var styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/gi)||[];
+    var bodyMatch=html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    var inner=(styleMatch.join('')+(bodyMatch?bodyMatch[1]:html));
+    el.innerHTML=inner;
+    el.classList.add('pb-printable');
+    window.print();
+    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; },1800);
+  }
+
   if(isHtml){
-    // Write directly to the new window — srcdoc+iframe approach prevents browsers from
-    // capturing iframe content (and embedded signature images) when printing the parent.
-    var w=window.open('','_blank','width=900,height=700');
-    if(!w){ showToast('Pop-up blocked — please allow pop-ups for this page and try again'); return; }
-    w.document.open();
-    w.document.write(text);
-    w.document.close();
-    w.focus();
-    // Small delay so images (data-URL signatures) finish painting before the dialog opens
-    setTimeout(function(){ w.print(); }, 800);
+    // Try opening a new window first (best quality on desktop).
+    // On mobile browsers (Safari/Chrome iOS) window.open is often blocked — fall back
+    // to the in-page injection approach, which works reliably on all devices.
+    var isMobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if(!isMobile){
+      var w=window.open('','_blank','width=900,height=700');
+      if(w){
+        w.document.open();
+        w.document.write(text);
+        w.document.close();
+        w.focus();
+        setTimeout(function(){ w.print(); }, 800);
+        return;
+      }
+    }
+    // Mobile or popup blocked — print within current page
+    _printInPage(text);
   } else {
     // Plain-text template: `text` still contains HTML <img> tags for signatures,
     // so insert as innerHTML (not escaped) so the signature images actually render.
@@ -10283,6 +10338,10 @@ function downloadContractPdf(){
   var fname = 'contract' + (b ? '-'+b.name.replace(/\s+/g,'-').toLowerCase()+'-'+fmtDate(b.pickupDate||b.date).replace(/\//g,'-') : '') + '.pdf';
   var text = $d('contractFilled').value;
   if(!text.trim()){ toast('No contract to download'); return; }
+  // On mobile, html2pdf/html2canvas is unreliable — use the browser's native print-to-PDF instead
+  if(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)){
+    showToast('On mobile: use Share → Print → Save as PDF'); printContract(); return;
+  }
   if(typeof html2pdf === 'undefined'){
     toast('PDF library not loaded — try Print / PDF instead'); printContract(); return;
   }
