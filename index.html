@@ -6793,6 +6793,32 @@ function clearVerificationPoll(){
   _verifyPollBookingId = null;
 }
 
+// Track every Stripe session ID ever created for a booking.
+// Called each time sendStripeVerification or resendVerificationEmail creates a session.
+// Stores in two places:
+//   • localStorage  — fast, survives page refresh, scoped to this browser
+//   • booking.verify.stripeSessionIds[] — persisted to Firebase, visible on any device
+function _addVerifySession(bookingId, sessionId){
+  if(!bookingId||!sessionId) return;
+  // localStorage array
+  try{
+    var _arr=[];
+    try{ _arr=JSON.parse(localStorage.getItem('pb_all_vsessions_'+bookingId)||'[]'); }catch(e){}
+    if(_arr.indexOf(sessionId)===-1){ _arr.push(sessionId); localStorage.setItem('pb_all_vsessions_'+bookingId,JSON.stringify(_arr)); }
+  }catch(e){}
+  // Booking verify object (Firebase-persisted)
+  var _idx=bookings.findIndex(function(x){ return x.id===bookingId; });
+  if(_idx!==-1){
+    var _v=bookings[_idx].verify||{};
+    var _ids=Array.isArray(_v.stripeSessionIds)?_v.stripeSessionIds.slice():[];
+    if(_ids.indexOf(sessionId)===-1){
+      _ids.push(sessionId);
+      bookings[_idx].verify=Object.assign({},_v,{stripeSessionIds:_ids});
+      save();
+    }
+  }
+}
+
 // Start (or resume) a poll for an existing Stripe session ID
 function _startVerifyPoll(sessionId, bookingId){
   clearVerificationPoll();
@@ -6870,6 +6896,8 @@ function sendStripeVerification(){
     $d('vCopyBtn').onclick=function(){ navigator.clipboard.writeText(_vUrl).then(function(){ showToast('Link copied!'); }); };
     // Save session ID to localStorage so poll can survive modal close / page refresh
     try{ localStorage.setItem('pb_pending_vsession_'+_bookingId, data.id); }catch(e){}
+    // Append to the full session history so Check Status can inspect every link sent
+    _addVerifySession(_bookingId, data.id);
 
     // _afterEmailSent — called once the email resolves (success or fail), or immediately
     // when there is no email to send. Starts the background poll using the captured booking ID.
@@ -6941,51 +6969,78 @@ function sendStripeVerification(){
 // diagnose issues without opening DevTools.
 function checkVerifyNow(){
   if(!verifyId||!VERIFY_URL) return;
-  // Capture verifyId now — it could change if modal closes before fetch returns
+  // Capture verifyId now — it could change if modal closes before fetches return
   var _checkBookingId = verifyId;
-  var _sid=null;
-  // 1. Prefer the actively-pending session stored at link-send time
-  try{ _sid=localStorage.getItem('pb_pending_vsession_'+_checkBookingId); }catch(e){}
-  // 2. Fall back to the session ID saved when a previous verification completed
-  if(!_sid){
-    var _cb=bookings.find(function(x){ return x.id===_checkBookingId; });
-    if(_cb && _cb.verify && _cb.verify.stripeSessionId) _sid=_cb.verify.stripeSessionId;
-  }
-  if(!_sid){ showToast('No Stripe session found — send a verification link first.'); return; }
-  var _btn=$d('vCheckBtn');
-  if(_btn){ _btn.disabled=true; _btn.textContent='Checking…'; }
-  fetch(VERIFY_URL+'/check-verification?session_id='+_sid)
-  .then(function(r){ return r.json(); })
-  .then(function(s){
-    if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
-    console.log('[PB Verify] Manual check raw response:', JSON.stringify(s, null, 2));
-    var _st=$d('vStripeStatus');
-    if(s.error){
-      if(_st){ _st.textContent='❌ Worker error: '+s.error; _st.style.color='var(--red)'; }
-      showToast('Worker error: '+s.error);
-      return;
-    }
-    var _vo=s.verified_outputs||{};
-    var _lvr=s.last_verification_report;
-    var _lvr_type=typeof _lvr;
-    var _doc=(_lvr&&_lvr_type==='object'&&_lvr.document)||{};
 
-    if(s.status==='verified'){
-      // Log diagnostic details to console instead of a blocking alert
-      console.log('[PB Verify] verified_outputs:', JSON.stringify(_vo));
-      console.log('[PB Verify] last_verification_report type:', _lvr_type, typeof _lvr==='string'?'[EXPAND BUG — deploy worker with %5B%5D fix]':'[OK]');
-      if(typeof _lvr==='object'&&_lvr) console.log('[PB Verify] document:', JSON.stringify(_doc));
-      applyStripeVerification(s, _checkBookingId);
-    } else if(s.status==='processing'){
-      if(_st){ _st.textContent='⏳ Stripe is still processing — check again in a moment.'; _st.style.color='var(--muted)'; }
-    } else if(s.status==='canceled'){
-      if(_st){ _st.textContent='❌ Verification was canceled. Send a new link to retry.'; _st.style.color='var(--red)'; }
-    } else {
-      // requires_input or other pending state
-      if(_st){ _st.textContent='⏳ Waiting for customer to complete verification… ('+s.status+')'; _st.style.color='var(--muted)'; }
+  // ── Gather every session ID ever created for this booking ──────────────────
+  var _allSids = [];
+  // 1. localStorage all-sessions list (most complete; written at each link-send)
+  try{ _allSids = JSON.parse(localStorage.getItem('pb_all_vsessions_'+_checkBookingId)||'[]'); }catch(e){}
+  // 2. Active pending session (may not be in the list yet if _addVerifySession raced)
+  var _pending=null; try{ _pending=localStorage.getItem('pb_pending_vsession_'+_checkBookingId); }catch(e){}
+  if(_pending && _allSids.indexOf(_pending)===-1) _allSids.push(_pending);
+  // 3. Booking verify data (Firebase-persisted; works on other devices / browsers)
+  var _cb=bookings.find(function(x){ return x.id===_checkBookingId; });
+  if(_cb && _cb.verify){
+    // Legacy single ID
+    if(_cb.verify.stripeSessionId && _allSids.indexOf(_cb.verify.stripeSessionId)===-1)
+      _allSids.push(_cb.verify.stripeSessionId);
+    // New array of all IDs
+    if(Array.isArray(_cb.verify.stripeSessionIds))
+      _cb.verify.stripeSessionIds.forEach(function(s){ if(s && _allSids.indexOf(s)===-1) _allSids.push(s); });
+  }
+  // Sanity-filter: only real Stripe session IDs
+  _allSids = _allSids.filter(function(s){ return s && typeof s==='string' && s.indexOf('vs_')===0; });
+
+  if(!_allSids.length){ showToast('No Stripe sessions found — send a verification link first.'); return; }
+
+  var _btn=$d('vCheckBtn');
+  var _st=$d('vStripeStatus');
+  if(_btn){ _btn.disabled=true; _btn.textContent='Checking…'; }
+  if(_st){ _st.textContent='⏳ Checking '+_allSids.length+' session'+(_allSids.length!==1?'s':'')+'…'; _st.style.color='var(--muted)'; }
+
+  // ── Check every session in parallel ───────────────────────────────────────
+  Promise.all(_allSids.map(function(sid){
+    return fetch(VERIFY_URL+'/check-verification?session_id='+sid)
+      .then(function(r){ return r.json(); })
+      .catch(function(){ return {id:sid, status:'error', error:'network error'}; });
+  })).then(function(results){
+    if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+    console.log('[PB Verify] All sessions checked:', JSON.stringify(results.map(function(s){ return {id:s.id,status:s.status}; })));
+
+    // Find the most recent verified session (last in array = newest link sent)
+    var _verified=null;
+    for(var i=results.length-1;i>=0;i--){
+      if(results[i].status==='verified'){ _verified=results[i]; break; }
     }
-  })
-  .catch(function(err){
+
+    if(_verified){
+      // Log diagnostics to console for debugging
+      var _vo=_verified.verified_outputs||{};
+      var _lvr=_verified.last_verification_report;
+      console.log('[PB Verify] verified_outputs:', JSON.stringify(_vo));
+      console.log('[PB Verify] last_verification_report type:', typeof _lvr, typeof _lvr==='string'?'[EXPAND BUG — deploy worker with %5B%5D fix]':'[OK]');
+      if(typeof _lvr==='object'&&_lvr) console.log('[PB Verify] document:', JSON.stringify(_lvr.document||{}));
+      applyStripeVerification(_verified, _checkBookingId);
+    } else {
+      // No verified session found — show best available status
+      var _anyProcessing=results.some(function(s){ return s.status==='processing'; });
+      var _anyPending=results.some(function(s){ return s.status==='requires_input'; });
+      var _allCanceled=results.every(function(s){ return s.status==='canceled'||s.status==='error'; });
+      if(_st){
+        if(_anyProcessing){
+          _st.textContent='⏳ Stripe is processing the verification — check again in a moment.';
+          _st.style.color='var(--muted)';
+        } else if(_allCanceled){
+          _st.textContent='❌ All '+_allSids.length+' verification link'+(_allSids.length!==1?'s':'')+' canceled. Send a new link to retry.';
+          _st.style.color='var(--red)';
+        } else {
+          _st.textContent='⏳ Waiting for customer to complete verification ('+_allSids.length+' link'+(_allSids.length!==1?'s':'')+' checked).';
+          _st.style.color='var(--muted)';
+        }
+      }
+    }
+  }).catch(function(err){
     if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
     showToast('Check failed: '+err.message);
   });
@@ -7326,6 +7381,8 @@ function resendVerificationEmail(id, skipConfirm){
     if(!d||!d.url||!d.id){ showToast('Could not create verify session'); return; }
     // Save new session ID so the poll and Check Status button are tied to this fresh link
     try{ localStorage.setItem('pb_pending_vsession_'+id, d.id); }catch(e){}
+    // Append to full session history so Check Status sees every link ever sent
+    _addVerifySession(id, d.id);
     // Restart background poll for the new session
     if(typeof _startVerifyPoll === 'function') _startVerifyPoll(d.id, id);
 
