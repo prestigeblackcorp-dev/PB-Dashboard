@@ -7556,6 +7556,7 @@ function getVehicleUtilization(vehicleName){
 // ════════════════════════════════════════════════════════
 function sendReviewRequest(b){
   if(!MESSAGING_URL || !b || !b.email) return;
+  if(b.reviewEmailSentAt) return; // already sent — never double-send
   var firstName = (b.name||'').split(' ')[0] || 'there';
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',
@@ -7564,14 +7565,33 @@ function sendReviewRequest(b){
       to: b.email,
       subject: 'How was your experience with Prestige Black? ⭐',
       html:
-        '<div style="font-family:sans-serif;max-width:520px;color:#111">'+
-        '<h2 style="color:#b8982e">Thank you, '+firstName+'! 🙏🏾</h2>'+
-        '<p style="font-size:15px;line-height:1.6">If we did a good job for you, please take a quick second to leave us a 5⭐️ review. We appreciate you!</p>'+
-        '<a href="'+(REVIEW_URL||'https://g.page/r/CbWVnx8A8oUZEAE/review')+'" style="display:inline-block;margin-top:12px;padding:12px 24px;background:#b8982e;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Leave a Google Review ⭐</a>'+
-        '<p style="margin-top:24px;font-size:12px;color:#888">Prestige Black Rentals · Dallas–Fort Worth</p>'+
+        '<div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.10)">'+
+        '<div style="background:linear-gradient(135deg,#b8982e 0%,#8a6e1e 100%);padding:32px 28px;text-align:center">'+
+        '<div style="font-size:48px;margin-bottom:8px">⭐</div>'+
+        '<h1 style="margin:0;color:#fff;font-size:24px;font-weight:800;letter-spacing:-.5px">Thank you, '+esc(firstName)+'!</h1>'+
+        '<p style="margin:8px 0 0;color:rgba(255,255,255,.85);font-size:15px">Your rental is complete 🎉</p>'+
+        '</div>'+
+        '<div style="padding:28px">'+
+        '<p style="font-size:16px;line-height:1.7;color:#333;margin-top:0">We hope you had an amazing experience with <strong>Prestige Black</strong>. It means the world to us to hear from our customers!</p>'+
+        '<p style="font-size:15px;line-height:1.6;color:#555">If we took care of you, please take <strong>30 seconds</strong> to leave us a 5-star Google review — it helps us grow and keeps the fleet looking 🔥</p>'+
+        '<div style="text-align:center;margin:28px 0">'+
+        '<a href="'+(REVIEW_URL||'https://g.page/r/CbWVnx8A8oUZEAE/review')+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#8a6e1e);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:16px;letter-spacing:.3px;box-shadow:0 4px 14px rgba(184,152,46,.4)">⭐ Leave a Google Review</a>'+
+        '</div>'+
+        '<p style="font-size:13px;color:#888;margin-bottom:0">Questions or concerns? Call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+        '</div>'+
+        '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">'+
+        'Prestige Black Rentals · Dallas–Fort Worth'+
+        '</div>'+
         '</div>'
     })
-  }).then(function(r){ if(r&&r.ok) logNotif('review','Review Request',b.email,b.id); }).catch(function(){});
+  }).then(function(r){
+    if(r&&r.ok){
+      logNotif('review','Review Request',b.email,b.id);
+      // Stamp so this never fires again for this booking
+      var _ridx=bookings.findIndex(function(x){return x.id===b.id;});
+      if(_ridx!==-1){ bookings[_ridx].reviewEmailSentAt=Date.now(); bookings[_ridx]._t=Date.now(); save(); }
+    }
+  }).catch(function(){});
 }
 
 // Auto-trigger verification — skips if already verified, no email, or Worker not configured
