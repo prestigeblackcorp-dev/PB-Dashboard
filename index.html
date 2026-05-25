@@ -2304,11 +2304,6 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Stripe payment link for the $100 date lock fee. Included in booking confirmation emails so customers can pay immediately.</div>
       </div>
       <div class="fgroup ffull">
-        <div class="flabel">Balance Payment Link (custom amount)</div>
-        <input type="url" class="finput" id="settBalanceUrl" placeholder="https://buy.stripe.com/…">
-        <div style="font-size:11px;color:var(--muted);margin-top:5px">Stripe payment link that allows the customer to enter a custom amount. Shown in the customer portal when a balance is due so they can pay by card before pickup. In Stripe → Payment Links, set the price to "Customer chooses amount".</div>
-      </div>
-      <div class="fgroup ffull">
         <div class="flabel">Google Review URL</div>
         <input type="url" class="finput" id="settReviewUrl" placeholder="https://g.page/r/…/review">
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Sent to customers after trip is marked complete. Find yours at business.google.com.</div>
@@ -11366,16 +11361,16 @@ function _portalRender(body,bookingId,bk){
             '<div style="font-size:13px;font-weight:700;color:#fb923c">💳 Balance Due at Pickup</div>'+
             '<div style="font-size:17px;font-weight:800;color:#fb923c">'+pFmt(t.bal)+'</div>'+
           '</div>'+
-          (BALANCE_URL?
+          (VERIFY_URL?
             '<div style="padding:14px 16px;background:rgba(255,255,255,.03);border-top:1px solid rgba(255,255,255,.06)">'+
               '<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px">Pay Before Pickup</div>'+
               '<div style="display:flex;gap:10px;flex-wrap:wrap">'+
-                // Card option
+                // Card option — creates a Stripe Checkout session with exact amount
                 '<div style="flex:1;min-width:140px;background:rgba(99,91,255,.1);border:1px solid rgba(99,91,255,.25);border-radius:10px;padding:12px 14px">'+
                   '<div style="font-size:12px;font-weight:700;color:#a78bfa;margin-bottom:4px">💳 Pay by Card</div>'+
                   '<div style="font-size:13px;color:rgba(255,255,255,.7);margin-bottom:2px">'+pFmt(Math.ceil(t.bal*1.05*100)/100)+'</div>'+
                   '<div style="font-size:10px;color:rgba(255,255,255,.3);margin-bottom:10px">Includes 5% processing fee &amp; taxes</div>'+
-                  '<a href="'+BALANCE_URL+'" target="_blank" style="display:block;text-align:center;padding:9px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:12px">Pay Online →</a>'+
+                  '<button id="portalPayBtn_'+bookingId+'" onclick="portalPayByCard(\''+bookingId+'\','+Math.round(t.bal*1.05*100)+',\''+esc(bk.name)+'\')" style="width:100%;padding:9px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:12px;cursor:pointer">Pay in Full →</button>'+
                 '</div>'+
                 // Cash/Zelle option
                 '<div style="flex:1;min-width:140px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:12px 14px">'+
@@ -11517,6 +11512,35 @@ function _pExtrasGrid(bk,days){
     '<div style="font-size:12px;color:rgba(255,255,255,.25);margin-bottom:12px;text-align:center">Standard pricing shown — confirm with us to customize</div>'+
     '<button onclick="pSaveExtras(\''+_pBookingId+'\')" id="pExtrasSaveBtn" style="width:100%;padding:13px;background:linear-gradient(135deg,rgba(201,169,98,.85),rgba(139,105,20,.9));color:#000;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">Add Selected Extras →</button>';
   return html;
+}
+
+// ─ Pay balance by card — creates Stripe Checkout session via verify worker ─
+function portalPayByCard(bookingId, amountCents, customerName){
+  var btn = document.getElementById('portalPayBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  fetch(VERIFY_URL+'/create-checkout',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      amountCents: amountCents,
+      bookingId:   bookingId,
+      customerName: customerName,
+      description: 'Rental balance — Prestige Black Rentals'
+    })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if(d && d.url){
+      window.location.href = d.url;
+    } else {
+      if(btn){ btn.disabled=false; btn.textContent='Pay in Full →'; }
+      alert('Unable to open payment — please call (214) 207-2481.');
+    }
+  })
+  .catch(function(){
+    if(btn){ btn.disabled=false; btn.textContent='Pay in Full →'; }
+    alert('Unable to open payment — please call (214) 207-2481.');
+  });
 }
 
 // ─ Toggle expand/collapse ─
