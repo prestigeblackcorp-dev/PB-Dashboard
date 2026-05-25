@@ -9789,7 +9789,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
   <h2>2. Vehicle Description</h2>
   <p>Vehicle: <span class="bold">Polaris {{vehicle_model}} ({{vehicle_color}})</span><br>
   VIN: <span class="bold">{{vehicle_vin}}</span><br>
-  Rental Period: <span class="bold">{{days}} Hour(s) &mdash; {{pickup_date}}{{pickup_time_display}}</span></p>
+  Rental Period: <span class="bold">{{rental_hours}} Hour(s) &mdash; {{pickup_date}}{{pickup_time_display}}</span></p>
 
   <hr class="hr">
 
@@ -9978,6 +9978,11 @@ function _migrateWaiverTemplate(){
     slingshotWaiverTemplate.indexOf('{{owner_signature}}') === -1;     // missing entirely
   if(stale){
     slingshotWaiverTemplate = DEFAULT_SLINGSHOT_WAIVER_TEMPLATE;
+    try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){}
+  } else if(slingshotWaiverTemplate.indexOf('{{rental_hours}}') === -1 &&
+            slingshotWaiverTemplate.indexOf('{{days}} Hour') !== -1){
+    // Surgical fix: replace {{days}} Hour with {{rental_hours}} Hour so daily bookings show 24hr
+    slingshotWaiverTemplate = slingshotWaiverTemplate.replace(/\{\{days\}\} Hour/g, '{{rental_hours}} Hour');
     try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){}
   }
 }
@@ -10247,6 +10252,8 @@ function _renderContractContent(){
   var _bd=_buildContractBreakdown(b);
   var rev=totalRevenue(b), dep=_bd.depositAmt, bal=Math.max(0,getRemainingBalance(b));
   var days=_bd.days;
+  // rental_hours: for waiver — daily bookings count as 24h per day, hourly uses hours directly
+  var rentalHours = b.type==='daily' ? (Number(days)||1)*24 : (Number(days)||1);
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
   // dailyRate = base rental per day (NOT totalRevenue/days — that incorrectly inflates rate with add-ons)
@@ -10270,7 +10277,8 @@ function _renderContractContent(){
   var licState=(b.verify&&b.verify.idState)||'';
   var licAddress=(b.verify&&b.verify.idAddress)||'';
   var vInfo=Object.assign({},VEHICLE_INFO[b.vehicle]||{});
-  if(_contractIsWaiver && b.vehicle==='Polaris Slingshot'){
+  if(b.vehicle==='Polaris Slingshot'){
+    // Apply selected color to both contract and waiver — color picker is visible for all Slingshot docs
     var _ss = SLINGSHOT_SPECS[_slingshotColor] || {};
     vInfo.color = _slingshotColor;
     vInfo.vin   = _ss.vin   || vInfo.vin;
@@ -10293,6 +10301,7 @@ function _renderContractContent(){
     .replace(/\{\{pickup_time_display\}\}/gi,sr(pickupTimeTxt))
     .replace(/\{\{dropoff_time_display\}\}/gi,sr(dropoffTimeTxt))
     .replace(/\{\{days\}\}/gi,               sr(String(days)))
+    .replace(/\{\{rental_hours\}\}/gi,       sr(String(rentalHours)))
     .replace(/\{\{total_revenue\}\}/gi,      sr('$'+_bd.subtotal.toFixed(2)))
     .replace(/\{\{base_rental\}\}/gi,        sr('$'+_bd.baseRev.toFixed(2)))
     .replace(/\{\{addons_total\}\}/gi,       sr('$'+_bd.addonsTotal.toFixed(2)))
