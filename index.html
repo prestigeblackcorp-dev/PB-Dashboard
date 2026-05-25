@@ -6434,9 +6434,12 @@ function openVerify(id){
     }
   }
 
-  // Lock sections if already verified — prevents accidental wipe of contract data
-  _applyVerifyIdLock(!!v.idVerified);
-  _applyVerifyInsLock(!!v.insVerified);
+  // Lock verified sections only when there is actual data to protect.
+  // If Stripe verified but returned no PII fields, keep editable so owner can fill manually.
+  var _idHasData=!!(v.idName||v.idNumber);
+  var _insHasData=!!(v.insCarrier||v.insPolicyNum);
+  _applyVerifyIdLock(!!v.idVerified && _idHasData);
+  _applyVerifyInsLock(!!v.insVerified && _insHasData);
 
   $d('verifyModal').classList.add('open');
 }
@@ -6449,35 +6452,13 @@ function closeVerify(){
 }
 
 // ── Lock / unlock ID section fields once verified ──────────────────────────
+// NEVER uses .disabled on selects or checkboxes — disabled resets selects
+// visually on unlock and grays out the verified checkbox (looks un-verified).
+// Use readOnly + pointer-events only so all values stay visible and intact.
 function _applyVerifyIdLock(locked){
   var textFields=['vIdName','vIdDob','vIdNumber','vIdState','vIdExpiry','vIdAddress'];
   var selectFields=['vIdType'];
-  var bg=locked?'rgba(34,197,94,.05)':'';
-  var cursor=locked?'default':'';
-  textFields.forEach(function(id){
-    var el=$d(id); if(!el) return;
-    el.readOnly=locked;
-    el.style.background=bg;
-    el.style.cursor=cursor;
-    el.style.userSelect=locked?'text':'';
-  });
-  selectFields.forEach(function(id){
-    var el=$d(id); if(!el) return;
-    el.disabled=locked;
-    el.style.opacity=locked?'0.7':'';
-    el.style.pointerEvents=locked?'none':'';
-  });
-  var cb=$d('vIdVerified'); if(cb){ cb.disabled=locked; }
-  var btn=$d('vStripeBtn'); if(btn){ btn.disabled=locked; btn.style.opacity=locked?'0.4':''; btn.title=locked?'ID already verified — unlock to re-send':''; }
-  var chkBtn=$d('vCheckBtn'); if(chkBtn){ chkBtn.disabled=false; } // Check Status always available
-  var banner=$d('vIdLockBanner'); if(banner) banner.style.display=locked?'flex':'none';
-}
-
-// ── Lock / unlock insurance section fields once verified ───────────────────
-function _applyVerifyInsLock(locked){
-  var textFields=['vInsCarrier','vInsPolicyNum','vInsExpiry','vInsHolder'];
-  var selectFields=['vInsCoverage'];
-  var bg=locked?'rgba(34,197,94,.05)':'';
+  var bg=locked?'rgba(34,197,94,.06)':'';
   textFields.forEach(function(id){
     var el=$d(id); if(!el) return;
     el.readOnly=locked;
@@ -6486,24 +6467,59 @@ function _applyVerifyInsLock(locked){
   });
   selectFields.forEach(function(id){
     var el=$d(id); if(!el) return;
-    el.disabled=locked;
-    el.style.opacity=locked?'0.7':'';
+    // pointer-events only — never disabled, so value always displays correctly
     el.style.pointerEvents=locked?'none':'';
+    el.style.opacity=locked?'0.8':'';
+    el.style.cursor=locked?'default':'';
   });
-  var cb=$d('vInsVerified'); if(cb){ cb.disabled=locked; }
-  var scanLabel=document.querySelector('label[for="vInsCardUpload"],label:has(#vInsCardUpload)');
-  // disable scan button if locked
-  var scanInput=$d('vInsCardUpload'); if(scanInput){ scanInput.disabled=locked; }
+  // Checkbox: pointer-events only — stays green/checked when locked, not grayed
+  var cb=$d('vIdVerified');
+  if(cb){ cb.style.pointerEvents=locked?'none':''; cb.style.cursor=locked?'not-allowed':'pointer'; }
+  // Stripe send button: disabled is fine (action button, not a display element)
+  var btn=$d('vStripeBtn');
+  if(btn){ btn.disabled=locked; btn.style.opacity=locked?'0.4':''; btn.title=locked?'ID already verified — use 🔓 Override to unlock':''; }
+  var chkBtn=$d('vCheckBtn'); if(chkBtn){ chkBtn.disabled=false; }
+  var banner=$d('vIdLockBanner'); if(banner) banner.style.display=locked?'flex':'none';
+}
+
+// ── Lock / unlock insurance section fields once verified ───────────────────
+function _applyVerifyInsLock(locked){
+  var textFields=['vInsCarrier','vInsPolicyNum','vInsExpiry','vInsHolder'];
+  var selectFields=['vInsCoverage'];
+  var bg=locked?'rgba(34,197,94,.06)':'';
+  textFields.forEach(function(id){
+    var el=$d(id); if(!el) return;
+    el.readOnly=locked;
+    el.style.background=bg;
+    el.style.cursor=locked?'default':'';
+  });
+  selectFields.forEach(function(id){
+    var el=$d(id); if(!el) return;
+    el.style.pointerEvents=locked?'none':'';
+    el.style.opacity=locked?'0.8':'';
+    el.style.cursor=locked?'default':'';
+  });
+  var cb=$d('vInsVerified');
+  if(cb){ cb.style.pointerEvents=locked?'none':''; cb.style.cursor=locked?'not-allowed':'pointer'; }
+  var scanInput=$d('vInsCardUpload');
+  if(scanInput){ scanInput.disabled=locked; }
   var banner=$d('vInsLockBanner'); if(banner) banner.style.display=locked?'flex':'none';
 }
 
-// ── onchange handlers — lock the moment the checkbox is checked ────────────
+// ── onchange handlers — lock only when there is actual data to protect ──────
+// If Stripe verified but returned no PII, keep editable so owner can fill manually.
 function _onIdVerifiedChange(checked){
-  if(checked) _applyVerifyIdLock(true);
-  // Unlocking is only via the Override button — not by unchecking
+  if(checked){
+    var hasData=($d('vIdName').value.trim()||$d('vIdNumber').value.trim());
+    if(hasData) _applyVerifyIdLock(true);
+    // No data → stay editable; lock applies after owner fills fields and saves
+  }
 }
 function _onInsVerifiedChange(checked){
-  if(checked) _applyVerifyInsLock(true);
+  if(checked){
+    var hasData=($d('vInsCarrier').value.trim()||$d('vInsPolicyNum').value.trim());
+    if(hasData) _applyVerifyInsLock(true);
+  }
 }
 
 function saveVerify(){
@@ -6538,9 +6554,10 @@ function saveVerify(){
     verifiedAt:  _existing.verifiedAt || new Date().toISOString()
   });
   save();
-  // Re-lock based on what was just saved — ensures lock state is always in sync
-  _applyVerifyIdLock(!!bookings[idx].verify.idVerified);
-  _applyVerifyInsLock(!!bookings[idx].verify.insVerified);
+  // Re-lock based on what was just saved — only lock if there is data to protect
+  var _sv=bookings[idx].verify;
+  _applyVerifyIdLock(!!_sv.idVerified && !!(_sv.idName||_sv.idNumber));
+  _applyVerifyInsLock(!!_sv.insVerified && !!(_sv.insCarrier||_sv.insPolicyNum));
   closeVerify();
   renderTodayBanner();
   if(activeTab==='upcoming') renderUpcoming();
@@ -7390,9 +7407,18 @@ function applyStripeVerification(session, bookingId){
     if(extracted.idState)   $d('vIdState').value   = extracted.idState;
     if(extracted.idType)    $d('vIdType').value    = extracted.idType;
     $d('vIdVerified').checked = true;
-    $d('vStripeStatus').textContent = '✅ Identity verified & saved!';
-    $d('vStripeStatus').style.color = 'var(--green)';
-    _applyVerifyIdLock(true); // lock fields immediately — data is now in Firebase
+    var _stripeHasData=!!(extracted.idName||extracted.idNumber);
+    if(_stripeHasData){
+      $d('vStripeStatus').textContent='✅ Identity verified & auto-filled!';
+      $d('vStripeStatus').style.color='var(--green)';
+      _applyVerifyIdLock(true); // data is in Firebase and form — lock it
+    } else {
+      // Stripe confirmed identity but didn't extract PII (flow type limitation)
+      $d('vStripeStatus').textContent='✅ Verified by Stripe — please enter the customer\'s ID details above, then click Save.';
+      $d('vStripeStatus').style.color='var(--gold)';
+      // Keep fields editable so owner can fill them in manually
+      _applyVerifyIdLock(false);
+    }
   }
 
   // ── 3. Auto-save directly to booking — works regardless of modal state ────
