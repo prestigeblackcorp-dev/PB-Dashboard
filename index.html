@@ -2153,9 +2153,17 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <input type="text" class="finput" id="vIdAddress" placeholder="Street, City, State ZIP">
       </div>
       <div class="fgroup ffull" style="flex-direction:row;align-items:center;gap:10px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:10px 14px">
-        <input type="checkbox" id="vIdVerified" style="width:18px;height:18px;accent-color:var(--green);cursor:pointer">
+        <input type="checkbox" id="vIdVerified" style="width:18px;height:18px;accent-color:var(--green);cursor:pointer" onchange="_onIdVerifiedChange(this.checked)">
         <label for="vIdVerified" style="font-size:14px;font-weight:700;cursor:pointer;color:var(--green)">✅ Mark ID as Verified</label>
       </div>
+    </div>
+    <div id="vIdLockBanner" style="display:none;flex-direction:row;align-items:center;gap:10px;background:rgba(34,197,94,.1);border:1.5px solid rgba(34,197,94,.4);border-radius:10px;padding:10px 16px;margin-top:10px">
+      <span style="font-size:20px">🔒</span>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:800;color:var(--green)">ID Verified & Locked</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">Fields are read-only — data is locked into the contract. Use Override only to correct an error.</div>
+      </div>
+      <button class="btn btn-sm" onclick="_applyVerifyIdLock(false)" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
     </div>
 
     <!-- Insurance Section -->
@@ -2195,9 +2203,17 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <input type="text" class="finput" id="vInsHolder" placeholder="Leave blank if same as renter">
       </div>
       <div class="fgroup ffull" style="flex-direction:row;align-items:center;gap:10px;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:10px 14px">
-        <input type="checkbox" id="vInsVerified" style="width:18px;height:18px;accent-color:var(--green);cursor:pointer">
+        <input type="checkbox" id="vInsVerified" style="width:18px;height:18px;accent-color:var(--green);cursor:pointer" onchange="_onInsVerifiedChange(this.checked)">
         <label for="vInsVerified" style="font-size:14px;font-weight:700;cursor:pointer;color:var(--green)">✅ Mark Insurance as Verified</label>
       </div>
+    </div>
+    <div id="vInsLockBanner" style="display:none;flex-direction:row;align-items:center;gap:10px;background:rgba(34,197,94,.1);border:1.5px solid rgba(34,197,94,.4);border-radius:10px;padding:10px 16px;margin-top:10px">
+      <span style="font-size:20px">🔒</span>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:800;color:var(--green)">Insurance Verified & Locked</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">Fields are read-only — insurance data is preserved. Use Override only to correct an error.</div>
+      </div>
+      <button class="btn btn-sm" onclick="_applyVerifyInsLock(false)" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
     </div>
 
     <!-- Credit Card Auth -->
@@ -6418,6 +6434,10 @@ function openVerify(id){
     }
   }
 
+  // Lock sections if already verified — prevents accidental wipe of contract data
+  _applyVerifyIdLock(!!v.idVerified);
+  _applyVerifyInsLock(!!v.insVerified);
+
   $d('verifyModal').classList.add('open');
 }
 
@@ -6426,6 +6446,64 @@ function closeVerify(){
   // verification completes even when the owner dismisses the modal.
   $d('verifyModal').classList.remove('open');
   verifyId = null;
+}
+
+// ── Lock / unlock ID section fields once verified ──────────────────────────
+function _applyVerifyIdLock(locked){
+  var textFields=['vIdName','vIdDob','vIdNumber','vIdState','vIdExpiry','vIdAddress'];
+  var selectFields=['vIdType'];
+  var bg=locked?'rgba(34,197,94,.05)':'';
+  var cursor=locked?'default':'';
+  textFields.forEach(function(id){
+    var el=$d(id); if(!el) return;
+    el.readOnly=locked;
+    el.style.background=bg;
+    el.style.cursor=cursor;
+    el.style.userSelect=locked?'text':'';
+  });
+  selectFields.forEach(function(id){
+    var el=$d(id); if(!el) return;
+    el.disabled=locked;
+    el.style.opacity=locked?'0.7':'';
+    el.style.pointerEvents=locked?'none':'';
+  });
+  var cb=$d('vIdVerified'); if(cb){ cb.disabled=locked; }
+  var btn=$d('vStripeBtn'); if(btn){ btn.disabled=locked; btn.style.opacity=locked?'0.4':''; btn.title=locked?'ID already verified — unlock to re-send':''; }
+  var chkBtn=$d('vCheckBtn'); if(chkBtn){ chkBtn.disabled=false; } // Check Status always available
+  var banner=$d('vIdLockBanner'); if(banner) banner.style.display=locked?'flex':'none';
+}
+
+// ── Lock / unlock insurance section fields once verified ───────────────────
+function _applyVerifyInsLock(locked){
+  var textFields=['vInsCarrier','vInsPolicyNum','vInsExpiry','vInsHolder'];
+  var selectFields=['vInsCoverage'];
+  var bg=locked?'rgba(34,197,94,.05)':'';
+  textFields.forEach(function(id){
+    var el=$d(id); if(!el) return;
+    el.readOnly=locked;
+    el.style.background=bg;
+    el.style.cursor=locked?'default':'';
+  });
+  selectFields.forEach(function(id){
+    var el=$d(id); if(!el) return;
+    el.disabled=locked;
+    el.style.opacity=locked?'0.7':'';
+    el.style.pointerEvents=locked?'none':'';
+  });
+  var cb=$d('vInsVerified'); if(cb){ cb.disabled=locked; }
+  var scanLabel=document.querySelector('label[for="vInsCardUpload"],label:has(#vInsCardUpload)');
+  // disable scan button if locked
+  var scanInput=$d('vInsCardUpload'); if(scanInput){ scanInput.disabled=locked; }
+  var banner=$d('vInsLockBanner'); if(banner) banner.style.display=locked?'flex':'none';
+}
+
+// ── onchange handlers — lock the moment the checkbox is checked ────────────
+function _onIdVerifiedChange(checked){
+  if(checked) _applyVerifyIdLock(true);
+  // Unlocking is only via the Override button — not by unchecking
+}
+function _onInsVerifiedChange(checked){
+  if(checked) _applyVerifyInsLock(true);
 }
 
 function saveVerify(){
@@ -6460,6 +6538,9 @@ function saveVerify(){
     verifiedAt:  _existing.verifiedAt || new Date().toISOString()
   });
   save();
+  // Re-lock based on what was just saved — ensures lock state is always in sync
+  _applyVerifyIdLock(!!bookings[idx].verify.idVerified);
+  _applyVerifyInsLock(!!bookings[idx].verify.insVerified);
   closeVerify();
   renderTodayBanner();
   if(activeTab==='upcoming') renderUpcoming();
@@ -7311,6 +7392,7 @@ function applyStripeVerification(session, bookingId){
     $d('vIdVerified').checked = true;
     $d('vStripeStatus').textContent = '✅ Identity verified & saved!';
     $d('vStripeStatus').style.color = 'var(--green)';
+    _applyVerifyIdLock(true); // lock fields immediately — data is now in Firebase
   }
 
   // ── 3. Auto-save directly to booking — works regardless of modal state ────
