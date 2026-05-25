@@ -7350,51 +7350,77 @@ function applyStripeVerification(session, bookingId){
   // We merge both so we get every available field regardless of flow type.
   console.log('[PB Verify] Raw Stripe session:', JSON.stringify({
     status: session.status,
+    _extracted: session._extracted,
     verified_outputs: session.verified_outputs,
     last_verification_report: session.last_verification_report,
     type: session.type,
     id: session.id
   }, null, 2));
-  var vo  = session.verified_outputs || {};
-  var doc = (session.last_verification_report && typeof session.last_verification_report === 'object' && session.last_verification_report.document) || {};
-
   // ── 1. Build extracted fields ─────────────────────────────────────────────
+  // Primary source: session._extracted — pre-parsed by the Verify Worker from both
+  // verified_outputs (name/DOB/address) and last_verification_report.document
+  // (license #, expiry, doc type).  Raw fallback kept for older Worker versions.
+  var _ex  = (session._extracted && typeof session._extracted === 'object') ? session._extracted : {};
+  var vo   = session.verified_outputs || {};
+  var doc  = (session.last_verification_report && typeof session.last_verification_report === 'object' && session.last_verification_report.document) || {};
+
   var extracted = { idVerified: true, verifiedAt: new Date().toISOString(), stripeSessionId: session.id||'' };
 
-  // Name — verified_outputs has flat first_name/last_name; Stripe VerificationReport.document
-  // also has first_name/last_name directly on the document object (NOT nested under doc.name).
-  var first = vo.first_name || doc.first_name || '';
-  var last  = vo.last_name  || doc.last_name  || '';
-  if(first||last) extracted.idName=(first+' '+last).trim();
+  // Name
+  var _name = _ex.fullName || ((_ex.firstName||vo.first_name||doc.first_name||'')+' '+(_ex.lastName||vo.last_name||doc.last_name||'')).trim();
+  if(_name) extracted.idName = _name;
 
-  // DOB — same shape in both (year/month/day object)
-  var dob = vo.dob || doc.dob;
-  if(dob&&dob.year) extracted.idDob=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
-
-  // Expiry — only in document report (not in verified_outputs)
-  var exp = doc.expiration_date;
-  if(exp&&exp.year) extracted.idExpiry=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
-
-  // ID / license number — verified_outputs.id_number or doc.number
-  var idNum = vo.id_number || doc.number;
-  if(idNum) extracted.idNumber=String(idNum);
-
-  // Address — same shape in both (line1/line2/city/state/postal_code)
-  var addr = vo.address || doc.address;
-  if(addr){
-    var _addrParts=[];
-    if(addr.line1)       _addrParts.push(addr.line1);
-    if(addr.line2)       _addrParts.push(addr.line2);
-    if(addr.city)        _addrParts.push(addr.city);
-    if(addr.state)       _addrParts.push(addr.state);
-    if(addr.postal_code) _addrParts.push(addr.postal_code);
-    if(_addrParts.length) extracted.idAddress=_addrParts.join(', ');
-    if(addr.state) extracted.idState=addr.state;
+  // DOB — _extracted already formatted as YYYY-MM-DD; raw fallback parses {year,month,day}
+  if(_ex.dob){
+    extracted.idDob = _ex.dob;
+  } else {
+    var dob = vo.dob || doc.dob;
+    if(dob&&dob.year) extracted.idDob=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
   }
 
-  // Document type — only in document report
-  var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
-  if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
+  // Expiry — only in document report; _extracted pre-formats it
+  if(_ex.expiry){
+    extracted.idExpiry = _ex.expiry;
+  } else {
+    var exp = doc.expiration_date;
+    if(exp&&exp.year) extracted.idExpiry=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
+  }
+
+  // License / ID number
+  var idNum = _ex.idNumber || vo.id_number || doc.number;
+  if(idNum) extracted.idNumber = String(idNum);
+
+  // Address — _extracted is a flat string; raw fallback assembles the parts
+  if(_ex.address){
+    extracted.idAddress = _ex.address;
+  } else {
+    var addr = vo.address || doc.address;
+    if(addr){
+      var _addrParts=[];
+      if(addr.line1)       _addrParts.push(addr.line1);
+      if(addr.line2)       _addrParts.push(addr.line2);
+      if(addr.city)        _addrParts.push(addr.city);
+      if(addr.state)       _addrParts.push(addr.state);
+      if(addr.postal_code) _addrParts.push(addr.postal_code);
+      if(_addrParts.length) extracted.idAddress=_addrParts.join(', ');
+    }
+  }
+
+  // State — from _extracted or raw address
+  if(_ex.idState){
+    extracted.idState = _ex.idState;
+  } else {
+    var _rawAddr = vo.address || doc.address;
+    if(_rawAddr&&_rawAddr.state) extracted.idState = _rawAddr.state;
+  }
+
+  // Document type — human-readable string from _extracted or raw type map
+  if(_ex.idType){
+    extracted.idType = _ex.idType;
+  } else {
+    var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
+    if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
+  }
 
   // ── 2. Populate form fields — only if the modal is currently open for this booking ──
   var _modalOpen = (verifyId === _bId && $d('verifyModal').classList.contains('open'));
