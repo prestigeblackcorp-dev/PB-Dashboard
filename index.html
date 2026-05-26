@@ -4448,8 +4448,8 @@ function renderKPIs(filtered, containerId){
   // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
     cards.push({label:'⚠ Uncollected Deposits', val:uncollected, sub:'Confirmed/pending, $0 deposit', cls: uncollected>0?'red':''});
-    var remainBalSum = active.reduce(function(s,b){ return s+(Number(b.remainingBalance)||0); },0);
-    cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'':'green'});
+    var remainBalSum = active.reduce(function(s,b){ return s+getRemainingBalance(b); },0);
+    cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'red':'green'});
   }
 
   $d(containerId).innerHTML=cards.map(function(k){
@@ -5769,6 +5769,7 @@ function saveBooking(){
       entry.balancePaidAt     = bpChecked ? (ex.balancePaidAt||Date.now()) : null;
       entry.balancePaidAmount = bpChecked ? (parseFloat($d('fBalancePaidAmt').value)||0) : 0;
       entry.balancePaidMethod = bpChecked ? ($d('fBalancePaidMethod').value||'') : '';
+      if(bpChecked) entry.remainingBalance = 0; // always zero out when marking paid via form
       if(ex.checkInPhotoIds)    entry.checkInPhotoIds    = ex.checkInPhotoIds;
       if(ex.checkOutPhotoIds)   entry.checkOutPhotoIds   = ex.checkOutPhotoIds;
       if(ex.odomIn)             entry.odomIn             = ex.odomIn;
@@ -6386,6 +6387,15 @@ function saveCloseOut(){
   var _rate=_prule2?(_baseRate2*_prule2.mileageMultiplier):_baseRate2;
   var _hasUnlim=Number(bookings[idx].unlimited)>0;
   bookings[idx].mileageCharge = (!_hasUnlim&&_driven&&_allowed&&_rate&&_driven>_allowed) ? Math.round((_driven-_allowed)*_rate) : 0;
+  // Recalculate remaining balance to include any new fuel/mileage charges — only when not yet paid
+  if(!bookings[idx].balancePaidAt){
+    var _bRev=Number(bookings[idx].revenue)||0;
+    var _bDep=Number(bookings[idx].deposit)||0;
+    var _bLock=Number(bookings[idx].dateLock)||0;
+    var _bFuel=bookings[idx].fuelCharge||0;
+    var _bMile=bookings[idx].mileageCharge||0;
+    bookings[idx].remainingBalance=Math.max(0,_bRev+_bDep-_bLock+_bFuel+_bMile);
+  }
   bookings[idx].damage = $d('coDamageFlagged').checked ? {
     flagged: true,
     type:        $d('coDamageType').value,
@@ -8814,6 +8824,7 @@ function renderOutstanding(){
 }
 
 function getRemainingBalance(b){
+  if(b.balancePaidAt) return 0; // paid — always 0 regardless of stored field value
   if(b.remainingBalance!=null) return Number(b.remainingBalance)||0;
   var lock=Number(b.dateLock)||0;
   var dep=Number(b.deposit)||0;
