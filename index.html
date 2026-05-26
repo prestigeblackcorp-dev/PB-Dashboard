@@ -4226,7 +4226,7 @@ function fmtTime(t){
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
 function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.dateLock)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1)); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -4373,40 +4373,76 @@ function renderKPIs(filtered, containerId){
       {val:'90',  label:'90 Days'},
       {val:'all', label:'All Time'},
     ], _kpiPeriod, 'setKpiPeriod', 'KPIs');
-    // Sub-filter by selected period (relative to today, looking back)
-    if(_kpiPeriod !== 'all'){
-      var tod=todayStr();
-      var cutoff = _kpiPeriod==='today' ? tod
-                 : dateStr(addDays(new Date(tod+'T00:00:00'), -(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
-      filtered = filtered.filter(function(b){
-        var bd=b.pickupDate||b.date||'';
-        return _kpiPeriod==='today' ? bd===tod : bd>=cutoff && bd<=tod;
-      });
-    }
   }
-  var active   = filtered.filter(function(b){ return b.status!=='cancelled'; });
-  // b.revenue already includes base + add-ons; totalRevenue also adds post-trip charges
-  var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0); // breakdown display only
-  var bookingRev   = active.reduce(function(s,b){ return s+totalRevenue(b); },0); // correct total
-  var pureBase     = sumK(active,'revenue') - addons; // base = revenue − add-ons (deposit never in revenue)
-  var deposits    = sumK(active,'deposit');
-  var depositKept = sumK(active,'depositKept'); // already inside totalRevenue; kept for Deposits Kept card
-  var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
-  var totalBrokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*(Number(b.days)||1)); },0);
-  var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0);
-  var from        = $d('filterFrom') ? $d('filterFrom').value : '';
-  var to          = $d('filterTo')   ? $d('filterTo').value   : '';
-  // When a KPI period pill is active, use that window for expenses/income too —
-  // otherwise expenses default to all-time while bookings are scoped to today/7d/etc.
-  if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
-    var _tod=todayStr();
-    to   = _tod;
-    from = _kpiPeriod==='today' ? _tod
-         : dateStr(addDays(new Date(_tod+'T00:00:00'), -(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
-  }
-  var loggedExp   = getTotalExpenses(from||null, to||null);
 
-  // Additional income from incomes log within date range
+  // ── Keep pre-period snapshot (for date-lock received-date lookup) ─────────
+  var allFiltered = filtered;
+  var tod, cutoff;
+
+  // ── Apply period sub-filter by pickup date ────────────────────────────────
+  if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
+    tod    = todayStr();
+    cutoff = _kpiPeriod==='today' ? tod
+           : dateStr(addDays(new Date(tod+'T00:00:00'), -(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
+    filtered = filtered.filter(function(b){
+      var bd=b.pickupDate||b.date||'';
+      return _kpiPeriod==='today' ? bd===tod : bd>=cutoff && bd<=tod;
+    });
+  }
+
+  var active    = filtered.filter(function(b){ return b.status!=='cancelled'; });
+  var allActive = allFiltered.filter(function(b){ return b.status!=='cancelled'; }); // unfiltered by period
+
+  // ── Cash-basis date lock revenue: count when received, not on pickup day ──
+  // Uses dateLockPaidAt (stamped on new bookings) or falls back to createdAt for old data.
+  var dateLockPeriodRev = 0;
+  if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
+    allActive.forEach(function(b){
+      if(!(Number(b.dateLock)>0)) return;
+      var dlTs = b.dateLockPaidAt || b.createdAt || b._t || 0;
+      if(!dlTs) return;
+      var dlStr = dateStr(new Date(dlTs));
+      var inPeriod = _kpiPeriod==='today' ? dlStr===tod : (dlStr>=cutoff && dlStr<=tod);
+      if(inPeriod) dateLockPeriodRev += Number(b.dateLock);
+    });
+  }
+
+  // ── Revenue components ────────────────────────────────────────────────────
+  var addons          = active.reduce(function(s,b){ return s+getAddons(b); },0);
+  var deposits        = sumK(active,'deposit');
+  var depositKept     = sumK(active,'depositKept');
+  var bookingCost     = active.reduce(function(s,b){ return s+getEstCost(b); },0);
+  var totalBrokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*(Number(b.days)||1)); },0);
+  var fuelTotal       = sumK(active,'fuelCharge');
+  var mileTotal       = sumK(active,'mileageCharge');
+  var lateReturnTotal = sumK(active,'lateReturnFee');
+  var dateLockTotal   = sumK(allActive,'dateLock'); // all-time total (for Date Locks card in all-time mode)
+
+  // bookingRev: cash-basis for period filters, accrual for all-time
+  var bookingRev, pureBase;
+  if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
+    // Period (cash basis):
+    //   • (revenue − dateLock) collected at pickup for pickup-period bookings
+    //   • dateLock amounts received in period (any pickup date) — counted above
+    var pickupBalance = active.reduce(function(s,b){
+      return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
+    },0);
+    pureBase   = pickupBalance - addons;
+    bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev;
+  } else {
+    // All time: revenue = full booking price (dateLock already in revenue, no double-count)
+    pureBase   = sumK(active,'revenue') - addons;
+    bookingRev = active.reduce(function(s,b){ return s+totalRevenue(b); },0);
+  }
+
+  // ── Expenses / other income scoped to same window ─────────────────────────
+  var from = $d('filterFrom') ? $d('filterFrom').value : '';
+  var to   = $d('filterTo')   ? $d('filterTo').value   : '';
+  if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
+    to   = tod;
+    from = cutoff;
+  }
+  var loggedExp = getTotalExpenses(from||null, to||null);
   var otherIncome = incomes.filter(function(inc){
     if(inc._deleted) return false;
     if(from && (inc.fromDate||'') < from) return false;
@@ -4414,7 +4450,6 @@ function renderKPIs(filtered, containerId){
     return true;
   }).reduce(function(s,inc){ return s+(Number(inc.amount)||0); }, 0);
 
-  // depositKept is already captured inside totalRevenue(b) — don't add again
   var revenue   = bookingRev + otherIncome;
   var totalCost = bookingCost + loggedExp;
   var profit    = revenue - totalCost;
@@ -4429,34 +4464,50 @@ function renderKPIs(filtered, containerId){
     return true;
   }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
   var netAfterCar = revenue - carPayments;
+  var netToOwner  = revenue - totalBrokerFees - totalCost;
 
-  var dateLockTotal  = sumK(active,'dateLock');
-  var fuelTotal      = sumK(active,'fuelCharge');
-  var mileTotal      = sumK(active,'mileageCharge');
-  var lateReturnTotal= sumK(active,'lateReturnFee');
-  // Build a full per-component breakdown so every dollar in Total Revenue is visible
-  var revParts=['Base: '+$$(pureBase)];
-  if(addons)          revParts.push('Add-ons: '+$$(addons));
-  if(dateLockTotal)   revParts.push('Date Locks: '+$$(dateLockTotal));
-  if(fuelTotal)       revParts.push('Fuel: '+$$(fuelTotal));
-  if(mileTotal)       revParts.push('Mileage: '+$$(mileTotal));
-  if(depositKept)     revParts.push('Deposit Kept: '+$$(depositKept));
-  if(lateReturnTotal) revParts.push('Late Fees: '+$$(lateReturnTotal));
-  if(otherIncome)     revParts.push('Other: '+$$(otherIncome));
+  // ── Revenue breakdown label ───────────────────────────────────────────────
+  var revParts, dateLockCardVal, dateLockCardSub;
+  if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
+    // Period breakdown: show balance-at-pickup + date locks received separately
+    var pickupBalanceForLabel = active.reduce(function(s,b){ return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)); },0);
+    revParts = ['Rental balance: '+$$(pickupBalanceForLabel)];
+    if(dateLockPeriodRev) revParts.push('Date locks rcvd: '+$$(dateLockPeriodRev));
+    if(addons)            revParts.push('Add-ons: '+$$(addons));
+    if(fuelTotal)         revParts.push('Fuel: '+$$(fuelTotal));
+    if(mileTotal)         revParts.push('Mileage: '+$$(mileTotal));
+    if(depositKept)       revParts.push('Deposit kept: '+$$(depositKept));
+    if(lateReturnTotal)   revParts.push('Late fees: '+$$(lateReturnTotal));
+    if(otherIncome)       revParts.push('Other income: '+$$(otherIncome));
+    dateLockCardVal = dateLockPeriodRev;
+    dateLockCardSub = 'Received in period · applied toward balance';
+  } else {
+    revParts = ['Base: '+$$(pureBase)];
+    if(addons)          revParts.push('Add-ons: '+$$(addons));
+    if(fuelTotal)       revParts.push('Fuel: '+$$(fuelTotal));
+    if(mileTotal)       revParts.push('Mileage: '+$$(mileTotal));
+    if(depositKept)     revParts.push('Deposit kept: '+$$(depositKept));
+    if(lateReturnTotal) revParts.push('Late fees: '+$$(lateReturnTotal));
+    if(otherIncome)     revParts.push('Other income: '+$$(otherIncome));
+    dateLockCardVal = dateLockTotal;
+    dateLockCardSub = 'Total holds on file · applied toward balance';
+  }
   var revSub = revParts.join(' · ');
+
+  var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0); // for display only
 
   var cards = [
     {label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
     {label:'Total Revenue',         val:$$(revenue),            sub:revSub,                                                cls:''},
-    {label:'Date Locks',            val:$$(dateLockTotal),      sub:'Holds collected — applied toward balance',           cls:'blue'},
+    {label:'Date Locks',            val:$$(dateLockCardVal),    sub:dateLockCardSub,                                       cls:'blue'},
     {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(deposits-depositKept)+' returned to clients',      cls:'purple'},
     {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
     {label:'Logged Expenses',       val:$$(loggedExp),          sub:$$(bookingCost)+' direct booking costs',               cls:'red'},
     {label:'Net Profit',            val:$$(profit),             sub:'Margin: '+pct(margin),                               cls:profit>=0?'green':'red'},
     {label:'Avg / Booking',         val:$$(active.length?sumK(active,'revenue')/active.length:0), sub:'Avg revenue per booking, excl. cancelled', cls:''},
     {label:'Net After Car Payments',val:$$(netAfterCar),        sub:$$(carPayments)+' in car payments',                   cls:''},
-    {label:'Net to PBR',            val:$$(netBookingRev+otherIncome-totalCost), sub:'After broker fees & discounts',     cls:netBookingRev+otherIncome-totalCost>=0?'green':'red'},
-    {label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Paid to partners',           cls:'red'},
+    {label:'Net to PBR',            val:$$(netToOwner),         sub:'After broker fees & expenses',                       cls:netToOwner>=0?'green':'red'},
+    {label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Paid to partners',                                   cls:'red'},
   ];
   // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
@@ -5733,6 +5784,7 @@ function saveBooking(){
     revenue:      parseFloat($d('fRevenue').value)||0,
     deposit:          parseFloat($d('fDeposit').value)||0,
     dateLock:         parseFloat($d('fDateLock').value)||0,
+    dateLockPaidAt:   parseFloat($d('fDateLock').value)>0 ? Date.now() : null,
     remainingBalance: parseFloat($d('fRemainingBalance').value)||0,
 
     address:      ($d('fType').value==='chauffeur'&&$d('fPickupAddress')&&($d('fPickupAddress').value.trim()||$d('fDropoffAddress').value.trim()))
@@ -5802,6 +5854,10 @@ function saveBooking(){
       if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
       if(ex.fuelCharge!=null)   entry.fuelCharge         = ex.fuelCharge;
       if(ex.mileageCharge)     entry.mileageCharge      = ex.mileageCharge;
+      // dateLockPaidAt: preserve original timestamp if dateLock was already on record
+      if(Number(ex.dateLock)>0 && Number(entry.dateLock)>0){
+        entry.dateLockPaidAt = ex.dateLockPaidAt || ex.createdAt || null;
+      }
       // lateReturnFee + actualReturnTime come from the booking form fields (not preserved from ex)
       if(ex._fromWeb)          entry._fromWeb           = ex._fromWeb;
       // Audit trail: record which fields changed
@@ -8880,6 +8936,7 @@ function markDateLockPaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   if(!confirm('Mark $100 date lock as paid for '+b.name+'?')) return;
   b.dateLock=100;
+  b.dateLockPaidAt = b.dateLockPaidAt || Date.now(); // stamp when date lock was received
   var dep=Number(b.deposit)||0;
   var rev=Number(b.revenue)||0;
   if(b.remainingBalance!=null){
