@@ -9716,11 +9716,11 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
 
   <!-- 9. SECURITY DEPOSIT -->
   <h2>9. Security Deposit</h2>
-  <p>A refundable security deposit of <strong style="color:#e0e0e0">{{deposit_amount}}</strong> is required before possession of the Vehicle. The deposit will be refunded within seven (7) days after return, provided no damage, excessive cleaning, unpaid mileage, or late fees apply.</p>
+  <p>A refundable security deposit of <strong style="color:#e0e0e0">{{deposit_amount}}</strong> is required before possession of the Vehicle. The deposit will be refunded within seven (7) days after return, provided no damage, excessive cleaning, unpaid mileage, or late fees apply. <strong>Late returns are charged at $75 per hour</strong> past the agreed return time.</p>
 
   <!-- 10. RETURN OF VEHICLE -->
   <h2>10. Return of Vehicle</h2>
-  <p>The Vehicle must be returned to the agreed location on or before the return date and time. Failure to return the Vehicle within 24 hours of the scheduled time without notice shall be considered vehicle theft and reported to law enforcement.</p>
+  <p>The Vehicle must be returned to the agreed location on or before the return date and time. <strong>Late returns are subject to a $75 per hour late fee</strong>, applied after a 1-hour grace period. Failure to return the Vehicle within 24 hours of the scheduled time without notice shall be considered vehicle theft and reported to law enforcement.</p>
 
   <!-- 11. GOVERNING LAW -->
   <h2>11. Governing Law</h2>
@@ -9874,6 +9874,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
     <li>Administrative and recovery costs</li>
   </ul>
   <p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>
+  <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 1-hour grace period.</p>
 
   <hr class="hr">
 
@@ -9979,7 +9980,28 @@ function _migrateContractTemplate(){
   if(stale){
     contractTemplate = DEFAULT_CONTRACT_TEMPLATE;
     try{ localStorage.setItem('pb_contract_template', contractTemplate); }catch(e){}
+    return;
   }
+  var changed = false;
+  // Surgical fix: add $75/hr late fee rate to security deposit paragraph
+  if(contractTemplate.indexOf('$75 per hour late') === -1 &&
+     contractTemplate.indexOf('or late fees apply.') !== -1){
+    contractTemplate = contractTemplate.replace(
+      'or late fees apply.',
+      'or late fees apply. <strong>Late returns are charged at $75 per hour</strong> past the agreed return time.'
+    );
+    changed = true;
+  }
+  // Surgical fix: add $75/hr late fee rate to return of vehicle section
+  if(contractTemplate.indexOf('$75 per hour late fee') === -1 &&
+     contractTemplate.indexOf('Failure to return the Vehicle within 24 hours') !== -1){
+    contractTemplate = contractTemplate.replace(
+      'Failure to return the Vehicle within 24 hours',
+      '<strong>Late returns are subject to a $75 per hour late fee</strong>, applied after a 1-hour grace period. Failure to return the Vehicle within 24 hours'
+    );
+    changed = true;
+  }
+  if(changed) try{ localStorage.setItem('pb_contract_template', contractTemplate); }catch(e){}
 }
 
 function _migrateWaiverTemplate(){
@@ -10001,11 +10023,24 @@ function _migrateWaiverTemplate(){
   if(stale){
     slingshotWaiverTemplate = DEFAULT_SLINGSHOT_WAIVER_TEMPLATE;
     try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){}
-  } else if(slingshotWaiverTemplate.indexOf('{{rental_hours}}') === -1 &&
-            slingshotWaiverTemplate.indexOf('{{days}} Hour') !== -1){
+  } else {
+    var wChanged = false;
     // Surgical fix: replace {{days}} Hour with {{rental_hours}} Hour so daily bookings show 24hr
-    slingshotWaiverTemplate = slingshotWaiverTemplate.replace(/\{\{days\}\} Hour/g, '{{rental_hours}} Hour');
-    try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){}
+    if(slingshotWaiverTemplate.indexOf('{{rental_hours}}') === -1 &&
+       slingshotWaiverTemplate.indexOf('{{days}} Hour') !== -1){
+      slingshotWaiverTemplate = slingshotWaiverTemplate.replace(/\{\{days\}\} Hour/g, '{{rental_hours}} Hour');
+      wChanged = true;
+    }
+    // Surgical fix: add $75/hr late fee line to damage section
+    if(slingshotWaiverTemplate.indexOf('$75 per hour late fee') === -1 &&
+       slingshotWaiverTemplate.indexOf('security deposit does NOT limit liability') !== -1){
+      slingshotWaiverTemplate = slingshotWaiverTemplate.replace(
+        '<p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>',
+        '<p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>\n  <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 1-hour grace period.</p>'
+      );
+      wChanged = true;
+    }
+    if(wChanged) try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){}
   }
 }
 
@@ -10648,22 +10683,8 @@ function printContract(){
   }
 
   if(isHtml){
-    // Try opening a new window first (best quality on desktop).
-    // On mobile browsers (Safari/Chrome iOS) window.open is often blocked — fall back
-    // to the in-page injection approach, which works reliably on all devices.
-    var isMobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if(!isMobile){
-      var w=window.open('','_blank','width=900,height=700');
-      if(w){
-        w.document.open();
-        w.document.write(text);
-        w.document.close();
-        w.focus();
-        setTimeout(function(){ w.print(); }, 800);
-        return;
-      }
-    }
-    // Mobile or popup blocked — print within current page
+    // Always use in-page injection — reliable on all devices including iPads in
+    // desktop mode, Android tablets, and any browser that blocks popups.
     _printInPage(text);
   } else {
     // Plain-text template: `text` still contains HTML <img> tags for signatures,
