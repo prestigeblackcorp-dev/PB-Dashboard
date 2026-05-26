@@ -1302,6 +1302,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
   <div class="main">
     <div class="chart-card" id="forecastSection" style="padding:16px 18px"></div>
     <div id="openClaimsSection" style="margin-bottom:16px"></div>
+    <div id="kpiPillBar" style="margin-bottom:10px"></div>
     <div class="kpi-grid" id="kpiGrid"></div>
     <div class="budget-section" id="budgetSection"></div>
     <div class="charts-row">
@@ -4086,6 +4087,8 @@ var vSortKey = 'revenue', vSortAsc = false;
 var bSortKey = 'date',    bSortAsc = false;
 var charts   = {};
 var _bPage   = 0; // bookings table current page (50 per page)
+var _kpiPeriod      = 'all'; // 'today' | '7' | '30' | '90' | 'all'
+var _forecastPeriod = '30';  // 'today' | '7' | '30' | '90'
 
 // ════════════════════════════════════════════════════════
 //  STORAGE
@@ -4331,13 +4334,56 @@ function getFiltered(){
 }
 function clearFilters(){
   ['filterFrom','filterTo','filterVehicle','filterType','filterStatus','filterSource','filterSearch'].forEach(function(id){ if($d(id)) $d(id).value=''; });
+  _kpiPeriod='all'; _forecastPeriod='30';
   render();
 }
+
+// ════════════════════════════════════════════════════════
+//  PERIOD PILL HELPERS
+// ════════════════════════════════════════════════════════
+function _pillBar(periods, active, onclickFn, label){
+  var ps = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+
+    '<span style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.07em;text-transform:uppercase;margin-right:2px">'+(label||'Period')+'</span>'+
+    periods.map(function(p){
+      var sel = p.val===active;
+      return '<button onclick="'+onclickFn+'(\''+p.val+'\')" style="'+
+        'border:1px solid '+(sel?'var(--gold)':'var(--border)')+';'+
+        'background:'+(sel?'var(--gold)':'transparent')+';'+
+        'color:'+(sel?'#111':'var(--muted)')+';'+
+        'border-radius:20px;padding:3px 12px;font-size:11px;font-weight:'+(sel?'800':'600')+';'+
+        'cursor:pointer;transition:all .15s;white-space:nowrap">'+p.label+'</button>';
+    }).join('')+
+  '</div>';
+  return ps;
+}
+function setKpiPeriod(p){ _kpiPeriod=p; renderKPIs(getFiltered(),'kpiGrid'); }
+function setForecastPeriod(p){ _forecastPeriod=p; renderForecast(); }
 
 // ════════════════════════════════════════════════════════
 //  KPIs
 // ════════════════════════════════════════════════════════
 function renderKPIs(filtered, containerId){
+  // ── Period pill bar (overview only) ──────────────────────────────────────
+  if(containerId==='kpiGrid'){
+    var pb=$d('kpiPillBar');
+    if(pb) pb.innerHTML=_pillBar([
+      {val:'today',label:'Today'},
+      {val:'7',   label:'7 Days'},
+      {val:'30',  label:'30 Days'},
+      {val:'90',  label:'90 Days'},
+      {val:'all', label:'All Time'},
+    ], _kpiPeriod, 'setKpiPeriod', 'KPIs');
+    // Sub-filter by selected period (relative to today, looking back)
+    if(_kpiPeriod !== 'all'){
+      var tod=todayStr();
+      var cutoff = _kpiPeriod==='today' ? tod
+                 : dateStr(addDays(new Date(tod+'T00:00:00'), -(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
+      filtered = filtered.filter(function(b){
+        var bd=b.pickupDate||b.date||'';
+        return _kpiPeriod==='today' ? bd===tod : bd>=cutoff && bd<=tod;
+      });
+    }
+  }
   var active   = filtered.filter(function(b){ return b.status!=='cancelled'; });
   // b.revenue already includes base + add-ons; totalRevenue also adds post-trip charges
   var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0); // breakdown display only
@@ -8642,17 +8688,60 @@ function renderForecast(){
   var el=$d('forecastSection'); if(!el) return;
   var tod=todayStr();
   function fr(days){
+    var from=tod;
     var lim=dateStr(addDays(new Date(tod+'T00:00:00'),days-1));
-    var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>=tod&&(b.pickupDate||b.date)<=lim; });
+    var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>=from&&(b.pickupDate||b.date)<=lim; });
     return {count:bks.length, rev:bks.reduce(function(s,b){return s+totalRevenue(b);},0)};
   }
-  var f30=fr(30),f60=fr(60),f90=fr(90);
-  el.innerHTML='<div class="chart-ttl" style="margin-bottom:12px">📈 Revenue Forecast (Confirmed &amp; Pending Bookings)</div>'+
+  var periods=[
+    {val:'today',label:'Today',  days:1},
+    {val:'7',    label:'7 Days', days:7},
+    {val:'30',   label:'30 Days',days:30},
+    {val:'90',   label:'90 Days',days:90},
+  ];
+  var selP=periods.find(function(p){return p.val===_forecastPeriod;})||periods[2];
+  var fSel=fr(selP.days);
+  var pillHtml=_pillBar(periods,_forecastPeriod,'setForecastPeriod','Forecast');
+  el.innerHTML=
+    '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">'+
+      '<div class="chart-ttl" style="margin-bottom:0">📈 Revenue Forecast</div>'+
+      pillHtml+
+    '</div>'+
     '<div class="forecast-grid">'+
-    ['30','60','90'].map(function(d,i){
-      var f=[f30,f60,f90][i];
-      return '<div class="forecast-card"><div class="forecast-lbl">Next '+d+' Days</div><div class="forecast-val">'+$$(f.rev)+'</div><div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div></div>';
-    }).join('')+
+      '<div class="forecast-card">'+
+        '<div class="forecast-lbl">Next '+selP.days+(selP.days===1?' Day':' Days')+'</div>'+
+        '<div class="forecast-val">'+$$(fSel.rev)+'</div>'+
+        '<div class="forecast-sub">'+fSel.count+' booking'+(fSel.count!==1?'s':'')+' confirmed or pending</div>'+
+      '</div>'+
+      // Always also show 30/90 day outlook as context cards
+      (selP.val!=='30'&&selP.val!=='90'?
+        ['30','90'].map(function(d){
+          var f=fr(+d);
+          return '<div class="forecast-card" style="opacity:.65">'+
+            '<div class="forecast-lbl">Next '+d+' Days</div>'+
+            '<div class="forecast-val" style="font-size:18px">'+$$(f.rev)+'</div>'+
+            '<div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div>'+
+          '</div>';
+        }).join('')
+      : selP.val==='30'?
+        ['7','90'].map(function(d){
+          var f=fr(+d);
+          return '<div class="forecast-card" style="opacity:.65">'+
+            '<div class="forecast-lbl">Next '+d+' Days</div>'+
+            '<div class="forecast-val" style="font-size:18px">'+$$(f.rev)+'</div>'+
+            '<div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div>'+
+          '</div>';
+        }).join('')
+      :
+        ['7','30'].map(function(d){
+          var f=fr(+d);
+          return '<div class="forecast-card" style="opacity:.65">'+
+            '<div class="forecast-lbl">Next '+d+' Days</div>'+
+            '<div class="forecast-val" style="font-size:18px">'+$$(f.rev)+'</div>'+
+            '<div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div>'+
+          '</div>';
+        }).join('')
+      )+
     '</div>';
 }
 
@@ -9874,7 +9963,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
     <li>Administrative and recovery costs</li>
   </ul>
   <p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>
-  <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 1-hour grace period.</p>
+  <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 15-minute grace period.</p>
 
   <hr class="hr">
 
@@ -10032,11 +10121,18 @@ function _migrateWaiverTemplate(){
       wChanged = true;
     }
     // Surgical fix: add $75/hr late fee line to damage section
+    // Surgical fix: upgrade 1-hour grace → 15-minute grace in the waiver late fee line
+    if(slingshotWaiverTemplate.indexOf('$75 per hour late fee') !== -1 &&
+       slingshotWaiverTemplate.indexOf('15-minute grace') === -1 &&
+       slingshotWaiverTemplate.indexOf('1-hour grace') !== -1){
+      slingshotWaiverTemplate = slingshotWaiverTemplate.replace(/1-hour grace period/g, '15-minute grace period');
+      wChanged = true;
+    }
     if(slingshotWaiverTemplate.indexOf('$75 per hour late fee') === -1 &&
        slingshotWaiverTemplate.indexOf('security deposit does NOT limit liability') !== -1){
       slingshotWaiverTemplate = slingshotWaiverTemplate.replace(
         '<p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>',
-        '<p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>\n  <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 1-hour grace period.</p>'
+        '<p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>\n  <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 15-minute grace period.</p>'
       );
       wChanged = true;
     }
