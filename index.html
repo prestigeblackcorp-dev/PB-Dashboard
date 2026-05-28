@@ -1857,6 +1857,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="btn" id="bdInvoiceBtn" onclick="">📄 Invoice</button>
       <button class="btn" id="bdContractBtn" onclick="">📝 Contract</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">✏ Edit</button>
+      <button class="btn btn-sm" id="bdBlacklistBtn" onclick="" style="border-color:rgba(239,68,68,.4);color:#f87171">⛔ Blacklist</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
     </div>
   </div>
@@ -2388,6 +2389,15 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <input type="number" id="settTaxRate" min="0" max="60" step="0.1" value="25" style="width:100px;padding:6px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);margin-top:4px">
     </div>
 
+    <!-- Blacklist -->
+    <div style="margin-top:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:800;color:var(--muted);letter-spacing:.06em;text-transform:uppercase">⛔ Blacklisted Guests</div>
+      </div>
+      <div id="settBlacklistList" style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;font-size:12px;background:var(--surface)"></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Blacklisted guests are flagged on all bookings. To blacklist a guest, open any booking and tap ⛔ Blacklist.</div>
+    </div>
+
     <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
       <div style="font-size:12px;font-weight:800;color:#ef4444;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Danger Zone</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Permanently deletes all bookings, expenses, income, and maintenance records from this device and Firebase. This cannot be undone.</div>
@@ -2831,7 +2841,7 @@ function cloudSave() {
       }
       var data = {
         bookings: bookings, expenses: expenses, incomes: incomes,
-        maintenance: maintenance, waitlist: waitlist, pricingRules: pricingRules,
+        maintenance: maintenance, waitlist: waitlist, pricingRules: pricingRules, blacklist: blacklist,
         custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
         budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
         contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
@@ -2931,6 +2941,11 @@ function cloudLoad(callback) {
           if (merged.length !== data.pricingRules.length) needsPush = true;
           pricingRules = merged;
           try { localStorage.setItem('pb_pricing_rules', JSON.stringify(pricingRules)); } catch(e) {}
+        }
+        if (Array.isArray(data.blacklist)) {
+          merged = mergeArray(blacklist, data.blacklist);
+          blacklist = merged;
+          try { localStorage.setItem('pb_blacklist', JSON.stringify(blacklist)); } catch(e) {}
         }
         if (data.contractTemplate && typeof data.contractTemplate === 'string' && data.contractTemplate.length > 10) {
           contractTemplate = data.contractTemplate;
@@ -3475,6 +3490,93 @@ function loadIncomes(){
 function saveIncomes(){
   try { localStorage.setItem('pb_incomes', JSON.stringify(incomes)); } catch(e){}
   cloudSave();
+}
+
+// ════════════════════════════════════════════════════════
+//  BLACKLIST
+// ════════════════════════════════════════════════════════
+var blacklist = [];
+function loadBlacklist(){
+  try { var r=localStorage.getItem('pb_blacklist'); if(r) blacklist=JSON.parse(r); } catch(e){ blacklist=[]; }
+}
+function saveBlacklist(){
+  try { localStorage.setItem('pb_blacklist', JSON.stringify(blacklist)); } catch(e){}
+}
+// Returns the blacklist entry if this guest is banned (checks phone, email, and name)
+function isBlacklisted(phone, email, name){
+  if(!blacklist.length) return null;
+  var ph=(phone||'').replace(/\D/g,'');
+  var em=(email||'').toLowerCase().trim();
+  var nm=(name||'').toLowerCase().trim();
+  return blacklist.find(function(bl){
+    if(bl._deleted) return false;
+    if(ph && bl.phone && bl.phone.replace(/\D/g,'')===ph) return true;
+    if(em && bl.email && bl.email.toLowerCase()===em) return true;
+    if(nm && bl.name && bl.name.toLowerCase()===nm) return true;
+    return false;
+  }) || null;
+}
+function blacklistGuest(bookingId){
+  var b=bookings.find(function(x){return x.id===bookingId;}); if(!b) return;
+  var already=isBlacklisted(b.phone,b.email,b.name);
+  if(already){
+    if(!confirm('⛔ '+b.name+' is already on the blacklist.\nReason: '+(already.reason||'(none)')+'\n\nRemove them from the blacklist?')) return;
+    already._deleted=true;
+    saveBlacklist();
+    cloudSave();
+    renderBlacklist();
+    openBookingDetail(bookingId); // re-render to update button
+    showToast(b.name+' removed from blacklist');
+    return;
+  }
+  var reason=prompt('Add '+b.name+' to the blacklist?\n\nOptional reason (e.g. "No-show", "Damage", "Fraud"):','');
+  if(reason===null) return; // cancelled
+  blacklist.push({
+    id:       'bl'+Date.now(),
+    name:     b.name||'',
+    phone:    b.phone||'',
+    email:    b.email||'',
+    reason:   reason.trim(),
+    bookingId:b.id,
+    addedAt:  Date.now()
+  });
+  saveBlacklist();
+  cloudSave();
+  renderBlacklist();
+  openBookingDetail(bookingId); // re-render to update button state
+  showToast('⛔ '+b.name+' added to blacklist');
+}
+function removeFromBlacklist(blId){
+  var bl=blacklist.find(function(x){return x.id===blId;}); if(!bl) return;
+  if(!confirm('Remove '+bl.name+' from the blacklist?')) return;
+  bl._deleted=true;
+  saveBlacklist();
+  cloudSave();
+  renderBlacklist();
+  showToast(bl.name+' removed from blacklist');
+}
+function renderBlacklist(){
+  var el=$d('settBlacklistList'); if(!el) return;
+  var active=blacklist.filter(function(bl){return !bl._deleted;});
+  if(!active.length){
+    el.innerHTML='<div style="padding:14px 16px;color:var(--muted);text-align:center;font-size:12px">No blacklisted guests</div>';
+    return;
+  }
+  el.innerHTML=active.map(function(bl){
+    var when=bl.addedAt?new Date(bl.addedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+    return '<div style="padding:10px 14px;border-bottom:1px solid var(--border2);display:flex;align-items:center;justify-content:space-between;gap:10px">'+
+      '<div style="min-width:0;flex:1">'+
+        '<div style="font-weight:700;font-size:13px;color:var(--text)">'+esc(bl.name)+'</div>'+
+        '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+
+          (bl.phone?'📞 '+esc(bl.phone)+'  ':'')+
+          (bl.email?'✉ '+esc(bl.email)+'  ':'')+
+        '</div>'+
+        (bl.reason?'<div style="font-size:11px;color:#f87171;margin-top:2px">Reason: '+esc(bl.reason)+'</div>':'')+
+        (when?'<div style="font-size:10px;color:var(--muted);margin-top:2px">Added '+when+'</div>':'')+
+      '</div>'+
+      '<button class="btn btn-sm" onclick="removeFromBlacklist(\''+bl.id+'\')" style="flex-shrink:0;border-color:rgba(34,197,94,.4);color:var(--green);font-size:11px">✓ Unban</button>'+
+    '</div>';
+  }).join('');
 }
 
 // ════════════════════════════════════════════════════════
@@ -4972,6 +5074,7 @@ function tripCard(b, showCountdown){
       noDepositChip+
       unpaidChip+
       (b.damage&&b.damage.flagged?'<div style="margin-top:4px"><span style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">🚨 Damage Flagged</span></div>':'')+
+      (isBlacklisted(b.phone,b.email,b.name)?'<div style="margin-top:4px"><span style="background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.35);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">⛔ Blacklisted</span></div>':'')+
       loggedLine+
     '</div>'+
     '<div>'+
@@ -5082,6 +5185,20 @@ function openBookingDetail(id){
   }
   var bdPortalBtn=$d('bdPortalBtn');
   if(bdPortalBtn){ bdPortalBtn.onclick=function(){ shareBookingPortal(b.id); }; }
+  var bdBlacklistBtn=$d('bdBlacklistBtn');
+  if(bdBlacklistBtn){
+    var blEntry=isBlacklisted(b.phone,b.email,b.name);
+    if(blEntry){
+      bdBlacklistBtn.textContent='✓ Unban';
+      bdBlacklistBtn.style.borderColor='rgba(34,197,94,.4)';
+      bdBlacklistBtn.style.color='var(--green)';
+    } else {
+      bdBlacklistBtn.textContent='⛔ Blacklist';
+      bdBlacklistBtn.style.borderColor='rgba(239,68,68,.4)';
+      bdBlacklistBtn.style.color='#f87171';
+    }
+    bdBlacklistBtn.onclick=function(){ blacklistGuest(b.id); };
+  }
   var reminderBtn=$d('bdReminderBtn');
   if(reminderBtn){
     if(b.email&&MESSAGING_URL){
@@ -5111,6 +5228,7 @@ function openBookingDetail(id){
       '<span class="badge '+b.type+'">'+b.type+'</span>'+
       '<span class="badge '+b.status+'">'+b.status+'</span>'+
       (fmtDateFull(b.pickupDate||b.date)?'<span style="font-size:12px;color:var(--muted)">'+fmtDateFull(b.pickupDate||b.date)+'</span>':'')+
+      (isBlacklisted(b.phone,b.email,b.name)?'<span style="background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#f87171;font-size:11px;font-weight:800;padding:2px 10px;border-radius:20px;letter-spacing:.05em">⛔ BLACKLISTED</span>':'')+
     '</div>'+
 
     // Customer
@@ -5742,6 +5860,14 @@ function saveBooking(){
   if(!date)    { alert('Please enter a pickup date.');   return; }
   if(!name)    { alert('Please enter a customer name.'); return; }
   if(!vehicle) { alert('Please select a vehicle.');      return; }
+  // Blacklist check — warn if this guest is banned
+  if(!editingId){
+    var _blHit=isBlacklisted($d('fPhone')?$d('fPhone').value:'', $d('fEmail')?$d('fEmail').value:'', name);
+    if(_blHit){
+      var _blMsg='⛔ BLACKLISTED GUEST\n\n'+_blHit.name+(_blHit.reason?'\nReason: '+_blHit.reason:'')+'\n\nThis customer is on the blacklist. Save booking anyway?';
+      if(!confirm(_blMsg)) return;
+    }
+  }
   // Input validation
   var rev=parseFloat($d('fRevenue').value)||0, dep=parseFloat($d('fDeposit').value)||0;
   var daysVal=parseFloat($d('fDays').value)||0;
@@ -6794,6 +6920,7 @@ function openSettings(){
     if(_currentRole&&_currentRole!=='full'){ showToast('⛔ Settings restricted to owner access'); return; }
     loadNotifLog();
     renderStaffPinList();
+    renderBlacklist();
     var settWorkerUrl=$d('settWorkerUrl');       if(settWorkerUrl)    settWorkerUrl.value    = WORKER_URL||'';
     var settVerifyUrl=$d('settVerifyUrl');       if(settVerifyUrl)    settVerifyUrl.value    = VERIFY_URL||'';
     var settMessagingUrl=$d('settMessagingUrl'); if(settMessagingUrl) settMessagingUrl.value = MESSAGING_URL||'';
@@ -12433,7 +12560,7 @@ setTimeout(stickyTabFix, 200);
   }
   // Normal dashboard init
   loadNotifLog();
-  loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules(); loadStaffPins();
+  loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules(); loadBlacklist(); loadStaffPins();
   initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
   updateSyncUI(); updateOnlineStatus(); initLock();
   setTimeout(hideSplash, 1300);
