@@ -11,7 +11,7 @@
 <meta name="theme-color" content="#0a0a0a">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" integrity="sha384-Yv5O+t3uE3hunW8uyrbpPW3iw6/5/Y7HitWJBLgqfMoA36NogMmy+8wWZMpn3HWc" crossorigin="anonymous" defer></script>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -38,8 +38,8 @@ if('serviceWorker' in navigator){
   });
 }
 </script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://accounts.google.com/gsi/client" onload="initGCal()" async defer></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
+<script src="https://accounts.google.com/gsi/client" onload="initGCal()" onerror="console.warn('Google GSI failed to load — Google Calendar integration unavailable')" async defer></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -50,6 +50,7 @@ if('serviceWorker' in navigator){
   --green: #4ade80; --red: #f87171; --blue: #60a5fa; --purple: #c084fc;
   --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 4px 20px rgba(0,0,0,.45);
   --shadow-hover: 0 8px 32px rgba(0,0,0,.6);
+  --surface: rgba(255,255,255,.04);
 }
 body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; -webkit-font-smoothing: antialiased; }
 
@@ -863,6 +864,67 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 }
 
 /* ══ MOBILE OVERRIDES — placed last so they beat any earlier base CSS ══ */
+@media (max-width: 480px) {
+  /* Tab panel + filter bar: force full width */
+  .tab-panel.active {
+    display: block !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  .filter-bar {
+    width: 100% !important;
+    box-sizing: border-box !important;
+    padding: 10px 12px !important;
+    flex-direction: column !important;
+  }
+  .filter-bar .fg {
+    display: flex !important;
+    flex-direction: row !important;
+    width: 100% !important;
+    flex: 0 0 100% !important;
+    box-sizing: border-box !important;
+  }
+  .filter-bar .fi,
+  .fi {
+    width: 100% !important;
+    flex: 1 !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+  .filter-bar > .btn {
+    width: calc(100% - 78px) !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Today banner: force full width — cascade fix (base CSS padding overrides mobile block) */
+  #todayBanner {
+    padding: 12px 14px !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  #todayBannerItems,
+  .today-banner-items {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    align-items: stretch !important;
+  }
+  .today-banner-card {
+    display: block !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+}
+
+/* ── Respect user's motion preference ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
 </style>
 </head>
 <body>
@@ -1853,6 +1915,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="btn btn-sm" id="bdReminderBtn" onclick="" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📨 Remind</button>
       <button class="btn btn-sm" id="bdPortalBtn" onclick="" style="border-color:rgba(99,91,255,.4);color:#9b8fff">🔗 Portal</button>
       <button class="btn" id="bdInvoiceBtn" onclick="">📄 Invoice</button>
+      <button class="btn btn-sm" id="bdPayLinkBtn" onclick="" style="border-color:rgba(99,91,255,.5);color:#9b8fff">💳 Pay Link</button>
       <button class="btn" id="bdContractBtn" onclick="">📝 Contract</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">✏ Edit</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
@@ -2115,6 +2178,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div class="fsec" style="margin-bottom:10px">🪪 Driver ID Verification</div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <button class="btn btn-sm" id="vStripeBtn" onclick="sendStripeVerification()" style="border-color:#635bff;color:#635bff;white-space:nowrap">📤 Send Stripe Verification Link</button>
+      <button class="btn btn-sm" id="vCheckBtn" onclick="checkStripeStatus()" style="border-color:#22c55e;color:#22c55e;white-space:nowrap">🔄 Check Status</button>
       <span id="vStripeStatus" style="font-size:12px;color:var(--muted)"></span>
     </div>
     <div class="fgrid">
@@ -2468,6 +2532,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div class="fgroup">
         <div class="flabel">Category</div>
         <select class="finput" id="iCategory">
+          <option value="Groupon Payout">Groupon Payout</option>
           <option value="Transfer">Transfer</option>
           <option value="Tip">Tip</option>
           <option value="Referral Fee">Referral Fee</option>
@@ -2777,7 +2842,15 @@ function mergeArray(local, cloud) {
     } else {
       var lt = Number(map[item.id]._t) || Number(map[item.id].createdAt) || 0;
       var ct = Number(item._t)         || Number(item.createdAt)         || 0;
-      if (ct > lt) map[item.id] = item;
+      if (ct > lt) {
+        // Cloud version is newer — warn if local had uncommitted edits that differ
+        var localJson  = JSON.stringify(map[item.id]);
+        var cloudJson  = JSON.stringify(item);
+        if (localJson !== cloudJson) {
+          console.warn('[sync] Conflict: cloud overwrote local record id='+item.id+' (cloud _t='+ct+' > local _t='+lt+')');
+        }
+        map[item.id] = item;
+      }
     }
   });
   var result = [];
@@ -2807,6 +2880,7 @@ function cloudSave() {
       var data = {
         bookings: bookings, expenses: expenses, incomes: incomes,
         maintenance: maintenance, waitlist: waitlist, pricingRules: pricingRules,
+        blacklist: blacklist, customerNotes: customerNotes,
         custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
         budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
         contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
@@ -2863,19 +2937,19 @@ function cloudLoad(callback) {
           if (merged.length !== cloudBookings.length) needsPush = true;
           if (!needsPush && merged.some(function(m){ return !cloudBookings.find(function(c){ return c.id===m.id&&c._t===m._t; }); })) needsPush = true;
           bookings = merged;
-          try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
+          _lsSave('pb_dash_v2', JSON.stringify(bookings));
         }
         if (Array.isArray(data.expenses)) {
           merged = mergeArray(expenses, data.expenses);
           if (merged.length !== data.expenses.length) needsPush = true;
           expenses = merged;
-          try { localStorage.setItem('pb_expenses', JSON.stringify(expenses)); } catch(e) {}
+          _lsSave('pb_expenses', JSON.stringify(expenses));
         }
         if (Array.isArray(data.incomes)) {
           merged = mergeArray(incomes, data.incomes);
           if (merged.length !== data.incomes.length) needsPush = true;
           incomes = merged;
-          try { localStorage.setItem('pb_incomes', JSON.stringify(incomes)); } catch(e) {}
+          _lsSave('pb_incomes', JSON.stringify(incomes));
         }
         if (Array.isArray(data.custom_vehicles)) {
           try { localStorage.setItem('pb_custom_vehicles', JSON.stringify(data.custom_vehicles)); } catch(e) {}
@@ -2889,7 +2963,7 @@ function cloudLoad(callback) {
           merged = mergeArray(maintenance, data.maintenance);
           if (merged.length !== data.maintenance.length) needsPush = true;
           maintenance = merged;
-          try { localStorage.setItem('pb_maintenance', JSON.stringify(maintenance)); } catch(e) {}
+          _lsSave('pb_maintenance', JSON.stringify(maintenance));
         }
         if (data.waitlist) {
           // Worker writes individual keys (object map); cloudSave writes array
@@ -2899,13 +2973,24 @@ function cloudLoad(callback) {
           merged = mergeArray(waitlist, cloudWaitlist);
           if (merged.length !== cloudWaitlist.length) needsPush = true;
           waitlist = merged;
-          try { localStorage.setItem('pb_waitlist', JSON.stringify(waitlist)); } catch(e) {}
+          _lsSave('pb_waitlist', JSON.stringify(waitlist));
         }
         if (Array.isArray(data.pricingRules)) {
           merged = mergeArray(pricingRules, data.pricingRules);
           if (merged.length !== data.pricingRules.length) needsPush = true;
           pricingRules = merged;
-          try { localStorage.setItem('pb_pricing_rules', JSON.stringify(pricingRules)); } catch(e) {}
+          _lsSave('pb_pricing_rules', JSON.stringify(pricingRules));
+        }
+        if (Array.isArray(data.blacklist)) {
+          // merge by id so removals from one device propagate
+          merged = mergeArray(blacklist, data.blacklist);
+          blacklist = merged;
+          _lsSave('pb_blacklist', JSON.stringify(blacklist));
+        }
+        if (data.customerNotes && typeof data.customerNotes === 'object' && !Array.isArray(data.customerNotes)) {
+          // plain object keyed by email — cloud wins for simplicity (notes don't conflict often)
+          customerNotes = Object.assign({}, customerNotes, data.customerNotes);
+          _lsSave('pb_customer_notes', JSON.stringify(customerNotes));
         }
         if (data.contractTemplate && typeof data.contractTemplate === 'string' && data.contractTemplate.length > 10) {
           contractTemplate = data.contractTemplate;
@@ -3743,9 +3828,15 @@ function renderIncomeList(){
       var dateStr2 = inc.fromDate||(inc.toDate||'—');
       if(inc.toDate && inc.toDate!==inc.fromDate) dateStr2+=' → '+inc.toDate;
       var timeStr = inc.startTime?(inc.startTime+(inc.endTime?' – '+inc.endTime:'')):'—';
+      // Check for linked Groupon/Slingshot bookings
+      var isGrouponInc=(inc.category+' '+(inc.description||'')+' '+(inc.notes||'')).toLowerCase().indexOf('groupon')!==-1;
+      var linkedBks=isGrouponInc?grouponBookingsForIncome(inc):[];
+      var linkedHtml=linkedBks.length?
+        '<div style="margin-top:4px;font-size:11px;color:#22c55e">🎟 '+linkedBks.length+' Slingshot booking'+(linkedBks.length!==1?'s':'')+' linked: '+
+        linkedBks.map(function(bk){ return esc(bk.name)+' ('+fmtDate(bk.pickupDate||bk.date)+')'; }).join(', ')+'</div>':'';
       return '<tr>'+
         '<td>'+dateStr2+'</td>'+
-        '<td><strong>'+esc(inc.description)+'</strong></td>'+
+        '<td><strong>'+esc(inc.description)+'</strong>'+linkedHtml+'</td>'+
         '<td><span class="badge" style="background:rgba(34,197,94,.15);color:var(--green);border:none">'+esc(inc.category)+'</span></td>'+
         '<td>'+esc(inc.vehicle||'—')+'</td>'+
         '<td style="white-space:nowrap">'+esc(timeStr)+'</td>'+
@@ -3804,7 +3895,7 @@ function connectGCal(){
 }
 
 function disconnectGCal(){
-  if(gcalAccessToken) google.accounts.oauth2.revoke(gcalAccessToken, function(){});
+  if(gcalAccessToken && window.google && window.google.accounts) google.accounts.oauth2.revoke(gcalAccessToken, function(){});
   gcalAccessToken = null;
   localStorage.removeItem('pb_gcal_connected');
   updateGCalUI();
@@ -3829,8 +3920,9 @@ function updateGCalUI(){
   }
 }
 
-function gcalFetch(method, path, body){
+function gcalFetch(method, path, body, _attempt){
   if(!gcalAccessToken) return Promise.reject('Not connected');
+  _attempt = _attempt || 0;
   var opts = {
     method: method,
     headers: {
@@ -3850,6 +3942,14 @@ function gcalFetch(method, path, body){
     }
     // 204 No Content (DELETE) or 410 Gone (already deleted) are fine
     if(r.status === 204 || r.status === 410) return null;
+    // 429 Rate Limit — exponential backoff up to 4 retries
+    if(r.status === 429){
+      if(_attempt >= 4) throw new Error('Google Calendar rate limit — too many requests. Wait a moment and try again.');
+      var delay = (Math.pow(2, _attempt) * 1000) + Math.round(Math.random() * 500); // 1s, 2s, 4s, 8s + jitter
+      return new Promise(function(resolve){
+        setTimeout(function(){ resolve(gcalFetch(method, path, body, _attempt + 1)); }, delay);
+      });
+    }
     if(!r.ok) return r.json().then(function(e){ throw new Error(e.error && e.error.message || r.status); });
     return r.json();
   });
@@ -3971,7 +4071,7 @@ function _drainGCalQueue(){
     var b=bookings.find(function(x){ return x.id===id; });
     if(!b) return; // booking deleted — skip
     synced++;
-    setTimeout(function(){ syncToGCal(b); }, i*150);
+    setTimeout(function(){ syncToGCal(b); }, i*400); // 400ms apart to stay under rate limit
   });
   if(synced) showToast('📅 Syncing '+synced+' queued booking'+(synced!==1?'s':'')+' to Google Calendar…');
 }
@@ -3982,9 +4082,9 @@ function syncAllToGCal(){
   if(!gcalAccessToken){ alert('Connect Google Calendar first.'); return; }
   var toSync = bookings.filter(function(b){ return !b._deleted && b.status !== 'cancelled'; });
   if(!toSync.length){ alert('No active bookings to sync.'); return; }
-  // Stagger requests slightly to avoid rate limits
+  // Stagger requests to stay under Google's rate limit (~2-3 req/sec is safe)
   toSync.forEach(function(b, i){
-    setTimeout(function(){ syncToGCal(b); }, i * 120);
+    setTimeout(function(){ syncToGCal(b); }, i * 400);
   });
   alert('Syncing ' + toSync.length + ' booking' + (toSync.length!==1?'s':'') + ' to Google Calendar.\nCheck your calendar in a few seconds.');
 }
@@ -4040,6 +4140,8 @@ var SAMPLE = [
 //  STATE
 // ════════════════════════════════════════════════════════
 var bookings = [];
+var blacklist = (function(){ try{ return JSON.parse(localStorage.getItem('pb_blacklist')||'[]'); }catch(e){ return []; }})();
+var customerNotes = (function(){ try{ return JSON.parse(localStorage.getItem('pb_customer_notes')||'{}'); }catch(e){ return {}; }})();
 var editingId = null;
 var activeTab = 'overview';
 var calStart = null; // Date object, start of displayed week (Sunday)
@@ -4055,12 +4157,25 @@ function loadBookings(){
   try { var r = localStorage.getItem('pb_dash_v2'); if(r){ bookings=JSON.parse(r); return; } } catch(e){}
   bookings = []; // start empty — no sample data auto-loaded
 }
+// Wrapper for localStorage.setItem that surfaces QuotaExceededError to the user
+function _lsSave(key, val){
+  try{
+    localStorage.setItem(key, val);
+  } catch(e){
+    if(e && (e.name==='QuotaExceededError'||e.name==='NS_ERROR_DOM_QUOTA_REACHED'||e.code===22)){
+      showToast('⚠️ Storage full — data could not be saved locally. Export a backup and free up space.');
+    }
+    // Re-throw so callers that check result know it failed
+  }
+}
 function save(){
-  try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){}
+  _lsSave('pb_dash_v2', JSON.stringify(bookings));
+  _lsSave('pb_blacklist', JSON.stringify(blacklist));
+  _lsSave('pb_customer_notes', JSON.stringify(customerNotes));
   // Warn when approaching localStorage limit (~4MB)
   try{
     var used=0; for(var k in localStorage){ if(localStorage.hasOwnProperty(k)) used+=localStorage[k].length*2; }
-    if(used > 3.5*1024*1024) toast('⚠️ Storage nearly full ('+Math.round(used/1024/1024*10)/10+' MB). Export a CSV backup.');
+    if(used > 3.5*1024*1024) showToast('⚠️ Storage nearly full ('+Math.round(used/1024/1024*10)/10+' MB). Export a CSV backup.');
   }catch(e){}
   cloudSave();
 }
@@ -4079,6 +4194,9 @@ async function promptClearAll(){
 
 function clearAllData(){
   bookings = []; expenses = []; incomes = []; maintenance = [];
+  blacklist = []; customerNotes = {};
+  try{ localStorage.setItem('pb_blacklist', JSON.stringify([])); }catch(e){}
+  try{ localStorage.setItem('pb_customer_notes', JSON.stringify({})); }catch(e){}
   try{ localStorage.setItem('pb_dash_v2',     JSON.stringify([])); }catch(e){}
   try{ localStorage.setItem('pb_expenses',    JSON.stringify([])); }catch(e){}
   try{ localStorage.setItem('pb_incomes',     JSON.stringify([])); }catch(e){}
@@ -4185,7 +4303,18 @@ function fmtTime(t){
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
 function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
 function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0); }
-function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1)); }
+// Return the actual rental duration in days/hours, preferring date-diff for daily bookings
+function getActualDays(b){
+  if((b.type==='daily')&&(b.pickupDate||b.date)&&b.dropoffDate){
+    var s=parseLocalDate(b.pickupDate||b.date), e=parseLocalDate(b.dropoffDate);
+    if(s&&e&&!isNaN(s.getTime())&&!isNaN(e.getTime())){
+      var diff=Math.round((e-s)/86400000);
+      if(diff>0) return diff; // date-diff days (dropoff - pickup)
+    }
+  }
+  return Math.max(1,Number(b.days)||1);
+}
+function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*getActualDays(b)); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
 
@@ -4195,16 +4324,19 @@ function getVehicleExpenses(vehicle, from, to){
     if(e._deleted) return false;
     if(vehicle && e.vehicle!==vehicle && e.vehicle!=='') return false;
     if(vehicle && e.vehicle==='') return false;
-    if(from && e.date<from) return false;
-    if(to   && e.date>to)   return false;
+    var d = e.date||'';
+    if(from && !(d >= from)) return false;
+    if(to   && !(d <= to))   return false;
     return true;
   }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
 }
 function getTotalExpenses(from, to){
   return expenses.filter(function(e){
     if(e._deleted) return false;
-    if(from && e.date<from) return false;
-    if(to   && e.date>to)   return false;
+    var d = e.date||'';
+    // !(d >= from) catches undefined/null/empty dates so they never bleed into filtered views
+    if(from && !(d >= from)) return false;
+    if(to   && !(d <= to))   return false;
     return true;
   }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
 }
@@ -4299,63 +4431,87 @@ function clearFilters(){
 //  KPIs
 // ════════════════════════════════════════════════════════
 function renderKPIs(filtered, containerId){
-  var active   = filtered.filter(function(b){ return b.status!=='cancelled'; });
-  // b.revenue already includes base + add-ons; totalRevenue also adds post-trip charges
-  var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0); // breakdown display only
-  var bookingRev   = active.reduce(function(s,b){ return s+totalRevenue(b); },0); // correct total
-  var pureBase     = sumK(active,'revenue') - addons; // base = revenue − add-ons (deposit never in revenue)
-  var deposits    = sumK(active,'deposit');
-  var depositKept = sumK(active,'depositKept'); // already inside totalRevenue; kept for Deposits Kept card
-  var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
-  var totalBrokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*(Number(b.days)||1)); },0);
-  var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0);
-  var from        = $d('filterFrom') ? $d('filterFrom').value : '';
-  var to          = $d('filterTo')   ? $d('filterTo').value   : '';
-  var loggedExp   = getTotalExpenses(from||null, to||null);
+  var active = filtered.filter(function(b){ return b.status!=='cancelled'; });
+  var from   = ($d('filterFrom')&&$d('filterFrom').value) || null;
+  var to     = ($d('filterTo')  &&$d('filterTo').value)   || null;
 
-  // Additional income from incomes log within date range
+  // ── REVENUE ──────────────────────────────────────────────────────────────
+  // totalRevenue(b) = b.revenue + fuelCharge + mileageCharge + depositKept + lateReturnFee
+  // b.revenue itself already contains base rate × days + all add-ons entered on the booking
+  var bookingRev   = active.reduce(function(s,b){ return s+totalRevenue(b); },0);
+  var addons       = active.reduce(function(s,b){ return s+getAddons(b); },0);
+  var pureBase     = Math.max(0, active.reduce(function(s,b){ return s+(Number(b.revenue)||0); },0) - addons);
+  var postTrip     = active.reduce(function(s,b){
+    return s+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.lateReturnFee)||0);
+  },0);
+  var depositKept  = active.reduce(function(s,b){ return s+(Number(b.depositKept)||0); },0);
+  var depositTotal = active.reduce(function(s,b){ return s+(Number(b.deposit)||0); },0);
+
+  // Other income entries (non-booking), filtered to the same date range
   var otherIncome = incomes.filter(function(inc){
     if(inc._deleted) return false;
-    if(from && (inc.fromDate||'') < from) return false;
-    if(to   && (inc.fromDate||'') > to)   return false;
+    var d = inc.fromDate||inc.date||'';
+    if(from && !(d && d>=from)) return false;
+    if(to   && !(d && d<=to))   return false;
     return true;
-  }).reduce(function(s,inc){ return s+(Number(inc.amount)||0); }, 0);
+  }).reduce(function(s,inc){ return s+(Number(inc.amount)||0); },0);
 
-  // depositKept is already captured inside totalRevenue(b) — don't add again
-  var revenue   = bookingRev + otherIncome;
-  var totalCost = bookingCost + loggedExp;
-  var profit    = revenue - totalCost;
-  var margin    = revenue>0 ? profit/revenue*100 : 0;
+  var grossRevenue = bookingRev + otherIncome;
 
-  var uncollected = active.filter(function(b){ return (Number(b.deposit)||0)===0 && b.status!=='cancelled'; }).length;
+  // ── COSTS ────────────────────────────────────────────────────────────────
+  // bookingCosts = per-booking cost fields (b.cost entered on each booking)
+  // loggedExp    = expenses log entries filtered to date range
+  var bookingCosts = active.reduce(function(s,b){ return s+getEstCost(b); },0);
+  var loggedExp    = getTotalExpenses(from, to);
+  var totalCosts   = bookingCosts + loggedExp;
+
+  // ── BROKER FEES ──────────────────────────────────────────────────────────
+  var brokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*getActualDays(b)); },0);
+
+  // ── PROFIT ───────────────────────────────────────────────────────────────
+  // Gross Profit  = Revenue − all direct costs (before broker fees)
+  // Net to PBR    = Gross Profit − broker fees (what the business keeps)
+  var grossProfit = grossRevenue - totalCosts;
+  var netToPBR    = grossProfit - brokerFees;
+  var margin      = grossRevenue>0 ? grossProfit/grossRevenue*100 : 0;
+
+  // ── CAR PAYMENTS (subset of expenses, shown separately) ──────────────────
   var carPayments = expenses.filter(function(e){
-    if(e._deleted) return false;
-    if(e.category!=='Car Payment') return false;
-    if(from && e.date<from) return false;
-    if(to   && e.date>to)   return false;
+    if(e._deleted||e.category!=='Car Payment') return false;
+    var d = e.date||'';
+    if(from && !(d >= from)) return false;
+    if(to   && !(d <= to))   return false;
     return true;
   }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
-  var netAfterCar = revenue - carPayments;
 
-  var revSub = 'Base: '+$$(pureBase)+' · Add-ons: '+$$(addons)+' · Other: '+$$(otherIncome);
+  var netAfterCar   = grossRevenue - carPayments;
+  var avgPerBooking = active.length ? bookingRev/active.length : 0;
+  var uncollected   = active.filter(function(b){ return (Number(b.deposit)||0)===0; }).length;
+
+  // Date locks — count and total; NOT included in revenue (they reduce remaining balance only)
+  var dateLockCount = active.filter(function(b){ return (Number(b.dateLock)||0)>0; }).length;
+  var dateLockTotal = active.reduce(function(s,b){ return s+(Number(b.dateLock)||0); },0);
+
+  var revBreakdown = 'Base: '+$$(pureBase)+' · Add-ons: '+$$(addons)+(postTrip?' · Post-trip: '+$$(postTrip):'')+' · Other: '+$$(otherIncome);
 
   var cards = [
-    {label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
-    {label:'Total Revenue',         val:$$(revenue),            sub:revSub,                                                cls:''},
-    {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(deposits-depositKept)+' returned to clients',      cls:'purple'},
-    {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
-    {label:'Logged Expenses',       val:$$(loggedExp),          sub:$$(bookingCost)+' direct booking costs',               cls:'red'},
-    {label:'Net Profit',            val:$$(profit),             sub:'Margin: '+pct(margin),                               cls:profit>=0?'green':'red'},
-    {label:'Avg / Booking',         val:$$(active.length?sumK(active,'revenue')/active.length:0), sub:'Avg revenue per booking, excl. cancelled', cls:''},
-    {label:'Net After Car Payments',val:$$(netAfterCar),        sub:$$(carPayments)+' in car payments',                   cls:''},
-    {label:'Net to PBR',            val:$$(netBookingRev+otherIncome-totalCost), sub:'After broker fees & discounts',     cls:netBookingRev+otherIncome-totalCost>=0?'green':'red'},
-    {label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Paid to partners',           cls:'red'},
+    {label:'Total Bookings',         val:filtered.length,      sub:active.length+' active · '+(filtered.length-active.length)+' cancelled',           cls:''},
+    {label:'Gross Revenue',          val:$$(grossRevenue),      sub:revBreakdown,                                                                      cls:''},
+    {label:'Date Locks Received',    val:dateLockCount,         sub:$$(dateLockTotal)+' collected · reduces balance, not revenue',                     cls:''},
+    {label:'Deposits Kept',          val:$$(depositKept),       sub:$$(Math.max(0,depositTotal-depositKept))+' returned to clients',                   cls:'purple'},
+    {label:'Add-on Revenue',         val:$$(addons),            sub:'Delivery, unlimited miles, extras — included in revenue',                         cls:'blue'},
+    {label:'Logged Expenses',        val:$$(loggedExp),         sub:$$(bookingCosts)+' direct booking costs · '+$$(totalCosts)+' total costs',         cls:'red'},
+    {label:'Gross Profit',           val:$$(grossProfit),       sub:'Margin: '+pct(margin),                                                            cls:grossProfit>=0?'green':'red'},
+    {label:'Broker Fees Paid',       val:$$(brokerFees),        sub:'Paid to partners — not included in costs above',                                  cls:'red'},
+    {label:'Net to PBR',             val:$$(netToPBR),          sub:'After all costs & broker fees',                                                   cls:netToPBR>=0?'green':'red'},
+    {label:'Avg / Booking',          val:$$(avgPerBooking),     sub:'Average booking revenue, excl. cancelled',                                        cls:''},
+    {label:'Net After Car Payments', val:$$(netAfterCar),       sub:$$(carPayments)+' in car payments this period',                                    cls:''},
   ];
-  // Remaining balances card — only on overview
+
   if(containerId==='kpiGrid'){
-    cards.push({label:'⚠ Uncollected Deposits', val:uncollected, sub:'Confirmed/pending, $0 deposit', cls: uncollected>0?'red':''});
+    cards.push({label:'⚠ Uncollected Deposits', val:uncollected, sub:'Active/pending bookings with $0 deposit', cls:uncollected>0?'red':''});
     var remainBalSum = active.reduce(function(s,b){ return s+(Number(b.remainingBalance)||0); },0);
-    cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'':'green'});
+    cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls:remainBalSum>0?'':'green'});
   }
 
   $d(containerId).innerHTML=cards.map(function(k){
@@ -4475,7 +4631,8 @@ function renderVehicleTable(filtered){
 // ════════════════════════════════════════════════════════
 function sortB(k){ if(bSortKey===k) bSortAsc=!bSortAsc; else{bSortKey=k;bSortAsc=false;} _bPage=0; render(); }
 
-function filterChange(){ _bPage=0; render(); }
+var _filterTimer=null;
+function filterChange(){ clearTimeout(_filterTimer); _filterTimer=setTimeout(function(){ _bPage=0; render(); },220); }
 function changeBPage(delta){ _bPage+=delta; render(); }
 function renderBookingsTable(filtered){
   var PAGE_SIZE=50;
@@ -4754,6 +4911,12 @@ function tripCard(b, showCountdown){
   // Feature 7: duplicate button
   var dupBtn='<button class="btn btn-sm" onclick="duplicateBooking(\''+b.id+'\')" title="Duplicate this booking" style="border-color:rgba(100,180,255,.4);color:var(--blue)">⧉ Duplicate</button>';
 
+  // Blacklist quick-button
+  var alreadyBl=isBlacklisted(b);
+  var blBtn=alreadyBl
+    ?'<button class="btn btn-sm" style="border-color:rgba(239,68,68,.3);color:rgba(239,68,68,.5);cursor:default" disabled title="Already blacklisted">🚫 Blacklisted</button>'
+    :'<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();addToBlacklist(\''+b.id+'\')" title="Add to blacklist">🚫 Blacklist</button>';
+
   // Feature 11: no-deposit warning chip (shown inline in card)
   var noDepositChip=(Number(b.deposit)||0)===0&&b.status!=='cancelled'?
     '<div style="margin-top:4px"><span class="deposit-chip">⚠️ No deposit collected</span></div>':'';
@@ -4804,6 +4967,7 @@ function tripCard(b, showCountdown){
       '<button class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold)" onclick="openContract(\''+b.id+'\')">📝 Contract</button>'+
       statusBtn+
       dupBtn+
+      blBtn+
     '</div>'+
     '</div>';
 }
@@ -4830,9 +4994,9 @@ function tripEndDate(b){
   if(!start) return '';
   if(b.dropoffDate) return normDateStr(b.dropoffDate)||start;
   if(b.type==='hourly'||b.type==='chauffeur') return start;
-  // days=1 means the rental ends on its start date (not start+1); days=3 ends on start+2
+  // 1 day = 24 hrs: pickup 05/22, dropoff 05/23 = 1 day. End date = pickupDate + days.
   var sd=parseLocalDate(start);
-  return dateStr(addDays(sd, Math.max(0, (Number(b.days)||1) - 1)));
+  return dateStr(addDays(sd, Number(b.days)||1));
 }
 
 function sortByTime(a,b){
@@ -4891,6 +5055,16 @@ function openBookingDetail(id){
     bdContractBtn.textContent=isWaiverType?'⚠ Waiver':'📝 Contract';
     bdContractBtn.onclick=function(){ closeBookingDetail(); openContract(b.id); };
   }
+  var bdPayLinkBtn=$d('bdPayLinkBtn');
+  if(bdPayLinkBtn){
+    var _bl=Math.max(0,getRemainingBalance(b));
+    if(_bl>0&&VERIFY_URL){
+      bdPayLinkBtn.style.display='';
+      bdPayLinkBtn.onclick=function(){ sendStripePaymentLink(b.id); };
+    } else {
+      bdPayLinkBtn.style.display='none';
+    }
+  }
   var bdPortalBtn=$d('bdPortalBtn');
   if(bdPortalBtn){ bdPortalBtn.onclick=function(){ shareBookingPortal(b.id); }; }
   var reminderBtn=$d('bdReminderBtn');
@@ -4924,6 +5098,24 @@ function openBookingDetail(id){
       (fmtDateFull(b.pickupDate||b.date)?'<span style="font-size:12px;color:var(--muted)">'+fmtDateFull(b.pickupDate||b.date)+'</span>':'')+
     '</div>'+
 
+    // Blacklist warning
+    (function(){
+      var bl=isBlacklisted(b);
+      return bl?'<div style="background:rgba(239,68,68,.12);border:2px solid #ef4444;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:flex-start;gap:10px">'+
+        '<span style="font-size:22px;line-height:1">🚫</span>'+
+        '<div style="flex:1"><div style="font-weight:800;color:#ef4444;font-size:14px">BLACKLISTED CUSTOMER</div>'+
+        '<div style="color:#ef4444;font-size:12px;margin-top:2px">Reason: '+esc(bl.reason)+'</div>'+
+        '<div style="color:rgba(239,68,68,.6);font-size:11px;margin-top:2px">Added '+new Date(bl.addedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+(bl.addedBy?' by '+esc(bl.addedBy):'')+'</div></div>'+
+        '<button class="btn btn-sm" onclick="removeFromBlacklist(\''+bl.id+'\')" style="border-color:#ef4444;color:#ef4444;flex-shrink:0">Remove</button></div>':'';
+    })()+
+    // Customer note
+    (getCustomerNote(b)?'<div style="background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;gap:10px;align-items:flex-start">'+
+      '<span style="font-size:16px">📝</span>'+
+      '<div style="flex:1;font-size:13px;color:#fbbf24;line-height:1.5">'+esc(getCustomerNote(b))+'</div>'+
+      '<button class="btn btn-sm" onclick="saveCustomerNote(\''+b.id+'\')" style="border-color:rgba(251,191,36,.4);color:#fbbf24;flex-shrink:0;font-size:11px">Edit</button></div>':'')+
+    // Underage flag
+    ((b.verify&&b.verify.underageFlag)?'<div style="background:rgba(239,68,68,.1);border:1px solid #ef4444;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-weight:700;color:#ef4444;font-size:13px">🚨 UNDERAGE: Customer is '+(b.verify.age||'?')+' years old — minimum rental age is 21</div>':'')+
+
     // Customer
     '<div class="fsec">Customer</div>'+
     '<div class="detail-row"><span class="detail-label">Name</span><span class="detail-val">'+esc(b.name)+'</span></div>'+
@@ -4941,13 +5133,24 @@ function openBookingDetail(id){
     // Revenue
     '<div class="fsec">Revenue</div>'+
     '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(getAddons(b)?'<span style="font-size:10px;opacity:.7"> (base '+$$(Math.max(0,(Number(b.revenue)||0)-getAddons(b)))+' + add-ons '+$$(getAddons(b))+')</span>':'')+'</span></div>'+
-    (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+ ((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+' × '+(b.days||1)+')</span></span></div>':'')+
+    (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$((Number(b.brokerFee)||0)*getActualDays(b))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+ ((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+' × '+getActualDays(b)+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">−'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
     (b.broker?'<div class="detail-row"><span class="detail-label">Broker / Partner</span><span class="detail-val">'+esc(b.broker)+'</span></div>':'')+
+    (function(){
+      if(!isGrouponVoucherBooking(b)) return '';
+      var matched=grouponIncomeForBooking(b);
+      if(matched.length){
+        return '<div class="detail-row"><span class="detail-label" style="color:#22c55e">🎟 Groupon Payout</span><span class="detail-val" style="color:#22c55e;font-size:12px">'+
+          matched.map(function(inc){ return esc(inc.description)+' · '+$$(inc.amount)+(inc.fromDate?' ('+fmtDate(inc.fromDate)+(inc.toDate&&inc.toDate!==inc.fromDate?' – '+fmtDate(inc.toDate):'')+')':''); }).join('<br>')+'</span></div>';
+      }
+      return '<div class="detail-row"><span class="detail-label" style="color:#f97316">🎟 Groupon Payout</span><span class="detail-val" style="color:#f97316;font-size:12px">No matching Groupon income entry found for '+(b.pickupDate||b.date||'this date')+'.</span></div>';
+    })()+
     (b.source?'<div class="detail-row"><span class="detail-label">Booking Source</span><span class="detail-val">'+esc(b.source)+'</span></div>':'')+
     (b.includedMiles?'<div class="detail-row"><span class="detail-label">Included Miles</span><span class="detail-val">'+Number(b.includedMiles).toLocaleString()+' mi'+(b.overageRate?' @ $'+b.overageRate+'/mi overage':'')+'</span></div>':'')+
-    '<div class="detail-row"><span class="detail-label">Date Lock Paid</span><span class="detail-val" style="color:var(--green)">'+$$(b.dateLock!=null?b.dateLock:100)+'</span></div>'+
+    (b.paidInFull
+      ? '<div class="detail-row"><span class="detail-label" style="color:var(--green)">✅ Paid in Full</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(b.deposit)+'</span></div>'
+      : '<div class="detail-row"><span class="detail-label">Date Lock Paid</span><span class="detail-val" style="color:var(--green)">'+$$(b.dateLock!=null?b.dateLock:100)+'</span></div>')+
     '<div class="detail-row"><span class="detail-label">Remaining Balance</span><span class="detail-val" style="color:'+(getRemainingBalance(b)>0?'var(--red)':'var(--green)')+'">'+$$(getRemainingBalance(b))+
       ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\');closeBookingDetail()" style="padding:2px 8px;font-size:10px;margin-left:6px">✏ Update</button>'+
     '</span></div>'+
@@ -5005,8 +5208,14 @@ function openBookingDetail(id){
     // Verification
     '<div class="fsec">Verification</div>'+
     '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified':'🪪 Not verified')+'</span></div>'+
-    (idOk&&v.idName?'<div class="detail-row"><span class="detail-label">ID Name</span><span class="detail-val">'+esc(v.idName)+'</span></div>':'')+
-    (idOk&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+esc(v.idType)+(v.idNumber?' #'+esc(v.idNumber):'')+'</span></div>':'')+
+    (idOk&&v.idName?'<div class="detail-row"><span class="detail-label">Verified Name</span><span class="detail-val">'+esc(v.idName)+'</span></div>':'')+
+    (idOk&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+esc(v.idType)+'</span></div>':'')+
+    (idOk&&v.idNumber?'<div class="detail-row"><span class="detail-label">DL / ID #</span><span class="detail-val" style="font-family:monospace;letter-spacing:.04em">'+esc(v.idNumber)+'</span></div>':'')+
+    (idOk&&v.idState?'<div class="detail-row"><span class="detail-label">Issuing State</span><span class="detail-val">'+esc(v.idState)+'</span></div>':'')+
+    (idOk&&v.idDob?'<div class="detail-row"><span class="detail-label">Date of Birth</span><span class="detail-val">'+fmtDate(v.idDob)+'</span></div>':'')+
+    (idOk&&v.idExpiry?'<div class="detail-row"><span class="detail-label">ID Expiry</span><span class="detail-val">'+(function(){var ex=fmtDate(v.idExpiry);var exRaw=v.idExpiry||'';var soon=exRaw&&exRaw<dateStr(addDays(parseLocalDate(todayStr()),30));return (soon?'<span style="color:#ef4444;font-weight:700">⚠ '+ex+'</span>':ex);})()+'</span></div>':'')+
+    (idOk&&v.idAddress?'<div class="detail-row"><span class="detail-label">Address</span><span class="detail-val" style="font-size:12px">'+esc(v.idAddress)+'</span></div>':'')+
+    (idOk&&v.verifiedAt?'<div class="detail-row"><span class="detail-label">Verified At</span><span class="detail-val" style="font-size:11px;color:var(--muted)">'+new Date(v.verifiedAt).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</span></div>':'')+
     (b._maintConflictAck?'<div class="detail-row"><span class="detail-label" style="color:#f59e0b">⚠ Maint. Override</span><span class="detail-val" style="color:#f59e0b;font-size:11px">Saved despite maintenance conflict</span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Insurance</span><span class="detail-val">'+(insOk?'🛡✅ Verified':'🛡 Not verified')+'</span></div>'+
     (insOk&&v.insCarrier?'<div class="detail-row"><span class="detail-label">Carrier</span><span class="detail-val">'+esc(v.insCarrier)+(v.insCoverage?' · '+esc(v.insCoverage):'')+'</span></div>':'')+
@@ -5016,7 +5225,10 @@ function openBookingDetail(id){
       '<div class="fsec">Customer Signature</div>'+
       '<div style="margin:4px 0 8px;background:#fff;border-radius:8px;padding:8px;display:inline-block">'+
         '<img src="'+b.customerSig+'" style="max-height:60px;max-width:260px;object-fit:contain;display:block">'+
-      '</div>' : '')+
+      '</div>'+
+      (b.sigAt?'<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Signed '+new Date(b.sigAt).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+(b.sigIp?' · IP: '+esc(b.sigIp):'')+'</div>':'')+
+      '<button class="btn btn-sm" onclick="downloadSignedContract(\''+b.id+'\')" style="border-color:rgba(34,197,94,.4);color:var(--green);margin-bottom:8px">📄 Download Signed PDF</button>'
+    : '')+
 
     // Resend emails
     ((b.email&&MESSAGING_URL)?
@@ -5027,6 +5239,8 @@ function openBookingDetail(id){
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">📨 Send Reminder</button>'+
         (WORKER_URL&&(b.status==='confirmed'||b.status==='active')?'<button class="btn btn-sm" onclick="sendExtensionLink(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">🔗 Send Extension Link</button>':'')+
         (!b.dateLock?'<button class="btn btn-sm" onclick="markDateLockPaid(\''+b.id+'\')" style="border-color:rgba(34,197,94,.5);color:var(--green);font-weight:700">✅ Mark $100 Date Lock Paid</button>':'')+
+        '<button class="btn btn-sm" onclick="addToBlacklist(\''+b.id+'\')" style="border-color:rgba(239,68,68,.4);color:#ef4444">🚫 Blacklist</button>'+
+        '<button class="btn btn-sm" onclick="saveCustomerNote(\''+b.id+'\')" style="border-color:rgba(251,191,36,.4);color:#fbbf24">📝 Note</button>'+
       '</div>'
     : '')+
 
@@ -5355,6 +5569,9 @@ function onDepositChange(){ updateLiveTotal(); updateRemainingBalance(); }
 function toggleBalancePaidFields(){
   var chk=$d('fBalancePaidChk'), fields=$d('fBalancePaidFields');
   if(fields) fields.style.display=chk&&chk.checked?'contents':'none';
+  if(chk&&chk.checked){
+    var rb=$d('fRemainingBalance'); if(rb){ rb.value=0; rb._manual=true; }
+  }
 }
 function toggleDamageSection(){
   var cb=$d('coDamageFlagged'), sec=$d('damageSection');
@@ -5377,10 +5594,13 @@ function updateLiveTotal(){
 }
 
 function updateRemainingBalance(force){force=true; // always recalc when revenue changes
-  var rev    = parseFloat($d('fRevenue').value)||0;
-  var lock   = parseFloat($d('fDateLock').value)||0;
-  var dep    = parseFloat($d('fDeposit').value)||0;
-  var rb     = $d('fRemainingBalance');
+  var rb   = $d('fRemainingBalance');
+  // Never recalculate when balance is already marked as paid — it must stay at $0
+  var paid = $d('fBalancePaidChk') && $d('fBalancePaidChk').checked;
+  if(paid){ rb._manual=true; rb.value=0; return; }
+  var rev  = parseFloat($d('fRevenue').value)||0;
+  var lock = parseFloat($d('fDateLock').value)||0;
+  var dep  = parseFloat($d('fDeposit').value)||0;
   if(force){ rb._manual=false; }
   if(!rb._manual){
     rb.value = Math.max(0, rev + dep - lock);
@@ -5493,6 +5713,7 @@ function autoFillDropoff(){
     }
   } else if(type==='daily'){
     if(pDate && !ddEl._manual){
+      // 1 day = 24 hrs: pickup 05/22 → dropoff 05/23 (pickupDate + days)
       var d=new Date(pDate+'T00:00:00');
       d.setDate(d.getDate()+days);
       ddEl.value=dateStr(d);
@@ -5621,7 +5842,7 @@ function saveBooking(){
     revenue:      parseFloat($d('fRevenue').value)||0,
     deposit:          parseFloat($d('fDeposit').value)||0,
     dateLock:         parseFloat($d('fDateLock').value)||0,
-    remainingBalance: parseFloat($d('fRemainingBalance').value)||0,
+    remainingBalance: ($d('fBalancePaidChk')&&$d('fBalancePaidChk').checked) ? 0 : (parseFloat($d('fRemainingBalance').value)||0),
 
     address:      ($d('fType').value==='chauffeur'&&$d('fPickupAddress')&&($d('fPickupAddress').value.trim()||$d('fDropoffAddress').value.trim()))
                     ? 'Pickup: '+$d('fPickupAddress').value.trim()+' → Dropoff: '+$d('fDropoffAddress').value.trim()
@@ -5729,13 +5950,14 @@ function saveBooking(){
     // Fire owner notification and customer date-lock confirmation on new bookings only
     sendOwnerBookingNotification(entry);
     if(Number(entry.dateLock)){
-      sendDateLockConfirmation(entry);
+      sendDateLockConfirmation(entry); // already includes full booking details — skip separate confirmation
       autoSendVerification(entry);
     }
-    // Created straight to confirmed → send booking confirmation + verification (avoid double verify)
-    if(entry.status === 'confirmed'){
+    // Created straight to confirmed → send booking confirmation + verification
+    // Skip confirmation if date lock email was already sent (it confirms the booking too)
+    if(entry.status === 'confirmed' && !Number(entry.dateLock)){
       sendConfirmationEmail(entry);
-      if(!Number(entry.dateLock)) autoSendVerification(entry);
+      autoSendVerification(entry);
     }
   }
 
@@ -6298,6 +6520,7 @@ function saveCloseOut(){
   if(bookings[idx].status!=='cancelled'){
     bookings[idx].status='completed';
     bookings[idx]._completedAt = Date.now();
+    bookings[idx]._reviewSent = true;
     sendReviewRequest(bookings[idx]);
     sendReceiptEmail(bookings[idx]);
     sendCloseOutOverageSummary(bookings[idx]);
@@ -6352,6 +6575,31 @@ function openVerify(id){
   $d('vInscanStatus').textContent = '';
   $d('vInscanStatus').style.color = '';
   $d('vStripeBtn').disabled = false;
+  $d('vCheckBtn').style.display = b._verifySessionId && !v.idVerified ? '' : 'none';
+
+  // If there's a pending Stripe session and not yet verified, auto-poll so data
+  // flows back even if the customer verified after the owner closed the modal
+  if(b._verifySessionId && !v.idVerified && VERIFY_URL){
+    clearVerificationPoll();
+    var _autoBid = id;
+    var _autoCount = 0;
+    _verifyPollTimer = setInterval(function(){
+      if(verifyId !== _autoBid || ++_autoCount > 120){ clearVerificationPoll(); return; }
+      fetch(VERIFY_URL+'/check-verification?session_id='+b._verifySessionId+'&expand=1')
+      .then(function(r){ return r.json(); })
+      .then(function(session){
+        if(session.status==='verified'){
+          clearVerificationPoll();
+          applyStripeVerification(session, _autoBid);
+        } else if(session.status==='canceled'){
+          clearVerificationPoll();
+          $d('vStripeStatus').textContent='❌ Session expired — send a new link.';
+          $d('vStripeStatus').style.color='var(--red)';
+        }
+      }).catch(function(){});
+    },5000);
+    $d('vStripeStatus').textContent='⏳ Watching for verification…';
+  }
 
   // If this booking isn't yet verified, look for a past completed Stripe verification
   // for the same customer (matched by email or phone) and pre-fill the fields
@@ -6376,6 +6624,16 @@ function openVerify(id){
       var _pvDate=_pv.verifiedAt?new Date(_pv.verifiedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'previously';
       $d('vStripeStatus').textContent='📋 Pre-filled from Stripe verification on '+_pvDate+' — check ID # and expiry are still current, then save.';
       $d('vStripeStatus').style.color='var(--gold)';
+      // Auto-verify if verified within last 180 days and ID not expired
+      var _verifiedAt=new Date(_past[0].verify.verifiedAt||0);
+      var _daysSince=(Date.now()-_verifiedAt.getTime())/86400000;
+      var _idExpiry=_past[0].verify.idExpiry||'';
+      var _idStillValid=!_idExpiry||_idExpiry>=todayStr();
+      if(_daysSince<180&&_idStillValid){
+        $d('vIdVerified').checked=true;
+        $d('vStripeStatus').textContent='✅ Auto-verified — same customer verified '+Math.round(_daysSince)+' days ago with valid ID. Review fields and save.';
+        $d('vStripeStatus').style.color='var(--green)';
+      }
     }
   }
 
@@ -6386,6 +6644,30 @@ function closeVerify(){
   clearVerificationPoll();
   $d('verifyModal').classList.remove('open');
   verifyId = null;
+}
+
+function checkStripeStatus(){
+  var b=bookings.find(function(x){return x.id===verifyId;});
+  if(!b||!b._verifySessionId){ showToast('No pending Stripe session found for this booking'); return; }
+  if(!VERIFY_URL){ openSettings(); return; }
+  $d('vStripeStatus').textContent='🔄 Checking with Stripe…';
+  $d('vStripeStatus').style.color='';
+  fetch(VERIFY_URL+'/check-verification?session_id='+b._verifySessionId+'&expand=1')
+  .then(function(r){ return r.json(); })
+  .then(function(session){
+    if(session.status==='verified'){
+      applyStripeVerification(session, verifyId);
+    } else if(session.status==='canceled'){
+      $d('vStripeStatus').textContent='❌ Session expired or canceled — send a new link.';
+      $d('vStripeStatus').style.color='var(--red)';
+    } else {
+      $d('vStripeStatus').textContent='⏳ Not verified yet (Stripe status: '+(session.status||'unknown')+'). Customer may still be completing it.';
+      $d('vStripeStatus').style.color='var(--muted)';
+    }
+  }).catch(function(e){
+    $d('vStripeStatus').textContent='❌ Check failed — '+(e&&e.message?e.message:'network error');
+    $d('vStripeStatus').style.color='var(--red)';
+  });
 }
 
 function saveVerify(){
@@ -6414,6 +6696,7 @@ function saveVerify(){
     authStatus:  $d('vAuthStatus').value,
     verifiedAt:  new Date().toISOString()
   };
+  bookings[idx]._t = Date.now(); // bump timestamp so mergeArray picks this up on other devices
   save();
   closeVerify();
   renderTodayBanner();
@@ -6451,6 +6734,12 @@ document.addEventListener('click', function(e){
   var wrap = $d('hbgWrap');
   if(wrap && !wrap.contains(e.target)) closeHamburger();
 });
+// Belt-and-suspenders: attach settings listener directly so it fires even if
+// inline onclick is swallowed by the browser (seen on some iOS Safari versions)
+document.addEventListener('DOMContentLoaded', function(){
+  var sb = $d('hbg-btn-settings');
+  if(sb) sb.addEventListener('click', function(e){ e.stopPropagation(); openSettings(); closeHamburger(); });
+});
 
 // ── Floating Action Button ──────────────────────────────
 var _fabOpen = false;
@@ -6475,25 +6764,38 @@ document.addEventListener('click', function(e){
 });
 
 function openSettings(){
-  if(_currentRole&&_currentRole!=='full'){ showToast('⛔ Settings restricted to owner access'); return; }
-  loadNotifLog();
-  renderStaffPinList();
-  $d('settWorkerUrl').value    = WORKER_URL;
-  $d('settVerifyUrl').value    = VERIFY_URL;
-  $d('settMessagingUrl').value = MESSAGING_URL;
-  $d('settOwnerEmail').value   = OWNER_EMAIL;
-  $d('settDateLockUrl').value  = DATE_LOCK_URL;
-  $d('settReviewUrl').value    = REVIEW_URL;
-  $d('settOpenAiKey').value    = OPENAI_KEY;
-  $d('settTaxRate').value      = SELF_EMPLOYMENT_TAX_RATE;
-  _refreshSigPreview(OWNER_SIGNATURE);
-  renderNotifLog();
-  _settingsDirty = false;
-  var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
-  ['settWorkerUrl','settVerifyUrl','settMessagingUrl','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
-    var el=$d(id); if(el) el.oninput=_markSettingsDirty;
-  });
-  $d('settingsModal').classList.add('open');
+  try {
+    if(_currentRole&&_currentRole!=='full'){ showToast('⛔ Settings restricted to owner access'); return; }
+    loadNotifLog();
+    renderStaffPinList();
+    var settWorkerUrl = $d('settWorkerUrl');
+    if(settWorkerUrl) settWorkerUrl.value = WORKER_URL||'';
+    var settVerifyUrl = $d('settVerifyUrl');
+    if(settVerifyUrl) settVerifyUrl.value = VERIFY_URL||'';
+    var settMessagingUrl = $d('settMessagingUrl');
+    if(settMessagingUrl) settMessagingUrl.value = MESSAGING_URL||'';
+    var settOwnerEmail = $d('settOwnerEmail');
+    if(settOwnerEmail) settOwnerEmail.value = OWNER_EMAIL||'';
+    var settDateLockUrl = $d('settDateLockUrl');
+    if(settDateLockUrl) settDateLockUrl.value = DATE_LOCK_URL||'';
+    var settReviewUrl = $d('settReviewUrl');
+    if(settReviewUrl) settReviewUrl.value = REVIEW_URL||'';
+    var settOpenAiKey = $d('settOpenAiKey');
+    if(settOpenAiKey) settOpenAiKey.value = OPENAI_KEY||'';
+    var settTaxRate = $d('settTaxRate');
+    if(settTaxRate) settTaxRate.value = SELF_EMPLOYMENT_TAX_RATE;
+    _refreshSigPreview(OWNER_SIGNATURE);
+    renderNotifLog();
+    _settingsDirty = false;
+    var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
+    ['settWorkerUrl','settVerifyUrl','settMessagingUrl','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
+      var el=$d(id); if(el) el.oninput=_markSettingsDirty;
+    });
+    $d('settingsModal').classList.add('open');
+  } catch(err) {
+    console.error('openSettings error:', err);
+    alert('Settings failed to open: ' + (err && err.message ? err.message : String(err)) + '\n\nPlease screenshot this and report it.');
+  }
 }
 function closeSettings(){ _settingsDirty=false; $d('settingsModal').classList.remove('open'); }
 function closeSettingsGuard(){
@@ -6759,6 +7061,7 @@ function clearSignature(){
 }
 function _refreshSigPreview(src){
   var img = $d('settSigPreview'), empty = $d('settSigEmpty');
+  if(!img||!empty) return;
   if(src){ img.src=src; img.style.display=''; empty.style.display='none'; }
   else   { img.src='';  img.style.display='none'; empty.style.display=''; }
 }
@@ -6774,19 +7077,24 @@ function clearVerificationPoll(){
 
 function sendStripeVerification(){
   if(!VERIFY_URL){ openSettings(); return; }
-  var b=bookings.find(function(x){ return x.id===verifyId; });
+  var _capturedBid = verifyId; // capture NOW — don't rely on global later
+  var b=bookings.find(function(x){ return x.id===_capturedBid; });
   $d('vStripeBtn').disabled=true;
   $d('vStripeStatus').style.color='';
   $d('vStripeStatus').textContent='Creating session…';
   fetch(VERIFY_URL+'/create-verification',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({bookingId:verifyId, returnUrl:window.location.href, customerName:b?b.name:''})
+    body:JSON.stringify({bookingId:_capturedBid, returnUrl:window.location.href, customerName:b?b.name:''})
   })
   .then(function(r){ return r.json(); })
   .then(function(data){
     if(!data.url||!data.id) throw new Error(data.error||'No URL returned from worker');
     $d('vStripeBtn').disabled=false;
+    // Store session ID on booking so it survives modal close and can be re-checked
+    var _sidx=bookings.findIndex(function(x){return x.id===_capturedBid;});
+    if(_sidx!==-1){ bookings[_sidx]._verifySessionId=data.id; bookings[_sidx]._t=Date.now(); _lsSave('pb_dash_v2',JSON.stringify(bookings)); }
+    if($d('vCheckBtn')) $d('vCheckBtn').style.display='';
     var _vUrl=data.url;
     var vStatusEl=$d('vStripeStatus');
     vStatusEl.innerHTML='<a href="'+_vUrl+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; text to customer &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
@@ -6844,12 +7152,12 @@ function sendStripeVerification(){
         $d('vStripeStatus').style.color='var(--muted)';
         return;
       }
-      fetch(VERIFY_URL+'/check-verification?session_id='+data.id)
+      fetch(VERIFY_URL+'/check-verification?session_id='+data.id+'&expand=1')
       .then(function(r){ return r.json(); })
       .then(function(session){
         if(session.status==='verified'){
           clearVerificationPoll();
-          applyStripeVerification(session);
+          applyStripeVerification(session, _capturedBid);
         } else if(session.status==='canceled'){
           clearVerificationPoll();
           $d('vStripeStatus').textContent='❌ Verification was canceled by customer.';
@@ -6865,17 +7173,28 @@ function sendStripeVerification(){
   });
 }
 
-function applyStripeVerification(session){
+function applyStripeVerification(session, bookingId){
+  var _bid = bookingId || verifyId; // prefer explicit param; fall back to global
   var doc=session.last_verification_report&&session.last_verification_report.document;
 
   // ── 1. Build extracted fields from Stripe report ──────────────────────────
   var extracted = { idVerified: true, verifiedAt: new Date().toISOString() };
   if(doc){
-    var first=(doc.name&&doc.name.first_name)||'';
-    var last=(doc.name&&doc.name.last_name)||'';
+    // Stripe returns first_name / last_name directly on the document object
+    var first = doc.first_name || '';
+    var last  = doc.last_name  || '';
     if(first||last) extracted.idName=(first+' '+last).trim();
     var dob=doc.dob;
-    if(dob&&dob.year) extracted.idDob=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
+    if(dob&&dob.year){
+      extracted.idDob=dob.year+'-'+String(dob.month).padStart(2,'0')+'-'+String(dob.day).padStart(2,'0');
+      // Age check — minimum 21
+      var _today=new Date(), _dobD=new Date(dob.year,dob.month-1,dob.day);
+      var _age=_today.getFullYear()-_dobD.getFullYear();
+      var _am=_today.getMonth()-_dobD.getMonth();
+      if(_am<0||(_am===0&&_today.getDate()<_dobD.getDate())) _age--;
+      extracted.age=_age;
+      extracted.underageFlag=_age<21;
+    }
     var exp=doc.expiration_date;
     if(exp&&exp.year) extracted.idExpiry=exp.year+'-'+String(exp.month).padStart(2,'0')+'-'+String(exp.day).padStart(2,'0');
     if(doc.number) extracted.idNumber=doc.number;
@@ -6891,6 +7210,9 @@ function applyStripeVerification(session){
     }
     var typeMap={driving_license:'Driver License',passport:'Passport',id_card:'State ID'};
     if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
+  } else {
+    // Worker returned verified status but no document data — likely needs expand[]
+    console.warn('[verify] applyStripeVerification: last_verification_report.document missing. Raw session:', JSON.stringify(session));
   }
 
   // ── 2. Populate form fields so owner can see what was captured ───────────
@@ -6904,16 +7226,16 @@ function applyStripeVerification(session){
   $d('vIdVerified').checked = true;
 
   // ── 3. Auto-save directly to booking — don't wait for owner to click Save ─
-  var idx = bookings.findIndex(function(x){ return x.id===verifyId; });
+  var idx = bookings.findIndex(function(x){ return x.id===_bid; });
   if(idx !== -1){
     var existing = bookings[idx].verify || {};
     // Merge: keep any existing insurance/card fields, overlay Stripe ID fields
     bookings[idx].verify = Object.assign({}, existing, extracted);
+    bookings[idx]._t = Date.now();
 
     // ── 4. Auto-confirm if still pending ───────────────────────────────────
     if(bookings[idx].status === 'pending'){
       bookings[idx].status = 'confirmed';
-      bookings[idx]._t = Date.now();
       sendConfirmationEmail(bookings[idx]);
       var histEntry={at:Date.now(),by:_currentUser||'owner',changes:['status: "pending"→"confirmed" (auto after ID verified)']};
       bookings[idx]._history=(bookings[idx]._history||[]).concat([histEntry]);
@@ -6925,14 +7247,34 @@ function applyStripeVerification(session){
     if(activeTab==='current')   renderCurrent();
     if(activeTab==='previous')  renderPrevious();
     if(activeTab==='cancelled') renderCancelled();
+
+    // If verify modal is showing this booking, update the status message
+    if(verifyId === _bid){
+      if(!doc){
+        $d('vStripeStatus').textContent='⚠️ Verified — but ID data not returned by verification worker. Enter DL# and details manually below, then save.';
+        $d('vStripeStatus').style.color='var(--gold)';
+      } else {
+        $d('vStripeStatus').textContent='✅ Identity verified & saved!';
+        $d('vStripeStatus').style.color='var(--green)';
+        if(extracted.underageFlag){
+          showToast('🚨 UNDERAGE: '+extracted.idName+' is '+extracted.age+' — minimum rental age is 21');
+          $d('vStripeStatus').textContent='🚨 UNDERAGE ('+extracted.age+' yrs) — minimum age is 21. ID verified but rental not allowed.';
+          $d('vStripeStatus').style.color='var(--red)';
+        }
+      }
+    }
+  } else {
+    console.error('[verify] applyStripeVerification: booking not found for id=', _bid);
   }
 
-  $d('vStripeStatus').textContent='✅ Identity verified & saved!';
-  $d('vStripeStatus').style.color='var(--green)';
-  toast('✅ ID Verified — fields saved, booking confirmed');
+  if(doc){
+    toast('✅ ID Verified — data saved to booking');
+  } else {
+    toast('✅ ID Verified — open Verify panel to enter ID details manually');
+  }
 
   // ── 5. Email owner with extracted ID data + Stripe dashboard link ─────────
-  var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===verifyId;});
+  var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===_bid;});
   if(_vb) sendOwnerIdVerification(_vb, session.id||'');
 }
 
@@ -6997,7 +7339,11 @@ function scanInsuranceCard(input){
 function renderTodayBanner(){
   var today=todayStr();
   var todays=bookings.filter(function(b){
-    return !b._deleted && (b.pickupDate||b.date)===today && b.status!=='cancelled';
+    if(b._deleted||b.status==='cancelled'||b.status==='completed') return false;
+    // Show: pickups today OR multi-day rentals currently active (started before today, ends today or later)
+    var start=b.pickupDate||b.date;
+    var end=tripEndDate(b);
+    return start===today || (start<today && end>=today);
   }).sort(function(a,b){
     // Bookings with no time set go last
     var ta=a.pickupTime||'99:99', tb=b.pickupTime||'99:99';
@@ -7038,6 +7384,11 @@ function renderTodayBanner(){
       ?'<span style="color:var(--red);font-size:12px;font-weight:600">Due: '+$$(bal)+'</span>'
       :'<span style="color:var(--green);font-size:12px;font-weight:600">Paid ✓</span>';
 
+    // Date lock already received (reduces balance, not revenue)
+    var lockAmt=Number(b.dateLock)||0;
+    var lockHtml=lockAmt>0
+      ?'<span style="font-size:11px;color:var(--gold);font-weight:600">🔑 '+$$(lockAmt)+' received</span>':'';
+
     // Deposit
     var depHtml=Number(b.deposit)>0
       ?'<span style="font-size:11px;color:var(--muted)">Deposit: '+$$(b.deposit)+'</span>':'';
@@ -7061,9 +7412,10 @@ function renderTodayBanner(){
       '<div class="today-banner-customer">'+esc(b.name)+verBadges+(b.phone?' · <a href="tel:'+esc(b.phone)+'" onclick="event.stopPropagation()" style="color:var(--gold);text-decoration:none">'+esc(b.phone)+'</a>':'')+'</div>'+
       // Address row
       addrHtml+
-      // Row 4: revenue + balance + deposit
+      // Row 4: revenue + date lock received + balance + deposit
       '<div style="display:flex;align-items:center;gap:14px;margin-top:8px;flex-wrap:wrap">'+
         '<span class="today-banner-revenue">'+$$(totalRevenue(b))+'</span>'+
+        lockHtml+
         balHtml+
         depHtml+
       '</div>'+
@@ -7167,6 +7519,9 @@ function resendVerificationEmail(id, skipConfirm){
     body:JSON.stringify({bookingId:id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
   }).then(function(r){return r.json();}).then(function(d){
     if(!d||!d.url){ showToast('Could not create verify session'); return; }
+    // Store session ID on booking so owner can Check Status anytime
+    var _ridx=bookings.findIndex(function(x){return x.id===id;});
+    if(_ridx!==-1 && d.id){ bookings[_ridx]._verifySessionId=d.id; bookings[_ridx]._t=Date.now(); _lsSave('pb_dash_v2',JSON.stringify(bookings)); }
     var firstName=(b.name||'').split(' ')[0]||'there';
     var addons=[];
     if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
@@ -7500,6 +7855,66 @@ function sendOwnerIdVerification(b, sessionId){
   }).catch(function(){});
 }
 
+function sendStripePaymentLink(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b) return;
+  var remaining=Math.max(0,getRemainingBalance(b));
+  if(remaining<=0){ showToast('No balance due on this booking'); return; }
+  if(!VERIFY_URL){ openSettings(); return; }
+  // Calculate total with 5% processing fee + 8.25% tax
+  var processingFee=Math.round(remaining*0.05*100)/100;
+  var subtotal=remaining+processingFee;
+  var tax=Math.round(subtotal*0.0825*100)/100;
+  var total=Math.round((subtotal+tax)*100)/100;
+  var breakdown='Balance: $'+remaining.toFixed(2)+'\nProcessing (5%): $'+processingFee.toFixed(2)+'\nTax (8.25%): $'+tax.toFixed(2)+'\nTotal: $'+total.toFixed(2);
+  if(!confirm('Send payment link to '+b.name+'?\n\n'+breakdown+'\n\nA Stripe checkout link will be created for $'+total.toFixed(2)+'.')) return;
+  showToast('Creating payment link…');
+  fetch(VERIFY_URL+'/create-payment-link',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      amount:total,
+      bookingId:b.id,
+      customerEmail:b.email||'',
+      description:'Prestige Black Rentals — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+') · Balance $'+remaining.toFixed(2)+' + fees & tax'
+    })
+  })
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(!d||!d.url){ showToast('Could not create payment link: '+(d&&d.error?d.error:'unknown error')); return; }
+    // Copy to clipboard and optionally email
+    navigator.clipboard.writeText(d.url).catch(function(){});
+    if(b.email&&MESSAGING_URL){
+      fetch(MESSAGING_URL+'/send-email',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          to:b.email,
+          subject:'Payment Link — Prestige Black Rentals ('+b.vehicle+')',
+          html:'<div style="font-family:sans-serif;max-width:520px;color:#111">'+
+            '<h2 style="color:#b8982e">Hi '+(b.name||'').split(' ')[0]+', your payment link is ready</h2>'+
+            '<p style="font-size:15px">Click the button below to securely pay your remaining balance for your upcoming rental.</p>'+
+            '<table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0;background:#f9f9f9;border-radius:8px;padding:12px">'+
+              '<tr><td style="padding:6px 12px 6px 0;color:#555">Vehicle</td><td style="font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+              '<tr><td style="padding:6px 12px 6px 0;color:#555">Pickup</td><td>'+fmtDate(b.pickupDate||b.date)+'</td></tr>'+
+              '<tr><td style="padding:6px 12px 6px 0;color:#555">Balance</td><td>$'+remaining.toFixed(2)+'</td></tr>'+
+              '<tr><td style="padding:6px 12px 6px 0;color:#555">Processing (5%)</td><td>$'+processingFee.toFixed(2)+'</td></tr>'+
+              '<tr><td style="padding:6px 12px 6px 0;color:#555">Tax (8.25%)</td><td>$'+tax.toFixed(2)+'</td></tr>'+
+              '<tr style="border-top:1px solid #ddd"><td style="padding:8px 12px 6px 0;font-weight:700">Total Due</td><td style="font-weight:700;color:#b8982e">$'+total.toFixed(2)+'</td></tr>'+
+            '</table>'+
+            '<a href="'+d.url+'" style="display:inline-block;padding:14px 28px;background:#635bff;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Pay $'+total.toFixed(2)+' →</a>'+
+            '<p style="font-size:12px;color:#999;margin-top:24px">Questions? Call <a href="tel:2142072481" style="color:#b8982e">(214) 207-2481</a></p></div>'
+        })
+      }).then(function(r){
+        if(r.ok) showToast('💳 Payment link emailed to '+b.email+' — also copied to clipboard!');
+        else showToast('💳 Payment link created & copied! (email failed)');
+      }).catch(function(){ showToast('💳 Payment link created & copied! (email failed)'); });
+    } else {
+      showToast('💳 Payment link copied to clipboard!');
+    }
+  })
+  .catch(function(e){ showToast('Payment link error: '+(e&&e.message?e.message:'network error')); });
+}
+
 function bulkConfirmPending(){
   var pending=bookings.filter(function(b){return !b._deleted&&b.status==='pending';});
   if(!pending.length){ showToast('No pending bookings to confirm'); return; }
@@ -7528,7 +7943,7 @@ function quickStatus(id, newStatus){
   bookings[idx].status=newStatus;
   bookings[idx]._t=Date.now();
   if(newStatus==='completed'){ bookings[idx]._completedAt=Date.now(); }
-  if(newStatus==='completed') sendReviewRequest(bookings[idx]);
+  if(newStatus==='completed' && !bookings[idx]._reviewSent){ bookings[idx]._reviewSent=true; sendReviewRequest(bookings[idx]); }
   if(newStatus==='confirmed'){ sendConfirmationEmail(bookings[idx]); autoSendVerification(bookings[idx]); }
   if(newStatus==='cancelled') checkWaitlistOnCancel(bookings[idx]);
   if(oldStatus!==newStatus){
@@ -7982,6 +8397,93 @@ function getRemainingBalance(b){
   return Math.max(0,(Number(b.revenue)||0)+dep-lock);
 }
 
+// ── Blacklist helpers ──────────────────────────────────────────────
+function isBlacklisted(b){
+  if(!b) return null;
+  var em=(b.email||'').toLowerCase().trim();
+  var ph=(b.phone||'').replace(/\D/g,'');
+  return blacklist.find(function(x){
+    if(x._deleted) return false;
+    var xe=(x.email||'').toLowerCase().trim();
+    var xp=(x.phone||'').replace(/\D/g,'');
+    return (em&&xe&&em===xe)||(ph&&ph.length>=10&&xp&&ph===xp);
+  })||null;
+}
+
+function addToBlacklist(bookingId){
+  var b=bookings.find(function(x){return x.id===bookingId;});
+  if(!b) return;
+  var reason=prompt('Reason for blacklisting '+b.name+' (required):');
+  if(!reason||!reason.trim()) return;
+  if(isBlacklisted(b)){ showToast(b.name+' is already blacklisted'); return; }
+  blacklist.push({id:'bl_'+Date.now(),name:b.name,email:(b.email||'').toLowerCase().trim(),phone:(b.phone||'').replace(/\D/g,''),reason:reason.trim(),addedAt:new Date().toISOString(),addedBy:_currentUser||'owner'});
+  save();
+  showToast('🚫 '+b.name+' added to blacklist');
+  openBookingDetail(bookingId);
+}
+
+function removeFromBlacklist(blId){
+  var entry=blacklist.find(function(x){return x.id===blId;});
+  if(!entry) return;
+  if(!confirm('Remove '+entry.name+' from blacklist?')) return;
+  blacklist=blacklist.filter(function(x){return x.id!==blId;});
+  save();
+  showToast('✅ Removed from blacklist');
+  render();
+}
+
+function getCustomerNote(b){
+  var key=(b.email||'').toLowerCase().trim();
+  return key?customerNotes[key]||'':'';
+}
+
+function saveCustomerNote(bookingId){
+  var b=bookings.find(function(x){return x.id===bookingId;});
+  if(!b) return;
+  var key=(b.email||'').toLowerCase().trim();
+  if(!key){ showToast('No email on booking — cannot attach note'); return; }
+  var cur=customerNotes[key]||'';
+  var note=prompt('Customer note for '+b.name+' (visible on all their bookings):', cur);
+  if(note===null) return;
+  if(note.trim()){ customerNotes[key]=note.trim(); } else { delete customerNotes[key]; }
+  save();
+  showToast('📝 Note saved');
+  openBookingDetail(bookingId);
+}
+
+// Returns true if a booking is a Groupon-voucher Slingshot redemption
+function isGrouponVoucherBooking(b){
+  return b.vehicle==='Polaris Slingshot' &&
+    (b.broker||'').toLowerCase().indexOf('groupon')!==-1 &&
+    getRemainingBalance(b)===0;
+}
+// Returns the income entries (from the incomes log) that are Groupon payouts
+// and whose date range covers a given booking date
+function grouponIncomeForBooking(b){
+  var bDate=b.pickupDate||b.date;
+  if(!bDate) return [];
+  return incomes.filter(function(inc){
+    if(inc._deleted) return false;
+    // Match by category OR keywords in description/notes
+    var haystack=(inc.category+' '+(inc.description||'')+' '+(inc.notes||'')).toLowerCase();
+    if(haystack.indexOf('groupon')===-1) return false;
+    var from=inc.fromDate||'0000-01-01';
+    var to=inc.toDate||inc.fromDate||'9999-12-31';
+    return bDate>=from && bDate<=to;
+  });
+}
+// Returns all Groupon/Slingshot/0-balance bookings whose date falls within an income entry's range
+function grouponBookingsForIncome(inc){
+  var from=inc.fromDate||'0000-01-01';
+  var to=inc.toDate||inc.fromDate||'9999-12-31';
+  return bookings.filter(function(b){
+    if(b._deleted) return false;
+    if(!isGrouponVoucherBooking(b)) return false;
+    var bDate=b.pickupDate||b.date||'';
+    return bDate>=from && bDate<=to;
+  });
+}
+
 function editRemainingBalance(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   var cur=getRemainingBalance(b);
@@ -8016,20 +8518,21 @@ function markBalancePaid(id){
 }
 function markDateLockPaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
-  if(!confirm('Mark $100 date lock as paid for '+b.name+'?')) return;
-  b.dateLock=100;
+  var lockAmt=Number(b.dateLock)||100; // use stored amount; fall back to $100 for legacy bookings
+  if(!confirm('Mark $'+lockAmt+' date lock as paid for '+b.name+'?')) return;
+  b.dateLock=lockAmt;
   var dep=Number(b.deposit)||0;
   var rev=Number(b.revenue)||0;
   if(b.remainingBalance!=null){
-    b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-100);
+    b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-lockAmt);
   } else {
-    b.remainingBalance=Math.max(0,rev+dep-100);
+    b.remainingBalance=Math.max(0,rev+dep-lockAmt);
   }
   b._t=Date.now();
   save();
   render();
   showBookingDetail(id);
-  showToast('✅ $100 date lock marked as paid for '+b.name);
+  showToast('✅ $'+lockAmt+' date lock marked as paid for '+b.name);
 }
 
 // ════════════════════════════════════════════════════════
@@ -8066,36 +8569,42 @@ function renderTaxTab(){
         return (i.fromDate||'').substring(0,4)===yr&&m>=qs&&m<=qe;
       });
       var qRev=qBk.reduce(function(s,b){return s+totalRevenue(b);},0);
+      var qBroker=qBk.reduce(function(s,b){return s+((Number(b.brokerFee)||0)*(Number(b.days)||1));},0);
       var qOth=qIn.reduce(function(s,i){return s+(Number(i.amount)||0);},0);
       var qExp=qEx.reduce(function(s,e){return s+(Number(e.amount)||0);},0);
-      var qNet=qRev+qOth-qExp;
+      var qNet=qRev+qOth-qExp-qBroker; // broker fees are deductible business expenses
       annRev+=qRev; annOth+=qOth; annExp+=qExp;
       var pc=qNet>=0?'var(--green)':'var(--red)';
       html+='<div class="tax-quarter">'+
         '<div class="tax-q-hd">'+
           '<div><div class="tax-q-lbl">Q'+q+' — '+['Jan–Mar','Apr–Jun','Jul–Sep','Oct–Dec'][q-1]+'</div>'+
-          '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+qBk.length+' bookings · '+qEx.length+' expenses</div></div>'+
+          '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+qBk.length+' bookings · '+qEx.length+' expenses'+(qBroker?' · '+$$(qBroker)+' broker fees':'')+'</div></div>'+
           '<div class="tax-q-net" style="color:'+pc+'">'+$$(qNet)+'</div>'+
         '</div>'+
         '<div class="tbl-wrap"><table style="font-size:12px"><thead><tr>'+
-          '<th>Booking Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax ('+SELF_EMPLOYMENT_TAX_RATE+'%)</th>'+
+          '<th>Booking Rev</th><th>Other Income</th><th>Broker Fees</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax ('+SELF_EMPLOYMENT_TAX_RATE+'%)</th>'+
         '</tr></thead><tbody><tr>'+
           '<td style="color:var(--gold);font-weight:700">'+$$(qRev)+'</td>'+
           '<td style="color:var(--green)">'+$$(qOth)+'</td>'+
-          '<td style="font-weight:700">'+$$(qRev+qOth)+'</td>'+
+          '<td style="color:var(--red)">'+(qBroker?'−'+$$(qBroker):'$0')+'</td>'+
           '<td style="color:var(--red)">'+$$(qExp)+'</td>'+
           '<td style="font-weight:900;color:'+pc+'">'+$$(qNet)+'</td>'+
           '<td style="color:#fbbf24">'+$$(Math.max(0,qNet*(SELF_EMPLOYMENT_TAX_RATE/100)))+'</td>'+
         '</tr></tbody></table></div></div>';
     });
-    var annNet=annRev+annOth-annExp, annPc=annNet>=0?'var(--green)':'var(--red)';
+    // Annual broker fees: sum across all quarters from bookings in this year
+    var annBroker=bookings.filter(function(b){
+      if(b._deleted||b.status==='cancelled') return false;
+      var d=b.pickupDate||b.date||''; return d.substring(0,4)===yr;
+    }).reduce(function(s,b){return s+((Number(b.brokerFee)||0)*(Number(b.days)||1));},0);
+    var annNet=annRev+annOth-annExp-annBroker, annPc=annNet>=0?'var(--green)':'var(--red)';
     html+='<div class="tbl-card" style="margin-bottom:20px"><div class="tbl-head"><div class="tbl-title">'+yr+' Annual Summary</div></div>'+
       '<div class="tbl-wrap"><table style="font-size:13px"><thead><tr>'+
-        '<th>Total Rev</th><th>Other Income</th><th>Total In</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax ('+SELF_EMPLOYMENT_TAX_RATE+'%)</th>'+
+        '<th>Total Rev</th><th>Other Income</th><th>Broker Fees</th><th>Expenses</th><th>Net Profit</th><th>Est. Tax ('+SELF_EMPLOYMENT_TAX_RATE+'%)</th>'+
       '</tr></thead><tbody><tr>'+
         '<td style="color:var(--gold);font-weight:800">'+$$(annRev)+'</td>'+
         '<td style="color:var(--green)">'+$$(annOth)+'</td>'+
-        '<td style="font-weight:800">'+$$(annRev+annOth)+'</td>'+
+        '<td style="color:var(--red)">'+(annBroker?'−'+$$(annBroker):'$0')+'</td>'+
         '<td style="color:var(--red)">'+$$(annExp)+'</td>'+
         '<td style="font-weight:900;color:'+annPc+'">'+$$(annNet)+'</td>'+
         '<td style="color:#fbbf24;font-weight:700">'+$$(Math.max(0,annNet*(SELF_EMPLOYMENT_TAX_RATE/100)))+'</td>'+
@@ -8435,7 +8944,7 @@ function renderFleetTab(){
     // Latest odometer from completed bookings
     var latestOdom=0;
     bookings.forEach(function(b){
-      if(b.vehicle===v&&!b._deleted&&b.odomOut&&b.odomOut>latestOdom) latestOdom=b.odomOut;
+      if(b.vehicle===v&&!b._deleted&&b.odomOut&&Number(b.odomOut)>latestOdom) latestOdom=Number(b.odomOut);
     });
     var currentMiles=latestOdom||lastMileage;
     var milesSince=currentMiles-lastMileage;
@@ -8701,7 +9210,7 @@ function renderCustomersTab(){
       '<th>Customer</th><th>Phone</th><th>Bookings</th><th>Total Spent</th><th>Net Revenue</th><th>Avg/Booking</th><th>Last Booking</th><th></th>'+
     '</tr></thead><tbody>'+
     custs.map(function(c){
-      var last=c.bookings.slice().sort(function(a,b){return b.date.localeCompare(a.date);})[0];
+      var last=c.bookings.slice().sort(function(a,b){return (b.pickupDate||b.date||'').localeCompare(a.pickupDate||a.date||'');})[0];
       var active=c.bookings.filter(function(b){return b.status!=='cancelled';}).length;
       var repeat=active>1;
       var enc=encodeURIComponent((c.phone||'').replace(/\D/g,'')||c.email||c.name).replace(/'/g,'%27');
@@ -8711,8 +9220,8 @@ function renderCustomersTab(){
         '<td>'+c.bookings.length+'</td>'+
         '<td style="color:var(--gold);font-weight:700">'+$$(c.spent)+'</td>'+
         '<td style="color:var(--green);font-weight:700">'+$$(c.net)+'</td>'+
-        '<td>'+$$(active?c.net/active:0)+'</td>'+
-        '<td>'+(last?fmtDate(last.date):'—')+'</td>'+
+        '<td>'+$$(active?c.spent/active:0)+'</td>'+
+        '<td>'+(last?fmtDate(last.pickupDate||last.date):'—')+'</td>'+
         '<td><button class="btn btn-sm" onclick="openCustomerProfile(\''+enc+'\')">View</button></td>'+
       '</tr>';
     }).join('')+
@@ -8724,7 +9233,7 @@ function renderBrokerTab(){
   var active=bookings.filter(function(b){return !b._deleted&&b.status!=='cancelled';});
 
   // KPIs
-  var totalBF=active.reduce(function(s,b){return s+((Number(b.brokerFee)||0)*(Number(b.days)||1));},0);
+  var totalBF=active.reduce(function(s,b){return s+((Number(b.brokerFee)||0)*getActualDays(b));},0);
   var brokered=active.filter(function(b){return b.broker;});
   var kpiEl=$d('brokerKpiGrid'); if(!kpiEl) return;
   kpiEl.innerHTML=[
@@ -8741,8 +9250,8 @@ function renderBrokerTab(){
     if(!brokerMap[n]) brokerMap[n]={name:n,count:0,gross:0,fees:0,lastDate:''};
     brokerMap[n].count++;
     brokerMap[n].gross+=totalRevenue(b);
-    brokerMap[n].fees+=((Number(b.brokerFee)||0)*(Number(b.days)||1));
-    if((b.date||'')>brokerMap[n].lastDate) brokerMap[n].lastDate=b.date;
+    brokerMap[n].fees+=((Number(b.brokerFee)||0)*getActualDays(b));
+    var bDate=b.pickupDate||b.date||''; if(bDate>brokerMap[n].lastDate) brokerMap[n].lastDate=bDate;
   });
   var rows=Object.values(brokerMap).sort(function(a,b){return b.gross-a.gross;});
   var tbody=$d('brokerTable')?$d('brokerTable').querySelector('tbody'):null;
@@ -9435,8 +9944,12 @@ function _buildBreakdownTable(bk){
   if(bd.decorAmt>0)     rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Décor</td><td style="text-align:right;padding:4px 0">'+f(bd.decorAmt)+'</td></tr>';
   if(bd.bouquetAmt>0)   rows+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Flower Bouquet</td><td style="text-align:right;padding:4px 0">'+f(bd.bouquetAmt)+'</td></tr>';
   rows+='<tr style="border-top:1.5px solid #888"><td style="padding:7px 8px 4px 0;font-weight:700">Rental Total</td><td style="text-align:right;padding:7px 0 4px;font-weight:700">'+f(bd.subtotal)+'</td></tr>';
-  if(bd.dateLockAmt>0)  rows+='<tr><td style="padding:4px 8px 4px 0;color:#888">Date Lock (credited toward balance)</td><td style="text-align:right;padding:4px 0;color:#888">−'+f(bd.dateLockAmt)+'</td></tr>';
-  rows+='<tr style="border-top:1.5px solid #C9A962"><td style="padding:7px 8px 4px 0;font-weight:800;color:#C9A962">Balance Due</td><td style="text-align:right;padding:7px 0 4px;font-weight:800;color:#C9A962">'+f(bd.balanceDue)+'</td></tr>';
+  if(bk.paidInFull){
+    rows+='<tr style="border-top:1.5px solid #22c55e"><td style="padding:7px 8px 4px 0;font-weight:800;color:#22c55e">✅ Paid in Full</td><td style="text-align:right;padding:7px 0 4px;font-weight:800;color:#22c55e">$0.00 due at pickup</td></tr>';
+  } else {
+    if(bd.dateLockAmt>0) rows+='<tr><td style="padding:4px 8px 4px 0;color:#888">Date Lock (credited toward balance)</td><td style="text-align:right;padding:4px 0;color:#888">−'+f(bd.dateLockAmt)+'</td></tr>';
+    rows+='<tr style="border-top:1.5px solid #C9A962"><td style="padding:7px 8px 4px 0;font-weight:800;color:#C9A962">Balance Due</td><td style="text-align:right;padding:7px 0 4px;font-weight:800;color:#C9A962">'+f(bd.balanceDue)+'</td></tr>';
+  }
   return '<table style="width:100%;border-collapse:collapse;font-size:11px;color:inherit"><tbody>'+rows+'</tbody></table>';
 }
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -9554,7 +10067,7 @@ function _renderContractContent(){
     .replace(/\{\{addons_total\}\}/gi,       sr('$'+_bd.addonsTotal.toFixed(2)))
     .replace(/\{\{total_charges\}\}/gi,      sr('$'+_bd.subtotal.toFixed(2)))
     .replace(/\{\{deposit_amount\}\}/gi,     sr('$'+dep.toFixed(2)))
-    .replace(/\{\{balance_due\}\}/gi,        sr('$'+_bd.balanceDue.toFixed(2)))
+    .replace(/\{\{balance_due\}\}/gi,        sr(b.paidInFull?'Paid in Full ✅':'$'+_bd.balanceDue.toFixed(2)))
     .replace(/\{\{pickup_address\}\}/gi,     sr(b.address||''))
     .replace(/\{\{addons\}\}/gi,             sr(addonLines.length?addonLines.join(', '):'None'))
     .replace(/\{\{invoice_number\}\}/gi,     sr('#PBR-'+b.id.slice(-6).toUpperCase()))
@@ -9589,12 +10102,12 @@ function _renderContractContent(){
     .replace(/\{\{delivery_fee\}\}/gi,       sr(deliveryFee))
     .replace(/\{\{pet_fee\}\}/gi,            sr(petFee))
     .replace(/\{\{odometer_in\}\}/gi,        sr(odomIn))
-    .replace(/\{\{date_lock\}\}/gi,          sr(b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
+    .replace(/\{\{date_lock\}\}/gi,          sr(b.paidInFull?'N/A (paid in full)':b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
     .replace(/\{\{owner_signature\}\}/gi,      OWNER_SIGNATURE?'<img src="'+OWNER_SIGNATURE+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+(_contractIsWaiver?';filter:invert(1)':'')+'">'  :'<span style="color:#aaa;font-size:11px;font-style:italic">not yet signed</span>')
     .replace(/\{\{customer_signature\}\}/gi,   (b.customerSig&&b.customerSig.startsWith('data:image/'))?'<img src="'+b.customerSig+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+(_contractIsWaiver?'':';filter:invert(1)')+'">':'_______________________________')
     .replace(/\{\{customer_signed_date\}\}/gi, sr(b.customerSigDate||todayFmt))
     .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee?'$'+b.brokerFee+'/day':'N/A')
-    .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0,getRemainingBalance(b)))
+    .replace(/\{\{remaining_balance\}\}/gi,  b.paidInFull?'Paid in Full ✅':'$'+Math.max(0,getRemainingBalance(b)))
     .replace(/\{\{mileage_policy\}\}/gi,     sr(_cIsUnlim?'Mileage: This rental includes unlimited mileage at no additional per-mile charge.':'Mileage: This rental includes '+_cPerDay.toLocaleString()+' miles per day ('+tripTotalMiles+' for this rental). Miles driven beyond the included amount will be charged at $'+_cOverage+' per mile.'))
     .replace(/\{\{fuel_policy\}\}/gi,        'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
     .replace(/\{\{breakdown_table\}\}/gi,    sr(_buildBreakdownTable(b)))
@@ -9845,6 +10358,21 @@ function printContract(){
 // ════════════════════════════════════════════════════════
 //  PDF DOWNLOAD
 // ════════════════════════════════════════════════════════
+function downloadSignedContract(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b){ showToast('Booking not found'); return; }
+  if(!b._signedContractHtml){ showToast('No signed contract on file — customer must sign via the contract link first'); return; }
+  if(typeof html2pdf==='undefined'){ showToast('PDF library not loaded — please wait a moment and try again'); return; }
+  var filename='Signed_Contract_PBR-'+b.id.slice(-6).toUpperCase()+'_'+esc(b.name).replace(/\s+/g,'_')+'.pdf';
+  html2pdf().set({
+    margin:[10,10,10,10],
+    filename:filename,
+    image:{type:'jpeg',quality:.95},
+    html2canvas:{scale:2,useCORS:true},
+    jsPDF:{unit:'mm',format:'a4',orientation:'portrait'}
+  }).from(b._signedContractHtml).save();
+}
+
 function downloadContractPdf(){
   var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
   var fname = 'contract' + (b ? '-'+b.name.replace(/\s+/g,'-').toLowerCase()+'-'+fmtDate(b.pickupDate||b.date).replace(/\//g,'-') : '') + '.pdf';
@@ -10011,7 +10539,9 @@ function sendContractSigningLink(){
   var b = bookings.find(function(x){return x.id===_contractBookingId;});
   if(!b){ toast('Booking not found'); return; }
   var base = location.origin + location.pathname;
-  var url = base + '?sign=' + encodeURIComponent(_contractBookingId);
+  // Generate a per-booking signing token (persists in booking so it survives refreshes)
+  if(!b.sigToken){ b.sigToken=_genToken(); save(); cloudSave(); }
+  var url = base + '?sign=' + encodeURIComponent(_contractBookingId) + '&t=' + encodeURIComponent(b.sigToken);
   var sl = $d('sigLinkStatus');
   // Try to email the link if we have email + messaging worker
   if(b.email && MESSAGING_URL){
@@ -10052,7 +10582,11 @@ function shareBookingPortal(id){
   var b = bookings.find(function(x){return x.id===id;});
   if(!b){ toast('Booking not found'); return; }
   var base = location.origin + location.pathname;
-  var url = base + '?portal=' + encodeURIComponent(id);
+  // Generate per-booking portal token (and sigToken for the embedded sign link)
+  if(!b.portalToken){ b.portalToken=_genToken(); }
+  if(!b.sigToken){ b.sigToken=_genToken(); }
+  save(); cloudSave();
+  var url = base + '?portal=' + encodeURIComponent(id) + '&t=' + encodeURIComponent(b.portalToken);
   // Try to email or copy
   if(b.email && MESSAGING_URL){
     var firstName = (b.name||'').split(' ')[0]||'there';
@@ -10089,7 +10623,10 @@ function _fallbackCopyPortalLink(url){
 // ════════════════════════════════════════════════════════
 //  SIGNING MODE — load on page init when ?sign= present
 // ════════════════════════════════════════════════════════
-function _initSigningMode(bookingId){
+function _genToken(){
+  return Array.from(crypto.getRandomValues(new Uint8Array(16))).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+}
+function _initSigningMode(bookingId,urlToken){
   var wrap = $d('signingModeWrap');
   var body = $d('signingModeBody');
   if(!wrap||!body) return;
@@ -10105,6 +10642,8 @@ function _initSigningMode(bookingId){
     if(!data||!data.bookings){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load booking. Please contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
     var bk = (data.bookings||[]).find(function(x){return x.id===bookingId&&!x._deleted;});
     if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired or been revoked.</div>'; return; }
+    // Token validation — if booking has a sigToken, the URL must include the matching ?t= value
+    if(bk.sigToken && urlToken !== bk.sigToken){ body.innerHTML='<div style="color:#f87171;padding:20px">This signing link is invalid or has expired. Please request a new link from Prestige Black Rentals at (214) 207-2481.</div>'; return; }
     if(bk.customerSig&&bk.customerSig.startsWith('data:image/')){
       body.innerHTML='<div style="text-align:center;padding:30px">'+
         '<div style="font-size:48px;margin-bottom:12px">✅</div>'+
@@ -10160,9 +10699,9 @@ function _initSigningMode(bookingId){
       .replace(/\{\{total_charges\}\}/gi,_sr('$'+_sbd.subtotal.toFixed(2)))
       .replace(/\{\{total_revenue\}\}/gi,_sr('$'+_sbd.subtotal.toFixed(2)))
       .replace(/\{\{deposit_amount\}\}/gi,_sr('$'+_sbd.depositAmt.toFixed(2)))
-      .replace(/\{\{balance_due\}\}/gi,_sr('$'+_sbd.balanceDue.toFixed(2)))
-      .replace(/\{\{remaining_balance\}\}/gi,_sr('$'+_sbd.balanceDue.toFixed(2)))
-      .replace(/\{\{date_lock\}\}/gi,_sr('$'+_sbd.dateLockAmt.toFixed(2)))
+      .replace(/\{\{balance_due\}\}/gi,_sr(bk.paidInFull?'Paid in Full ✅':'$'+_sbd.balanceDue.toFixed(2)))
+      .replace(/\{\{remaining_balance\}\}/gi,_sr(bk.paidInFull?'Paid in Full ✅':'$'+_sbd.balanceDue.toFixed(2)))
+      .replace(/\{\{date_lock\}\}/gi,_sr(bk.paidInFull?'N/A (paid in full)':'$'+_sbd.dateLockAmt.toFixed(2)))
       .replace(/\{\{breakdown_table\}\}/gi,_sr(_sBdTable))
       .replace(/\{\{addons\}\}/gi,_sr(
         [bk.delivery&&Number(bk.delivery)?'Delivery ($'+bk.delivery+')':null,
@@ -10187,7 +10726,7 @@ function _initSigningMode(bookingId){
       .replace(/\{\{notes\}\}/gi,_sr(esc(bk.notes||'')))
       .replace(/\{\{broker\}\}/gi,_sr(esc(bk.broker||'')))
       .replace(/\{\{broker_line\}\}/gi,_sr(_sBrokerLine))
-      .replace(/\{\{broker_fee_rate\}\}/gi,_sr(bk.brokerFee?'$'+bk.brokerFee+'/day':'N/A'))
+      .replace(/\{\{broker_fee_rate\}\}/gi,'')/* internal-only token — not shown to customer */
       .replace(/\{\{source\}\}/gi,_sr(esc(bk.source||'')))
       .replace(/\{\{included_miles\}\}/gi,_sr(_sIsUnlim?'Unlimited':String(_sPerDay)))
       .replace(/\{\{overage_rate\}\}/gi,_sr(_sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi':'N/A')))
@@ -10202,7 +10741,7 @@ function _initSigningMode(bookingId){
       .replace(/\{\{odometer_in\}\}/gi,_sr(bk.odomIn?Number(bk.odomIn).toLocaleString()+' mi':''))
       .replace(/\{\{mileage_policy\}\}/gi,_sr(_sMilagePol))
       .replace(/\{\{fuel_policy\}\}/gi,'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
-      .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-(Number(bk.brokerFee)||0)*_sbd.days).toFixed(2)))
+      .replace(/\{\{net_revenue\}\}/gi,'')/* internal-only token — not shown to customer */
       .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
       .replace(/\{\{customer_signature\}\}/gi,'<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>')
       .replace(/\{\{customer_signed_date\}\}/gi,'<span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>');
@@ -10268,13 +10807,34 @@ function _smSubmitSig(bookingId){
   if(idx===-1){ document.getElementById('smSigMsg').style.color='#f87171'; document.getElementById('smSigMsg').textContent='Booking not found. Please contact (214) 207-2481.'; return; }
   allBookings[idx].customerSig=sig;
   allBookings[idx].customerSigDate=sigDate;
+  allBookings[idx].sigAt=new Date().toISOString();
   allBookings[idx]._t=Date.now();
-  var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
-  var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
-  fetch(workerUrl+'/sync/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)})
+  // Fetch customer IP for legal record then save
+  fetch('https://api.ipify.org?format=json').then(function(r){return r.json();}).catch(function(){return{};}).then(function(ipData){
+    allBookings[idx].sigIp=ipData.ip||'unknown';
+    var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
+    var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
+    return fetch(workerUrl+'/sync/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)});
+  })
   .then(function(r){return r.json();})
   .then(function(res){
     if(res&&res.ok){
+      // Capture the rendered contract HTML + signature for PDF generation
+      var _contractWrap=document.getElementById('smContractWrap');
+      var _contractHtml=_contractWrap?_contractWrap.innerHTML:'';
+      var _signedHtml='<div style="font-family:serif;font-size:12px;color:#111;max-width:760px;margin:0 auto;padding:24px">'+
+        _contractHtml+
+        '<div style="margin-top:24px;border-top:1px solid #ccc;padding-top:16px">'+
+        '<div style="font-size:11px;color:#555;margin-bottom:8px">Customer Signature</div>'+
+        '<img src="'+sig+'" style="max-height:70px;max-width:280px;display:block">'+
+        '<div style="font-size:11px;color:#555;margin-top:8px">Signed: '+sigDate+
+        (allBookings[idx].sigIp?' · IP: '+allBookings[idx].sigIp:'')+
+        ' · Booking #PBR-'+allBookings[idx].id.slice(-6).toUpperCase()+'</div></div></div>';
+      allBookings[idx]._signedContractHtml=_signedHtml;
+      // Re-save with the contract HTML (fire and forget)
+      var _workerUrl2='https://pb-booking.prestigeblackcorp.workers.dev';
+      var _saveData2=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
+      fetch(_workerUrl2+'/sync/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_saveData2)}).catch(function(){});
       document.getElementById('signingModeBody').innerHTML=
         '<div style="text-align:center;padding:40px">'+
         '<div style="font-size:60px;margin-bottom:16px">✅</div>'+
@@ -10341,7 +10901,7 @@ function _pIsUpcoming(bk){
   return d>=today && bk.status!=='completed' && bk.status!=='cancelled';
 }
 
-function _initPortalMode(bookingId){
+function _initPortalMode(bookingId,urlToken){
   _pBookingId=bookingId; _pExtraDays=1; _pExtraSel={};
   var wrap=$d('portalModeWrap'); var body=$d('portalModeBody');
   if(!wrap||!body) return;
@@ -10358,6 +10918,8 @@ function _initPortalMode(bookingId){
     if(!data||!data.bookings){body.innerHTML=_pErrHtml('Unable to load booking. Please contact (214) 207-2481.');return;}
     var bk=(data.bookings||[]).find(function(x){return x.id===bookingId&&!x._deleted;});
     if(!bk){body.innerHTML=_pErrHtml('Booking not found. This link may have expired or been deactivated.');return;}
+    // Token validation — if booking has a portalToken, the URL must include the matching ?t= value
+    if(bk.portalToken && urlToken !== bk.portalToken){body.innerHTML=_pErrHtml('This portal link is invalid or has expired. Please request a new link from Prestige Black Rentals.');return;}
     _pAllData=data;
     _portalRender(body,bookingId,bk);
   }).catch(function(){body.innerHTML=_pErrHtml('Network error. Please refresh or call (214) 207-2481.');});
@@ -10374,7 +10936,7 @@ function _portalRender(body,bookingId,bk){
   var t=_pCalcTotals(bk);
   var isUpcoming=_pIsUpcoming(bk);
   var hasSig=bk.customerSig&&bk.customerSig.startsWith('data:image/');
-  var sigUrl=location.origin+location.pathname+'?sign='+encodeURIComponent(bookingId);
+  var sigUrl=location.origin+location.pathname+'?sign='+encodeURIComponent(bookingId)+(bk.sigToken?'&t='+encodeURIComponent(bk.sigToken):'');
   var dailyRate=(t.rev>0&&t.days>0)?Math.round(t.rev/t.days):0;
   var sc={confirmed:'#22c55e',pending:'#f97316',completed:'#60a5fa',cancelled:'#ef4444'}[bk.status]||'#9ca3af';
   var typeLabel=bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
@@ -10574,6 +11136,18 @@ function _portalRow(label,val){
 // ─ Extras grid ─
 function _pExtrasGrid(bk,days){
   var html='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">';
+
+  // Determine if the trip has already started (pickupDate <= today)
+  var _pickupDs=bk.pickupDate||bk.date;
+  var _tripStarted=false;
+  if(_pickupDs){
+    var _pd=parseLocalDate(_pickupDs);
+    if(_pd&&!isNaN(_pd.getTime())){
+      var _tod=new Date(); _tod.setHours(0,0,0,0);
+      _tripStarted=_pd<=_tod;
+    }
+  }
+
   PORTAL_ADDONS.forEach(function(ex){
     var existing=Number(bk[ex.key])||0;
     var isAdded=existing>0;
@@ -10583,6 +11157,12 @@ function _pExtrasGrid(bk,days){
       html+='<div style="padding:11px 12px;border-radius:10px;border:1px solid rgba(34,197,94,.22);background:rgba(34,197,94,.06)">'+
         '<div style="font-size:12px;font-weight:600;color:#4ade80">'+ex.label+'</div>'+
         '<div style="font-size:11px;color:rgba(74,222,128,.6);margin-top:3px">✅ Already included</div>'+
+      '</div>';
+    } else if(ex.key==='unlimited'&&_tripStarted){
+      // Rental already in progress — unlimited miles must be contracted before agreement is signed
+      html+='<div style="padding:11px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.02);grid-column:1/-1">'+
+        '<div style="font-size:12px;font-weight:600;color:rgba(255,255,255,.3)">🛣️ Unlimited Miles — Locked</div>'+
+        '<div style="font-size:11px;color:rgba(255,255,255,.25);margin-top:4px;line-height:1.5">Unlimited miles must be added before your rental begins and rental agreement is signed. Please contact us at <strong style="color:rgba(255,255,255,.4)">(214) 207-2481</strong> to arrange.</div>'+
       '</div>';
     } else {
       html+='<div id="pExCard_'+ex.key+'" onclick="pToggleExtra(\''+ex.key+'\')" '+
@@ -10910,7 +11490,15 @@ function showLockScreen(){
   setTimeout(function(){ var inp=$d('lockPinInput'); if(inp) inp.focus(); },100);
 }
 function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='none'; }
+var _pinAttempts=0, _pinLockUntil=0;
 async function unlockApp(){
+  // Brute-force rate-limit: 5 attempts → 30 s cooldown
+  var now=Date.now();
+  if(_pinLockUntil>now){
+    var secs=Math.ceil((_pinLockUntil-now)/1000);
+    $d('lockError').textContent='Too many attempts. Try again in '+secs+' second'+(secs!==1?'s':'')+'.';
+    return;
+  }
   var storedPin=localStorage.getItem('pb_lock_pin');
   var entered=($d('lockPinInput').value||'').trim();
   var hashed=await _hashPin(entered);
@@ -10926,6 +11514,7 @@ async function unlockApp(){
     ownerMatch=(hashed===storedPin);
   }
   if(ownerMatch){
+    _pinAttempts=0; _pinLockUntil=0;
     _appUnlocked=true; _currentUser='owner'; _currentRole='full';
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
@@ -10943,6 +11532,7 @@ async function unlockApp(){
     if(s.pin===hashed){ staff=s; break; }
   }
   if(staff){
+    _pinAttempts=0; _pinLockUntil=0;
     _appUnlocked=true; _currentUser=staff.name; _currentRole=staff.role||'checkin';
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
@@ -10950,7 +11540,10 @@ async function unlockApp(){
     showToast('Welcome, '+staff.name+' ('+(_currentRole==='checkin'?'Check-in Access':_currentRole==='readonly'?'Read Only':'Full Access')+')');
     return;
   }
-  $d('lockError').textContent='Incorrect PIN. Try again.';
+  // Failed attempt
+  _pinAttempts++;
+  if(_pinAttempts>=5){ _pinLockUntil=Date.now()+30000; _pinAttempts=0; $d('lockError').textContent='Too many incorrect attempts. Locked for 30 seconds.'; }
+  else { $d('lockError').textContent='Incorrect PIN. Try again. ('+(5-_pinAttempts)+' attempt'+(5-_pinAttempts!==1?'s':'')+' left)'; }
   $d('lockPinInput').value=''; $d('lockPinInput').focus();
 }
 function lockApp(){
@@ -11074,7 +11667,7 @@ function renderVehiclePnL(){
     var vBookings=bookings.filter(function(b){ return !b._deleted&&b.vehicle===v&&b.status!=='cancelled'; });
     var rev=vBookings.reduce(function(s,b){ return s+totalRevenue(b); },0);
     var maintCost=maintenance.filter(function(m){ return !m._deleted&&m.vehicle===v; }).reduce(function(s,m){ return s+(Number(m.cost)||0); },0);
-    var expCost=expenses.filter(function(e){ return !e._deleted&&(e.vehicle===v||(e.description||'').toLowerCase().indexOf(v.toLowerCase())!==-1); }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
+    var expCost=expenses.filter(function(e){ return !e._deleted&&e.vehicle===v; }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
     var totalCost=maintCost+expCost;
     var net=rev-totalCost;
     // Utilization last 90 days
@@ -11083,7 +11676,7 @@ function renderVehiclePnL(){
     while(d<=today){
       var ds=dateStr(d);
       var booked=vBookings.some(function(b){
-        var s=b.pickupDate||b.date, e=b.dropoffDate||s;
+        var s=b.pickupDate||b.date, e=tripEndDate(b)||s;
         return ds>=s&&ds<=e;
       });
       if(booked) bookedDays++;
@@ -11223,16 +11816,17 @@ setTimeout(stickyTabFix, 200);
   var sp = new URLSearchParams(location.search);
   var signId   = sp.get('sign');
   var portalId = sp.get('portal');
+  var urlTok   = sp.get('t');
   if(signId||portalId){
     // Don't run the full dashboard init; just show the special view
     document.addEventListener('DOMContentLoaded', function(){
-      if(signId)   _initSigningMode(signId);
-      if(portalId) _initPortalMode(portalId);
+      if(signId)   _initSigningMode(signId, urlTok);
+      if(portalId) _initPortalMode(portalId, urlTok);
     });
     // If DOM is already loaded, fire immediately
     if(document.readyState!=='loading'){
-      if(signId)   _initSigningMode(signId);
-      if(portalId) _initPortalMode(portalId);
+      if(signId)   _initSigningMode(signId, urlTok);
+      if(portalId) _initPortalMode(portalId, urlTok);
     }
     return; // Skip dashboard init
   }
