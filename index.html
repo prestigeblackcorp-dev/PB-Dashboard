@@ -2306,6 +2306,11 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Stripe payment link for the $100 date lock fee. Included in booking confirmation emails so customers can pay immediately.</div>
       </div>
       <div class="fgroup ffull">
+        <div class="flabel">Balance Payment Link (Stripe)</div>
+        <input type="url" class="finput" id="settBalanceUrl" placeholder="https://buy.stripe.com/…">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Stripe payment link for remaining balance. Shown in the customer portal so clients can pay their remaining balance online.</div>
+      </div>
+      <div class="fgroup ffull">
         <div class="flabel">Google Review URL</div>
         <input type="url" class="finput" id="settReviewUrl" placeholder="https://g.page/r/…/review">
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Sent to customers after trip is marked complete. Find yours at business.google.com.</div>
@@ -4395,7 +4400,9 @@ function renderKPIs(filtered, containerId){
     cutoff = _kpiPeriod==='today' ? tod
            : dateStr(addDays(new Date(tod+'T00:00:00'), -(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
     filtered = filtered.filter(function(b){
-      var bd=b.pickupDate||b.date||'';
+      // Use pickupDate as authoritative; fall back to b.date only for multi-day period ranges
+      // (avoids b.date matching today for bookings synced/created today with future pickup)
+      var bd = _kpiPeriod==='today' ? (b.pickupDate||'') : (b.pickupDate||b.date||'');
       return _kpiPeriod==='today' ? bd===tod : bd>=cutoff && bd<=tod;
     });
   }
@@ -4404,17 +4411,26 @@ function renderKPIs(filtered, containerId){
   var allActive = allFiltered.filter(function(b){ return b.status!=='cancelled'; }); // unfiltered by period
 
   // ── Cash-basis date lock revenue: count when received, not on pickup day ──
-  // Uses dateLockPaidAt (stamped on new bookings) or falls back to createdAt for old data.
+  // For 'today': include any date lock on today's pickups regardless of when it was received
+  //   (owner expects full booking value visible when viewing today's schedule)
+  // For 7/30/90 day periods: cash-basis — count when payment was received
   var dateLockPeriodRev = 0;
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
-    allActive.forEach(function(b){
-      if(!(Number(b.dateLock)>0)) return;
-      var dlTs = b.dateLockPaidAt || b.createdAt || b._t || 0;
-      if(!dlTs) return;
-      var dlStr = dateStr(new Date(dlTs));
-      var inPeriod = _kpiPeriod==='today' ? dlStr===tod : (dlStr>=cutoff && dlStr<=tod);
-      if(inPeriod) dateLockPeriodRev += Number(b.dateLock);
-    });
+    if(_kpiPeriod === 'today'){
+      // Today view: include all date locks on today's pickup bookings (already received = accrual)
+      active.forEach(function(b){
+        dateLockPeriodRev += Number(b.dateLock) || 0;
+      });
+    } else {
+      // Multi-day periods: cash-basis — count by when the date lock was received
+      allActive.forEach(function(b){
+        if(!(Number(b.dateLock)>0)) return;
+        var dlTs = b.dateLockPaidAt || b.createdAt || b._t || 0;
+        if(!dlTs) return;
+        var dlStr = dateStr(new Date(dlTs));
+        if(dlStr>=cutoff && dlStr<=tod) dateLockPeriodRev += Number(b.dateLock);
+      });
+    }
   }
 
   // ── Revenue components ────────────────────────────────────────────────────
@@ -7020,30 +7036,36 @@ function testOpenAiKey(){
   });
 }
 function saveSettings(){
-  WORKER_URL    = ($d('settWorkerUrl').value||'').trim().replace(/\/$/,'');
-  VERIFY_URL    = ($d('settVerifyUrl').value||'').trim().replace(/\/$/,'');
-  MESSAGING_URL = ($d('settMessagingUrl').value||'').trim().replace(/\/$/,'');
-  OWNER_EMAIL   = ($d('settOwnerEmail').value||'').trim();
-  DATE_LOCK_URL = ($d('settDateLockUrl').value||'').trim();
-  BALANCE_URL   = ($d('settBalanceUrl').value||'').trim();
-  REVIEW_URL    = ($d('settReviewUrl').value||'').trim() || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
-  OPENAI_KEY    = ($d('settOpenAiKey').value||'').trim();
-  SELF_EMPLOYMENT_TAX_RATE = parseFloat($d('settTaxRate').value) || 25;
-  localStorage.setItem('pb_worker_url',    WORKER_URL);
-  localStorage.setItem('pb_verify_url',    VERIFY_URL);
-  localStorage.setItem('pb_messaging_url', MESSAGING_URL);
-  localStorage.setItem('pb_owner_email',   OWNER_EMAIL);
-  localStorage.setItem('pb_date_lock_url', DATE_LOCK_URL);
-  localStorage.setItem('pb_balance_url',   BALANCE_URL);
-  localStorage.setItem('pb_review_url',    REVIEW_URL);
-  localStorage.setItem('pb_openai_key',    OPENAI_KEY);
-  localStorage.setItem('pb_tax_rate',      SELF_EMPLOYMENT_TAX_RATE);
-  cloudSave();
-  // signature saved live via loadSigPreview; persist current value
-  localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
-  _settingsDirty = false;
-  closeSettings();
-  toast('Settings saved.');
+  try {
+    var g = function(id){ var el=$d(id); return el ? (el.value||'') : ''; };
+    WORKER_URL    = g('settWorkerUrl').trim().replace(/\/$/,'');
+    VERIFY_URL    = g('settVerifyUrl').trim().replace(/\/$/,'');
+    MESSAGING_URL = g('settMessagingUrl').trim().replace(/\/$/,'');
+    OWNER_EMAIL   = g('settOwnerEmail').trim();
+    DATE_LOCK_URL = g('settDateLockUrl').trim();
+    BALANCE_URL   = g('settBalanceUrl').trim();
+    REVIEW_URL    = g('settReviewUrl').trim() || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
+    OPENAI_KEY    = g('settOpenAiKey').trim();
+    SELF_EMPLOYMENT_TAX_RATE = parseFloat(g('settTaxRate')) || 25;
+    localStorage.setItem('pb_worker_url',    WORKER_URL);
+    localStorage.setItem('pb_verify_url',    VERIFY_URL);
+    localStorage.setItem('pb_messaging_url', MESSAGING_URL);
+    localStorage.setItem('pb_owner_email',   OWNER_EMAIL);
+    localStorage.setItem('pb_date_lock_url', DATE_LOCK_URL);
+    localStorage.setItem('pb_balance_url',   BALANCE_URL);
+    localStorage.setItem('pb_review_url',    REVIEW_URL);
+    localStorage.setItem('pb_openai_key',    OPENAI_KEY);
+    localStorage.setItem('pb_tax_rate',      SELF_EMPLOYMENT_TAX_RATE);
+    cloudSave();
+    // signature saved live via loadSigPreview; persist current value
+    localStorage.setItem('pb_owner_signature', OWNER_SIGNATURE);
+    _settingsDirty = false;
+    closeSettings();
+    toast('Settings saved.');
+  } catch(err) {
+    console.error('saveSettings error:', err);
+    alert('Settings failed to save: ' + (err && err.message ? err.message : String(err)));
+  }
 }
 function loadSigPreview(input){
   var file = input.files[0]; if(!file) return;
@@ -7760,7 +7782,7 @@ function scanInsuranceCard(input){
 function renderTodayBanner(){
   var today=todayStr();
   var todays=bookings.filter(function(b){
-    return !b._deleted && (b.pickupDate||b.date)===today && b.status!=='cancelled';
+    return !b._deleted && (b.pickupDate||b.date||'')===today && b.status!=='cancelled';
   }).sort(function(a,b){
     // Bookings with no time set go last
     var ta=a.pickupTime||'99:99', tb=b.pickupTime||'99:99';
