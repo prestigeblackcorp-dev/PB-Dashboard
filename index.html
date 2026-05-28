@@ -7728,11 +7728,12 @@ function applyStripeVerification(session, bookingId){
   var idNum = _ex.idNumber || vo.id_number || doc.number;
   if(idNum) extracted.idNumber = String(idNum);
 
-  // Address — _extracted is a flat string; raw fallback assembles the parts
+  // Address — _extracted is a flat string; raw fallback assembles the parts.
+  // Prefer doc.address for document flows — it's the address printed on the DL.
   if(_ex.address){
     extracted.idAddress = _ex.address;
   } else {
-    var addr = vo.address || doc.address;
+    var addr = doc.address || vo.address;
     if(addr){
       var _addrParts=[];
       if(addr.line1)       _addrParts.push(addr.line1);
@@ -7744,12 +7745,17 @@ function applyStripeVerification(session, bookingId){
     }
   }
 
-  // State — from _extracted or raw address
+  // State — issuing state of the document (e.g. "TX" for a Texas DL).
+  // doc.issuing_state is the definitive 2-letter code; addr.state is a fallback
+  // (may be full name like "Texas" depending on Stripe API version).
   if(_ex.idState){
     extracted.idState = _ex.idState;
   } else {
-    var _rawAddr = vo.address || doc.address;
-    if(_rawAddr&&_rawAddr.state) extracted.idState = _rawAddr.state;
+    var _issuingState = doc.issuing_state
+      || (doc.address && doc.address.state)
+      || (vo.address  && vo.address.state)
+      || '';
+    if(_issuingState) extracted.idState = _issuingState;
   }
 
   // Document type — human-readable string from _extracted or raw type map
