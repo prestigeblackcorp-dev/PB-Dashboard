@@ -2112,7 +2112,8 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <span>📋 ID & Insurance Verification</span>
       <button class="modal-close" onclick="closeVerify()">✕</button>
     </div>
-    <div id="verBookingLabel" style="font-size:13px;color:var(--muted);margin-bottom:16px"></div>
+    <div id="verBookingLabel" style="font-size:13px;color:var(--muted);margin-bottom:8px"></div>
+    <div id="verDriverLabel" style="display:none;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.3);border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;color:var(--gold);margin-bottom:12px"></div>
 
     <!-- ID Section -->
     <div class="fsec" style="margin-bottom:10px">🪪 Driver ID Verification</div>
@@ -2169,7 +2170,8 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="btn btn-sm" onclick="_applyVerifyIdLock(false)" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
     </div>
 
-    <!-- Insurance Section -->
+    <!-- Insurance Section (hidden in driver mode) -->
+    <div id="vInsuranceSection">
     <div class="fsec" style="margin:18px 0 10px">🛡 Insurance Verification</div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <label style="display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border:1px solid rgba(100,180,255,.5);border-radius:9px;cursor:pointer;font-size:12px;font-weight:700;color:#64b4ff;white-space:nowrap">
@@ -2218,8 +2220,10 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
       <button class="btn btn-sm" onclick="_applyVerifyInsLock(false)" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
     </div>
+    </div><!-- end #vInsuranceSection -->
 
-    <!-- Credit Card Auth -->
+    <!-- Credit Card Auth (hidden in driver mode) -->
+    <div id="vCardAuthSection">
     <div class="fsec" style="margin:18px 0 12px">💳 Credit Card Auth Hold</div>
     <div class="fgrid">
       <div class="fgroup">
@@ -2250,6 +2254,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         </select>
       </div>
     </div>
+    </div><!-- end #vCardAuthSection -->
 
     <div style="display:flex;gap:10px;margin-top:20px">
       <button class="btn btn-gold" style="flex:1" onclick="saveVerify()">Save Verification</button>
@@ -2788,9 +2793,19 @@ var _notifLog = [];
 function loadNotifLog(){ try { var r=localStorage.getItem('pb_notif_log'); if(r) _notifLog=JSON.parse(r); } catch(e){ _notifLog=[]; } }
 function _saveNotifLog(){ try { localStorage.setItem('pb_notif_log', JSON.stringify(_notifLog.slice(0,200))); } catch(e){} }
 function logNotif(type, label, to, bookingId){
-  _notifLog.unshift({ at:Date.now(), type:type, label:label, to:to||'', bookingId:bookingId||'' });
+  var _now=Date.now();
+  _notifLog.unshift({ at:_now, type:type, label:label, to:to||'', bookingId:bookingId||'' });
   if(_notifLog.length>200) _notifLog=_notifLog.slice(0,200);
   _saveNotifLog();
+  // Also append to per-booking communication log
+  if(bookingId){
+    var _clIdx=bookings.findIndex(function(b){ return b.id===bookingId; });
+    if(_clIdx!==-1){
+      if(!bookings[_clIdx]._commLog) bookings[_clIdx]._commLog=[];
+      bookings[_clIdx]._commLog.push({at:_now,type:type,label:label,to:to||''});
+      save();
+    }
+  }
 }
 var DATE_LOCK_URL  = localStorage.getItem('pb_date_lock_url')  || 'https://book.stripe.com/9B614f3b1eqgaKmewAgUM0i';
 var BALANCE_URL    = localStorage.getItem('pb_balance_url')    || '';
@@ -5321,6 +5336,30 @@ function openBookingDetail(id){
     '<div class="detail-row"><span class="detail-label">Insurance</span><span class="detail-val">'+(insOk?'🛡✅ Verified':'🛡 Not verified')+'</span></div>'+
     (insOk&&v.insCarrier?'<div class="detail-row"><span class="detail-label">Carrier</span><span class="detail-val">'+esc(v.insCarrier)+(v.insCoverage?' · '+esc(v.insCoverage):'')+'</span></div>':'')+
 
+    // Additional Authorized Drivers
+    '<div class="fsec" style="margin-top:10px">🚗 Additional Authorized Drivers</div>'+
+    (b.extraDrivers&&b.extraDrivers.length?
+      b.extraDrivers.map(function(d,i){
+        return '<div style="background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">'+
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+            '<span style="font-weight:700;font-size:13px">'+esc(d.name||'Driver '+(i+1))+'</span>'+
+            (d.idVerified?
+              '<span style="background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);color:#4ade80;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px">🪪 Verified</span>':
+              '<span style="background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);color:#fbbf24;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px">⚠ Not Verified</span>')+
+            (d.phone?'<span style="color:var(--muted);font-size:11px">'+esc(d.phone)+'</span>':'')+
+            (d.email?'<span style="color:var(--muted);font-size:11px">'+esc(d.email)+'</span>':'')+
+          '</div>'+
+          (d.idVerified&&d.idName?'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+esc(d.idName)+(d.idType?' · '+esc(d.idType):'')+(d.idNumber?' #'+esc(d.idNumber):'')+(d.idState?' ('+esc(d.idState)+')':'')+'</div>':'')+
+          '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'+
+            '<button class="btn btn-sm" onclick="openDriverVerify(\''+b.id+'\','+i+');closeBookingDetail()" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">📋 Verify ID</button>'+
+            (VERIFY_URL&&d.email?'<button class="btn btn-sm" onclick="sendDriverStripeVerify(\''+b.id+'\','+i+')" style="border-color:#635bff;color:#635bff;font-size:10px">📤 Send Link</button>':'')+
+            '<button class="btn btn-sm" onclick="removeExtraDriver(\''+b.id+'\','+i+')" style="border-color:rgba(239,68,68,.4);color:var(--red);font-size:10px">🗑 Remove</button>'+
+          '</div>'+
+        '</div>';
+      }).join('')
+    :'<div style="font-size:12px;color:var(--muted);padding:4px 0 6px">No additional drivers added</div>')+
+    '<button class="btn btn-sm" onclick="openAddDriverModal(\''+b.id+'\')" style="margin-bottom:8px;font-size:11px">+ Add Driver</button>'+
+
     // Customer Signature
     (b.customerSig?
       '<div class="fsec">Customer Signature</div>'+
@@ -5349,6 +5388,23 @@ function openBookingDetail(id){
 
     // Notes
     (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0;white-space:pre-wrap">'+esc(b.notes)+'</div>':'')+
+
+    // Communication Log (above change history)
+    (b._commLog&&b._commLog.length?
+      '<div class="fsec" style="margin-top:12px">📨 Communication Log</div>'+
+      '<div style="font-size:11px;color:var(--muted)">'+
+      (function(){
+        var _typeIcons={verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
+        return b._commLog.slice().reverse().map(function(c){
+          var _icon=_typeIcons[c.type]||'📧';
+          return '<div style="padding:5px 0;border-bottom:1px solid var(--border)">'+
+            '<span style="color:var(--text);font-weight:600">'+new Date(c.at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</span> · '+
+            _icon+' '+esc(c.label)+(c.to?'<span style="color:var(--muted)"> → '+esc(c.to)+'</span>':'')+
+            '</div>';
+        }).join('');
+      })()+
+      '</div>'
+    : '')+
 
     // Change history
     (b._history&&b._history.length?
@@ -6650,6 +6706,7 @@ function saveCloseOut(){
 //  VERIFY MODAL
 // ════════════════════════════════════════════════════════
 var verifyId = null;
+var verifyDriverIdx = null; // null = primary customer; number = extra driver index in b.extraDrivers
 
 function openVerify(id){
   var b = bookings.find(function(x){ return x.id===id; });
@@ -6744,6 +6801,162 @@ function closeVerify(){
   // verification completes even when the owner dismisses the modal.
   $d('verifyModal').classList.remove('open');
   verifyId = null;
+  verifyDriverIdx = null;
+  // Reset driver mode UI
+  var _dlabel = $d('verDriverLabel');
+  if(_dlabel) _dlabel.style.display='none';
+  var _insSection = $d('vInsuranceSection');
+  if(_insSection) _insSection.style.display='';
+  var _cardSection = $d('vCardAuthSection');
+  if(_cardSection) _cardSection.style.display='';
+}
+
+// ════════════════════════════════════════════════════════
+//  EXTRA DRIVER MANAGEMENT
+// ════════════════════════════════════════════════════════
+
+// Open the verify modal pre-populated for a specific extra driver
+function openDriverVerify(bookingId, driverIdx){
+  var b=bookings.find(function(x){ return x.id===bookingId; });
+  if(!b) return;
+  verifyId = bookingId;
+  verifyDriverIdx = driverIdx;
+  var d=(b.extraDrivers&&b.extraDrivers[driverIdx])||{};
+
+  // Set modal title label
+  $d('verBookingLabel').textContent = 'Driver: '+esc(d.name||'Driver '+(driverIdx+1))+' · '+b.vehicle+' · '+b.name;
+
+  // Show driver mode banner; hide insurance + card auth sections (drivers don't need those)
+  var _dlabel=$d('verDriverLabel');
+  if(_dlabel){ _dlabel.textContent='👤 Verifying additional driver: '+(d.name||'Driver '+(driverIdx+1)); _dlabel.style.display=''; }
+  var _insSection=$d('vInsuranceSection');
+  if(_insSection) _insSection.style.display='none';
+  var _cardSection=$d('vCardAuthSection');
+  if(_cardSection) _cardSection.style.display='none';
+
+  // Pre-fill ID fields with existing driver data
+  $d('vIdName').value    = d.idName||d.name||'';
+  $d('vIdDob').value     = d.idDob||'';
+  $d('vIdType').value    = d.idType||'Driver License';
+  $d('vIdNumber').value  = d.idNumber||'';
+  $d('vIdState').value   = d.idState||'';
+  $d('vIdExpiry').value  = d.idExpiry||'';
+  $d('vIdAddress').value = d.idAddress||'';
+  $d('vIdVerified').checked = !!d.idVerified;
+  $d('vStripeStatus').textContent='';
+  $d('vStripeStatus').style.color='';
+  $d('vInscanStatus').textContent='';
+  $d('vStripeBtn').disabled=false;
+  _applyVerifyIdLock(!!d.idVerified && !!(d.idName||d.idNumber));
+
+  $d('verifyModal').classList.add('open');
+}
+
+// Send a Stripe verification link to an extra driver's email
+function sendDriverStripeVerify(bookingId, driverIdx){
+  if(!VERIFY_URL){ openSettings(); return; }
+  var b=bookings.find(function(x){ return x.id===bookingId; });
+  if(!b) return;
+  var d=(b.extraDrivers&&b.extraDrivers[driverIdx]);
+  if(!d||!d.email){ showToast('Driver has no email — open Verify ID to send manually.'); return; }
+
+  showToast('Creating Stripe session for '+d.name+'…');
+  fetch(VERIFY_URL+'/create-verification',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({bookingId:bookingId, returnUrl:'https://prestigeblackrentals.com', customerName:d.name||''})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    if(!data.url||!data.id) throw new Error(data.error||'No URL');
+    // Start polling for this driver
+    var _pollBookingId=bookingId;
+    var _pollDriverIdx=driverIdx;
+    _startVerifyPoll(data.id, _pollBookingId, _pollDriverIdx);
+
+    // Email the link to the driver
+    if(MESSAGING_URL){
+      var _firstName=(d.name||'').split(' ')[0]||'there';
+      fetch(MESSAGING_URL+'/send-email',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          to:d.email,
+          subject:'ID Verification Required — Prestige Black Rentals',
+          html:'<div style="font-family:-apple-system,sans-serif;max-width:580px;margin:0 auto">'+
+            '<div style="background:linear-gradient(135deg,#b8982e,#7a6320);padding:24px;text-align:center">'+
+              '<h2 style="margin:0;color:#fff;font-size:20px">ID Verification</h2>'+
+              '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:13px">Additional Authorized Driver</p>'+
+            '</div>'+
+            '<div style="padding:24px">'+
+              '<p style="font-size:15px;line-height:1.6">Hi '+esc(_firstName)+', you\'ve been added as an authorized driver for a Prestige Black Rentals booking. Please complete your ID verification using the secure link below:</p>'+
+              '<div style="text-align:center;margin:24px 0"><a href="'+data.url+'" style="background:#635bff;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Verify My ID →</a></div>'+
+              '<p style="font-size:12px;color:#888">Questions? Text us at (214) 207-2481</p>'+
+            '</div>'+
+          '</div>'
+        })
+      }).then(function(r){
+        if(r.ok) showToast('Verify link sent to '+d.email+' ✅');
+        logNotif('verification','Driver ID Verification Link',d.email,bookingId);
+      }).catch(function(){ showToast('Verify link created — email failed, copy manually.'); });
+    } else {
+      navigator.clipboard.writeText(data.url).then(function(){ showToast('Link copied! Send to '+d.name+'.'); });
+    }
+  })
+  .catch(function(err){ showToast('Error: '+err.message); });
+}
+
+// Open an "Add Driver" overlay using a dynamic modal
+function openAddDriverModal(bookingId){
+  // Remove any stale copy
+  var _old=$d('addDriverOverlay'); if(_old) _old.remove();
+
+  var _overlay=document.createElement('div');
+  _overlay.id='addDriverOverlay';
+  _overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px';
+  _overlay.innerHTML=
+    '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:420px">'+
+      '<div style="font-size:16px;font-weight:800;margin-bottom:16px">+ Add Authorized Driver</div>'+
+      '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Full Name *</div>'+
+        '<input id="addDrvName" type="text" placeholder="First Last" class="finput" style="width:100%"></div>'+
+      '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Phone</div>'+
+        '<input id="addDrvPhone" type="tel" placeholder="(555) 000-0000" class="finput" style="width:100%"></div>'+
+      '<div style="margin-bottom:20px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Email</div>'+
+        '<input id="addDrvEmail" type="email" placeholder="driver@email.com" class="finput" style="width:100%"></div>'+
+      '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+        '<button class="btn" onclick="$d(\'addDriverOverlay\').remove()" style="border-color:var(--border)">Cancel</button>'+
+        '<button class="btn" onclick="confirmAddDriver(\''+bookingId+'\')" style="background:var(--gold);color:#000;border-color:var(--gold);font-weight:700">Add Driver</button>'+
+      '</div>'+
+    '</div>';
+  document.body.appendChild(_overlay);
+  setTimeout(function(){ var el=$d('addDrvName'); if(el) el.focus(); },50);
+}
+
+function confirmAddDriver(bookingId){
+  var name=($d('addDrvName').value||'').trim();
+  if(!name){ showToast('Name is required'); return; }
+  var phone=($d('addDrvPhone').value||'').trim();
+  var email=($d('addDrvEmail').value||'').trim();
+  var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
+  if(idx===-1){ showToast('Booking not found'); return; }
+  if(!bookings[idx].extraDrivers) bookings[idx].extraDrivers=[];
+  bookings[idx].extraDrivers.push({name:name,phone:phone,email:email,idVerified:false,addedAt:Date.now()});
+  bookings[idx]._t=Date.now();
+  save();
+  $d('addDriverOverlay').remove();
+  showToast('Driver added ✅');
+  openBookingDetail(bookingId);
+}
+
+function removeExtraDriver(bookingId, driverIdx){
+  var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
+  if(idx===-1) return;
+  var d=(bookings[idx].extraDrivers||[])[driverIdx];
+  if(!confirm('Remove '+(d&&d.name?d.name:'this driver')+'?')) return;
+  bookings[idx].extraDrivers=bookings[idx].extraDrivers.filter(function(_,i){ return i!==driverIdx; });
+  bookings[idx]._t=Date.now();
+  save();
+  showToast('Driver removed');
+  openBookingDetail(bookingId);
 }
 
 // ── Lock / unlock ID section fields once verified ──────────────────────────
@@ -6821,6 +7034,35 @@ function saveVerify(){
   if(!verifyId) return;
   var idx = bookings.findIndex(function(b){ return b.id===verifyId; });
   if(idx===-1) return;
+
+  // ── Driver mode: save only ID fields to extraDrivers[verifyDriverIdx] ──────
+  if(verifyDriverIdx !== null){
+    var _drivers = (bookings[idx].extraDrivers||[]).slice();
+    if(!_drivers[verifyDriverIdx]) _drivers[verifyDriverIdx]={};
+    var _ed = _drivers[verifyDriverIdx];
+    _drivers[verifyDriverIdx] = Object.assign({}, _ed, {
+      idName:     $d('vIdName').value.trim(),
+      idDob:      $d('vIdDob').value,
+      idType:     $d('vIdType').value,
+      idNumber:   $d('vIdNumber').value.trim(),
+      idState:    $d('vIdState').value.trim(),
+      idExpiry:   $d('vIdExpiry').value,
+      idAddress:  $d('vIdAddress').value.trim(),
+      idVerified: $d('vIdVerified').checked,
+      verifiedAt: _ed.verifiedAt || new Date().toISOString()
+    });
+    bookings[idx].extraDrivers = _drivers;
+    save();
+    closeVerify();
+    renderTodayBanner();
+    if(activeTab==='upcoming') renderUpcoming();
+    if(activeTab==='current')  renderCurrent();
+    if(activeTab==='previous') renderPrevious();
+    if(activeTab==='cancelled') renderCancelled();
+    return;
+  }
+
+  // ── Primary customer mode ────────────────────────────────────────────────
   // Merge with existing verify object so Stripe session tracking fields are never lost.
   // stripeSessionId, stripeSessionIds, firstSentAt, carriedFromBooking, and the original
   // Stripe verifiedAt are invisible in the form — a plain replace would wipe them from Firebase.
@@ -7396,10 +7638,12 @@ function sendVerifyNudgeEmail(b){
 }
 
 // Start (or resume) a poll for an existing Stripe session ID
-function _startVerifyPoll(sessionId, bookingId){
+function _startVerifyPoll(sessionId, bookingId, driverIdx){
   clearVerificationPoll();
   if(!VERIFY_URL||!sessionId||!bookingId) return;
   _verifyPollBookingId = bookingId;
+  // driverIdx is carried through the closure so applyStripeVerification can target the right slot
+  var _pollDriverIdx = (driverIdx !== undefined && driverIdx !== null) ? driverIdx : null;
   var _pollCount = 0, MAX_POLLS = 120;
   _verifyPollTimer = setInterval(function(){
     if(++_pollCount > MAX_POLLS){
@@ -7421,12 +7665,12 @@ function _startVerifyPoll(sessionId, bookingId){
       if(session.status==='verified'){
         clearVerificationPoll();
         try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
-        applyStripeVerification(session, bookingId);
+        applyStripeVerification(session, bookingId, _pollDriverIdx);
       } else if(session.status==='canceled'){
         clearVerificationPoll();
         try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
         if(verifyId === bookingId){
-          $d('vStripeStatus').textContent = '❌ Verification was canceled by customer.';
+          $d('vStripeStatus').textContent = '❌ Verification was canceled.';
           $d('vStripeStatus').style.color = 'var(--red)';
         }
       } else if(session.status==='processing'){
@@ -7681,10 +7925,12 @@ function checkVerifyNow(){
   }
 }
 
-function applyStripeVerification(session, bookingId){
+function applyStripeVerification(session, bookingId, driverIdx){
   // bookingId is passed explicitly from _startVerifyPoll so this works even
   // when the verify modal is closed (verifyId would be null in that case).
   var _bId = bookingId || verifyId;
+  // driverIdx: if a number, save to extraDrivers[driverIdx] instead of booking.verify
+  var _dIdx = (driverIdx !== undefined && driverIdx !== null) ? driverIdx : verifyDriverIdx;
   // Stripe Flow sessions expose extracted data in two places:
   //   • session.verified_outputs  — always present on verified sessions; no expansion needed
   //   • session.last_verification_report.document — only present for document-scan flows
@@ -7797,17 +8043,25 @@ function applyStripeVerification(session, bookingId){
   // ── 3. Auto-save directly to booking — works regardless of modal state ────
   var idx = bookings.findIndex(function(x){ return x.id===_bId; });
   if(idx !== -1){
-    var existing = bookings[idx].verify || {};
-    // Merge: keep any existing insurance/card fields, overlay Stripe ID fields
-    bookings[idx].verify = Object.assign({}, existing, extracted);
+    if(_dIdx !== null && _dIdx !== undefined){
+      // Driver mode — save to extraDrivers[_dIdx]
+      var _drvs = (bookings[idx].extraDrivers||[]).slice();
+      if(!_drvs[_dIdx]) _drvs[_dIdx]={};
+      _drvs[_dIdx] = Object.assign({}, _drvs[_dIdx], extracted);
+      bookings[idx].extraDrivers = _drvs;
+    } else {
+      var existing = bookings[idx].verify || {};
+      // Merge: keep any existing insurance/card fields, overlay Stripe ID fields
+      bookings[idx].verify = Object.assign({}, existing, extracted);
 
-    // ── 4. Auto-confirm if still pending ───────────────────────────────────
-    if(bookings[idx].status === 'pending'){
-      bookings[idx].status = 'confirmed';
-      bookings[idx]._t = Date.now();
-      sendConfirmationEmail(bookings[idx]);
-      var histEntry={at:Date.now(),by:_currentUser||'owner',changes:['status: "pending"→"confirmed" (auto after ID verified)']};
-      bookings[idx]._history=(bookings[idx]._history||[]).concat([histEntry]);
+      // ── 4. Auto-confirm if still pending ─────────────────────────────────
+      if(bookings[idx].status === 'pending'){
+        bookings[idx].status = 'confirmed';
+        bookings[idx]._t = Date.now();
+        sendConfirmationEmail(bookings[idx]);
+        var histEntry={at:Date.now(),by:_currentUser||'owner',changes:['status: "pending"→"confirmed" (auto after ID verified)']};
+        bookings[idx]._history=(bookings[idx]._history||[]).concat([histEntry]);
+      }
     }
 
     save();
@@ -7821,14 +8075,18 @@ function applyStripeVerification(session, bookingId){
   // Clear nudge flag so a future booking for the same ID doesn't get stuck
   try{ localStorage.removeItem('pb_sent_nudge_'+_bId); }catch(e){}
 
-  showToast('✅ ID Verified — '+(_bId? (bookings.find(function(x){return x.id===_bId;})|| {}).name||'customer' : 'customer')+' verified & saved');
-
-  // ── 5. Email owner with extracted ID data + Stripe dashboard link ─────────
   var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===_bId;});
-  if(_vb) sendOwnerIdVerification(_vb, session.id||'');
-
-  // ── 6. Email customer — "You're verified & all set" ───────────────────────
-  if(_vb) sendCustomerVerifiedEmail(_vb);
+  if(_dIdx !== null && _dIdx !== undefined){
+    // Driver mode — show driver name in toast
+    var _drvName = (_vb&&_vb.extraDrivers&&_vb.extraDrivers[_dIdx]&&_vb.extraDrivers[_dIdx].name)||'driver';
+    showToast('✅ Driver ID Verified — '+_drvName+' saved');
+  } else {
+    showToast('✅ ID Verified — '+(_bId? (_vb||{}).name||'customer' : 'customer')+' verified & saved');
+    // ── 5. Email owner with extracted ID data + Stripe dashboard link ───────
+    if(_vb) sendOwnerIdVerification(_vb, session.id||'');
+    // ── 6. Email customer — "You're verified & all set" ─────────────────────
+    if(_vb) sendCustomerVerifiedEmail(_vb);
+  }
 }
 
 // Sent to customer immediately after Stripe confirms their ID.
