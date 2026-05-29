@@ -12435,8 +12435,15 @@ function _portalRender(body,bookingId,bk){
             '<div id="pDaysSummary" style="text-align:center;background:rgba(99,91,255,.1);border-radius:8px;padding:10px;font-size:13px;color:rgba(255,255,255,.6);margin-bottom:12px">'+
               _pDaysSummaryHtml(bk,1,dailyRate)+
             '</div>'+
-            '<div style="font-size:12px;color:rgba(255,255,255,.28);margin-bottom:12px;text-align:center">Payment instructions shown after confirming</div>'+
-            (function(){var _a0=_pCheckAvailability(bk,1);return '<button onclick="pSaveDays(\''+bookingId+'\','+dailyRate+')" id="pDaysSaveBtn" style="width:100%;padding:13px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer'+(_a0.available?'':';opacity:.4')+';"'+(_a0.available?'':' disabled')+'>'+(_a0.available?'Confirm Extension →':'Not Available')+'</button>';}())+
+            (function(){
+              var _a0=_pCheckAvailability(bk,1);
+              var _dis=_a0.available?'':' disabled';
+              var _op=_a0.available?'':'opacity:.4;';
+              return '<div style="display:flex;gap:8px;flex-direction:column">'+
+                '<button onclick="pPayByCard(\''+bookingId+'\','+dailyRate+')" id="pDaysCardBtn" style="width:100%;padding:13px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;'+_op+'"'+_dis+'>'+(_a0.available?'💳 Pay by Card →':'Not Available')+'</button>'+
+                '<button onclick="pSaveDays(\''+bookingId+'\','+dailyRate+')" id="pDaysSaveBtn" style="width:100%;padding:13px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);color:rgba(255,255,255,.8);border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;'+_op+'"'+_dis+'>'+(_a0.available?'Pay via Zelle →':'Not Available')+'</button>'+
+              '</div>';
+            }())+
             '<div id="pDaysMsg" style="margin-top:8px;font-size:12px;color:rgba(255,255,255,.4);text-align:center"></div>'+
           '</div>'+
         '</div>':'')+ // end add days
@@ -12575,7 +12582,8 @@ function pAdjDays(delta){
   _pExtraDays=Math.max(1,(_pExtraDays||1)+delta);
   var numEl=document.getElementById('pDaysNum');
   var sumEl=document.getElementById('pDaysSummary');
-  var saveBtn=document.getElementById('pDaysSaveBtn');
+  var cardBtn=document.getElementById('pDaysCardBtn');
+  var zelleBtn=document.getElementById('pDaysSaveBtn');
   if(numEl) numEl.textContent=_pExtraDays;
   if(sumEl&&_pAllData){
     var bk=(_pAllData.bookings||[]).find(function(x){return x.id===_pBookingId;});
@@ -12583,11 +12591,13 @@ function pAdjDays(delta){
     var rate=(t.days>0)?Math.round(t.rev/t.days):0;
     var avail=_pCheckAvailability(bk,_pExtraDays);
     sumEl.innerHTML=_pDaysSummaryHtml(bk,_pExtraDays,rate);
-    if(saveBtn){
-      saveBtn.disabled=!avail.available;
-      saveBtn.style.opacity=avail.available?'1':'0.4';
-      saveBtn.textContent=avail.available?'Confirm Extension →':'Not Available';
-    }
+    [cardBtn,zelleBtn].forEach(function(btn){
+      if(!btn) return;
+      btn.disabled=!avail.available;
+      btn.style.opacity=avail.available?'1':'0.4';
+    });
+    if(cardBtn) cardBtn.textContent=avail.available?'💳 Pay by Card →':'Not Available';
+    if(zelleBtn) zelleBtn.textContent=avail.available?'Pay via Zelle →':'Not Available';
   }
 }
 
@@ -12689,6 +12699,41 @@ function _pDaysSummaryHtml(bk, extraDays, dailyRate){
   return html;
 }
 
+// ─ Card payment for extension (Stripe) ─
+// Booking is NOT saved until the Stripe webhook fires on payment success.
+function pPayByCard(bookingId, dailyRate){
+  var extra=_pExtraDays||1;
+  var bk=_pAllData?(_pAllData.bookings||[]).find(function(x){return x.id===bookingId;}):null;
+  if(!bk){ var m=$d('pDaysMsg'); if(m){m.style.color='#f87171';m.textContent='Booking not found.';} return; }
+  var avail=_pCheckAvailability(bk,extra);
+  if(!avail.available){ var m2=$d('pDaysMsg'); if(m2){m2.style.color='#f87171';m2.textContent='Those dates are not available.';} return; }
+  if(!avail.newDropoff){ var m3=$d('pDaysMsg'); if(m3){m3.style.color='#f87171';m3.textContent='Could not calculate new return date.';} return; }
+  var cardBtn=$d('pDaysCardBtn'); var zelleBtn=$d('pDaysSaveBtn'); var msg=$d('pDaysMsg');
+  if(cardBtn){cardBtn.disabled=true;cardBtn.textContent='Opening checkout…';}
+  if(zelleBtn){zelleBtn.disabled=true;}
+  if(msg){msg.textContent='';}
+  // Step 1: create extension token
+  fetch(_PORTAL_WORKER+'/extend/create-token',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({bookingId:bookingId,dailyRate:dailyRate})})
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(!d||!d.token){ throw new Error(d&&d.error?d.error:'Could not create payment session'); }
+    // Step 2: create Stripe checkout session for the exact date
+    return fetch(_PORTAL_WORKER+'/extend/checkout',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:d.token,newDropoffDate:avail.newDropoff})});
+  })
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(!d||!d.url){ throw new Error(d&&d.error?d.error:'Could not open payment page'); }
+    window.location.href=d.url; // redirect to Stripe Checkout
+  })
+  .catch(function(err){
+    if(cardBtn){cardBtn.disabled=false;cardBtn.textContent='💳 Pay by Card →';}
+    if(zelleBtn){zelleBtn.disabled=false;}
+    if(msg){msg.style.color='#f87171';msg.textContent=String(err).replace(/^Error:\s*/,'');}
+  });
+}
+
 // ─ Shared Firebase patch helper ─
 function _pSavePatch(patchFn,onSuccess,onError){
   // Always re-fetch to avoid overwriting concurrent changes
@@ -12713,23 +12758,23 @@ function _pSavePatch(patchFn,onSuccess,onError){
   }).catch(function(){onError('Could not connect. Please try again.');});
 }
 
-// ─ Save extra days ─
+// ─ Save extra days (Zelle path) ─
 function pSaveDays(bookingId,dailyRate){
   var extra=_pExtraDays||1;
   if(extra<1) return;
-  // Pre-check availability with current cached data before hitting the server
+  // Pre-check availability
   var _preCheckBk=_pAllData?(_pAllData.bookings||[]).find(function(x){return x.id===bookingId;}):null;
   if(_preCheckBk){
     var _preAvail=_pCheckAvailability(_preCheckBk,extra);
     if(!_preAvail.available){
-      var _preMsg=document.getElementById('pDaysMsg');
+      var _preMsg=$d('pDaysMsg');
       if(_preMsg){_preMsg.style.color='#f87171';_preMsg.textContent='Those dates are no longer available — please choose fewer days.';}
       return;
     }
   }
-  var btn=document.getElementById('pDaysSaveBtn');
-  var msg=document.getElementById('pDaysMsg');
+  var cardBtn=$d('pDaysCardBtn'); var btn=$d('pDaysSaveBtn'); var msg=$d('pDaysMsg');
   if(btn){btn.disabled=true;btn.textContent='Saving…';}
+  if(cardBtn){cardBtn.disabled=true;}
   if(msg){msg.textContent='';}
   _pSavePatch(
     function(bk){
@@ -12757,66 +12802,80 @@ function pSaveDays(bookingId,dailyRate){
     function(updatedBk){
       var addedCost=extra*dailyRate;
       var plural=extra===1?'day':'days';
+      var _newReturn=updatedBk.dropoffDate?fmtDateFull(updatedBk.dropoffDate):'';
       var zelleHtml=
         '<div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:10px;padding:16px;margin-top:4px">'+
           '<div style="font-size:15px;font-weight:800;color:#22c55e;margin-bottom:8px">✅ '+extra+' '+plural+' added!</div>'+
-          '<div style="font-size:13px;color:rgba(255,255,255,.6);margin-bottom:14px">New rental period: <strong style="color:rgba(255,255,255,.85)">'+updatedBk.days+' days</strong>'+
-            (updatedBk.dropoffDate?' · returns <strong>'+fmtDateFull(updatedBk.dropoffDate)+'</strong>':'')+
+          '<div style="font-size:13px;color:rgba(255,255,255,.6);margin-bottom:14px">'+
+            esc(updatedBk.vehicle||'')+' · '+fmtDate(updatedBk.pickupDate||updatedBk.date)+
+            (_newReturn?' → <strong style="color:rgba(255,255,255,.85)">'+esc(_newReturn)+'</strong>':'')+
           '</div>'+
-          '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:rgba(255,255,255,.3);margin-bottom:10px">Please pay via Zelle</div>'+
-          '<div style="font-size:22px;font-weight:800;color:#fb923c;margin-bottom:12px">'+pFmt(addedCost)+'</div>'+
-          '<div style="font-size:13px;color:rgba(255,255,255,.65);line-height:2">📱 <strong style="color:rgba(255,255,255,.85)">(214) 207-2481</strong><br>👤 <strong style="color:rgba(255,255,255,.85)">Edwin Watson</strong></div>'+
-          '<div style="margin-top:10px;padding:7px 10px;background:rgba(255,255,255,.04);border-radius:7px;font-size:11px;color:rgba(255,255,255,.35)">Memo: PBR-'+updatedBk.id.slice(-6).toUpperCase()+'</div>'+
-          '<div style="margin-top:14px;padding:11px 14px;background:rgba(99,91,255,.1);border:1px solid rgba(99,91,255,.2);border-radius:8px;font-size:12px;color:rgba(255,255,255,.55)">'+
-            '✍️ An updated rental agreement with your new return date has been sent to your email to sign.'+
+          '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:rgba(255,255,255,.3);margin-bottom:6px">Amount due via Zelle</div>'+
+          '<div style="font-size:28px;font-weight:800;color:#fb923c;margin-bottom:12px">'+pFmt(addedCost)+'</div>'+
+          '<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:8px;padding:14px 16px;font-size:13px;color:rgba(255,255,255,.7);line-height:2.2;margin-bottom:12px">'+
+            '📱 <strong style="color:rgba(255,255,255,.9)">(214) 207-2481</strong><br>'+
+            '👤 <strong style="color:rgba(255,255,255,.9)">Edwin Watson</strong><br>'+
+            '📝 Memo: <strong style="color:rgba(255,255,255,.9)">PBR-'+updatedBk.id.slice(-6).toUpperCase()+' Extension</strong>'+
+          '</div>'+
+          '<div style="padding:10px 14px;background:rgba(99,91,255,.1);border:1px solid rgba(99,91,255,.2);border-radius:8px;font-size:12px;color:rgba(255,255,255,.55)">'+
+            '✍️ A text with payment details + updated contract to sign has been sent to your email.'+
           '</div>'+
         '</div>';
-      var daysBody=document.getElementById('pDaysBody');
+      var daysBody=$d('pDaysBody');
       if(daysBody) daysBody.innerHTML=zelleHtml;
-      // Auto-send updated contract signing link to primary driver
+      // Send combined email: booking details + extension details + Zelle amount + signing link
       var _msgUrl=((_pAllData&&_pAllData.messaging_url)||_PORTAL_WORKER).replace(/\/$/,'');
       if(updatedBk.email&&_msgUrl){
         var _firstName=(updatedBk.name||'').split(' ')[0]||'there';
         var _docType=updatedBk.vehicle==='Polaris Slingshot'&&updatedBk.type==='hourly'?'Liability Waiver':'Rental Agreement';
-        var _newReturn=updatedBk.dropoffDate?fmtDateFull(updatedBk.dropoffDate):'';
         var _sigUrl=location.origin+location.pathname+'?sign='+encodeURIComponent(updatedBk.id);
         var _emailHtml=
           '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
           '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
             '<div style="font-size:40px;margin-bottom:10px">📅</div>'+
             '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">Rental Extended, '+esc(_firstName)+'!</h1>'+
-            '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">'+esc(updatedBk.vehicle)+(_newReturn?' · Now returns '+esc(_newReturn):'')+' </p>'+
+            '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">'+esc(updatedBk.vehicle)+(_newReturn?' · Returns '+esc(_newReturn):'')+' </p>'+
           '</div>'+
           '<div style="padding:28px">'+
-          '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">Your rental has been extended by <strong>'+extra+' '+plural+'</strong>. Please sign the updated '+esc(_docType)+' which reflects your new return date.</p>'+
-          '<div style="background:#f7f7f7;border-radius:10px;padding:16px;margin-bottom:20px;font-size:14px">'+
-            '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee">'+
-              '<span style="color:#555">Vehicle</span><span style="font-weight:600">'+esc(updatedBk.vehicle||'')+'</span>'+
-            '</div>'+
-            '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee">'+
-              '<span style="color:#555">Pickup</span><span style="font-weight:600">'+fmtDate(updatedBk.pickupDate||updatedBk.date)+'</span>'+
-            '</div>'+
-            (_newReturn?'<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee">'+
-              '<span style="color:#555">New Return</span><span style="font-weight:600;color:#635bff">'+esc(_newReturn)+'</span>'+
-            '</div>':'')+
-            '<div style="display:flex;justify-content:space-between;padding:6px 0">'+
-              '<span style="color:#555">Extension Charge</span><span style="font-weight:600;color:#f97316">'+pFmt(addedCost)+'</span>'+
-            '</div>'+
+          // Booking + extension summary table
+          '<div style="background:#f7f7f7;border-radius:10px;padding:4px 0;margin-bottom:20px;font-size:14px">'+
+            '<div style="padding:10px 16px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#888;border-bottom:1px solid #eee">Booking Details</div>'+
+            '<table style="width:100%;border-collapse:collapse;font-size:14px">'+
+              '<tr><td style="padding:9px 16px;color:#555;width:40%">Booking Ref</td><td style="padding:9px 16px;font-weight:700;color:#111">PBR-'+updatedBk.id.slice(-6).toUpperCase()+'</td></tr>'+
+              '<tr style="background:#f0f0f0"><td style="padding:9px 16px;color:#555">Customer</td><td style="padding:9px 16px;font-weight:600">'+esc(updatedBk.name||'')+'</td></tr>'+
+              '<tr><td style="padding:9px 16px;color:#555">Vehicle</td><td style="padding:9px 16px;font-weight:600">'+esc(updatedBk.vehicle||'')+'</td></tr>'+
+              '<tr style="background:#f0f0f0"><td style="padding:9px 16px;color:#555">Pickup</td><td style="padding:9px 16px;font-weight:600">'+fmtDate(updatedBk.pickupDate||updatedBk.date)+'</td></tr>'+
+              (_newReturn?'<tr><td style="padding:9px 16px;color:#555">New Return</td><td style="padding:9px 16px;font-weight:700;color:#635bff">'+esc(_newReturn)+'</td></tr>':'')+
+              '<tr style="background:#fff8e8"><td style="padding:9px 16px;color:#555">Extension</td><td style="padding:9px 16px;font-weight:700;color:#b8982e">+'+extra+' '+plural+'</td></tr>'+
+            '</table>'+
           '</div>'+
-          '<div style="text-align:center;margin:20px 0">'+
-            '<a href="'+_sigUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">✍️ Sign Updated '+esc(_docType)+'</a>'+
+          // Zelle payment box
+          '<div style="background:#fff8f0;border:2px solid #f97316;border-radius:12px;padding:20px;margin-bottom:20px;text-align:center">'+
+            '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#c2440f;margin-bottom:8px">Amount Due via Zelle</div>'+
+            '<div style="font-size:36px;font-weight:800;color:#f97316;margin-bottom:12px">'+pFmt(addedCost)+'</div>'+
+            '<table style="width:100%;border-collapse:collapse;font-size:14px;text-align:left">'+
+              '<tr><td style="padding:6px 10px;color:#555">Send to</td><td style="padding:6px 10px;font-weight:700;color:#111">📱 (214) 207-2481</td></tr>'+
+              '<tr style="background:#fff3e0"><td style="padding:6px 10px;color:#555">Name</td><td style="padding:6px 10px;font-weight:700;color:#111">👤 Edwin Watson</td></tr>'+
+              '<tr><td style="padding:6px 10px;color:#555">Memo</td><td style="padding:6px 10px;font-weight:700;color:#111">PBR-'+updatedBk.id.slice(-6).toUpperCase()+' Extension</td></tr>'+
+            '</table>'+
           '</div>'+
-          '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+          // Sign CTA
+          '<div style="text-align:center;margin:20px 0;padding:16px;background:#f9f7ff;border-radius:10px;border:1px solid #e0d9ff">'+
+            '<div style="font-size:13px;color:#555;margin-bottom:12px">Your rental agreement has been updated with the new dates. Please sign it below:</div>'+
+            '<a href="'+_sigUrl+'" style="display:inline-block;padding:13px 28px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:14px;box-shadow:0 4px 14px rgba(184,152,46,.3)">✍️ Sign Updated '+esc(_docType)+'</a>'+
+          '</div>'+
+          '<p style="font-size:13px;color:#888;margin:16px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
           '</div>'+
           '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
           '</div>';
         fetch(_msgUrl+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({to:updatedBk.email,subject:'Your Rental Has Been Extended — Please Sign Updated '+_docType,html:_emailHtml})
+          body:JSON.stringify({to:updatedBk.email,subject:'Your Rental Is Extended — Zelle '+pFmt(addedCost)+' + Sign Updated '+_docType,html:_emailHtml})
         }).catch(function(){});
       }
     },
     function(err){
-      if(btn){btn.disabled=false;btn.textContent='Confirm Extension →';}
+      if(btn){btn.disabled=false;btn.textContent='Pay via Zelle →';}
+      if(cardBtn){cardBtn.disabled=false;}
       if(msg){msg.style.color='#f87171';msg.textContent='Error: '+err;}
     }
   );
