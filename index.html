@@ -6823,12 +6823,12 @@ function openDriverVerify(bookingId, driverIdx){
   verifyDriverIdx = driverIdx;
   var d=(b.extraDrivers&&b.extraDrivers[driverIdx])||{};
 
-  // Set modal title label
-  $d('verBookingLabel').textContent = 'Driver: '+esc(d.name||'Driver '+(driverIdx+1))+' · '+b.vehicle+' · '+b.name;
+  // Set modal title label (use innerHTML so special chars render correctly)
+  $d('verBookingLabel').innerHTML = 'Driver: <strong>'+esc(d.name||'Driver '+(driverIdx+1))+'</strong> &middot; '+esc(b.vehicle)+' &middot; '+esc(b.name);
 
   // Show driver mode banner; hide insurance + card auth sections (drivers don't need those)
   var _dlabel=$d('verDriverLabel');
-  if(_dlabel){ _dlabel.textContent='👤 Verifying additional driver: '+(d.name||'Driver '+(driverIdx+1)); _dlabel.style.display=''; }
+  if(_dlabel){ _dlabel.innerHTML='👤 Verifying additional driver: <strong>'+esc(d.name||'Driver '+(driverIdx+1))+'</strong>'; _dlabel.style.display=''; }
   var _insSection=$d('vInsuranceSection');
   if(_insSection) _insSection.style.display='none';
   var _cardSection=$d('vCardAuthSection');
@@ -6912,7 +6912,7 @@ function openAddDriverModal(bookingId){
 
   var _overlay=document.createElement('div');
   _overlay.id='addDriverOverlay';
-  _overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px';
+  _overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
   _overlay.innerHTML=
     '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:420px">'+
       '<div style="font-size:16px;font-weight:800;margin-bottom:16px">+ Add Authorized Driver</div>'+
@@ -6943,8 +6943,11 @@ function confirmAddDriver(bookingId){
   bookings[idx]._t=Date.now();
   save();
   $d('addDriverOverlay').remove();
-  showToast('Driver added ✅');
-  openBookingDetail(bookingId);
+  // Close booking detail and open verify modal for the new driver so owner can
+  // immediately send the Stripe verification link without extra taps.
+  var newDriverIdx = bookings[idx].extraDrivers.length - 1;
+  closeBookingDetail();
+  openDriverVerify(bookingId, newDriverIdx);
 }
 
 function removeExtraDriver(bookingId, driverIdx){
@@ -7693,6 +7696,15 @@ function _startVerifyPoll(sessionId, bookingId, driverIdx){
 function sendStripeVerification(){
   if(!VERIFY_URL){ openSettings(); return; }
   var b=bookings.find(function(x){ return x.id===verifyId; });
+
+  // ── Driver mode: capture context NOW before any async ─────────────────────
+  var _isDriver = (verifyDriverIdx !== null && verifyDriverIdx !== undefined);
+  var _capturedDriverIdx = _isDriver ? verifyDriverIdx : null;
+  var _driver = _isDriver && b && b.extraDrivers ? b.extraDrivers[_capturedDriverIdx] : null;
+  // Use driver's name/email when in driver mode; fall back to booking primary
+  var _targetName  = (_isDriver && _driver) ? (_driver.name||'') : (b ? b.name : '');
+  var _targetEmail = (_isDriver && _driver) ? (_driver.email||'') : (b ? b.email : '');
+
   $d('vStripeBtn').disabled=true;
   $d('vStripeStatus').style.color='';
   $d('vStripeStatus').textContent='Creating session…';
@@ -7702,7 +7714,7 @@ function sendStripeVerification(){
     // Use the public website as return_url — the dashboard URL (github.io/cloudflare pages)
     // must be whitelisted in Stripe's allowed-redirect list or Stripe silently breaks the session.
     // Redirecting to the public site is better UX anyway; the dashboard polls independently.
-    body:JSON.stringify({bookingId:verifyId, returnUrl:'https://prestigeblackrentals.com', customerName:b?b.name:''})
+    body:JSON.stringify({bookingId:verifyId, returnUrl:'https://prestigeblackrentals.com', customerName:_targetName})
   })
   .then(function(r){ return r.json(); })
   .then(function(data){
@@ -7715,74 +7727,116 @@ function sendStripeVerification(){
     // HTML-encode for safe use inside href attributes (& → &amp; etc.)
     var _vUrlHtml=_vUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
     var vStatusEl=$d('vStripeStatus');
-    vStatusEl.innerHTML='<a href="'+_vUrlHtml+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; text to customer &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
+    vStatusEl.innerHTML='<a href="'+_vUrlHtml+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; send to '+esc(_targetName||'customer')+' &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
     $d('vCopyBtn').onclick=function(){ navigator.clipboard.writeText(_vUrl).then(function(){ showToast('Link copied!'); }); };
     // Save session ID to localStorage so poll can survive modal close / page refresh
     try{ localStorage.setItem('pb_pending_vsession_'+_bookingId, data.id); }catch(e){}
     // Append to the full session history so Check Status can inspect every link sent
     _addVerifySession(_bookingId, data.id);
+    // Also store on driver object for Check Status in driver mode
+    if(_capturedDriverIdx !== null){
+      var _bidx=bookings.findIndex(function(x){ return x.id===_bookingId; });
+      if(_bidx!==-1&&bookings[_bidx].extraDrivers&&bookings[_bidx].extraDrivers[_capturedDriverIdx]){
+        bookings[_bidx].extraDrivers[_capturedDriverIdx].stripeSessionId=data.id;
+        save();
+      }
+    }
 
     // _afterEmailSent — called once the email resolves (success or fail), or immediately
     // when there is no email to send. Starts the background poll using the captured booking ID.
     function _afterEmailSent(){
-      _startVerifyPoll(data.id, _bookingId);
+      _startVerifyPoll(data.id, _bookingId, _capturedDriverIdx);
     }
 
-    // Auto-email the customer the verification link + trip details
-    if(MESSAGING_URL && b && b.email){
-      var _firstName=(b.name||'').split(' ')[0]||'there';
-      var _rev=totalRevenue(b);
-      var _addons=[];
-      if(Number(b.photo))     _addons.push('Photoshoot ($'+b.photo+')');
-      if(Number(b.champagne)) _addons.push('Champagne ($'+b.champagne+')');
-      if(Number(b.decor))     _addons.push('Decor ($'+b.decor+')');
-      if(Number(b.bouquet))   _addons.push('Bouquet ($'+b.bouquet+')');
-      if(Number(b.delivery))  _addons.push('Delivery ($'+b.delivery+')');
-      if(Number(b.unlimited)) _addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
-      if(Number(b.pet))       _addons.push('Pet Fee ($'+b.pet+')');
-      var _detailRows=
-        '<tr><td style="padding:6px 12px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
-        '<tr><td style="padding:6px 12px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+
-          (b.address?'<br><span style="color:#555;font-size:13px">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
-        (b.dropoffDate?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
-        (b.dropoffAddress?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off Location</td><td style="padding:6px 0">📍 '+esc(b.dropoffAddress)+'</td></tr>':'')+
-        '<tr><td style="padding:6px 12px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
-        (_addons.length?'<tr><td style="padding:6px 12px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+_addons.join('<br>')+'</td></tr>':'')+
-        '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(_rev)+'</td></tr>'+
-        (Number(b.dateLock)?'<tr><td style="padding:6px 12px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
-      fetch(MESSAGING_URL+'/send-email',{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          to:b.email,
-          subject:'Action Required: Verify your ID — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')',
-          html:'<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
-            '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
-              '<div style="font-size:40px;margin-bottom:10px">🔒</div>'+
-              '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">One Quick Step, '+esc(_firstName)+'</h1>'+
-              '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">Your rental is almost ready</p>'+
-            '</div>'+
-            '<div style="padding:28px">'+
-            '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">To finalize your upcoming rental, we need to verify your ID — it takes less than 60 seconds.</p>'+
-            '<div style="text-align:center;margin:24px 0"><a href="'+_vUrlHtml+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(99,91,255,.35)">Verify My ID →</a></div>'+
-            '<p style="font-size:12px;color:#666;margin:0 0 20px;word-break:break-all">Or copy this link: <a href="'+_vUrlHtml+'" style="color:#635bff">'+esc(_vUrl)+'</a></p>'+
-            '<div style="background:#f7f7f7;border-radius:10px;padding:20px;margin:20px 0">'+
-              '<div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">Booking Details</div>'+
-              '<table style="width:100%;border-collapse:collapse;font-size:14px">'+_detailRows+'</table>'+
-            '</div>'+
-            '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
-            '<p style="font-size:11px;color:#bbb;margin:16px 0 0;padding-top:12px;border-top:1px solid #eee">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals</p>'+
-            '</div>'+
-            '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
+    if(MESSAGING_URL && _targetEmail){
+      var _firstName=(_targetName||'').split(' ')[0]||'there';
+      if(_isDriver){
+        // ── Driver mode email — simple verify request ──────────────────────
+        fetch(MESSAGING_URL+'/send-email',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            to:_targetEmail,
+            subject:'ID Verification Required — Prestige Black Rentals',
+            html:'<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
+              '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
+                '<div style="font-size:40px;margin-bottom:10px">🔒</div>'+
+                '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">One Quick Step, '+esc(_firstName)+'</h1>'+
+                '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">Additional Authorized Driver Verification</p>'+
+              '</div>'+
+              '<div style="padding:28px">'+
+                '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">You\'ve been added as an additional authorized driver for a Prestige Black Rentals booking. We need to verify your ID — it only takes 60 seconds.</p>'+
+                '<div style="background:#f7f7f7;border-radius:10px;padding:16px;margin-bottom:20px">'+
+                  '<div style="font-size:13px;color:#555"><strong>Vehicle:</strong> '+esc(b?b.vehicle:'')+'</div>'+
+                  '<div style="font-size:13px;color:#555;margin-top:6px"><strong>Primary Renter:</strong> '+esc(b?b.name:'')+'</div>'+
+                  '<div style="font-size:13px;color:#555;margin-top:6px"><strong>Rental Dates:</strong> '+fmtDate(b?(b.pickupDate||b.date):'')+(b&&b.dropoffDate?' – '+fmtDate(b.dropoffDate):'')+'</div>'+
+                '</div>'+
+                '<div style="text-align:center;margin:24px 0"><a href="'+_vUrlHtml+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(99,91,255,.35)">Verify My ID →</a></div>'+
+                '<p style="font-size:12px;color:#666;margin:0 0 20px;word-break:break-all">Or copy this link: <a href="'+_vUrlHtml+'" style="color:#635bff">'+esc(_vUrl)+'</a></p>'+
+                '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+              '</div>'+
+              '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
             '</div>'
-        })
-      }).then(function(r){
-        if(r.ok){ showToast('Verification link emailed to '+b.email); logNotif('verification','ID Verification Link',b.email,_bookingId); }
-        else { showToast('Link created — could not email customer (check messaging worker)'); }
-        _afterEmailSent();
-      }).catch(function(){
-        showToast('Link created — email send failed');
-        _afterEmailSent();
-      });
+          })
+        }).then(function(r){
+          if(r.ok){ showToast('Verify link emailed to '+_targetEmail); logNotif('verification','Driver ID Verification Link',_targetEmail,_bookingId); }
+          else { showToast('Link created — could not email driver'); }
+          _afterEmailSent();
+        }).catch(function(){ showToast('Link created — email send failed'); _afterEmailSent(); });
+      } else {
+        // ── Primary customer email — full booking detail ────────────────────
+        var _rev=totalRevenue(b);
+        var _addons=[];
+        if(Number(b.photo))     _addons.push('Photoshoot ($'+b.photo+')');
+        if(Number(b.champagne)) _addons.push('Champagne ($'+b.champagne+')');
+        if(Number(b.decor))     _addons.push('Decor ($'+b.decor+')');
+        if(Number(b.bouquet))   _addons.push('Bouquet ($'+b.bouquet+')');
+        if(Number(b.delivery))  _addons.push('Delivery ($'+b.delivery+')');
+        if(Number(b.unlimited)) _addons.push('Unlimited Miles ($'+b.unlimited+'/day)');
+        if(Number(b.pet))       _addons.push('Pet Fee ($'+b.pet+')');
+        var _detailRows=
+          '<tr><td style="padding:6px 12px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
+          '<tr><td style="padding:6px 12px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+
+            (b.address?'<br><span style="color:#555;font-size:13px">📍 '+esc(b.address)+'</span>':'')+'</td></tr>'+
+          (b.dropoffDate?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
+          (b.dropoffAddress?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off Location</td><td style="padding:6px 0">📍 '+esc(b.dropoffAddress)+'</td></tr>':'')+
+          '<tr><td style="padding:6px 12px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?'Hourly':b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+          (_addons.length?'<tr><td style="padding:6px 12px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+_addons.join('<br>')+'</td></tr>':'')+
+          '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(_rev)+'</td></tr>'+
+          (Number(b.dateLock)?'<tr><td style="padding:6px 12px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
+        fetch(MESSAGING_URL+'/send-email',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            to:_targetEmail,
+            subject:'Action Required: Verify your ID — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')',
+            html:'<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
+              '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
+                '<div style="font-size:40px;margin-bottom:10px">🔒</div>'+
+                '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">One Quick Step, '+esc(_firstName)+'</h1>'+
+                '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">Your rental is almost ready</p>'+
+              '</div>'+
+              '<div style="padding:28px">'+
+              '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">To finalize your upcoming rental, we need to verify your ID — it takes less than 60 seconds.</p>'+
+              '<div style="text-align:center;margin:24px 0"><a href="'+_vUrlHtml+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(99,91,255,.35)">Verify My ID →</a></div>'+
+              '<p style="font-size:12px;color:#666;margin:0 0 20px;word-break:break-all">Or copy this link: <a href="'+_vUrlHtml+'" style="color:#635bff">'+esc(_vUrl)+'</a></p>'+
+              '<div style="background:#f7f7f7;border-radius:10px;padding:20px;margin:20px 0">'+
+                '<div style="font-size:11px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">Booking Details</div>'+
+                '<table style="width:100%;border-collapse:collapse;font-size:14px">'+_detailRows+'</table>'+
+              '</div>'+
+              '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+              '<p style="font-size:11px;color:#bbb;margin:16px 0 0;padding-top:12px;border-top:1px solid #eee">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals</p>'+
+              '</div>'+
+              '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
+              '</div>'
+          })
+        }).then(function(r){
+          if(r.ok){ showToast('Verification link emailed to '+_targetEmail); logNotif('verification','ID Verification Link',_targetEmail,_bookingId); }
+          else { showToast('Link created — could not email customer (check messaging worker)'); }
+          _afterEmailSent();
+        }).catch(function(){
+          showToast('Link created — email send failed');
+          _afterEmailSent();
+        });
+      }
     } else {
       // No email address on file — show button immediately
       showToast('Verification link created — polling for result…');
@@ -7801,8 +7855,9 @@ function sendStripeVerification(){
 // diagnose issues without opening DevTools.
 function checkVerifyNow(){
   if(!verifyId||!VERIFY_URL) return;
-  // Capture verifyId now — it could change if modal closes before fetches return
+  // Capture both IDs now — they could change if modal closes before fetches return
   var _checkBookingId = verifyId;
+  var _checkDriverIdx = (verifyDriverIdx !== null && verifyDriverIdx !== undefined) ? verifyDriverIdx : null;
 
   // ── Gather every session ID ever created for this booking ──────────────────
   var _allSids = [];
@@ -7818,6 +7873,11 @@ function checkVerifyNow(){
       _allSids.push(_cb.verify.stripeSessionId);
     if(Array.isArray(_cb.verify.stripeSessionIds))
       _cb.verify.stripeSessionIds.forEach(function(s){ if(s && _allSids.indexOf(s)===-1) _allSids.push(s); });
+  }
+  // 4. In driver mode also check the session stored on the driver object
+  if(_checkDriverIdx !== null && _cb && _cb.extraDrivers && _cb.extraDrivers[_checkDriverIdx]){
+    var _dSid=_cb.extraDrivers[_checkDriverIdx].stripeSessionId;
+    if(_dSid && _allSids.indexOf(_dSid)===-1) _allSids.push(_dSid);
   }
   // Sanity-filter: only real Stripe session IDs
   _allSids = _allSids.filter(function(s){ return s && typeof s==='string' && s.indexOf('vs_')===0; });
@@ -7864,7 +7924,7 @@ function checkVerifyNow(){
             typeof _lvr.document==='string'?'[STRING — nested expand missing]':'[OK — object]');
           console.log('[PB Verify] document:', JSON.stringify(_lvr.document||{}));
         }
-        applyStripeVerification(_verified, _checkBookingId);
+        applyStripeVerification(_verified, _checkBookingId, _checkDriverIdx);
       } else {
         var _anyProcessing=results.some(function(s){ return s.status==='processing'; });
         var _allCanceled=results.every(function(s){ return s.status==='canceled'||s.status==='error'; });
