@@ -2121,6 +2121,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <button class="btn btn-sm" id="vStripeBtn" onclick="sendStripeVerification()" style="border-color:#635bff;color:#635bff;white-space:nowrap">📤 Send Stripe Verification Link</button>
       <button class="btn btn-sm" id="vCheckBtn" onclick="checkVerifyNow()" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap">🔍 Check Status</button>
       <span id="vStripeStatus" style="font-size:12px;color:var(--muted)"></span>
+      <span id="vRiskBadge" style="display:none;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-left:4px"></span>
     </div>
     <div class="fgrid">
       <div class="fgroup">
@@ -5342,7 +5343,7 @@ function openBookingDetail(id){
 
     // Verification
     '<div class="fsec">Verification</div>'+
-    '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified':'🪪 Not verified')+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified':'🪪 Not verified')+(idOk&&v.idRisk?' <span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:6px;'+(v.idRisk==='high'?'background:rgba(239,68,68,.15);color:#ef4444':v.idRisk==='elevated'?'background:rgba(245,158,11,.15);color:#f59e0b':v.idRisk==='low'?'background:rgba(34,197,94,.15);color:#22c55e':'background:rgba(255,255,255,.08);color:rgba(255,255,255,.45)')+'">'+(v.idRisk==='high'?'🔴':v.idRisk==='elevated'?'🟡':v.idRisk==='low'?'🟢':'⚪')+' '+v.idRisk.charAt(0).toUpperCase()+v.idRisk.slice(1)+' Risk</span>':'')+'</span></div>'+
     (idOk&&v.idName?'<div class="detail-row"><span class="detail-label">ID Name</span><span class="detail-val">'+esc(v.idName)+'</span></div>':'')+
     (idOk&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+esc(v.idType)+(v.idNumber?' #'+esc(v.idNumber):'')+'</span></div>':'')+
     (b._maintConflictAck?'<div class="detail-row"><span class="detail-label" style="color:#f59e0b">⚠ Maint. Override</span><span class="detail-val" style="color:#f59e0b;font-size:11px">Saved despite maintenance conflict</span></div>':'')+
@@ -6721,6 +6722,34 @@ function saveCloseOut(){
 var verifyId = null;
 var verifyDriverIdx = null; // null = primary customer; number = extra driver index in b.extraDrivers
 
+function _riskBadgeHtml(level){
+  var lc=(level||'unknown').toLowerCase();
+  var map={
+    low:      {icon:'🟢',label:'Low Risk',      bg:'rgba(34,197,94,.15)',  color:'#22c55e'},
+    elevated: {icon:'🟡',label:'Elevated Risk', bg:'rgba(245,158,11,.15)', color:'#f59e0b'},
+    high:     {icon:'🔴',label:'High Risk',     bg:'rgba(239,68,68,.15)',  color:'#ef4444'},
+    unknown:  {icon:'⚪',label:'Unknown Risk',  bg:'rgba(255,255,255,.08)',color:'rgba(255,255,255,.45)'}
+  };
+  var c=map[lc]||map.unknown;
+  return c.icon+' Stripe Risk: <span style="color:'+c.color+'">'+c.label+'</span>';
+}
+function _showRiskBadge(level){
+  var el=$d('vRiskBadge'); if(!el) return;
+  if(!level){el.style.display='none';el.innerHTML='';return;}
+  var lc=(level||'unknown').toLowerCase();
+  var map={
+    low:      {bg:'rgba(34,197,94,.15)',  outline:'rgba(34,197,94,.4)'},
+    elevated: {bg:'rgba(245,158,11,.15)', outline:'rgba(245,158,11,.4)'},
+    high:     {bg:'rgba(239,68,68,.15)',  outline:'rgba(239,68,68,.4)'},
+    unknown:  {bg:'rgba(255,255,255,.08)',outline:'rgba(255,255,255,.2)'}
+  };
+  var s=map[lc]||map.unknown;
+  el.style.display='inline';
+  el.style.background=s.bg;
+  el.style.outline='1px solid '+s.outline;
+  el.innerHTML=_riskBadgeHtml(level);
+}
+
 function openVerify(id){
   var b = bookings.find(function(x){ return x.id===id; });
   if(!b) return;
@@ -6755,6 +6784,7 @@ function openVerify(id){
   $d('vInscanStatus').textContent = '';
   $d('vInscanStatus').style.color = '';
   $d('vStripeBtn').disabled = false;
+  _showRiskBadge(v.idRisk||null);
 
   // Resume a pending Stripe poll if one was started for this booking
   // (covers: owner closed the modal while waiting, or page was refreshed)
@@ -8024,6 +8054,10 @@ function applyStripeVerification(session, bookingId, driverIdx){
   var vo   = session.verified_outputs || {};
   var doc  = (session.last_verification_report && typeof session.last_verification_report === 'object' && session.last_verification_report.document) || {};
 
+  // Risk level — from session.risk_insights (top-level, no expand needed)
+  var _ri = (session.risk_insights && typeof session.risk_insights === 'object') ? session.risk_insights : {};
+  var _riskLevel = _ex.riskLevel || (_ri.selfie && _ri.selfie.decision) || _ri.decision || 'unknown';
+
   var extracted = { idVerified: true, verifiedAt: new Date().toISOString(), stripeSessionId: session.id||'' };
 
   // Name
@@ -8088,6 +8122,9 @@ function applyStripeVerification(session, bookingId, driverIdx){
     if(doc.type&&typeMap[doc.type]) extracted.idType=typeMap[doc.type];
   }
 
+  // Risk level
+  extracted.idRisk = _riskLevel;
+
   // ── 2. Populate form fields — only if the modal is currently open for this booking ──
   var _modalOpen = (verifyId === _bId && $d('verifyModal').classList.contains('open'));
   if(_modalOpen){
@@ -8098,6 +8135,7 @@ function applyStripeVerification(session, bookingId, driverIdx){
     if(extracted.idAddress) $d('vIdAddress').value = extracted.idAddress;
     if(extracted.idState)   $d('vIdState').value   = extracted.idState;
     if(extracted.idType)    $d('vIdType').value    = extracted.idType;
+    _showRiskBadge(_riskLevel);
     $d('vIdVerified').checked = true;
     var _stripeHasData=!!(extracted.idName||extracted.idNumber);
     if(_stripeHasData){
@@ -13477,6 +13515,7 @@ function afterCloudLoad(ok){
       if(_vd.idState)   $d('vIdState').value   = _vd.idState;
       if(_vd.idExpiry)  $d('vIdExpiry').value  = _vd.idExpiry;
       if(_vd.idAddress) $d('vIdAddress').value = _vd.idAddress;
+      _showRiskBadge(_vd.idRisk||null);
       $d('vIdVerified').checked = true;
       $d('vStripeStatus').textContent = '✅ ID verified — auto-filled from completed verification';
       $d('vStripeStatus').style.color = 'var(--green)';
