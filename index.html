@@ -10998,6 +10998,38 @@ function _buildBreakdownTable(bk){
   return '<table style="width:100%;border-collapse:collapse;font-size:11px;color:inherit"><tbody>'+rows+'</tbody></table>';
 }
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// Build the additional authorized drivers block for contracts / waivers.
+// Returns an empty string when no extra drivers have been added.
+function _buildAdditionalDriversHtml(bk){
+  if(!bk||!bk.extraDrivers||!bk.extraDrivers.length) return '';
+  var rows=bk.extraDrivers.map(function(d,i){
+    var verBadge=d.idVerified
+      ? '<span style="color:#166534;font-weight:700">✓ Verified</span>'
+      : '<span style="color:#92400e;font-weight:700">⚠ Pending</span>';
+    var idDetail='';
+    if(d.idVerified&&d.idName)  idDetail+='<br><span style="font-size:10px;color:#555">Name: '+esc(d.idName)+'</span>';
+    if(d.idVerified&&d.idType)  idDetail+='<br><span style="font-size:10px;color:#555">ID Type: '+esc(d.idType)+(d.idNumber?' &nbsp;#'+esc(d.idNumber):'')+'</span>';
+    if(d.idVerified&&d.idState) idDetail+='<br><span style="font-size:10px;color:#555">State: '+esc(d.idState)+'</span>';
+    if(d.idVerified&&d.idExpiry)idDetail+='<br><span style="font-size:10px;color:#555">Expires: '+fmtDate(d.idExpiry)+'</span>';
+    return '<tr style="border-bottom:1px solid #e5e7eb">'+
+      '<td style="padding:6px 10px 6px 0;font-size:11px;vertical-align:top">'+(i+1)+'</td>'+
+      '<td style="padding:6px 10px 6px 0;font-size:12px;font-weight:600;vertical-align:top">'+esc(d.name||'—')+(d.phone?'<br><span style="font-size:10px;color:#555">'+esc(d.phone)+'</span>':'')+'</td>'+
+      '<td style="padding:6px 10px 6px 0;font-size:11px;vertical-align:top">'+verBadge+idDetail+'</td>'+
+    '</tr>';
+  }).join('');
+  return '<div style="margin:24px 0 8px;page-break-inside:avoid">'+
+    '<div style="font-size:13px;font-weight:800;border-bottom:2px solid #111;padding-bottom:4px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Additional Authorized Drivers</div>'+
+    '<p style="font-size:11px;color:#555;margin:0 0 10px">The following individuals are authorized to operate the vehicle under this agreement and are subject to the same terms and conditions as the primary renter.</p>'+
+    '<table style="width:100%;border-collapse:collapse;font-size:11px;color:#111">'+
+      '<thead><tr style="border-bottom:1.5px solid #111">'+
+        '<th style="padding:4px 10px 4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">#</th>'+
+        '<th style="padding:4px 10px 4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">Name / Phone</th>'+
+        '<th style="padding:4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">ID Verification</th>'+
+      '</tr></thead>'+
+      '<tbody>'+rows+'</tbody>'+
+    '</table>'+
+  '</div>';
+}
 
 function _renderContractContent(){
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
@@ -11160,7 +11192,18 @@ function _renderContractContent(){
     .replace(/\{\{mileage_policy\}\}/gi,     sr(_cIsUnlim?'Mileage: This rental includes unlimited mileage at no additional per-mile charge.':'Mileage: This rental includes '+_cPerDay.toLocaleString()+' miles per day ('+tripTotalMiles+' for this rental). Miles driven beyond the included amount will be charged at $'+_cOverage+' per mile.'))
     .replace(/\{\{fuel_policy\}\}/gi,        'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
     .replace(/\{\{breakdown_table\}\}/gi,    sr(_buildBreakdownTable(b)))
-    .replace(/\{\{remaining_balance\}\}/gi,  sr('$'+_bd.balanceDue.toFixed(2)));
+    .replace(/\{\{remaining_balance\}\}/gi,  sr('$'+_bd.balanceDue.toFixed(2)))
+    .replace(/\{\{additional_drivers\}\}/gi, sr(_buildAdditionalDriversHtml(b)));
+  // Auto-inject additional drivers section before </body> when template has no token but drivers exist
+  var _adrHtml=_buildAdditionalDriversHtml(b);
+  if(_adrHtml && !/\{\{additional_drivers\}\}/i.test(activeTemplate)){
+    var _bodyClose2=filled.indexOf('</body>');
+    if(_bodyClose2!==-1){
+      filled=filled.slice(0,_bodyClose2)+_adrHtml+'\n'+filled.slice(_bodyClose2);
+    } else {
+      filled+=_adrHtml;
+    }
+  }
   $d('contractFilled').value=filled;
   var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
   var frame=$d('contractPreviewFrame');
@@ -11796,6 +11839,7 @@ function _initSigningMode(bookingId){
     var _sMilagePol=_sIsUnlim?'Mileage: This rental includes unlimited mileage at no additional per-mile charge.':'Mileage: This rental includes '+_sPerDay.toLocaleString()+' miles per day ('+_sTripMiles+' for this rental). Miles driven beyond the included amount will be charged at $'+_sOvRate+' per mile.';
     var _sBdTable=_buildBreakdownTable(bk);
     function _sr(v){return function(){return v;};}
+    var _origSigningTmpl=tmpl; // save pre-substitution so auto-inject check works correctly
     tmpl=tmpl.replace(/\{\{today\}\}/gi,tStr)
       .replace(/\{\{customer_name\}\}/gi,_sr(esc(bk.name||'')))
       .replace(/\{\{customer_email\}\}/gi,_sr(esc(bk.email||'')))
@@ -11865,9 +11909,21 @@ function _initSigningMode(bookingId){
       .replace(/\{\{mileage_policy\}\}/gi,_sr(_sMilagePol))
       .replace(/\{\{fuel_policy\}\}/gi,'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
       .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-(Number(bk.brokerFee)||0)*_sbd.days).toFixed(2)))
+      .replace(/\{\{additional_drivers\}\}/gi,_sr(_buildAdditionalDriversHtml(bk)))
       .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
       .replace(/\{\{customer_signature\}\}/gi,'<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>')
       .replace(/\{\{customer_signed_date\}\}/gi,'<span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>');
+    // Auto-inject additional drivers section before </body> when template has no token but drivers exist.
+    // Check _origSigningTmpl (pre-substitution) — by now {{additional_drivers}} has already been replaced in tmpl.
+    var _sadrHtml=_buildAdditionalDriversHtml(bk);
+    if(_sadrHtml && !/\{\{additional_drivers\}\}/i.test(_origSigningTmpl)){
+      var _sbClose=tmpl.indexOf('</body>');
+      if(_sbClose!==-1){
+        tmpl=tmpl.slice(0,_sbClose)+_sadrHtml+'\n'+tmpl.slice(_sbClose);
+      } else {
+        tmpl+=_sadrHtml;
+      }
+    }
     var isHtml = tmpl.trim().toLowerCase().startsWith('<!doctype')||tmpl.trim().startsWith('<html');
     body.innerHTML =
       '<div id="smContractWrap" style="border:1px solid rgba(255,255,255,.1);border-radius:12px;overflow:hidden;margin-bottom:20px;background:#fff">'+
