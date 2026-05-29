@@ -12433,10 +12433,10 @@ function _portalRender(body,bookingId,bk){
               '<button onclick="pAdjDays(1)" style="width:42px;height:42px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.8);font-size:24px;cursor:pointer;line-height:1;display:flex;align-items:center;justify-content:center">+</button>'+
             '</div>'+
             '<div id="pDaysSummary" style="text-align:center;background:rgba(99,91,255,.1);border-radius:8px;padding:10px;font-size:13px;color:rgba(255,255,255,.6);margin-bottom:12px">'+
-              '1 day × '+pFmt(dailyRate)+' = <strong style="color:#a78bfa;font-size:15px">'+pFmt(dailyRate)+'</strong>'+
+              _pDaysSummaryHtml(bk,1,dailyRate)+
             '</div>'+
             '<div style="font-size:12px;color:rgba(255,255,255,.28);margin-bottom:12px;text-align:center">Payment instructions shown after confirming</div>'+
-            '<button onclick="pSaveDays(\''+bookingId+'\','+dailyRate+')" id="pDaysSaveBtn" style="width:100%;padding:13px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">Confirm Extension →</button>'+
+            (function(){var _a0=_pCheckAvailability(bk,1);return '<button onclick="pSaveDays(\''+bookingId+'\','+dailyRate+')" id="pDaysSaveBtn" style="width:100%;padding:13px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer'+(_a0.available?'':';opacity:.4')+';"'+(_a0.available?'':' disabled')+'>'+(_a0.available?'Confirm Extension →':'Not Available')+'</button>';}())+
             '<div id="pDaysMsg" style="margin-top:8px;font-size:12px;color:rgba(255,255,255,.4);text-align:center"></div>'+
           '</div>'+
         '</div>':'')+ // end add days
@@ -12575,16 +12575,19 @@ function pAdjDays(delta){
   _pExtraDays=Math.max(1,(_pExtraDays||1)+delta);
   var numEl=document.getElementById('pDaysNum');
   var sumEl=document.getElementById('pDaysSummary');
+  var saveBtn=document.getElementById('pDaysSaveBtn');
   if(numEl) numEl.textContent=_pExtraDays;
-  // recalc price label
   if(sumEl&&_pAllData){
     var bk=(_pAllData.bookings||[]).find(function(x){return x.id===_pBookingId;});
-    var rev=bk?Number(bk.revenue)||0:0;
-    var days=bk?Math.max(1,Number(bk.days)||1):1;
-    var rate=days>0?Math.round(rev/days):0;
-    var total=rate*_pExtraDays;
-    var plural=_pExtraDays===1?'day':'days';
-    sumEl.innerHTML=_pExtraDays+' '+plural+' × '+pFmt(rate)+' = <strong style="color:#a78bfa;font-size:15px">'+pFmt(total)+'</strong>';
+    var t=bk?_pCalcTotals(bk):{rev:0,days:1};
+    var rate=(t.days>0)?Math.round(t.rev/t.days):0;
+    var avail=_pCheckAvailability(bk,_pExtraDays);
+    sumEl.innerHTML=_pDaysSummaryHtml(bk,_pExtraDays,rate);
+    if(saveBtn){
+      saveBtn.disabled=!avail.available;
+      saveBtn.style.opacity=avail.available?'1':'0.4';
+      saveBtn.textContent=avail.available?'Confirm Extension →':'Not Available';
+    }
   }
 }
 
@@ -12627,6 +12630,65 @@ function pToggleExtra(key){
   }
 }
 
+// ─ Availability helpers ─
+
+// Returns 'YYYY-MM-DD' string for bk.dropoffDate + extraDays days
+function _pNewDropoffStr(bk, extraDays){
+  if(!bk||!bk.dropoffDate) return null;
+  var d=parseLocalDate(bk.dropoffDate);
+  if(!d||isNaN(d.getTime())) return null;
+  d.setDate(d.getDate()+(extraDays||0));
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+}
+
+// Returns {available:bool, newDropoff:'YYYY-MM-DD'|null, conflict:booking|null}
+function _pCheckAvailability(bk, extraDays){
+  var newDropoff=_pNewDropoffStr(bk,extraDays);
+  if(!_pAllData||!bk||!bk.dropoffDate||!newDropoff) return {available:true,newDropoff:newDropoff,conflict:null};
+  var curDropMs=parseLocalDate(bk.dropoffDate).getTime();
+  var newDropMs=parseLocalDate(newDropoff).getTime();
+  var conflict=null;
+  (_pAllData.bookings||[]).some(function(other){
+    if(other.id===bk.id||other._deleted||other.status==='cancelled') return false;
+    if((other.vehicle||'').toLowerCase().trim()!==(bk.vehicle||'').toLowerCase().trim()) return false;
+    var oPickup=parseLocalDate(other.pickupDate||other.date);
+    if(!oPickup||isNaN(oPickup.getTime())) return false;
+    var oPickMs=oPickup.getTime();
+    var oDropMs;
+    if(other.dropoffDate){
+      var od=parseLocalDate(other.dropoffDate);
+      oDropMs=(od&&!isNaN(od.getTime()))?od.getTime():oPickMs+86400000*Math.max(1,Number(other.days)||1);
+    } else {
+      oDropMs=oPickMs+86400000*Math.max(1,Number(other.days)||1);
+    }
+    // Extension window [curDropoff … newDropoff] overlaps [otherPickup … otherDropoff]?
+    if(oPickMs<newDropMs&&oDropMs>curDropMs){conflict=other;return true;}
+    return false;
+  });
+  return {available:!conflict,newDropoff:newDropoff,conflict:conflict};
+}
+
+// Returns the inner HTML for the days-summary box
+function _pDaysSummaryHtml(bk, extraDays, dailyRate){
+  var plural=extraDays===1?'day':'days';
+  var total=dailyRate*extraDays;
+  var avail=_pCheckAvailability(bk,extraDays);
+  var html=extraDays+' '+plural+' × '+pFmt(dailyRate)+
+    ' = <strong style="color:#a78bfa;font-size:15px">'+pFmt(total)+'</strong>';
+  if(avail.newDropoff){
+    html+='<div style="margin-top:7px;font-size:12px">';
+    if(avail.available){
+      html+='<span style="color:#22c55e;font-weight:700">✅ Available</span>'
+          +' · New return: <strong style="color:rgba(255,255,255,.85)">'+fmtDateFull(avail.newDropoff)+'</strong>';
+    } else {
+      html+='<span style="color:#f87171;font-weight:700">❌ Not available</span>'
+          +' <span style="color:rgba(255,255,255,.35)">— vehicle has another booking over those dates</span>';
+    }
+    html+='</div>';
+  }
+  return html;
+}
+
 // ─ Shared Firebase patch helper ─
 function _pSavePatch(patchFn,onSuccess,onError){
   // Always re-fetch to avoid overwriting concurrent changes
@@ -12654,19 +12716,30 @@ function _pSavePatch(patchFn,onSuccess,onError){
 // ─ Save extra days ─
 function pSaveDays(bookingId,dailyRate){
   var extra=_pExtraDays||1;
-  if(extra<1){return;}
+  if(extra<1) return;
+  // Pre-check availability with current cached data before hitting the server
+  var _preCheckBk=_pAllData?(_pAllData.bookings||[]).find(function(x){return x.id===bookingId;}):null;
+  if(_preCheckBk){
+    var _preAvail=_pCheckAvailability(_preCheckBk,extra);
+    if(!_preAvail.available){
+      var _preMsg=document.getElementById('pDaysMsg');
+      if(_preMsg){_preMsg.style.color='#f87171';_preMsg.textContent='Those dates are no longer available — please choose fewer days.';}
+      return;
+    }
+  }
   var btn=document.getElementById('pDaysSaveBtn');
   var msg=document.getElementById('pDaysMsg');
   if(btn){btn.disabled=true;btn.textContent='Saving…';}
   if(msg){msg.textContent='';}
   _pSavePatch(
     function(bk){
-      var oldDays=Math.max(1,Number(bk.days)||1);
-      var newDays=oldDays+extra;
+      // Final server-side availability check against freshly-loaded data
+      var freshAvail=_pCheckAvailability(bk,extra);
+      if(!freshAvail.available) return null; // _pSavePatch calls onError('No changes to save.')
       var addedCost=extra*dailyRate;
-      bk.days=newDays;
+      bk.days=Math.max(1,Number(bk.days)||1)+extra;
       bk.revenue=(Number(bk.revenue)||0)+addedCost;
-      // extend dropoff date if set
+      // Extend dropoff date
       if(bk.dropoffDate){
         var d=parseLocalDate(bk.dropoffDate);
         if(d&&!isNaN(d.getTime())){
@@ -12674,7 +12747,6 @@ function pSaveDays(bookingId,dailyRate){
           bk.dropoffDate=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
         }
       }
-      // bump remaining balance
       if(bk.remainingBalance!=null){
         bk.remainingBalance=Math.max(0,(Number(bk.remainingBalance)||0)+addedCost);
       }
@@ -12685,20 +12757,63 @@ function pSaveDays(bookingId,dailyRate){
     function(updatedBk){
       var addedCost=extra*dailyRate;
       var plural=extra===1?'day':'days';
-      // Show Zelle payment instructions
       var zelleHtml=
         '<div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:10px;padding:16px;margin-top:4px">'+
           '<div style="font-size:15px;font-weight:800;color:#22c55e;margin-bottom:8px">✅ '+extra+' '+plural+' added!</div>'+
-          '<div style="font-size:13px;color:rgba(255,255,255,.6);margin-bottom:14px">New rental: <strong style="color:rgba(255,255,255,.85)">'+updatedBk.days+' days</strong>'+
-            (updatedBk.dropoffDate?' through <strong>'+fmtDateFull(updatedBk.dropoffDate)+'</strong>':'')+
+          '<div style="font-size:13px;color:rgba(255,255,255,.6);margin-bottom:14px">New rental period: <strong style="color:rgba(255,255,255,.85)">'+updatedBk.days+' days</strong>'+
+            (updatedBk.dropoffDate?' · returns <strong>'+fmtDateFull(updatedBk.dropoffDate)+'</strong>':'')+
           '</div>'+
           '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:rgba(255,255,255,.3);margin-bottom:10px">Please pay via Zelle</div>'+
           '<div style="font-size:22px;font-weight:800;color:#fb923c;margin-bottom:12px">'+pFmt(addedCost)+'</div>'+
           '<div style="font-size:13px;color:rgba(255,255,255,.65);line-height:2">📱 <strong style="color:rgba(255,255,255,.85)">(214) 207-2481</strong><br>👤 <strong style="color:rgba(255,255,255,.85)">Edwin Watson</strong></div>'+
           '<div style="margin-top:10px;padding:7px 10px;background:rgba(255,255,255,.04);border-radius:7px;font-size:11px;color:rgba(255,255,255,.35)">Memo: PBR-'+updatedBk.id.slice(-6).toUpperCase()+'</div>'+
+          '<div style="margin-top:14px;padding:11px 14px;background:rgba(99,91,255,.1);border:1px solid rgba(99,91,255,.2);border-radius:8px;font-size:12px;color:rgba(255,255,255,.55)">'+
+            '✍️ An updated rental agreement with your new return date has been sent to your email to sign.'+
+          '</div>'+
         '</div>';
       var daysBody=document.getElementById('pDaysBody');
       if(daysBody) daysBody.innerHTML=zelleHtml;
+      // Auto-send updated contract signing link to primary driver
+      var _msgUrl=((_pAllData&&_pAllData.messaging_url)||_PORTAL_WORKER).replace(/\/$/,'');
+      if(updatedBk.email&&_msgUrl){
+        var _firstName=(updatedBk.name||'').split(' ')[0]||'there';
+        var _docType=updatedBk.vehicle==='Polaris Slingshot'&&updatedBk.type==='hourly'?'Liability Waiver':'Rental Agreement';
+        var _newReturn=updatedBk.dropoffDate?fmtDateFull(updatedBk.dropoffDate):'';
+        var _sigUrl=location.origin+location.pathname+'?sign='+encodeURIComponent(updatedBk.id);
+        var _emailHtml=
+          '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
+          '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
+            '<div style="font-size:40px;margin-bottom:10px">📅</div>'+
+            '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">Rental Extended, '+esc(_firstName)+'!</h1>'+
+            '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">'+esc(updatedBk.vehicle)+(_newReturn?' · Now returns '+esc(_newReturn):'')+' </p>'+
+          '</div>'+
+          '<div style="padding:28px">'+
+          '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">Your rental has been extended by <strong>'+extra+' '+plural+'</strong>. Please sign the updated '+esc(_docType)+' which reflects your new return date.</p>'+
+          '<div style="background:#f7f7f7;border-radius:10px;padding:16px;margin-bottom:20px;font-size:14px">'+
+            '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee">'+
+              '<span style="color:#555">Vehicle</span><span style="font-weight:600">'+esc(updatedBk.vehicle||'')+'</span>'+
+            '</div>'+
+            '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee">'+
+              '<span style="color:#555">Pickup</span><span style="font-weight:600">'+fmtDate(updatedBk.pickupDate||updatedBk.date)+'</span>'+
+            '</div>'+
+            (_newReturn?'<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee">'+
+              '<span style="color:#555">New Return</span><span style="font-weight:600;color:#635bff">'+esc(_newReturn)+'</span>'+
+            '</div>':'')+
+            '<div style="display:flex;justify-content:space-between;padding:6px 0">'+
+              '<span style="color:#555">Extension Charge</span><span style="font-weight:600;color:#f97316">'+pFmt(addedCost)+'</span>'+
+            '</div>'+
+          '</div>'+
+          '<div style="text-align:center;margin:20px 0">'+
+            '<a href="'+_sigUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">✍️ Sign Updated '+esc(_docType)+'</a>'+
+          '</div>'+
+          '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+          '</div>'+
+          '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
+          '</div>';
+        fetch(_msgUrl+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({to:updatedBk.email,subject:'Your Rental Has Been Extended — Please Sign Updated '+_docType,html:_emailHtml})
+        }).catch(function(){});
+      }
     },
     function(err){
       if(btn){btn.disabled=false;btn.textContent='Confirm Extension →';}
