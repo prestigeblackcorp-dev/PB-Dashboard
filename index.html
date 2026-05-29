@@ -11333,8 +11333,12 @@ function openContract(id){
     var _openedId=id;
     cloudLoad(function(ok){
       if(ok&&_contractBookingId===_openedId&&$d('contractModal').classList.contains('open')){
-        _renderContractContent();
-        setTimeout(initCustSigCanvas, 50);
+        _renderContractContent(); // refreshes iframe + all signer badges
+        // Only re-init signature lock view when primary has signed — don't reset canvas mid-draw
+        var _bkFresh=bookings.find(function(x){return x.id===_openedId;});
+        if(_bkFresh&&_bkFresh.customerSig&&_bkFresh.customerSig.startsWith('data:image/')){
+          setTimeout(initCustSigCanvas, 50);
+        }
       }
     });
   }
@@ -11880,7 +11884,10 @@ function _initSigningMode(bookingId, driverIdx){
   .then(function(r){return r.ok?r.json():null;})
   .then(function(data){
     if(!data||!data.bookings){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load booking. Please contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
-    var bk = (data.bookings||[]).find(function(x){return x.id===bookingId&&!x._deleted;});
+    // Normalize: Firebase sometimes returns bookings as a keyed object instead of array
+    var _bkArr=Array.isArray(data.bookings)?data.bookings:Object.values(data.bookings).filter(Boolean);
+    data.bookings=_bkArr; // normalize in place so window._smData gets the array form
+    var bk = _bkArr.find(function(x){return x.id===bookingId&&!x._deleted;});
     if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired or been revoked.</div>'; return; }
 
     // ── Already-signed check (primary or specific driver) ─────────────────
@@ -12125,6 +12132,10 @@ function _smSubmitSig(bookingId, driverIdx){
   .then(function(freshData){
     // Fall back to page-load snapshot only if fresh fetch failed
     var data=(freshData&&freshData.bookings)?freshData:window._smData;
+    // Normalize: Firebase may return bookings as a keyed object instead of array
+    if(data&&data.bookings&&!Array.isArray(data.bookings)){
+      data=Object.assign({},data,{bookings:Object.values(data.bookings).filter(Boolean)});
+    }
     var allBookings=data?(data.bookings||[]):(window._smBookings||[]);
     if(!data||!allBookings.length){ _showSaveErr('Error loading data — please refresh.'); return; }
     var idx=allBookings.findIndex(function(x){return x.id===bookingId;});
@@ -13442,8 +13453,13 @@ function afterCloudLoad(ok){
   if(activeTab==='brokers')   renderBrokerTab();
   // If contract modal is open, refresh it so newly-received signatures appear immediately
   if(_contractBookingId&&$d('contractModal')&&$d('contractModal').classList.contains('open')){
-    _renderContractContent();
-    setTimeout(initCustSigCanvas,50);
+    _renderContractContent(); // refreshes iframe + all header signer badges (primary + drivers)
+    // Only re-init the signature section when the primary customer has signed —
+    // avoids resetting the drawing canvas if the owner is mid-stroke
+    var _cbk=bookings.find(function(x){return x.id===_contractBookingId;});
+    if(_cbk&&_cbk.customerSig&&_cbk.customerSig.startsWith('data:image/')){
+      setTimeout(initCustSigCanvas,50);
+    }
   }
 
   // ── Auto-populate verify modal if a webhook/scheduler just verified a booking ──
