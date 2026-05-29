@@ -11000,7 +11000,9 @@ function _buildBreakdownTable(bk){
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Build the additional authorized drivers block for contracts / waivers.
 // Returns an empty string when no extra drivers have been added.
-function _buildAdditionalDriversHtml(bk){
+// showSigs=true adds a Signature column (actual sig image or blank line).
+// Used in contract/waiver rendering so all parties' signatures appear in the doc.
+function _buildAdditionalDriversHtml(bk, showSigs){
   if(!bk||!bk.extraDrivers||!bk.extraDrivers.length) return '';
   var rows=bk.extraDrivers.map(function(d,i){
     var verBadge=d.idVerified
@@ -11011,12 +11013,24 @@ function _buildAdditionalDriversHtml(bk){
     if(d.idVerified&&d.idType)  idDetail+='<br><span style="font-size:10px;color:#555">ID Type: '+esc(d.idType)+(d.idNumber?' &nbsp;#'+esc(d.idNumber):'')+'</span>';
     if(d.idVerified&&d.idState) idDetail+='<br><span style="font-size:10px;color:#555">State: '+esc(d.idState)+'</span>';
     if(d.idVerified&&d.idExpiry)idDetail+='<br><span style="font-size:10px;color:#555">Expires: '+fmtDate(d.idExpiry)+'</span>';
+    var sigCell='';
+    if(showSigs){
+      sigCell='<td style="padding:6px 0;font-size:11px;vertical-align:bottom;width:180px">'+
+        (d.sig&&d.sig.startsWith('data:image/')
+          ? '<img src="'+d.sig+'" style="max-height:46px;max-width:160px;display:block;margin-bottom:2px">'+
+            '<div style="font-size:9px;color:#888;border-top:1px solid #999;padding-top:2px">'+esc(d.name||'')+(d.sigDate?' · '+esc(d.sigDate):'')+'</div>'
+          : '<div style="border-bottom:1.5px solid #888;height:46px;margin-bottom:2px"></div>'+
+            '<div style="font-size:9px;color:#888;padding-top:2px">Printed Name: '+esc(d.name||'')+'</div>')+
+      '</td>';
+    }
     return '<tr style="border-bottom:1px solid #e5e7eb">'+
       '<td style="padding:6px 10px 6px 0;font-size:11px;vertical-align:top">'+(i+1)+'</td>'+
       '<td style="padding:6px 10px 6px 0;font-size:12px;font-weight:600;vertical-align:top">'+esc(d.name||'—')+(d.phone?'<br><span style="font-size:10px;color:#555">'+esc(d.phone)+'</span>':'')+'</td>'+
       '<td style="padding:6px 10px 6px 0;font-size:11px;vertical-align:top">'+verBadge+idDetail+'</td>'+
+      sigCell+
     '</tr>';
   }).join('');
+  var sigHeader=showSigs?'<th style="padding:4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">Signature</th>':'';
   return '<div style="margin:24px 0 8px;page-break-inside:avoid">'+
     '<div style="font-size:13px;font-weight:800;border-bottom:2px solid #111;padding-bottom:4px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Additional Authorized Drivers</div>'+
     '<p style="font-size:11px;color:#555;margin:0 0 10px">The following individuals are authorized to operate the vehicle under this agreement and are subject to the same terms and conditions as the primary renter.</p>'+
@@ -11024,7 +11038,8 @@ function _buildAdditionalDriversHtml(bk){
       '<thead><tr style="border-bottom:1.5px solid #111">'+
         '<th style="padding:4px 10px 4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">#</th>'+
         '<th style="padding:4px 10px 4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">Name / Phone</th>'+
-        '<th style="padding:4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">ID Verification</th>'+
+        '<th style="padding:4px 10px 4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em">ID Verification</th>'+
+        sigHeader+
       '</tr></thead>'+
       '<tbody>'+rows+'</tbody>'+
     '</table>'+
@@ -11193,9 +11208,9 @@ function _renderContractContent(){
     .replace(/\{\{fuel_policy\}\}/gi,        'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
     .replace(/\{\{breakdown_table\}\}/gi,    sr(_buildBreakdownTable(b)))
     .replace(/\{\{remaining_balance\}\}/gi,  sr('$'+_bd.balanceDue.toFixed(2)))
-    .replace(/\{\{additional_drivers\}\}/gi, sr(_buildAdditionalDriversHtml(b)));
+    .replace(/\{\{additional_drivers\}\}/gi, sr(_buildAdditionalDriversHtml(b, true)));
   // Auto-inject additional drivers section before </body> when template has no token but drivers exist
-  var _adrHtml=_buildAdditionalDriversHtml(b);
+  var _adrHtml=_buildAdditionalDriversHtml(b, true);
   if(_adrHtml && !/\{\{additional_drivers\}\}/i.test(activeTemplate)){
     var _bodyClose2=filled.indexOf('</body>');
     if(_bodyClose2!==-1){
@@ -11221,12 +11236,26 @@ function _renderContractContent(){
     frame.style.display='none'; $d('contractFilled').style.display=''; rawToggle.style.display='none';
   }
   var rev2=totalRevenue(b);
+  // Build per-party signature badges
+  var _primarySigned = (b.customerSig&&b.customerSig.startsWith('data:image/'));
+  var _sigBadges =
+    '<span title="Primary Customer" style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:11px;font-weight:700;'+(_primarySigned?'background:rgba(34,197,94,.15);color:#22c55e;':'background:rgba(255,255,255,.07);color:var(--muted);')+'">'+
+    (_primarySigned?'✅':'⏳')+' '+esc((b.name||'Customer').split(' ')[0])+'</span>';
+  if(b.extraDrivers&&b.extraDrivers.length){
+    b.extraDrivers.forEach(function(d,i){
+      var _dSigned=(d&&d.sig&&d.sig.startsWith('data:image/'));
+      _sigBadges+=
+        '<span title="Driver '+(i+1)+': '+esc(d&&d.name?d.name:'?')+'" style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:11px;font-weight:700;'+(_dSigned?'background:rgba(34,197,94,.15);color:#22c55e;':'background:rgba(255,255,255,.07);color:var(--muted);')+'">'+
+        (_dSigned?'✅':'⏳')+' '+(d&&d.name?(d.name.split(' ')[0]):'Driver '+(i+1))+'</span>';
+    });
+  }
   $d('contractHeader').innerHTML=
-    '<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">'+
+    '<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:13px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'+
     '<strong>'+esc(b.vehicle)+'</strong> <span>'+esc(b.name)+'</span>'+
     (b.email?'<span style="color:var(--muted)">✉ '+esc(b.email)+'</span>':'')+
     '<span style="color:var(--gold)">'+$$(rev2)+'</span>'+
     '<span style="color:var(--muted)">'+fmtDate(b.pickupDate||b.date)+'</span>'+
+    '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+_sigBadges+'</span>'+
     '</div>';
   var emailAddr=b.email||'';
   var docType=_contractIsWaiver?'Liability Waiver':'Rental Agreement';
@@ -11246,9 +11275,11 @@ function _renderContractContent(){
       window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(plainBody);
     }
   };
-  // Show "Send Signed Copy" button only when a signature is on file
+  // Show "Send Signed Copy" button when any party has signed
   var ssb=$d('contractSendSignedBtn');
-  if(ssb) ssb.style.display=(b.customerSig&&b.customerSig.startsWith('data:image/'))?'':'none';
+  var _anySigned=(b.customerSig&&b.customerSig.startsWith('data:image/'))||
+    (b.extraDrivers&&b.extraDrivers.some(function(d){return d&&d.sig&&d.sig.startsWith('data:image/');}));
+  if(ssb) ssb.style.display=_anySigned?'':'none';
 }
 
 function openContract(id){
@@ -11665,10 +11696,8 @@ function sendContractSigningLink(){
   var b = bookings.find(function(x){return x.id===_contractBookingId;});
   if(!b){ toast('Booking not found'); return; }
   var base = location.origin + location.pathname;
-  var url = base + '?sign=' + encodeURIComponent(_contractBookingId);
+  var primaryUrl = base + '?sign=' + encodeURIComponent(_contractBookingId);
   // Persist the selected Slingshot color to Firebase BEFORE sending the link.
-  // The signing page reads contractSentColor from the booking to render the correct
-  // vehicle color, VIN, and model — without this, it always defaults to Green.
   if(b.vehicle==='Polaris Slingshot'){
     var _sidx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
     if(_sidx!==-1 && bookings[_sidx].contractSentColor!==_slingshotColor){
@@ -11678,34 +11707,73 @@ function sendContractSigningLink(){
     }
   }
   var sl = $d('sigLinkStatus');
-  // Try to email the link if we have email + messaging worker
-  if(b.email && MESSAGING_URL){
-    var firstName = (b.name||'').split(' ')[0]||'there';
-    var docType = (b.vehicle==='Polaris Slingshot'&&b.type==='hourly') ? 'Liability Waiver' : 'Rental Agreement';
-    var html =
+  var docType = (b.vehicle==='Polaris Slingshot'&&b.type==='hourly') ? 'Liability Waiver' : 'Rental Agreement';
+
+  // Build list of all recipients: primary customer + extra drivers with email
+  var _recipients = [];
+  if(b.email) _recipients.push({name:b.name||'there',email:b.email,url:primaryUrl,driverIdx:null});
+  if(b.extraDrivers&&b.extraDrivers.length){
+    b.extraDrivers.forEach(function(d,i){
+      if(d&&d.email){
+        _recipients.push({name:d.name||'Additional Driver',email:d.email,url:primaryUrl+'&driver='+i,driverIdx:i});
+      }
+    });
+  }
+
+  if(!_recipients.length){
+    // No emails at all — copy primary link to clipboard
+    _fallbackCopySigLink(primaryUrl, sl);
+    return;
+  }
+
+  if(!MESSAGING_URL){
+    // No messaging worker — copy primary link only
+    _fallbackCopySigLink(primaryUrl, sl);
+    return;
+  }
+
+  if(sl) sl.textContent = 'Sending…';
+  var _sent=0, _failed=0;
+
+  _recipients.forEach(function(rec){
+    var firstName=(rec.name||'there').split(' ')[0];
+    var roleLabel=rec.driverIdx!==null?'Additional Authorized Driver':'';
+    var html=
       '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
       '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
         '<div style="font-size:40px;margin-bottom:10px">✍️</div>'+
         '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">Ready to Sign, '+esc(firstName)+'!</h1>'+
-        '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">'+esc(docType)+' for '+esc(b.vehicle)+'</p>'+
+        '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">'+esc(docType)+' for '+esc(b.vehicle)+(roleLabel?' · <em>'+esc(roleLabel)+'</em>':'')+'</p>'+
       '</div>'+
       '<div style="padding:28px">'+
-      '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">Please review and sign your '+esc(docType.toLowerCase())+' for your upcoming <strong>'+esc(b.vehicle)+'</strong> rental.</p>'+
-      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">✍️ Sign My '+esc(docType)+'</a></div>'+
-      '<p style="font-size:13px;color:#666;margin:0 0 20px">This link is for your rental agreement only. If you didn\'t expect this email, you can ignore it.</p>'+
+      (rec.driverIdx!==null?
+        '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">You have been listed as an <strong>Additional Authorized Driver</strong> on this rental. Please review and sign the '+esc(docType.toLowerCase())+' for the <strong>'+esc(b.vehicle)+'</strong> rental.</p>':
+        '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">Please review and sign your '+esc(docType.toLowerCase())+' for your upcoming <strong>'+esc(b.vehicle)+'</strong> rental.</p>')+
+      '<div style="text-align:center;margin:24px 0"><a href="'+rec.url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">✍️ Sign My '+esc(docType)+'</a></div>'+
+      '<p style="font-size:13px;color:#666;margin:0 0 20px">This link is for you personally. Please do not share it — each driver must sign individually.</p>'+
       '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
       '</div>'+
       '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
       '</div>';
-    if(sl){ sl.textContent = 'Sending…'; }
-    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:'Please Sign Your '+docType+' — Prestige Black Rentals',html:html})})
+    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:rec.email,subject:'Please Sign Your '+docType+' — Prestige Black Rentals',html:html})})
     .then(function(r){
-      if(r.ok){ toast('Signing link emailed to '+b.email+' ✅'); if(sl) sl.textContent='Sent to '+b.email; logNotif('signing','Contract Signing Link',b.email,b.id); }
-      else { _fallbackCopySigLink(url, sl); }
-    }).catch(function(){ _fallbackCopySigLink(url, sl); });
-  } else {
-    _fallbackCopySigLink(url, sl);
-  }
+      if(r.ok){
+        _sent++;
+        logNotif('signing', rec.driverIdx!==null?'Driver Signing Link (Driver '+(rec.driverIdx+1)+')':'Contract Signing Link', rec.email, b.id);
+        if(_sent===_recipients.length){
+          var _names=_recipients.map(function(rr){return (rr.name||'').split(' ')[0];}).join(', ');
+          toast('Signing link'+((_recipients.length>1)?'s':'')+' sent to '+_names+' ✅');
+          if(sl) sl.textContent='Sent to '+_recipients.map(function(rr){return rr.email;}).join(', ');
+        }
+      } else {
+        _failed++;
+        if(_failed===1) _fallbackCopySigLink(primaryUrl, sl);
+      }
+    }).catch(function(){
+      _failed++;
+      if(_failed===1) _fallbackCopySigLink(primaryUrl, sl);
+    });
+  });
 }
 
 function _fallbackCopySigLink(url, statusEl){
@@ -11771,7 +11839,11 @@ function _fallbackCopyPortalLink(url){
 // ════════════════════════════════════════════════════════
 //  SIGNING MODE — load on page init when ?sign= present
 // ════════════════════════════════════════════════════════
-function _initSigningMode(bookingId){
+// driverIdx: null = primary customer, number = extraDrivers[N]
+var _smSigningDriverIdx = null; // module-level so template substitution can read it
+
+function _initSigningMode(bookingId, driverIdx){
+  _smSigningDriverIdx = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx))) ? Number(driverIdx) : null;
   var wrap = $d('signingModeWrap');
   var body = $d('signingModeBody');
   if(!wrap||!body) return;
@@ -11787,11 +11859,21 @@ function _initSigningMode(bookingId){
     if(!data||!data.bookings){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load booking. Please contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
     var bk = (data.bookings||[]).find(function(x){return x.id===bookingId&&!x._deleted;});
     if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired or been revoked.</div>'; return; }
-    if(bk.customerSig&&bk.customerSig.startsWith('data:image/')){
+
+    // ── Already-signed check (primary or specific driver) ─────────────────
+    var _isDriverMode = (_smSigningDriverIdx !== null);
+    var _signer = _isDriverMode ? (bk.extraDrivers&&bk.extraDrivers[_smSigningDriverIdx]) : null;
+    var _signerName = _isDriverMode ? (_signer&&_signer.name)||'Additional Driver' : (bk.name||'').split(' ')[0]||'there';
+    var _alreadySig = _isDriverMode
+      ? (_signer&&_signer.sig&&_signer.sig.startsWith('data:image/'))
+      : (bk.customerSig&&bk.customerSig.startsWith('data:image/'));
+    var _alreadyDate = _isDriverMode ? (_signer&&_signer.sigDate) : bk.customerSigDate;
+
+    if(_alreadySig){
       body.innerHTML='<div style="text-align:center;padding:30px">'+
         '<div style="font-size:48px;margin-bottom:12px">✅</div>'+
         '<div style="font-size:18px;font-weight:700;color:#22c55e;margin-bottom:8px">Already Signed!</div>'+
-        '<div style="color:rgba(255,255,255,.5);font-size:14px">Your contract has been signed on '+(bk.customerSigDate||'file')+'. Thank you, '+esc((bk.name||'').split(' ')[0])+'!</div>'+
+        '<div style="color:rgba(255,255,255,.5);font-size:14px">Your contract has been signed on '+(_alreadyDate||'file')+'. Thank you, '+esc(_signerName)+'!</div>'+
         '<div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,.3)">Questions? Call us at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div></div>';
       return;
     }
@@ -11909,13 +11991,23 @@ function _initSigningMode(bookingId){
       .replace(/\{\{mileage_policy\}\}/gi,_sr(_sMilagePol))
       .replace(/\{\{fuel_policy\}\}/gi,'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
       .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-(Number(bk.brokerFee)||0)*_sbd.days).toFixed(2)))
-      .replace(/\{\{additional_drivers\}\}/gi,_sr(_buildAdditionalDriversHtml(bk)))
+      .replace(/\{\{additional_drivers\}\}/gi,_sr(_buildAdditionalDriversHtml(bk, true)))
       .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
-      .replace(/\{\{customer_signature\}\}/gi,'<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>')
-      .replace(/\{\{customer_signed_date\}\}/gi,'<span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>');
+      // customer_signature: primary signs → canvas placeholder; driver signs → primary's actual sig (or blank)
+      .replace(/\{\{customer_signature\}\}/gi,
+        (_smSigningDriverIdx===null)
+          ? '<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>'
+          : (bk.customerSig&&bk.customerSig.startsWith('data:image/')
+              ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block">'
+              : '_______________________________'))
+      // customer_signed_date: primary signs → placeholder; driver signs → actual date or blank
+      .replace(/\{\{customer_signed_date\}\}/gi,
+        (_smSigningDriverIdx===null)
+          ? '<span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>'
+          : (bk.customerSigDate||''));
     // Auto-inject additional drivers section before </body> when template has no token but drivers exist.
     // Check _origSigningTmpl (pre-substitution) — by now {{additional_drivers}} has already been replaced in tmpl.
-    var _sadrHtml=_buildAdditionalDriversHtml(bk);
+    var _sadrHtml=_buildAdditionalDriversHtml(bk, true);
     if(_sadrHtml && !/\{\{additional_drivers\}\}/i.test(_origSigningTmpl)){
       var _sbClose=tmpl.indexOf('</body>');
       if(_sbClose!==-1){
@@ -11932,11 +12024,14 @@ function _initSigningMode(bookingId){
       '</div>'+
       '<div id="smSignSection" style="background:rgba(201,169,98,.08);border:2px solid rgba(201,169,98,.4);border-radius:14px;padding:20px;margin-bottom:80px">'+
       '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">✍️ Sign Below</div>'+
+      (_smSigningDriverIdx!==null&&bk.extraDrivers&&bk.extraDrivers[_smSigningDriverIdx]
+        ? '<div style="font-size:12px;color:var(--gold);margin-bottom:6px;font-weight:700">Signing as: '+esc(bk.extraDrivers[_smSigningDriverIdx].name||'Additional Driver')+'</div>'
+        : '')+
       '<div style="font-size:12px;color:rgba(255,255,255,.45);margin-bottom:14px">Draw your signature in the white box, then tap <strong style="color:#fff">Sign &amp; Submit</strong>.</div>'+
       '<canvas id="smSigCanvas" width="480" height="130" style="width:100%;max-width:480px;height:130px;border:2px dashed rgba(201,169,98,.5);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>'+
       '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'+
       '<button onclick="_smClearSig()" style="padding:8px 16px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:transparent;color:rgba(255,255,255,.7);cursor:pointer;font-size:13px">✕ Clear</button>'+
-      '<button onclick="_smSubmitSig(\''+bookingId+'\')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">✍️ Sign & Submit</button>'+
+      '<button onclick="_smSubmitSig(\''+bookingId+'\','+((_smSigningDriverIdx!==null)?_smSigningDriverIdx:'null')+')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">✍️ Sign & Submit</button>'+
       '</div>'+
       '<div id="smSigMsg" style="font-size:12px;color:rgba(255,255,255,.4);margin-top:8px">By signing, you agree to the terms of the rental agreement above.</div>'+
       '</div>';
@@ -11979,7 +12074,9 @@ function _smClearSig(){
   c.getContext('2d').clearRect(0,0,c.width,c.height);
 }
 
-function _smSubmitSig(bookingId){
+function _smSubmitSig(bookingId, driverIdx){
+  var _isDriver = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx)));
+  var _dIdx = _isDriver ? Number(driverIdx) : null;
   var data = window._smData;
   var allBookings = window._smBookings;
   if(!data||!allBookings){ document.getElementById('smSigMsg').textContent='Error: data not loaded. Please refresh.'; return; }
@@ -11993,11 +12090,23 @@ function _smSubmitSig(bookingId){
   var t=new Date(); var sigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
   var idx=allBookings.findIndex(function(x){return x.id===bookingId;});
   if(idx===-1){ document.getElementById('smSigMsg').style.color='#f87171'; document.getElementById('smSigMsg').textContent='Booking not found. Please contact (214) 207-2481.'; return; }
-  allBookings[idx].customerSig=sig;
-  allBookings[idx].customerSigDate=sigDate;
-  allBookings[idx].customerSigVehicle=allBookings[idx].vehicle||'';
-  if(allBookings[idx].vehicle==='Polaris Slingshot'&&allBookings[idx].contractSentColor){
-    allBookings[idx].customerSigColor=allBookings[idx].contractSentColor;
+  var _signerName;
+  if(_isDriver){
+    // Save to the specific extra driver slot
+    var _drvs=(allBookings[idx].extraDrivers||[]).slice();
+    if(!_drvs[_dIdx]) _drvs[_dIdx]={};
+    _drvs[_dIdx]=Object.assign({},_drvs[_dIdx],{sig:sig,sigDate:sigDate});
+    allBookings[idx].extraDrivers=_drvs;
+    _signerName=(_drvs[_dIdx].name||'Driver').split(' ')[0];
+  } else {
+    // Primary customer
+    allBookings[idx].customerSig=sig;
+    allBookings[idx].customerSigDate=sigDate;
+    allBookings[idx].customerSigVehicle=allBookings[idx].vehicle||'';
+    if(allBookings[idx].vehicle==='Polaris Slingshot'&&allBookings[idx].contractSentColor){
+      allBookings[idx].customerSigColor=allBookings[idx].contractSentColor;
+    }
+    _signerName=(allBookings[idx].name||'').split(' ')[0]||'there';
   }
   allBookings[idx]._t=Date.now();
   var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
@@ -12010,7 +12119,7 @@ function _smSubmitSig(bookingId){
         '<div style="text-align:center;padding:40px">'+
         '<div style="font-size:60px;margin-bottom:16px">✅</div>'+
         '<div style="font-size:22px;font-weight:800;color:#22c55e;margin-bottom:10px">Signed Successfully!</div>'+
-        '<div style="color:rgba(255,255,255,.6);font-size:15px;margin-bottom:20px">Thank you, '+esc((allBookings[idx].name||'').split(' ')[0])+'! Your contract has been signed and recorded.</div>'+
+        '<div style="color:rgba(255,255,255,.6);font-size:15px;margin-bottom:20px">Thank you, '+esc(_signerName)+'! Your contract has been signed and recorded.</div>'+
         '<div style="background:rgba(255,255,255,.05);border-radius:10px;padding:16px;display:inline-block;text-align:left;min-width:220px">'+
         '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Your Signature</div>'+
         '<img src="'+sig+'" style="max-height:60px;max-width:240px;display:block;background:#fff;padding:6px;border-radius:6px">'+
@@ -13005,15 +13114,17 @@ setTimeout(stickyTabFix, 200);
   var sp = new URLSearchParams(location.search);
   var signId   = sp.get('sign');
   var portalId = sp.get('portal');
+  var _signDriverParam = sp.get('driver');
+  var _signDriverIdx = (_signDriverParam !== null && _signDriverParam !== '') ? parseInt(_signDriverParam) : null;
   if(signId||portalId){
     // Don't run the full dashboard init; just show the special view
     document.addEventListener('DOMContentLoaded', function(){
-      if(signId)   _initSigningMode(signId);
+      if(signId)   _initSigningMode(signId, _signDriverIdx);
       if(portalId) _initPortalMode(portalId);
     });
     // If DOM is already loaded, fire immediately
     if(document.readyState!=='loading'){
-      if(signId)   _initSigningMode(signId);
+      if(signId)   _initSigningMode(signId, _signDriverIdx);
       if(portalId) _initPortalMode(portalId);
     }
     return; // Skip dashboard init
