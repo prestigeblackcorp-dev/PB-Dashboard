@@ -4491,8 +4491,19 @@ function _pillBar(periods, active, onclickFn, label){
   '</div>';
   return ps;
 }
-function setKpiPeriod(p){ _kpiPeriod=p; renderKPIs(getFiltered(),'kpiGrid'); }
+function setKpiPeriod(p){ _kpiPeriod=p; render(); }
 function setForecastPeriod(p){ _forecastPeriod=p; renderForecast(); }
+
+// Returns arr filtered to the current KPI period (by pickup date). 'all' → returns arr unchanged.
+function _applyKpiPeriod(arr){
+  if(_kpiPeriod==='all') return arr;
+  var tod=todayStr();
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
+  return arr.filter(function(b){
+    var bd=_kpiPeriod==='today'?(b.pickupDate||''):(b.pickupDate||b.date||'');
+    return _kpiPeriod==='today'?bd===tod:bd>=cutoff&&bd<=tod;
+  });
+}
 
 // ════════════════════════════════════════════════════════
 //  KPIs
@@ -13004,15 +13015,16 @@ function pNotifyPayment(bookingId,amount){
 // ════════════════════════════════════════════════════════
 function render(){
   var filtered=getFiltered();
+  var pf=_applyKpiPeriod(filtered); // period-filtered slice for charts + tables
   renderForecast();
   renderOpenClaims();
   renderKPIs(filtered,'kpiGrid');
   renderBudgetSection();
-  renderCharts(filtered);
-  renderVehicleTable(filtered);
-  renderBookingsTable(filtered);
+  renderCharts(pf);
+  renderVehicleTable(pf);
+  renderBookingsTable(pf);
   renderTodayBanner();
-  if(pnlOpen) renderPnl(filtered);
+  if(pnlOpen) renderPnl(pf);
   renderIncomeList();
   renderExpenseLog();
 }
