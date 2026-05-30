@@ -2844,10 +2844,20 @@ function mergeArray(local, cloud) {
 
 var _cloudSaveRetries = 0;
 var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
-var _cloudSaving = false; // guard: prevent concurrent cloudSave calls from overlapping
+var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from overlapping
+var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
+
+// cloudSave is debounced: rapid back-to-back calls (GCal callback, form save, etc.)
+// collapse into a single network request fired 800ms after the last call.
 function cloudSave() {
-  if (!WORKER_URL || _cloudLoading || _cloudSaving) return;
+  if (!WORKER_URL) return;
   if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
+  clearTimeout(_cloudSaveTimer);
+  _cloudSaveTimer = setTimeout(_cloudSaveNow, 800);
+}
+
+function _cloudSaveNow() {
+  if (!WORKER_URL || _cloudLoading || _cloudSaving) return;
   _cloudSaving = true;
   setSyncStatus('syncing');
   // Staleness check via Worker so Firebase rules can be locked
@@ -2894,13 +2904,13 @@ function cloudSave() {
           localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString());
         } else {
           setSyncStatus('error');
-          if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
+          if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
           else { _cloudSaveRetries = 0; setSyncStatus('error'); }
         }
       }).catch(function() {
         _cloudSaving = false;
         setSyncStatus('error');
-        if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
+        if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
         else { _cloudSaveRetries = 0; }
       });
     })
