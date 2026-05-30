@@ -6774,11 +6774,13 @@ function openVerify(id){
   // Run _autoCarryVerifyLookup right now (synchronously) so the form fills
   // with verified data immediately — don't wait for the async Stripe pass.
   // Skip only if there's an active pending Stripe poll for this booking.
+  var _carryMsg=''; // set below, rendered after vStripeStatus is reset
   if(!v.idVerified){
     var _immPend=null;
     try{ _immPend=localStorage.getItem('pb_pending_vsession_'+id); }catch(e){}
     if(!_immPend){
       var _immCarry=_autoCarryVerifyLookup(b.email, b.phone, id);
+      console.log('[PB openVerify] booking '+id+' email="'+b.email+'" phone="'+b.phone+'" carry→',_immCarry?{idVerified:_immCarry.idVerified,idName:_immCarry.idName,idNumber:_immCarry.idNumber,from:_immCarry.carriedFromBooking}:'null');
       if(_immCarry){
         var _immIdx=bookings.findIndex(function(x){ return x.id===id; });
         if(_immIdx!==-1){
@@ -6787,6 +6789,10 @@ function openVerify(id){
           save();
         }
         v=_immCarry;
+        // If the carried verify object has no usable ID data, flag it so the owner knows
+        if(!v.idName&&!v.idNumber){
+          _carryMsg='⚠️ Previous verification found but no ID data on file — enter fields manually then save.';
+        }
       }
     }
   }
@@ -6818,6 +6824,8 @@ function openVerify(id){
   // Reset verification UI state
   $d('vStripeStatus').textContent = '';
   $d('vStripeStatus').style.color = '';
+  // Show carry message if the previous booking had no usable ID data
+  if(_carryMsg){ $d('vStripeStatus').textContent=_carryMsg; $d('vStripeStatus').style.color='var(--gold)'; }
   $d('vInscanStatus').textContent = '';
   $d('vInscanStatus').style.color = '';
   $d('vStripeBtn').disabled = false;
@@ -6847,15 +6855,15 @@ function openVerify(id){
   //   Pass 2 — live Stripe session lookup (works even when old booking has no saved verify data)
   if(!v.idVerified){
     var _ve=(b.email||'').toLowerCase().trim();
-    var _vp=(b.phone||'').replace(/\D/g,'');
+    var _vp=_normPhone(b.phone);
 
     // Pass 1: fill from locally-saved verify data on a previous booking
     // (verifiedAt not required — covers manually-verified bookings too)
     var _past=bookings.filter(function(x){
       if(x.id===id||x._deleted||!x.verify||!x.verify.idVerified) return false;
       var xe=(x.email||'').toLowerCase().trim();
-      var xp=(x.phone||'').replace(/\D/g,'');
-      return (_ve&&xe&&_ve===xe)||(_vp&&_vp.length>=10&&xp&&_vp===xp);
+      var xp=_normPhone(x.phone);
+      return (_ve&&xe&&_ve===xe)||(_vp.length>=10&&xp.length>=10&&_vp===xp);
     }).sort(function(a,b){
       // Sort by verifiedAt desc; fall back to createdAt for bookings without a date
       var ta=Date.parse((a.verify&&a.verify.verifiedAt)||'')||-(a.createdAt||0);
@@ -6886,8 +6894,8 @@ function openVerify(id){
       var _prevBks=bookings.filter(function(x){
         if(x.id===id||x._deleted) return false;
         var xe=(x.email||'').toLowerCase().trim();
-        var xp=(x.phone||'').replace(/\D/g,'');
-        return (_ve&&xe&&_ve===xe)||(_vp&&_vp.length>=10&&xp&&_vp===xp);
+        var xp=_normPhone(x.phone);
+        return (_ve&&xe&&_ve===xe)||(_vp.length>=10&&xp.length>=10&&_vp===xp);
       }).sort(function(a,b){ return (b.createdAt||0)-(a.createdAt||0); });
 
       if(_prevBks.length){
@@ -6906,8 +6914,8 @@ function openVerify(id){
         var _noSessionFound=function(){
           var cur=$d('vStripeStatus').textContent;
           if(cur==='🔍 Checking Stripe for prior verification…'){
-            $d('vStripeStatus').textContent='';
-            $d('vStripeStatus').style.color='';
+            $d('vStripeStatus').textContent='No prior Stripe verification found — send a new verification link.';
+            $d('vStripeStatus').style.color='var(--muted)';
           }
         };
 
@@ -8615,17 +8623,28 @@ function isRepeat(b, repeatSet){
 // Returns a ready-to-assign verify object carried from the most recently verified booking
 // that shares email or phone with the given values, or null if none found.
 // Pass bookingIdToExclude to prevent a booking from matching itself.
+// Normalize a phone number to the last 10 digits (strips country code, spaces, punctuation).
+// "+1 (555) 123-4567", "15551234567", "555-123-4567" all become "5551234567".
+function _normPhone(p){
+  var s=(p||'').replace(/\D/g,'');
+  if(s.length===11&&s.charAt(0)==='1') s=s.slice(1);
+  return s; // returns 10-digit string, or shorter if the input had fewer digits
+}
+
 function _autoCarryVerifyLookup(email, phone, bookingIdToExclude){
   var bEmail=(email||'').toLowerCase().trim();
-  var bPhone=(phone||'').replace(/\D/g,'');
-  if(!bEmail&&(!bPhone||bPhone.length<10)) return null;
+  var bPhone=_normPhone(phone);
+  if(!bEmail&&bPhone.length<10) return null;
   var past=bookings.filter(function(x){
     if(x._deleted||!x.verify||!x.verify.idVerified) return false;
     if(bookingIdToExclude&&x.id===bookingIdToExclude) return false;
     var xe=(x.email||'').toLowerCase().trim();
-    var xp=(x.phone||'').replace(/\D/g,'');
-    return (bEmail&&xe&&bEmail===xe)||(bPhone&&bPhone.length>=10&&xp&&bPhone===xp);
-  }).sort(function(a,b){ return ((b.verify&&b.verify.verifiedAt)||0)-((a.verify&&a.verify.verifiedAt)||0); });
+    var xp=_normPhone(x.phone);
+    return (bEmail&&xe&&bEmail===xe)||(bPhone.length>=10&&xp.length>=10&&bPhone===xp);
+  }).sort(function(a,b){
+    return (Date.parse((b.verify&&b.verify.verifiedAt)||'')||0)-(Date.parse((a.verify&&a.verify.verifiedAt)||'')||0);
+  });
+  console.log('[PB carryLookup] email="'+bEmail+'" phone="'+bPhone+'" exclude='+bookingIdToExclude+' → '+past.length+' match(es)', past.map(function(x){ return {id:x.id,name:x.name,email:x.email,phone:x.phone,idVerified:x.verify&&x.verify.idVerified}; }));
   if(!past.length) return null;
   return Object.assign({},past[0].verify,{idVerified:true,carriedFromBooking:past[0].id});
 }
