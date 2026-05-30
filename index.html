@@ -2172,7 +2172,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <span style="font-size:20px">🔒</span>
       <div style="flex:1">
         <div style="font-size:13px;font-weight:800;color:var(--green)">ID Verified & Locked</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:2px">Fields are read-only — data is locked into the contract. Use Override only to correct an error.</div>
+        <div id="vIdLockSubtext" style="font-size:11px;color:var(--muted);margin-top:2px">Fields are read-only — data is locked into the contract. Use Override only to correct an error.</div>
       </div>
       <button class="btn btn-sm" onclick="_applyVerifyIdLock(false)" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
     </div>
@@ -5367,7 +5367,7 @@ function openBookingDetail(id){
 
     // Verification
     '<div class="fsec">Verification</div>'+
-    '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified':'🪪 Not verified')+(idOk&&v.idRisk?' <span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:6px;'+(v.idRisk==='high'?'background:rgba(239,68,68,.15);color:#ef4444':v.idRisk==='elevated'?'background:rgba(245,158,11,.15);color:#f59e0b':v.idRisk==='low'?'background:rgba(34,197,94,.15);color:#22c55e':'background:rgba(255,255,255,.08);color:rgba(255,255,255,.45)')+'">'+(v.idRisk==='high'?'🔴':v.idRisk==='elevated'?'🟡':v.idRisk==='low'?'🟢':'⚪')+' '+v.idRisk.charAt(0).toUpperCase()+v.idRisk.slice(1)+' Risk</span>':'')+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified'+(v.carriedFromBooking?' <span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:4px;background:rgba(99,91,255,.15);color:#a78bfa">🔄 On File</span>':''):'🪪 Not verified')+(idOk&&v.idRisk?' <span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:6px;'+(v.idRisk==='high'?'background:rgba(239,68,68,.15);color:#ef4444':v.idRisk==='elevated'?'background:rgba(245,158,11,.15);color:#f59e0b':v.idRisk==='low'?'background:rgba(34,197,94,.15);color:#22c55e':'background:rgba(255,255,255,.08);color:rgba(255,255,255,.45)')+'">'+(v.idRisk==='high'?'🔴':v.idRisk==='elevated'?'🟡':v.idRisk==='low'?'🟢':'⚪')+' '+v.idRisk.charAt(0).toUpperCase()+v.idRisk.slice(1)+' Risk</span>':'')+'</span></div>'+
     (idOk&&v.idName?'<div class="detail-row"><span class="detail-label">ID Name</span><span class="detail-val">'+esc(v.idName)+'</span></div>':'')+
     (idOk&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+esc(v.idType)+(v.idNumber?' #'+esc(v.idNumber):'')+'</span></div>':'')+
     (b._maintConflictAck?'<div class="detail-row"><span class="detail-label" style="color:#f59e0b">⚠ Maint. Override</span><span class="detail-val" style="color:#f59e0b;font-size:11px">Saved despite maintenance conflict</span></div>':'')+
@@ -6130,19 +6130,8 @@ function saveBooking(){
     }
   } else {
     // NEW BOOKING — auto-carry verified ID from a past booking for the same customer
-    var _newEmail=(entry.email||'').toLowerCase().trim();
-    var _newPhone=(entry.phone||'').replace(/\D/g,'');
-    if(_newEmail||(_newPhone&&_newPhone.length>=10)){
-      var _pastVerified=bookings.filter(function(x){
-        if(x._deleted||!x.verify||!x.verify.idVerified) return false;
-        var xe=(x.email||'').toLowerCase().trim();
-        var xp=(x.phone||'').replace(/\D/g,'');
-        return (_newEmail&&xe&&_newEmail===xe)||(_newPhone&&_newPhone.length>=10&&xp&&_newPhone===xp);
-      }).sort(function(a,b){return ((b.verify&&b.verify.verifiedAt)||0)-((a.verify&&a.verify.verifiedAt)||0);});
-      if(_pastVerified.length){
-        entry.verify=Object.assign({},_pastVerified[0].verify,{idVerified:true,carriedFromBooking:_pastVerified[0].id});
-      }
-    }
+    var _carried=_autoCarryVerifyLookup(entry.email,entry.phone,null);
+    if(_carried) entry.verify=_carried;
     bookings.push(entry);
     // Fire owner notification and customer date-lock confirmation on new bookings only
     sendOwnerBookingNotification(entry);
@@ -6859,6 +6848,16 @@ function openVerify(id){
   var _insHasData=!!(v.insCarrier||v.insPolicyNum);
   _applyVerifyIdLock(!!v.idVerified && _idHasData);
   _applyVerifyInsLock(!!v.insVerified && _insHasData);
+
+  // Update lock banner subtext: distinguish carried-over from fresh Stripe verification
+  var _lockSub=$d('vIdLockSubtext');
+  if(_lockSub){
+    if(v.carriedFromBooking){
+      _lockSub.innerHTML='🔄 Pre-verified from previous booking — ID already on file. No re-verification needed.';
+    } else {
+      _lockSub.textContent='Fields are read-only — data is locked into the contract. Use Override only to correct an error.';
+    }
+  }
 
   $d('verifyModal').classList.add('open');
 }
@@ -8428,6 +8427,38 @@ function isRepeat(b, repeatSet){
   if(b.email){ var e=(b.email||'').toLowerCase().trim(); if(e&&(repeatSet.emails[e]||0)>1) return true; }
   return false;
 }
+// Returns a ready-to-assign verify object carried from the most recently verified booking
+// that shares email or phone with the given values, or null if none found.
+// Pass bookingIdToExclude to prevent a booking from matching itself.
+function _autoCarryVerifyLookup(email, phone, bookingIdToExclude){
+  var bEmail=(email||'').toLowerCase().trim();
+  var bPhone=(phone||'').replace(/\D/g,'');
+  if(!bEmail&&(!bPhone||bPhone.length<10)) return null;
+  var past=bookings.filter(function(x){
+    if(x._deleted||!x.verify||!x.verify.idVerified) return false;
+    if(bookingIdToExclude&&x.id===bookingIdToExclude) return false;
+    var xe=(x.email||'').toLowerCase().trim();
+    var xp=(x.phone||'').replace(/\D/g,'');
+    return (bEmail&&xe&&bEmail===xe)||(bPhone&&bPhone.length>=10&&xp&&bPhone===xp);
+  }).sort(function(a,b){ return ((b.verify&&b.verify.verifiedAt)||0)-((a.verify&&a.verify.verifiedAt)||0); });
+  if(!past.length) return null;
+  return Object.assign({},past[0].verify,{idVerified:true,carriedFromBooking:past[0].id});
+}
+
+// Scan ALL bookings and carry verified ID into any unverified booking from the same customer.
+// Called after every cloud load to catch bookings that arrived via the website worker.
+function _autoCarryVerifyForAll(){
+  var changed=false;
+  bookings.forEach(function(b,idx){
+    if(b._deleted||(b.verify&&b.verify.idVerified)) return;
+    var carried=_autoCarryVerifyLookup(b.email,b.phone,b.id);
+    if(!carried) return;
+    bookings[idx]=Object.assign({},b,{verify:carried,_t:Date.now()});
+    changed=true;
+  });
+  if(changed) save();
+}
+
 function checkReturningCustomer(){
   var phone=($d('fPhone').value||'').trim().replace(/\D/g,'');
   var hint=$d('phoneHint');
@@ -8437,7 +8468,8 @@ function checkReturningCustomer(){
     return (b.phone||'').replace(/\D/g,'')===phone;
   });
   if(match){
-    hint.textContent='⚡ Returning customer — last booked '+match.vehicle+' on '+fmtDate(match.date);
+    var _vNote=(match.verify&&match.verify.idVerified)?' · ✅ ID pre-verified':'';
+    hint.textContent='⚡ Returning customer — last booked '+match.vehicle+' on '+fmtDate(match.date)+_vNote;
     hint.classList.add('visible');
   } else {
     hint.classList.remove('visible');
@@ -13503,6 +13535,7 @@ setTimeout(stickyTabFix, 200);
 })();
 function afterCloudLoad(ok){
   if(!ok) return;
+  _autoCarryVerifyForAll(); // fill verify data for any unverified booking from a known customer
   initSelects(); render(); renderIncomeList(); renderExpenseLog();
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
