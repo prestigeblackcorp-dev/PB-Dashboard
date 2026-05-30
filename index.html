@@ -3446,12 +3446,11 @@ function saveExpense(){
   var idx = expenses.findIndex(function(e){return e.id===entry.id;});
   if(idx!==-1) expenses[idx]=entry; else expenses.push(entry);
   saveExpenses(); closeExpenseModal(); render(); renderExpenseLog();
-  // Budget warning
+  // Budget warning — uses getMonthSpent so recurring expenses count correctly
   var cat=entry.category;
   var bgt=budgets[cat]||0;
   if(bgt>0){
-    var ym=entry.date.substring(0,7);
-    var spent=expenses.filter(function(e){return !e._deleted&&e.category===cat&&(e.date||'').substring(0,7)===ym;}).reduce(function(s,e){return s+(e.amount||0);},0);
+    var spent=getMonthSpent(cat);
     if(spent>bgt) showToast('⚠️ '+cat+' budget exceeded — $'+Math.round(spent)+' of $'+Math.round(bgt)+' this month');
   }
   if(activeTab==='upcoming') renderUpcoming();
@@ -9534,10 +9533,14 @@ function saveBudgets(){
   cloudSave();
 }
 function getMonthSpent(category){
-  var now=new Date(); var ym=now.getFullYear()+'-'+pad(now.getMonth()+1);
-  return expenses.filter(function(e){
-    return !e._deleted && e.category===category && (e.date||'').substring(0,7)===ym;
-  }).reduce(function(s,e){return s+(Number(e.amount)||0);},0);
+  var now=new Date();
+  var y=now.getFullYear(), m=now.getMonth();
+  // First and last day of current calendar month as date strings
+  var from=y+'-'+pad(m+1)+'-01';
+  var lastDay=new Date(y,m+1,0).getDate();
+  var to=y+'-'+pad(m+1)+'-'+pad(lastDay);
+  return expenses.filter(function(e){ return !e._deleted && e.category===category; })
+    .reduce(function(s,e){ return s+_expandExpenseAmount(e,from,to); },0);
 }
 function renderBudgetSection(){
   var el=$d('budgetSection');
