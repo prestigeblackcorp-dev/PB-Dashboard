@@ -2468,7 +2468,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <input type="hidden" id="expId">
     <div class="fgrid">
       <div class="fgroup">
-        <div class="flabel">Date *</div>
+        <div class="flabel">Start Date *</div>
         <input type="date" class="finput" id="expDate">
       </div>
       <div class="fgroup">
@@ -2488,6 +2488,29 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
           <option>Cleaning</option><option>Storage</option><option>Marketing</option>
           <option>Platform Fees</option><option>Other</option>
         </select>
+      </div>
+      <!-- Recurring toggle -->
+      <div class="fgroup ffull" style="flex-direction:row;align-items:center;gap:12px;background:rgba(99,91,255,.06);border:1px solid rgba(99,91,255,.2);border-radius:10px;padding:10px 14px">
+        <input type="checkbox" id="expRecurring" style="width:16px;height:16px;accent-color:#635bff;cursor:pointer" onchange="_toggleExpRecurring()">
+        <label for="expRecurring" style="font-size:13px;font-weight:700;cursor:pointer;color:#a78bfa">🔁 Recurring Expense</label>
+      </div>
+      <!-- Recurring options (hidden by default) -->
+      <div id="expRecurringFields" style="display:none;width:100%;grid-column:1/-1">
+        <div class="fgrid" style="margin-top:0">
+          <div class="fgroup">
+            <div class="flabel">Frequency</div>
+            <select class="finput" id="expFrequency">
+              <option value="monthly">Monthly</option>
+              <option value="weekly">Weekly</option>
+              <option value="daily">Daily</option>
+            </select>
+          </div>
+          <div class="fgroup">
+            <div class="flabel">End Date (optional)</div>
+            <input type="date" class="finput" id="expRecurringEnd" placeholder="Leave blank = ongoing">
+          </div>
+        </div>
+        <div style="font-size:11px;color:rgba(167,139,250,.7);padding:2px 0 6px">Leave end date blank to keep recurring indefinitely.</div>
       </div>
       <div class="fgroup ffull">
         <div class="flabel">Notes</div>
@@ -3379,6 +3402,10 @@ function saveExpenses(){
   cloudSave();
 }
 
+function _toggleExpRecurring(){
+  var on=$d('expRecurring').checked;
+  $d('expRecurringFields').style.display=on?'block':'none';
+}
 function openExpenseModal(id){
   var exp = id ? expenses.find(function(e){return e.id===id;}) : null;
   $d('expModalTitle').textContent = exp ? 'Edit Expense' : 'Log Expense';
@@ -3388,6 +3415,12 @@ function openExpenseModal(id){
   $d('expCategory').value  = exp ? (exp.category||'Other') : 'Other';
   $d('expAmount').value    = exp ? exp.amount : '';
   $d('expNotes').value     = exp ? (exp.notes||'') : '';
+  // Recurring fields
+  var isRecurring = !!(exp && exp.recurring);
+  $d('expRecurring').checked = isRecurring;
+  $d('expRecurringFields').style.display = isRecurring ? 'block' : 'none';
+  $d('expFrequency').value      = exp ? (exp.recurring||'monthly') : 'monthly';
+  $d('expRecurringEnd').value   = exp ? (exp.recurringEndDate||'') : '';
   $d('expDeleteBtn').style.display = exp ? 'inline-flex' : 'none';
   $d('expenseModal').classList.add('open');
 }
@@ -3398,14 +3431,17 @@ function saveExpense(){
   var amount  = parseFloat($d('expAmount').value);
   if(!date)           { alert('Select a date.'); return; }
   if(!amount || amount<=0){ alert('Enter an amount greater than 0.'); return; }
+  var isRecurring = $d('expRecurring').checked;
   var entry = {
-    id:       $d('expId').value || ('x'+Date.now()),
-    date:     date,
-    vehicle:  $d('expVehicle').value,
-    category: $d('expCategory').value,
-    amount:   amount,
-    notes:    $d('expNotes').value.trim(),
-    _t:       Date.now()
+    id:                $d('expId').value || ('x'+Date.now()),
+    date:              date,
+    vehicle:           $d('expVehicle').value,
+    category:          $d('expCategory').value,
+    amount:            amount,
+    notes:             $d('expNotes').value.trim(),
+    recurring:         isRecurring ? ($d('expFrequency').value||'monthly') : null,
+    recurringEndDate:  isRecurring ? ($d('expRecurringEnd').value||null) : null,
+    _t:                Date.now()
   };
   var idx = expenses.findIndex(function(e){return e.id===entry.id;});
   if(idx!==-1) expenses[idx]=entry; else expenses.push(entry);
@@ -4419,24 +4455,59 @@ function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number
 
 function getEstCost(b){ return Number(b.cost)||0; }
 
+// Calculates how much a single expense contributes within [from, to].
+// For one-time expenses: amount if date falls in window, else 0.
+// For recurring expenses: amount × number of occurrences in window.
+function _expandExpenseAmount(e, from, to){
+  var amount = Number(e.amount)||0;
+  if(!amount) return 0;
+  var startStr = e.date||'';
+  if(!startStr) return 0;
+  if(!e.recurring){
+    return ((!from||startStr>=from)&&(!to||startStr<=to)) ? amount : 0;
+  }
+  // Cap recurring end at today for open-ended series
+  var todStr = dateStr(new Date());
+  var endStr = (e.recurringEndDate && e.recurringEndDate<todStr) ? e.recurringEndDate : todStr;
+  // Window: intersection of [from,to] and [startStr,endStr]
+  var winFrom = (from && from>startStr) ? from : startStr;
+  var winTo   = (to   && to  <endStr  ) ? to   : endStr;
+  if(winFrom>winTo) return 0;
+  var start = parseLocalDate(startStr);
+  var wFrom = parseLocalDate(winFrom);
+  var wTo   = parseLocalDate(winTo);
+  var count = 0;
+  var cur = new Date(start);
+  if(e.recurring==='daily'){
+    // Fast-forward to winFrom using arithmetic
+    var diffMs = wFrom.getTime()-start.getTime();
+    if(diffMs>0){ var skipDays=Math.floor(diffMs/86400000); cur=addDays(start,skipDays); }
+    while(cur<=wTo){ if(cur>=wFrom) count++; cur=addDays(cur,1); }
+  } else if(e.recurring==='weekly'){
+    var diffW = Math.floor((wFrom.getTime()-start.getTime())/(86400000*7));
+    if(diffW>0) cur=addDays(start,diffW*7);
+    while(cur<=wTo){ if(cur>=wFrom) count++; cur=addDays(cur,7); }
+  } else if(e.recurring==='monthly'){
+    // Skip ahead by months until >= winFrom
+    while(cur<wFrom){ var nx=new Date(cur); nx.setMonth(nx.getMonth()+1); if(nx>wFrom){break;} cur=nx; }
+    // Now step month by month through winTo
+    while(cur<=wTo){ if(cur>=wFrom) count++; var nx2=new Date(cur); nx2.setMonth(nx2.getMonth()+1); cur=nx2; }
+  }
+  return count * amount;
+}
+
 // Sum logged expenses for a vehicle within an optional date range
 function getVehicleExpenses(vehicle, from, to){
   return expenses.filter(function(e){
     if(e._deleted) return false;
     if(vehicle && e.vehicle!==vehicle && e.vehicle!=='') return false;
     if(vehicle && e.vehicle==='') return false;
-    if(from && e.date<from) return false;
-    if(to   && e.date>to)   return false;
     return true;
-  }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
+  }).reduce(function(s,e){ return s+_expandExpenseAmount(e,from,to); },0);
 }
 function getTotalExpenses(from, to){
-  return expenses.filter(function(e){
-    if(e._deleted) return false;
-    if(from && e.date<from) return false;
-    if(to   && e.date>to)   return false;
-    return true;
-  }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
+  return expenses.filter(function(e){ return !e._deleted; })
+    .reduce(function(s,e){ return s+_expandExpenseAmount(e,from,to); },0);
 }
 function getAddons(b){
   var days=Math.max(1,Number(b.days)||1);
@@ -5553,14 +5624,18 @@ function renderExpenseLog(){
       '<button class="btn btn-sm" onclick="openExpenseModal()">+ Log Expense</button>'+
     '</div>'+
     '<div class="tbl-wrap"><table><thead><tr>'+
-      '<th>Date</th><th>Category</th><th>Vehicle</th><th>Amount</th><th>Note</th><th></th>'+
+      '<th>Start Date</th><th>Category</th><th>Vehicle</th><th>Amount</th><th>Frequency</th><th>Note</th><th></th>'+
     '</tr></thead><tbody>'+
     sorted.map(function(exp){
+      var freqLabel = exp.recurring
+        ? '<span style="background:rgba(99,91,255,.15);color:#a78bfa;border:1px solid rgba(99,91,255,.3);border-radius:5px;padding:1px 7px;font-size:10px;font-weight:700">🔁 '+(exp.recurring.charAt(0).toUpperCase()+exp.recurring.slice(1))+(exp.recurringEndDate?' · ends '+fmtDate(exp.recurringEndDate):'')+'</span>'
+        : '<span style="color:var(--muted);font-size:11px">One-time</span>';
       return '<tr>'+
         '<td>'+fmtDate(exp.date)+'</td>'+
         '<td><span class="badge" style="background:rgba(255,92,92,.12);color:var(--red)">'+esc(exp.category)+'</span></td>'+
         '<td>'+esc(exp.vehicle||'—')+'</td>'+
-        '<td style="color:var(--red);font-weight:700">'+$$(exp.amount)+'</td>'+
+        '<td style="color:var(--red);font-weight:700">'+$$(exp.amount)+(exp.recurring?'<span style="font-size:10px;color:var(--muted)">/'+exp.recurring.replace('daily','day').replace('weekly','wk').replace('monthly','mo')+'</span>':'')+'</td>'+
+        '<td>'+freqLabel+'</td>'+
         '<td style="color:var(--muted);font-size:12px">'+esc(exp.notes||'')+'</td>'+
         '<td><button class="btn btn-sm" onclick="openExpenseModal(\''+exp.id+'\')">Edit</button></td>'+
       '</tr>';
