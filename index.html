@@ -7687,7 +7687,28 @@ function runAutoScheduledEmails(){
       }
     }
 
-    // ── 3. Incomplete verification nudge ────────────────────────────────────
+    // ── 3. Post-trip review request ─────────────────────────────────────────
+    // Fires once, 2+ hours after the scheduled return, for any non-cancelled
+    // booking that has an email and hasn't received a review request yet.
+    // Triggers whether or not the owner manually marks status='completed'.
+    if(!b.reviewEmailSentAt && b.status!=='cancelled'){
+      var _endDateStr=tripEndDate(b);
+      if(_endDateStr){
+        var _endDt=parseLocalDate(_endDateStr);
+        if(_endDt){
+          // Use drop-off time if set; otherwise assume end of day (23:59)
+          var _dropTm=b.dropoffTime||'23:59';
+          var _dtParts=String(_dropTm).split(':');
+          _endDt.setHours(parseInt(_dtParts[0],10)||23, parseInt(_dtParts[1],10)||59, 0, 0);
+          var _hoursAfterEnd=(_now-_endDt.getTime())/3600000;
+          if(_hoursAfterEnd>=2){
+            sendReviewRequest(b);
+          }
+        }
+      }
+    }
+
+    // ── 4. Incomplete verification nudge ────────────────────────────────────
     // Fires once when a verify link was sent 2+ hours ago but customer hasn't
     // completed it.  Clears on verified (see applyStripeVerification).
     if(!b.verify||!b.verify.idVerified){
