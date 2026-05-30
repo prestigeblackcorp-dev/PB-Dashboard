@@ -6847,9 +6847,12 @@ function openVerify(id){
       $d('vStripeStatus').style.color='var(--gold)';
     }
 
-    // Pass 2: query Stripe directly for verified sessions on previous bookings.
-    // Runs even when Pass 1 found data — Stripe is the authoritative source and
-    // will overwrite with the most current PII (updated name, address, etc.).
+    // Pass 2: pull the verified Stripe session directly.
+    // Strategy — for each previous booking, in order from most recent:
+    //   a) If the booking has b.verify.stripeSessionId already saved, hit /check-verification
+    //      directly (fast, no metadata search needed).
+    //   b) Otherwise fall back to /list-sessions?booking_id=xxx (searches Stripe metadata).
+    // Stops as soon as one verified session is found and applied.
     if(VERIFY_URL && (_ve||(_vp&&_vp.length>=10))){
       var _prevBks=bookings.filter(function(x){
         if(x.id===id||x._deleted) return false;
@@ -6862,30 +6865,55 @@ function openVerify(id){
         $d('vStripeStatus').textContent='🔍 Checking Stripe for prior verification…';
         $d('vStripeStatus').style.color='var(--muted)';
 
-        // Walk previous bookings until we find a verified Stripe session
+        var _applySession=function(session){
+          if(!session||session.error) return false;
+          if(session.status!=='verified') return false;
+          if(verifyId!==id||!$d('verifyModal').classList.contains('open')) return false;
+          $d('vStripeStatus').textContent='';
+          applyStripeVerification(session, id, null);
+          return true;
+        };
+
+        var _noSessionFound=function(){
+          // Only clear the "checking" message if Pass 1 didn't already put something there
+          var cur=$d('vStripeStatus').textContent;
+          if(cur==='🔍 Checking Stripe for prior verification…'){
+            $d('vStripeStatus').textContent='';
+            $d('vStripeStatus').style.color='';
+          }
+        };
+
         var _checkNext=function(i){
-          if(i>=_prevBks.length){ return; }
-          var _pb=_prevBks[i];
-          // Check if the modal is still open for THIS booking before doing network work
+          if(i>=_prevBks.length){ _noSessionFound(); return; }
           if(verifyId!==id||!$d('verifyModal').classList.contains('open')) return;
+          var _pb=_prevBks[i];
+
+          // Path A: booking already has a saved session ID — check it directly
+          var _savedSid=(_pb.verify&&_pb.verify.stripeSessionId)||'';
+          if(_savedSid){
+            fetch(VERIFY_URL+'/check-verification?session_id='+_savedSid)
+              .then(function(r){ return r.json(); })
+              .then(function(session){
+                if(_applySession(session)) return;
+                _checkNext(i+1); // session exists but not verified — try next booking
+              })
+              .catch(function(){ _checkNext(i+1); });
+            return;
+          }
+
+          // Path B: no saved session ID — search Stripe by booking_id metadata
           fetch(VERIFY_URL+'/list-sessions?booking_id='+_pb.id)
             .then(function(r){ return r.ok?r.json():null; })
             .then(function(d){
               if(verifyId!==id||!$d('verifyModal').classList.contains('open')) return;
               var _verified=(d&&d.sessions||[]).filter(function(s){ return s.status==='verified'; });
               if(!_verified.length){ _checkNext(i+1); return; }
-              // Sort newest first and fetch full PII from the most recent verified session
               _verified.sort(function(a,b){ return b.created-a.created; });
               return fetch(VERIFY_URL+'/check-verification?session_id='+_verified[0].id)
                 .then(function(r){ return r.json(); })
                 .then(function(session){
-                  if(verifyId!==id||!$d('verifyModal').classList.contains('open')) return;
-                  if(session&&session.status==='verified'){
-                    $d('vStripeStatus').textContent='';
-                    applyStripeVerification(session, id, null);
-                  } else {
-                    _checkNext(i+1);
-                  }
+                  if(_applySession(session)) return;
+                  _checkNext(i+1);
                 });
             })
             .catch(function(){ _checkNext(i+1); });
