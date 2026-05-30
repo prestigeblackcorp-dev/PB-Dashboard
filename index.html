@@ -9542,41 +9542,66 @@ function getMonthSpent(category){
   return expenses.filter(function(e){ return !e._deleted && e.category===category; })
     .reduce(function(s,e){ return s+_expandExpenseAmount(e,from,to); },0);
 }
+// Safe category key → DOM id fragment (strips spaces/slashes)
+function _budgetKey(cat){ return cat.replace(/[^a-zA-Z0-9]/g,'_'); }
+
 function renderBudgetSection(){
   var el=$d('budgetSection');
   if(!el) return;
+  // ── If the grid is already built, only refresh the dynamic cells ──────────
+  // This prevents cloud-sync / render() calls from wiping user-typed values.
+  if(el.querySelector('.budget-grid')){
+    _refreshBudgetCells();
+    return;
+  }
+  // ── First-time full build ────────────────────────────────────────────────
   var html='<div class="budget-title">📊 Monthly Budgets vs. Actual</div>'+
     '<div class="budget-grid">'+
     '<div class="budget-grid-header">Category</div>'+
     '<div class="budget-grid-header">Monthly Budget</div>'+
     '<div class="budget-grid-header">Spent This Month</div>'+
     '<div class="budget-grid-header">Status</div>';
+  EXPENSE_CATEGORIES.forEach(function(cat){
+    var k=_budgetKey(cat);
+    var bgt=Number(budgets[cat])||0;
+    html+='<div style="font-size:12px;font-weight:600">'+cat+'</div>'+
+      '<div><input type="number" class="budget-input" id="bgtInput_'+k+'" placeholder="0" value="'+(bgt||'')+'" min="0" step="1" onchange="setBudget(\''+cat+'\',this.value)"></div>'+
+      '<div id="bgtSpent_'+k+'" style="font-size:12px"></div>'+
+      '<div id="bgtStatus_'+k+'"></div>';
+  });
+  html+='<div style="font-size:12px;font-weight:900;border-top:2px solid var(--gold-dim);padding-top:6px;margin-top:2px">TOTAL</div>'+
+    '<div id="bgtTotalBgt" style="font-size:12px;font-weight:900;border-top:2px solid var(--gold-dim);padding-top:6px;color:var(--gold)"></div>'+
+    '<div id="bgtTotalSpent" style="font-size:12px;font-weight:900;border-top:2px solid var(--gold-dim);padding-top:6px"></div>'+
+    '<div id="bgtTotalStatus" style="border-top:2px solid var(--gold-dim);padding-top:6px"></div>';
+  html+='</div>';
+  el.innerHTML=html;
+  _refreshBudgetCells();
+}
+// Updates only the Spent / Status / Total cells — never touches the input values
+function _refreshBudgetCells(){
   var totalBgt=0, totalSpent=0;
   EXPENSE_CATEGORIES.forEach(function(cat){
-    var bgt=Number(budgets[cat])||0;
+    var k=_budgetKey(cat);
+    // Read the LIVE input value (what user has typed) — don't trust budgets[] alone
+    var inputEl=$d('bgtInput_'+k);
+    var bgt=inputEl ? (parseFloat(inputEl.value)||0) : (Number(budgets[cat])||0);
     var spent=getMonthSpent(cat);
     totalBgt+=bgt; totalSpent+=spent;
     var over=bgt>0&&spent>bgt;
-    var statusHtml=bgt>0?(over?'<span class="budget-status budget-over">⚠️ Over</span>':'<span class="budget-status budget-under">✅ Under</span>'):'<span style="color:var(--muted);font-size:11px">—</span>';
-    html+='<div style="font-size:12px;font-weight:600">'+cat+'</div>'+
-      '<div><input type="number" class="budget-input" placeholder="0" value="'+(bgt||'')+'" min="0" step="1" onchange="setBudget(\''+cat+'\',this.value)"></div>'+
-      '<div style="font-size:12px;color:'+(over?'var(--red)':'var(--muted)')+'">'+$$(spent)+'</div>'+
-      '<div>'+statusHtml+'</div>';
+    var spentEl=$d('bgtSpent_'+k);
+    if(spentEl){ spentEl.textContent=$$(spent); spentEl.style.color=over?'var(--red)':'var(--muted)'; }
+    var statusEl=$d('bgtStatus_'+k);
+    if(statusEl) statusEl.innerHTML=bgt>0?(over?'<span class="budget-status budget-over">⚠️ Over</span>':'<span class="budget-status budget-under">✅ Under</span>'):'<span style="color:var(--muted);font-size:11px">—</span>';
   });
-  // Totals row
   var totalOver=totalBgt>0&&totalSpent>totalBgt;
-  var totalStatus=totalBgt>0?(totalOver?'<span class="budget-status budget-over">⚠️ Over</span>':'<span class="budget-status budget-under">✅ Under</span>'):'<span style="color:var(--muted);font-size:11px">—</span>';
-  html+='<div style="font-size:12px;font-weight:900;border-top:2px solid var(--gold-dim);padding-top:6px;margin-top:2px">TOTAL</div>'+
-    '<div style="font-size:12px;font-weight:900;border-top:2px solid var(--gold-dim);padding-top:6px;color:var(--gold)">'+$$(totalBgt)+'</div>'+
-    '<div style="font-size:12px;font-weight:900;border-top:2px solid var(--gold-dim);padding-top:6px;color:'+(totalOver?'var(--red)':'var(--muted)')+'">'+$$(totalSpent)+'</div>'+
-    '<div style="border-top:2px solid var(--gold-dim);padding-top:6px">'+totalStatus+'</div>';
-  html+='</div>';
-  el.innerHTML=html;
+  var tb=$d('bgtTotalBgt'); if(tb) tb.textContent=$$(totalBgt);
+  var ts=$d('bgtTotalSpent'); if(ts){ ts.textContent=$$(totalSpent); ts.style.color=totalOver?'var(--red)':'var(--muted)'; }
+  var tst=$d('bgtTotalStatus'); if(tst) tst.innerHTML=totalBgt>0?(totalOver?'<span class="budget-status budget-over">⚠️ Over</span>':'<span class="budget-status budget-under">✅ Under</span>'):'<span style="color:var(--muted);font-size:11px">—</span>';
 }
 function setBudget(category, val){
   budgets[category]=parseFloat(val)||0;
   saveBudgets();
-  renderBudgetSection();
+  _refreshBudgetCells(); // never rebuilds inputs
 }
 
 // ════════════════════════════════════════════════════════
