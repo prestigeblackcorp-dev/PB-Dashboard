@@ -6769,6 +6769,29 @@ function openVerify(id){
   if(!b) return;
   verifyId = id;
   var v = b.verify||{};
+
+  // ── Immediate local carry-over for repeat customers ───────────────────────
+  // Run _autoCarryVerifyLookup right now (synchronously) so the form fills
+  // with verified data immediately — don't wait for the async Stripe pass.
+  // Skip only if there's an active pending Stripe poll for this booking.
+  if(!v.idVerified){
+    var _immPend=null;
+    try{ _immPend=localStorage.getItem('pb_pending_vsession_'+id); }catch(e){}
+    if(!_immPend){
+      var _immCarry=_autoCarryVerifyLookup(b.email, b.phone, id);
+      if(_immCarry){
+        var _immIdx=bookings.findIndex(function(x){ return x.id===id; });
+        if(_immIdx!==-1){
+          bookings[_immIdx]=Object.assign({},bookings[_immIdx],{verify:_immCarry,_t:Date.now()});
+          b=bookings[_immIdx];
+          save();
+        }
+        v=_immCarry;
+      }
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   $d('verBookingLabel').textContent = b.vehicle+' · '+b.name+(b.date?' · '+b.date:'');
   // ID fields
   $d('vIdName').value     = v.idName||b.name||'';
@@ -6827,12 +6850,18 @@ function openVerify(id){
     var _vp=(b.phone||'').replace(/\D/g,'');
 
     // Pass 1: fill from locally-saved verify data on a previous booking
+    // (verifiedAt not required — covers manually-verified bookings too)
     var _past=bookings.filter(function(x){
-      if(x.id===id||x._deleted||!x.verify||!x.verify.idVerified||!x.verify.verifiedAt) return false;
+      if(x.id===id||x._deleted||!x.verify||!x.verify.idVerified) return false;
       var xe=(x.email||'').toLowerCase().trim();
       var xp=(x.phone||'').replace(/\D/g,'');
       return (_ve&&xe&&_ve===xe)||(_vp&&_vp.length>=10&&xp&&_vp===xp);
-    }).sort(function(a,b){ return ((b.verify&&b.verify.verifiedAt)||0)-((a.verify&&a.verify.verifiedAt)||0); });
+    }).sort(function(a,b){
+      // Sort by verifiedAt desc; fall back to createdAt for bookings without a date
+      var ta=Date.parse((a.verify&&a.verify.verifiedAt)||'')||-(a.createdAt||0);
+      var tb=Date.parse((b.verify&&b.verify.verifiedAt)||'')||-(b.createdAt||0);
+      return tb-ta;
+    });
     if(_past.length){
       var _pv=_past[0].verify;
       if(_pv.idName)    $d('vIdName').value    = _pv.idName;
