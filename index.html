@@ -2844,10 +2844,11 @@ function mergeArray(local, cloud) {
 
 var _cloudSaveRetries = 0;
 var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
+var _cloudSaving = false; // guard: prevent concurrent cloudSave calls from overlapping
 function cloudSave() {
-  if (!WORKER_URL || _cloudLoading) return;
+  if (!WORKER_URL || _cloudLoading || _cloudSaving) return;
   if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
-  if (_cloudLoading) { _offlinePending = true; return; }
+  _cloudSaving = true;
   setSyncStatus('syncing');
   // Staleness check via Worker so Firebase rules can be locked
   fetch(WORKER_URL + '/sync/savedAt?_=' + Date.now(), { cache: 'no-store' })
@@ -2858,7 +2859,7 @@ function cloudSave() {
       if (remoteT > _lastSavedAt && _lastSavedAt > 0) {
         // Another device saved more recently — load first, then push any local-only
         // changes (e.g. a booking created while offline) on top of the fresh cloud data.
-        // loadFromFirebase() was undefined here — cloudLoad handles the merge + push.
+        _cloudSaving = false;
         cloudLoad(function(ok){
           if(typeof afterCloudLoad === 'function') afterCloudLoad(ok);
         });
@@ -2884,6 +2885,7 @@ function cloudSave() {
         headers: { 'Content-Type': 'application/json' }
       }).then(function(r){ return r.json(); })
       .then(function(res) {
+        _cloudSaving = false;
         if (res && res.ok) {
           setSyncStatus('ok');
           _offlinePending = false;
@@ -2896,11 +2898,13 @@ function cloudSave() {
           else { _cloudSaveRetries = 0; setSyncStatus('error'); }
         }
       }).catch(function() {
+        _cloudSaving = false;
         setSyncStatus('error');
         if (++_cloudSaveRetries <= 5) setTimeout(cloudSave, 5000);
         else { _cloudSaveRetries = 0; }
       });
-    });
+    })
+    .catch(function(){ _cloudSaving = false; setSyncStatus('error'); });
 }
 
 function cloudLoad(callback) {
@@ -3014,7 +3018,11 @@ function cloudLoad(callback) {
         if (needsPush) cloudSave();
       }
       setSyncStatus('ok');
-      localStorage.setItem('pb_last_cloud_save', (data && data.savedAt) ? data.savedAt.toString() : Date.now().toString());
+      // Update _lastSavedAt so cloudSave's staleness guard sees fresh state and doesn't loop
+      if (data && data.savedAt) {
+        _lastSavedAt = Math.max(_lastSavedAt, Number(data.savedAt));
+        localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString());
+      }
       if (callback) callback(true);
     }).catch(function() {
       _cloudLoading = false;
