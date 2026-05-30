@@ -2937,6 +2937,26 @@ function cloudLoad(callback) {
           if (merged.length !== cloudBookings.length) needsPush = true;
           if (!needsPush && merged.some(function(m){ return !cloudBookings.find(function(c){ return c.id===m.id&&c._t===m._t; }); })) needsPush = true;
           bookings = merged;
+          // ── Normalize date lock to $100 flat for web bookings ──────────────
+          // Stripe processing fees / taxes should not change the recorded amount.
+          // If dateLock ≥ revenue the customer paid in full; otherwise always $100.
+          bookings.forEach(function(b, idx){
+            if(!b._fromWeb) return;
+            var dl=Number(b.dateLock); if(!dl) return;
+            var rev=Number(b.revenue)||0;
+            if(rev>0 && dl>=rev){
+              // Paid in full
+              if(b.remainingBalance!==0){
+                bookings[idx]=Object.assign({},b,{dateLock:dl,remainingBalance:0});
+                needsPush=true;
+              }
+            } else if(dl!==100){
+              // Always $100 flat — processing fees/taxes don't apply
+              bookings[idx]=Object.assign({},b,{dateLock:100});
+              needsPush=true;
+            }
+          });
+          // ──────────────────────────────────────────────────────────────────
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
         }
         if (Array.isArray(data.expenses)) {
@@ -5070,9 +5090,10 @@ function tripCard(b, showCountdown){
     '<div style="font-size:9px;color:var(--muted);margin-top:4px">📋 logged '+new Date(Number(b.createdAt)).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true})+'</div>' : '';
 
   var idOk=b.verify&&b.verify.idVerified;
+  var idCarried=!idOk&&b.verify&&!!b.verify.carriedFromBooking;
   var insOk=b.verify&&b.verify.insVerified;
   var contractSigned=!!(b.customerSig&&b.customerSig.startsWith('data:image/'));
-  var verBadges=(idOk?'<span title="ID Verified">🪪✅</span>':'')+
+  var verBadges=(idOk?'<span title="ID Verified">🪪✅</span>':(idCarried?'<span title="ID On File — Not Yet Verified">🪪🔄</span>':''))+
                 (insOk?'<span title="Insurance Verified">🛡✅</span>':'')+
                 (contractSigned?'<span title="Contract Signed">📝✅</span>':'');
 
@@ -5265,6 +5286,7 @@ function openBookingDetail(id){
 
   var v=b.verify||{};
   var idOk=v.idVerified, insOk=v.insVerified;
+  var idCarried=!idOk&&!!v.carriedFromBooking;
   var addonsHtml='';
   var addonFields=[
     {label:'Delivery',val:b.delivery},{label:'Unlimited Miles ('+$$(b.unlimited)+'/'+ ((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+' × '+(b.days||1)+((b.type==='hourly'||b.type==='chauffeur')?'hr':'d')+')',val:(Number(b.unlimited)||0)*(Number(b.days)||1)},
@@ -5308,7 +5330,7 @@ function openBookingDetail(id){
     (b.broker?'<div class="detail-row"><span class="detail-label">Broker / Partner</span><span class="detail-val">'+esc(b.broker)+'</span></div>':'')+
     (b.source?'<div class="detail-row"><span class="detail-label">Booking Source</span><span class="detail-val">'+esc(b.source)+'</span></div>':'')+
     (b.includedMiles?'<div class="detail-row"><span class="detail-label">Included Miles</span><span class="detail-val">'+Number(b.includedMiles).toLocaleString()+' mi'+(b.overageRate?' @ $'+b.overageRate+'/mi overage':'')+'</span></div>':'')+
-    '<div class="detail-row"><span class="detail-label">Date Lock Paid</span><span class="detail-val" style="color:var(--green)">'+$$(b.dateLock!=null?b.dateLock:100)+'</span></div>'+
+    (Number(b.dateLock)>0?'<div class="detail-row"><span class="detail-label">Date Lock Paid</span><span class="detail-val" style="color:var(--green)">'+$$(b.dateLock)+'</span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Remaining Balance</span><span class="detail-val" style="color:'+(getRemainingBalance(b)>0?'var(--red)':'var(--green)')+'">'+$$(getRemainingBalance(b))+
       ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\');closeBookingDetail()" style="padding:2px 8px;font-size:10px;margin-left:6px">✏ Update</button>'+
     '</span></div>'+
@@ -5367,9 +5389,9 @@ function openBookingDetail(id){
 
     // Verification
     '<div class="fsec">Verification</div>'+
-    '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified'+(v.carriedFromBooking?' <span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:4px;background:rgba(99,91,255,.15);color:#a78bfa">🔄 On File</span>':''):'🪪 Not verified')+(idOk&&v.idRisk?' <span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:6px;'+(v.idRisk==='high'?'background:rgba(239,68,68,.15);color:#ef4444':v.idRisk==='elevated'?'background:rgba(245,158,11,.15);color:#f59e0b':v.idRisk==='low'?'background:rgba(34,197,94,.15);color:#22c55e':'background:rgba(255,255,255,.08);color:rgba(255,255,255,.45)')+'">'+(v.idRisk==='high'?'🔴':v.idRisk==='elevated'?'🟡':v.idRisk==='low'?'🟢':'⚪')+' '+v.idRisk.charAt(0).toUpperCase()+v.idRisk.slice(1)+' Risk</span>':'')+'</span></div>'+
-    (idOk&&v.idName?'<div class="detail-row"><span class="detail-label">ID Name</span><span class="detail-val">'+esc(v.idName)+'</span></div>':'')+
-    (idOk&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+esc(v.idType)+(v.idNumber?' #'+esc(v.idNumber):'')+'</span></div>':'')+
+    '<div class="detail-row"><span class="detail-label">ID Status</span><span class="detail-val">'+(idOk?'🪪✅ Verified'+(idOk&&v.idRisk?' <span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;margin-left:6px;'+(v.idRisk==='high'?'background:rgba(239,68,68,.15);color:#ef4444':v.idRisk==='elevated'?'background:rgba(245,158,11,.15);color:#f59e0b':v.idRisk==='low'?'background:rgba(34,197,94,.15);color:#22c55e':'background:rgba(255,255,255,.08);color:rgba(255,255,255,.45)')+'">'+(v.idRisk==='high'?'🔴':v.idRisk==='elevated'?'🟡':v.idRisk==='low'?'🟢':'⚪')+' '+v.idRisk.charAt(0).toUpperCase()+v.idRisk.slice(1)+' Risk</span>':''):idCarried?'🪪🔄 On File — Not Yet Verified':'🪪 Not verified')+'</span></div>'+
+    ((idOk||idCarried)&&v.idName?'<div class="detail-row"><span class="detail-label">ID Name</span><span class="detail-val">'+esc(v.idName)+'</span></div>':'')+
+    ((idOk||idCarried)&&v.idType?'<div class="detail-row"><span class="detail-label">ID Type</span><span class="detail-val">'+esc(v.idType)+(v.idNumber?' #'+esc(v.idNumber):'')+'</span></div>':'')+
     (b._maintConflictAck?'<div class="detail-row"><span class="detail-label" style="color:#f59e0b">⚠ Maint. Override</span><span class="detail-val" style="color:#f59e0b;font-size:11px">Saved despite maintenance conflict</span></div>':'')+
     '<div class="detail-row"><span class="detail-label">Insurance</span><span class="detail-val">'+(insOk?'🛡✅ Verified':'🛡 Not verified')+'</span></div>'+
     (insOk&&v.insCarrier?'<div class="detail-row"><span class="detail-label">Carrier</span><span class="detail-val">'+esc(v.insCarrier)+(v.insCoverage?' · '+esc(v.insCoverage):'')+'</span></div>':'')+
@@ -6789,9 +6811,11 @@ function openVerify(id){
           save();
         }
         v=_immCarry;
-        // If the carried verify object has no usable ID data, flag it so the owner knows
-        if(!v.idName&&!v.idNumber){
-          _carryMsg='⚠️ Previous verification found but no ID data on file — enter fields manually then save.';
+        // Always show a carry message — data is pre-filled but not yet verified for this booking
+        if(v.idName||v.idNumber){
+          _carryMsg='📋 ID on file from previous booking — send a new link or confirm, then save.';
+        } else {
+          _carryMsg='⚠️ Previous booking found but no ID data on file — enter fields manually then save.';
         }
       }
     }
@@ -8540,8 +8564,9 @@ function renderTodayBanner(){
   $d('todayBanner').querySelector('.today-banner-title').textContent='📅 '+dayLabel+' · '+todays.length+' booking'+(todays.length!==1?'s':'');
   $d('todayBannerItems').innerHTML=todays.map(function(b){
     var idOk=b.verify&&b.verify.idVerified;
+    var idCarried=!idOk&&b.verify&&!!b.verify.carriedFromBooking;
     var insOk=b.verify&&b.verify.insVerified;
-    var verBadges=(idOk?' 🪪✅':'')+(insOk?' 🛡✅':'')+((b.customerSig&&b.customerSig.startsWith('data:image/'))?' 📝✅':'');
+    var verBadges=(idOk?' 🪪✅':(idCarried?' 🪪🔄':''))+(insOk?' 🛡✅':'')+((b.customerSig&&b.customerSig.startsWith('data:image/'))?' 📝✅':'');
 
     // Time range
     var timeStr=b.pickupTime?fmtTime(b.pickupTime):'No time set';
@@ -8646,7 +8671,8 @@ function _autoCarryVerifyLookup(email, phone, bookingIdToExclude){
   });
   console.log('[PB carryLookup] email="'+bEmail+'" phone="'+bPhone+'" exclude='+bookingIdToExclude+' → '+past.length+' match(es)', past.map(function(x){ return {id:x.id,name:x.name,email:x.email,phone:x.phone,idVerified:x.verify&&x.verify.idVerified}; }));
   if(!past.length) return null;
-  return Object.assign({},past[0].verify,{idVerified:true,carriedFromBooking:past[0].id});
+  // Carry ID data only — idVerified stays false until owner/Stripe confirms this booking
+  return Object.assign({},past[0].verify,{idVerified:false,carriedFromBooking:past[0].id});
 }
 
 // Scan ALL bookings and carry verified ID into any unverified booking from the same customer.
