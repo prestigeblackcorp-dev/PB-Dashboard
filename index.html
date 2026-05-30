@@ -6818,10 +6818,15 @@ function openVerify(id){
   }
 
   // If this booking isn't yet verified, look for a past completed Stripe verification
-  // for the same customer (matched by email or phone) and pre-fill the fields
+  // for the same customer (matched by email or phone) and pre-fill the fields.
+  // Two-pass approach:
+  //   Pass 1 — local saved data (fast, no network)
+  //   Pass 2 — live Stripe session lookup (works even when old booking has no saved verify data)
   if(!v.idVerified){
     var _ve=(b.email||'').toLowerCase().trim();
     var _vp=(b.phone||'').replace(/\D/g,'');
+
+    // Pass 1: fill from locally-saved verify data on a previous booking
     var _past=bookings.filter(function(x){
       if(x.id===id||x._deleted||!x.verify||!x.verify.idVerified||!x.verify.verifiedAt) return false;
       var xe=(x.email||'').toLowerCase().trim();
@@ -6840,6 +6845,53 @@ function openVerify(id){
       var _pvDate=_pv.verifiedAt?new Date(_pv.verifiedAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'previously';
       $d('vStripeStatus').textContent='📋 Pre-filled from Stripe verification on '+_pvDate+' — check ID # and expiry are still current, then save.';
       $d('vStripeStatus').style.color='var(--gold)';
+    }
+
+    // Pass 2: query Stripe directly for verified sessions on previous bookings.
+    // Runs even when Pass 1 found data — Stripe is the authoritative source and
+    // will overwrite with the most current PII (updated name, address, etc.).
+    if(VERIFY_URL && (_ve||(_vp&&_vp.length>=10))){
+      var _prevBks=bookings.filter(function(x){
+        if(x.id===id||x._deleted) return false;
+        var xe=(x.email||'').toLowerCase().trim();
+        var xp=(x.phone||'').replace(/\D/g,'');
+        return (_ve&&xe&&_ve===xe)||(_vp&&_vp.length>=10&&xp&&_vp===xp);
+      }).sort(function(a,b){ return (b.createdAt||0)-(a.createdAt||0); });
+
+      if(_prevBks.length){
+        $d('vStripeStatus').textContent='🔍 Checking Stripe for prior verification…';
+        $d('vStripeStatus').style.color='var(--muted)';
+
+        // Walk previous bookings until we find a verified Stripe session
+        var _checkNext=function(i){
+          if(i>=_prevBks.length){ return; }
+          var _pb=_prevBks[i];
+          // Check if the modal is still open for THIS booking before doing network work
+          if(verifyId!==id||!$d('verifyModal').classList.contains('open')) return;
+          fetch(VERIFY_URL+'/list-sessions?booking_id='+_pb.id)
+            .then(function(r){ return r.ok?r.json():null; })
+            .then(function(d){
+              if(verifyId!==id||!$d('verifyModal').classList.contains('open')) return;
+              var _verified=(d&&d.sessions||[]).filter(function(s){ return s.status==='verified'; });
+              if(!_verified.length){ _checkNext(i+1); return; }
+              // Sort newest first and fetch full PII from the most recent verified session
+              _verified.sort(function(a,b){ return b.created-a.created; });
+              return fetch(VERIFY_URL+'/check-verification?session_id='+_verified[0].id)
+                .then(function(r){ return r.json(); })
+                .then(function(session){
+                  if(verifyId!==id||!$d('verifyModal').classList.contains('open')) return;
+                  if(session&&session.status==='verified'){
+                    $d('vStripeStatus').textContent='';
+                    applyStripeVerification(session, id, null);
+                  } else {
+                    _checkNext(i+1);
+                  }
+                });
+            })
+            .catch(function(){ _checkNext(i+1); });
+        };
+        _checkNext(0);
+      }
     }
   }
 
