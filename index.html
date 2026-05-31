@@ -2830,6 +2830,28 @@ var OWNER_EMAIL    = localStorage.getItem('pb_owner_email')    || '';
 var _notifLog = [];
 function loadNotifLog(){ try { var r=localStorage.getItem('pb_notif_log'); if(r) _notifLog=JSON.parse(r); } catch(e){ _notifLog=[]; } }
 function _saveNotifLog(){ try { localStorage.setItem('pb_notif_log', JSON.stringify(_notifLog.slice(0,200))); } catch(e){} }
+// Merge _commLog entries from all bookings into _notifLog so remote-sent notifications appear in the global log
+function mergeCommLogsIntoNotifLog(){
+  var seen = {};
+  _notifLog.forEach(function(n){ seen[n.at+'|'+n.type+'|'+n.to] = true; });
+  var added = [];
+  bookings.forEach(function(b){
+    if(!b._commLog) return;
+    b._commLog.forEach(function(c){
+      var key = c.at+'|'+c.type+'|'+c.to;
+      if(!seen[key]){
+        seen[key] = true;
+        added.push({ at:c.at, type:c.type, label:c.label, to:c.to||'', bookingId:b.id });
+      }
+    });
+  });
+  if(added.length){
+    _notifLog = _notifLog.concat(added);
+    _notifLog.sort(function(a,b){ return b.at - a.at; });
+    if(_notifLog.length>200) _notifLog=_notifLog.slice(0,200);
+    _saveNotifLog();
+  }
+}
 function logNotif(type, label, to, bookingId){
   var _now=Date.now();
   _notifLog.unshift({ at:_now, type:type, label:label, to:to||'', bookingId:bookingId||'' });
@@ -3075,6 +3097,7 @@ function cloudLoad(callback) {
           try { localStorage.setItem('pb_review_url', REVIEW_URL); } catch(e) {}
         }
         _cloudLoading = false;
+        mergeCommLogsIntoNotifLog();
         // If local had items cloud didn't, push merged result so all devices get it
         if (needsPush) cloudSave();
       }
@@ -7537,6 +7560,7 @@ function openSettings(){
   try {
     if(_currentRole&&_currentRole!=='full'){ showToast('⛔ Settings restricted to owner access'); return; }
     loadNotifLog();
+    mergeCommLogsIntoNotifLog();
     renderStaffPinList();
     renderBlacklist();
     var settWorkerUrl=$d('settWorkerUrl');       if(settWorkerUrl)    settWorkerUrl.value    = WORKER_URL||'';
