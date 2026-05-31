@@ -4771,8 +4771,18 @@ function renderKPIs(filtered, containerId){
     // Period (cash basis):
     //   • (revenue − dateLock) collected at pickup for pickup-period bookings
     //   • dateLock amounts received in period (any pickup date) — counted above
-    //   • extension charges on bookings in the period
-    var extChargeTotal = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
+    //   • extension charges counted by the date the extension was CREATED (not booking pickup date)
+    //     so an extension made today on a booking that started last month shows in today's KPI
+    var extChargeTotal = allActive.reduce(function(s,b){
+      if(!b.extensions) return s;
+      return s + b.extensions.reduce(function(es,ext){
+        if(!(Number(ext.additionalCharge)>0)) return es;
+        var extDate = ext.createdAt ? dateStr(new Date(ext.createdAt)) : '';
+        if(!extDate) return es;
+        var inPeriod = _kpiPeriod==='today' ? extDate===tod : extDate>=cutoff && extDate<=tod;
+        return inPeriod ? es+(Number(ext.additionalCharge)||0) : es;
+      },0);
+    },0);
     var pickupBalance = active.reduce(function(s,b){
       return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
     },0);
@@ -4780,7 +4790,8 @@ function renderKPIs(filtered, containerId){
     bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal;
   } else {
     // All time: revenue = full booking price (dateLock already in revenue, no double-count)
-    pureBase   = sumK(active,'revenue') - addons;
+    var _allExtChargeTot = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
+    pureBase   = sumK(active,'revenue') - addons + _allExtChargeTot;
     bookingRev = active.reduce(function(s,b){ return s+totalRevenue(b); },0);
   }
 
@@ -4889,11 +4900,19 @@ function dc(id){ if(charts[id]){charts[id].destroy();delete charts[id];} }
 function renderCharts(filtered){
   var active=filtered.filter(function(b){ return b.status!=='cancelled'; });
 
-  // Monthly trend
+  // Monthly trend — base revenue bucketed by pickup month, extension charges by extension createdAt month
   var mR={},mC={};
   active.forEach(function(b){
     var m=((b.pickupDate||b.date)||'').substring(0,7); if(!m) return;
-    mR[m]=(mR[m]||0)+totalRevenue(b);
+    // Base revenue without extension charges (those go into their own month bucket below)
+    var baseRev=(Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0);
+    mR[m]=(mR[m]||0)+baseRev;
+    // Extension charges: bucket by extension createdAt month
+    (b.extensions||[]).forEach(function(ext){
+      if(!(Number(ext.additionalCharge)>0)) return;
+      var em=ext.createdAt ? dateStr(new Date(ext.createdAt)).substring(0,7) : m;
+      mR[em]=(mR[em]||0)+(Number(ext.additionalCharge)||0);
+    });
     mC[m]=(mC[m]||0)+getEstCost(b);
   });
   var months=Object.keys(mR).sort();
