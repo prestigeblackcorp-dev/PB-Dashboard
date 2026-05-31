@@ -1126,7 +1126,8 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Slingshot Color:</span>
         <button id="slingshotBtnGreen" onclick="switchSlingshotColor('Green')" style="padding:6px 16px;border-radius:8px;border:2px solid #22c55e;background:rgba(34,197,94,.15);color:#22c55e;font-weight:800;font-size:13px;cursor:pointer">🟢 Green</button>
         <button id="slingshotBtnWhite" onclick="switchSlingshotColor('White')" style="padding:6px 16px;border-radius:8px;border:2px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.5);font-weight:800;font-size:13px;cursor:pointer">⚪ White</button>
-        <span style="font-size:11px;color:var(--muted)">VIN &amp; color auto-fill on waiver</span>
+        <button id="slingshotColorChangeBtn" onclick="_unlockColorPicker()" style="display:none;padding:4px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.45);font-size:11px;font-weight:700;cursor:pointer">🔓 Change</button>
+        <span id="slingshotColorHint" style="font-size:11px;color:var(--muted)">VIN &amp; color auto-fill on waiver</span>
       </div>
     </div>
     <!-- Daily Slingshot: toggle between rental contract and liability waiver -->
@@ -1144,9 +1145,10 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <!-- Slingshot color picker — also shown near signature so it's visible when scrolled down -->
     <div id="slingshotColorRow" style="display:none;margin:14px 0 10px;padding:10px 14px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:10px">
       <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Slingshot Color (VIN auto-fills)</div>
-      <div style="display:flex;gap:10px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <button id="slingshotBtnGreen2" onclick="switchSlingshotColor('Green')" style="padding:6px 18px;border-radius:8px;border:2px solid #22c55e;background:rgba(34,197,94,.15);color:#22c55e;font-weight:800;font-size:13px;cursor:pointer">🟢 Green</button>
         <button id="slingshotBtnWhite2" onclick="switchSlingshotColor('White')" style="padding:6px 18px;border-radius:8px;border:2px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.5);font-weight:800;font-size:13px;cursor:pointer">⚪ White</button>
+        <button id="slingshotColorChangeBtn2" onclick="_unlockColorPicker()" style="display:none;padding:4px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:transparent;color:rgba(255,255,255,.45);font-size:11px;font-weight:700;cursor:pointer">🔓 Change</button>
       </div>
     </div>
     <div style="margin:14px 0 0">
@@ -11333,15 +11335,34 @@ var _contractBookingId = null;
 var _custSigDrawing = false;
 
 function _lockColorPicker(locked){
-  // Lock or unlock the Slingshot color buttons after a signature is saved.
-  // Prevents flipping color after the contract is already signed.
+  // Lock or unlock the Slingshot color buttons.
+  // Locks after a signature is saved OR after a signing link is sent.
+  var isSigned = (function(){
+    if(!_contractBookingId) return false;
+    var b=bookings.find(function(x){return x.id===_contractBookingId;});
+    return !!(b&&b.customerSig&&b.customerSig.startsWith('data:image/'));
+  })();
+  var tipMsg = isSigned
+    ? 'Color locked — contract already signed. Click 🔓 Override to change.'
+    : 'Color locked — signing link already sent. Click 🔓 Change to update.';
   ['slingshotBtnGreen','slingshotBtnGreen2','slingshotBtnWhite','slingshotBtnWhite2'].forEach(function(id){
     var btn=$d(id); if(!btn) return;
     btn.disabled = locked;
     btn.style.opacity = locked ? '0.4' : '1';
     btn.style.cursor  = locked ? 'not-allowed' : 'pointer';
-    btn.title = locked ? 'Color locked — contract already signed. Click 🔓 Override to change.' : '';
+    btn.title = locked ? tipMsg : '';
   });
+  // Show/hide the Change button (only when locked AND not yet signed — signed uses Override)
+  ['slingshotColorChangeBtn','slingshotColorChangeBtn2'].forEach(function(id){
+    var btn=$d(id); if(!btn) return;
+    btn.style.display = (locked && !isSigned) ? '' : 'none';
+  });
+  // Update hint text
+  var hint=$d('slingshotColorHint');
+  if(hint) hint.textContent = locked ? '🔒 Locked — client link active' : 'VIN & color auto-fill on waiver';
+}
+function _unlockColorPicker(){
+  _lockColorPicker(false);
 }
 
 function initCustSigCanvas(){
@@ -11788,8 +11809,10 @@ function openContract(id){
   var isDailySling = isSlingshot && b.type==='daily';
   // Daily Slingshot: start on contract (toggle available); hourly Slingshot: waiver only
   _contractIsWaiver = isSlingshot && !isDailySling;
-  // Restore the color that was selected when the contract was signed (if any); else default Green
-  _slingshotColor = (isSlingshot && b.customerSigColor) ? b.customerSigColor : 'Green';
+  // Restore the color: signed color > sent color > default Green
+  _slingshotColor = (isSlingshot && b.customerSigColor) ? b.customerSigColor
+                  : (isSlingshot && b.contractSentColor) ? b.contractSentColor
+                  : 'Green';
   $d('contractModalTitle').textContent = _contractIsWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
   $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
   // Color picker — show for any Slingshot (needed for waiver portion on daily too)
@@ -11812,7 +11835,13 @@ function openContract(id){
   _renderContractContent();
   if(!OWNER_SIGNATURE) toast('⚠ No representative signature — go to ⚙ Settings → Owner Signature to upload');
   $d('contractModal').classList.add('open');
-  setTimeout(initCustSigCanvas, 50);
+  setTimeout(function(){
+    initCustSigCanvas();
+    // Lock color picker if a signing link has already been sent (and contract not yet signed — signed case handled inside initCustSigCanvas)
+    if(isSlingshot && b.contractSentColor && !(b.customerSig&&b.customerSig.startsWith('data:image/'))){
+      _lockColorPicker(true);
+    }
+  }, 50);
   // Background sync: refresh contract once latest data arrives, in case customer signed recently
   if(WORKER_URL){
     var _openedId=id;
@@ -11845,13 +11874,15 @@ function switchSlingshotColor(color){
     btn.style.color       = color==='White'?'#e5e7eb':'rgba(255,255,255,.5)';
   });
   // Persist color change immediately so clients who already received a signing link
-  // see the updated vehicle color when they open it
+  // see the updated vehicle color when they open it, then re-lock the picker
   if(_contractBookingId){
     var _cidx=bookings.findIndex(function(b){return b.id===_contractBookingId;});
     if(_cidx!==-1 && bookings[_cidx].vehicle==='Polaris Slingshot'){
+      var _hadSentColor = !!bookings[_cidx].contractSentColor;
       bookings[_cidx].contractSentColor=color;
       bookings[_cidx]._t=Date.now();
       save();
+      if(_hadSentColor) _lockColorPicker(true);
     }
   }
   _renderContractContent();
