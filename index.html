@@ -1149,6 +1149,8 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div id="contractHeader"></div>
     <!-- Rendered HTML preview -->
     <iframe id="contractPreviewFrame" sandbox="allow-same-origin allow-scripts" style="width:100%;height:clamp(320px,50vh,560px);border:1px solid var(--border);border-radius:10px;background:#fff;display:none" scrolling="yes"></iframe>
+    <!-- Dedicated extension iframe — completely separate from the original contract frame -->
+    <iframe id="extContractPreviewFrame" sandbox="allow-same-origin allow-scripts" style="width:100%;height:clamp(320px,50vh,560px);border:1px solid var(--border);border-radius:10px;background:#fff;display:none" scrolling="yes"></iframe>
     <!-- Raw / plain-text fallback -->
     <textarea id="contractFilled" class="finput" rows="12" style="font-family:monospace;font-size:12px;line-height:1.7;resize:vertical"></textarea>
     <!-- Slingshot color picker — also shown near signature so it's visible when scrolled down -->
@@ -11442,6 +11444,7 @@ function saveContractTemplate(){
 
 var _contractBookingId = null;
 var _contractActiveExtIdx = -1; // -1 = original contract, 0+ = extension index
+var _extWatchdogTimer = null;   // interval that re-enforces extension view
 var _custSigDrawing = false;
 
 function _lockColorPicker(locked){
@@ -11676,6 +11679,13 @@ function _buildAdditionalDriversHtml(bk, showSigs){
 }
 
 function _renderContractContent(){
+  // Safety net: if an extension tab is active, never render the original contract
+  if(_contractActiveExtIdx >= 0){
+    console.warn('[PB Contract] _renderContractContent blocked — on ext tab', _contractActiveExtIdx, new Error().stack);
+    var _bGuard=bookings.find(function(x){return x.id===_contractBookingId;});
+    if(_bGuard) _renderExtensionView(_bGuard, _contractActiveExtIdx);
+    return;
+  }
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
   var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
   if(!activeTemplate) return;
@@ -11852,6 +11862,8 @@ function _renderContractContent(){
   var isHtml=filled.trim().toLowerCase().startsWith('<!doctype')||filled.trim().startsWith('<html');
   var frame=$d('contractPreviewFrame');
   var rawToggle=$d('contractRawToggle');
+  // Never show the original contract frame while an extension tab is active
+  if(_contractActiveExtIdx >= 0){ return; }
   if(isHtml){
     frame.style.display=''; $d('contractFilled').style.display='none';
     rawToggle.style.display=''; rawToggle.textContent='👁 View Raw HTML'; rawToggle._showingRaw=false;
@@ -11943,6 +11955,7 @@ function openContract(id){
     return;
   }
   _contractActiveExtIdx = -1;
+  console.warn('[PB Contract] openContract resetting to original tab', id, new Error().stack);
   _renderContractContent();
   _updateExtensionTabs();
   // Show main sig area (may have been hidden from a previous extension tab view)
@@ -12006,7 +12019,12 @@ function switchSlingshotColor(color){
       if(_hadSentColor) _lockColorPicker(true);
     }
   }
-  _renderContractContent();
+  if(_contractActiveExtIdx >= 0){
+    var _bSSC=bookings.find(function(x){return x.id===_contractBookingId;});
+    if(_bSSC) _renderExtensionView(_bSSC, _contractActiveExtIdx);
+  } else {
+    _renderContractContent();
+  }
 }
 
 // Toggle between rental contract and liability waiver for daily Slingshot bookings
@@ -12028,7 +12046,12 @@ function switchSlingshotDoc(isWaiver){
   $d('contractModalTitle').textContent      = isWaiver ? '⚠ Liability Waiver' : '📝 Rental Agreement';
   $d('contractEditTemplateBtn').textContent  = isWaiver ? '✏ Edit Waiver Template' : '✏ Edit Template';
   _updateSlingshotDocToggleBtns(isWaiver);
-  _renderContractContent();
+  if(_contractActiveExtIdx >= 0){
+    var _bSSD=bookings.find(function(x){return x.id===_contractBookingId;});
+    if(_bSSD) _renderExtensionView(_bSSD, _contractActiveExtIdx);
+  } else {
+    _renderContractContent();
+  }
 }
 
 function sendSignedCopyToClient(){
@@ -12133,8 +12156,10 @@ function sendSignedCopyToClient(){
 }
 
 function closeContract(){
+  _stopExtWatchdog();
   $d('contractModal').classList.remove('open');
   _contractActiveExtIdx = -1;
+  var _ef = $d('extContractPreviewFrame'); if(_ef){ _ef.style.display='none'; _ef.srcdoc=''; }
 }
 
 // ════════════════════════════════════════════════════════
@@ -12171,14 +12196,39 @@ function _updateExtensionTabs(){
   }
 }
 
+function _stopExtWatchdog(){
+  if(_extWatchdogTimer){ clearInterval(_extWatchdogTimer); _extWatchdogTimer = null; }
+}
+function _startExtWatchdog(extIdx){
+  _stopExtWatchdog();
+  // Keep sig panels correct while extension tab is active
+  _extWatchdogTimer = setInterval(function(){
+    var modal = $d('contractModal');
+    if(!modal || !modal.classList.contains('open') || _contractActiveExtIdx !== extIdx){
+      _stopExtWatchdog(); return;
+    }
+    var sigArea    = $d('sigEditView');
+    var sigLockArea= $d('sigLockView');
+    var extSigView = $d('extSigView');
+    var origFrame  = $d('contractPreviewFrame');
+    if(origFrame  && origFrame.style.display    !== 'none') origFrame.style.display  = 'none';
+    if(sigArea    && sigArea.style.display      !== 'none') sigArea.style.display    = 'none';
+    if(sigLockArea && sigLockArea.style.display !== 'none') sigLockArea.style.display = 'none';
+    if(extSigView && extSigView.style.display   === 'none') extSigView.style.display  = '';
+  }, 800);
+}
+
 function _contractShowTab(extIdx){
   _contractActiveExtIdx = extIdx;
+  _stopExtWatchdog();
   _updateExtensionTabs();
   var sigArea    = $d('sigEditView');
   var sigLockArea= $d('sigLockView');
   var extSigView = $d('extSigView');
   if(extIdx === -1){
-    // Original contract
+    // Original contract — hide the extension iframe, restore original frame visibility
+    var _extFr = $d('extContractPreviewFrame');
+    if(_extFr) _extFr.style.display = 'none';
     if(sigArea)    sigArea.style.display = '';
     if(sigLockArea)sigLockArea.style.display = '';
     if(extSigView) extSigView.style.display = 'none';
@@ -12192,19 +12242,23 @@ function _contractShowTab(extIdx){
     if(sigLockArea)sigLockArea.style.display = 'none';
     if(extSigView) extSigView.style.display = '';
     _renderExtensionView(b, extIdx);
+    _startExtWatchdog(extIdx);
   }
 }
 
 function _renderExtensionView(b, extIdx){
+  if(!b || !b.extensions || !b.extensions[extIdx]) return;
   var ext = b.extensions[extIdx];
-  // Render the extension contract HTML into the iframe
   var html = _buildExtensionContractHtml(b, extIdx);
-  $d('contractFilled').value = html;
-  var frame = $d('contractPreviewFrame');
+  // Use the dedicated extension iframe — hide the original contract frame entirely
+  // so nothing writing to contractPreviewFrame can ever affect the extension view
+  var origFrame = $d('contractPreviewFrame');
+  var extFrame  = $d('extContractPreviewFrame');
   var rawToggle = $d('contractRawToggle');
-  frame.style.display = ''; $d('contractFilled').style.display = 'none';
-  rawToggle.style.display = ''; rawToggle.textContent = '👁 View Raw HTML'; rawToggle._showingRaw = false;
-  frame.srcdoc = html;
+  if(origFrame) origFrame.style.display = 'none';
+  $d('contractFilled').style.display = 'none';
+  if(rawToggle){ rawToggle.style.display = ''; rawToggle.textContent = '👁 View Raw HTML'; rawToggle._showingRaw = false; }
+  if(extFrame){ extFrame.style.display = ''; extFrame.srcdoc = html; }
   // Update the booking info header
   var extNum = extIdx + 1;
   var fromFmt = fmtDateFull(ext.fromDate);
@@ -14789,12 +14843,18 @@ function afterCloudLoad(ok){
   if(activeTab==='brokers')   renderBrokerTab();
   // If contract modal is open, refresh it so newly-received signatures appear immediately
   if(_contractBookingId&&$d('contractModal')&&$d('contractModal').classList.contains('open')){
-    _renderContractContent(); // refreshes iframe + all header signer badges (primary + drivers)
-    // Only re-init the signature section when the primary customer has signed —
-    // avoids resetting the drawing canvas if the owner is mid-stroke
-    var _cbk=bookings.find(function(x){return x.id===_contractBookingId;});
-    if(_cbk&&_cbk.customerSig&&_cbk.customerSig.startsWith('data:image/')){
-      setTimeout(initCustSigCanvas,50);
+    _updateExtensionTabs();
+    if(_contractActiveExtIdx >= 0){
+      var _cbkExt=bookings.find(function(x){return x.id===_contractBookingId;});
+      if(_cbkExt) _renderExtensionView(_cbkExt, _contractActiveExtIdx);
+    } else {
+      _renderContractContent(); // refreshes iframe + all header signer badges (primary + drivers)
+      // Only re-init the signature section when the primary customer has signed —
+      // avoids resetting the drawing canvas if the owner is mid-stroke
+      var _cbk=bookings.find(function(x){return x.id===_contractBookingId;});
+      if(_cbk&&_cbk.customerSig&&_cbk.customerSig.startsWith('data:image/')){
+        setTimeout(initCustSigCanvas,50);
+      }
     }
   }
 
