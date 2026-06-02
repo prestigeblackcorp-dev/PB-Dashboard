@@ -3943,13 +3943,19 @@ function loadPricingRules(){
     var r=localStorage.getItem('pb_pricing_rules');
     if(r) pricingRules=JSON.parse(r);
   } catch(e){ pricingRules=[]; }
-  // Seed World Cup rule if not already present
+  // Ensure World Cup rule is seeded but OFF by default — toggle in dashboard if needed
+  var _wcRule=pricingRules.find(function(r){ return r.id==='worldcup2026'; });
+  if(_wcRule && _wcRule.active && !_wcRule._manuallyEnabled){
+    _wcRule.active=false; _wcRule._t=Date.now();
+    try { localStorage.setItem('pb_pricing_rules', JSON.stringify(pricingRules)); } catch(e){}
+    cloudSave();
+  }
   if(!pricingRules.find(function(r){ return r.id==='worldcup2026'; })){
     pricingRules.push({
       id:'worldcup2026', name:'FIFA World Cup 2026',
       startDate:'2026-06-11', endDate:'2026-07-14',
       priceMultiplier:2, mileageMultiplier:2,
-      active:true,
+      active:false,
       note:'FIFA World Cup 2026 — all rates and mileage overage doubled',
       _t: Date.now()
     });
@@ -10734,6 +10740,8 @@ function togglePricingRule(id){
   if(idx===-1) return;
   pricingRules[idx].active=!pricingRules[idx].active;
   pricingRules[idx]._t=Date.now();
+  if(pricingRules[idx].active) pricingRules[idx]._manuallyEnabled=true;
+  else delete pricingRules[idx]._manuallyEnabled;
   savePricingRules();
   renderPricingRulesPanel();
 }
