@@ -3806,36 +3806,112 @@ function submitGrouponPayout(){
   showToast('✅ Groupon payout logged');
 }
 
+var _gpKpiRange = 'all'; // default: all time
+
+function _gpRangeStart(range){
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if(range==='today')   return today;
+  if(range==='weekend'){
+    // Past weekend = most recent Fri–Sun (or current if still in it)
+    var dow = today.getDay(); // 0=Sun,1=Mon,...,6=Sat
+    var friOffset = dow===0 ? 2 : dow===6 ? 1 : dow===5 ? 0 : -(dow-5+7)%7;
+    // Go back to most recently completed Friday
+    if(dow < 5) friOffset = -(dow + 2); // Mon-Thu: go back to last Fri
+    else if(dow===5) friOffset = 0;     // Fri: this Fri
+    else if(dow===6) friOffset = -1;    // Sat: last Fri
+    else friOffset = -2;                 // Sun: last Fri
+    var fri = new Date(today); fri.setDate(today.getDate()+friOffset);
+    return fri;
+  }
+  if(range==='7')  { var d=new Date(today); d.setDate(d.getDate()-6); return d; }
+  if(range==='30') { var d=new Date(today); d.setDate(d.getDate()-29); return d; }
+  if(range==='90') { var d=new Date(today); d.setDate(d.getDate()-89); return d; }
+  return null; // all time
+}
+
+function _gpRangeEnd(range){
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if(range==='weekend'){
+    var dow = today.getDay();
+    var sunOffset = dow===0 ? 0 : dow===6 ? 1 : -(dow-1);
+    // Sun of the most recent weekend
+    if(dow===0) sunOffset = 0;
+    else if(dow===6) sunOffset = 1;
+    else sunOffset = -(dow-1); // Mon-Fri: go back to last Sun... wait
+    // Simpler: friStart + 2 days = Sun
+    var start = _gpRangeStart('weekend');
+    var sun = new Date(start); sun.setDate(start.getDate()+2);
+    return sun > today ? today : sun;
+  }
+  return today;
+}
+
+function _inGpRange(dateStr, range){
+  if(!range||range==='all') return true;
+  if(!dateStr) return false;
+  var d = new Date(dateStr+'T00:00:00');
+  var start = _gpRangeStart(range);
+  var end   = _gpRangeEnd(range);
+  if(isNaN(d.getTime())) return false;
+  return d >= start && d <= end;
+}
+
 function renderGrouponSection(){
   var el=$d('grouponSectionBody'); if(!el) return;
 
   var allPayouts = getAllGrouponPayouts(); // sorted by date asc
-  var gbookings = getGrouponBookings();
+  var gbookings  = getGrouponBookings();
   var now = new Date();
+  var range = _gpKpiRange || 'all';
+
+  // Filter payouts and bookings to selected range
+  var rangePayouts  = allPayouts.filter(function(p){ return _inGpRange(p.date, range); });
+  var gAll    = gbookings; // full history always used for payout-period assignment
+  var gActive = gbookings.filter(function(b){ return b.status !== 'cancelled'; });
+  var gRangeActive = gActive.filter(function(b){ return _inGpRange(b.pickupDate||b.date, range); });
+
+  // KPIs (scoped to range)
+  var totalPayouts = rangePayouts.reduce(function(s,p){return s+Number(p.amount);},0);
+  var totalDirect  = gRangeActive.reduce(function(s,b){return s+totalRevenue(b);},0);
+  var totalBookings = gRangeActive.length;
+  var avgPayout = rangePayouts.length ? totalPayouts/rangePayouts.length : 0;
+
+  // Mom comparison — always use full allPayouts for context
   var thisMonthKey = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   var lastMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
   var lastMonthKey = lastMonthDate.getFullYear()+'-'+String(lastMonthDate.getMonth()+1).padStart(2,'0');
-
-  // Active (non-cancelled) bookings for pending/KPI counts
-  var gActive = gbookings.filter(function(b){ return b.status !== 'cancelled'; });
-
-  // KPIs
-  var totalPayouts = allPayouts.reduce(function(s,p){return s+Number(p.amount);},0);
-  // "Direct" = revenue manually logged on Groupon bookings (extensions, extras paid directly)
-  var totalDirect  = gActive.reduce(function(s,b){return s+totalRevenue(b);},0);
   var thisMonthPayout = allPayouts.filter(function(p){return (p.date||'').slice(0,7)===thisMonthKey;}).reduce(function(s,p){return s+Number(p.amount);},0);
   var lastMonthPayout = allPayouts.filter(function(p){return (p.date||'').slice(0,7)===lastMonthKey;}).reduce(function(s,p){return s+Number(p.amount);},0);
-  // Only non-cancelled bookings count as "pending next payout"
-  var pendingBooks = gActive.filter(function(b){ return !getGrouponPeriodForBooking(b,allPayouts); });
-
   var momDiff = thisMonthPayout - lastMonthPayout;
   var momLabel = lastMonthPayout>0 ? (momDiff>=0?'▲':'▼')+$$(Math.abs(momDiff))+' vs last mo' : (thisMonthPayout>0?'First payout this mo':'No data');
 
-  var kpiHtml =
+  // Pending = non-cancelled bookings not yet covered by any payout (always all-time)
+  var pendingBooks = gActive.filter(function(b){ return !getGrouponPeriodForBooking(b,allPayouts); });
+
+  // Range label
+  var rangeLabels = {today:'Today',weekend:'Past Weekend','7':'Last 7 Days','30':'Last 30 Days','90':'Last 90 Days',all:'All Time'};
+  var rLabel = rangeLabels[range]||'All Time';
+
+  // Filter pills
+  var pills = ['today','weekend','7','30','90','all'].map(function(r){
+    var active = r===range;
+    return '<button onclick="_gpKpiRange=\''+r+'\';renderGrouponSection()" style="'+
+      'padding:4px 12px;border-radius:20px;border:1px solid '+(active?'#00a34d':'rgba(255,255,255,.15)')+';'+
+      'background:'+(active?'rgba(0,163,77,.2)':'transparent')+';'+
+      'color:'+(active?'#00a34d':'var(--muted)')+';font-size:12px;font-weight:'+(active?'700':'400')+';cursor:pointer;white-space:nowrap">'+
+      rangeLabels[r]+'</button>';
+  }).join('');
+
+  var filterBar = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center">'+
+    '<span style="font-size:11px;color:var(--muted);font-weight:600;margin-right:2px">PERIOD</span>'+pills+'</div>';
+
+  var kpiHtml = filterBar +
     '<div class="kpi-grid" style="margin-bottom:14px">'+
-      '<div class="kpi"><div class="kpi-label">Total Groupon Payouts</div><div class="kpi-val">'+$$(totalPayouts)+'</div><div class="kpi-sub">'+allPayouts.length+' payment'+(allPayouts.length!==1?'s':'')+'</div></div>'+
-      '<div class="kpi"><div class="kpi-label">Direct Customer Payments</div><div class="kpi-val">'+$$(totalDirect)+'</div><div class="kpi-sub">'+gActive.length+' active · '+gbookings.length+' total</div></div>'+
-      '<div class="kpi"><div class="kpi-label">This Month Payout</div><div class="kpi-val">'+$$(thisMonthPayout)+'</div><div class="kpi-sub">'+momLabel+'</div></div>'+
+      '<div class="kpi"><div class="kpi-label">Groupon Payouts</div><div class="kpi-val">'+$$(totalPayouts)+'</div><div class="kpi-sub">'+rangePayouts.length+' payment'+(rangePayouts.length!==1?'s':'')+' · '+rLabel+'</div></div>'+
+      '<div class="kpi"><div class="kpi-label">Direct Customer Payments</div><div class="kpi-val">'+$$(totalDirect)+'</div><div class="kpi-sub">'+totalBookings+' booking'+(totalBookings!==1?'s':'')+' · '+rLabel+'</div></div>'+
+      '<div class="kpi"><div class="kpi-label">This Month vs Last</div><div class="kpi-val">'+$$(thisMonthPayout)+'</div><div class="kpi-sub" style="color:'+(momDiff>=0?'var(--green)':'var(--red)')+'">'+momLabel+'</div></div>'+
       '<div class="kpi'+(pendingBooks.length?' red':'')+'"><div class="kpi-label">Pending Next Payout</div><div class="kpi-val">'+pendingBooks.length+'</div><div class="kpi-sub">booking'+(pendingBooks.length!==1?'s':'')+' uncovered</div></div>'+
     '</div>';
 
