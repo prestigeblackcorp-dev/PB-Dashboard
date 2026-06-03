@@ -3716,17 +3716,28 @@ function saveGrouponPayouts(){
 // 2. any booking addlIncome where desc includes 'groupon' (legacy / alternate entry)
 function getAllGrouponPayouts(){
   var out = grouponPayouts.slice();
-  // Absorb addlIncome entries tagged as groupon
+  // Absorb addlIncome entries tagged as groupon (desc OR source field contains 'groupon')
   bookings.forEach(function(b){
     if(b._deleted) return;
     var ai = b.addlIncome;
-    if(ai && ai.amount && (ai.desc||'').toLowerCase().includes('groupon')){
-      // Only absorb if no dedicated payout already has the same amount+date
-      var bDate = b.pickupDate || b.date || '';
-      var exists = out.some(function(p){ return p.date===bDate && Math.abs(Number(p.amount)-Number(ai.amount))<0.01; });
-      if(!exists){
-        out.push({ id:'ai_'+b.id, date:bDate, amount:Number(ai.amount), note:'From booking #'+b.id+' addl income', _fromAddlIncome:true });
-      }
+    if(!ai || !ai.amount) return;
+    var desc = (ai.desc||'').toLowerCase();
+    var src  = (ai.source||ai.desc||'').toLowerCase(); // some entries use source field
+    if(!desc.includes('groupon') && !src.includes('groupon')) return;
+    // Use createdAt date as the payout received date (when you logged it),
+    // falling back to pickup date if createdAt unavailable
+    var payoutDate = b.createdAt
+      ? new Date(Number(b.createdAt)).toISOString().slice(0,10)
+      : (b.pickupDate || b.date || '');
+    // Dedup: skip if a dedicated payout already exists within 3 days with same amount
+    var exists = out.some(function(p){
+      if(Math.abs(Number(p.amount)-Number(ai.amount))>0.01) return false;
+      var diff = Math.abs(new Date(p.date).getTime() - new Date(payoutDate).getTime());
+      return diff < 3*24*60*60*1000;
+    });
+    if(!exists){
+      out.push({ id:'ai_'+b.id, date:payoutDate, amount:Number(ai.amount),
+        note:'Addl income on booking '+esc(b.name||b.id), _fromAddlIncome:true });
     }
   });
   return out.slice().sort(function(a,b){ return a.date<b.date?-1:a.date>b.date?1:0; });
@@ -3741,10 +3752,10 @@ function getGrouponPeriodForBooking(b, sortedPayouts){
   return null; // pending next payout
 }
 
-// All Groupon bookings — broker = 'groupon' (case-insensitive)
+// All Groupon bookings — broker = 'groupon' (case-insensitive), includes cancelled for full history
 function getGrouponBookings(){
   return bookings.filter(function(b){
-    return !b._deleted && !b.status==='cancelled' &&
+    return !b._deleted &&
       (b.broker||'').toLowerCase().trim()==='groupon';
   });
 }
@@ -3791,12 +3802,17 @@ function renderGrouponSection(){
   var lastMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
   var lastMonthKey = lastMonthDate.getFullYear()+'-'+String(lastMonthDate.getMonth()+1).padStart(2,'0');
 
+  // Active (non-cancelled) bookings for pending/KPI counts
+  var gActive = gbookings.filter(function(b){ return b.status !== 'cancelled'; });
+
   // KPIs
   var totalPayouts = allPayouts.reduce(function(s,p){return s+Number(p.amount);},0);
-  var totalDirect  = gbookings.reduce(function(s,b){return s+totalRevenue(b);},0);
+  // "Direct" = revenue manually logged on Groupon bookings (extensions, extras paid directly)
+  var totalDirect  = gActive.reduce(function(s,b){return s+totalRevenue(b);},0);
   var thisMonthPayout = allPayouts.filter(function(p){return (p.date||'').slice(0,7)===thisMonthKey;}).reduce(function(s,p){return s+Number(p.amount);},0);
   var lastMonthPayout = allPayouts.filter(function(p){return (p.date||'').slice(0,7)===lastMonthKey;}).reduce(function(s,p){return s+Number(p.amount);},0);
-  var pendingBooks = gbookings.filter(function(b){ return !getGrouponPeriodForBooking(b,allPayouts); });
+  // Only non-cancelled bookings count as "pending next payout"
+  var pendingBooks = gActive.filter(function(b){ return !getGrouponPeriodForBooking(b,allPayouts); });
 
   var momDiff = thisMonthPayout - lastMonthPayout;
   var momLabel = lastMonthPayout>0 ? (momDiff>=0?'▲':'▼')+$$(Math.abs(momDiff))+' vs last mo' : (thisMonthPayout>0?'First payout this mo':'No data');
@@ -3804,7 +3820,7 @@ function renderGrouponSection(){
   var kpiHtml =
     '<div class="kpi-grid" style="margin-bottom:14px">'+
       '<div class="kpi"><div class="kpi-label">Total Groupon Payouts</div><div class="kpi-val">'+$$(totalPayouts)+'</div><div class="kpi-sub">'+allPayouts.length+' payment'+(allPayouts.length!==1?'s':'')+'</div></div>'+
-      '<div class="kpi"><div class="kpi-label">Direct Customer Payments</div><div class="kpi-val">'+$$(totalDirect)+'</div><div class="kpi-sub">'+gbookings.length+' Groupon booking'+(gbookings.length!==1?'s':'')+'</div></div>'+
+      '<div class="kpi"><div class="kpi-label">Direct Customer Payments</div><div class="kpi-val">'+$$(totalDirect)+'</div><div class="kpi-sub">'+gActive.length+' active · '+gbookings.length+' total</div></div>'+
       '<div class="kpi"><div class="kpi-label">This Month Payout</div><div class="kpi-val">'+$$(thisMonthPayout)+'</div><div class="kpi-sub">'+momLabel+'</div></div>'+
       '<div class="kpi'+(pendingBooks.length?' red':'')+'"><div class="kpi-label">Pending Next Payout</div><div class="kpi-val">'+pendingBooks.length+'</div><div class="kpi-sub">booking'+(pendingBooks.length!==1?'s':'')+' uncovered</div></div>'+
     '</div>';
@@ -3901,7 +3917,7 @@ function renderGrouponSection(){
 
   el.innerHTML = kpiHtml + periodsHtml + pendingHtml + allBooksHtml;
 
-  // Now populate the filtered all-bookings table
+  // Now populate the filtered all-bookings table (all statuses, full history)
   var mf = ($d('gpFilterMonth')||{}).value||'';
   var sf = ($d('gpFilterStatus')||{}).value||'';
   var filtered = gbookings.filter(function(b){
@@ -3909,12 +3925,16 @@ function renderGrouponSection(){
     if(mf && bDate.slice(0,7)!==mf) return false;
     if(sf && b.status!==sf) return false;
     return true;
-  }).sort(function(a,b){ return (b.pickupDate||b.date||'')>(a.pickupDate||a.date||'')?1:-1; });
+  }).sort(function(a,b){
+    var aD=(a.pickupDate||a.date||''), bD=(b.pickupDate||b.date||'');
+    return bD>aD?1:bD<aD?-1:0;
+  });
 
   var tbody = filtered.map(function(b){
     var period = getGrouponPeriodForBooking(b, allPayouts);
     var bDirect = totalRevenue(b);
-    return '<tr onclick="openBookingDetail(\''+b.id+'\')" style="cursor:pointer">'+
+    var isCancelled = b.status==='cancelled';
+    return '<tr onclick="openBookingDetail(\''+b.id+'\')" style="cursor:pointer'+(isCancelled?';opacity:0.45':'')+'">'+
       '<td>'+esc(b.name)+'</td>'+
       '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
       '<td>'+esc(b.vehicle||'')+'</td>'+
