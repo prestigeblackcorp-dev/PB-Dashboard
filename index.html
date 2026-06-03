@@ -3716,28 +3716,42 @@ function saveGrouponPayouts(){
 // 2. any booking addlIncome where desc includes 'groupon' (legacy / alternate entry)
 function getAllGrouponPayouts(){
   var out = grouponPayouts.slice();
-  // Absorb addlIncome entries tagged as groupon (desc OR source field contains 'groupon')
+  // Absorb from booking-level addlIncome (b.addlIncome.desc contains 'groupon')
   bookings.forEach(function(b){
     if(b._deleted) return;
     var ai = b.addlIncome;
     if(!ai || !ai.amount) return;
     var desc = (ai.desc||'').toLowerCase();
-    var src  = (ai.source||ai.desc||'').toLowerCase(); // some entries use source field
-    if(!desc.includes('groupon') && !src.includes('groupon')) return;
-    // Use createdAt date as the payout received date (when you logged it),
-    // falling back to pickup date if createdAt unavailable
+    if(!desc.includes('groupon')) return;
     var payoutDate = b.createdAt
       ? new Date(Number(b.createdAt)).toISOString().slice(0,10)
       : (b.pickupDate || b.date || '');
-    // Dedup: skip if a dedicated payout already exists within 3 days with same amount
     var exists = out.some(function(p){
       if(Math.abs(Number(p.amount)-Number(ai.amount))>0.01) return false;
-      var diff = Math.abs(new Date(p.date).getTime() - new Date(payoutDate).getTime());
-      return diff < 3*24*60*60*1000;
+      return Math.abs(new Date(p.date).getTime()-new Date(payoutDate).getTime()) < 3*24*60*60*1000;
     });
     if(!exists){
       out.push({ id:'ai_'+b.id, date:payoutDate, amount:Number(ai.amount),
-        note:'Addl income on booking '+esc(b.name||b.id), _fromAddlIncome:true });
+        note:'Booking addl income — '+esc(b.name||b.id), _fromAddlIncome:true });
+    }
+  });
+
+  // Absorb from standalone income log (incomes[].description or .category contains 'groupon')
+  (typeof incomes !== 'undefined' ? incomes : []).forEach(function(inc){
+    if(inc._deleted) return;
+    var desc = (inc.description||'').toLowerCase();
+    var cat  = (inc.category||'').toLowerCase();
+    var notes= (inc.notes||'').toLowerCase();
+    if(!desc.includes('groupon') && !cat.includes('groupon') && !notes.includes('groupon')) return;
+    var payoutDate = inc.fromDate || inc.toDate || (inc._t ? new Date(Number(inc._t)).toISOString().slice(0,10) : '');
+    if(!payoutDate) return;
+    var exists = out.some(function(p){
+      if(Math.abs(Number(p.amount)-Number(inc.amount))>0.01) return false;
+      return Math.abs(new Date(p.date).getTime()-new Date(payoutDate).getTime()) < 3*24*60*60*1000;
+    });
+    if(!exists){
+      out.push({ id:'inc_'+inc.id, date:payoutDate, amount:Number(inc.amount),
+        note:inc.description||'Income log entry', _fromAddlIncome:true });
     }
   });
   return out.slice().sort(function(a,b){ return a.date<b.date?-1:a.date>b.date?1:0; });
