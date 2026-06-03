@@ -8697,6 +8697,15 @@ function applyStripeVerification(session, bookingId, driverIdx){
 // They receive nothing else at this moment — this closes the loop.
 function sendCustomerVerifiedEmail(b){
   if(!MESSAGING_URL||!b||!b.email) return;
+  // Dedup guard — only send once per booking
+  if(b.verify && b.verify.verifiedEmailSent) return;
+  // Stamp the flag immediately (before the async send) so a rapid second call is blocked
+  var _vIdx = bookings.findIndex(function(x){ return x.id===b.id; });
+  if(_vIdx !== -1){
+    bookings[_vIdx].verify = Object.assign({}, bookings[_vIdx].verify||{}, { verifiedEmailSent: true });
+    b = bookings[_vIdx]; // use updated reference
+    save();
+  }
   var firstName=(b.name||'').split(' ')[0]||'there';
   var addons=[];
   if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
