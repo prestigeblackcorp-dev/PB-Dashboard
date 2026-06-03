@@ -2586,6 +2586,15 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div class="flabel">Notes</div>
         <input type="text" class="finput" id="expNotes" placeholder="Optional description">
       </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Receipt / Photo</div>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <span class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold);white-space:nowrap">📎 Choose File</span>
+          <input type="file" id="expPhoto" accept="image/*" style="display:none" onchange="_previewPhoto(this,'expPhotoPreview')">
+          <span id="expPhotoName" style="font-size:12px;color:var(--muted)">No file chosen</span>
+        </label>
+        <div id="expPhotoPreview" style="margin-top:8px"></div>
+      </div>
     </div>
     <div class="factions">
       <button class="btn btn-danger btn-sm" id="expDeleteBtn" onclick="deleteExpense()" style="display:none;margin-right:auto">Delete</button>
@@ -2648,6 +2657,15 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div class="fgroup ffull">
         <div class="flabel">Notes</div>
         <input type="text" class="finput" id="iNotes" placeholder="Optional details…">
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Receipt / Photo</div>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+          <span class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold);white-space:nowrap">📎 Choose File</span>
+          <input type="file" id="incPhoto" accept="image/*" style="display:none" onchange="_previewPhoto(this,'incPhotoPreview')">
+          <span id="incPhotoName" style="font-size:12px;color:var(--muted)">No file chosen</span>
+        </label>
+        <div id="incPhotoPreview" style="margin-top:8px"></div>
       </div>
     </div>
     <div style="display:flex;gap:10px;margin-top:18px;align-items:center">
@@ -3505,6 +3523,76 @@ function _toggleExpRecurring(){
   var on=$d('expRecurring').checked;
   $d('expRecurringFields').style.display=on?'block':'none';
 }
+// ── Photo upload helpers ──────────────────────────────────────────────────────
+var _expPhotoData  = null; // base64 for current expense modal session
+var _incPhotoData  = null; // base64 for current income modal session
+
+function _previewPhoto(input, previewId){
+  var nameEl = input.id==='expPhoto' ? $d('expPhotoName') : $d('incPhotoName');
+  var store  = input.id==='expPhoto' ? '_expPhotoData' : '_incPhotoData';
+  var file   = input.files[0];
+  if(!file){ if(nameEl) nameEl.textContent='No file chosen'; return; }
+  if(nameEl) nameEl.textContent=file.name;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    // Compress to max 800px wide via canvas
+    var img = new Image();
+    img.onload = function(){
+      var maxW=800, maxH=1200;
+      var w=img.width, h=img.height;
+      if(w>maxW){ h=Math.round(h*maxW/w); w=maxW; }
+      if(h>maxH){ w=Math.round(w*maxH/h); h=maxH; }
+      var canvas=document.createElement('canvas');
+      canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      var data=canvas.toDataURL('image/jpeg',0.75);
+      if(store==='_expPhotoData') _expPhotoData=data;
+      else _incPhotoData=data;
+      _renderPhotoPreview(data, previewId);
+    };
+    img.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function _renderPhotoPreview(data, containerId){
+  var el=$d(containerId); if(!el) return;
+  if(!data){ el.innerHTML=''; return; }
+  el.innerHTML='<div style="position:relative;display:inline-block">'+
+    '<img src="'+data+'" style="max-width:100%;max-height:180px;border-radius:8px;border:1px solid var(--border);cursor:pointer;display:block" onclick="viewReceiptPhoto(this.src)" title="Click to expand">'+
+    '<button onclick="event.stopPropagation();_clearPhotoPreview(\''+containerId+'\')" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);border:none;color:#fff;border-radius:50%;width:20px;height:20px;font-size:11px;cursor:pointer;line-height:20px;text-align:center">✕</button>'+
+  '</div>';
+}
+
+function _clearPhotoPreview(containerId){
+  if(containerId==='expPhotoPreview'){ _expPhotoData=null; var f=$d('expPhoto'); if(f){f.value='';} var n=$d('expPhotoName'); if(n) n.textContent='No file chosen'; }
+  else { _incPhotoData=null; var f=$d('incPhoto'); if(f){f.value='';} var n=$d('incPhotoName'); if(n) n.textContent='No file chosen'; }
+  var el=$d(containerId); if(el) el.innerHTML='';
+}
+
+function viewReceiptPhoto(src){
+  // Full-screen lightbox
+  var overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:pointer';
+  overlay.onclick=function(){ document.body.removeChild(overlay); };
+  var img=document.createElement('img');
+  img.src=src;
+  img.style.cssText='max-width:90vw;max-height:90vh;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.8)';
+  var close=document.createElement('button');
+  close.textContent='✕';
+  close.style.cssText='position:absolute;top:18px;right:24px;background:none;border:none;color:#fff;font-size:28px;cursor:pointer;line-height:1';
+  close.onclick=function(e){ e.stopPropagation(); document.body.removeChild(overlay); };
+  overlay.appendChild(img);
+  overlay.appendChild(close);
+  document.body.appendChild(overlay);
+}
+
+// Inline receipt thumbnail for list rows
+function _receiptThumb(photo){
+  if(!photo) return '';
+  return '<img src="'+photo+'" onclick="viewReceiptPhoto(\''+photo+'\')" title="View receipt" style="width:28px;height:28px;object-fit:cover;border-radius:4px;border:1px solid var(--border);cursor:pointer;vertical-align:middle;margin-left:4px">';
+}
+
 function openExpenseModal(id){
   var exp = id ? expenses.find(function(e){return e.id===id;}) : null;
   $d('expModalTitle').textContent = exp ? 'Edit Expense' : 'Log Expense';
@@ -3521,9 +3609,14 @@ function openExpenseModal(id){
   $d('expFrequency').value      = exp ? (exp.recurring||'monthly') : 'monthly';
   $d('expRecurringEnd').value   = exp ? (exp.recurringEndDate||'') : '';
   $d('expDeleteBtn').style.display = exp ? 'inline-flex' : 'none';
+  // Photo
+  _expPhotoData = exp ? (exp.photo||null) : null;
+  var epf=$d('expPhoto'); if(epf) epf.value='';
+  var epn=$d('expPhotoName'); if(epn) epn.textContent = _expPhotoData ? '📷 Photo attached' : 'No file chosen';
+  _renderPhotoPreview(_expPhotoData, 'expPhotoPreview');
   $d('expenseModal').classList.add('open');
 }
-function closeExpenseModal(){ $d('expenseModal').classList.remove('open'); }
+function closeExpenseModal(){ $d('expenseModal').classList.remove('open'); _expPhotoData=null; }
 
 function saveExpense(){
   var date    = $d('expDate').value;
@@ -3540,6 +3633,7 @@ function saveExpense(){
     notes:             $d('expNotes').value.trim(),
     recurring:         isRecurring ? ($d('expFrequency').value||'monthly') : null,
     recurringEndDate:  isRecurring ? ($d('expRecurringEnd').value||null) : null,
+    photo:             _expPhotoData || undefined,
     _t:                Date.now()
   };
   var idx = expenses.findIndex(function(e){return e.id===entry.id;});
@@ -4386,12 +4480,18 @@ function openIncomeModal(id){
   var sel=$d('iVehicle'); sel.innerHTML='<option value="">None</option>';
   ALL_VEHICLES.forEach(function(v){ var o=document.createElement('option'); o.value=o.textContent=v; sel.appendChild(o); });
   sel.value = inc ? (inc.vehicle||'') : '';
+  // Photo
+  _incPhotoData = inc ? (inc.photo||null) : null;
+  var ipf=$d('incPhoto'); if(ipf) ipf.value='';
+  var ipn=$d('incPhotoName'); if(ipn) ipn.textContent = _incPhotoData ? '📷 Photo attached' : 'No file chosen';
+  _renderPhotoPreview(_incPhotoData, 'incPhotoPreview');
   $d('incomeModal').classList.add('open');
 }
 
 function closeIncomeModal(){
   $d('incomeModal').classList.remove('open');
   editingIncomeId = null;
+  _incPhotoData = null;
 }
 
 function saveIncome(){
@@ -4410,6 +4510,7 @@ function saveIncome(){
     startTime:   $d('iStartTime').value,
     endTime:     $d('iEndTime').value,
     notes:       $d('iNotes').value.trim(),
+    photo:       _incPhotoData || undefined,
     _t:          Date.now()
   };
   if(editingIncomeId){
@@ -4459,6 +4560,7 @@ function renderIncomeList(){
         '<td style="white-space:nowrap">'+esc(timeStr)+'</td>'+
         '<td style="color:var(--green);font-weight:800">'+$$(inc.amount)+'</td>'+
         '<td style="color:var(--muted);font-size:12px">'+esc(inc.notes||'')+'</td>'+
+        '<td style="text-align:center">'+_receiptThumb(inc.photo)+'</td>'+
         '<td><button class="btn btn-sm" onclick="openIncomeModal(\''+inc.id+'\')">Edit</button></td>'+
         '</tr>';
     }).join('')+
@@ -6167,6 +6269,7 @@ function renderExpenseLog(){
         '<td style="color:var(--red);font-weight:700">'+$$(exp.amount)+(exp.recurring?'<span style="font-size:10px;color:var(--muted)">/'+exp.recurring.replace('daily','day').replace('weekly','wk').replace('monthly','mo')+'</span>':'')+'</td>'+
         '<td>'+freqLabel+'</td>'+
         '<td style="color:var(--muted);font-size:12px">'+esc(exp.notes||'')+'</td>'+
+        '<td style="text-align:center">'+_receiptThumb(exp.photo)+'</td>'+
         '<td><button class="btn btn-sm" onclick="openExpenseModal(\''+exp.id+'\')">Edit</button></td>'+
       '</tr>';
     }).join('')+
