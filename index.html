@@ -127,10 +127,12 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 /* ── Charts ── */
 .charts-row { display: grid; grid-template-columns: 1fr 1fr 280px; gap: 16px; }
 .chart-card { background: var(--card); border: none; border-radius: 20px; padding: 22px;
-  box-shadow: var(--shadow-card); }
+  box-shadow: var(--shadow-card); min-width: 0; }
 .chart-card.span2 { grid-column: 1 / 3; }
 .chart-card.full { grid-column: 1 / -1; }
 .chart-ttl { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; }
+/* Ensure canvases never overflow their card */
+.chart-card canvas { max-width: 100%; }
 
 /* ── Tables ── */
 .tbl-card { background: var(--card); border: none; border-radius: 20px; overflow: hidden;
@@ -333,6 +335,9 @@ tr:hover td { background: rgba(255,255,255,.02); }
   .modal-card { margin: 10px; max-height: 93vh; border-radius: 22px; }
   .charts-row { grid-template-columns: 1fr; }
   .chart-card.span2, .chart-card.full { grid-column: 1; }
+  .chart-card canvas { max-width: 100% !important; }
+  .heatmap-vlbl { min-width: 100px; font-size: 9px; }
+  .hm-day { width: 11px; height: 11px; }
   .trip-card { grid-template-columns: 70px 1fr 1fr; gap: 12px; padding: 14px 16px; }
   .trip-date-big { font-size: 24px; }
   .trip-vehicle { font-size: 14px; }
@@ -393,8 +398,14 @@ tr:hover td { background: rgba(255,255,255,.02); }
 
   /* — Charts — */
   .charts-row { grid-template-columns: 1fr; gap: 10px; }
-  .chart-card { padding: 16px; border-radius: 16px; }
+  .chart-card { padding: 14px 12px; border-radius: 16px; }
   .chart-card.span2, .chart-card.full { grid-column: 1; }
+  .chart-card canvas { max-width: 100% !important; height: auto !important; }
+  /* Heatmap: shrink label so cells have room */
+  .heatmap-vlbl { min-width: 80px; font-size: 9px; padding-right: 5px; }
+  .hm-day { width: 10px; height: 10px; }
+  /* Forecast card scrollable on mobile */
+  #forecastSection { overflow-x: auto; }
 
   /* — Trip cards: single-column stacked — */
   .trip-group { padding: 10px 12px 0; }
@@ -5415,7 +5426,28 @@ Chart.defaults.color='rgba(255,255,255,.5)';
 Chart.defaults.borderColor='rgba(255,255,255,.06)';
 Chart.defaults.font.family='-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
 Chart.defaults.font.size=11;
+Chart.defaults.responsive=true;
+Chart.defaults.maintainAspectRatio=true;
 var GOLD='#C9A962',GREEN='#7CFC98',BLUE='#64b4ff',RED='#ff5c5c';
+
+// Detect mobile for chart option tuning
+function _isMobile(){ return window.innerWidth<=480; }
+function _isTablet(){ return window.innerWidth<=834; }
+
+// Shared mobile-aware plugin options
+function _chartPlugins(legendPos){
+  var mobile=_isMobile();
+  return {
+    legend:{ position: legendPos||'bottom', labels:{ usePointStyle:true, padding: mobile?8:14, font:{size: mobile?9:11} }},
+    tooltip:{ titleFont:{size: mobile?10:12}, bodyFont:{size: mobile?10:11} }
+  };
+}
+function _scaleY(prefix){
+  return { ticks:{ callback:function(v){ return (prefix||'$')+v.toLocaleString(); }, maxTicksLimit: _isMobile()?4:8, font:{size: _isMobile()?9:11} }};
+}
+function _scaleX(){
+  return { grid:{display:false}, ticks:{ maxRotation: _isMobile()?45:0, font:{size: _isMobile()?9:11}, maxTicksLimit: _isMobile()?6:12 }};
+}
 
 function dc(id){ if(charts[id]){charts[id].destroy();delete charts[id];} }
 
@@ -5441,31 +5473,34 @@ function renderCharts(filtered){
   var mLabels=months.map(function(m){
     var p=m.split('-'); return new Date(+p[0],+p[1]-1,1).toLocaleString('en-US',{month:'short',year:'2-digit'});
   });
+  var mobile=_isMobile();
   dc('monthly');
   charts['monthly']=new Chart($d('chartMonthly'),{type:'line',data:{labels:mLabels,datasets:[
-    {label:'Revenue',data:months.map(function(m){return mR[m]||0;}),borderColor:GOLD,backgroundColor:'rgba(201,169,98,.08)',fill:true,tension:.4,pointBackgroundColor:GOLD,pointRadius:4},
-    {label:'Est. Cost',data:months.map(function(m){return mC[m]||0;}),borderColor:'rgba(255,92,92,.7)',backgroundColor:'rgba(255,92,92,.06)',fill:true,tension:.4,pointBackgroundColor:RED,pointRadius:4}
-  ]},options:{plugins:{legend:{position:'bottom',labels:{usePointStyle:true,padding:14}}},scales:{y:{ticks:{callback:function(v){return'$'+v.toLocaleString();}}}}}});
+    {label:'Revenue',data:months.map(function(m){return mR[m]||0;}),borderColor:GOLD,backgroundColor:'rgba(201,169,98,.08)',fill:true,tension:.4,pointBackgroundColor:GOLD,pointRadius:mobile?2:4},
+    {label:'Est. Cost',data:months.map(function(m){return mC[m]||0;}),borderColor:'rgba(255,92,92,.7)',backgroundColor:'rgba(255,92,92,.06)',fill:true,tension:.4,pointBackgroundColor:RED,pointRadius:mobile?2:4}
+  ]},options:{responsive:true,maintainAspectRatio:true,plugins:_chartPlugins('bottom'),scales:{y:_scaleY('$'),x:_scaleX()}}});
 
   // Type split
   var tc={daily:0,hourly:0,chauffeur:0};
   active.forEach(function(b){ tc[b.type]=(tc[b.type]||0)+1; });
   dc('type');
-  charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur],backgroundColor:[GOLD,BLUE,GREEN],borderWidth:0,hoverOffset:8}]},options:{cutout:'64%',plugins:{legend:{position:'bottom',labels:{usePointStyle:true,padding:14}}}}});
+  charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur],backgroundColor:[GOLD,BLUE,GREEN],borderWidth:0,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:true,cutout:'64%',plugins:_chartPlugins('bottom')}});
 
-  // Revenue by vehicle
+  // Revenue by vehicle — horizontal bar, truncate long labels on mobile
   var rv={};
   active.forEach(function(b){ rv[b.vehicle]=(rv[b.vehicle]||0)+totalRevenue(b); });
-  var vl=Object.keys(rv).sort(function(a,b){return rv[b]-rv[a];}).slice(0,10);
+  var vl=Object.keys(rv).sort(function(a,b){return rv[b]-rv[a];}).slice(0,mobile?6:10);
+  var vlLabels=vl.map(function(v){ return mobile&&v.length>10?v.slice(0,9)+'…':v; });
   dc('rvv');
-  charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vl,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();}}},y:{grid:{display:false}}}}});
+  charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vlLabels,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{responsive:true,maintainAspectRatio:true,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return vl[items[0].dataIndex]; }}}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();},font:{size:mobile?9:11},maxTicksLimit:mobile?3:6},grid:{display:false}},y:{grid:{display:false},ticks:{font:{size:mobile?9:11}}}}}});
 
   // Bookings per vehicle
   var bv={};
   active.forEach(function(b){ bv[b.vehicle]=(bv[b.vehicle]||0)+1; });
   var bl=Object.keys(bv).sort(function(a,b){return bv[b]-bv[a];});
+  var blLabels=bl.map(function(v){ return mobile&&v.length>8?v.slice(0,7)+'…':v; });
   dc('bvv');
-  charts['bvv']=new Chart($d('chartBkVehicle'),{type:'bar',data:{labels:bl,datasets:[{label:'Bookings',data:bl.map(function(v){return bv[v];}),backgroundColor:'rgba(100,180,255,.55)',borderRadius:5}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{stepSize:1}},x:{grid:{display:false}}}}});
+  charts['bvv']=new Chart($d('chartBkVehicle'),{type:'bar',data:{labels:blLabels,datasets:[{label:'Bookings',data:bl.map(function(v){return bv[v];}),backgroundColor:'rgba(100,180,255,.55)',borderRadius:5}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return bl[items[0].dataIndex]; }}}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,font:{size:mobile?9:11}},grid:{display:false}},x:{grid:{display:false},ticks:{maxRotation:mobile?45:0,font:{size:mobile?9:11}}}}}});
 }
 
 // ════════════════════════════════════════════════════════
@@ -15358,6 +15393,18 @@ function stickyTabFix(){
 }
 stickyTabFix();
 window.addEventListener('resize', stickyTabFix);
+// Re-render charts on orientation change / window resize so they reflow correctly
+(function(){
+  var _chartResizeTimer;
+  function _onResize(){
+    clearTimeout(_chartResizeTimer);
+    _chartResizeTimer=setTimeout(function(){
+      if(activeTab==='overview'||activeTab==='') render();
+    }, 250);
+  }
+  window.addEventListener('resize', _onResize);
+  window.addEventListener('orientationchange', function(){ setTimeout(_onResize, 350); });
+})();
 // Re-run after fonts/layout settle
 setTimeout(stickyTabFix, 200);
 
