@@ -1628,15 +1628,17 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
       <!-- Log payout form (hidden by default) -->
       <div id="grouponPayoutForm" style="display:none;padding:14px 16px;border-bottom:1px solid var(--border);background:rgba(0,163,77,.04)">
-        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-          <div><div class="flabel" style="font-size:11px;margin-bottom:4px">Payout Date</div>
-            <input type="date" id="gpDate" class="finput" style="font-size:13px;padding:6px 10px;width:150px"></div>
-          <div><div class="flabel" style="font-size:11px;margin-bottom:4px">Amount Received ($)</div>
-            <input type="number" id="gpAmount" class="finput" min="0" step="0.01" placeholder="0.00" style="font-size:13px;padding:6px 10px;width:130px"></div>
-          <div style="flex:1;min-width:160px"><div class="flabel" style="font-size:11px;margin-bottom:4px">Note (optional)</div>
-            <input type="text" id="gpNote" class="finput" placeholder="e.g. Jan 2026 payout" style="font-size:13px;padding:6px 10px;width:100%"></div>
-          <button class="btn" onclick="submitGrouponPayout()" style="background:#00a34d;border-color:#00a34d;color:#fff;padding:7px 18px">Save Payout</button>
-          <button class="btn btn-sm" onclick="$d('grouponPayoutForm').style.display='none'" style="color:var(--muted)">Cancel</button>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><div class="flabel" style="font-size:11px;margin-bottom:4px">Payout Date *</div>
+            <input type="date" id="gpDate" class="finput" style="width:100%;box-sizing:border-box"></div>
+          <div><div class="flabel" style="font-size:11px;margin-bottom:4px">Amount Received ($) *</div>
+            <input type="number" id="gpAmount" class="finput" min="0" step="0.01" placeholder="0.00" style="width:100%;box-sizing:border-box"></div>
+          <div style="grid-column:1/-1"><div class="flabel" style="font-size:11px;margin-bottom:4px">Note (optional)</div>
+            <input type="text" id="gpNote" class="finput" placeholder="e.g. Jan 2026 payout" style="width:100%;box-sizing:border-box"></div>
+          <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" onclick="submitGrouponPayout()" style="flex:1;background:#00a34d;border-color:#00a34d;color:#fff">Save Payout</button>
+            <button class="btn btn-sm" onclick="$d('grouponPayoutForm').style.display='none'" style="color:var(--muted)">Cancel</button>
+          </div>
         </div>
       </div>
       <div id="grouponSectionBody" style="padding:14px 16px">
@@ -2590,7 +2592,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div class="flabel">Receipt / Photo</div>
         <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
           <span class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold);white-space:nowrap">📎 Choose File</span>
-          <input type="file" id="expPhoto" accept="image/*" style="display:none" onchange="_previewPhoto(this,'expPhotoPreview')">
+          <input type="file" id="expPhoto" accept="image/*,application/pdf" style="display:none;position:absolute;width:1px;height:1px;opacity:0" onchange="_previewPhoto(this,'expPhotoPreview')">
           <span id="expPhotoName" style="font-size:12px;color:var(--muted)">No file chosen</span>
         </label>
         <div id="expPhotoPreview" style="margin-top:8px"></div>
@@ -2662,7 +2664,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div class="flabel">Receipt / Photo</div>
         <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
           <span class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold);white-space:nowrap">📎 Choose File</span>
-          <input type="file" id="incPhoto" accept="image/*" style="display:none" onchange="_previewPhoto(this,'incPhotoPreview')">
+          <input type="file" id="incPhoto" accept="image/*,application/pdf" style="display:none;position:absolute;width:1px;height:1px;opacity:0" onchange="_previewPhoto(this,'incPhotoPreview')">
           <span id="incPhotoName" style="font-size:12px;color:var(--muted)">No file chosen</span>
         </label>
         <div id="incPhotoPreview" style="margin-top:8px"></div>
@@ -3535,7 +3537,21 @@ function _previewPhoto(input, previewId){
   if(nameEl) nameEl.textContent=file.name;
   var reader = new FileReader();
   reader.onload = function(e){
-    // Compress to max 800px wide via canvas
+    if(file.type==='application/pdf'){
+      // PDFs: store as-is (base64 data URL), show doc icon preview
+      var data=e.target.result;
+      if(store==='_expPhotoData') _expPhotoData=data;
+      else _incPhotoData=data;
+      var el=$d(previewId); if(el) el.innerHTML=
+        '<div style="display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:8px;padding:8px 12px">'+
+        '<span style="font-size:24px">📄</span>'+
+        '<div><div style="font-size:12px;font-weight:700">'+esc(file.name)+'</div>'+
+        '<div style="font-size:11px;color:var(--muted)">PDF attached</div></div>'+
+        '<button onclick="event.stopPropagation();_clearPhotoPreview(\''+previewId+'\')" style="margin-left:8px;background:rgba(0,0,0,.4);border:none;color:#fff;border-radius:50%;width:20px;height:20px;font-size:11px;cursor:pointer;line-height:20px;text-align:center">✕</button>'+
+        '</div>';
+      return;
+    }
+    // Compress image to max 800px wide via canvas
     var img = new Image();
     img.onload = function(){
       var maxW=800, maxH=1200;
@@ -3565,23 +3581,36 @@ function _renderPhotoPreview(data, containerId){
 }
 
 function _clearPhotoPreview(containerId){
-  if(containerId==='expPhotoPreview'){ _expPhotoData=null; var f=$d('expPhoto'); if(f){f.value='';} var n=$d('expPhotoName'); if(n) n.textContent='No file chosen'; }
-  else { _incPhotoData=null; var f=$d('incPhoto'); if(f){f.value='';} var n=$d('incPhotoName'); if(n) n.textContent='No file chosen'; }
+  var isExp=containerId==='expPhotoPreview';
+  if(isExp){ _expPhotoData=null; } else { _incPhotoData=null; }
+  var fileEl=$d(isExp?'expPhoto':'incPhoto');
+  var nameEl=$d(isExp?'expPhotoName':'incPhotoName');
+  if(fileEl) fileEl.value='';
+  if(nameEl) nameEl.textContent='No file chosen';
   var el=$d(containerId); if(el) el.innerHTML='';
 }
 
 function viewReceiptPhoto(src){
-  // Full-screen lightbox
+  if(src && src.startsWith('data:application/pdf')){
+    // PDFs: open in new tab
+    var w=window.open(); w.document.write('<iframe src="'+src+'" style="width:100%;height:100%;border:none;position:fixed;inset:0"></iframe>');
+    return;
+  }
+  // Full-screen lightbox with scroll lock
+  var prev=document.body.style.overflow;
+  document.body.style.overflow='hidden';
   var overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:pointer';
-  overlay.onclick=function(){ document.body.removeChild(overlay); };
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:99999;display:flex;align-items:center;justify-content:center;cursor:pointer;touch-action:none;padding:20px;box-sizing:border-box';
+  function closeOverlay(){ document.body.style.overflow=prev; if(overlay.parentNode) document.body.removeChild(overlay); }
+  overlay.onclick=closeOverlay;
   var img=document.createElement('img');
   img.src=src;
-  img.style.cssText='max-width:90vw;max-height:90vh;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.8)';
+  img.style.cssText='max-width:min(90vw,900px);max-height:88vh;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.8);object-fit:contain';
+  img.onclick=function(e){ e.stopPropagation(); }; // tap photo = don't close
   var close=document.createElement('button');
   close.textContent='✕';
-  close.style.cssText='position:absolute;top:18px;right:24px;background:none;border:none;color:#fff;font-size:28px;cursor:pointer;line-height:1';
-  close.onclick=function(e){ e.stopPropagation(); document.body.removeChild(overlay); };
+  close.style.cssText='position:absolute;top:max(18px,env(safe-area-inset-top,18px));right:max(24px,env(safe-area-inset-right,24px));background:rgba(0,0,0,.5);border:none;color:#fff;font-size:26px;cursor:pointer;line-height:1;width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center';
+  close.onclick=function(e){ e.stopPropagation(); closeOverlay(); };
   overlay.appendChild(img);
   overlay.appendChild(close);
   document.body.appendChild(overlay);
@@ -3590,7 +3619,10 @@ function viewReceiptPhoto(src){
 // Inline receipt thumbnail for list rows
 function _receiptThumb(photo){
   if(!photo) return '';
-  return '<img src="'+photo+'" onclick="viewReceiptPhoto(\''+photo+'\')" title="View receipt" style="width:28px;height:28px;object-fit:cover;border-radius:4px;border:1px solid var(--border);cursor:pointer;vertical-align:middle;margin-left:4px">';
+  if(photo.startsWith('data:application/pdf')){
+    return '<span onclick="viewReceiptPhoto(\''+photo+'\')" title="View PDF" style="cursor:pointer;font-size:18px;vertical-align:middle">📄</span>';
+  }
+  return '<img src="'+photo+'" onclick="viewReceiptPhoto(\''+photo+'\')" title="View receipt" style="width:28px;height:28px;object-fit:cover;border-radius:4px;border:1px solid var(--border);cursor:pointer;vertical-align:middle">';
 }
 
 function openExpenseModal(id){
@@ -3998,8 +4030,8 @@ function renderGrouponSection(){
       rangeLabels[r]+'</button>';
   }).join('');
 
-  var filterBar = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center">'+
-    '<span style="font-size:11px;color:var(--muted);font-weight:600;margin-right:2px">PERIOD</span>'+pills+'</div>';
+  var filterBar = '<div style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:12px;align-items:center;padding-bottom:2px;scrollbar-width:none">'+
+    '<span style="font-size:11px;color:var(--muted);font-weight:600;margin-right:2px;flex-shrink:0">PERIOD</span>'+pills+'</div>';
 
   var kpiHtml = filterBar +
     '<div class="kpi-grid" style="margin-bottom:14px">'+
@@ -4050,8 +4082,8 @@ function renderGrouponSection(){
     periodsHtml =
       '<div class="tbl-card" style="margin-top:14px">'+
         '<div class="tbl-head"><div class="tbl-title">💳 Payout Periods</div><div class="tbl-meta" style="font-size:11px;color:var(--muted)">Click a row to expand bookings</div></div>'+
-        '<div class="tbl-wrap"><table><thead><tr>'+
-          '<th>Payout Date</th><th>Amount Received</th><th>Bookings Covered</th><th>Direct Payments in Period</th><th>Net Diff</th><th></th>'+
+        '<div class="tbl-wrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="min-width:560px"><thead><tr>'+
+          '<th>Payout Date</th><th>Amount Received</th><th>Bookings</th><th>Direct Payments</th><th>Net Diff</th><th></th>'+
         '</tr></thead><tbody>'+periodRows+'</tbody></table></div>'+
       '</div>';
   }
@@ -4132,12 +4164,12 @@ function renderGrouponSection(){
 
   var wrap=$d('gpAllBooksTableWrap');
   if(wrap) wrap.innerHTML=
-    '<table><thead><tr>'+
+    '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="min-width:560px"><thead><tr>'+
       '<th>Customer</th><th>Pickup Date</th><th>Vehicle</th><th>Duration</th>'+
       '<th>Direct Payment</th><th>Payout Period</th><th>Status</th>'+
     '</tr></thead><tbody>'+
     (tbody||'<tr class="empty-row"><td colspan="7">No Groupon bookings yet.</td></tr>')+
-    '</tbody></table>';
+    '</tbody></table></div>';
 }
 
 // ════════════════════════════════════════════════════════
@@ -4546,7 +4578,7 @@ function renderIncomeList(){
   }
   var sorted=incomes.filter(function(i){return !i._deleted;}).sort(function(a,b){ return (b.fromDate||'9999').localeCompare(a.fromDate||'9999'); });
   container.innerHTML='<div class="tbl-wrap"><table><thead><tr>'+
-    '<th>Date</th><th>Description</th><th>Category</th><th>Vehicle</th><th>Time</th><th>Amount</th><th>Notes</th><th></th>'+
+    '<th>Date</th><th>Description</th><th>Category</th><th>Vehicle</th><th>Time</th><th>Amount</th><th>Notes</th><th>📎</th><th></th>'+
     '</tr></thead><tbody>'+
     sorted.map(function(inc){
       var dateStr2 = inc.fromDate||(inc.toDate||'—');
@@ -6256,7 +6288,7 @@ function renderExpenseLog(){
       '<button class="btn btn-sm" onclick="openExpenseModal()">+ Log Expense</button>'+
     '</div>'+
     '<div class="tbl-wrap"><table><thead><tr>'+
-      '<th>Start Date</th><th>Category</th><th>Vehicle</th><th>Amount</th><th>Frequency</th><th>Note</th><th></th>'+
+      '<th>Start Date</th><th>Category</th><th>Vehicle</th><th>Amount</th><th>Frequency</th><th>Note</th><th>📎</th><th></th>'+
     '</tr></thead><tbody>'+
     sorted.map(function(exp){
       var freqLabel = exp.recurring
