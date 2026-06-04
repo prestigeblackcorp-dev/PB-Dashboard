@@ -5445,14 +5445,22 @@ function _kpiDateRange(){
   return {from:from, to:tod};
 }
 
-// Returns arr filtered to the current KPI period (by pickup date). 'all' → returns arr unchanged.
+// Returns arr filtered to the current KPI period. 'all' → returns arr unchanged.
+// For 7/30/90: includes bookings whose pickup OR return/end date falls in range
+// (catches extension bookings that started before the window but ended within it).
 function _applyKpiPeriod(arr){
   if(_kpiPeriod==='all') return arr;
   var tod=todayStr();
   var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
   return arr.filter(function(b){
-    var bd=_kpiPeriod==='today'?(b.pickupDate||''):(b.pickupDate||b.date||'');
-    return _kpiPeriod==='today'?bd===tod:bd>=cutoff&&bd<=tod;
+    if(_kpiPeriod==='today'){
+      var bd=b.pickupDate||'';
+      return bd===tod;
+    }
+    var pickup=b.pickupDate||b.date||'';
+    var ret=tripEndDate(b)||pickup;
+    // Include if pickup in range OR return date in range (covers extension bookings)
+    return (pickup>=cutoff&&pickup<=tod)||(ret>=cutoff&&ret<=tod);
   });
 }
 
@@ -5482,10 +5490,12 @@ function renderKPIs(filtered, containerId){
     cutoff = _kpiPeriod==='today' ? tod
            : dateStr(addDays(new Date(tod+'T00:00:00'), -(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
     filtered = filtered.filter(function(b){
-      // Use pickupDate as authoritative; fall back to b.date only for multi-day period ranges
-      // (avoids b.date matching today for bookings synced/created today with future pickup)
-      var bd = _kpiPeriod==='today' ? (b.pickupDate||'') : (b.pickupDate||b.date||'');
-      return _kpiPeriod==='today' ? bd===tod : bd>=cutoff && bd<=tod;
+      if(_kpiPeriod==='today'){
+        return (b.pickupDate||'')===tod;
+      }
+      var pickup=b.pickupDate||b.date||'';
+      var ret=tripEndDate(b)||pickup;
+      return (pickup>=cutoff&&pickup<=tod)||(ret>=cutoff&&ret<=tod);
     });
   }
 
