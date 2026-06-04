@@ -5553,18 +5553,18 @@ function renderKPIs(filtered, containerId){
     bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal;
 
   } else if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
-    // 7 / 30 / 90 DAYS — accrual by pickup date (past bookings presumed collected)
+    // 7 / 30 / 90 DAYS — accrual by pickup date; net to PBR (broker fees deducted)
     dateLockPeriodRev = sumK(active,'dateLock');
     var _allExtChargePeriod = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
-    pureBase   = sumK(active,'revenue') - addons + _allExtChargePeriod;
-    bookingRev = active.reduce(function(s,b){ return s+totalRevenue(b); },0);
+    pureBase   = sumK(active,'revenue') - addons + _allExtChargePeriod - totalBrokerFees;
+    bookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0);
     pickupBalance = sumK(active,'revenue');
     extChargeTotal = _allExtChargePeriod;
   } else {
-    // All time: revenue = full booking price (dateLock already in revenue, no double-count)
+    // All time: net to PBR (broker fees already deducted via netRevenue)
     var _allExtChargeTot = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
-    pureBase   = sumK(active,'revenue') - addons + _allExtChargeTot;
-    bookingRev = active.reduce(function(s,b){ return s+totalRevenue(b); },0);
+    pureBase   = sumK(active,'revenue') - addons + _allExtChargeTot - totalBrokerFees;
+    bookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0);
   }
 
   // ── Expenses / other income scoped to same window ─────────────────────────
@@ -5596,7 +5596,7 @@ function renderKPIs(filtered, containerId){
     return true;
   }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
   var netAfterCar = revenue - carPayments;
-  var netToOwner  = revenue - totalBrokerFees - totalCost;
+  var netToOwner  = revenue - totalCost; // revenue is already net of broker fees
 
   // ── Revenue breakdown label ───────────────────────────────────────────────
   var revParts, dateLockCardVal, dateLockCardSub;
@@ -5638,7 +5638,7 @@ function renderKPIs(filtered, containerId){
     {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
     {label:'Logged Expenses',       val:$$(loggedExp),          sub:$$(bookingCost)+' direct booking costs',               cls:'red'},
     {label:'Net Profit',            val:$$(profit),             sub:'Margin: '+pct(margin),                               cls:profit>=0?'green':'red'},
-    {label:'Avg / Booking',         val:$$(active.length?sumK(active,'revenue')/active.length:0), sub:'Avg revenue per booking, excl. cancelled', cls:''},
+    {label:'Avg / Booking',         val:$$(active.length?(active.reduce(function(s,b){return s+netRevenue(b);},0)/active.length):0), sub:'Avg net revenue per booking, excl. cancelled', cls:''},
     {label:'Net After Car Payments',val:$$(netAfterCar),        sub:$$(carPayments)+' in car payments',                   cls:''},
     {label:'Net to PBR',            val:$$(netToOwner),         sub:'After broker fees & expenses',                       cls:netToOwner>=0?'green':'red'},
     {label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Paid to partners',                                   cls:'red'},
@@ -5697,7 +5697,9 @@ function renderCharts(filtered){
   active.forEach(function(b){
     var m=((b.pickupDate||b.date)||'').substring(0,7); if(!m) return;
     // Base revenue without extension charges (those go into their own month bucket below)
-    var baseRev=(Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0);
+    // Subtract broker fees so monthly trend reflects net to PBR
+    var _brkDeduct=(Number(b.brokerFee)||0)*(Number(b.days)||1);
+    var baseRev=(Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)-_brkDeduct;
     mR[m]=(mR[m]||0)+baseRev;
     // Extension charges: bucket by extension createdAt month
     (b.extensions||[]).forEach(function(ext){
@@ -5726,7 +5728,7 @@ function renderCharts(filtered){
 
   // Revenue by vehicle — horizontal bar, truncate long labels on mobile
   var rv={};
-  active.forEach(function(b){ rv[b.vehicle]=(rv[b.vehicle]||0)+totalRevenue(b); });
+  active.forEach(function(b){ rv[b.vehicle]=(rv[b.vehicle]||0)+netRevenue(b); });
   var vl=Object.keys(rv).sort(function(a,b){return rv[b]-rv[a];}).slice(0,mobile?6:10);
   var vlLabels=vl.map(function(v){ return mobile&&v.length>10?v.slice(0,9)+'…':v; });
   dc('rvv');
@@ -5794,7 +5796,7 @@ function renderVehicleTable(filtered){
     active.forEach(function(b){
       if(!map[b.vehicle]) map[b.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
       map[b.vehicle].bookings++;
-      map[b.vehicle].revenue    +=totalRevenue(b);
+      map[b.vehicle].revenue    +=netRevenue(b);
       map[b.vehicle].deposits   +=(Number(b.deposit)||0);
       map[b.vehicle].addons     +=getAddons(b);
       map[b.vehicle].cost       +=getEstCost(b);
@@ -5878,7 +5880,7 @@ function renderBookingsTable(filtered){
   if(_bPage<0) _bPage=0;
   var page=sorted.slice(_bPage*PAGE_SIZE, (_bPage+1)*PAGE_SIZE);
   $d('bookingMeta').textContent=filtered.length+' booking'+(filtered.length!==1?'s':'')+
-    ' — Revenue: '+$$(filtered.filter(function(b){return b.status!=='cancelled';}).reduce(function(s,b){return s+totalRevenue(b);},0))+
+    ' — Net Revenue: '+$$(filtered.filter(function(b){return b.status!=='cancelled';}).reduce(function(s,b){return s+netRevenue(b);},0))+
     (totalPages>1?' — Page '+(_bPage+1)+'/'+totalPages:'');
   var tbody=document.querySelector('#bookingsTable tbody');
   if(!sorted.length){ tbody.innerHTML='<tr class="empty-row"><td colspan="23">No bookings</td></tr>';
@@ -10604,6 +10606,16 @@ function renderPnl(filtered){
         if(!vMap[e.vehicle]) vMap[e.vehicle]={rev:0,cost:0,bookings:0};
       });
     }
+    // Add standalone income entries linked to a vehicle (e.g. photoshoot, misc)
+    incomes.filter(function(i){
+      if(i._deleted||!i.vehicle) return false;
+      if(_kpiDRp.from && (i.fromDate||'')<_kpiDRp.from) return false;
+      if(_kpiDRp.to   && (i.fromDate||'')>_kpiDRp.to)   return false;
+      return true;
+    }).forEach(function(i){
+      if(!vMap[i.vehicle]) return; // only add to vehicles already in map
+      vMap[i.vehicle].rev+=(Number(i.amount)||0);
+    });
   }
 
   var rows=Object.keys(vMap).sort(function(a,b){return vMap[b].rev-vMap[a].rev;});
