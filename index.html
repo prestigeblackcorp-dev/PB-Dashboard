@@ -4223,11 +4223,13 @@ function renderGrouponSection(){
       '<div class="kpi'+(pendingBooks.length?' red':'')+'"><div class="kpi-label">Pending Next Payout</div><div class="kpi-val">'+pendingBooks.length+'</div><div class="kpi-sub">booking'+(pendingBooks.length!==1?'s':'')+' uncovered</div></div>'+
     '</div>';
 
-  // Payout periods table
+  // Payout periods table — filter to payouts that fall in the selected range
   var periodsHtml = '';
-  if(allPayouts.length){
-    var periodRows = allPayouts.map(function(p, idx){
-      var prevDate = idx>0 ? allPayouts[idx-1].date : '';
+  var visiblePayouts = range==='all' ? allPayouts : allPayouts.filter(function(p){ return _inGpRange(p.date, range); });
+  if(visiblePayouts.length){
+    var periodRows = visiblePayouts.map(function(p){
+      var pidx = allPayouts.indexOf(p);
+      var prevDate = pidx>0 ? allPayouts[pidx-1].date : '';
       var inPeriod = gbookings.filter(function(b){
         var bDate = b.pickupDate||b.date||'';
         return bDate <= p.date && (prevDate===''||bDate>prevDate);
@@ -4270,14 +4272,15 @@ function renderGrouponSection(){
       '</div>';
   }
 
-  // Pending bookings (no payout yet)
+  // Pending bookings (no payout yet) — scoped to range
+  var pendingInRange = pendingBooks.filter(function(b){ return _inGpRange(b.pickupDate||b.date, range); });
   var pendingHtml = '';
-  if(pendingBooks.length){
+  if(pendingInRange.length){
     pendingHtml =
       '<div style="margin-top:10px;padding:10px 14px;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.2);border-radius:10px;font-size:13px">'+
-        '<b style="color:var(--red)">⏳ '+pendingBooks.length+' booking'+(pendingBooks.length!==1?'s':'')+' pending next Groupon payout:</b>'+
+        '<b style="color:var(--red)">⏳ '+pendingInRange.length+' booking'+(pendingInRange.length!==1?'s':'')+' pending next Groupon payout'+(range!=='all'?' · '+rLabel:'')+':</b>'+
         '<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">'+
-        pendingBooks.map(function(b){
+        pendingInRange.map(function(b){
           return '<div style="display:flex;gap:14px;align-items:center;font-size:12px">'+
             '<span style="color:var(--gold)">'+fmtDate(b.pickupDate||b.date)+'</span>'+
             '<span>'+esc(b.name)+'</span>'+
@@ -4289,9 +4292,13 @@ function renderGrouponSection(){
         '</div></div>';
   }
 
-  // All bookings filter table
+  // All bookings filter table — month options scoped to current range
   var filterMonths = {};
-  gbookings.forEach(function(b){ var m=(b.pickupDate||b.date||'').slice(0,7); if(m) filterMonths[m]=true; });
+  gbookings.forEach(function(b){
+    var bDate=(b.pickupDate||b.date||'');
+    if(!_inGpRange(bDate, range)) return;
+    var m=bDate.slice(0,7); if(m) filterMonths[m]=true;
+  });
   var monthOpts = Object.keys(filterMonths).sort().reverse().map(function(m){
     return '<option value="'+m+'">'+m+'</option>';
   }).join('');
@@ -4315,11 +4322,12 @@ function renderGrouponSection(){
 
   el.innerHTML = kpiHtml + periodsHtml + pendingHtml + allBooksHtml;
 
-  // Now populate the filtered all-bookings table (all statuses, full history)
+  // Now populate the filtered all-bookings table — KPI range + month/status sub-filters
   var mf = ($d('gpFilterMonth')||{}).value||'';
   var sf = ($d('gpFilterStatus')||{}).value||'';
   var filtered = gbookings.filter(function(b){
     var bDate=(b.pickupDate||b.date||'');
+    if(!_inGpRange(bDate, range)) return false;
     if(mf && bDate.slice(0,7)!==mf) return false;
     if(sf && b.status!==sf) return false;
     return true;
