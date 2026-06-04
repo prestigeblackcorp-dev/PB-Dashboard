@@ -5460,21 +5460,19 @@ function renderKPIs(filtered, containerId){
   var active    = filtered.filter(function(b){ return b.status!=='cancelled'; });
   var allActive = allFiltered.filter(function(b){ return b.status!=='cancelled'; }); // unfiltered by period
 
-  // ── Cash-basis date lock revenue: count when received, not on pickup day ──
-  // For 'today': include any date lock on today's pickups regardless of when it was received
-  //   (owner expects full booking value visible when viewing today's schedule)
-  // For 7/30/90 day periods: cash-basis — count when payment was received
+  // ── Revenue: Today = cash-basis (only logged payments); 7/30/90 = accrual by pickup date ──
+  // Past bookings are presumed paid even without balancePaidAt (cash/Zelle at pickup).
+  // Today-only uses cash-basis so future/unpaid same-day bookings don't inflate revenue.
   var dateLockPeriodRev = 0;
+  var bookingRev, pureBase, extChargeTotal=0, pickupBalance=0;
+
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
-    // Cash-basis for all periods including Today: count by when payment was actually received
-    allActive.forEach(function(b){
-      if(!(Number(b.dateLock)>0)) return;
-      var dlTs = b.dateLockPaidAt || 0;
-      if(!dlTs) return;
-      var dlStr = dateStr(new Date(dlTs));
-      var inPeriod = _kpiPeriod==='today' ? dlStr===tod : dlStr>=cutoff && dlStr<=tod;
-      if(inPeriod) dateLockPeriodRev += Number(b.dateLock);
-    });
+    extChargeTotal = active.reduce(function(s,b){
+      if(!b.extensions) return s;
+      return s+b.extensions.reduce(function(es,ext){
+        return es+(Number(ext.additionalCharge)||0);
+      },0);
+    },0);
   }
 
   // ── Revenue components ────────────────────────────────────────────────────
@@ -5486,35 +5484,38 @@ function renderKPIs(filtered, containerId){
   var fuelTotal       = sumK(active,'fuelCharge');
   var mileTotal       = sumK(active,'mileageCharge');
   var lateReturnTotal = sumK(active,'lateReturnFee');
-  var dateLockTotal   = sumK(allActive,'dateLock'); // all-time total (for Date Locks card in all-time mode)
+  var dateLockTotal   = sumK(allActive,'dateLock');
 
-  // bookingRev: cash-basis for period filters, accrual for all-time
-  var bookingRev, pureBase;
-  if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
-    // Period (cash basis):
-    //   • balance (revenue − dateLock) counted only when balancePaidAt falls in period
-    //   • dateLock amounts counted when dateLockPaidAt falls in period (any pickup date)
-    //   • extension charges counted by the date the extension was CREATED
-    var extChargeTotal = allActive.reduce(function(s,b){
-      if(!b.extensions) return s;
-      return s + b.extensions.reduce(function(es,ext){
-        if(!(Number(ext.additionalCharge)>0)) return es;
-        var extDate = ext.createdAt ? dateStr(new Date(ext.createdAt)) : '';
-        if(!extDate) return es;
-        var inPeriod = _kpiPeriod==='today' ? extDate===tod : extDate>=cutoff && extDate<=tod;
-        return inPeriod ? es+(Number(ext.additionalCharge)||0) : es;
-      },0);
-    },0);
-    // Balance: only count when balancePaidAt falls in the period
-    var pickupBalance = allActive.reduce(function(s,b){
+  if(containerId==='kpiGrid' && _kpiPeriod === 'today'){
+    // TODAY — strict cash-basis: only count money with a logged payment timestamp today
+    allActive.forEach(function(b){
+      if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt) return;
+      if(dateStr(new Date(b.dateLockPaidAt))===tod) dateLockPeriodRev+=Number(b.dateLock);
+    });
+    pickupBalance = allActive.reduce(function(s,b){
       if(!b.balancePaidAt) return s;
-      var bpStr = dateStr(new Date(b.balancePaidAt));
-      var inPeriod = _kpiPeriod==='today' ? bpStr===tod : bpStr>=cutoff && bpStr<=tod;
-      if(!inPeriod) return s;
+      if(dateStr(new Date(b.balancePaidAt))!==tod) return s;
       return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
+    },0);
+    // Extension charges created today (any booking)
+    extChargeTotal = allActive.reduce(function(s,b){
+      if(!b.extensions) return s;
+      return s+b.extensions.reduce(function(es,ext){
+        if(!(Number(ext.additionalCharge)>0)||!ext.createdAt) return es;
+        return dateStr(new Date(ext.createdAt))===tod ? es+(Number(ext.additionalCharge)||0) : es;
+      },0);
     },0);
     pureBase   = pickupBalance - addons;
     bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal;
+
+  } else if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
+    // 7 / 30 / 90 DAYS — accrual by pickup date (past bookings presumed collected)
+    dateLockPeriodRev = sumK(active,'dateLock');
+    var _allExtChargePeriod = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
+    pureBase   = sumK(active,'revenue') - addons + _allExtChargePeriod;
+    bookingRev = active.reduce(function(s,b){ return s+totalRevenue(b); },0);
+    pickupBalance = sumK(active,'revenue');
+    extChargeTotal = _allExtChargePeriod;
   } else {
     // All time: revenue = full booking price (dateLock already in revenue, no double-count)
     var _allExtChargeTot = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
@@ -5556,9 +5557,9 @@ function renderKPIs(filtered, containerId){
   // ── Revenue breakdown label ───────────────────────────────────────────────
   var revParts, dateLockCardVal, dateLockCardSub;
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
-    // Period breakdown: cash-basis — balance collected in period + date locks received
-    revParts = ['Rental balance collected: '+$$(pickupBalance)];
-    if(dateLockPeriodRev) revParts.push('Date locks rcvd: '+$$(dateLockPeriodRev));
+    var _baseLabel = _kpiPeriod==='today' ? 'Balance collected today' : 'Rental revenue';
+    revParts = [_baseLabel+': '+$$(pickupBalance)];
+    if(dateLockPeriodRev) revParts.push('Date locks: '+$$(dateLockPeriodRev));
     if(addons)            revParts.push('Add-ons: '+$$(addons));
     if(fuelTotal)         revParts.push('Fuel: '+$$(fuelTotal));
     if(mileTotal)         revParts.push('Mileage: '+$$(mileTotal));
@@ -5567,7 +5568,7 @@ function renderKPIs(filtered, containerId){
     if(extChargeTotal)    revParts.push('Extensions: '+$$(extChargeTotal));
     if(otherIncome)       revParts.push('Other income: '+$$(otherIncome));
     dateLockCardVal = dateLockPeriodRev;
-    dateLockCardSub = 'Received in period · applied toward balance';
+    dateLockCardSub = _kpiPeriod==='today' ? 'Received today' : 'Held on file for period bookings';
   } else {
     var _allExtCharge = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
     revParts = ['Base: '+$$(pureBase)];
@@ -5705,55 +5706,47 @@ function renderVehicleTable(filtered){
   // filtered is already period-scoped by pickup date via _applyKpiPeriod
   var active=filtered.filter(function(b){ return b.status!=='cancelled'; });
   var from=$d('filterFrom').value, to=$d('filterTo').value;
-  var _kpiDR3 = _kpiDateRange(); // cash-basis date range for period filters
-  var isCashPeriod = !!_kpiDR3.from; // true when a period pill (not all-time) is selected
-
-  // For cash-basis, we need ALL active bookings (not just period-pickup ones) to catch
-  // date locks / balances received in-period on bookings with other pickup dates.
+  var _kpiDR3 = _kpiDateRange();
+  var isTodayOnly = _kpiPeriod === 'today';
+  var isPeriod = !!_kpiDR3.from; // any period pill active (including today)
   var allActive = bookings.filter(function(b){ return !b._deleted && b.status!=='cancelled'; });
-
   var map={};
 
-  if(isCashPeriod){
-    // Cash-basis: revenue = money actually received in the period
-    // Still show bookings with pickup in period (for count), but revenue = cash received
+  if(isTodayOnly){
+    // TODAY — cash-basis: only count logged payment timestamps
     active.forEach(function(b){
       if(!map[b.vehicle]) map[b.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
       map[b.vehicle].bookings++;
-      // Revenue and cost handled via cash-basis date checks below; don't add accrual values here
     });
-    // Cash-basis balance payments
     allActive.forEach(function(b){
-      if(!b.balancePaidAt) return;
-      var bpStr=dateStr(new Date(b.balancePaidAt));
-      var inP=_kpiPeriod==='today'?bpStr===_kpiDR3.from:bpStr>=_kpiDR3.from&&bpStr<=_kpiDR3.to;
-      if(!inP) return;
-      if(!map[b.vehicle]) return; // only credit vehicles shown in period
+      if(!b.balancePaidAt||dateStr(new Date(b.balancePaidAt))!==_kpiDR3.from) return;
+      if(!map[b.vehicle]) return;
       map[b.vehicle].revenue+=Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
     });
-    // Cash-basis date lock payments
     allActive.forEach(function(b){
-      if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt) return;
-      var dlStr=dateStr(new Date(b.dateLockPaidAt));
-      var inP=_kpiPeriod==='today'?dlStr===_kpiDR3.from:dlStr>=_kpiDR3.from&&dlStr<=_kpiDR3.to;
-      if(!inP) return;
+      if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt||dateStr(new Date(b.dateLockPaidAt))!==_kpiDR3.from) return;
       if(!map[b.vehicle]) return;
       map[b.vehicle].revenue+=Number(b.dateLock);
     });
-    // Extension charges received in period
     allActive.forEach(function(b){
       if(!b.extensions) return;
       b.extensions.forEach(function(ext){
         if(!(Number(ext.additionalCharge)>0)||!ext.createdAt) return;
-        var exStr=dateStr(new Date(ext.createdAt));
-        var inP=_kpiPeriod==='today'?exStr===_kpiDR3.from:exStr>=_kpiDR3.from&&exStr<=_kpiDR3.to;
-        if(!inP) return;
+        if(dateStr(new Date(ext.createdAt))!==_kpiDR3.from) return;
         if(!map[b.vehicle]) return;
         map[b.vehicle].revenue+=Number(ext.additionalCharge);
       });
     });
+    // Seed expense-only vehicles for today
+    var _m2=_recurringSourcesWithChildren();
+    expenses.forEach(function(e){
+      if(e._deleted||!e.vehicle) return;
+      if(e.recurring&&!e._autoGenerated&&_m2[e.id]) return;
+      if((e.date||'')!==_kpiDR3.from) return;
+      if(!map[e.vehicle]) map[e.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
+    });
   } else {
-    // All-time: accrual — full booking value
+    // ALL-TIME or 7/30/90 — accrual by pickup date (past bookings presumed collected)
     active.forEach(function(b){
       if(!map[b.vehicle]) map[b.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
       map[b.vehicle].bookings++;
@@ -5763,9 +5756,20 @@ function renderVehicleTable(filtered){
       map[b.vehicle].cost       +=getEstCost(b);
       map[b.vehicle].extraIncome+=(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0);
     });
+    // Seed expense-only vehicles for period (e.g. Corvette car payment in a week with no rental)
+    if(isPeriod){
+      var _m3=_recurringSourcesWithChildren();
+      expenses.forEach(function(e){
+        if(e._deleted||!e.vehicle) return;
+        if(e.recurring&&!e._autoGenerated&&_m3[e.id]) return;
+        if(_kpiDR3.from&&(e.date||'')<_kpiDR3.from) return;
+        if(_kpiDR3.to  &&(e.date||'')>_kpiDR3.to)   return;
+        if(!map[e.vehicle]) map[e.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
+      });
+    }
   }
 
-  // Add standalone income entries linked to vehicles (filter by period date)
+  // Standalone income entries linked to vehicles
   incomes.filter(function(i){
     if(i._deleted||!i.vehicle) return false;
     if(_kpiDR3.from && (i.fromDate||'') < _kpiDR3.from) return false;
@@ -5776,27 +5780,13 @@ function renderVehicleTable(filtered){
     map[i.vehicle].extraIncome+=(Number(i.amount)||0);
     map[i.vehicle].revenue    +=(Number(i.amount)||0);
   });
-  // In period mode, also seed the map from expenses so vehicles with expenses
-  // but no booking in the period still appear (e.g. Corvette car payment on a day with no rental).
-  if(isCashPeriod){
-    var _expFrom2 = _kpiDR3.from, _expTo2 = _kpiDR3.to;
-    var _managed2 = _recurringSourcesWithChildren();
-    expenses.forEach(function(e){
-      if(e._deleted || !e.vehicle) return;
-      // Skip recurring sources that already have auto-generated children (children are counted)
-      if(e.recurring && !e._autoGenerated && _managed2[e.id]) return;
-      if(_expFrom2 && (e.date||'') < _expFrom2) return;
-      if(_expTo2   && (e.date||'') > _expTo2)   return;
-      if(!map[e.vehicle]) map[e.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
-    });
-  }
 
   var rows=Object.keys(map).map(function(v){
     var d=map[v];
     var expFrom = _kpiDR3.from || from || null;
     var expTo   = _kpiDR3.to   || to   || null;
-    // In period mode use direct date-match (no projection) so only actually-dated entries count
-    var loggedExp = isCashPeriod
+    // Today: direct date-match only (no projection). 7/30/90/all: allow recurring expansion.
+    var loggedExp = isTodayOnly
       ? getVehicleExpensesDirect(v, expFrom, expTo)
       : getVehicleExpenses(v, expFrom, expTo);
     var totalCost=d.cost+loggedExp;
@@ -10514,71 +10504,74 @@ function renderPnl(filtered){
   var active=filtered.filter(function(b){return b.status!=='cancelled';});
   var from=$d('filterFrom').value, to=$d('filterTo').value;
   var _kpiDRp = _kpiDateRange();
-  var isCashP = !!_kpiDRp.from;
+  var isTodayPnl = _kpiPeriod==='today';
   var allActive = bookings.filter(function(b){return !b._deleted&&b.status!=='cancelled';});
   var vMap={};
+  var _managedPnl = _recurringSourcesWithChildren();
 
-  if(isCashP){
-    // Cash-basis: count booking (for row), revenue only when payment received
+  if(isTodayPnl){
+    // TODAY — strict cash-basis
     active.forEach(function(b){
       if(!vMap[b.vehicle]) vMap[b.vehicle]={rev:0,cost:0,bookings:0};
       vMap[b.vehicle].bookings++;
     });
-    // Balance received in period
     allActive.forEach(function(b){
-      if(!b.balancePaidAt) return;
-      var bpStr=dateStr(new Date(b.balancePaidAt));
-      var inP=_kpiPeriod==='today'?bpStr===_kpiDRp.from:bpStr>=_kpiDRp.from&&bpStr<=_kpiDRp.to;
-      if(!inP||!vMap[b.vehicle]) return;
+      if(!b.balancePaidAt||dateStr(new Date(b.balancePaidAt))!==_kpiDRp.from) return;
+      if(!vMap[b.vehicle]) return;
       vMap[b.vehicle].rev+=Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
     });
-    // Date lock received in period
     allActive.forEach(function(b){
-      if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt) return;
-      var dlStr=dateStr(new Date(b.dateLockPaidAt));
-      var inP=_kpiPeriod==='today'?dlStr===_kpiDRp.from:dlStr>=_kpiDRp.from&&dlStr<=_kpiDRp.to;
-      if(!inP||!vMap[b.vehicle]) return;
+      if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt||dateStr(new Date(b.dateLockPaidAt))!==_kpiDRp.from) return;
+      if(!vMap[b.vehicle]) return;
       vMap[b.vehicle].rev+=Number(b.dateLock);
     });
-    // Seed from expenses so expense-only vehicles appear (e.g. Corvette car payment with no booking)
-    var _managedPnl = _recurringSourcesWithChildren();
     expenses.forEach(function(e){
       if(e._deleted||!e.vehicle) return;
-      if(e.recurring&&!e._autoGenerated&&_managedPnl[e.id]) return; // skip if children handle it
-      if(_kpiDRp.from&&(e.date||'')<_kpiDRp.from) return;
-      if(_kpiDRp.to  &&(e.date||'')>_kpiDRp.to)   return;
+      if(e.recurring&&!e._autoGenerated&&_managedPnl[e.id]) return;
+      if((e.date||'')!==_kpiDRp.from) return;
       if(!vMap[e.vehicle]) vMap[e.vehicle]={rev:0,cost:0,bookings:0};
     });
   } else {
+    // ALL-TIME or 7/30/90 — accrual by pickup date
     active.forEach(function(b){
       if(!vMap[b.vehicle]) vMap[b.vehicle]={rev:0,cost:0,bookings:0};
       vMap[b.vehicle].rev+=netRevenue(b);
       vMap[b.vehicle].cost+=getEstCost(b);
       vMap[b.vehicle].bookings++;
     });
+    // Seed expense-only vehicles for period
+    if(_kpiDRp.from){
+      expenses.forEach(function(e){
+        if(e._deleted||!e.vehicle) return;
+        if(e.recurring&&!e._autoGenerated&&_managedPnl[e.id]) return;
+        if(_kpiDRp.from&&(e.date||'')<_kpiDRp.from) return;
+        if(_kpiDRp.to  &&(e.date||'')>_kpiDRp.to)   return;
+        if(!vMap[e.vehicle]) vMap[e.vehicle]={rev:0,cost:0,bookings:0};
+      });
+    }
   }
 
   var rows=Object.keys(vMap).sort(function(a,b){return vMap[b].rev-vMap[a].rev;});
-  // Sync header — hide Booking Costs column in cash-basis mode (no accrual cost to show)
+  // Sync header — hide Booking Costs column for Today (cash-basis, no accrual cost)
   var thead=$d('pnlTableHead');
   if(thead){
     thead.innerHTML='<th>Vehicle</th><th>Total Revenue</th>'+
-      (isCashP?'':'<th>Booking Costs</th>')+
+      (isTodayPnl?'':'<th>Booking Costs</th>')+
       '<th>Logged Expenses</th><th>Profit</th><th>Bookings</th>';
   }
-  var colSpan=isCashP?5:6;
+  var colSpan=isTodayPnl?5:6;
   var tbody=document.querySelector('#pnlTable tbody');
   if(!rows.length){tbody.innerHTML='<tr class="empty-row"><td colspan="'+colSpan+'">No data</td></tr>';return;}
   tbody.innerHTML=rows.map(function(v){
     var d=vMap[v];
     var expF=_kpiDRp.from||from||null, expT=_kpiDRp.to||to||null;
-    var loggedExp=isCashP?getVehicleExpensesDirect(v,expF,expT):getVehicleExpenses(v,expF,expT);
-    var profit=d.rev-(isCashP?0:d.cost)-loggedExp;
+    var loggedExp=isTodayPnl?getVehicleExpensesDirect(v,expF,expT):getVehicleExpenses(v,expF,expT);
+    var profit=d.rev-(isTodayPnl?0:d.cost)-loggedExp;
     var pc=profit>=0?'pos':'neg';
     return '<tr>'+
       '<td style="font-weight:700">'+v+'</td>'+
       '<td style="color:var(--gold);font-weight:700">'+$$(d.rev)+'</td>'+
-      (isCashP?'':'<td style="opacity:.7">'+$$(d.cost)+'</td>')+
+      (isTodayPnl?'':'<td style="opacity:.7">'+$$(d.cost)+'</td>')+
       '<td style="opacity:.7">'+$$(loggedExp)+'</td>'+
       '<td class="'+pc+'">'+$$(profit)+'</td>'+
       '<td>'+d.bookings+'</td>'+
