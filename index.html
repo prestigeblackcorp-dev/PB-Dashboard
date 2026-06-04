@@ -4092,6 +4092,17 @@ function submitGrouponPayout(){
 
 var _gpKpiRange = 'all'; // default: all time
 
+// Returns {from, to} date strings for the "last payout" period.
+// "Last payout" = bookings with pickupDate between the previous payout (exclusive)
+// and the most recent payout (inclusive).  Returns null if < 1 payout on record.
+function _gpLastPayoutRange(){
+  var all = getAllGrouponPayouts(); // sorted asc by date
+  if(!all.length) return null;
+  var last = all[all.length-1];
+  var prev = all.length>1 ? all[all.length-2] : null;
+  return { from: prev ? prev.date : '', to: last.date, label: 'Last Payout ('+fmtDate(last.date)+')' };
+}
+
 function _gpRangeStart(range){
   var now = new Date();
   var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -4135,6 +4146,11 @@ function _gpRangeEnd(range){
 function _inGpRange(dateStr, range){
   if(!range||range==='all') return true;
   if(!dateStr) return false;
+  if(range==='lastpayout'){
+    var lpr = _gpLastPayoutRange();
+    if(!lpr) return false;
+    return (!lpr.from || dateStr > lpr.from) && dateStr <= lpr.to;
+  }
   var d = new Date(dateStr+'T00:00:00');
   var start = _gpRangeStart(range);
   var end   = _gpRangeEnd(range);
@@ -4175,11 +4191,19 @@ function renderGrouponSection(){
   var pendingBooks = gActive.filter(function(b){ return !getGrouponPeriodForBooking(b,allPayouts); });
 
   // Range label
-  var rangeLabels = {today:'Today',weekend:'Past Weekend','7':'Last 7 Days','30':'Last 30 Days','90':'Last 90 Days',all:'All Time'};
+  var _lpr = _gpLastPayoutRange();
+  var rangeLabels = {
+    today:'Today', weekend:'Past Weekend', '7':'Last 7 Days',
+    '30':'Last 30 Days', '90':'Last 90 Days', all:'All Time',
+    lastpayout: _lpr ? _lpr.label : 'Last Payout'
+  };
   var rLabel = rangeLabels[range]||'All Time';
 
   // Filter pills
-  var pills = ['today','weekend','7','30','90','all'].map(function(r){
+  var pillOptions = ['lastpayout','today','weekend','7','30','90','all'];
+  var pills = pillOptions.map(function(r){
+    // Hide Last Payout pill if no payouts logged yet
+    if(r==='lastpayout' && !_lpr) return '';
     var active = r===range;
     return '<button onclick="_gpKpiRange=\''+r+'\';renderGrouponSection()" style="'+
       'padding:4px 12px;border-radius:20px;border:1px solid '+(active?'#00a34d':'rgba(255,255,255,.15)')+';'+
