@@ -11372,33 +11372,21 @@ function markBalancePaid(id){
 }
 function markDateLockPaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
-  // Fix 18: use actual remaining balance or prompt for amount rather than hardcoded 100
-  var defaultAmt = b.remainingBalance ? Math.min(100, Number(b.remainingBalance)) : 100;
-  var amtStr = prompt('Date lock amount received for '+b.name+'? (default: $'+defaultAmt+')', String(defaultAmt));
-  if(amtStr===null) return; // cancelled
-  var amt = parseFloat(amtStr) || defaultAmt;
-  if(amt<=0){ showToast('Invalid amount'); return; }
-  b.dateLock = amt;
+  if(!confirm('Mark $100 date lock as paid for '+b.name+'?')) return;
+  b.dateLock=100;
   b.dateLockPaidAt = b.dateLockPaidAt || Date.now();
+  var dep=Number(b.deposit)||0;
   var rev=Number(b.revenue)||0;
   if(b.remainingBalance!=null){
-    b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt);
+    b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-100);
   } else {
-    b.remainingBalance=Math.max(0,rev-amt);
+    b.remainingBalance=Math.max(0,rev+dep-100);
   }
   b._t=Date.now();
   save();
-  // Fix 9: also call /confirm-booking on the booking worker to sync status to Firebase
-  if(WORKER_URL){
-    fetch(WORKER_URL+'/confirm-booking',{
-      method:'POST',
-      headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
-      body:JSON.stringify({bookingId:b.id, dateLock:amt, revenue:rev})
-    }).catch(function(){});
-  }
   render();
   showBookingDetail(id);
-  showToast('✅ $'+amt+' date lock marked as paid for '+b.name);
+  showToast('✅ $100 date lock marked as paid for '+b.name);
 }
 
 // ════════════════════════════════════════════════════════
@@ -16126,10 +16114,12 @@ setTimeout(stickyTabFix, 200);
         WORKER_URL = cfg.w.trim().replace(/\/$/,'');
         try { localStorage.setItem('pb_worker_url', WORKER_URL); } catch(e){}
       }
-      // Clean the URL so the secret isn't visible in the address bar
+      // Clean only the pb_setup param from the URL, preserve other params (portal=, sign=, etc.)
       try {
-        var cleanUrl = location.href.replace(/[?&]pb_setup=[^&#]*/,'').replace(/^\?$/,'').replace(/^#$/,'') || location.pathname;
-        history.replaceState(null, '', cleanUrl);
+        var cleanSp = new URLSearchParams(location.search);
+        cleanSp.delete('pb_setup');
+        var cleanSearch = cleanSp.toString() ? '?' + cleanSp.toString() : '';
+        history.replaceState(null, '', location.pathname + cleanSearch + location.hash);
       } catch(e){}
       // Trigger a cloud load now that we have credentials
       if (typeof cloudLoad === 'function') {
