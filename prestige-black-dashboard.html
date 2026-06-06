@@ -3365,7 +3365,8 @@ function fmtTime(t){
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
 function totalRevenue(b){ return (Number(b.revenue)||0)+getAddons(b)+(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0); }
-function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
+function grossRevenue(b){ return totalRevenue(b)+(Number(b.dateLock)||0); }
+function netRevenue(b){ return grossRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1))-(Number(b.loyaltyDiscount)||0); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
 
@@ -3393,7 +3394,7 @@ function getAddons(b){
   return (Number(b.delivery)||0)+(Number(b.unlimited)||0)*days+(Number(b.pet)||0)+
          (Number(b.photo)||0)+(Number(b.champagne)||0)+(Number(b.decor)||0)+(Number(b.bouquet)||0);
 }
-function getProfit(b){ return totalRevenue(b)-getEstCost(b); }
+function getProfit(b){ return grossRevenue(b)-getEstCost(b); }
 
 // Days a booking occupies (for calendar spanning)
 function getBookingDates(b){
@@ -3481,13 +3482,13 @@ function renderKPIs(filtered, containerId){
   var baseBookingRev = sumK(active,'revenue');
   var addons         = active.reduce(function(s,b){ return s+getAddons(b); },0);
   var dateLockSum    = active.reduce(function(s,b){ return s+(Number(b.dateLock)||0); },0);
-  var bookingRev     = active.reduce(function(s,b){ return s+totalRevenue(b)+(Number(b.dateLock)||0); },0); // includes date lock
+  var bookingRev     = active.reduce(function(s,b){ return s+grossRevenue(b); },0);
   var deposits    = sumK(active,'deposit');
   var depositKept = sumK(active,'depositKept');
   var bookingCost = active.reduce(function(s,b){ return s+getEstCost(b); },0);
   var totalBrokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*(Number(b.days)||1)); },0);
   var totalLoyaltyDisc = sumK(active,'loyaltyDiscount');
-  var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b)+(Number(b.dateLock)||0); },0);
+  var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0);
   var from        = $d('filterFrom') ? $d('filterFrom').value : '';
   var to          = $d('filterTo')   ? $d('filterTo').value   : '';
   var loggedExp   = getTotalExpenses(from||null, to||null);
@@ -3561,7 +3562,7 @@ function renderCharts(filtered){
   var mR={},mC={};
   active.forEach(function(b){
     var m=((b.pickupDate||b.date)||'').substring(0,7); if(!m) return;
-    mR[m]=(mR[m]||0)+totalRevenue(b);
+    mR[m]=(mR[m]||0)+grossRevenue(b);
     mC[m]=(mC[m]||0)+getEstCost(b);
   });
   var months=Object.keys(mR).sort();
@@ -3582,7 +3583,7 @@ function renderCharts(filtered){
 
   // Revenue by vehicle
   var rv={};
-  active.forEach(function(b){ rv[b.vehicle]=(rv[b.vehicle]||0)+totalRevenue(b); });
+  active.forEach(function(b){ rv[b.vehicle]=(rv[b.vehicle]||0)+grossRevenue(b); });
   var vl=Object.keys(rv).sort(function(a,b){return rv[b]-rv[a];}).slice(0,10);
   dc('rvv');
   charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vl,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();}}},y:{grid:{display:false}}}}});
@@ -3607,7 +3608,7 @@ function renderVehicleTable(filtered){
   active.forEach(function(b){
     if(!map[b.vehicle]) map[b.vehicle]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0};
     map[b.vehicle].bookings++;
-    map[b.vehicle].revenue    +=totalRevenue(b);
+    map[b.vehicle].revenue    +=grossRevenue(b);
     map[b.vehicle].deposits   +=(Number(b.deposit)||0);
     map[b.vehicle].addons     +=getAddons(b);
     map[b.vehicle].cost       +=getEstCost(b);
@@ -3667,7 +3668,7 @@ function renderBookingsTable(filtered){
   if(_bPage<0) _bPage=0;
   var page=sorted.slice(_bPage*PAGE_SIZE, (_bPage+1)*PAGE_SIZE);
   $d('bookingMeta').textContent=filtered.length+' booking'+(filtered.length!==1?'s':'')+
-    ' — Revenue: '+$$(filtered.filter(function(b){return b.status!=='cancelled';}).reduce(function(s,b){return s+totalRevenue(b)+(Number(b.dateLock)||0);},0))+
+    ' — Revenue: '+$$(filtered.filter(function(b){return b.status!=='cancelled';}).reduce(function(s,b){return s+grossRevenue(b);},0))+
     (totalPages>1?' — Page '+(_bPage+1)+'/'+totalPages:'');
   var tbody=document.querySelector('#bookingsTable tbody');
   if(!sorted.length){ tbody.innerHTML='<tr class="empty-row"><td colspan="23">No bookings</td></tr>';
@@ -4083,7 +4084,7 @@ function openBookingDetail(id){
 
     // Revenue
     '<div class="fsec">Revenue</div>'+
-    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(getAddons(b)?'<span style="font-size:10px;opacity:.7"> (base '+$$(b.revenue)+' + add-ons '+$$(getAddons(b))+')</span>':'')+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(grossRevenue(b))+(getAddons(b)||b.dateLock?'<span style="font-size:10px;opacity:.7"> (base '+$$(b.revenue)+(getAddons(b)?' + add-ons '+$$(getAddons(b)):'')+((Number(b.dateLock)||0)?' + date lock '+$$(b.dateLock):'')+' )</span>':'')+'</span></div>'+
     (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+ ((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+' × '+(b.days||1)+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">−'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
@@ -5082,7 +5083,7 @@ function openCheckIn(id){
   $d('ciSummary').innerHTML=
     '<strong>'+esc(b.vehicle)+'</strong> &nbsp;·&nbsp; '+esc(b.name)+'<br>'+
     'Pickup: <strong>'+(b.pickupDate?fmtDate(b.pickupDate)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):''):fmtDate(b.date))+'</strong><br>'+
-    'Revenue: <strong>'+$$(totalRevenue(b))+'</strong> &nbsp;·&nbsp; <span class="badge '+b.status+'">'+b.status+'</span>';
+    'Revenue: <strong>'+$$(grossRevenue(b))+'</strong> &nbsp;·&nbsp; <span class="badge '+b.status+'">'+b.status+'</span>';
   updatePhotoSyncHints();
   // Verification + signature warnings
   var warnEl=$d('ciVerifyWarn');
@@ -5179,7 +5180,7 @@ function openCloseOut(id){
     '<div style="background:rgba(255,200,0,.06);border:1px solid rgba(255,200,0,.2);border-radius:10px;padding:8px 14px;font-size:12px;color:var(--muted)">⚠ No check-in recorded — open Check In first to log pickup odometer, fuel &amp; condition.</div>';
   $d('coSummary').innerHTML =
     '<strong>'+esc(b.vehicle)+'</strong> &nbsp;·&nbsp; '+esc(b.name)+'<br>'+
-    'Pickup: <strong>'+fmtDate(b.pickupDate||b.date)+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(totalRevenue(b))+'</strong>'+
+    'Pickup: <strong>'+fmtDate(b.pickupDate||b.date)+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(grossRevenue(b))+'</strong>'+
     (b.broker?' &nbsp;·&nbsp; Broker: <strong>'+esc(b.broker)+'</strong>':'')+
     (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'</strong>':'')+
     (!(b.type==='chauffeur'||(b.vehicle==='Polaris Slingshot'&&b.type==='hourly'))
@@ -5873,7 +5874,7 @@ function renderTodayBanner(){
       addrHtml+
       // Row 4: revenue + balance + deposit
       '<div style="display:flex;align-items:center;gap:14px;margin-top:8px;flex-wrap:wrap">'+
-        '<span class="today-banner-revenue">'+$$(totalRevenue(b))+'</span>'+
+        '<span class="today-banner-revenue">'+$$(grossRevenue(b))+'</span>'+
         balHtml+
         depHtml+
       '</div>'+
@@ -6038,7 +6039,7 @@ function sendReceiptEmail(b){
     '<tr><td style="padding:6px 0;color:#555">Duration</td><td style="padding:6px 0">'+b.days+' day'+(b.days!==1?'s':'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Base Rate</td><td style="padding:6px 0">'+$$(b.revenue)+'</td></tr>'+
     addons.map(function(a){ return '<tr><td style="padding:6px 0;color:#555">'+a.label+'</td><td style="padding:6px 0">'+$$(a.val)+'</td></tr>'; }).join('')+
-    '<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(totalRevenue(b))+'</td></tr>'+
+    '<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(grossRevenue(b))+'</td></tr>'+
     (Number(b.dateLock)?'<tr><td style="padding:6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',headers:{'Content-Type':'application/json'},
@@ -6162,7 +6163,7 @@ function renderPnl(filtered){
   var vMap={};
   active.forEach(function(b){
     if(!vMap[b.vehicle]) vMap[b.vehicle]={rev:0,cost:0,bookings:0};
-    vMap[b.vehicle].rev+=netRevenue(b);
+    vMap[b.vehicle].rev+=grossRevenue(b);
     vMap[b.vehicle].cost+=getEstCost(b);
     vMap[b.vehicle].bookings++;
   });
@@ -6271,7 +6272,7 @@ function exportCSV(){
       b.id,b.date,b.name,b.phone||'',b.email||'',b.vehicle,b.type,b.days,
       b.revenue||0,
       b.delivery||0,b.unlimited||0,b.pet||0,b.photo||0,b.champagne||0,b.decor||0,b.bouquet||0,
-      getAddons(b),totalRevenue(b),netRevenue(b),
+      getAddons(b),grossRevenue(b),netRevenue(b),
       b.deposit||0,b.depositKept||0,b.dateLock||0,getRemainingBalance(b),
       b.balancePaidAmount||'',b.balancePaidMethod||'',
       b.broker||'',b.brokerFee||0,b.loyaltyDiscount||0,
@@ -6453,7 +6454,7 @@ function renderForecast(){
   function fr(days){
     var lim=dateStr(addDays(new Date(tod+'T00:00:00'),days-1));
     var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>=tod&&(b.pickupDate||b.date)<=lim; });
-    return {count:bks.length, rev:bks.reduce(function(s,b){return s+totalRevenue(b);},0)};
+    return {count:bks.length, rev:bks.reduce(function(s,b){return s+grossRevenue(b);},0)};
   }
   var f30=fr(30),f60=fr(60),f90=fr(90);
   el.innerHTML='<div class="chart-ttl" style="margin-bottom:12px">📈 Revenue Forecast (Confirmed &amp; Pending Bookings)</div>'+
@@ -6492,7 +6493,7 @@ function renderOutstanding(){
       '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
       '<td style="font-weight:700">'+esc(b.name)+(b.phone?' <span style="color:var(--muted);font-size:11px">'+esc(b.phone)+'</span>':'')+'</td>'+
       '<td>'+b.vehicle+'</td>'+
-      '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
+      '<td style="color:var(--gold);font-weight:700">'+$$(grossRevenue(b))+'</td>'+
       '<td style="color:var(--green)">'+$$(lock)+'</td>'+
       '<td style="color:var(--green);font-weight:700">'+
         (b.balancePaidAt?
@@ -6603,7 +6604,7 @@ function renderTaxTab(){
         var m=parseInt((i.fromDate||'').substring(5,7),10);
         return (i.fromDate||'').substring(0,4)===yr&&m>=qs&&m<=qe;
       });
-      var qRev=qBk.reduce(function(s,b){return s+totalRevenue(b);},0);
+      var qRev=qBk.reduce(function(s,b){return s+grossRevenue(b);},0);
       var qOth=qIn.reduce(function(s,i){return s+(Number(i.amount)||0);},0);
       var qExp=qEx.reduce(function(s,e){return s+(Number(e.amount)||0);},0);
       var qNet=qRev+qOth-qExp;
@@ -6937,7 +6938,7 @@ function renderCustomersTab(){
     if(!key) return;
     if(!custMap[key]) custMap[key]={name:b.name,phone:b.phone||'',email:b.email||'',bookings:[],spent:0,net:0};
     custMap[key].bookings.push(b);
-    if(b.status!=='cancelled'){ custMap[key].spent+=totalRevenue(b); custMap[key].net+=netRevenue(b); }
+    if(b.status!=='cancelled'){ custMap[key].spent+=grossRevenue(b); custMap[key].net+=netRevenue(b); }
   });
   var custs=Object.values(custMap).sort(function(a,b){return b.spent-a.spent;});
   if(!custs.length){ el.innerHTML='<div style="padding:40px;text-align:center;color:var(--muted)">No customer data yet.</div>'; return; }
@@ -6989,7 +6990,7 @@ function renderBrokerTab(){
     var n=b.broker;
     if(!brokerMap[n]) brokerMap[n]={name:n,count:0,gross:0,fees:0,loyalty:0,lastDate:''};
     brokerMap[n].count++;
-    brokerMap[n].gross+=totalRevenue(b);
+    brokerMap[n].gross+=grossRevenue(b);
     brokerMap[n].fees+=((Number(b.brokerFee)||0)*(Number(b.days)||1));
     brokerMap[n].loyalty+=(Number(b.loyaltyDiscount)||0);
     if((b.date||'')>brokerMap[n].lastDate) brokerMap[n].lastDate=b.date;
@@ -7021,7 +7022,7 @@ function renderBrokerTab(){
     var s=b.source||'Unknown';
     if(!srcMap[s]) srcMap[s]={count:0,rev:0,net:0};
     srcMap[s].count++;
-    srcMap[s].rev+=totalRevenue(b);
+    srcMap[s].rev+=grossRevenue(b);
     srcMap[s].net+=netRevenue(b);
   });
   var srows=Object.values(Object.assign({},srcMap)).sort(function(a,b){return b.rev-a.rev;});
@@ -7051,7 +7052,7 @@ function openCustomerProfile(enc){
   if(!bks.length) return;
   var first=bks[0];
   var nonCancelled=bks.filter(function(b){return b.status!=='cancelled';});
-  var spent=nonCancelled.reduce(function(s,b){return s+totalRevenue(b);},0);
+  var spent=nonCancelled.reduce(function(s,b){return s+grossRevenue(b);},0);
   var net=nonCancelled.reduce(function(s,b){return s+netRevenue(b);},0);
   var active=nonCancelled.length;
   // Preferred vehicle (most booked)
@@ -7086,7 +7087,7 @@ function openCustomerProfile(enc){
         '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
         '<td>'+b.vehicle+'</td>'+
         '<td><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span></td>'+
-        '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
+        '<td style="color:var(--gold);font-weight:700">'+$$(grossRevenue(b))+'</td>'+
         '<td><span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></td>'+
         '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\');closeCustomerModal()">Edit</button></td>'+
       '</tr>';
@@ -7544,7 +7545,7 @@ function openContract(id){
   if(Number(b.champagne)) addonLines.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addonLines.push('Decor ($'+b.decor+')');
   if(Number(b.bouquet))   addonLines.push('Flower Bouquet ($'+b.bouquet+')');
-  var rev=totalRevenue(b), dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
+  var rev=grossRevenue(b), dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
   var days=Number(b.days)||1;
   var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
