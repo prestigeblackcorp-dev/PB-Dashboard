@@ -1337,7 +1337,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
             <div style="font-size:11px;color:var(--muted)">Auto-calculated from Revenue − Date Lock. Edit freely to track partial payments.</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
-            <input type="number" class="finput" id="fRemainingBalance" min="0" step="1" placeholder="0" style="width:120px;text-align:right;font-size:15px;font-weight:700;color:var(--gold)" oninput="this._manual=true">
+            <input type="number" class="finput" id="fRemainingBalance" min="0" step="1" placeholder="0" style="width:120px;text-align:right;font-size:15px;font-weight:700;color:var(--gold)" oninput="this._manual=true;if((parseFloat(this.value)||0)===0){var chk=$d('fBalancePaidChk');if(chk&&!chk.checked){chk.checked=true;toggleBalancePaidFields();}}">
             <button type="button" class="btn btn-sm" onclick="updateRemainingBalance(true)" title="Recalculate from Revenue − Date Lock" style="white-space:nowrap">↺ Recalc</button>
           </div>
         </div>
@@ -4482,6 +4482,11 @@ function onDepositChange(){ updateLiveTotal(); updateRemainingBalance(); }
 function toggleBalancePaidFields(){
   var chk=$d('fBalancePaidChk'), fields=$d('fBalancePaidFields');
   if(fields) fields.style.display=chk&&chk.checked?'contents':'none';
+  // Auto-zero remaining balance when marking paid
+  if(chk&&chk.checked){
+    var rb=$d('fRemainingBalance');
+    if(rb){ rb.value=0; rb._manual=true; }
+  }
 }
 function toggleDamageSection(){
   var cb=$d('coDamageFlagged'), sec=$d('damageSection');
@@ -4793,9 +4798,11 @@ function saveBooking(){
       if(ex.damage)             entry.damage             = ex.damage;
       if(ex.customerSig)        entry.customerSig        = ex.customerSig;
       var bpChecked=$d('fBalancePaidChk')&&$d('fBalancePaidChk').checked;
-      entry.balancePaidAt     = bpChecked ? (ex.balancePaidAt||Date.now()) : null;
-      entry.balancePaidAmount = bpChecked ? (parseFloat($d('fBalancePaidAmt').value)||0) : 0;
-      entry.balancePaidMethod = bpChecked ? ($d('fBalancePaidMethod').value||'') : '';
+      var rbVal=parseFloat($d('fRemainingBalance').value)||0;
+      var effectivePaid=bpChecked||(rbVal===0&&(ex.balancePaidAt||false));
+      entry.balancePaidAt     = effectivePaid ? (ex.balancePaidAt||Date.now()) : null;
+      entry.balancePaidAmount = effectivePaid ? (parseFloat($d('fBalancePaidAmt').value)||0) : 0;
+      entry.balancePaidMethod = effectivePaid ? ($d('fBalancePaidMethod').value||'') : '';
       if(ex.checkInPhotoIds)    entry.checkInPhotoIds    = ex.checkInPhotoIds;
       if(ex.checkOutPhotoIds)   entry.checkOutPhotoIds   = ex.checkOutPhotoIds;
       if(ex.odomIn)             entry.odomIn             = ex.odomIn;
@@ -6532,9 +6539,14 @@ function editRemainingBalance(id){
   var num=parseFloat(val);
   if(isNaN(num)||num<0){ alert('Please enter a valid amount.'); return; }
   b.remainingBalance=num;
+  if(num===0&&!b.balancePaidAt){
+    var method=prompt('Payment method for records (Zelle, Cash App, Venmo, Cash, Card, Other):','Cash');
+    if(method){ b.balancePaidAt=Date.now(); b.balancePaidMethod=method.trim(); b.balancePaidAmount=0; }
+  }
   b._t=Date.now();
   save();
   renderOutstanding();
+  render();
   toast(b.name+' remaining balance updated to $'+num);
 }
 function markBalancePaid(id){
