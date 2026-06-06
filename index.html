@@ -9242,9 +9242,7 @@ function runAutoScheduledEmails(){
     // completed it.  Clears on verified (see applyStripeVerification).
     if(!b.verify||!b.verify.idVerified){
       var _nudgeKey = 'pb_sent_nudge_'+b.id;
-      // Fix 17: use Firebase notif for nudge dedup so it works across devices/browsers
-      var _nudgeFbKey = b.id+'_nudge';
-      if(localStorage.getItem(_nudgeKey)) return; // already sent on this device
+      if(localStorage.getItem(_nudgeKey)) return; // already sent
       if(!VERIFY_URL) return;
       var _hasSids = (b.verify&&Array.isArray(b.verify.stripeSessionIds)&&b.verify.stripeSessionIds.length);
       var _lsSids = [];
@@ -9254,28 +9252,8 @@ function runAutoScheduledEmails(){
       if(!_sentAt) return;
       var _hoursSinceSent = (_now - _sentAt) / 3600000;
       if(_hoursSinceSent >= 2){
-        (function(_b, _lsKey, _fbKey){
-          var _fbUrl = (localStorage.getItem('pb_firebase_url')||'').replace(/\/$/,'');
-          var doSend = function(){
-            localStorage.setItem(_lsKey, String(_now));
-            // Write to Firebase notif so other devices see it too
-            if(_fbUrl){
-              fetch(_fbUrl+'/pb_data/notif/'+encodeURIComponent(_fbKey)+'.json',{
-                method:'PUT', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify(_now)
-              }).catch(function(){});
-            }
-            sendVerifyNudgeEmail(_b);
-          };
-          if(_fbUrl){
-            fetch(_fbUrl+'/pb_data/notif/'+encodeURIComponent(_fbKey)+'.json',{cache:'no-store'})
-              .then(function(r){ return r.json(); })
-              .then(function(v){ if(!v) doSend(); })
-              .catch(function(){ doSend(); });
-          } else {
-            doSend();
-          }
-        })(b, _nudgeKey, _nudgeFbKey);
+        localStorage.setItem(_nudgeKey, String(_now));
+        sendVerifyNudgeEmail(b);
       }
     }
   });
