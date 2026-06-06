@@ -2400,6 +2400,11 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Cloudflare Worker URL for sending emails (review requests, etc.). Deploy <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">prestige-black-messaging-worker.js</code> to get this URL.</div>
       </div>
       <div class="fgroup ffull">
+        <div class="flabel">Worker Secret (DASHBOARD_SECRET)</div>
+        <input type="password" class="finput" id="settDashboardSecret" placeholder="Paste your DASHBOARD_SECRET from Cloudflare" autocomplete="new-password">
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Shared secret set in all your Cloudflare Worker Variables as <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">DASHBOARD_SECRET</code>. Required for sync, email, and booking actions.</div>
+      </div>
+      <div class="fgroup ffull">
         <div class="flabel">Owner Notification Email</div>
         <input type="email" class="finput" id="settOwnerEmail" placeholder="you@example.com">
         <div style="font-size:11px;color:var(--muted);margin-top:5px">Receives new booking alerts and ID verification emails. Leave blank to disable.</div>
@@ -2932,6 +2937,9 @@ var _rawMessagingUrl       = localStorage.getItem('pb_messaging_url') || localSt
 var WORKER_URL     = (_rawWorkerUrl.indexOf('https://')===0    ? _rawWorkerUrl    : '') || _WORKER_URL_DEFAULT;
 var MESSAGING_URL  = (_rawMessagingUrl.indexOf('https://')===0 ? _rawMessagingUrl : '') || _WORKER_URL_DEFAULT;
 var VERIFY_URL     = localStorage.getItem('pb_verify_url')     || 'https://idverify.prestigeblackcorp.workers.dev';
+var DASHBOARD_SECRET = localStorage.getItem('pb_dashboard_secret') || '';
+// Helper: returns Authorization header object if secret is set, empty object otherwise
+function _authHeader(){ return DASHBOARD_SECRET ? {'Authorization':'Bearer '+DASHBOARD_SECRET} : {}; }
 var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) || 25;
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
 var REVIEW_URL     = localStorage.getItem('pb_review_url')     || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
@@ -3025,7 +3033,7 @@ function _cloudSaveNow() {
   _cloudSaving = true;
   setSyncStatus('syncing');
   // Staleness check via Worker so Firebase rules can be locked
-  fetch(WORKER_URL + '/sync/savedAt?_=' + Date.now(), { cache: 'no-store' })
+  fetch(WORKER_URL + '/sync/savedAt?_=' + Date.now(), { cache: 'no-store', headers: _authHeader() })
     .then(function(r){ return r.ok ? r.json() : null; })
     .catch(function(){ return null; })
     .then(function(remoteSavedAt){
@@ -3057,7 +3065,7 @@ function _cloudSaveNow() {
       };
       fetch(WORKER_URL + '/sync/save', {
         method: 'POST', body: JSON.stringify(data),
-        headers: { 'Content-Type': 'application/json' }
+        headers: Object.assign({'Content-Type':'application/json'}, _authHeader())
       }).then(function(r){ return r.json(); })
       .then(function(res) {
         _cloudSaving = false;
@@ -3085,7 +3093,7 @@ function _cloudSaveNow() {
 function cloudLoad(callback) {
   if (!WORKER_URL) { if (callback) callback(false); return; }
   setSyncStatus('syncing');
-  fetch(WORKER_URL + '/sync/load?_=' + Date.now(), { cache: 'no-store' })
+  fetch(WORKER_URL + '/sync/load?_=' + Date.now(), { cache: 'no-store', headers: _authHeader() })
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data && typeof data === 'object') {
@@ -4518,7 +4526,7 @@ function sendWaitlistAutoBookEmail(b){
   var firstName=(b.name||'').split(' ')[0]||'there';
   var lockUrl=DATE_LOCK_URL||'';
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method:'POST', headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:b.email,
       subject:'🎉 Your waitlist booking is confirmed — '+esc(b.vehicle),
@@ -4563,7 +4571,7 @@ function sendWaitlistAddedConfirmation(w){
   var firstName=(w.name||'').split(' ')[0]||'there';
   var dates=w.startDate+(w.endDate&&w.endDate!==w.startDate?' – '+fmtDate(w.endDate):('  '+fmtDate(w.startDate)));
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method:'POST', headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:w.email,
       subject:'You\'re on the waitlist — '+esc(w.vehicle)+' · Prestige Black',
@@ -4607,7 +4615,7 @@ function sendWaitlistNotification(entry, cancelledBooking){
   var dates=entry.startDate+(entry.endDate&&entry.endDate!==entry.startDate?' – '+fmtDate(entry.endDate):('  '+fmtDate(entry.startDate)));
   var lockUrl=DATE_LOCK_URL||'';
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method:'POST', headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:entry.email,
       subject:'A spot opened up — '+esc(veh)+' · Prestige Black',
@@ -5142,7 +5150,7 @@ function clearAllData(){
       savedAt: Date.now() };
     fetch(WORKER_URL+'/sync/save',{
       method:'POST', body:JSON.stringify(data),
-      headers:{'Content-Type':'application/json'}
+      headers:Object.assign({'Content-Type':'application/json'},_authHeader())
     }).then(function(r){ return r.json(); })
       .then(function(res){ setSyncStatus(res&&res.ok?'ok':'error'); })
       .catch(function(){ setSyncStatus('error'); });
@@ -8469,7 +8477,7 @@ function sendDriverStripeVerify(bookingId, driverIdx){
   showToast('Creating Stripe session for '+d.name+'…');
   fetch(VERIFY_URL+'/create-verification',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({bookingId:bookingId, returnUrl:'https://prestigeblackrentals.com', customerName:d.name||''})
   })
   .then(function(r){ return r.json(); })
@@ -8484,7 +8492,7 @@ function sendDriverStripeVerify(bookingId, driverIdx){
     if(MESSAGING_URL){
       var _firstName=(d.name||'').split(' ')[0]||'there';
       fetch(MESSAGING_URL+'/send-email',{
-        method:'POST', headers:{'Content-Type':'application/json'},
+        method:'POST', headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
         body:JSON.stringify({
           to:d.email,
           subject:'ID Verification Required — Prestige Black Rentals',
@@ -8776,10 +8784,11 @@ function openSettings(){
     mergeCommLogsIntoNotifLog();
     renderStaffPinList();
     renderBlacklist();
-    var settWorkerUrl=$d('settWorkerUrl');       if(settWorkerUrl)    settWorkerUrl.value    = WORKER_URL||'';
-    var settVerifyUrl=$d('settVerifyUrl');       if(settVerifyUrl)    settVerifyUrl.value    = VERIFY_URL||'';
-    var settMessagingUrl=$d('settMessagingUrl'); if(settMessagingUrl) settMessagingUrl.value = MESSAGING_URL||'';
-    var settOwnerEmail=$d('settOwnerEmail');     if(settOwnerEmail)   settOwnerEmail.value   = OWNER_EMAIL||'';
+    var settWorkerUrl=$d('settWorkerUrl');             if(settWorkerUrl)       settWorkerUrl.value       = WORKER_URL||'';
+    var settVerifyUrl=$d('settVerifyUrl');             if(settVerifyUrl)       settVerifyUrl.value       = VERIFY_URL||'';
+    var settMessagingUrl=$d('settMessagingUrl');       if(settMessagingUrl)   settMessagingUrl.value     = MESSAGING_URL||'';
+    var settDashboardSecret=$d('settDashboardSecret'); if(settDashboardSecret) settDashboardSecret.value = DASHBOARD_SECRET ? '••••••••' : '';
+    var settOwnerEmail=$d('settOwnerEmail');           if(settOwnerEmail)     settOwnerEmail.value       = OWNER_EMAIL||'';
     var settDateLockUrl=$d('settDateLockUrl');   if(settDateLockUrl)  settDateLockUrl.value  = DATE_LOCK_URL||'';
     var settBalanceUrl=$d('settBalanceUrl');     if(settBalanceUrl)   settBalanceUrl.value   = BALANCE_URL||'';
     var settReviewUrl=$d('settReviewUrl');       if(settReviewUrl)    settReviewUrl.value    = REVIEW_URL||'';
@@ -8789,7 +8798,7 @@ function openSettings(){
     renderNotifLog();
     _settingsDirty = false;
     var b=$d('settUnsavedBanner'); if(b) b.style.display='none';
-    ['settWorkerUrl','settVerifyUrl','settMessagingUrl','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
+    ['settWorkerUrl','settVerifyUrl','settMessagingUrl','settDashboardSecret','settOwnerEmail','settDateLockUrl','settReviewUrl','settOpenAiKey'].forEach(function(id){
       var el=$d(id); if(el) el.oninput=_markSettingsDirty;
     });
     $d('settingsModal').classList.add('open');
@@ -9022,19 +9031,22 @@ function testOpenAiKey(){
 function saveSettings(){
   try {
     var g = function(id){ var el=$d(id); return el ? (el.value||'') : ''; };
-    WORKER_URL    = g('settWorkerUrl').trim().replace(/\/$/,'');
-    VERIFY_URL    = g('settVerifyUrl').trim().replace(/\/$/,'');
-    MESSAGING_URL = g('settMessagingUrl').trim().replace(/\/$/,'');
-    OWNER_EMAIL   = g('settOwnerEmail').trim();
+    WORKER_URL       = g('settWorkerUrl').trim().replace(/\/$/,'');
+    VERIFY_URL       = g('settVerifyUrl').trim().replace(/\/$/,'');
+    MESSAGING_URL    = g('settMessagingUrl').trim().replace(/\/$/,'');
+    var newSecret    = g('settDashboardSecret').trim();
+    if (newSecret) DASHBOARD_SECRET = newSecret;
+    OWNER_EMAIL      = g('settOwnerEmail').trim();
     DATE_LOCK_URL = g('settDateLockUrl').trim();
     BALANCE_URL   = g('settBalanceUrl').trim();
     REVIEW_URL    = g('settReviewUrl').trim() || 'https://g.page/r/CbWVnx8A8oUZEAE/review';
     OPENAI_KEY    = g('settOpenAiKey').trim();
     SELF_EMPLOYMENT_TAX_RATE = parseFloat(g('settTaxRate')) || 25;
-    localStorage.setItem('pb_worker_url',    WORKER_URL);
-    localStorage.setItem('pb_verify_url',    VERIFY_URL);
-    localStorage.setItem('pb_messaging_url', MESSAGING_URL);
-    localStorage.setItem('pb_owner_email',   OWNER_EMAIL);
+    localStorage.setItem('pb_worker_url',       WORKER_URL);
+    localStorage.setItem('pb_verify_url',       VERIFY_URL);
+    localStorage.setItem('pb_messaging_url',    MESSAGING_URL);
+    if (newSecret) localStorage.setItem('pb_dashboard_secret', DASHBOARD_SECRET);
+    localStorage.setItem('pb_owner_email',      OWNER_EMAIL);
     localStorage.setItem('pb_date_lock_url', DATE_LOCK_URL);
     localStorage.setItem('pb_balance_url',   BALANCE_URL);
     localStorage.setItem('pb_review_url',    REVIEW_URL);
@@ -9236,7 +9248,7 @@ function sendVerifyNudgeEmail(b){
 
   // Create a fresh session so the link is guaranteed to be valid
   fetch(VERIFY_URL+'/create-verification',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({bookingId:b.id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
   }).then(function(r){ return r.json(); }).then(function(d){
     if(!d||!d.url||!d.id) return;
@@ -9244,7 +9256,7 @@ function sendVerifyNudgeEmail(b){
     var _url=d.url;
     var _urlHtml=_url.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
     fetch(MESSAGING_URL+'/send-email',{
-      method:'POST',headers:{'Content-Type':'application/json'},
+      method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
       body:JSON.stringify({
         to:b.email,
         subject:'Quick reminder: your ID verification is still waiting — '+esc(b.vehicle),
@@ -9340,7 +9352,7 @@ function sendStripeVerification(){
   $d('vStripeStatus').textContent='Creating session…';
   fetch(VERIFY_URL+'/create-verification',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     // Use the public website as return_url — the dashboard URL (github.io/cloudflare pages)
     // must be whitelisted in Stripe's allowed-redirect list or Stripe silently breaks the session.
     // Redirecting to the public site is better UX anyway; the dashboard polls independently.
@@ -9383,7 +9395,7 @@ function sendStripeVerification(){
       if(_isDriver){
         // ── Driver mode email — simple verify request ──────────────────────
         fetch(MESSAGING_URL+'/send-email',{
-          method:'POST',headers:{'Content-Type':'application/json'},
+          method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
           body:JSON.stringify({
             to:_targetEmail,
             subject:'ID Verification Required — Prestige Black Rentals',
@@ -9434,7 +9446,7 @@ function sendStripeVerification(){
           '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(_rev)+'</td></tr>'+
           (Number(b.dateLock)?'<tr><td style="padding:6px 12px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
         fetch(MESSAGING_URL+'/send-email',{
-          method:'POST',headers:{'Content-Type':'application/json'},
+          method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
           body:JSON.stringify({
             to:_targetEmail,
             subject:'Action Required: Verify your ID — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')',
@@ -9821,7 +9833,7 @@ function sendCustomerVerifiedEmail(b){
     (Number(b.dateLock)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+' ✅</td></tr>':'')+
     (remaining>0?'<tr><td style="padding:6px 14px 6px 0;color:#555">Remaining Balance</td><td style="padding:6px 0;font-weight:600">'+$$(remaining)+' due at pickup</td></tr>':'');
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:b.email,
       subject:'You\'re verified & all set — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
@@ -10093,7 +10105,7 @@ function sendReviewRequest(b){
   var firstName = (b.name||'').split(' ')[0] || 'there';
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to: b.email,
       subject: 'How was your experience with Prestige Black? ⭐',
@@ -10142,7 +10154,7 @@ function resendVerificationEmail(id, skipConfirm){
   if(!MESSAGING_URL){ showToast('Messaging URL not set — check Settings'); return; }
   showToast('Creating new verify link…');
   fetch(VERIFY_URL+'/create-verification',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({bookingId:id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
   }).then(function(r){return r.json();}).then(function(d){
     if(!d||!d.url||!d.id){ showToast('Could not create verify session'+(d&&d.error?' — '+d.error:'')); return; }
@@ -10176,7 +10188,7 @@ function resendVerificationEmail(id, skipConfirm){
       '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
       (Number(b.dateLock)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
     fetch(MESSAGING_URL+'/send-email',{
-      method:'POST',headers:{'Content-Type':'application/json'},
+      method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
       body:JSON.stringify({
         to:b.email,
         subject:'Action Required: Verify your ID — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')',
@@ -10218,7 +10230,7 @@ function sendConfirmationEmail(b, showFeedback){
   if(!MESSAGING_URL||!b||!b.email) { if(showFeedback) showToast('No email or messaging worker configured'); return; }
   var firstName=(b.name||'').split(' ')[0]||'there';
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:b.email,
       subject:'Your booking is confirmed — '+b.vehicle,
@@ -10310,7 +10322,7 @@ function sendPickupReminder(id){
   if(!b.email){ showToast('No email on this booking'); return; }
   var firstName=(b.name||'').split(' ')[0]||'there';
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:b.email,
       subject:'Reminder: Your rental is coming up — '+b.vehicle,
@@ -10349,7 +10361,7 @@ function sendReturnReminder(id){
   var returnTimeStr = b.dropoffTime ? fmtTime(b.dropoffTime) : 'your scheduled return time';
   var returnDateStr = fmtDateFull(b.dropoffDate);
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method:'POST', headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to: b.email,
       subject: 'Return reminder: '+esc(b.vehicle)+' is due back in 1 hour',
@@ -10401,7 +10413,7 @@ function sendExtensionLink(id){
   showToast('Sending extension link…');
   fetch(WORKER_URL+'/extend/create-token',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({ bookingId: b.id, dailyRate: dailyRate })
   }).then(function(r){ return r.json(); }).then(function(d){
     if(d.success){ showToast('🔗 Extension link sent to '+b.email+' ✅'); }
@@ -10429,7 +10441,7 @@ function sendReceiptEmail(b){
     '<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(totalRevenue(b))+'</td></tr>'+
     (Number(b.dateLock)?'<tr><td style="padding:6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:b.email,
       subject:'Your Prestige Black receipt — '+b.vehicle,
@@ -10468,7 +10480,7 @@ function sendCloseOutOverageSummary(b){
   var total=mileage+fuel+kept;
   rows+='<tr style="border-top:1px solid #eee"><td style="padding:8px 0;font-weight:700">Additional Charges Total</td><td style="padding:8px 0;font-weight:700;color:#ef4444">'+$$(total)+'</td></tr>';
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:b.email,
       subject:'Close-out charges — your '+b.vehicle+' rental',
@@ -10520,7 +10532,7 @@ function sendOwnerBookingNotification(b){
     '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;color:#333">Status</td><td style="padding:7px 12px;text-transform:capitalize">'+esc(b.status||'pending')+'</td></tr>'+
     '<tr><td style="padding:7px 12px;font-weight:700;color:#333">Source</td><td style="padding:7px 12px">'+esc(b.source||'—')+(b._fromWeb?' 🌐 Web':'')+'</td></tr>';
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:OWNER_EMAIL,
       subject:'New Booking: '+esc(b.name)+' — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
@@ -10568,7 +10580,7 @@ function sendDateLockConfirmation(b){
     '<tr style="background:#f0fdf4"><td style="padding:7px 14px 7px 0;font-weight:700;color:#16a34a">Date Lock Paid</td><td style="padding:7px 0;font-weight:700;color:#16a34a">'+$$(b.dateLock)+' ✅</td></tr>'+
     (Number(b.remainingBalance)?'<tr><td style="padding:6px 14px 6px 0;color:#555">Remaining Balance</td><td style="padding:6px 0;font-weight:600">'+$$(b.remainingBalance)+' due at pickup</td></tr>':'');
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:b.email,
       subject:'Your date is locked in! — '+esc(b.vehicle)+' ('+fmtDate(b.pickupDate||b.date)+')',
@@ -10611,7 +10623,7 @@ function sendOwnerIdVerification(b, sessionId){
     '<tr style="background:#f9f9f9"><td style="padding:7px 12px;font-weight:700;border-bottom:1px solid #eee">Expiration</td><td style="padding:7px 12px;border-bottom:1px solid #eee">'+esc(v.idExpiry||'—')+'</td></tr>'+
     (sessionId?'<tr><td style="padding:7px 12px;font-weight:700">License Photos</td><td style="padding:7px 12px"><a href="https://dashboard.stripe.com/identity/verification-sessions/'+sessionId+'" style="color:#635bff;font-weight:700">View in Stripe Dashboard →</a></td></tr>':'');
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       to:OWNER_EMAIL,
       subject:'ID Verified: '+esc(b.name)+' — '+esc(b.vehicle),
@@ -11103,7 +11115,7 @@ function generateInvoice(id){
     if(MESSAGING_URL && emailAddr){
       fetch(MESSAGING_URL+'/send-email',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
         body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})
       }).then(function(r){
         if(r.ok){ toast('Invoice sent to '+emailAddr); closeInvoiceModal(); }
@@ -13094,7 +13106,7 @@ function _renderContractContent(){
     var isH=rawBody.trim().toLowerCase().startsWith('<!doctype')||rawBody.trim().startsWith('<')||rawBody.includes('<div');
     if(MESSAGING_URL&&emailAddr){
       var htmlBody=isH?rawBody:('<pre style="font-family:sans-serif;white-space:pre-wrap">'+rawBody+'</pre>');
-      fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})})
+      fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:emailAddr,subject:subj,html:htmlBody})})
         .then(function(r){ if(r.ok){showToast(docType+' sent to '+emailAddr);}else{showToast('Email failed — opening mail app');window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody);} })
         .catch(function(){ window.location.href='mailto:'+emailAddr+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(rawBody); });
     } else {
@@ -13324,7 +13336,7 @@ function sendSignedCopyToClient(){
   var ssb=$d('contractSendSignedBtn');
   if(ssb){ ssb.disabled=true; ssb.textContent='Sending…'; }
   fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({to:b.email,subject:subj,html:html})
   }).then(function(r){
     if(ssb){ ssb.disabled=false; ssb.textContent='📧 Send Signed Copy to Client'; }
@@ -13481,7 +13493,7 @@ function _renderExtensionView(b, extIdx){
     emailBtn.onclick = function(){
       var subj = 'Rental Agreement Extension #'+(extIdx+1)+' — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
       if(MESSAGING_URL && b.email){
-        fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:subj,html:html})})
+        fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:subj,html:html})})
           .then(function(r){ if(r.ok){showToast('Extension contract sent to '+b.email+' ✅');}else{window.location.href='mailto:'+b.email+'?subject='+encodeURIComponent(subj);} });
       } else {
         window.location.href='mailto:'+(b.email||'')+'?subject='+encodeURIComponent(subj);
@@ -13761,7 +13773,7 @@ function sendSignedExtCopyToClient(){
     '</div>';
   var btn = $d('extSendSignedBtn');
   if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
-  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:subj,html:emailHtml})})
+  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:subj,html:emailHtml})})
   .then(function(r){
     if(btn){ btn.disabled=false; btn.textContent='📧 Send Signed Copy to Client'; }
     if(r.ok){
@@ -13819,7 +13831,7 @@ function sendExtensionSigningLink(){
     '</div>'+
     '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals &middot; Dallas&ndash;Fort Worth &middot; (214) 207-2481</div>'+
     '</div>';
-  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({
     to: b.email,
     subject: 'Sign Your Extension Agreement — Prestige Black Rentals',
     html: html
@@ -14131,7 +14143,7 @@ function sendContractSigningLink(){
       '</div>'+
       '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
       '</div>';
-    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:rec.email,subject:'Please Sign Your '+docType+' — Prestige Black Rentals',html:html})})
+    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:rec.email,subject:'Please Sign Your '+docType+' — Prestige Black Rentals',html:html})})
     .then(function(r){
       if(r.ok){
         _sent++;
@@ -14196,7 +14208,7 @@ function shareBookingPortal(id){
       '</div>'+
       '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
       '</div>';
-    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:'Your Booking Portal — Prestige Black Rentals',html:html})})
+    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Your Booking Portal — Prestige Black Rentals',html:html})})
     .then(function(r){ if(r.ok){ toast('Portal link emailed to '+b.email+' ✅'); logNotif('portal','Booking Portal Link',b.email,b.id); } else _fallbackCopyPortalLink(url); })
     .catch(function(){ _fallbackCopyPortalLink(url); });
   } else {
@@ -14512,7 +14524,7 @@ function _smSubmitSig(bookingId, driverIdx){
     var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
 
     // Save chain nested here so allBookings/idx/_signerName/_drvs stay in closure scope
-    fetch(workerUrl+'/sync/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)})
+    fetch(workerUrl+'/sync/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify(saveData)})
     .then(function(r){ return r.json(); })
     .then(function(res){
       if(res&&res.ok){
@@ -14578,7 +14590,7 @@ function _smSubmitSig(bookingId, driverIdx){
               '</div>'+
               '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
               '</div>';
-            fetch(workerUrl+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},
+            fetch(workerUrl+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
               body:JSON.stringify({to:_driverEmail,subject:'Your Signed '+_docType2+' — Prestige Black Rentals',html:_driverCopyHtml})
             }).catch(function(){}); // fire and forget
           }
@@ -14746,7 +14758,7 @@ function _smSubmitExtSig(bookingId, extId){
     allBookings[idx].extensions[extIdx].signed =true;
     allBookings[idx]._t=Date.now();
     var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
-    return fetch(workerUrl+'/sync/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(saveData)});
+    return fetch(workerUrl+'/sync/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify(saveData)});
   }).then(function(r){
     if(!r) return;
     if(r.ok){
@@ -14807,7 +14819,7 @@ function _smSubmitExtSig(bookingId, extId){
           '</div>'+
           '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals &middot; Dallas&ndash;Fort Worth</div>'+
           '</div>';
-        fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({
           to:_smBk.email,
           subject:'Your Signed Extension Agreement #'+extNum+' — Prestige Black Rentals',
           html:_copyHtml
@@ -15155,7 +15167,7 @@ function portalPayByCard(bookingId, amountCents, customerName){
   if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
   fetch(VERIFY_URL+'/create-checkout',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
     body:JSON.stringify({
       amountCents: amountCents,
       bookingId:   bookingId,
@@ -15493,7 +15505,7 @@ function sendExtensionConfirmEmail(bookingId){
     '</div>'+
     '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
     '</div>';
-  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:b.email,subject:'Extension Confirmed — Prestige Black Rentals',html:html})})
+  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Extension Confirmed — Prestige Black Rentals',html:html})})
   .then(function(r){
     if(r.ok){
       // Mark paid in booking record
