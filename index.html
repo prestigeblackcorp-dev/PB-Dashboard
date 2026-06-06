@@ -6777,9 +6777,23 @@ function openBookingDetail(id){
       '<div class="fsec" style="margin-top:12px">📋 Change History</div>'+
       '<div style="font-size:11px;color:var(--muted)">'+
       b._history.slice().reverse().map(function(h){
+        var changesHtml = h.changes.map(function(c){
+          var parts = c.split('|');
+          if(parts.length === 3){
+            var field = parts[0], oldVal = parts[1], newVal = parts[2];
+            return '<div style="margin:2px 0 2px 8px">'+
+              '<span style="color:var(--muted);min-width:90px;display:inline-block">'+esc(field)+':</span> '+
+              '<span style="color:#e57373;text-decoration:line-through">'+esc(oldVal||'—')+'</span>'+
+              '<span style="color:var(--muted);margin:0 4px">→</span>'+
+              '<span style="color:#81c784">'+esc(newVal||'—')+'</span></div>';
+          }
+          // legacy format fallback
+          return '<div style="margin:2px 0 2px 8px">'+esc(c)+'</div>';
+        }).join('');
         return '<div style="padding:5px 0;border-bottom:1px solid var(--border)">'+
-          '<span style="color:var(--text);font-weight:600">'+new Date(h.at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</span> · '+
-          esc(h.changes.join(', '))+'</div>';
+          '<span style="color:var(--text);font-weight:600">'+new Date(h.at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</span>'+
+          (h.by ? ' <span style="color:var(--muted)">· '+esc(h.by)+'</span>' : '')+
+          changesHtml+'</div>';
       }).join('')+
       '</div>'
     : '');
@@ -7477,9 +7491,9 @@ function saveBooking(){
       // lateReturnFee + actualReturnTime come from the booking form fields (not preserved from ex)
       if(ex._fromWeb)          entry._fromWeb           = ex._fromWeb;
       // Audit trail: record which fields changed
-      var auditFields=['date','name','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
+      var auditFields=['date','name','email','phone','vehicle','type','days','revenue','deposit','status','notes','source','broker','brokerFee','pickupDate','dropoffDate','remainingBalance'];
       var changes=[];
-      auditFields.forEach(function(f){ if(String(ex[f]||'')!==String(entry[f]||'')) changes.push(f+': '+JSON.stringify(ex[f]||'')+'→'+JSON.stringify(entry[f]||'')); });
+      auditFields.forEach(function(f){ if(String(ex[f]||'')!==String(entry[f]||'')) changes.push(f+'|'+String(ex[f]||'')+'|'+String(entry[f]||'')); });
       if(changes.length){
         entry._history=(ex._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:changes}]);
       } else {
@@ -8940,7 +8954,15 @@ function renderAuditLog(){
                 dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
     var byColor = e.by==='owner' ? 'var(--gold)' : '#a78bfa';
     var changesHtml = e.changes.map(function(c){
-      // Format "field: "old"→"new"" more readably
+      // New pipe-delimited format: "field|old|new"
+      var pipe = c.split('|');
+      if(pipe.length === 3){
+        return '<div style="padding:1px 0"><span style="color:var(--muted);min-width:80px;display:inline-block">'+esc(pipe[0])+':</span> '+
+          '<span style="color:var(--red);text-decoration:line-through">'+esc(pipe[1]||'—')+'</span>'+
+          ' <span style="color:var(--muted)">→</span> '+
+          '<span style="color:var(--green)">'+esc(pipe[2]||'—')+'</span></div>';
+      }
+      // Legacy format: 'field: "old"→"new"'
       var parts = c.match(/^(.+?):\s*"?(.*?)"?\s*→\s*"?(.*?)"?$/);
       if(parts){
         return '<div style="padding:1px 0"><span style="color:var(--muted)">'+esc(parts[1])+':</span> '+
