@@ -2401,8 +2401,11 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       </div>
       <div class="fgroup ffull">
         <div class="flabel">Worker Secret (DASHBOARD_SECRET)</div>
-        <input type="password" class="finput" id="settDashboardSecret" placeholder="Paste your DASHBOARD_SECRET from Cloudflare" autocomplete="new-password">
-        <div style="font-size:11px;color:var(--muted);margin-top:5px">Shared secret set in all your Cloudflare Worker Variables as <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">DASHBOARD_SECRET</code>. Required for sync, email, and booking actions.</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="password" class="finput" id="settDashboardSecret" placeholder="Paste your DASHBOARD_SECRET from Cloudflare" autocomplete="new-password" style="flex:1">
+          <button class="btn btn-sm" onclick="copySetupLink()" title="Copy a one-tap link to set up this device" style="white-space:nowrap;padding:6px 12px">📋 Copy Setup Link</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Shared secret set in all your Cloudflare Worker Variables as <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">DASHBOARD_SECRET</code>. Required for sync, email, and booking actions. Use <strong>Copy Setup Link</strong> to instantly configure any other device — just open the link on that device.</div>
       </div>
       <div class="fgroup ffull">
         <div class="flabel">Owner Notification Email</div>
@@ -9102,6 +9105,19 @@ function saveSettings(){
     alert('Settings failed to save: ' + (err && err.message ? err.message : String(err)));
   }
 }
+function copySetupLink(){
+  var secret = (($d('settDashboardSecret').value||'').trim() === '••••••••' ? '' : ($d('settDashboardSecret').value||'').trim()) || DASHBOARD_SECRET;
+  var worker = ($d('settWorkerUrl').value||'').trim() || WORKER_URL;
+  if(!secret){ alert('Enter your DASHBOARD_SECRET first, then copy the setup link.'); return; }
+  var base = location.href.split('?')[0].split('#')[0];
+  var link = base + '?pb_setup=' + encodeURIComponent(btoa(JSON.stringify({s:secret,w:worker})));
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(link).then(function(){ toast('Setup link copied! Open it on any device to auto-configure.'); }).catch(function(){ prompt('Copy this setup link:', link); });
+  } else {
+    prompt('Copy this setup link:', link);
+  }
+}
+
 function loadSigPreview(input){
   var file = input.files[0]; if(!file) return;
   var reader = new FileReader();
@@ -16096,6 +16112,35 @@ window.addEventListener('resize', stickyTabFix);
 })();
 // Re-run after fonts/layout settle
 setTimeout(stickyTabFix, 200);
+
+// ── Auto-configure from setup link (?pb_setup=...) ───────────────────────
+(function(){
+  try {
+    var sp = new URLSearchParams(location.search);
+    var pbSetup = sp.get('pb_setup');
+    if (pbSetup) {
+      var cfg = JSON.parse(atob(pbSetup));
+      if (cfg.s && typeof cfg.s === 'string') {
+        DASHBOARD_SECRET = cfg.s.trim();
+        try { localStorage.setItem('pb_dashboard_secret', DASHBOARD_SECRET); } catch(e){}
+      }
+      if (cfg.w && typeof cfg.w === 'string' && cfg.w.length > 5) {
+        WORKER_URL = cfg.w.trim().replace(/\/$/,'');
+        try { localStorage.setItem('pb_worker_url', WORKER_URL); } catch(e){}
+      }
+      // Clean the URL so the secret isn't visible in the address bar
+      try {
+        var cleanUrl = location.href.replace(/[?&]pb_setup=[^&#]*/,'').replace(/^\?$/,'').replace(/^#$/,'') || location.pathname;
+        history.replaceState(null, '', cleanUrl);
+      } catch(e){}
+      // Trigger a cloud load now that we have credentials
+      if (typeof cloudLoad === 'function') {
+        document.addEventListener('DOMContentLoaded', function(){ cloudLoad(); });
+        if (document.readyState !== 'loading') cloudLoad();
+      }
+    }
+  } catch(e) { console.warn('[PB] pb_setup parse error', e); }
+})();
 
 // ── URL-param special modes (signing / portal) ──────────────────────────
 (function(){
