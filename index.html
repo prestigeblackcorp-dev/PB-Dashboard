@@ -8300,7 +8300,8 @@ function openVerify(id){
           return new Promise(function(resolve, reject){
             var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
             var t=setTimeout(function(){ if(ctrl) ctrl.abort(); reject(new Error('timeout')); }, ms||8000);
-            fetch(url, ctrl?{signal:ctrl.signal}:{})
+            var opts=Object.assign(ctrl?{signal:ctrl.signal}:{}, {headers:_authHeader()});
+            fetch(url, opts)
               .then(function(r){ clearTimeout(t); resolve(r); })
               .catch(function(e){ clearTimeout(t); reject(e); });
           });
@@ -9167,9 +9168,24 @@ function runAutoScheduledEmails(){
           }
           var _hoursUntil = (_pd.getTime() - _now) / 3600000;
           var _r24Key = 'pb_sent_24h_'+b.id;
+          var _fbNotifKey = b.id+'_h24';
           if(_hoursUntil >= 20 && _hoursUntil <= 28 && !localStorage.getItem(_r24Key)){
-            localStorage.setItem(_r24Key, String(_now));
-            sendPickupReminder(b.id);
+            // Fix 11: check Firebase notif before sending to avoid duplicating booking worker's reminder
+            (function(_b, _lsKey, _fbKey){
+              var _fbUrl = (localStorage.getItem('pb_firebase_url')||'').replace(/\/$/,'');
+              var checkAndSend = function(){
+                localStorage.setItem(_lsKey, String(_now));
+                sendPickupReminder(_b.id);
+              };
+              if(_fbUrl){
+                fetch(_fbUrl+'/pb_data/notif/'+encodeURIComponent(_fbKey)+'.json',{cache:'no-store'})
+                  .then(function(r){ return r.json(); })
+                  .then(function(v){ if(!v) checkAndSend(); }) // only send if worker hasn't already
+                  .catch(function(){ checkAndSend(); }); // if Firebase unreachable, send anyway
+              } else {
+                checkAndSend();
+              }
+            })(b, _r24Key, _fbNotifKey);
           }
         }
       }
@@ -9218,20 +9234,40 @@ function runAutoScheduledEmails(){
     // completed it.  Clears on verified (see applyStripeVerification).
     if(!b.verify||!b.verify.idVerified){
       var _nudgeKey = 'pb_sent_nudge_'+b.id;
-      if(localStorage.getItem(_nudgeKey)) return; // already sent
+      // Fix 17: use Firebase notif for nudge dedup so it works across devices/browsers
+      var _nudgeFbKey = b.id+'_nudge';
+      if(localStorage.getItem(_nudgeKey)) return; // already sent on this device
       if(!VERIFY_URL) return;
-      // Need at least one session sent
       var _hasSids = (b.verify&&Array.isArray(b.verify.stripeSessionIds)&&b.verify.stripeSessionIds.length);
       var _lsSids = [];
       try{ _lsSids=JSON.parse(localStorage.getItem('pb_all_vsessions_'+b.id)||'[]'); }catch(e){}
-      if(!_hasSids && !_lsSids.length) return; // no link ever sent — skip
-      // Use firstSentAt stored in verify object (set by _addVerifySession)
+      if(!_hasSids && !_lsSids.length) return;
       var _sentAt = (b.verify&&b.verify.firstSentAt) ? b.verify.firstSentAt : 0;
-      if(!_sentAt) return; // no timestamp — can't judge
+      if(!_sentAt) return;
       var _hoursSinceSent = (_now - _sentAt) / 3600000;
       if(_hoursSinceSent >= 2){
-        localStorage.setItem(_nudgeKey, String(_now));
-        sendVerifyNudgeEmail(b);
+        (function(_b, _lsKey, _fbKey){
+          var _fbUrl = (localStorage.getItem('pb_firebase_url')||'').replace(/\/$/,'');
+          var doSend = function(){
+            localStorage.setItem(_lsKey, String(_now));
+            // Write to Firebase notif so other devices see it too
+            if(_fbUrl){
+              fetch(_fbUrl+'/pb_data/notif/'+encodeURIComponent(_fbKey)+'.json',{
+                method:'PUT', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify(_now)
+              }).catch(function(){});
+            }
+            sendVerifyNudgeEmail(_b);
+          };
+          if(_fbUrl){
+            fetch(_fbUrl+'/pb_data/notif/'+encodeURIComponent(_fbKey)+'.json',{cache:'no-store'})
+              .then(function(r){ return r.json(); })
+              .then(function(v){ if(!v) doSend(); })
+              .catch(function(){ doSend(); });
+          } else {
+            doSend();
+          }
+        })(b, _nudgeKey, _nudgeFbKey);
       }
     }
   });
@@ -9307,7 +9343,7 @@ function _startVerifyPoll(sessionId, bookingId, driverIdx){
       }
       return;
     }
-    fetch(VERIFY_URL+'/check-verification?session_id='+sessionId)
+    fetch(VERIFY_URL+'/check-verification?session_id='+sessionId, {headers:_authHeader()})
     .then(function(r){ return r.json(); })
     .then(function(session){
       if(session.status==='verified'){
@@ -11309,21 +11345,33 @@ function markBalancePaid(id){
 }
 function markDateLockPaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
-  if(!confirm('Mark $100 date lock as paid for '+b.name+'?')) return;
-  b.dateLock=100;
-  b.dateLockPaidAt = b.dateLockPaidAt || Date.now(); // stamp when date lock was received
-  var dep=Number(b.deposit)||0;
+  // Fix 18: use actual remaining balance or prompt for amount rather than hardcoded 100
+  var defaultAmt = b.remainingBalance ? Math.min(100, Number(b.remainingBalance)) : 100;
+  var amtStr = prompt('Date lock amount received for '+b.name+'? (default: $'+defaultAmt+')', String(defaultAmt));
+  if(amtStr===null) return; // cancelled
+  var amt = parseFloat(amtStr) || defaultAmt;
+  if(amt<=0){ showToast('Invalid amount'); return; }
+  b.dateLock = amt;
+  b.dateLockPaidAt = b.dateLockPaidAt || Date.now();
   var rev=Number(b.revenue)||0;
   if(b.remainingBalance!=null){
-    b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-100);
+    b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt);
   } else {
-    b.remainingBalance=Math.max(0,rev+dep-100);
+    b.remainingBalance=Math.max(0,rev-amt);
   }
   b._t=Date.now();
   save();
+  // Fix 9: also call /confirm-booking on the booking worker to sync status to Firebase
+  if(WORKER_URL){
+    fetch(WORKER_URL+'/confirm-booking',{
+      method:'POST',
+      headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
+      body:JSON.stringify({bookingId:b.id, dateLock:amt, revenue:rev})
+    }).catch(function(){});
+  }
   render();
   showBookingDetail(id);
-  showToast('✅ $100 date lock marked as paid for '+b.name);
+  showToast('✅ $'+amt+' date lock marked as paid for '+b.name);
 }
 
 // ════════════════════════════════════════════════════════
