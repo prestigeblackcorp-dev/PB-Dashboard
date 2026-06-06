@@ -1319,7 +1319,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div class="modal-title" style="flex-shrink:0">
       <span>📋 Audit Log</span>
       <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
-        <input id="auditSearch" type="text" placeholder="Search by name, vehicle, field…" oninput="renderAuditLog()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;width:200px">
+        <input id="auditSearch" type="text" placeholder="Search by name, vehicle, field…" oninput="_debounceAuditSearch()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;width:200px">
         <button class="modal-close" onclick="closeAuditLog()">✕</button>
       </div>
     </div>
@@ -1364,7 +1364,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <option>Referral</option><option>Broker / Partner</option><option>Repeat Customer</option><option>Walk-in</option><option>Other</option>
       </select></div>
     <div class="fg"><div class="fl">Search</div>
-      <input type="text" class="fi" id="filterSearch" placeholder="Name, phone, vehicle, broker…" oninput="filterChange()" style="min-width:200px"></div>
+      <input type="text" class="fi" id="filterSearch" placeholder="Name, phone, vehicle, broker…" oninput="_debounceFilterChange()" style="min-width:200px"></div>
     <button class="btn btn-sm" style="align-self:flex-end" onclick="clearFilters()">Clear</button>
   </div>
 
@@ -2926,8 +2926,11 @@ var _gcalPendingIds  = []; // booking IDs queued for GCal sync when token unavai
 //  CLOUD SYNC
 // ════════════════════════════════════════════════════════
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
-var WORKER_URL     = localStorage.getItem('pb_worker_url')     || 'https://pb-booking.prestigeblackcorp.workers.dev';
-var MESSAGING_URL  = localStorage.getItem('pb_messaging_url')  || localStorage.getItem('pb_worker_url') || 'https://pb-booking.prestigeblackcorp.workers.dev';
+var _WORKER_URL_DEFAULT    = 'https://pb-booking.prestigeblackcorp.workers.dev';
+var _rawWorkerUrl          = localStorage.getItem('pb_worker_url')    || '';
+var _rawMessagingUrl       = localStorage.getItem('pb_messaging_url') || localStorage.getItem('pb_worker_url') || '';
+var WORKER_URL     = (_rawWorkerUrl.indexOf('https://')===0    ? _rawWorkerUrl    : '') || _WORKER_URL_DEFAULT;
+var MESSAGING_URL  = (_rawMessagingUrl.indexOf('https://')===0 ? _rawMessagingUrl : '') || _WORKER_URL_DEFAULT;
 var VERIFY_URL     = localStorage.getItem('pb_verify_url')     || 'https://idverify.prestigeblackcorp.workers.dev';
 var SELF_EMPLOYMENT_TAX_RATE = parseFloat(localStorage.getItem('pb_tax_rate')) || 25;
 var OPENAI_KEY     = localStorage.getItem('pb_openai_key')     || '';
@@ -3415,7 +3418,7 @@ function renderBlockedRangesList(){
   el.innerHTML=_editingBlockedRanges.map(function(r,i){
     return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px">'+
       '<span style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:3px 10px;color:#ef4444">'+
-        fmtDate(r.start)+' → '+fmtDate(r.end)+(r.reason?' · '+r.reason:'')+'</span>'+
+        fmtDate(r.start)+' → '+fmtDate(r.end)+(r.reason?' · '+esc(r.reason):'')+'</span>'+
       '<button onclick="removeBlockedRange('+i+')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 4px">✕</button>'+
     '</div>';
   }).join('');
@@ -5099,13 +5102,17 @@ function loadBookings(){
   try { var r = localStorage.getItem('pb_dash_v2'); if(r){ bookings=JSON.parse(r); return; } } catch(e){}
   bookings = []; // start empty — no sample data auto-loaded
 }
+var _saveCount = 0;
 function save(){
   try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){}
-  // Warn when approaching localStorage limit (~4MB)
-  try{
-    var used=0; for(var k in localStorage){ if(localStorage.hasOwnProperty(k)) used+=localStorage[k].length*2; }
-    if(used > 3.5*1024*1024) toast('⚠️ Storage nearly full ('+Math.round(used/1024/1024*10)/10+' MB). Export a CSV backup.');
-  }catch(e){}
+  // Warn when approaching localStorage limit (~4MB) — check at most once every 10 saves
+  _saveCount++;
+  if(_saveCount % 10 === 1){
+    try{
+      var used=0; for(var k in localStorage){ if(localStorage.hasOwnProperty(k)) used+=localStorage[k].length*2; }
+      if(used > 3.5*1024*1024) toast('⚠️ Storage nearly full ('+Math.round(used/1024/1024*10)/10+' MB). Export a CSV backup.');
+    }catch(e){}
+  }
   cloudSave();
 }
 async function promptClearAll(){
@@ -5448,7 +5455,7 @@ function _kpiDateRange(){
 function _applyKpiPeriod(arr){
   if(_kpiPeriod==='all') return arr;
   var tod=todayStr();
-  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
   return arr.filter(function(b){
     if(_kpiPeriod==='today'){
       var bd=b.pickupDate||'';
@@ -6028,7 +6035,7 @@ function renderVehicleTable(filtered){
   tbody.innerHTML=rows.map(function(r){
     var pc=r.profit>=0?'pos':'neg';
     return '<tr style="cursor:pointer" onclick="openVehicleDrilldown(\''+r.vehicle.replace(/'/g,'\\\'')+'\')" title="Click for breakdown">'+
-      '<td style="font-weight:700;color:var(--gold)">'+r.vehicle+' <span style="font-size:10px;opacity:.5">▶</span></td>'+
+      '<td style="font-weight:700;color:var(--gold)">'+esc(r.vehicle)+' <span style="font-size:10px;opacity:.5">▶</span></td>'+
       '<td>'+r.bookings+'</td>'+
       '<td style="color:'+GOLD+';font-weight:700">'+$$(r.revenue)+'</td>'+
       '<td>'+$$(r.avg)+'</td>'+
@@ -6048,6 +6055,8 @@ function renderVehicleTable(filtered){
 function sortB(k){ if(bSortKey===k) bSortAsc=!bSortAsc; else{bSortKey=k;bSortAsc=false;} _bPage=0; render(); }
 
 function filterChange(){ _bPage=0; render(); }
+var _filterChangeTimer=null;
+function _debounceFilterChange(){ clearTimeout(_filterChangeTimer); _filterChangeTimer=setTimeout(filterChange,300); }
 function changeBPage(delta){ _bPage+=delta; render(); }
 function renderBookingsTable(filtered){
   var PAGE_SIZE=50;
@@ -6759,7 +6768,7 @@ function openBookingDetail(id){
   if(b.checkInPhotoIds&&b.checkInPhotoIds.length){
     dbLoadPhotos(b.checkInPhotoIds,function(photos){
       var el=$d('bdCiPhotos'); if(!el) return;
-      el.innerHTML=photos.map(function(p){
+      el.innerHTML=photos.filter(function(p){return p.data&&p.data.indexOf('data:image/')===0;}).map(function(p){
         return '<img src="'+p.data+'" style="width:64px;height:64px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(59,130,246,.4)" onclick="viewPhoto(\''+p.id+'\')">';
       }).join('');
     });
@@ -6767,7 +6776,7 @@ function openBookingDetail(id){
   if(b.checkOutPhotoIds&&b.checkOutPhotoIds.length){
     dbLoadPhotos(b.checkOutPhotoIds,function(photos){
       var el=$d('bdCoPhotos'); if(!el) return;
-      el.innerHTML=photos.map(function(p){
+      el.innerHTML=photos.filter(function(p){return p.data&&p.data.indexOf('data:image/')===0;}).map(function(p){
         return '<img src="'+p.data+'" style="width:64px;height:64px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(168,85,247,.4)" onclick="viewPhoto(\''+p.id+'\')">';
       }).join('');
     });
@@ -6776,13 +6785,13 @@ function openBookingDetail(id){
   if(b.checkInPhotoIds&&b.checkInPhotoIds.length&&b.checkOutPhotoIds&&b.checkOutPhotoIds.length){
     dbLoadPhotos(b.checkInPhotoIds,function(photos){
       var el=$d('bdCmpIn'); if(!el) return;
-      el.innerHTML=photos.map(function(p){
+      el.innerHTML=photos.filter(function(p){return p.data&&p.data.indexOf('data:image/')===0;}).map(function(p){
         return '<img src="'+p.data+'" style="width:56px;height:56px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid rgba(59,130,246,.4)" onclick="viewPhoto(\''+p.id+'\')">';
       }).join('');
     });
     dbLoadPhotos(b.checkOutPhotoIds,function(photos){
       var el=$d('bdCmpOut'); if(!el) return;
-      el.innerHTML=photos.map(function(p){
+      el.innerHTML=photos.filter(function(p){return p.data&&p.data.indexOf('data:image/')===0;}).map(function(p){
         return '<img src="'+p.data+'" style="width:56px;height:56px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid rgba(168,85,247,.4)" onclick="viewPhoto(\''+p.id+'\')">';
       }).join('');
     });
@@ -6928,7 +6937,7 @@ function renderCalendar(){
       var cellCls='cal-dc'+(isToday?' is-today':'')+(blockedRange?' cal-blocked':'');
       var safe_v=vehicle.replace(/'/g,"\\'").replace(/"/g,'&quot;');
       var blockedBanner=blockedRange
-        ? '<div class="cal-block-blocked" title="'+(blockedRange.reason||'Blocked')+'">🚫 '+(blockedRange.reason||'Blocked')+'</div>'
+        ? '<div class="cal-block-blocked" title="'+esc(blockedRange.reason||'Blocked')+'">🚫 '+esc(blockedRange.reason||'Blocked')+'</div>'
         : '';
       var overlapWarn=bkgs.length>1?'<div style="font-size:9px;color:#ef4444;font-weight:700;padding:2px 4px;background:rgba(239,68,68,.15);border-radius:4px;margin-bottom:2px">⚠ '+bkgs.length+' bookings overlap</div>':'';
       var blocks=bkgs.slice(0,3).map(function(b){
@@ -7288,27 +7297,30 @@ function updateMileageHint(){
   }
 }
 
+var _saving = false;
 function saveBooking(){
+  if(_saving) return;
   var date=$d('fPickupDate').value||$d('fDate').value, name=$d('fName').value.trim(), vehicle=$d('fVehicle').value;
   if(!date)    { alert('Please enter a pickup date.');   return; }
   if(!name)    { alert('Please enter a customer name.'); return; }
   if(!vehicle) { alert('Please select a vehicle.');      return; }
+  _saving = true;
   // Blacklist check — warn if this guest is banned
   if(!editingId){
     var _blHit=isBlacklisted($d('fPhone')?$d('fPhone').value:'', $d('fEmail')?$d('fEmail').value:'', name);
     if(_blHit){
       var _blMsg='⛔ BLACKLISTED GUEST\n\n'+_blHit.name+(_blHit.reason?'\nReason: '+_blHit.reason:'')+'\n\nThis customer is on the blacklist. Save booking anyway?';
-      if(!confirm(_blMsg)) return;
+      if(!confirm(_blMsg)){ _saving=false; return; }
     }
   }
   // Input validation
   var rev=parseFloat($d('fRevenue').value)||0, dep=parseFloat($d('fDeposit').value)||0;
   var daysVal=parseFloat($d('fDays').value)||0;
   var pickupD=$d('fPickupDate').value, dropoffD=$d('fDropoffDate').value;
-  if(rev<0)    { alert('Revenue cannot be negative.'); return; }
-  if(dep<0)    { alert('Deposit cannot be negative.'); return; }
-  if(daysVal<=0){ alert('Duration must be at least 1.'); return; }
-  if(pickupD && dropoffD && dropoffD < pickupD){ alert('Drop-off date cannot be before pickup date.'); return; }
+  if(rev<0)    { alert('Revenue cannot be negative.'); _saving=false; return; }
+  if(dep<0)    { alert('Deposit cannot be negative.'); _saving=false; return; }
+  if(daysVal<=0){ alert('Duration must be at least 1.'); _saving=false; return; }
+  if(pickupD && dropoffD && dropoffD < pickupD){ alert('Drop-off date cannot be before pickup date.'); _saving=false; return; }
   // Conflict check — same vehicle, overlapping datetimes with per-vehicle buffer
   var checkPickup=$d('fPickupDate').value||date;
   var checkPickupTime=$d('fPickupTime').value||'00:00';
@@ -7338,13 +7350,13 @@ function saveBooking(){
         return '• '+c.name+' — '+st+' to '+en+' ('+c.status+')';
       }).join('\n')+
       '\n\nSave booking anyway?';
-    if(!confirm(dcMsg)) return;
+    if(!confirm(dcMsg)){ _saving=false; return; }
   }
 
   // Check vehicle blocked ranges before saving
   var blockedConflict=checkDashboardBlockedRanges(vehicle, checkPickup, checkDropoff, editingId);
   if(blockedConflict){
-    if(!confirm(vehicle+' is blocked for '+blockedConflict+'. Continue anyway?')) return;
+    if(!confirm(vehicle+' is blocked for '+blockedConflict+'. Continue anyway?')){ _saving=false; return; }
   }
 
   var maintConflicts=checkMaintenanceConflict(vehicle, date, $d('fDropoffDate').value);
@@ -7353,7 +7365,7 @@ function saveBooking(){
     var msg='⚠️ Maintenance conflict for '+vehicle+':\n\n'+
       maintConflicts.map(function(m){ return '• '+m.serviceType+' — '+fmtDate(m.date)+(m.nextDue?' (next due: '+fmtDate(m.nextDue)+')':''); }).join('\n')+
       '\n\nSave booking anyway?';
-    if(!confirm(msg)) return;
+    if(!confirm(msg)){ _saving=false; return; }
     _maintAcknowledged=true;
   }
 
@@ -7369,7 +7381,7 @@ function saveBooking(){
     revenue:      parseFloat($d('fRevenue').value)||0,
     deposit:          parseFloat($d('fDeposit').value)||0,
     dateLock:         parseFloat($d('fDateLock').value)||0,
-    dateLockPaidAt:   parseFloat($d('fDateLock').value)>0 ? Date.now() : null,
+    dateLockPaidAt:   parseFloat($d('fDateLock').value)>0 ? Date.now() : null, // may be overridden below for edits
     remainingBalance: parseFloat($d('fRemainingBalance').value)||0,
 
     address:      ($d('fType').value==='chauffeur'&&$d('fPickupAddress')&&($d('fPickupAddress').value.trim()||$d('fDropoffAddress').value.trim()))
@@ -7410,6 +7422,8 @@ function saveBooking(){
     var idx=bookings.findIndex(function(b){return b.id===editingId;});
     if(idx!==-1){
       var ex=bookings[idx];
+      // Preserve dateLockPaidAt: only set a new timestamp if the booking didn't already have one
+      if(ex.dateLockPaidAt){ entry.dateLockPaidAt = ex.dateLockPaidAt; }
       // Preserve all data that lives outside the booking form
       if(ex.gcalEventId)        entry.gcalEventId        = ex.gcalEventId;
       if(ex.verify)             entry.verify             = ex.verify;
@@ -7439,10 +7453,6 @@ function saveBooking(){
       if(ex.claimNotes)         entry.claimNotes         = ex.claimNotes;
       if(ex.fuelCharge!=null)   entry.fuelCharge         = ex.fuelCharge;
       if(ex.mileageCharge)     entry.mileageCharge      = ex.mileageCharge;
-      // dateLockPaidAt: preserve original timestamp if dateLock was already on record
-      if(Number(ex.dateLock)>0 && Number(entry.dateLock)>0){
-        entry.dateLockPaidAt = ex.dateLockPaidAt || ex.createdAt || null;
-      }
       // lateReturnFee + actualReturnTime come from the booking form fields (not preserved from ex)
       if(ex._fromWeb)          entry._fromWeb           = ex._fromWeb;
       // Audit trail: record which fields changed
@@ -7483,6 +7493,7 @@ function saveBooking(){
   }
 
   save(); closeModal(); initSelects();
+  _saving = false;
   _autoCarryVerifyForAll(); // immediate pass — catches the just-saved booking + any others for same customer
   syncToGCal(entry); // create or update Google Calendar event
   render();
@@ -8856,6 +8867,8 @@ function openAuditLog(){
   renderAuditLog();
 }
 function closeAuditLog(){ $d('auditLogModal').classList.remove('open'); }
+var _auditSearchTimer=null;
+function _debounceAuditSearch(){ clearTimeout(_auditSearchTimer); _auditSearchTimer=setTimeout(renderAuditLog,300); }
 function renderAuditLog(){
   var q = ($d('auditSearch').value||'').trim().toLowerCase();
   // Collect all history entries across all bookings
@@ -10407,7 +10420,7 @@ function sendReceiptEmail(b){
   if(Number(b.champagne)>0) addons.push({label:'Champagne',val:b.champagne});
   if(Number(b.decor)>0) addons.push({label:'Decor',val:b.decor});
   if(Number(b.bouquet)>0) addons.push({label:'Bouquet',val:b.bouquet});
-  var rows='<tr><td style="padding:6px 0;color:#555;width:160px">Vehicle</td><td style="padding:6px 0;font-weight:600">'+b.vehicle+'</td></tr>'+
+  var rows='<tr><td style="padding:6px 0;color:#555;width:160px">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Pickup</td><td style="padding:6px 0">'+(b.pickupDate||b.date)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+(b.dropoffDate||'—')+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?b.days+' hour'+(b.days!==1?'s':''):b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
@@ -11047,7 +11060,7 @@ function generateInvoice(id){
     (b.phone?'<div style="color:#666;font-size:13px">'+esc(b.phone)+'</div>':'')+
     (b.email?'<div style="color:#666;font-size:13px">'+esc(b.email)+'</div>':'')+
     '<div class="inv-sec">Booking Details</div>'+
-    '<div class="inv-row"><span class="inv-lbl">Vehicle</span><span class="inv-val">'+b.vehicle+'</span></div>'+
+    '<div class="inv-row"><span class="inv-lbl">Vehicle</span><span class="inv-val">'+esc(b.vehicle)+'</span></div>'+
     '<div class="inv-row"><span class="inv-lbl">Service</span><span class="inv-val">'+(b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service')+'</span></div>'+
     '<div class="inv-row"><span class="inv-lbl">Pickup</span><span class="inv-val">'+(b.pickupDate?fmtDateFull(b.pickupDate):fmtDateFull(b.date))+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</span></div>'+
     (b.dropoffDate?'<div class="inv-row"><span class="inv-lbl">Drop-off</span><span class="inv-val">'+fmtDateFull(b.dropoffDate)+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</span></div>':'')+
@@ -11119,7 +11132,13 @@ function renderForecast(){
   function fr(days){
     var from=tod;
     var lim=dateStr(addDays(new Date(tod+'T00:00:00'),days-1));
-    var bks=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'&&(b.pickupDate||b.date)>=from&&(b.pickupDate||b.date)<=lim; });
+    var bks=bookings.filter(function(b){
+      if(b._deleted||b.status==='cancelled') return false;
+      var pickup=b.pickupDate||b.date||'';
+      var end=tripEndDate(b)||pickup;
+      // Include if any part of the trip overlaps the forecast window
+      return pickup<=lim && end>=from;
+    });
     return {count:bks.length, rev:bks.reduce(function(s,b){return s+totalRevenue(b);},0)};
   }
   var periods=[
@@ -11200,7 +11219,7 @@ function renderOutstanding(){
     return '<tr>'+
       '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
       '<td style="font-weight:700">'+esc(b.name)+(b.phone?' <span style="color:var(--muted);font-size:11px">'+esc(b.phone)+'</span>':'')+'</td>'+
-      '<td>'+b.vehicle+'</td>'+
+      '<td>'+esc(b.vehicle)+'</td>'+
       '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
       '<td style="color:var(--green)">'+$$(lock)+'</td>'+
       '<td style="color:'+(b.balancePaidAt?'var(--green)':'var(--red)')+';font-weight:700">'+
@@ -11629,7 +11648,7 @@ function renderBdBlocks(){
       return '<div style="display:flex;align-items:center;gap:10px;background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:8px 12px">'+
         '<div style="flex:1">'+
           '<span style="font-size:12px;font-weight:700;color:var(--text)">'+fmtDate(r.start)+' → '+fmtDate(r.end)+'</span>'+
-          (r.reason?'<span style="font-size:11px;color:var(--muted);margin-left:8px">'+r.reason+'</span>':'')+
+          (r.reason?'<span style="font-size:11px;color:var(--muted);margin-left:8px">'+esc(r.reason)+'</span>':'')+
         '</div>'+
         '<button class="btn btn-danger btn-sm" onclick="removeBdBlock('+i+')" style="padding:3px 10px;font-size:11px">Remove</button>'+
       '</div>';
@@ -12096,7 +12115,7 @@ function openCustomerProfile(enc){
     bks.map(function(b){
       return '<tr>'+
         '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
-        '<td>'+b.vehicle+'</td>'+
+        '<td>'+esc(b.vehicle)+'</td>'+
         '<td><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span></td>'+
         '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
         '<td><span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></td>'+
@@ -15650,6 +15669,8 @@ function hideSplash(){
   setTimeout(function(){ s.style.display='none'; }, 570);
 }
 var _appUnlocked = false;
+var _pinAttempts = 0;
+var _pinLockedUntil = 0;
 function initLock(){
   var pin=localStorage.getItem('pb_lock_pin');
   if(!pin) return; // no PIN set — app is always open
@@ -15662,6 +15683,12 @@ function showLockScreen(){
 }
 function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='none'; }
 async function unlockApp(){
+  var now=Date.now();
+  if(_pinLockedUntil>now){
+    var secs=Math.ceil((_pinLockedUntil-now)/1000);
+    $d('lockError').textContent='Too many attempts. Try again in '+secs+' seconds.';
+    return;
+  }
   var storedPin=localStorage.getItem('pb_lock_pin');
   var entered=($d('lockPinInput').value||'').trim();
   var hashed=await _hashPin(entered);
@@ -15677,6 +15704,7 @@ async function unlockApp(){
     ownerMatch=(hashed===storedPin);
   }
   if(ownerMatch){
+    _pinAttempts=0; _pinLockedUntil=0;
     _appUnlocked=true; _currentUser='owner'; _currentRole='full';
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
@@ -15694,6 +15722,7 @@ async function unlockApp(){
     if(s.pin===hashed){ staff=s; break; }
   }
   if(staff){
+    _pinAttempts=0; _pinLockedUntil=0;
     _appUnlocked=true; _currentUser=staff.name; _currentRole=staff.role||'checkin';
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
@@ -15701,7 +15730,14 @@ async function unlockApp(){
     showToast('Welcome, '+staff.name+' ('+(_currentRole==='checkin'?'Check-in Access':_currentRole==='readonly'?'Read Only':'Full Access')+')');
     return;
   }
-  $d('lockError').textContent='Incorrect PIN. Try again.';
+  _pinAttempts++;
+  if(_pinAttempts>=5){
+    _pinLockedUntil=Date.now()+30000;
+    _pinAttempts=0;
+    $d('lockError').textContent='Too many attempts. Locked for 30 seconds.';
+  } else {
+    $d('lockError').textContent='Incorrect PIN. Try again. ('+_pinAttempts+'/5)';
+  }
   $d('lockPinInput').value=''; $d('lockPinInput').focus();
 }
 function lockApp(){
@@ -15926,6 +15962,7 @@ function renderDemandHeatmap(){
 (function(){
   var IDLE_MS = 30 * 60 * 1000; // 30 minutes
   var _idleTimer;
+  var _idleListenersAttached = false;
   function resetIdle(){
     clearTimeout(_idleTimer);
     _idleTimer = setTimeout(function(){
@@ -15933,9 +15970,12 @@ function renderDemandHeatmap(){
       if(pin){ lockApp(); }
     }, IDLE_MS);
   }
-  ['mousemove','keydown','touchstart','click','scroll'].forEach(function(ev){
-    document.addEventListener(ev, resetIdle, {passive:true});
-  });
+  if(!_idleListenersAttached){
+    _idleListenersAttached = true;
+    ['mousemove','keydown','touchstart','click','scroll'].forEach(function(ev){
+      document.addEventListener(ev, resetIdle, {passive:true});
+    });
+  }
   resetIdle();
 })();
 
