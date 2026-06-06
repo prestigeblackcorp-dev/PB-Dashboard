@@ -11723,17 +11723,46 @@ function renderBdBlocks(){
     el.innerHTML='<div style="font-size:12px;color:var(--muted);padding:4px 0">No dates blocked for this vehicle.</div>';
     return;
   }
+  var tod=todayStr();
   el.innerHTML='<div style="display:flex;flex-direction:column;gap:6px">'+
     ranges.map(function(r,i){
-      return '<div style="display:flex;align-items:center;gap:10px;background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:8px 12px">'+
+      var isActive = tod>=r.start && tod<=r.end;
+      var isPast   = tod>r.end;
+      var statusBadge = isActive
+        ? '<span style="background:rgba(239,68,68,.18);color:#ef4444;border:1px solid rgba(239,68,68,.4);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:800;margin-left:8px">● ACTIVE</span>'
+        : isPast
+          ? '<span style="background:rgba(255,255,255,.06);color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:8px">PAST</span>'
+          : '<span style="background:rgba(251,191,36,.12);color:#fbbf24;border:1px solid rgba(251,191,36,.3);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:8px">UPCOMING</span>';
+      var rowBg = isActive ? 'rgba(239,68,68,.09)' : isPast ? 'rgba(255,255,255,.03)' : 'rgba(251,191,36,.05)';
+      var rowBorder = isActive ? 'rgba(239,68,68,.3)' : isPast ? 'var(--border)' : 'rgba(251,191,36,.2)';
+      return '<div style="display:flex;align-items:center;gap:8px;background:'+rowBg+';border:1px solid '+rowBorder+';border-radius:8px;padding:8px 12px">'+
         '<div style="flex:1">'+
           '<span style="font-size:12px;font-weight:700;color:var(--text)">'+fmtDate(r.start)+' → '+fmtDate(r.end)+'</span>'+
-          (r.reason?'<span style="font-size:11px;color:var(--muted);margin-left:8px">'+esc(r.reason)+'</span>':'')+
+          statusBadge+
+          (r.reason?'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+esc(r.reason)+'</div>':'')+
         '</div>'+
-        '<button class="btn btn-danger btn-sm" onclick="removeBdBlock('+i+')" style="padding:3px 10px;font-size:11px">Remove</button>'+
+        (!isPast ? '<button class="btn btn-sm" onclick="extendBdBlock('+i+')" style="padding:3px 10px;font-size:11px;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.3)">Extend</button>' : '')+
+        '<button class="btn btn-danger btn-sm" onclick="removeBdBlock('+i+')" style="padding:3px 10px;font-size:11px">'+(isActive?'Lift Block':'Remove')+'</button>'+
       '</div>';
     }).join('')+
   '</div>';
+}
+
+function extendBdBlock(idx){
+  var v=$d('bdVehicle').value;
+  var ranges=VEHICLE_COSTS[v]&&VEHICLE_COSTS[v].blockedRanges;
+  if(!ranges||!ranges[idx]) return;
+  var r=ranges[idx];
+  var newEnd=prompt('Extend block end date for '+fmtDate(r.start)+' → '+fmtDate(r.end)+':\n\nEnter new end date (YYYY-MM-DD):', r.end);
+  if(!newEnd) return;
+  newEnd=newEnd.trim();
+  if(newEnd<r.start){ showToast('End date must be on or after start date.'); return; }
+  if(newEnd===r.end){ showToast('End date unchanged.'); return; }
+  ranges[idx].end=newEnd;
+  saveBdBlocks(v);
+  renderBdBlocks();
+  if(activeTab==='calendar') renderCalendar();
+  showToast('Block extended to '+fmtDate(newEnd)+' ✅');
 }
 
 function addBdBlock(){
