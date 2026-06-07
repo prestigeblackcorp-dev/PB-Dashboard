@@ -9285,8 +9285,10 @@ function runAutoScheduledEmails(){
     // Fires once when a verify link was sent 2+ hours ago but customer hasn't
     // completed it.  Clears on verified (see applyStripeVerification).
     if(!b.verify||!b.verify.idVerified){
+      // Cross-device dedup: check Firebase-backed nudgeSentAt first, then localStorage fallback
       var _nudgeKey = 'pb_sent_nudge_'+b.id;
-      if(localStorage.getItem(_nudgeKey)) return; // already sent
+      if(b.verify&&b.verify.nudgeSentAt) return; // already nudged (synced across devices)
+      if(localStorage.getItem(_nudgeKey)) return; // already nudged this device
       if(!VERIFY_URL) return;
       var _hasSids = (b.verify&&Array.isArray(b.verify.stripeSessionIds)&&b.verify.stripeSessionIds.length);
       var _lsSids = [];
@@ -9297,6 +9299,13 @@ function runAutoScheduledEmails(){
       var _hoursSinceSent = (_now - _sentAt) / 3600000;
       if(_hoursSinceSent >= 2){
         localStorage.setItem(_nudgeKey, String(_now));
+        // Stamp nudgeSentAt on booking so other devices skip
+        var _nIdx=bookings.findIndex(function(x){return x.id===b.id;});
+        if(_nIdx!==-1){
+          bookings[_nIdx].verify=Object.assign({},bookings[_nIdx].verify||{},{nudgeSentAt:_now});
+          bookings[_nIdx]._t=_now;
+          save();
+        }
         sendVerifyNudgeEmail(b);
       }
     }
@@ -10216,6 +10225,9 @@ function sendReviewRequest(b){
 function autoSendVerification(b){
   if(!b||!b.email||!VERIFY_URL||!MESSAGING_URL) return;
   if(b.verify&&b.verify.idVerified) return; // already verified
+  // Cross-device dedup: if a link was sent within the last 23 hours, skip
+  // verifyLinkSentAt is written to Firebase so all devices see it
+  if(b.verify&&b.verify.verifyLinkSentAt&&(Date.now()-b.verify.verifyLinkSentAt)<23*3600*1000) return;
   resendVerificationEmail(b.id, true); // skip confirm — auto-triggered
 }
 
@@ -10286,8 +10298,21 @@ function resendVerificationEmail(id, skipConfirm){
           '</div>'
       })
     }).then(function(r){
-      if(r.ok){ showToast('Verify link resent to '+b.email+' ✅'); logNotif('verification','ID Verification Link',b.email,b.id); }
-      else { r.text().then(function(t){ showToast('Failed to send — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
+      if(r.ok){
+        showToast('Verify link resent to '+b.email+' ✅');
+        logNotif('verification','ID Verification Link',b.email,b.id);
+        // Stamp verifyLinkSentAt on the booking so other devices skip auto-send
+        var _vIdx=bookings.findIndex(function(x){return x.id===id;});
+        if(_vIdx!==-1){
+          var _now2=Date.now();
+          bookings[_vIdx].verify=Object.assign({},bookings[_vIdx].verify||{},{
+            verifyLinkSentAt:_now2,
+            firstSentAt:bookings[_vIdx].verify&&bookings[_vIdx].verify.firstSentAt?bookings[_vIdx].verify.firstSentAt:_now2
+          });
+          bookings[_vIdx]._t=_now2;
+          save();
+        }
+      } else { r.text().then(function(t){ showToast('Failed to send — '+r.status+(t?' ('+t.slice(0,80)+')':'')); }); }
     }).catch(function(e){ showToast('Failed to send — '+(e&&e.message?e.message:'network error')); });
   }).catch(function(e){ showToast('Could not create verify session — '+(e&&e.message?e.message:'network error')); });
 }
