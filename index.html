@@ -9281,83 +9281,7 @@ function runAutoScheduledEmails(){
       }
     }
 
-    // ── 4. Incomplete verification nudge ────────────────────────────────────
-    // Fires once when a verify link was sent 2+ hours ago but customer hasn't
-    // completed it.  Clears on verified (see applyStripeVerification).
-    if(!b.verify||!b.verify.idVerified){
-      // Cross-device dedup: check Firebase-backed nudgeSentAt first, then localStorage fallback
-      var _nudgeKey = 'pb_sent_nudge_'+b.id;
-      if(b.verify&&b.verify.nudgeSentAt) return; // already nudged (synced across devices)
-      if(localStorage.getItem(_nudgeKey)) return; // already nudged this device
-      if(!VERIFY_URL) return;
-      var _hasSids = (b.verify&&Array.isArray(b.verify.stripeSessionIds)&&b.verify.stripeSessionIds.length);
-      var _lsSids = [];
-      try{ _lsSids=JSON.parse(localStorage.getItem('pb_all_vsessions_'+b.id)||'[]'); }catch(e){}
-      if(!_hasSids && !_lsSids.length) return;
-      var _sentAt = (b.verify&&b.verify.firstSentAt) ? b.verify.firstSentAt : 0;
-      if(!_sentAt) return;
-      var _hoursSinceSent = (_now - _sentAt) / 3600000;
-      if(_hoursSinceSent >= 2){
-        localStorage.setItem(_nudgeKey, String(_now));
-        // Stamp nudgeSentAt on booking so other devices skip
-        var _nIdx=bookings.findIndex(function(x){return x.id===b.id;});
-        if(_nIdx!==-1){
-          bookings[_nIdx].verify=Object.assign({},bookings[_nIdx].verify||{},{nudgeSentAt:_now});
-          bookings[_nIdx]._t=_now;
-          save();
-        }
-        sendVerifyNudgeEmail(b);
-      }
-    }
   });
-}
-
-// Gentle follow-up when customer received a verify link but hasn't completed it
-function sendVerifyNudgeEmail(b){
-  if(!MESSAGING_URL||!VERIFY_URL||!b||!b.email) return;
-  var firstName=(b.name||'').split(' ')[0]||'there';
-  // Grab the most recent session ID to build a fresh link — or create a new one silently
-  var _allSids=[];
-  try{ _allSids=JSON.parse(localStorage.getItem('pb_all_vsessions_'+b.id)||'[]'); }catch(e){}
-  if(b.verify&&Array.isArray(b.verify.stripeSessionIds)){
-    b.verify.stripeSessionIds.forEach(function(s){ if(s&&_allSids.indexOf(s)===-1) _allSids.push(s); });
-  }
-  _allSids=_allSids.filter(function(s){ return s&&s.indexOf('vs_')===0; });
-
-  // Create a fresh session so the link is guaranteed to be valid
-  fetch(VERIFY_URL+'/create-verification',{
-    method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
-    body:JSON.stringify({bookingId:b.id,customerName:b.name||'',returnUrl:'https://prestigeblackrentals.com'})
-  }).then(function(r){ return r.json(); }).then(function(d){
-    if(!d||!d.url||!d.id) return;
-    _addVerifySession(b.id, d.id);
-    var _url=d.url;
-    var _urlHtml=_url.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-    fetch(MESSAGING_URL+'/send-email',{
-      method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
-      body:JSON.stringify({
-        to:b.email,
-        subject:'Quick reminder: your ID verification is still waiting — '+esc(b.vehicle),
-        html:'<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
-          '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
-            '<div style="font-size:40px;margin-bottom:10px">🪪</div>'+
-            '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">Quick Reminder, '+esc(firstName)+'</h1>'+
-            '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">Your ID verification is still pending</p>'+
-          '</div>'+
-          '<div style="padding:28px">'+
-          '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">Your ID verification for the <strong>'+esc(b.vehicle)+'</strong> rental on <strong>'+fmtDateFull(b.pickupDate||b.date)+'</strong> hasn\'t been completed yet. It takes about 60 seconds to finish.</p>'+
-          '<div style="text-align:center;margin:24px 0"><a href="'+_urlHtml+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(99,91,255,.35)">Complete My Verification →</a></div>'+
-          '<p style="font-size:12px;color:#666;margin:0 0 16px;word-break:break-all">Or copy this link: <a href="'+_urlHtml+'" style="color:#635bff">'+esc(_url)+'</a></p>'+
-          '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
-          '<p style="font-size:11px;color:#bbb;margin:16px 0 0;padding-top:12px;border-top:1px solid #eee">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' · Prestige Black Rentals</p>'+
-          '</div>'+
-          '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
-          '</div>'
-      })
-    }).then(function(r){
-      if(r&&r.ok) logNotif('verify_nudge','ID Verification Nudge',b.email,b.id);
-    }).catch(function(){});
-  }).catch(function(){});
 }
 
 // Start (or resume) a poll for an existing Stripe session ID
@@ -9863,9 +9787,6 @@ function applyStripeVerification(session, bookingId, driverIdx){
     if(activeTab==='previous')  renderPrevious();
     if(activeTab==='cancelled') renderCancelled();
   }
-
-  // Clear nudge flag so a future booking for the same ID doesn't get stuck
-  try{ localStorage.removeItem('pb_sent_nudge_'+_bId); }catch(e){}
 
   var _vb = idx !== -1 ? bookings[idx] : bookings.find(function(x){return x.id===_bId;});
   if(_dIdx !== null && _dIdx !== undefined){
