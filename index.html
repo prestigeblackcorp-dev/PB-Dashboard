@@ -9379,7 +9379,11 @@ function _startVerifyPoll(sessionId, bookingId, driverIdx){
       if(session.status==='verified'){
         clearVerificationPoll();
         try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
-        applyStripeVerification(session, bookingId, _pollDriverIdx);
+        // Sync from cloud first so verifiedEmailSent flag (set by webhook) is present
+        // before applyStripeVerification runs — prevents duplicate customer email
+        var _doApply = function(){ applyStripeVerification(session, bookingId, _pollDriverIdx); };
+        if(WORKER_URL){ cloudLoad(function(ok){ if(ok) afterCloudLoad(ok); _doApply(); }); }
+        else { _doApply(); }
       } else if(session.status==='canceled'){
         clearVerificationPoll();
         try{ localStorage.removeItem('pb_pending_vsession_'+bookingId); }catch(e){}
