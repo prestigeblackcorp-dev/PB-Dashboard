@@ -5560,9 +5560,11 @@ function renderKPIs(filtered, containerId){
       if(dateStr(new Date(b.dateLockPaidAt))===tod) dateLockPeriodRev+=Number(b.dateLock);
     });
     pickupBalance = allActive.reduce(function(s,b){
-      // Count if explicitly marked paid today, OR if remaining balance is 0 (manually zeroed)
-      // For manually-zeroed, use last-modified timestamp (_t) to anchor to today
-      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (b._t||0) : 0);
+      // Count if explicitly marked paid today, OR if remaining balance is 0 (manually zeroed).
+      // For manually-zeroed, anchor to pickup date — NOT _t (last-modified), which would
+      // incorrectly pull old bookings into today's revenue whenever they're edited.
+      var _pDate = b.pickupDate || b.date || '';
+      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate ? new Date(_pDate+'T12:00:00').getTime() : 0) : 0);
       if(!paidTs || dateStr(new Date(paidTs))!==tod) return s;
       return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
     },0);
@@ -5973,7 +5975,8 @@ function renderVehicleTable(filtered){
       map[b.vehicle].bookings++;
     });
     allActive.forEach(function(b){
-      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 ? (b._t||0) : 0);
+      var _pDate2 = b.pickupDate || b.date || '';
+      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate2 ? new Date(_pDate2+'T12:00:00').getTime() : 0) : 0);
       if(!paidTs||dateStr(new Date(paidTs))!==_kpiDR3.from) return;
       if(!map[b.vehicle]) return;
       map[b.vehicle].revenue+=Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
