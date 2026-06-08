@@ -5395,7 +5395,9 @@ function fmtTime(t){
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
 function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
 function extensionCharge(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e.additionalCharge)||0);},0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b); }
+// Sum of portal charges that have been paid (base amount only — fee/tax go to Stripe/processor)
+function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return c&&c.paidAt ? s+(Number(c.amount)||0) : s; },0); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesTotal(b); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1)); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -5684,6 +5686,7 @@ function renderKPIs(filtered, containerId){
   var mileTotal       = sumK(active,'mileageCharge');
   var lateReturnTotal = sumK(active,'lateReturnFee');
   var dateLockTotal   = sumK(allActive,'dateLock');
+  var portalChargeRev = active.reduce(function(s,b){ return s+portalChargesTotal(b); },0);
 
   if(containerId==='kpiGrid' && _kpiPeriod === 'today'){
     // TODAY — strict cash-basis: only count money with a logged payment timestamp today
@@ -5709,8 +5712,15 @@ function renderKPIs(filtered, containerId){
         return dateStr(new Date(ext.createdAt))===tod ? es+(Number(ext.additionalCharge)||0) : es;
       },0);
     },0);
+    // Portal charges paid today (cash-basis)
+    var portalChargeTodayRev = allActive.reduce(function(s,b){
+      return s+(b.portalCharges||[]).reduce(function(cs,c){
+        if(!c||!c.paidAt) return cs;
+        return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
+      },0);
+    },0);
     pureBase   = pickupBalance - addons;
-    bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal;
+    bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev;
 
   } else if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     // 7 / 30 / 90 DAYS — accrual by pickup date; net to PBR (broker fees deducted)
@@ -5771,6 +5781,8 @@ function renderKPIs(filtered, containerId){
     if(depositKept)       revParts.push('Deposit kept: '+$$(depositKept));
     if(lateReturnTotal)   revParts.push('Late fees: '+$$(lateReturnTotal));
     if(extChargeTotal)    revParts.push('Extensions: '+$$(extChargeTotal));
+    if(_kpiPeriod==='today'&&portalChargeTodayRev) revParts.push('Portal charges: '+$$(portalChargeTodayRev));
+    if(_kpiPeriod!=='today'&&portalChargeRev) revParts.push('Portal charges: '+$$(portalChargeRev));
     if(otherIncome)       revParts.push('Other income: '+$$(otherIncome));
     dateLockCardVal = dateLockPeriodRev;
     dateLockCardSub = _kpiPeriod==='today' ? 'Received today' : 'Held on file for period bookings';
@@ -5783,6 +5795,7 @@ function renderKPIs(filtered, containerId){
     if(depositKept)      revParts.push('Deposit kept: '+$$(depositKept));
     if(lateReturnTotal)  revParts.push('Late fees: '+$$(lateReturnTotal));
     if(_allExtCharge)    revParts.push('Extensions: '+$$(_allExtCharge));
+    if(portalChargeRev)  revParts.push('Portal charges: '+$$(portalChargeRev));
     if(otherIncome)      revParts.push('Other income: '+$$(otherIncome));
     dateLockCardVal = dateLockTotal;
     dateLockCardSub = 'Total holds on file · applied toward balance';
@@ -5867,6 +5880,12 @@ function renderCharts(filtered){
       if(!(Number(ext.additionalCharge)>0)) return;
       var em=ext.createdAt ? dateStr(new Date(ext.createdAt)).substring(0,7) : m;
       mR[em]=(mR[em]||0)+(Number(ext.additionalCharge)||0);
+    });
+    // Portal charges: bucket by paidAt month
+    (b.portalCharges||[]).forEach(function(c){
+      if(!c||!c.paidAt) return;
+      var pm=dateStr(new Date(c.paidAt)).substring(0,7);
+      mR[pm]=(mR[pm]||0)+(Number(c.amount)||0);
     });
     mC[m]=(mC[m]||0)+getEstCost(b);
   });
@@ -6129,6 +6148,15 @@ function renderVehicleTable(filtered){
         if(dateStr(new Date(ext.createdAt))!==_kpiDR3.from) return;
         if(!map[b.vehicle]) return;
         map[b.vehicle].revenue+=Number(ext.additionalCharge);
+      });
+    });
+    // Portal charges paid today — bucket by vehicle
+    allActive.forEach(function(b){
+      (b.portalCharges||[]).forEach(function(c){
+        if(!c||!c.paidAt) return;
+        if(dateStr(new Date(c.paidAt))!==_kpiDR3.from) return;
+        if(!map[b.vehicle]) return;
+        map[b.vehicle].revenue+=Number(c.amount)||0;
       });
     });
     // Seed expense-only vehicles for today
@@ -6779,6 +6807,18 @@ function openBookingDetail(id){
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' — '+esc(b.addlIncome.desc):'')+'</span></div>':'')+
     (Number(b.lateReturnFee)?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">🕒 Late Return Fee</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.lateReturnFee)+'</span></div>':'')+
     (extensionCharge(b)>0?'<div class="detail-row"><span class="detail-label" style="color:#a78bfa">📅 Extension Charges</span><span class="detail-val" style="color:#a78bfa;font-weight:700">+'+$$(extensionCharge(b))+'<span style="font-size:10px;font-weight:400;color:var(--muted)"> across '+(b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length+' extension'+(((b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length!==1)?'s':'')+'</span></span></div>':'')+
+    (portalChargesTotal(b)>0 ?
+      '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">💸 Portal Charges</div>'+
+      (b.portalCharges||[]).map(function(c){
+        if(!c) return '';
+        var amt=Number(c.amount)||0;
+        var paidHtml=c.paidAt
+          ? ' <span style="color:var(--green);font-size:10px">✅ Paid '+new Date(c.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>'
+          : ' <span style="color:#fb923c;font-size:10px">⏳ Pending</span>';
+        return '<div class="detail-row"><span class="detail-label" style="color:#a78bfa">'+esc(c.description||'Charge')+'</span>'+
+          '<span class="detail-val" style="color:'+(c.paidAt?'var(--green)':'#fb923c')+';font-weight:700">'+$$(amt)+paidHtml+'</span></div>';
+      }).join('')
+    : '')+
 
     // Portal activity
     ((b.portalExtendedAt||b.portalAddedExtrasAt||b.portalPaymentNotifiedAt||b.portalExtensionZellePendingAt||b.extensionPaidEmailSentAt)?
@@ -11466,10 +11506,12 @@ function renderOutstanding(){
 
 function getRemainingBalance(b){
   if(b.balancePaidAt) return 0; // paid — always 0 regardless of stored field value
-  if(b.remainingBalance!=null) return Number(b.remainingBalance)||0;
-  var lock=Number(b.dateLock)||0;
-  var dep=Number(b.deposit)||0;
-  return Math.max(0,(Number(b.revenue)||0)+dep-lock);
+  var base = b.remainingBalance!=null ? Number(b.remainingBalance)||0 : (function(){
+    var lock=Number(b.dateLock)||0, dep=Number(b.deposit)||0;
+    return Math.max(0,(Number(b.revenue)||0)+dep-lock);
+  })();
+  // Subtract any portal charges that have already been paid separately
+  return Math.max(0, base - portalChargesTotal(b));
 }
 
 function editRemainingBalance(id){
