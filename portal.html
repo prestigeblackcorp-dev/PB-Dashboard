@@ -1251,9 +1251,12 @@ document.addEventListener('DOMContentLoaded',()=>{
   hideLoading();
   if(state.token && state.email){
     showLoading();
-    loadPortalData().then(ok=>{
-      if(ok){ showApp(); }
-      else{
+    loadPortalData().then(result=>{
+      if(result === true || result === 'error'){
+        // 'error' = network issue — still show app with cached state rather than log out
+        showApp();
+      } else {
+        // 'unauthorized' = token genuinely invalid/expired — clear and force re-login
         _safeClear('pb_portal_token');
         _safeClear('pb_portal_email');
         state.token=''; state.email='';
@@ -1275,13 +1278,14 @@ function showApp(){
 async function loadPortalData(){
   try{
     const r = await fetch(`${WORKER}/portal/data?email=${encodeURIComponent(state.email)}&token=${encodeURIComponent(state.token)}`);
-    if(!r.ok){ return false; }
+    if(r.status === 401){ return 'unauthorized'; }   // only real auth failure clears session
+    if(!r.ok){ return 'error'; }                     // network/server error — keep session
     const d = await r.json();
     state.bookings = d.bookings || [];
     state.insurance = d.insurance || null;
     state.savedVehicles = d.savedVehicles || [];
     return true;
-  }catch(e){ return false; }
+  }catch(e){ return 'error'; }   // fetch failed (offline, etc.) — keep session
 }
 
 function switchTab(tab){
