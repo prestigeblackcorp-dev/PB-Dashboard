@@ -352,9 +352,14 @@ tr:hover td { background: rgba(255,255,255,.02); }
 #mobileFilterToggle { display: none; }
 
 @media (max-width: 480px) {
-  /* ── Prevent any horizontal bleed ── */
-  *, *::before, *::after { max-width: 100%; }
-  html, body { overflow-x: hidden; width: 100%; }
+  /* ── Hard clamp: nothing can be wider than the viewport ── */
+  html, body { overflow-x: hidden !important; width: 100% !important; max-width: 100vw !important; }
+  /* Block-level elements use full width, flex/grid children shrink */
+  *, *::before, *::after { max-width: 100% !important; box-sizing: border-box; }
+  /* Chart.js sets inline width on canvas — override it */
+  canvas { max-width: 100% !important; width: 100% !important; }
+  /* Any chart wrapper div Chart.js inserts */
+  .chartjs-render-monitor, [style*="position: relative"] { max-width: 100% !important; overflow: hidden !important; }
 
   /* ── Header: single compact row ── */
   .header {
@@ -437,18 +442,28 @@ tr:hover td { background: rgba(255,255,255,.02); }
     overflow-x: hidden;
   }
 
-  /* ── KPI cards: 2-per-row ── */
-  .kpi-grid { gap: 8px; grid-template-columns: 1fr 1fr !important; }
-  .kpi { padding: 12px; border-radius: 14px; }
-  .kpi-label { font-size: 9px; margin-bottom: 5px; letter-spacing: .02em; }
-  .kpi-val { font-size: 19px; }
-  .kpi-sub { font-size: 9px; margin-top: 4px; }
+  /* ── KPI cards: 2-per-row, values shrink to fit ── */
+  .kpi-grid { gap: 8px; grid-template-columns: 1fr 1fr !important; width: 100%; }
+  .kpi { padding: 11px 10px; border-radius: 14px; overflow: hidden; min-width: 0; }
+  .kpi-label { font-size: 9px; margin-bottom: 4px; letter-spacing: .02em; white-space: normal; }
+  .kpi-val { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  .kpi-sub { font-size: 9px; margin-top: 4px; white-space: normal; word-break: break-word; }
 
-  /* ── Charts: single column, no overflow ── */
-  .charts-row { grid-template-columns: 1fr; gap: 10px; }
-  .chart-card { padding: 12px 10px; border-radius: 14px; overflow: hidden; max-width: 100%; }
-  .chart-card.span2, .chart-card.full { grid-column: 1; }
-  .chart-card canvas { max-width: 100% !important; width: 100% !important; height: auto !important; }
+  /* ── Charts: single column, clipped to viewport ── */
+  .charts-row { grid-template-columns: 1fr !important; gap: 10px; width: 100%; }
+  .chart-card { padding: 12px 10px; border-radius: 14px; overflow: hidden !important; max-width: 100% !important; width: 100%; position: relative; }
+  .chart-card.span2, .chart-card.full { grid-column: 1 !important; }
+  /* Force Chart.js canvas to fit — !important overrides inline styles */
+  .chart-card canvas { max-width: 100% !important; width: 100% !important; height: auto !important; min-height: 0 !important; }
+  /* Chart wrapper divs that Chart.js creates */
+  .chart-card > div { max-width: 100% !important; overflow: hidden !important; }
+
+  /* ── Budget grid: 2-col (label + input) on mobile, hide spent/status ── */
+  .budget-grid { grid-template-columns: 1fr 1fr !important; gap: 6px !important; }
+  /* In a 4-col grid rendered as 2-col, hide items 3 & 4 of each 4-item row */
+  .budget-grid > *:nth-child(4n+3),
+  .budget-grid > *:nth-child(4n+4) { display: none !important; }
+  .budget-section { overflow: hidden; padding: 12px 10px; }
   .chart-ttl { font-size: 12px; }
   .heatmap-vlbl { min-width: 70px; font-size: 8px; padding-right: 4px; }
   .hm-day { width: 9px; height: 9px; }
@@ -14401,8 +14416,8 @@ function _fallbackCopySigLink(url, statusEl){
 function shareBookingPortal(id){
   var b = bookings.find(function(x){return x.id===id;});
   if(!b){ toast('Booking not found'); return; }
-  var base = location.origin + location.pathname;
-  var url = base + '?portal=' + encodeURIComponent(id);
+  // Send to the new unified member portal (OTP login, all bookings, photos, insurance)
+  var url = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
   // Try to email or copy
   if(b.email && MESSAGING_URL){
     var firstName = (b.name||'').split(' ')[0]||'there';
