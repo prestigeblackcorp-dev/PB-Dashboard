@@ -304,8 +304,8 @@ const WORKER = 'https://pb-booking.prestigeblackcorp.workers.dev';
 
 // ─── State ─────────────────────────────────────────────────────────────────
 let state = {
-  email: localStorage.getItem('pb_portal_email') || '',
-  token: localStorage.getItem('pb_portal_token') || '',
+  email: (()=>{try{return localStorage.getItem('pb_portal_email')||'';}catch(e){return '';}}())  ,
+  token: (()=>{try{return localStorage.getItem('pb_portal_token')||'';}catch(e){return '';}}())  ,
   bookings: [],
   insurance: null,
   savedVehicles: [],
@@ -990,8 +990,8 @@ async function requestOTP(){
     if(!r.ok){ toast(d.error||'Error sending code','error'); return; }
     state.email = email;
     state.otpToken = d.otpToken || null;
-    if(d.otpToken) sessionStorage.setItem('pb_otp_token', d.otpToken);
-    else sessionStorage.removeItem('pb_otp_token');
+    if(d.otpToken){ try{sessionStorage.setItem('pb_otp_token',d.otpToken);}catch(e){} }
+    else{ try{sessionStorage.removeItem('pb_otp_token');}catch(e){} }
     _otpAutoSubmitDone = false;
     document.getElementById('step-email').style.display='none';
     document.getElementById('step-otp').style.display='block';
@@ -1025,7 +1025,21 @@ function backToEmail(){
   _otpAutoSubmitDone = false;
   _verifyingOTP = false;
   state.otpToken = null;
-  sessionStorage.removeItem('pb_otp_token');
+  try{sessionStorage.removeItem('pb_otp_token');}catch(e){}
+}
+
+function _safeStore(key, val){
+  try{ localStorage.setItem(key, val); }catch(e){}
+  try{ sessionStorage.setItem(key, val); }catch(e){}
+}
+function _safeGet(key){
+  try{ const v=localStorage.getItem(key); if(v) return v; }catch(e){}
+  try{ const v=sessionStorage.getItem(key); if(v) return v; }catch(e){}
+  return null;
+}
+function _safeClear(key){
+  try{ localStorage.removeItem(key); }catch(e){}
+  try{ sessionStorage.removeItem(key); }catch(e){}
 }
 
 var _verifyingOTP = false;
@@ -1037,18 +1051,18 @@ async function verifyOTP(){
   if(digits.length<6){ _verifyingOTP=false; toast('Enter the full 6-digit code','error'); return; }
   showLoading();
   try{
-    const _tok = state.otpToken || sessionStorage.getItem('pb_otp_token') || undefined;
+    const _tok = state.otpToken || _safeGet('pb_otp_token') || undefined;
     const r = await fetch(`${WORKER}/portal/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email, otp:digits, otpToken:_tok})});
     const d = await r.json();
     if(!r.ok){ toast(d.error||'Invalid code','error'); return; }
     state.token = d.token;
     state.otpToken = null;
-    sessionStorage.removeItem('pb_otp_token');
-    localStorage.setItem('pb_portal_token', d.token);
-    localStorage.setItem('pb_portal_email', state.email);
+    _safeClear('pb_otp_token');
+    _safeStore('pb_portal_token', d.token);
+    _safeStore('pb_portal_email', state.email);
     await loadPortalData();
     showApp();
-  }catch(e){ toast('Network error. Try again.','error'); }
+  }catch(e){ toast('Error: '+e.message,'error'); }
   finally{ hideLoading(); _verifyingOTP=false; }
 }
 
@@ -1127,8 +1141,8 @@ document.addEventListener('DOMContentLoaded',()=>{
             toast(msg,'success');
           }, 600);
         } else {
-          localStorage.removeItem('pb_portal_token');
-          localStorage.removeItem('pb_portal_email');
+          _safeClear('pb_portal_token');
+          _safeClear('pb_portal_email');
           state.token=''; state.email='';
           hideLoading();
           // Show auth with a note
@@ -1149,8 +1163,8 @@ document.addEventListener('DOMContentLoaded',()=>{
     loadPortalData().then(ok=>{
       if(ok){ showApp(); }
       else{
-        localStorage.removeItem('pb_portal_token');
-        localStorage.removeItem('pb_portal_email');
+        _safeClear('pb_portal_token');
+        _safeClear('pb_portal_email');
         state.token=''; state.email='';
         hideLoading();
       }
@@ -1584,8 +1598,8 @@ function renderAccount(){
 }
 
 function signOut(){
-  localStorage.removeItem('pb_portal_token');
-  localStorage.removeItem('pb_portal_email');
+  _safeClear('pb_portal_token');
+  _safeClear('pb_portal_email');
   state.token=''; state.email=''; state.bookings=[]; state.insurance=null; state.savedVehicles=[];
   document.getElementById('app-screen').style.display='none';
   document.getElementById('auth-screen').style.display='flex';
