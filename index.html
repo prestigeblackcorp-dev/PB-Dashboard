@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Prestige Black Rentals — Dashboard</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9931,15 +9931,22 @@ function renderTodayBanner(){
   var todays=bookings.filter(function(b){
     return !b._deleted && (b.pickupDate||b.date||'')===today && b.status!=='cancelled';
   }).sort(function(a,b){
-    // Bookings with no time set go last
     var ta=a.pickupTime||'99:99', tb=b.pickupTime||'99:99';
     return ta<tb?-1:ta>tb?1:0;
   });
+  var returns=bookings.filter(function(b){
+    return !b._deleted && b.status!=='cancelled' && b.status!=='completed' &&
+           (b.pickupDate||b.date||'')!==today && // not a pickup today
+           (b.dropoffDate||'')===today; // but drops off today
+  }).sort(function(a,b){
+    var ta=a.dropoffTime||'99:99', tb=b.dropoffTime||'99:99';
+    return ta<tb?-1:ta>tb?1:0;
+  });
   var banner=$d('todayBanner');
-  if(!todays.length){ banner.classList.remove('visible'); return; }
+  if(!todays.length && !returns.length){ banner.classList.remove('visible'); return; }
   banner.classList.add('visible');
   var dayLabel=new Date(today+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-  $d('todayBanner').querySelector('.today-banner-title').textContent='📅 '+dayLabel+' · '+todays.length+' booking'+(todays.length!==1?'s':'');
+  $d('todayBanner').querySelector('.today-banner-title').textContent='📅 '+dayLabel+(todays.length?' · '+todays.length+' pickup'+(todays.length!==1?'s':''):'')+(returns.length?' · '+returns.length+' return'+(returns.length!==1?'s':''):'');
   $d('todayBannerItems').innerHTML=todays.map(function(b){
     var idOk=b.verify&&b.verify.idVerified;
     var idCarried=!idOk&&b.verify&&!!b.verify.carriedFromBooking;
@@ -10006,6 +10013,35 @@ function renderTodayBanner(){
       notesHtml+
     '</button>';
   }).join('');
+
+  // Append returns section if any
+  if(returns.length){
+    var retHtml='<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'+
+      '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#f87171;margin-bottom:8px">🔁 Today\'s Returns</div>'+
+      returns.map(function(b){
+        var timeStr=b.dropoffTime?fmtTime(b.dropoffTime):'No time set';
+        var bal=getRemainingBalance(b);
+        var balHtml=(b.broker||'').toLowerCase().trim()==='groupon'
+          ?'<span style="color:#00a34d;font-size:11px;font-weight:600">🟢 Groupon</span>'
+          :(bal>0
+            ?'<span style="color:var(--red);font-size:11px;font-weight:600">Balance Due: '+$$(bal)+'</span>'
+            :'<span style="color:var(--green);font-size:11px;font-weight:600">Paid ✓</span>');
+        return '<button class="today-banner-card" onclick="openBookingDetail(\''+b.id+'\')" type="button" style="border-color:rgba(248,113,113,.25)">'+
+          '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:5px">'+
+            '<div style="font-size:12px;font-weight:700;color:#f87171">🔁 Return @ '+timeStr+'</div>'+
+            '<span class="badge '+b.status+'">'+b.status+'</span>'+
+          '</div>'+
+          '<div style="font-weight:800;font-size:13px;margin-bottom:2px">'+esc(b.vehicle)+'</div>'+
+          '<div style="color:var(--muted);font-size:12px;margin-bottom:5px">'+esc(b.name)+(b.phone?' · '+esc(b.phone):'')+'</div>'+
+          '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">'+
+            '<span style="color:var(--gold);font-weight:700;font-size:12px">'+$$(totalRevenue(b))+'</span>'+
+            balHtml+
+          '</div>'+
+        '</button>';
+      }).join('')+
+    '</div>';
+    $d('todayBannerItems').innerHTML += retHtml;
+  }
 }
 
 // ════════════════════════════════════════════════════════
@@ -12337,6 +12373,13 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
     <li>Not to permit any person other than the authorized driver(s) to operate the Vehicle.</li>
     <li>To operate the Vehicle in full compliance with all applicable federal, state, and local traffic laws, ordinances, and regulations. In the event Renter commits, causes, or is cited for any traffic violation, moving violation, reckless driving, excessive speeding, illegal racing, improper use of the Vehicle, or other unlawful operation during the rental period, Owner reserves the right to withhold all or a portion of the Security Deposit to cover fines, penalties, administrative costs, towing, impound fees, increased insurance exposure, or damages resulting from such violation.</li>
     <li>Any evidence of reckless operation, including but not limited to excessive speeding (20+ mph over posted limit), racing, burnouts, drifting, launch control abuse, track use, or operation in a manner that materially increases risk shall constitute a material breach of this Agreement and may result in immediate termination of the rental without refund and forfeiture of the Security Deposit.</li>
+    <li><strong style="color:#e0e0e0">100 MPH Speed Policy — Three-Strike Rule:</strong> Operating the Vehicle at or above 100 mph constitutes a serious violation of this Agreement and will be tracked as follows:
+      <ul style="margin-top:6px">
+        <li><strong>Strike 1:</strong> Formal written warning issued to Renter. Renter is notified that future violations will result in escalating consequences.</li>
+        <li><strong>Strike 2:</strong> A portion of the Security Deposit may be withheld at Owner's discretion as a penalty for repeated violation.</li>
+        <li><strong>Strike 3:</strong> Immediate termination of the rental agreement. Owner will dispatch vehicle retrieval at Renter's current location. <strong>No refund will be issued for any remaining rental days.</strong> The Security Deposit will be forfeited in full. Renter is responsible for any towing, retrieval, or administrative costs incurred.</li>
+      </ul>
+    </li>
   </ul>
 
   <!-- 7. INSURANCE AND LIABILITY -->
@@ -12493,6 +12536,13 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
     <li>Will not operate under <span class="bold">alcohol, drugs, or impairment</span></li>
     <li>Will obey all <span class="bold">Texas traffic laws</span></li>
     <li>Will not use vehicle for <span class="bold">racing, reckless driving, or illegal activity</span></li>
+    <li><span class="bold">100 MPH Speed Policy — Three-Strike Rule:</span> Operating the Vehicle at or above 100 mph is a serious violation tracked as follows:
+      <ul style="margin-top:4px">
+        <li><span class="bold">Strike 1:</span> Formal written warning issued to Renter.</li>
+        <li><span class="bold">Strike 2:</span> Partial Security Deposit forfeiture at Owner's discretion.</li>
+        <li><span class="bold">Strike 3:</span> Immediate rental termination. Vehicle retrieved at Renter's location. <span class="bold">No refund for remaining days. Security Deposit forfeited in full.</span> Renter is responsible for all retrieval costs.</li>
+      </ul>
+    </li>
   </ul>
 
   <hr class="hr">
@@ -13149,7 +13199,10 @@ function _renderContractContent(){
     if(!/name=["']viewport["']/i.test(srcdoc)){
       srcdoc=srcdoc.replace(/(<head[^>]*>)/i,'$1<meta name="viewport" content="width=device-width,initial-scale=1">');
     }
-    frame.srcdoc=srcdoc;
+    // Only reload the iframe if content actually changed — prevents scroll reset on data refresh
+    if(frame.srcdoc !== srcdoc){
+      frame.srcdoc=srcdoc;
+    }
   } else {
     frame.style.display='none'; $d('contractFilled').style.display=''; rawToggle.style.display='none';
   }
