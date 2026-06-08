@@ -4464,7 +4464,8 @@ function renderGrouponSection(){
   var periodsHtml = '';
   var visiblePayouts = range==='all' ? allPayouts : allPayouts.filter(function(p){ return _inGpRange(p.date, range); });
   if(visiblePayouts.length){
-    var periodRows = visiblePayouts.map(function(p){
+    var isMobP=window.innerWidth<=768;
+    var periodItems = visiblePayouts.map(function(p){
       var pidx = allPayouts.indexOf(p);
       var prevDate = pidx>0 ? allPayouts[pidx-1].date : '';
       var inPeriod = gbookings.filter(function(b){
@@ -4473,6 +4474,42 @@ function renderGrouponSection(){
       });
       var directInPeriod = inPeriod.reduce(function(s,b){return s+totalRevenue(b);},0);
       var diff = Number(p.amount) - directInPeriod;
+      var diffColor=diff>=0?'var(--green)':'var(--red)';
+      var deleteBtn=!p._fromAddlIncome
+        ? '<button class="btn btn-sm" style="color:var(--red);border-color:rgba(255,92,92,.3);padding:2px 8px;font-size:11px" onclick="event.stopPropagation();deleteGrouponPayout(\''+p.id+'\')">✕ Delete</button>'
+        : '<span style="font-size:10px;color:var(--muted)">via addl income</span>';
+      if(isMobP){
+        var subId='gpp_'+p.id;
+        var booksHtml=inPeriod.length ? inPeriod.map(function(b){
+          var bd=totalRevenue(b);
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--border2);font-size:12px">'+
+            '<div><div style="font-weight:700">'+esc(b.name)+'</div><div style="color:var(--muted);font-size:11px">'+fmtDate(b.pickupDate||b.date)+' · '+esc(b.vehicle||'')+'</div></div>'+
+            '<div style="text-align:right">'+
+              (bd>0?'<div style="color:var(--green);font-weight:700">'+$$(bd)+'</div>':'')+
+              '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
+            '</div>'+
+          '</div>';
+        }).join('') : '<div style="font-size:12px;color:var(--muted);padding:6px 0">No bookings in this period.</div>';
+        return '<div style="background:var(--bg);border-radius:12px;padding:12px 14px;border:1px solid var(--border2)">'+
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'+
+            '<div>'+
+              '<div style="font-weight:800;font-size:14px">'+fmtDate(p.date)+'</div>'+
+              (p.note?'<div style="font-size:11px;color:var(--muted)">'+esc(p.note)+'</div>':'')+
+            '</div>'+
+            '<div style="color:var(--green);font-weight:800;font-size:15px">'+$$(p.amount)+'</div>'+
+          '</div>'+
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px">'+
+            '<div style="background:var(--card2);border-radius:6px;padding:7px;text-align:center"><div style="color:var(--muted);font-size:10px">Bookings</div><div style="font-weight:700">'+inPeriod.length+'</div></div>'+
+            '<div style="background:var(--card2);border-radius:6px;padding:7px;text-align:center"><div style="color:var(--muted);font-size:10px">Direct Pay</div><div style="font-weight:700;color:var(--gold)">'+(directInPeriod>0?$$(directInPeriod):'—')+'</div></div>'+
+            '<div style="background:var(--card2);border-radius:6px;padding:7px;text-align:center"><div style="color:var(--muted);font-size:10px">Net Diff</div><div style="font-weight:700;color:'+diffColor+'">'+(diff>=0?'+':'')+$$(diff)+'</div></div>'+
+          '</div>'+
+          '<div style="display:flex;gap:8px;margin-bottom:'+(inPeriod.length?'10':'0')+'px">'+
+            (inPeriod.length?'<button class="btn btn-sm" style="flex:1" onclick="var e=$d(\''+subId+'\');e.style.display=e.style.display===\'none\'?\'block\':\'none\'">▶ '+inPeriod.length+' booking'+(inPeriod.length!==1?'s':'')+'</button>':'')+
+            deleteBtn+
+          '</div>'+
+          '<div id="'+subId+'" style="display:none">'+booksHtml+'</div>'+
+        '</div>';
+      }
       var bookingRows = inPeriod.length ? inPeriod.map(function(b){
         var bDirect=totalRevenue(b);
         return '<tr style="background:rgba(255,255,255,.02);font-size:12px">'+
@@ -4491,21 +4528,21 @@ function renderGrouponSection(){
         '<td style="padding:8px 10px">'+inPeriod.length+'</td>'+
         '<td style="padding:8px 10px;color:'+(directInPeriod>0?'var(--gold)':'var(--muted)')+'">'+
           (directInPeriod>0?$$(directInPeriod):'—')+'</td>'+
-        '<td style="padding:8px 10px;color:'+(diff>=0?'var(--green)':'var(--red)')+'">'+
+        '<td style="padding:8px 10px;color:'+diffColor+'">'+
           (diff>=0?'+':'')+$$(diff)+'</td>'+
-        '<td style="padding:8px 10px">'+
-          (!p._fromAddlIncome?'<button class="btn btn-sm" style="color:var(--red);border-color:rgba(255,92,92,.3);padding:2px 8px;font-size:11px" onclick="event.stopPropagation();deleteGrouponPayout(\''+p.id+'\')">✕ Delete</button>':
-          '<span style="font-size:10px;color:var(--muted)">via addl income</span>')+
-        '</td>'+
+        '<td style="padding:8px 10px">'+deleteBtn+'</td>'+
       '</tr>'+
       (bookingRows?'<tbody style="display:none">'+bookingRows+'</tbody>':'');
-    }).join('');
+    }).join(isMobP?'':'' );
     periodsHtml =
       '<div class="tbl-card" style="margin-top:14px">'+
-        '<div class="tbl-head"><div class="tbl-title">💳 Payout Periods</div><div class="tbl-meta" style="font-size:11px;color:var(--muted)">Click a row to expand bookings</div></div>'+
-        '<div class="tbl-wrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="min-width:560px"><thead><tr>'+
-          '<th>Payout Date</th><th>Amount Received</th><th>Bookings</th><th>Direct Payments</th><th>Net Diff</th><th></th>'+
-        '</tr></thead><tbody>'+periodRows+'</tbody></table></div>'+
+        '<div class="tbl-head"><div class="tbl-title">💳 Payout Periods</div><div class="tbl-meta" style="font-size:11px;color:var(--muted)">'+(isMobP?'Tap to expand bookings':'Click a row to expand bookings')+'</div></div>'+
+        (isMobP ?
+          '<div style="padding:10px 12px;display:flex;flex-direction:column;gap:10px">'+periodItems+'</div>' :
+          '<div class="tbl-wrap"><table style="min-width:560px"><thead><tr>'+
+            '<th>Payout Date</th><th>Amount Received</th><th>Bookings</th><th>Direct Payments</th><th>Net Diff</th><th></th>'+
+          '</tr></thead><tbody>'+periodItems+'</tbody></table></div>'
+        )+
       '</div>';
   }
 
@@ -4513,17 +4550,32 @@ function renderGrouponSection(){
   var pendingInRange = pendingBooks.filter(function(b){ return _inGpRange(b.pickupDate||b.date, range); });
   var pendingHtml = '';
   if(pendingInRange.length){
+    var isMobPend=window.innerWidth<=768;
     pendingHtml =
-      '<div style="margin-top:10px;padding:10px 14px;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.2);border-radius:10px;font-size:13px">'+
-        '<b style="color:var(--red)">⏳ '+pendingInRange.length+' booking'+(pendingInRange.length!==1?'s':'')+' pending next Groupon payout'+(range!=='all'?' · '+rLabel:'')+':</b>'+
-        '<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">'+
+      '<div style="margin-top:10px;padding:10px 14px;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.2);border-radius:10px">'+
+        '<b style="color:var(--red);font-size:13px">⏳ '+pendingInRange.length+' booking'+(pendingInRange.length!==1?'s':'')+' pending next Groupon payout'+(range!=='all'?' · '+rLabel:'')+':</b>'+
+        '<div style="margin-top:8px;display:flex;flex-direction:column;gap:'+(isMobPend?'8':'4')+'px">'+
         pendingInRange.map(function(b){
-          return '<div style="display:flex;gap:14px;align-items:center;font-size:12px">'+
+          var rev=totalRevenue(b);
+          if(isMobPend){
+            return '<div style="background:rgba(255,255,255,.04);border-radius:8px;padding:8px 10px">'+
+              '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'+
+                '<span style="font-weight:700;font-size:13px">'+esc(b.name)+'</span>'+
+                '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
+              '</div>'+
+              '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px">'+
+                '<span style="color:var(--muted)">'+esc(b.vehicle||'')+'</span>'+
+                '<span style="color:var(--gold)">'+fmtDate(b.pickupDate||b.date)+'</span>'+
+              '</div>'+
+              (rev>0?'<div style="margin-top:4px;font-size:12px;color:var(--green);font-weight:700">+'+$$(rev)+' direct pay</div>':'')+
+            '</div>';
+          }
+          return '<div style="display:flex;gap:14px;align-items:center;font-size:12px;flex-wrap:wrap">'+
             '<span style="color:var(--gold)">'+fmtDate(b.pickupDate||b.date)+'</span>'+
             '<span>'+esc(b.name)+'</span>'+
             '<span style="color:var(--muted)">'+esc(b.vehicle||'')+'</span>'+
             '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
-            (totalRevenue(b)>0?'<span style="color:var(--green);font-size:11px">+'+$$(totalRevenue(b))+' direct</span>':'')+
+            (rev>0?'<span style="color:var(--green);font-size:11px">+'+$$(rev)+' direct</span>':'')+
           '</div>';
         }).join('')+
         '</div></div>';
@@ -4573,30 +4625,56 @@ function renderGrouponSection(){
     return bD>aD?1:bD<aD?-1:0;
   });
 
-  var tbody = filtered.map(function(b){
-    var period = getGrouponPeriodForBooking(b, allPayouts);
-    var bDirect = totalRevenue(b);
-    var isCancelled = b.status==='cancelled';
-    return '<tr onclick="openBookingDetail(\''+b.id+'\')" style="cursor:pointer'+(isCancelled?';opacity:0.45':'')+'">'+
-      '<td>'+esc(b.name)+'</td>'+
-      '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
-      '<td>'+esc(b.vehicle||'')+'</td>'+
-      '<td>'+(b.days||1)+' '+(b.type==='hourly'||b.type==='chauffeur'?'hr':'day'+(b.days!==1?'s':''))+'</td>'+
-      '<td style="color:'+(bDirect>0?'var(--green)':'var(--muted)')+'">'+
-        (bDirect>0?$$(bDirect):'—')+'</td>'+
-      '<td>'+(period?'<span style="font-size:11px;color:var(--gold)">'+fmtDate(period.date)+'</span>':'<span style="font-size:11px;color:var(--red)">Pending</span>')+'</td>'+
-      '<td><span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span></td>'+
-    '</tr>';
-  }).join('');
-
+  var isMobG=window.innerWidth<=768;
   var wrap=$d('gpAllBooksTableWrap');
-  if(wrap) wrap.innerHTML=
-    '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="min-width:560px"><thead><tr>'+
-      '<th>Customer</th><th>Pickup Date</th><th>Vehicle</th><th>Duration</th>'+
-      '<th>Direct Payment</th><th>Payout Period</th><th>Status</th>'+
-    '</tr></thead><tbody>'+
-    (tbody||'<tr class="empty-row"><td colspan="7">No Groupon bookings yet.</td></tr>')+
-    '</tbody></table></div>';
+  if(!wrap) return;
+  if(!filtered.length){
+    wrap.innerHTML='<div style="padding:24px;text-align:center;color:var(--muted)">No Groupon bookings yet.</div>';
+    return;
+  }
+  if(isMobG){
+    wrap.innerHTML='<div style="padding:10px 12px;display:flex;flex-direction:column;gap:8px">'+
+      filtered.map(function(b){
+        var period=getGrouponPeriodForBooking(b,allPayouts);
+        var bDirect=totalRevenue(b);
+        var isCancelled=b.status==='cancelled';
+        return '<div style="background:var(--bg);border-radius:10px;padding:12px;border:1px solid var(--border2);'+(isCancelled?'opacity:0.5':'')+'" onclick="openBookingDetail(\''+b.id+'\')" >'+
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">'+
+            '<div style="font-weight:800;font-size:13px">'+esc(b.name)+'</div>'+
+            '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
+          '</div>'+
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px">'+
+            '<div><span style="color:var(--muted)">Date: </span>'+fmtDate(b.pickupDate||b.date)+'</div>'+
+            '<div><span style="color:var(--muted)">Duration: </span>'+(b.days||1)+' '+(b.type==='hourly'||b.type==='chauffeur'?'hr':'day'+(b.days!==1?'s':''))+'</div>'+
+            '<div style="grid-column:1/-1"><span style="color:var(--muted)">Vehicle: </span>'+esc(b.vehicle||'')+'</div>'+
+            (bDirect>0?'<div><span style="color:var(--muted)">Direct Pay: </span><b style="color:var(--green)">'+$$(bDirect)+'</b></div>':'')+
+            '<div'+(bDirect>0?'':' style="grid-column:1/-1"')+'><span style="color:var(--muted)">Payout: </span>'+(period?'<span style="color:var(--gold)">'+fmtDate(period.date)+'</span>':'<span style="color:var(--red)">Pending</span>')+'</div>'+
+          '</div>'+
+        '</div>';
+      }).join('')+
+    '</div>';
+  } else {
+    var tbody=filtered.map(function(b){
+      var period=getGrouponPeriodForBooking(b,allPayouts);
+      var bDirect=totalRevenue(b);
+      var isCancelled=b.status==='cancelled';
+      return '<tr onclick="openBookingDetail(\''+b.id+'\')" style="cursor:pointer'+(isCancelled?';opacity:0.45':'')+'">'+
+        '<td>'+esc(b.name)+'</td>'+
+        '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
+        '<td>'+esc(b.vehicle||'')+'</td>'+
+        '<td>'+(b.days||1)+' '+(b.type==='hourly'||b.type==='chauffeur'?'hr':'day'+(b.days!==1?'s':''))+'</td>'+
+        '<td style="color:'+(bDirect>0?'var(--green)':'var(--muted)')+'">'+
+          (bDirect>0?$$(bDirect):'—')+'</td>'+
+        '<td>'+(period?'<span style="font-size:11px;color:var(--gold)">'+fmtDate(period.date)+'</span>':'<span style="font-size:11px;color:var(--red)">Pending</span>')+'</td>'+
+        '<td><span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span></td>'+
+      '</tr>';
+    }).join('');
+    wrap.innerHTML=
+      '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="min-width:560px"><thead><tr>'+
+        '<th>Customer</th><th>Pickup Date</th><th>Vehicle</th><th>Duration</th>'+
+        '<th>Direct Payment</th><th>Payout Period</th><th>Status</th>'+
+      '</tr></thead><tbody>'+tbody+'</tbody></table></div>';
+  }
 }
 
 // ════════════════════════════════════════════════════════
