@@ -354,12 +354,14 @@ tr:hover td { background: rgba(255,255,255,.02); }
 @media (max-width: 480px) {
   /* ── Hard clamp: nothing can be wider than the viewport ── */
   html, body { overflow-x: hidden !important; width: 100% !important; max-width: 100vw !important; }
-  /* Block-level elements use full width, flex/grid children shrink */
-  *, *::before, *::after { max-width: 100% !important; box-sizing: border-box; }
-  /* Chart.js sets inline width on canvas — override it */
-  canvas { max-width: 100% !important; width: 100% !important; }
-  /* Any chart wrapper div Chart.js inserts */
-  .chartjs-render-monitor, [style*="position: relative"] { max-width: 100% !important; overflow: hidden !important; }
+  /* All layout elements box-sizing — do NOT apply max-width universally (breaks Chart.js) */
+  *, *::before, *::after { box-sizing: border-box; }
+  /* Main layout containers must not overflow */
+  .main, .tab-panel, .tab-panel.active, .filter-bar,
+  .kpi-grid, .kpi, .charts-row, .chart-card,
+  .trip-card, .modal-card, .tbl-card { max-width: 100% !important; overflow-x: hidden; }
+  /* Canvas: width constrained, height controlled per chart */
+  canvas { max-width: 100% !important; }
 
   /* ── Header: single compact row ── */
   .header {
@@ -443,20 +445,31 @@ tr:hover td { background: rgba(255,255,255,.02); }
   }
 
   /* ── KPI cards: 2-per-row, values shrink to fit ── */
-  .kpi-grid { gap: 8px; grid-template-columns: 1fr 1fr !important; width: 100%; }
-  .kpi { padding: 11px 10px; border-radius: 14px; overflow: hidden; min-width: 0; }
+  .kpi-grid { gap: 8px; grid-template-columns: 1fr 1fr !important; width: 100%; max-width: 100%; overflow: hidden; }
+  .kpi { padding: 11px 10px; border-radius: 14px; overflow: hidden; min-width: 0; max-width: 100%; box-sizing: border-box; }
   .kpi-label { font-size: 9px; margin-bottom: 4px; letter-spacing: .02em; white-space: normal; }
-  .kpi-val { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  /* Override gradient text so it can be clipped properly on mobile */
+  .kpi-val { font-size: 16px !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; width: 100%; max-width: 100%; -webkit-text-fill-color: unset !important; background: none !important; background-clip: unset !important; -webkit-background-clip: unset !important; color: var(--gold) !important; }
+  .kpi.green .kpi-val { color: var(--green) !important; }
+  .kpi.red .kpi-val   { color: var(--red) !important; }
+  .kpi.blue .kpi-val  { color: var(--blue) !important; }
+  .kpi.purple .kpi-val{ color: var(--purple) !important; }
   .kpi-sub { font-size: 9px; margin-top: 4px; white-space: normal; word-break: break-word; }
 
   /* ── Charts: single column, clipped to viewport ── */
-  .charts-row { grid-template-columns: 1fr !important; gap: 10px; width: 100%; }
-  .chart-card { padding: 12px 10px; border-radius: 14px; overflow: hidden !important; max-width: 100% !important; width: 100%; position: relative; }
+  .charts-row { grid-template-columns: 1fr !important; gap: 10px; width: 100%; overflow: hidden; }
+  .chart-card { padding: 12px 10px; border-radius: 14px; overflow: hidden !important; max-width: 100% !important; width: 100% !important; box-sizing: border-box; position: relative; }
   .chart-card.span2, .chart-card.full { grid-column: 1 !important; }
-  /* Force Chart.js canvas to fit — !important overrides inline styles */
-  .chart-card canvas { max-width: 100% !important; width: 100% !important; height: auto !important; min-height: 0 !important; }
-  /* Chart wrapper divs that Chart.js creates */
-  .chart-card > div { max-width: 100% !important; overflow: hidden !important; }
+  /* Chart container div that Chart.js injects — must be constrained */
+  .chart-card > div[style] { width: 100% !important; max-width: 100% !important; overflow: hidden !important; }
+  /* Canvas itself: let height be set by JS, but clamp width */
+  .chart-card canvas { max-width: 100% !important; width: 100% !important; display: block; }
+  /* Doughnut/pie charts: cap height so they don't blow up to screen size */
+  #chartType { max-height: 220px !important; }
+  /* Bar charts: limit height */
+  #chartRevVehicle, #chartBkVehicle { max-height: 220px !important; }
+  /* Monthly line chart */
+  #chartMonthly { max-height: 200px !important; }
 
   /* ── Budget grid: 2-col (label + input) on mobile, hide spent/status ── */
   .budget-grid { grid-template-columns: 1fr 1fr !important; gap: 6px !important; }
@@ -1487,7 +1500,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <div class="chart-card span2"><div class="chart-ttl">Monthly Revenue vs Est. Cost</div><canvas id="chartMonthly"></canvas></div>
       <div class="chart-card"><div class="chart-ttl">Booking Type Split</div><canvas id="chartType"></canvas></div>
       <div class="chart-card"><div class="chart-ttl">Revenue by Vehicle</div><canvas id="chartRevVehicle"></canvas></div>
-      <div class="chart-card span2"><div class="chart-ttl">Bookings per Vehicle</div><canvas id="chartBkVehicle" style="max-height:150px"></canvas></div>
+      <div class="chart-card span2"><div class="chart-ttl">Bookings per Vehicle</div><canvas id="chartBkVehicle"></canvas></div>
     </div>
     <div class="tbl-card">
       <div class="tbl-head"><div class="tbl-title">Vehicle Performance</div><div class="tbl-meta" id="vehicleMeta"></div></div>
@@ -5898,13 +5911,15 @@ function renderCharts(filtered){
   charts['monthly']=new Chart($d('chartMonthly'),{type:'line',data:{labels:mLabels,datasets:[
     {label:'Revenue',data:months.map(function(m){return mR[m]||0;}),borderColor:GOLD,backgroundColor:'rgba(201,169,98,.08)',fill:true,tension:.4,pointBackgroundColor:GOLD,pointRadius:mobile?2:4},
     {label:'Est. Cost',data:months.map(function(m){return mC[m]||0;}),borderColor:'rgba(255,92,92,.7)',backgroundColor:'rgba(255,92,92,.06)',fill:true,tension:.4,pointBackgroundColor:RED,pointRadius:mobile?2:4}
-  ]},options:{responsive:true,maintainAspectRatio:true,plugins:_chartPlugins('bottom'),scales:{y:_scaleY('$'),x:_scaleX()}}});
+  ]},options:{responsive:true,maintainAspectRatio:mobile?false:true,aspectRatio:mobile?2.2:2,plugins:_chartPlugins('bottom'),scales:{y:_scaleY('$'),x:_scaleX()}}});
+  if(mobile) $d('chartMonthly').style.height='200px';
 
-  // Type split
+  // Type split — doughnut: on mobile use fixed height to prevent blowup
   var tc={daily:0,hourly:0,chauffeur:0};
   active.forEach(function(b){ tc[b.type]=(tc[b.type]||0)+1; });
   dc('type');
-  charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur],backgroundColor:[GOLD,BLUE,GREEN],borderWidth:0,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:true,cutout:'64%',plugins:_chartPlugins('bottom')}});
+  charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur],backgroundColor:[GOLD,BLUE,GREEN],borderWidth:0,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:mobile?false:true,cutout:'64%',plugins:_chartPlugins('bottom')}});
+  if(mobile) $d('chartType').style.height='200px';
 
   // Revenue by vehicle — horizontal bar, truncate long labels on mobile
   var rv={};
@@ -5912,7 +5927,10 @@ function renderCharts(filtered){
   var vl=Object.keys(rv).sort(function(a,b){return rv[b]-rv[a];}).slice(0,mobile?6:10);
   var vlLabels=vl.map(function(v){ return mobile&&v.length>10?v.slice(0,9)+'…':v; });
   dc('rvv');
-  charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vlLabels,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{responsive:true,maintainAspectRatio:true,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return vl[items[0].dataIndex]; }}}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();},font:{size:mobile?9:11},maxTicksLimit:mobile?3:6},grid:{display:false}},y:{grid:{display:false},ticks:{font:{size:mobile?9:11}}}}}});
+  // Mobile: calculate height based on number of bars so they're never squished
+  var rvvH = mobile ? Math.min(220, Math.max(120, vl.length * 32)) : null;
+  charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vlLabels,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{responsive:true,maintainAspectRatio:mobile?false:true,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return vl[items[0].dataIndex]; }}}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();},font:{size:mobile?9:11},maxTicksLimit:mobile?3:6},grid:{display:false}},y:{grid:{display:false},ticks:{font:{size:mobile?9:11}}}}}});
+  if(mobile && rvvH) $d('chartRevVehicle').style.height=rvvH+'px';
 
   // Bookings per vehicle
   var bv={};
@@ -5921,6 +5939,7 @@ function renderCharts(filtered){
   var blLabels=bl.map(function(v){ return mobile&&v.length>8?v.slice(0,7)+'…':v; });
   dc('bvv');
   charts['bvv']=new Chart($d('chartBkVehicle'),{type:'bar',data:{labels:blLabels,datasets:[{label:'Bookings',data:bl.map(function(v){return bv[v];}),backgroundColor:'rgba(100,180,255,.55)',borderRadius:5}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return bl[items[0].dataIndex]; }}}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,font:{size:mobile?9:11}},grid:{display:false}},x:{grid:{display:false},ticks:{maxRotation:mobile?45:0,font:{size:mobile?9:11}}}}}});
+  if(mobile) $d('chartBkVehicle').style.height='160px';
 }
 
 // ════════════════════════════════════════════════════════
