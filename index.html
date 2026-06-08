@@ -954,6 +954,9 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     </div>
   </div>
   <div class="header-actions">
+    <button class="btn btn-sm" onclick="openCmdPalette()" id="cmdKBtn" title="Search (⌘K)" style="display:flex;align-items:center;gap:6px;border-color:var(--border);color:var(--muted);font-size:12px">
+      <span style="font-size:11px;opacity:.6;font-family:monospace">⌘K</span> Search
+    </button>
     <span id="offlineBadge" style="display:none;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.4);border-radius:8px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.06em">● OFFLINE</span>
     <button class="btn btn-sm" onclick="openSyncSetup()" id="syncBtn" title="Set up cross-device sync">
       <span id="syncDot" style="color:var(--muted)">●</span> Sync
@@ -962,6 +965,26 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <button class="btn btn-sm" id="gcalBtn" onclick="connectGCal()" title="Connect Google Calendar">🗓 Calendar</button>
     <button class="btn btn-sm" id="gcalSyncBtn" onclick="syncAllToGCal()" title="Push all bookings to Google Calendar" style="display:none">↑ Cal Sync</button>
     <button class="btn btn-sm" onclick="lockApp()" title="Lock dashboard">🔒 Lock</button>
+  </div>
+</div>
+
+<!-- ═══ COMMAND PALETTE ═══ -->
+<div id="cmdPaletteOverlay" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.7);backdrop-filter:blur(4px)" onclick="if(event.target===this)closeCmdPalette()">
+  <div style="position:absolute;top:15vh;left:50%;transform:translateX(-50%);width:min(640px,94vw);background:#1a1a1a;border:1px solid var(--border);border-radius:16px;box-shadow:0 24px 80px rgba(0,0,0,.8);overflow:hidden">
+    <!-- Search input -->
+    <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)">
+      <span style="font-size:16px;opacity:.5">⌘</span>
+      <input id="cmdPaletteInput" type="text" placeholder="Search bookings, vehicles, guests, dates…" autocomplete="off"
+        style="flex:1;background:none;border:none;outline:none;color:var(--text);font-size:15px;font-family:inherit"
+        oninput="renderCmdPalette()" onkeydown="cmdPaletteKey(event)">
+      <button onclick="closeCmdPalette()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer">esc</button>
+    </div>
+    <!-- Results -->
+    <div id="cmdPaletteResults" style="max-height:min(60vh,460px);overflow-y:auto;padding:8px 0"></div>
+    <!-- Footer hints -->
+    <div style="padding:8px 16px;border-top:1px solid var(--border);display:flex;gap:16px;font-size:11px;color:var(--muted)">
+      <span>↑↓ Navigate</span><span>↵ Select</span><span>Esc Close</span>
+    </div>
   </div>
 </div>
 
@@ -16293,6 +16316,158 @@ if(!(new URLSearchParams(location.search).get('sign'))&&!(new URLSearchParams(lo
   // Throttled internally to once per 29 min; interval fires every 30 min
   setInterval(runAutoScheduledEmails, 30*60*1000);
 }
+
+// ════════════════════════════════════════════════════════
+//  COMMAND PALETTE (⌘K)
+// ════════════════════════════════════════════════════════
+var _cmdPaletteIdx = 0;
+var _cmdPaletteItems = [];
+
+var CMD_PAGES = [
+  { icon:'📊', label:'Overview',   action:function(){ switchTab('overview'); } },
+  { icon:'📅', label:'Upcoming',   action:function(){ switchTab('upcoming'); } },
+  { icon:'🚗', label:'Current',    action:function(){ switchTab('current'); } },
+  { icon:'🕐', label:'Previous',   action:function(){ switchTab('previous'); } },
+  { icon:'🗓', label:'Calendar',   action:function(){ switchTab('calendar'); } },
+  { icon:'💰', label:'Tax & Revenue', action:function(){ switchTab('tax'); } },
+  { icon:'🔧', label:'Fleet',      action:function(){ switchTab('fleet'); } },
+  { icon:'👤', label:'Customers',  action:function(){ switchTab('customers'); } },
+  { icon:'🤝', label:'Brokers',    action:function(){ switchTab('brokers'); } },
+];
+var CMD_ACTIONS = [
+  { icon:'✦',  label:'New Booking',      action:function(){ openModal(); } },
+  { icon:'🔗', label:'New Lead',         action:function(){ if(typeof openLeadModal==='function') openLeadModal(); } },
+  { icon:'💸', label:'Log Expense',      action:function(){ openExpenseModal(); } },
+  { icon:'💰', label:'Add Income',       action:function(){ openIncomeModal(); } },
+  { icon:'🔧', label:'Log Maintenance',  action:function(){ openMaintenanceModal(); } },
+  { icon:'🚗', label:'Manage Vehicles',  action:function(){ openVehicleModal(); } },
+  { icon:'📝', label:'Contract Template',action:function(){ openContractTemplate(''); } },
+  { icon:'⚙️', label:'Settings',         action:function(){ openSettings(); } },
+];
+
+function openCmdPalette(){
+  var ov=$d('cmdPaletteOverlay'); if(!ov) return;
+  ov.style.display='';
+  var inp=$d('cmdPaletteInput'); if(inp){ inp.value=''; inp.focus(); }
+  _cmdPaletteIdx=0;
+  renderCmdPalette();
+}
+function closeCmdPalette(){
+  var ov=$d('cmdPaletteOverlay'); if(ov) ov.style.display='none';
+}
+function cmdPaletteKey(e){
+  var items=_cmdPaletteItems;
+  if(e.key==='Escape'){ closeCmdPalette(); return; }
+  if(e.key==='ArrowDown'){ e.preventDefault(); _cmdPaletteIdx=Math.min(_cmdPaletteIdx+1,items.length-1); _highlightCmd(); return; }
+  if(e.key==='ArrowUp'){ e.preventDefault(); _cmdPaletteIdx=Math.max(_cmdPaletteIdx-1,0); _highlightCmd(); return; }
+  if(e.key==='Enter'){ e.preventDefault(); if(items[_cmdPaletteIdx]) { closeCmdPalette(); items[_cmdPaletteIdx].action(); } return; }
+}
+function _highlightCmd(){
+  var els=($d('cmdPaletteResults')||{}).querySelectorAll?$d('cmdPaletteResults').querySelectorAll('[data-ci]'):[];
+  els.forEach(function(el,i){ el.style.background=i===_cmdPaletteIdx?'rgba(201,169,98,.12)':''; });
+  if(els[_cmdPaletteIdx]) els[_cmdPaletteIdx].scrollIntoView({block:'nearest'});
+}
+function renderCmdPalette(){
+  var q=($d('cmdPaletteInput')||{}).value||'';
+  var res=$d('cmdPaletteResults'); if(!res) return;
+  _cmdPaletteItems=[];
+  var html='';
+
+  if(!q.trim()){
+    // Default: show pages then actions
+    html+='<div style="padding:6px 16px 4px;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">Pages</div>';
+    CMD_PAGES.forEach(function(p,i){
+      _cmdPaletteItems.push(p);
+      html+=_cmdItem(p.icon,p.label,'Page',i);
+    });
+    html+='<div style="padding:10px 16px 4px;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">Actions</div>';
+    CMD_ACTIONS.forEach(function(p){
+      var i=_cmdPaletteItems.length;
+      _cmdPaletteItems.push(p);
+      html+=_cmdItem(p.icon,p.label,'Action',i);
+    });
+  } else {
+    var ql=q.toLowerCase().trim();
+    // Search bookings by name, phone, email, vehicle, date, full id, last 6
+    var matches=bookings.filter(function(b){
+      if(b._deleted) return false;
+      var last6=(b.id||'').slice(-6).toUpperCase();
+      return (b.name||'').toLowerCase().indexOf(ql)!==-1 ||
+             (b.phone||'').replace(/\D/g,'').indexOf(ql.replace(/\D/g,''))!==-1 ||
+             (b.email||'').toLowerCase().indexOf(ql)!==-1 ||
+             (b.vehicle||'').toLowerCase().indexOf(ql)!==-1 ||
+             (b.pickupDate||b.date||'').indexOf(ql)!==-1 ||
+             (b.dropoffDate||'').indexOf(ql)!==-1 ||
+             (b.id||'').toLowerCase()===ql ||
+             last6===ql.toUpperCase() ||
+             ('pbr-'+last6).toLowerCase()===ql ||
+             ('pbr'+last6).toLowerCase()===ql;
+    }).slice(0,10);
+
+    if(matches.length){
+      html+='<div style="padding:6px 16px 4px;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">Bookings</div>';
+      matches.forEach(function(b){
+        var i=_cmdPaletteItems.length;
+        var sub=esc(b.vehicle)+(b.pickupDate?' · '+fmtDate(b.pickupDate):'')+'<span style="color:var(--muted);font-size:10px;margin-left:6px">PBR-'+(b.id||'').slice(-6).toUpperCase()+'</span>';
+        var item={icon:'📋',label:b.name||'Booking',sub:sub,action:(function(bid){ return function(){ openBookingDetail(bid); }; })(b.id)};
+        _cmdPaletteItems.push(item);
+        html+=_cmdItemSub('📋',esc(b.name||'Booking'),sub,b.status,i);
+      });
+    }
+
+    // Also filter pages/actions by query
+    var pMatches=CMD_PAGES.filter(function(p){ return p.label.toLowerCase().indexOf(ql)!==-1; });
+    var aMatches=CMD_ACTIONS.filter(function(p){ return p.label.toLowerCase().indexOf(ql)!==-1; });
+    if(pMatches.length||aMatches.length){
+      if(matches.length) html+='<div style="height:1px;background:var(--border);margin:4px 0"></div>';
+      pMatches.concat(aMatches).forEach(function(p){
+        var i=_cmdPaletteItems.length;
+        _cmdPaletteItems.push(p);
+        html+=_cmdItem(p.icon,p.label,'',i);
+      });
+    }
+
+    if(!matches.length&&!pMatches.length&&!aMatches.length){
+      html='<div style="padding:32px;text-align:center;color:var(--muted);font-size:13px">No results for "'+esc(q)+'"</div>';
+    }
+  }
+
+  res.innerHTML=html;
+  _cmdPaletteIdx=0;
+  _highlightCmd();
+
+  res.querySelectorAll('[data-ci]').forEach(function(el){
+    el.addEventListener('mouseenter',function(){ _cmdPaletteIdx=Number(el.dataset.ci); _highlightCmd(); });
+    el.addEventListener('click',function(){ var item=_cmdPaletteItems[Number(el.dataset.ci)]; if(item){ closeCmdPalette(); item.action(); } });
+  });
+}
+function _cmdItem(icon,label,tag,i){
+  return '<div data-ci="'+i+'" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;border-radius:0">'+
+    '<span style="font-size:16px;width:22px;text-align:center">'+icon+'</span>'+
+    '<span style="flex:1;font-size:13px;font-weight:600;color:var(--text)">'+label+'</span>'+
+    (tag?'<span style="font-size:10px;color:var(--muted);background:rgba(255,255,255,.06);padding:2px 7px;border-radius:5px">'+tag+'</span>':'')+
+  '</div>';
+}
+function _cmdItemSub(icon,label,sub,status,i){
+  return '<div data-ci="'+i+'" style="display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer">'+
+    '<span style="font-size:16px;width:22px;text-align:center">'+icon+'</span>'+
+    '<div style="flex:1;min-width:0">'+
+      '<div style="font-size:13px;font-weight:600;color:var(--text)">'+label+'</div>'+
+      '<div style="font-size:11px;color:var(--muted);margin-top:1px">'+sub+'</div>'+
+    '</div>'+
+    '<span class="badge '+esc(status||'')+'" style="flex-shrink:0">'+esc(status||'')+'</span>'+
+  '</div>';
+}
+
+// ⌘K keyboard shortcut
+document.addEventListener('keydown',function(e){
+  if((e.metaKey||e.ctrlKey)&&e.key==='k'){
+    e.preventDefault();
+    var ov=$d('cmdPaletteOverlay');
+    if(ov&&ov.style.display!=='none') closeCmdPalette();
+    else openCmdPalette();
+  }
+});
 </script>
 </body>
 </html>
