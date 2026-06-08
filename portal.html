@@ -36,13 +36,17 @@
     -webkit-appearance:none;appearance:none;
   }
   input:focus,select:focus{border-color:var(--gold);}
-  .otp-row{display:flex;gap:8px;justify-content:center;margin-bottom:4px;}
-  .otp-digit{
-    background:#111;border:1px solid var(--border);border-radius:10px;color:var(--text);
-    font-size:22px;font-weight:700;text-align:center;width:46px;height:56px;outline:none;
-    -webkit-appearance:none;caret-color:var(--gold);
+  .otp-wrap{position:relative;margin-bottom:4px;}
+  .otp-hidden{position:absolute;inset:0;opacity:0;width:100%;height:100%;font-size:1px;z-index:2;cursor:text;caret-color:transparent;}
+  .otp-row{display:flex;gap:8px;justify-content:center;pointer-events:none;}
+  .otp-box{
+    background:#111;border:2px solid var(--border);border-radius:10px;color:var(--text);
+    font-size:22px;font-weight:700;text-align:center;width:46px;height:56px;
+    display:flex;align-items:center;justify-content:center;transition:border-color .15s;
+    flex-shrink:0;
   }
-  .otp-digit:focus{border-color:var(--gold);}
+  .otp-box.active{border-color:var(--gold);}
+  .otp-box.filled{border-color:rgba(201,169,98,.5);}
   .btn{
     background:var(--gold);border:none;border-radius:10px;color:#000;cursor:pointer;
     font-size:15px;font-weight:700;padding:14px;width:100%;margin-top:16px;
@@ -208,13 +212,16 @@
   <div class="auth-card" id="step-otp" style="display:none;">
     <div class="auth-title">Check Your Email</div>
     <div class="auth-desc" id="otp-desc">We sent a 6-digit code to your email. It expires in 10 minutes.</div>
-    <div class="otp-row" id="otp-inputs">
-      <input class="otp-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code">
-      <input class="otp-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-      <input class="otp-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-      <input class="otp-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-      <input class="otp-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-      <input class="otp-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+    <div class="otp-wrap" onclick="document.getElementById('otp-hidden').focus()">
+      <input id="otp-hidden" type="tel" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" style="position:absolute;inset:0;opacity:0;width:100%;height:100%;font-size:1px;z-index:2;cursor:text;caret-color:transparent;background:transparent;border:none;outline:none;">
+      <div class="otp-row" id="otp-inputs">
+        <div class="otp-box" id="otp-b0"></div>
+        <div class="otp-box" id="otp-b1"></div>
+        <div class="otp-box" id="otp-b2"></div>
+        <div class="otp-box" id="otp-b3"></div>
+        <div class="otp-box" id="otp-b4"></div>
+        <div class="otp-box" id="otp-b5"></div>
+      </div>
     </div>
     <button class="btn" id="verify-btn" onclick="verifyOTP()">Verify Code</button>
     <button class="btn btn-ghost" style="margin-top:8px;" onclick="backToEmail()">Back</button>
@@ -983,7 +990,7 @@ async function requestOTP(){
     document.getElementById('step-email').style.display='none';
     document.getElementById('step-otp').style.display='block';
     document.getElementById('otp-desc').textContent = `We sent a 6-digit code to ${email}. It expires in 10 minutes.`;
-    setTimeout(()=>{ document.querySelector('.otp-digit').focus(); },100);
+    setTimeout(()=>{ var h=document.getElementById('otp-hidden'); if(h){h.value='';h.focus();} },150);
     toast('Code sent! Check your email.','success');
   }catch(e){ toast('Network error. Try again.','error'); }
   finally{ hideLoading(); }
@@ -992,11 +999,13 @@ async function requestOTP(){
 function backToEmail(){
   document.getElementById('step-otp').style.display='none';
   document.getElementById('step-email').style.display='block';
-  document.querySelectorAll('.otp-digit').forEach(i=>i.value='');
+  var h=document.getElementById('otp-hidden'); if(h) h.value='';
+  for(var j=0;j<6;j++){var b=document.getElementById('otp-b'+j);if(b){b.textContent='';b.className='otp-box';}}
 }
 
 async function verifyOTP(){
-  const digits = [...document.querySelectorAll('.otp-digit')].map(i=>i.value).join('');
+  const hiddenInp = document.getElementById('otp-hidden');
+  const digits = hiddenInp ? hiddenInp.value.replace(/[^0-9]/g,'').slice(0,6) : '';
   if(digits.length<6){ toast('Enter the full 6-digit code','error'); return; }
   showLoading();
   try{
@@ -1012,33 +1021,26 @@ async function verifyOTP(){
   finally{ hideLoading(); }
 }
 
-// OTP digit navigation
+// OTP hidden-input approach — works reliably on all mobile devices
 document.addEventListener('DOMContentLoaded',()=>{
-  const digits = document.querySelectorAll('.otp-digit');
-  digits.forEach((inp,i)=>{
-    inp.addEventListener('input',()=>{
-      const v = inp.value.replace(/[^0-9]/g,'');
-      // Handle iOS autofill or paste of full code into one field
-      if(v.length >= 6){
-        [...v.slice(0,6)].forEach((ch,j)=>{ digits[j].value=ch; });
-        digits[5].focus();
-        return;
-      }
-      inp.value = v.slice(-1);
-      if(v && i<digits.length-1) digits[i+1].focus();
-    });
-    inp.addEventListener('keydown',e=>{
-      if(e.key==='Backspace'&&!inp.value&&i>0) digits[i-1].focus();
-    });
-    inp.addEventListener('paste',e=>{
-      const paste = (e.clipboardData||window.clipboardData).getData('text').replace(/\D/g,'');
-      if(paste.length>=6){
-        e.preventDefault();
-        [...paste.slice(0,6)].forEach((ch,j)=>{ digits[j].value=ch; });
-        digits[5].focus();
-      }
-    });
-  });
+  const hiddenInp = document.getElementById('otp-hidden');
+  function _otpUpdate(){
+    const v = (hiddenInp.value||'').replace(/[^0-9]/g,'').slice(0,6);
+    hiddenInp.value = v;
+    for(var j=0;j<6;j++){
+      var box=document.getElementById('otp-b'+j);
+      if(!box) continue;
+      box.textContent = v[j]||'';
+      box.classList.toggle('filled', j < v.length);
+      box.classList.toggle('active', j === v.length && document.activeElement===hiddenInp);
+    }
+    if(v.length===6) verifyOTP();
+  }
+  if(hiddenInp){
+    hiddenInp.addEventListener('input', _otpUpdate);
+    hiddenInp.addEventListener('focus', _otpUpdate);
+    hiddenInp.addEventListener('blur',  _otpUpdate);
+  }
 
   // Check for signing mode first
   var sp = new URLSearchParams(location.search);
