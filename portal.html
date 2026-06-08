@@ -1793,7 +1793,7 @@ async function nbZelle(){
   const errEl = document.getElementById('nb-error');
   errEl.style.display='none';
   const btn = document.getElementById('nb-btn-zelle');
-  if(btn){ btn.disabled=true; btn.textContent='Sending notification…'; }
+  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
   showLoading();
   try{
     const r = await fetch(`${WORKER}/portal/zelle-notify`,{
@@ -1807,13 +1807,20 @@ async function nbZelle(){
     document.getElementById('nb-step3').style.display='block';
     const info = d.zelleInfo || {};
     const totalAmt = d.revenue ? '$'+Number(d.revenue).toFixed(2) : '';
+    // Build pre-filled SMS body for owner notification
+    const bkData = _nbBookingId ? `Booking ID: ${_nbBookingId}` : '';
+    const smsText = `Zelle Payment Request - Prestige Black\nCustomer: ${state.name||''}\nEmail: ${state.email||''}\nVehicle: ${document.getElementById('nb-vehicle')?.value||''}\nPickup: ${document.getElementById('nb-pickup')?.value||''}\nReturn: ${document.getElementById('nb-dropoff')?.value||''}\nAmount: ${totalAmt}\n${bkData}`;
+    const ownerRaw = info.ownerPhone || info.phone || '';
+    const ownerDigits = ownerRaw.replace(/\D/g,'');
+    const smsHref = ownerDigits ? `sms:${ownerDigits}?body=${encodeURIComponent(smsText)}` : '';
     document.getElementById('nb-zelle-info').innerHTML =
       `<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px">Zelle Payment Details</div>`+
       (info.phone?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Send to (phone)</span><span style="font-weight:800;color:#a78bfa">${info.phone}</span></div>`:'') +
       (info.email?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Send to (email)</span><span style="font-weight:800;color:#a78bfa">${info.email}</span></div>`:'') +
       (info.name?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Name</span><span style="font-weight:700">${info.name}</span></div>`:'') +
       (totalAmt?`<div style="display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,.08);padding-top:8px;margin-top:4px;"><span style="color:rgba(255,255,255,.5)">Amount</span><span style="font-weight:900;color:#C9A962;font-size:16px">${totalAmt}</span></div>`:'') +
-      (d.bookingId?`<div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,.25)">Booking ref: ${d.bookingId}</div>`:'');
+      (d.bookingId?`<div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,.25)">Booking ref: ${d.bookingId}</div>`:'') +
+      (smsHref?`<a href="${smsHref}" style="display:block;margin-top:14px;padding:12px;background:rgba(37,211,102,.12);border:1px solid rgba(37,211,102,.35);border-radius:10px;color:#25d366;font-weight:800;font-size:14px;text-align:center;text-decoration:none;">📲 Text Owner to Notify</a>`:'');
   }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; }
   finally{ hideLoading(); if(btn){ btn.disabled=false; btn.textContent='Pay via Zelle'; } }
 }
