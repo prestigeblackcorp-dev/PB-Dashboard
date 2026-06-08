@@ -30,7 +30,7 @@
   .auth-title{font-size:18px;font-weight:600;margin-bottom:6px;}
   .auth-desc{font-size:13px;color:var(--text-muted);margin-bottom:20px;}
   .field-label{font-size:12px;color:var(--text-muted);margin-bottom:6px;display:block;}
-  input[type=email],input[type=text],input[type=number],input[type=date],input[type=tel],select{
+  input[type=email],input[type=text],input[type=number],input[type=date],input[type=tel],input[type=time],select{
     background:#111;border:1px solid var(--border);border-radius:10px;color:var(--text);
     font-size:15px;padding:12px 14px;width:100%;outline:none;
     -webkit-appearance:none;appearance:none;
@@ -298,6 +298,79 @@
     <div id="drv-error" style="color:var(--red);font-size:12px;margin-top:-6px;margin-bottom:8px;display:none;"></div>
     <button class="btn" id="drv-save-btn" onclick="submitAddDriver()">Add Driver</button>
     <button class="btn btn-ghost" style="margin-top:8px;" onclick="closeDriverModal()">Cancel</button>
+  </div>
+</div>
+
+<!-- New Booking Modal -->
+<div id="new-booking-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9980;overflow-y:auto;padding:20px 0;" onclick="if(event.target===this)closeNewBookingModal()">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:20px;max-width:480px;margin:0 auto;padding:24px 20px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+      <div style="font-weight:800;font-size:17px;color:var(--gold)">Request a Booking</div>
+      <button onclick="closeNewBookingModal()" style="background:transparent;border:none;color:var(--text-muted);font-size:20px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <div id="nb-vehicle-display" style="background:rgba(201,169,98,.08);border:1px solid rgba(201,169,98,.2);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-weight:700;font-size:14px;color:var(--gold)"></div>
+    <div class="form-group">
+      <label class="field-label">Your Name *</label>
+      <input type="text" id="nb-name" placeholder="Full name" autocomplete="name">
+    </div>
+    <div class="form-group">
+      <label class="field-label">Phone Number</label>
+      <input type="tel" id="nb-phone" placeholder="(555) 000-0000" autocomplete="tel">
+    </div>
+    <div class="form-group">
+      <label class="field-label">Rental Type</label>
+      <select id="nb-type">
+        <option value="daily">Daily Rental</option>
+        <option value="hourly">Hourly</option>
+        <option value="chauffeur">Chauffeur Service</option>
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="form-group">
+        <label class="field-label">Pickup Date *</label>
+        <input type="date" id="nb-pickup-date">
+      </div>
+      <div class="form-group">
+        <label class="field-label">Pickup Time</label>
+        <input type="time" id="nb-pickup-time" value="10:00">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="form-group">
+        <label class="field-label">Return Date</label>
+        <input type="date" id="nb-dropoff-date">
+      </div>
+      <div class="form-group">
+        <label class="field-label">Return Time</label>
+        <input type="time" id="nb-dropoff-time" value="10:00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="field-label">Pickup Address (optional)</label>
+      <input type="text" id="nb-address" placeholder="Delivery address or airport">
+    </div>
+    <div class="form-group">
+      <label class="field-label">Notes (optional)</label>
+      <input type="text" id="nb-notes" placeholder="Any special requests...">
+    </div>
+    <!-- Price breakdown -->
+    <div id="nb-price-box" style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;font-size:13px;display:none;">
+      <div id="nb-price-rows"></div>
+    </div>
+    <div id="nb-error" style="color:var(--red);font-size:12px;margin-bottom:10px;display:none;"></div>
+    <div id="nb-step1">
+      <button class="btn" onclick="nbNext()">Continue to Payment</button>
+    </div>
+    <div id="nb-step2" style="display:none;">
+      <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;text-align:center;">How would you like to pay?</div>
+      <button onclick="nbCheckout('datelock')" id="nb-btn-datelock" style="width:100%;padding:14px;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.4);color:var(--gold);border-radius:12px;font-weight:800;font-size:15px;cursor:pointer;margin-bottom:10px;display:block;">
+        $100 Date Lock <span style="font-size:11px;font-weight:400;opacity:.7">+ 8.25% tax · Secures your dates</span>
+      </button>
+      <button onclick="nbCheckout('full')" id="nb-btn-full" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:12px;font-weight:800;font-size:15px;cursor:pointer;display:block;" id="nb-btn-full">
+        Pay in Full <span id="nb-full-total" style="font-size:11px;font-weight:400;">+ 5% fee + 8.25% tax</span>
+      </button>
+      <button onclick="nbBack()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--text-muted);font-size:13px;cursor:pointer;margin-top:8px;">← Back</button>
+    </div>
   </div>
 </div>
 
@@ -1578,16 +1651,146 @@ function renderFleet(){
     </div>`;
 }
 
+var _nbVehicle = '';
+var _nbBookingId = '';
+
 function _fleetBook(vehicleName){
+  _nbVehicle = vehicleName;
+  _nbBookingId = '';
   const rates = VEHICLE_RATES[vehicleName]||{};
-  const typeLabel = rates.type==='chauffeur' ? 'Chauffeur Service' : 'Rental';
-  toast(`To book ${vehicleName} (${typeLabel}), call or text us at (214) 207-2481`, 'info');
-  setTimeout(()=>{
-    if(confirm(`Ready to book the ${vehicleName}?\n\nCall/text us at (214) 207-2481 or tap OK to open a pre-filled message.`)){
-      const msg = encodeURIComponent(`Hi, I'd like to book the ${vehicleName}. My name is ${state.email}.`);
-      window.open('sms:2142072481?body='+msg, '_blank');
-    }
-  }, 500);
+  document.getElementById('nb-vehicle-display').textContent = vehicleName + (rates.desc ? ' — ' + rates.desc : '');
+  // Pre-fill name from email if available
+  const nameEl = document.getElementById('nb-name');
+  if(nameEl && !nameEl.value) nameEl.value = '';
+  // Set type default
+  const typeEl = document.getElementById('nb-type');
+  if(typeEl) typeEl.value = rates.type==='chauffeur' ? 'chauffeur' : 'daily';
+  // Set min date to today
+  const today = new Date().toLocaleDateString('en-CA');
+  document.getElementById('nb-pickup-date').min = today;
+  document.getElementById('nb-dropoff-date').min = today;
+  // Reset steps
+  document.getElementById('nb-step1').style.display = 'block';
+  document.getElementById('nb-step2').style.display = 'none';
+  document.getElementById('nb-price-box').style.display = 'none';
+  document.getElementById('nb-error').style.display = 'none';
+  // Wire up date change to update price
+  ['nb-pickup-date','nb-dropoff-date','nb-type'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.oninput = nbUpdatePrice;
+  });
+  document.getElementById('new-booking-modal').style.display = 'block';
+}
+
+function closeNewBookingModal(){
+  document.getElementById('new-booking-modal').style.display = 'none';
+}
+
+function nbUpdatePrice(){
+  const vehicle = _nbVehicle;
+  const rates = VEHICLE_RATES[vehicle]||{};
+  const type = document.getElementById('nb-type').value;
+  const pickup = document.getElementById('nb-pickup-date').value;
+  const dropoff = document.getElementById('nb-dropoff-date').value;
+  if(!pickup){ document.getElementById('nb-price-box').style.display='none'; return; }
+  let days = 1;
+  if(dropoff && dropoff > pickup){
+    const ms = new Date(dropoff) - new Date(pickup);
+    days = Math.max(1, Math.round(ms / 86400000));
+  }
+  const ratePerDay = rates.rate || 0;
+  const base = ratePerDay * days;
+  const miles = VEHICLE_MILEAGE[vehicle];
+  const totalMiles = miles ? miles.miles * days : null;
+  const dlTax = Math.round(100 * 0.0825 * 100)/100;
+  const dlTotal = (100 + dlTax).toFixed(2);
+  const fee = Math.round(base * 0.05 * 100)/100;
+  const tax = Math.round((base + fee) * 0.0825 * 100)/100;
+  const fullTotal = (base + fee + tax).toFixed(2);
+  const f = n => '$'+Number(n).toFixed(2);
+  const unit = (type==='hourly'||type==='chauffeur') ? 'hr' : 'day';
+  const rows = `
+    <div style="display:flex;justify-content:space-between;margin-bottom:6px;color:var(--text-muted)">${vehicle} @ ${f(ratePerDay)}/${unit} × ${days} ${unit}${days!==1?'s':''}<span style="color:var(--text)">${f(base)}</span></div>
+    ${miles?`<div style="display:flex;justify-content:space-between;margin-bottom:10px;font-size:11px;color:var(--text-muted)">Miles included<span>${miles.miles}/day · ${totalMiles} mi total · $${miles.overage}/mi overage</span></div>`:''}
+    <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Date Lock Option</div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:2px">Date Lock<span>$100.00</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:4px">TX Sales Tax (8.25%)<span>${f(dlTax)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:800;color:var(--gold);font-size:13px">Total Due Now<span>$${dlTotal}</span></div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:10px;">
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Pay in Full Option</div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:2px">Rental Total<span>${f(base)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:2px">Processing Fee (5%)<span>${f(fee)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:4px">TX Sales Tax (8.25%)<span>${f(tax)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:800;color:var(--gold);font-size:13px">Total Due Now<span>$${fullTotal}</span></div>
+    </div>`;
+  document.getElementById('nb-price-rows').innerHTML = rows;
+  document.getElementById('nb-price-box').style.display = 'block';
+  document.getElementById('nb-full-total').textContent = '— $'+fullTotal+' total';
+  return { base, days };
+}
+
+async function nbNext(){
+  const errEl = document.getElementById('nb-error');
+  errEl.style.display = 'none';
+  const name = document.getElementById('nb-name').value.trim();
+  const pickup = document.getElementById('nb-pickup-date').value;
+  if(!name){ errEl.textContent='Name is required.'; errEl.style.display='block'; return; }
+  if(!pickup){ errEl.textContent='Pickup date is required.'; errEl.style.display='block'; return; }
+  const dropoff = document.getElementById('nb-dropoff-date').value;
+  let days = 1;
+  if(dropoff && dropoff > pickup){
+    days = Math.max(1, Math.round((new Date(dropoff)-new Date(pickup))/86400000));
+  }
+  const btn = document.querySelector('#nb-step1 .btn');
+  if(btn){ btn.disabled=true; btn.textContent='Submitting…'; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/submit-booking`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        token: state.token,
+        name, phone: document.getElementById('nb-phone').value.trim(),
+        vehicle: _nbVehicle, type: document.getElementById('nb-type').value,
+        pickupDate: pickup, pickupTime: document.getElementById('nb-pickup-time').value,
+        dropoffDate: dropoff, dropoffTime: document.getElementById('nb-dropoff-time').value,
+        days, address: document.getElementById('nb-address').value.trim(),
+        notes: document.getElementById('nb-notes').value.trim(),
+      })
+    });
+    const d = await r.json();
+    if(!r.ok){ errEl.textContent=d.error||'Could not submit booking'; errEl.style.display='block'; return; }
+    _nbBookingId = d.bookingId;
+    nbUpdatePrice();
+    document.getElementById('nb-step1').style.display = 'none';
+    document.getElementById('nb-step2').style.display = 'block';
+  }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; }
+  finally{ hideLoading(); if(btn){ btn.disabled=false; btn.textContent='Continue to Payment'; } }
+}
+
+function nbBack(){
+  document.getElementById('nb-step2').style.display='none';
+  document.getElementById('nb-step1').style.display='block';
+}
+
+async function nbCheckout(type){
+  const errEl = document.getElementById('nb-error');
+  errEl.style.display='none';
+  const btnId = type==='full' ? 'nb-btn-full' : 'nb-btn-datelock';
+  const btn = document.getElementById(btnId);
+  if(btn){ btn.disabled=true; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/checkout-new`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token: state.token, bookingId: _nbBookingId, paymentType: type })
+    });
+    const d = await r.json();
+    if(!r.ok || !d.url){ errEl.textContent=d.error||'Could not start checkout'; errEl.style.display='block'; return; }
+    window.location.href = d.url;
+  }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; }
+  finally{ hideLoading(); if(btn){ btn.disabled=false; } }
 }
 
 async function _fleetSave(name, emoji){
