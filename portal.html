@@ -1010,8 +1010,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   var extId  = sp.get('extId');
   var driverParam = sp.get('driver');
   var driverIdx = (driverParam !== null && driverParam !== '') ? parseInt(driverParam) : null;
-  var paidFlag = sp.get('paid');
-  var paidBkId = sp.get('bookingId');
+  var paidFlag   = sp.get('paid');
+  var paidBkId   = sp.get('bookingId');
+  var paidChgId  = sp.get('chargeId');
 
   if(signId){
     hideLoading();
@@ -1028,6 +1029,12 @@ document.addEventListener('DOMContentLoaded',()=>{
     // Clean URL so refresh doesn't re-trigger
     history.replaceState(null,'',location.pathname);
     hideLoading();
+    // If returning from a charge payment, mark it paid on the server
+    if(paidChgId && paidBkId && state.token && state.email){
+      fetch(`${WORKER}/portal/mark-charge-paid`,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email:state.email,token:state.token,bookingId:paidBkId,chargeId:paidChgId})
+      }).catch(()=>{});
+    }
     if(state.token && state.email){
       showLoading();
       loadPortalData().then(ok=>{
@@ -1036,7 +1043,8 @@ document.addEventListener('DOMContentLoaded',()=>{
           // Show payment success banner after render
           setTimeout(()=>{
             const ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
-            toast('✅ Payment received! Balance for '+ref+' has been paid.','success');
+            const msg = paidChgId ? '✅ Payment received!' : '✅ Payment received! Balance for '+ref+' has been paid.';
+            toast(msg,'success');
           }, 600);
         } else {
           localStorage.removeItem('pb_portal_token');
@@ -1310,6 +1318,54 @@ async function payBalance(bookingId){
   }
 }
 
+function showPendingCharges(b){
+  const charges = (b.portalCharges||[]).filter(c => c && !c.paidAt && Number(c.amount) >= 0.50);
+  if(!charges.length) return '';
+  return charges.map(c => {
+    const base  = Number(c.amount);
+    const fee   = Math.round(base * 0.05 * 100) / 100;
+    const tax   = Math.round(base * 0.0825 * 100) / 100;
+    const total = Math.round((base + fee + tax) * 100) / 100;
+    return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+      <div style="background:rgba(99,91,255,.08);border:1px solid rgba(99,91,255,.3);border-radius:12px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div style="font-size:12px;font-weight:700;color:#a78bfa;">💸 Payment Request</div>
+          <div style="font-size:15px;font-weight:800;color:#a78bfa;">$${base.toFixed(2)}</div>
+        </div>
+        <div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:2px;">${c.description||''}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,.35);margin-bottom:10px;">
+          Total charged: $${total.toFixed(2)} &nbsp;·&nbsp; includes 5% processing fee + 8.25% TX tax
+        </div>
+        <button onclick="payCharge('${b.id}','${c.id}')" id="chargeBtn_${c.id}"
+          style="width:100%;padding:11px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">
+          Pay $${total.toFixed(2)} by Card →
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function payCharge(bookingId, chargeId){
+  const btn = document.getElementById('chargeBtn_'+chargeId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-charge`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId, chargeId })
+    });
+    const d = await r.json();
+    if(!r.ok || !d.url){
+      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay by Card →'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay by Card →'; }
+  }
+}
+
 function renderBookings(){
   const el = document.getElementById('bookings-list');
   const sorted = sortBookings(state.bookings);
@@ -1329,6 +1385,7 @@ function renderBookings(){
       <div class="booking-meta">${priceStr?`<span>${priceStr}</span> &nbsp;·&nbsp; `:''}${bookingRef(b.id)}</div>
       ${progressBar(b.status)}
       ${showPayBalance(b)}
+      ${showPendingCharges(b)}
       ${showCondition(b)}
       ${showDrivers(b)}
     </div>`;

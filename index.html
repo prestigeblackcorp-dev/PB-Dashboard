@@ -2051,12 +2051,41 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end;flex-wrap:wrap">
       <button class="btn btn-sm" id="bdReminderBtn" onclick="" style="border-color:rgba(100,180,255,.4);color:var(--blue)">📨 Remind</button>
       <button class="btn btn-sm" id="bdPortalBtn" onclick="" style="border-color:rgba(99,91,255,.4);color:#9b8fff">🔗 Portal</button>
+      <button class="btn btn-sm" id="bdChargeBtn" onclick="" style="border-color:rgba(34,197,94,.4);color:var(--green)">💸 Charge</button>
       <button class="btn" id="bdInvoiceBtn" onclick="">📄 Invoice</button>
       <button class="btn" id="bdContractBtn" onclick="">📝 Contract</button>
       <button class="btn btn-sm" id="bdExtensionBtn" onclick="" style="display:none;border-color:rgba(167,139,250,.5);color:#a78bfa">📅 Extension</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">✏ Edit</button>
       <button class="btn btn-sm" id="bdBlacklistBtn" onclick="" style="border-color:rgba(239,68,68,.4);color:#f87171">⛔ Blacklist</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ PORTAL CHARGE MODAL ═══ -->
+<div class="modal" id="portalChargeModal">
+  <div class="modal-card" style="max-width:420px">
+    <div class="modal-title">💸 Send Payment Request</div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Client will see this in their portal with a Pay by Card button. 5% processing + 8.25% TX tax added automatically.</p>
+    <div class="fgrid" style="grid-template-columns:1fr;gap:12px">
+      <div>
+        <label class="flbl">Amount ($)</label>
+        <input class="finput" type="number" id="pcAmount" placeholder="0.00" min="0.50" step="0.01" oninput="_updateChargePreview()">
+      </div>
+      <div>
+        <label class="flbl">Description</label>
+        <input class="finput" type="text" id="pcDesc" placeholder="e.g. Hourly extension — 2 additional hrs">
+      </div>
+      <div id="pcPreview" style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:12px 14px;font-size:12px;display:none">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="color:var(--muted)">Charge amount</span><span id="pcBase">—</span></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="color:var(--muted)">Processing fee (5%)</span><span id="pcFee">—</span></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="color:var(--muted)">TX Sales Tax (8.25%)</span><span id="pcTax">—</span></div>
+        <div style="display:flex;justify-content:space-between;font-weight:700;border-top:1px solid rgba(255,255,255,.1);padding-top:8px;margin-top:4px"><span>Client pays</span><span id="pcTotal" style="color:var(--green)">—</span></div>
+      </div>
+    </div>
+    <div class="factions" style="margin-top:16px">
+      <button class="btn" onclick="submitPortalCharge()">Send to Portal</button>
+      <button class="btn" onclick="closePortalChargeModal()">Cancel</button>
     </div>
   </div>
 </div>
@@ -6665,6 +6694,8 @@ function openBookingDetail(id){
   }
   var bdPortalBtn=$d('bdPortalBtn');
   if(bdPortalBtn){ bdPortalBtn.onclick=function(){ shareBookingPortal(b.id); }; }
+  var bdChargeBtn=$d('bdChargeBtn');
+  if(bdChargeBtn){ bdChargeBtn.onclick=function(){ openPortalChargeModal(b.id); }; }
   var bdBlacklistBtn=$d('bdBlacklistBtn');
   if(bdBlacklistBtn){
     var blEntry=isBlacklisted(b.phone,b.email,b.name);
@@ -14459,6 +14490,96 @@ function _fallbackCopyPortalLink(url){
     navigator.clipboard.writeText(url).then(function(){ toast('Portal link copied to clipboard 📋'); });
   } else {
     prompt('Copy this portal link and send it to your customer:', url);
+  }
+}
+
+// ════════════════════════════════════════════════════════
+//  PORTAL CHARGE MODAL
+// ════════════════════════════════════════════════════════
+var _portalChargeBookingId = null;
+
+function openPortalChargeModal(bookingId){
+  _portalChargeBookingId = bookingId;
+  var inp = $d('pcAmount'); if(inp) inp.value = '';
+  var desc = $d('pcDesc'); if(desc) desc.value = '';
+  var prev = $d('pcPreview'); if(prev) prev.style.display = 'none';
+  $d('portalChargeModal').classList.add('open');
+}
+
+function closePortalChargeModal(){
+  $d('portalChargeModal').classList.remove('open');
+  _portalChargeBookingId = null;
+}
+
+function _updateChargePreview(){
+  var amt = parseFloat($d('pcAmount').value) || 0;
+  var prev = $d('pcPreview');
+  if(amt < 0.50){ prev.style.display='none'; return; }
+  var fee   = Math.round(amt * 0.05 * 100) / 100;
+  var tax   = Math.round(amt * 0.0825 * 100) / 100;
+  var total = Math.round((amt + fee + tax) * 100) / 100;
+  prev.style.display = '';
+  $d('pcBase').textContent  = $$(amt);
+  $d('pcFee').textContent   = $$(fee);
+  $d('pcTax').textContent   = $$(tax);
+  $d('pcTotal').textContent = $$(total);
+}
+
+async function submitPortalCharge(){
+  var bookingId = _portalChargeBookingId;
+  if(!bookingId){ toast('No booking selected'); return; }
+  var b = bookings.find(function(x){ return x.id === bookingId; });
+  if(!b){ toast('Booking not found'); return; }
+  var amt = parseFloat($d('pcAmount').value);
+  var desc = ($d('pcDesc').value||'').trim();
+  if(!amt || amt < 0.50){ toast('Enter a valid amount (min $0.50)'); return; }
+  if(!desc){ toast('Enter a description'); return; }
+
+  // Generate charge ID
+  var chargeId = 'chg_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+  var charge = { id: chargeId, amount: amt, description: desc, createdAt: new Date().toISOString() };
+
+  if(!b.portalCharges) b.portalCharges = [];
+  b.portalCharges.push(charge);
+
+  try {
+    await syncSave(b);
+    closePortalChargeModal();
+    toast('💸 Charge sent to client portal ✅');
+
+    // Email notification if possible
+    if(b.email && MESSAGING_URL){
+      var fee   = Math.round(amt * 0.05 * 100) / 100;
+      var tax   = Math.round(amt * 0.0825 * 100) / 100;
+      var total = Math.round((amt + fee + tax) * 100) / 100;
+      var portalUrl = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
+      var firstName = (b.name||'').split(' ')[0]||'there';
+      var html =
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
+        '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
+          '<div style="font-size:40px;margin-bottom:10px">💸</div>'+
+          '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800">Payment Request</h1>'+
+          '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">Prestige Black Rentals</p>'+
+        '</div>'+
+        '<div style="padding:28px">'+
+        '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">Hi '+esc(firstName)+', a new payment request has been added to your booking.</p>'+
+        '<div style="background:#f7f7f7;border-radius:10px;padding:20px;margin:20px 0">'+
+          '<div style="font-size:13px;color:#555;margin-bottom:8px">'+esc(desc)+'</div>'+
+          '<div style="font-size:28px;font-weight:800;color:#b8982e">'+$$(total)+'</div>'+
+          '<div style="font-size:12px;color:#999;margin-top:4px">Includes processing fee & TX sales tax</div>'+
+        '</div>'+
+        '<div style="text-align:center;margin:24px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Pay Now →</a></div>'+
+        '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Call or text <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+        '</div>'+
+        '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth</div>'+
+        '</div>';
+      fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Payment Request — Prestige Black Rentals',html:html})})
+      .then(function(r){ if(r.ok) logNotif('charge','Payment Request',b.email,b.id); });
+    }
+  } catch(e){
+    toast('Error saving charge: '+(e.message||e));
+    // roll back
+    b.portalCharges = (b.portalCharges||[]).filter(function(c){ return c.id !== chargeId; });
   }
 }
 
