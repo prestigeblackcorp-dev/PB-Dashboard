@@ -14319,14 +14319,12 @@ function _initSigningMode(bookingId, driverIdx){
   document.querySelectorAll('.header,.tab-bar,#offlineBadge,#lockScreen,#splashScreen').forEach(function(el){if(el)el.style.display='none';});
   body.innerHTML='<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Loading your contract…</div>';
   var workerUrl = 'https://pb-booking.prestigeblackcorp.workers.dev';
-  fetch(workerUrl+'/sync/load?_='+Date.now(),{cache:'no-store'})
+  fetch(workerUrl+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(function(r){return r.ok?r.json():null;})
   .then(function(data){
-    if(!data||!data.bookings){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load booking. Please contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
-    // Normalize: Firebase sometimes returns bookings as a keyed object instead of array
-    var _bkArr=Array.isArray(data.bookings)?data.bookings:Object.values(data.bookings).filter(Boolean);
-    data.bookings=_bkArr; // normalize in place so window._smData gets the array form
-    var bk = _bkArr.find(function(x){return x.id===bookingId&&!x._deleted;});
+    if(!data||!data.booking){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load booking. Please contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
+    // Wrap in the shape the rest of the code expects
+    var bk = data.booking;
     if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired or been revoked.</div>'; return; }
 
     // ── Already-signed check (primary or specific driver) ─────────────────
@@ -14511,7 +14509,7 @@ function _initSigningMode(bookingId, driverIdx){
     // Store data for submit closure + signed-copy email
     window._smRenderedContract = tmpl; // full rendered contract HTML (or plain text)
     window._smData = data;
-    window._smBookings = data.bookings;
+    window._smBookings = data.bookings || [data.booking].filter(Boolean);
     _smInitCanvas();
 
     // Sticky "Sign Agreement" bar — fixed to bottom so customers always see it
@@ -14566,17 +14564,14 @@ function _smSubmitSig(bookingId, driverIdx){
 
   // Load fresh data before saving — prevents overwriting any dashboard changes
   // (payments, booking edits, primary customer signature) that happened after page load.
-  fetch(workerUrl+'/sync/load?_='+Date.now(),{cache:'no-store'})
+  fetch(workerUrl+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(function(r){ return r.ok?r.json():null; })
   .then(function(freshData){
     // Fall back to page-load snapshot only if fresh fetch failed
-    var data=(freshData&&freshData.bookings)?freshData:window._smData;
-    // Normalize: Firebase may return bookings as a keyed object instead of array
-    if(data&&data.bookings&&!Array.isArray(data.bookings)){
-      data=Object.assign({},data,{bookings:Object.values(data.bookings).filter(Boolean)});
-    }
-    var allBookings=data?(data.bookings||[]):(window._smBookings||[]);
-    if(!data||!allBookings.length){ _showSaveErr('Error loading data — please refresh.'); return; }
+    var _freshBk = freshData&&freshData.booking ? freshData.booking : null;
+    var allBookings = _freshBk ? [_freshBk] : (window._smBookings||[]);
+    if(!allBookings.length){ _showSaveErr('Error loading data — please refresh.'); return; }
+    var data = window._smData;
     var idx=allBookings.findIndex(function(x){return x.id===bookingId;});
     if(idx===-1){ _showSaveErr('Booking not found. Please contact (214) 207-2481.'); return; }
 
@@ -14599,10 +14594,11 @@ function _smSubmitSig(bookingId, driverIdx){
       _signerName=(allBookings[idx].name||'').split(' ')[0]||'there';
     }
     allBookings[idx]._t=Date.now();
-    var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
 
-    // Save chain nested here so allBookings/idx/_signerName/_drvs stay in closure scope
-    fetch(workerUrl+'/sync/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify(saveData)})
+    // Save ONLY the signature via the public /signing/save endpoint (no auth required)
+    var _savePayload={bookingId:bookingId,sig:sig,sigDate:sigDate};
+    if(_isDriver) _savePayload.driverIdx=_dIdx;
+    fetch(workerUrl+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_savePayload)})
     .then(function(r){ return r.json(); })
     .then(function(res){
       if(res&&res.ok){
@@ -14693,12 +14689,11 @@ function _initExtensionSigningMode(bookingId, extId){
   document.querySelectorAll('.header,.tab-bar,#offlineBadge,#lockScreen,#splashScreen').forEach(function(el){if(el)el.style.display='none';});
   body.innerHTML='<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Loading extension agreement…</div>';
   var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
-  fetch(workerUrl+'/sync/load?_='+Date.now(),{cache:'no-store'})
+  fetch(workerUrl+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(function(r){return r.ok?r.json():null;})
   .then(function(data){
-    if(!data||!data.bookings){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load. Contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
-    var _bkArr=Array.isArray(data.bookings)?data.bookings:Object.values(data.bookings).filter(Boolean);
-    var bk=_bkArr.find(function(x){return x.id===bookingId&&!x._deleted;});
+    if(!data||!data.booking){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load. Contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
+    var bk=data.booking;
     if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired.</div>'; return; }
     var exts=bk.extensions||[];
     var extIdx=exts.findIndex(function(e){return e.id===extId;});
@@ -14816,27 +14811,16 @@ function _smSubmitExtSig(bookingId, extId){
     document.getElementById('smSigMsg').textContent=msg||'Network error — please try again.';
   }
 
-  fetch(workerUrl+'/sync/load?_='+Date.now(),{cache:'no-store'})
+  fetch(workerUrl+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(function(r){return r.ok?r.json():null;})
   .then(function(freshData){
-    var data=(freshData&&freshData.bookings)?freshData:window._smData;
-    if(data&&data.bookings&&!Array.isArray(data.bookings)){
-      data=Object.assign({},data,{bookings:Object.values(data.bookings).filter(Boolean)});
-    }
-    var allBookings=data?(data.bookings||[]):(window._smBookings||[]);
-    if(!data||!allBookings.length){_showSaveErr('Error loading data — please refresh.'); return;}
-    var idx=allBookings.findIndex(function(x){return x.id===bookingId;});
-    if(idx===-1){_showSaveErr('Booking not found. Please contact (214) 207-2481.'); return;}
-    var exts=allBookings[idx].extensions||[];
+    var bkFresh=freshData&&freshData.booking?freshData.booking:null;
+    if(!bkFresh){_showSaveErr('Error loading data — please refresh.'); return;}
+    var exts=bkFresh.extensions||[];
     var extIdx=exts.findIndex(function(e){return e.id===extId;});
     if(extIdx===-1){_showSaveErr('Extension not found. Please contact us.'); return;}
-    // Save sig into extension
-    allBookings[idx].extensions[extIdx].sig    =sig;
-    allBookings[idx].extensions[extIdx].sigDate=sigDate;
-    allBookings[idx].extensions[extIdx].signed =true;
-    allBookings[idx]._t=Date.now();
-    var saveData=Object.assign({},data,{bookings:allBookings,savedAt:Date.now()});
-    return fetch(workerUrl+'/sync/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify(saveData)});
+    // Save ONLY the extension signature via the public endpoint
+    return fetch(workerUrl+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bookingId:bookingId,sig:sig,sigDate:sigDate,extId:extId})});
   }).then(function(r){
     if(!r) return;
     if(r.ok){
