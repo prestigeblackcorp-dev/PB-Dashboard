@@ -1010,6 +1010,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   var extId  = sp.get('extId');
   var driverParam = sp.get('driver');
   var driverIdx = (driverParam !== null && driverParam !== '') ? parseInt(driverParam) : null;
+  var paidFlag = sp.get('paid');
+  var paidBkId = sp.get('bookingId');
 
   if(signId){
     hideLoading();
@@ -1017,6 +1019,37 @@ document.addEventListener('DOMContentLoaded',()=>{
       _initExtensionSigningMode(signId, extId);
     } else {
       _initSigningMode(signId, driverIdx);
+    }
+    return;
+  }
+
+  // Stripe payment success return
+  if(paidFlag === '1'){
+    // Clean URL so refresh doesn't re-trigger
+    history.replaceState(null,'',location.pathname);
+    hideLoading();
+    if(state.token && state.email){
+      showLoading();
+      loadPortalData().then(ok=>{
+        if(ok){
+          showApp();
+          // Show payment success banner after render
+          setTimeout(()=>{
+            const ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
+            toast('✅ Payment received! Balance for '+ref+' has been paid.','success');
+          }, 600);
+        } else {
+          localStorage.removeItem('pb_portal_token');
+          localStorage.removeItem('pb_portal_email');
+          state.token=''; state.email='';
+          hideLoading();
+          // Show auth with a note
+          document.getElementById('auth-screen').querySelector('.auth-sub').textContent = '✅ Payment received! Sign in to view your booking.';
+        }
+      });
+    } else {
+      // Not logged in — show auth with success note
+      document.getElementById('auth-screen').querySelector('.auth-sub').textContent = '✅ Payment received! Sign in to view your booking.';
     }
     return;
   }
@@ -1233,6 +1266,50 @@ function copyDriverSignLink(encodedUrl){
   }
 }
 
+function showPayBalance(b){
+  const bal = Number(b.remainingBalance) || 0;
+  if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed'].includes((b.status||'').toLowerCase())) return '';
+  const fee   = Math.round(bal * 0.05 * 100) / 100;
+  const tax   = Math.round(bal * 0.0825 * 100) / 100;
+  const total = Math.round((bal + fee + tax) * 100) / 100;
+  return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+    <div style="background:rgba(249,115,22,.07);border:1px solid rgba(249,115,22,.25);border-radius:12px;padding:12px 14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-size:12px;font-weight:700;color:#fb923c;">💳 Balance Due</div>
+        <div style="font-size:16px;font-weight:800;color:#fb923c;">$${bal.toFixed(2)}</div>
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,.4);margin-bottom:10px;">
+        Total charged: $${total.toFixed(2)} &nbsp;·&nbsp; includes 5% processing fee + 8.25% TX tax
+      </div>
+      <button onclick="payBalance('${b.id}')" id="payBtn_${b.id}"
+        style="width:100%;padding:11px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">
+        Pay $${total.toFixed(2)} by Card →
+      </button>
+    </div>
+  </div>`;
+}
+
+async function payBalance(bookingId){
+  const btn = document.getElementById('payBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-balance`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId })
+    });
+    const d = await r.json();
+    if(!r.ok || !d.url){
+      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay by Card →'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay by Card →'; }
+  }
+}
+
 function renderBookings(){
   const el = document.getElementById('bookings-list');
   const sorted = sortBookings(state.bookings);
@@ -1251,6 +1328,7 @@ function renderBookings(){
       </div>
       <div class="booking-meta">${priceStr?`<span>${priceStr}</span> &nbsp;·&nbsp; `:''}${bookingRef(b.id)}</div>
       ${progressBar(b.status)}
+      ${showPayBalance(b)}
       ${showCondition(b)}
       ${showDrivers(b)}
     </div>`;
