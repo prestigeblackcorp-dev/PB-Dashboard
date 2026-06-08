@@ -352,16 +352,34 @@ tr:hover td { background: rgba(255,255,255,.02); }
 #mobileFilterToggle { display: none; }
 
 @media (max-width: 480px) {
-  /* ── Hard clamp: nothing can be wider than the viewport ── */
-  html, body { overflow-x: hidden !important; width: 100% !important; max-width: 100vw !important; }
-  /* All layout elements box-sizing — do NOT apply max-width universally (breaks Chart.js) */
-  *, *::before, *::after { box-sizing: border-box; }
-  /* Main layout containers must not overflow */
-  .main, .tab-panel, .tab-panel.active, .filter-bar,
-  .kpi-grid, .kpi, .charts-row, .chart-card,
-  .trip-card, .modal-card, .tbl-card { max-width: 100% !important; overflow-x: hidden; }
-  /* Canvas: width constrained, height controlled per chart */
-  canvas { max-width: 100% !important; }
+  /* ── Hard containment: viewport is the ceiling ── */
+  html { overflow-x: hidden !important; }
+  body { overflow-x: hidden !important; width: 100vw !important; max-width: 100vw !important; }
+
+  /* Every element uses border-box so padding doesn't add width */
+  *, *::before, *::after { box-sizing: border-box !important; }
+
+  /* The tab panels and main column must never exceed the viewport */
+  #tab-overview, #tab-current, #tab-upcoming, #tab-previous,
+  #tab-calendar, #tab-cancelled, #tab-broker, #tab-expenses,
+  #tab-fleet, #tab-tasks, #tab-settings {
+    max-width: 100vw !important;
+    overflow-x: hidden !important;
+  }
+  .main {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+  }
+
+  /* Constrain common inline-width containers but NOT canvas (Chart.js sets those explicitly) */
+  div[style*="width"]:not(.chart-card *),
+  table[style*="width"],
+  section[style*="width"] { max-width: 100% !important; }
+
+  /* Pill bars scroll horizontally, not the whole page */
+  #kpiPillBar { overflow-x: auto !important; -webkit-overflow-scrolling: touch; white-space: nowrap; max-width: 100%; }
+  #kpiPillBar > * { display: inline-block; }
 
   /* ── Header: single compact row ── */
   .header {
@@ -456,20 +474,13 @@ tr:hover td { background: rgba(255,255,255,.02); }
   .kpi.purple .kpi-val{ color: var(--purple) !important; }
   .kpi-sub { font-size: 9px; margin-top: 4px; white-space: normal; word-break: break-word; }
 
-  /* ── Charts: single column, clipped to viewport ── */
-  .charts-row { grid-template-columns: 1fr !important; gap: 10px; width: 100%; overflow: hidden; }
-  .chart-card { padding: 12px 10px; border-radius: 14px; overflow: hidden !important; max-width: 100% !important; width: 100% !important; box-sizing: border-box; position: relative; }
+  /* ── Charts: single column ── */
+  .charts-row { grid-template-columns: 1fr !important; gap: 10px; width: 100%; }
+  .chart-card { padding: 12px 10px; border-radius: 14px; overflow: hidden !important; width: 100% !important; box-sizing: border-box; }
   .chart-card.span2, .chart-card.full { grid-column: 1 !important; }
-  /* Chart container div that Chart.js injects — must be constrained */
-  .chart-card > div[style] { width: 100% !important; max-width: 100% !important; overflow: hidden !important; }
-  /* Canvas itself: let height be set by JS, but clamp width */
-  .chart-card canvas { max-width: 100% !important; width: 100% !important; display: block; }
-  /* Doughnut/pie charts: cap height so they don't blow up to screen size */
-  #chartType { max-height: 220px !important; }
-  /* Bar charts: limit height */
-  #chartRevVehicle, #chartBkVehicle { max-height: 220px !important; }
-  /* Monthly line chart */
-  #chartMonthly { max-height: 200px !important; }
+  /* Chart.js wraps canvas in a div with inline styles — override its width */
+  .chart-card > div { width: 100% !important; max-width: 100% !important; }
+  .chart-card canvas { display: block; width: 100% !important; }
 
   /* ── Budget grid: 2-col (label + input) on mobile, hide spent/status ── */
   .budget-grid { grid-template-columns: 1fr 1fr !important; gap: 6px !important; }
@@ -5907,30 +5918,47 @@ function renderCharts(filtered){
     var p=m.split('-'); return new Date(+p[0],+p[1]-1,1).toLocaleString('en-US',{month:'short',year:'2-digit'});
   });
   var mobile=_isMobile();
+
+  // Mobile chart helper: set canvas to explicit pixel size BEFORE Chart.js reads it.
+  // Chart.js measures the canvas element dimensions at construction time.
+  // Setting style.height after new Chart() does nothing — Chart.js ignores it.
+  function _mobileSize(canvasId, w, h){
+    if(!mobile) return;
+    var c=$d(canvasId);
+    if(!c) return;
+    var dpr=window.devicePixelRatio||1;
+    c.width=Math.round(w*dpr);
+    c.height=Math.round(h*dpr);
+    c.style.width=w+'px';
+    c.style.height=h+'px';
+  }
+
+  // Available width: viewport minus padding (12px each side)
+  var mW = mobile ? Math.min(window.innerWidth, 400) - 24 : 0;
+
   dc('monthly');
+  _mobileSize('chartMonthly', mW, Math.round(mW * 0.5));
   charts['monthly']=new Chart($d('chartMonthly'),{type:'line',data:{labels:mLabels,datasets:[
     {label:'Revenue',data:months.map(function(m){return mR[m]||0;}),borderColor:GOLD,backgroundColor:'rgba(201,169,98,.08)',fill:true,tension:.4,pointBackgroundColor:GOLD,pointRadius:mobile?2:4},
     {label:'Est. Cost',data:months.map(function(m){return mC[m]||0;}),borderColor:'rgba(255,92,92,.7)',backgroundColor:'rgba(255,92,92,.06)',fill:true,tension:.4,pointBackgroundColor:RED,pointRadius:mobile?2:4}
-  ]},options:{responsive:true,maintainAspectRatio:mobile?false:true,aspectRatio:mobile?2.2:2,plugins:_chartPlugins('bottom'),scales:{y:_scaleY('$'),x:_scaleX()}}});
-  if(mobile) $d('chartMonthly').style.height='200px';
+  ]},options:{responsive:false,maintainAspectRatio:false,plugins:_chartPlugins('bottom'),scales:{y:_scaleY('$'),x:_scaleX()}}});
 
-  // Type split — doughnut: on mobile use fixed height to prevent blowup
+  // Type split — doughnut
   var tc={daily:0,hourly:0,chauffeur:0};
   active.forEach(function(b){ tc[b.type]=(tc[b.type]||0)+1; });
   dc('type');
-  charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur],backgroundColor:[GOLD,BLUE,GREEN],borderWidth:0,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:mobile?false:true,cutout:'64%',plugins:_chartPlugins('bottom')}});
-  if(mobile) $d('chartType').style.height='200px';
+  _mobileSize('chartType', mW, Math.round(mW * 0.75));
+  charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur],backgroundColor:[GOLD,BLUE,GREEN],borderWidth:0,hoverOffset:8}]},options:{responsive:false,maintainAspectRatio:false,cutout:'64%',plugins:_chartPlugins('bottom')}});
 
-  // Revenue by vehicle — horizontal bar, truncate long labels on mobile
+  // Revenue by vehicle — horizontal bar
   var rv={};
   active.forEach(function(b){ rv[b.vehicle]=(rv[b.vehicle]||0)+netRevenue(b); });
   var vl=Object.keys(rv).sort(function(a,b){return rv[b]-rv[a];}).slice(0,mobile?6:10);
   var vlLabels=vl.map(function(v){ return mobile&&v.length>10?v.slice(0,9)+'…':v; });
   dc('rvv');
-  // Mobile: calculate height based on number of bars so they're never squished
-  var rvvH = mobile ? Math.min(220, Math.max(120, vl.length * 32)) : null;
-  charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vlLabels,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{responsive:true,maintainAspectRatio:mobile?false:true,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return vl[items[0].dataIndex]; }}}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();},font:{size:mobile?9:11},maxTicksLimit:mobile?3:6},grid:{display:false}},y:{grid:{display:false},ticks:{font:{size:mobile?9:11}}}}}});
-  if(mobile && rvvH) $d('chartRevVehicle').style.height=rvvH+'px';
+  var rvvH = mobile ? Math.max(120, vl.length * 34) : 0;
+  _mobileSize('chartRevVehicle', mW, rvvH);
+  charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vlLabels,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{responsive:false,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return vl[items[0].dataIndex]; }}}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();},font:{size:mobile?9:11},maxTicksLimit:mobile?3:6},grid:{display:false}},y:{grid:{display:false},ticks:{font:{size:mobile?9:11}}}}}});
 
   // Bookings per vehicle
   var bv={};
@@ -5938,8 +5966,8 @@ function renderCharts(filtered){
   var bl=Object.keys(bv).sort(function(a,b){return bv[b]-bv[a];});
   var blLabels=bl.map(function(v){ return mobile&&v.length>8?v.slice(0,7)+'…':v; });
   dc('bvv');
-  charts['bvv']=new Chart($d('chartBkVehicle'),{type:'bar',data:{labels:blLabels,datasets:[{label:'Bookings',data:bl.map(function(v){return bv[v];}),backgroundColor:'rgba(100,180,255,.55)',borderRadius:5}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return bl[items[0].dataIndex]; }}}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,font:{size:mobile?9:11}},grid:{display:false}},x:{grid:{display:false},ticks:{maxRotation:mobile?45:0,font:{size:mobile?9:11}}}}}});
-  if(mobile) $d('chartBkVehicle').style.height='160px';
+  _mobileSize('chartBkVehicle', mW, mobile ? Math.round(mW * 0.45) : 0);
+  charts['bvv']=new Chart($d('chartBkVehicle'),{type:'bar',data:{labels:blLabels,datasets:[{label:'Bookings',data:bl.map(function(v){return bv[v];}),backgroundColor:'rgba(100,180,255,.55)',borderRadius:5}]},options:{responsive:false,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return bl[items[0].dataIndex]; }}}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,font:{size:mobile?9:11}},grid:{display:false}},x:{grid:{display:false},ticks:{maxRotation:mobile?45:0,font:{size:mobile?9:11}}}}}});
 }
 
 // ════════════════════════════════════════════════════════
@@ -16653,21 +16681,50 @@ function renderCmdPalette(){
     });
   } else {
     var ql=q.toLowerCase().trim();
-    // Search bookings by name, phone, email, vehicle, date, full id, last 6
-    var matches=bookings.filter(function(b){
-      if(b._deleted) return false;
+    var qlDigits=ql.replace(/\D/g,'');
+    var qlNoPbr=ql.replace(/^pbr[-]?/i,'');
+
+    // Score each booking — higher = more relevant
+    function _scoreBooking(b){
+      var score=0;
+      var name=(b.name||'').toLowerCase();
+      var phone=(b.phone||'').replace(/\D/g,'');
+      var email=(b.email||'').toLowerCase();
+      var vehicle=(b.vehicle||'').toLowerCase();
+      var pickup=(b.pickupDate||b.date||'');
       var last6=(b.id||'').slice(-6).toUpperCase();
-      return (b.name||'').toLowerCase().indexOf(ql)!==-1 ||
-             (b.phone||'').replace(/\D/g,'').indexOf(ql.replace(/\D/g,''))!==-1 ||
-             (b.email||'').toLowerCase().indexOf(ql)!==-1 ||
-             (b.vehicle||'').toLowerCase().indexOf(ql)!==-1 ||
-             (b.pickupDate||b.date||'').indexOf(ql)!==-1 ||
-             (b.dropoffDate||'').indexOf(ql)!==-1 ||
-             (b.id||'').toLowerCase()===ql ||
-             last6===ql.toUpperCase() ||
-             ('pbr-'+last6).toLowerCase()===ql ||
-             ('pbr'+last6).toLowerCase()===ql;
-    }).slice(0,10);
+      var last6l=last6.toLowerCase();
+      // Exact matches get highest priority
+      if(name===ql)                              score+=100;
+      if(last6l===qlNoPbr||last6l===ql)          score+=100;
+      if(phone&&qlDigits&&phone===qlDigits)       score+=100;
+      if(email===ql)                             score+=90;
+      // Starts-with next
+      if(name.indexOf(ql)===0)                   score+=60;
+      if(email.indexOf(ql)===0)                  score+=50;
+      if(vehicle.indexOf(ql)===0)                score+=45;
+      if(last6l.indexOf(qlNoPbr)===0)            score+=55;
+      // Contains anywhere
+      if(name.indexOf(ql)>0)                     score+=30;
+      if(email.indexOf(ql)>0)                    score+=20;
+      if(vehicle.indexOf(ql)>0)                  score+=15;
+      if(phone&&qlDigits.length>=4&&phone.indexOf(qlDigits)!==-1) score+=25;
+      if(pickup.indexOf(ql)!==-1)                score+=10;
+      if((b.dropoffDate||'').indexOf(ql)!==-1)   score+=8;
+      // Active/upcoming bookings get a small recency boost
+      var st=(b.status||'').toLowerCase();
+      if(st==='confirmed'||st==='active')        score+=5;
+      if(st==='pending')                         score+=3;
+      return score;
+    }
+
+    var scored=bookings.filter(function(b){
+      if(b._deleted) return false;
+      return _scoreBooking(b)>0;
+    }).map(function(b){ return {b:b,score:_scoreBooking(b)}; })
+      .sort(function(a,b){ return b.score-a.score; })
+      .slice(0,10);
+    var matches=scored.map(function(s){ return s.b; });
 
     if(matches.length){
       html+='<div style="padding:6px 16px 4px;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">Bookings</div>';
