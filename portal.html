@@ -990,6 +990,8 @@ async function requestOTP(){
     if(!r.ok){ toast(d.error||'Error sending code','error'); return; }
     state.email = email;
     state.otpToken = d.otpToken || null;
+    if(d.otpToken) sessionStorage.setItem('pb_otp_token', d.otpToken);
+    else sessionStorage.removeItem('pb_otp_token');
     _otpAutoSubmitDone = false;
     document.getElementById('step-email').style.display='none';
     document.getElementById('step-otp').style.display='block';
@@ -1021,6 +1023,9 @@ function backToEmail(){
   var h=document.getElementById('otp-hidden'); if(h) h.value='';
   for(var j=0;j<6;j++){var b=document.getElementById('otp-b'+j);if(b){b.textContent='';b.className='otp-box';}}
   _otpAutoSubmitDone = false;
+  _verifyingOTP = false;
+  state.otpToken = null;
+  sessionStorage.removeItem('pb_otp_token');
 }
 
 var _verifyingOTP = false;
@@ -1032,10 +1037,13 @@ async function verifyOTP(){
   if(digits.length<6){ _verifyingOTP=false; toast('Enter the full 6-digit code','error'); return; }
   showLoading();
   try{
-    const r = await fetch(`${WORKER}/portal/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email, otp:digits, otpToken:state.otpToken||undefined})});
+    const _tok = state.otpToken || sessionStorage.getItem('pb_otp_token') || undefined;
+    const r = await fetch(`${WORKER}/portal/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email, otp:digits, otpToken:_tok})});
     const d = await r.json();
     if(!r.ok){ toast(d.error||'Invalid code','error'); return; }
     state.token = d.token;
+    state.otpToken = null;
+    sessionStorage.removeItem('pb_otp_token');
     localStorage.setItem('pb_portal_token', d.token);
     localStorage.setItem('pb_portal_email', state.email);
     await loadPortalData();
