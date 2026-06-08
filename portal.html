@@ -366,10 +366,24 @@
       <button onclick="nbCheckout('datelock')" id="nb-btn-datelock" style="width:100%;padding:14px;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.4);color:var(--gold);border-radius:12px;font-weight:800;font-size:15px;cursor:pointer;margin-bottom:10px;display:block;">
         $100 Date Lock <span style="font-size:11px;font-weight:400;opacity:.7">+ 8.25% tax · Secures your dates</span>
       </button>
-      <button onclick="nbCheckout('full')" id="nb-btn-full" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:12px;font-weight:800;font-size:15px;cursor:pointer;display:block;" id="nb-btn-full">
+      <button onclick="nbCheckout('full')" id="nb-btn-full" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:12px;font-weight:800;font-size:15px;cursor:pointer;display:block;">
         Pay in Full <span id="nb-full-total" style="font-size:11px;font-weight:400;">+ 5% fee + 8.25% tax</span>
       </button>
+      <button onclick="nbZelle()" id="nb-btn-zelle" style="width:100%;padding:14px;background:rgba(122,92,214,.12);border:1px solid rgba(122,92,214,.4);color:#a78bfa;border-radius:12px;font-weight:800;font-size:15px;cursor:pointer;margin-top:10px;display:block;">
+        Pay via Zelle <span style="font-size:11px;font-weight:400;opacity:.7">No card fees · Instant notification</span>
+      </button>
       <button onclick="nbBack()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--text-muted);font-size:13px;cursor:pointer;margin-top:8px;">← Back</button>
+    </div>
+    <!-- Zelle confirmation screen -->
+    <div id="nb-step3" style="display:none;">
+      <div style="text-align:center;padding:8px 0 16px;">
+        <div style="font-size:40px;margin-bottom:10px">💜</div>
+        <div style="font-weight:800;font-size:17px;color:#a78bfa;margin-bottom:6px">Send via Zelle</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:18px">Your booking request has been sent to us. Please complete your Zelle payment to confirm.</div>
+        <div id="nb-zelle-info" style="background:rgba(122,92,214,.1);border:1px solid rgba(122,92,214,.3);border-radius:12px;padding:16px;margin-bottom:16px;text-align:left;font-size:14px;"></div>
+        <div style="font-size:12px;color:rgba(255,255,255,.4);margin-bottom:16px;">Once we receive your Zelle payment we'll confirm your booking right away. Questions? Call or text <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.</div>
+        <button onclick="closeNewBookingModal()" style="width:100%;padding:13px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:12px;font-weight:800;font-size:15px;cursor:pointer;">Done</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1672,6 +1686,7 @@ function _fleetBook(vehicleName){
   // Reset steps
   document.getElementById('nb-step1').style.display = 'block';
   document.getElementById('nb-step2').style.display = 'none';
+  document.getElementById('nb-step3').style.display = 'none';
   document.getElementById('nb-price-box').style.display = 'none';
   document.getElementById('nb-error').style.display = 'none';
   // Wire up date change to update price
@@ -1772,6 +1787,35 @@ async function nbNext(){
 function nbBack(){
   document.getElementById('nb-step2').style.display='none';
   document.getElementById('nb-step1').style.display='block';
+}
+
+async function nbZelle(){
+  const errEl = document.getElementById('nb-error');
+  errEl.style.display='none';
+  const btn = document.getElementById('nb-btn-zelle');
+  if(btn){ btn.disabled=true; btn.textContent='Sending notification…'; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/zelle-notify`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token: state.token, bookingId: _nbBookingId })
+    });
+    const d = await r.json();
+    if(!r.ok){ errEl.textContent=d.error||'Could not send notification'; errEl.style.display='block'; return; }
+    // Show zelle confirmation screen
+    document.getElementById('nb-step2').style.display='none';
+    document.getElementById('nb-step3').style.display='block';
+    const info = d.zelleInfo || {};
+    const totalAmt = d.revenue ? '$'+Number(d.revenue).toFixed(2) : '';
+    document.getElementById('nb-zelle-info').innerHTML =
+      `<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px">Zelle Payment Details</div>`+
+      (info.phone?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Send to (phone)</span><span style="font-weight:800;color:#a78bfa">${info.phone}</span></div>`:'') +
+      (info.email?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Send to (email)</span><span style="font-weight:800;color:#a78bfa">${info.email}</span></div>`:'') +
+      (info.name?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Name</span><span style="font-weight:700">${info.name}</span></div>`:'') +
+      (totalAmt?`<div style="display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,.08);padding-top:8px;margin-top:4px;"><span style="color:rgba(255,255,255,.5)">Amount</span><span style="font-weight:900;color:#C9A962;font-size:16px">${totalAmt}</span></div>`:'') +
+      (d.bookingId?`<div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,.25)">Booking ref: ${d.bookingId}</div>`:'');
+  }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; }
+  finally{ hideLoading(); if(btn){ btn.disabled=false; btn.textContent='Pay via Zelle'; } }
 }
 
 async function nbCheckout(type){
