@@ -30,7 +30,7 @@
   .auth-title{font-size:18px;font-weight:600;margin-bottom:6px;}
   .auth-desc{font-size:13px;color:var(--text-muted);margin-bottom:20px;}
   .field-label{font-size:12px;color:var(--text-muted);margin-bottom:6px;display:block;}
-  input[type=email],input[type=text],input[type=number],input[type=date],select{
+  input[type=email],input[type=text],input[type=number],input[type=date],input[type=tel],select{
     background:#111;border:1px solid var(--border);border-radius:10px;color:var(--text);
     font-size:15px;padding:12px 14px;width:100%;outline:none;
     -webkit-appearance:none;appearance:none;
@@ -234,12 +234,14 @@
 <div id="app-screen">
   <div class="tab-bar">
     <div class="tab-item active" data-tab="bookings" onclick="switchTab('bookings')">📅 Bookings</div>
+    <div class="tab-item" data-tab="fleet" onclick="switchTab('fleet')">🚗 Fleet</div>
     <div class="tab-item" data-tab="saved" onclick="switchTab('saved')">❤️ Saved</div>
     <div class="tab-item" data-tab="insurance" onclick="switchTab('insurance')">🛡 Insurance</div>
     <div class="tab-item" data-tab="account" onclick="switchTab('account')">👤 Account</div>
   </div>
   <div class="tab-content">
     <div class="tab-pane active" id="tab-bookings"><div id="bookings-list"></div></div>
+    <div class="tab-pane" id="tab-fleet"><div id="fleet-list"></div></div>
     <div class="tab-pane" id="tab-saved"><div id="saved-list"></div></div>
     <div class="tab-pane" id="tab-insurance">
       <div id="insurance-display"></div>
@@ -1202,6 +1204,7 @@ function switchTab(tab){
 
 function renderAll(){
   renderBookings();
+  renderFleet();
   renderSaved();
   renderInsurance();
   renderAccount();
@@ -1239,10 +1242,27 @@ function showCondition(booking){
   const postOwner = booking.incPhotoData||[];
   const preCust = booking.customerPreTripPhotos||[];
   const postCust = booking.customerPostTripPhotos||[];
+  // Pre-trip: only allow upload on the day of pickup (or later, before post-trip phase)
+  // Post-trip: only allow upload when booking is active/in-progress
+  const bStatus = (booking.status||'').toLowerCase();
+  const isActive = ['in-progress','in_progress','active'].includes(bStatus);
+  const pickupDay = booking.pickupDate ? booking.pickupDate.split('T')[0] : null;
+  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const isDayOf = pickupDay && todayStr >= pickupDay;
+
   const renderPhotos = (arr, type, bookingId) => {
     let html = '<div class="photo-grid">';
     arr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')">`; });
-    html += `<button class="add-photo-btn" onclick="triggerPhotoUpload('${bookingId}','${type}')">+</button></div>`;
+    if(type==='pre' && isDayOf && !isActive){
+      html += `<button class="add-photo-btn" onclick="triggerPhotoUpload('${bookingId}','pre')" title="Upload pre-trip photo">+</button>`;
+    } else if(type==='post' && isActive){
+      html += `<button class="add-photo-btn" onclick="triggerPhotoUpload('${bookingId}','post')" title="Upload post-trip photo">+</button>`;
+    } else if(type==='pre' && !isDayOf){
+      html += `<div style="font-size:11px;color:var(--text-muted);padding:4px 0">Available day of trip</div>`;
+    } else if(type==='post' && !isActive){
+      html += `<div style="font-size:11px;color:var(--text-muted);padding:4px 0">Available when trip is active</div>`;
+    }
+    html += '</div>';
     return html;
   };
   return `<div class="section-title">Vehicle Condition</div>
@@ -1504,6 +1524,85 @@ function renderBookings(){
 }
 
 // ─── Saved ─────────────────────────────────────────────────────────────────
+// ─── Fleet ─────────────────────────────────────────────────────────────────
+var VEHICLE_RATES = {
+  "Corvette":           { rate:450,  deposit:750,  type:'rental',    emoji:'🏎', desc:'2023 Chevrolet Corvette C8 · White' },
+  "Corvette Z51":       { rate:450,  deposit:750,  type:'rental',    emoji:'🏎', desc:'2023 Chevrolet Corvette C8 Z51 · Black' },
+  "BMW M3":             { rate:450,  deposit:750,  type:'rental',    emoji:'🚘', desc:'2026 BMW M3 Competition xDrive · Black' },
+  "BMW i4":             { rate:150,  deposit:300,  type:'rental',    emoji:'🚘', desc:'2022 BMW i4 · White' },
+  "Macan":              { rate:325,  deposit:500,  type:'rental',    emoji:'🚙', desc:'2025 Porsche Macan · Black' },
+  "Porsche Boxster S":  { rate:300,  deposit:500,  type:'rental',    emoji:'🏎', desc:'2013 Porsche Boxster S · White' },
+  "C300":               { rate:200,  deposit:500,  type:'rental',    emoji:'🚗', desc:'2022 Mercedes-Benz C300 AMG · Gray' },
+  "Accord":             { rate:85,   deposit:200,  type:'rental',    emoji:'🚗', desc:'2016 Honda Accord Coupe · Black' },
+  "Lambo Huracan":      { rate:1500, deposit:1000, type:'rental',    emoji:'🏎', desc:'2015 Lamborghini Huracán · Gray' },
+  "Lambo Urus":         { rate:1200, deposit:1000, type:'rental',    emoji:'🚙', desc:'2020 Lamborghini Urus · Blue' },
+  "Escalade Rental":    { rate:375,  deposit:500,  type:'rental',    emoji:'🚐', desc:'2023 Cadillac Escalade · Black' },
+  "G Wagon":            { rate:550,  deposit:750,  type:'rental',    emoji:'🚙', desc:'Mercedes-Benz G-Wagon · Black' },
+  "Polaris Slingshot":  { rate:300,  deposit:250,  type:'rental',    emoji:'🏍', desc:'2025 Polaris Slingshot SL · Green' },
+  "Escalade Chauffeur": { rate:150,  deposit:0,    type:'chauffeur', emoji:'🚐', desc:'2022 Cadillac Escalade · White — Per hour' },
+  "BMW 7 Series":       { rate:150,  deposit:0,    type:'chauffeur', emoji:'🚘', desc:'2023 BMW 7 Series · White — Per hour' },
+};
+
+function renderFleet(){
+  const el = document.getElementById('fleet-list');
+  if(!el) return;
+  const rental = Object.entries(VEHICLE_RATES).filter(([,v])=>v.type==='rental');
+  const chauffeur = Object.entries(VEHICLE_RATES).filter(([,v])=>v.type==='chauffeur');
+  const saved = (state.savedVehicles||[]).map(v=>(v.name||v));
+  const card = ([name, v]) => {
+    const isSaved = saved.includes(name);
+    const miles = VEHICLE_MILEAGE[name];
+    const milesLine = miles ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${miles.miles} mi/day · $${miles.overage}/mi overage</div>` : '';
+    const rate = v.type==='chauffeur' ? `$${v.rate}/hr` : `$${v.rate}/day`;
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;position:relative;">
+      <div style="font-size:28px;margin-bottom:6px">${v.emoji}</div>
+      <div style="font-weight:800;font-size:14px;color:var(--text)">${name}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px;line-height:1.4">${v.desc}</div>
+      ${milesLine}
+      <div style="font-size:16px;font-weight:900;color:var(--gold);margin-top:8px">${rate}</div>
+      ${v.deposit?`<div style="font-size:11px;color:var(--text-muted)">$${v.deposit} deposit</div>`:''}
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        <button onclick="_fleetBook('${name}')" style="flex:1;padding:8px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">Book</button>
+        <button onclick="_fleetSave('${name}','${v.emoji}')" style="padding:8px 10px;background:transparent;border:1px solid var(--border);border-radius:8px;font-size:14px;cursor:pointer;color:${isSaved?'#ef4444':'var(--text-muted)'}" title="${isSaved?'Remove from saved':'Save vehicle'}">${isSaved?'❤️':'🤍'}</button>
+      </div>
+    </div>`;
+  };
+  el.innerHTML = `
+    <div style="margin-bottom:16px">
+      <div style="font-weight:800;font-size:15px;color:var(--gold);margin-bottom:10px">🏎 Rental Fleet</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${rental.map(card).join('')}</div>
+    </div>
+    <div>
+      <div style="font-weight:800;font-size:15px;color:var(--gold);margin-bottom:10px">🚐 Chauffeur Service</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${chauffeur.map(card).join('')}</div>
+    </div>`;
+}
+
+function _fleetBook(vehicleName){
+  const rates = VEHICLE_RATES[vehicleName]||{};
+  const typeLabel = rates.type==='chauffeur' ? 'Chauffeur Service' : 'Rental';
+  toast(`To book ${vehicleName} (${typeLabel}), call or text us at (214) 207-2481`, 'info');
+  setTimeout(()=>{
+    if(confirm(`Ready to book the ${vehicleName}?\n\nCall/text us at (214) 207-2481 or tap OK to open a pre-filled message.`)){
+      const msg = encodeURIComponent(`Hi, I'd like to book the ${vehicleName}. My name is ${state.email}.`);
+      window.open('sms:2142072481?body='+msg, '_blank');
+    }
+  }, 500);
+}
+
+async function _fleetSave(name, emoji){
+  const saved = state.savedVehicles||[];
+  const idx = saved.findIndex(v=>(v.name||v)===name);
+  if(idx>=0){ saved.splice(idx,1); }
+  else { saved.push({name, emoji}); }
+  state.savedVehicles = saved;
+  renderFleet();
+  renderSaved();
+  try{
+    await fetch(`${WORKER}/portal/save-vehicles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,savedVehicles:state.savedVehicles})});
+  }catch(e){}
+}
+
 function renderSaved(){
   const el = document.getElementById('saved-list');
   if(!state.savedVehicles.length){ el.innerHTML=`<div class="empty-state"><div class="empty-icon">❤️</div><div>No saved vehicles yet.</div></div>`; return; }
@@ -1511,7 +1610,10 @@ function renderSaved(){
     <div class="vehicle-card">
       <div class="vehicle-emoji">${v.emoji||'🚗'}</div>
       <div class="vehicle-card-name">${v.name||v}</div>
-      <button class="heart-btn" onclick="removeSaved(${i})">❤️</button>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <button onclick="_fleetBook('${v.name||v}')" style="flex:1;padding:6px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:7px;font-weight:800;font-size:11px;cursor:pointer;">Book</button>
+        <button class="heart-btn" onclick="removeSaved(${i})">❤️</button>
+      </div>
     </div>`).join('')}</div>`;
 }
 
