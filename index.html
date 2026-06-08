@@ -582,9 +582,28 @@ body { overflow-x: hidden; max-width: 100vw; }
   .budget-grid { grid-template-columns: 1fr 1fr; }
 
   /* ── Calendar nav ── */
-  .cal-nav { padding: 8px 12px; gap: 8px; flex-wrap: wrap; }
-  .cal-range { font-size: 12px; }
+  .cal-nav { padding: 8px 12px; gap: 6px; flex-wrap: wrap; }
+  .cal-range { font-size: 13px; font-weight: 800; flex-basis: 100%; text-align: center; order: -1; }
+  .cal-filter-row { width: 100%; margin-left: 0 !important; }
+  .cal-filter-row .fi { width: 100%; box-sizing: border-box; }
   .cal-legend { padding: 6px 12px; gap: 8px; flex-wrap: wrap; }
+  .cal-legend > div:last-child { display: none; } /* hide "click to add" hint on mobile */
+
+  /* ── Calendar cells: compact on mobile (3-day view) ── */
+  .cal-vh { min-width: 90px !important; font-size: 10px; padding: 8px 8px; }
+  .cal-vc { min-width: 90px !important; font-size: 11px; padding: 6px 8px; }
+  .cal-dh { min-width: 0 !important; padding: 8px 4px; }
+  .cal-dh-name { font-size: 9px; }
+  .cal-dh-num  { font-size: 14px; }
+  .cal-dc { min-width: 0 !important; min-height: 56px; padding: 3px; }
+  .cal-block { padding: 4px 5px; min-height: 34px; }
+  .cal-block-name { font-size: 10px; }
+  .cal-block-info { font-size: 9px; }
+  .cal-block-chips { display: none; } /* hide chips — too small */
+  .cal-table { min-width: 0 !important; table-layout: fixed; width: 100%; }
+  .cal-table colgroup .col-veh { width: 90px; }
+  /* Vehicle filter: full-width on mobile */
+  #calVehicleFilter { min-width: 0 !important; width: 100%; }
 
   /* ── Today banner ── */
   #todayBanner { padding: 10px 12px; width: 100%; box-sizing: border-box; }
@@ -1630,11 +1649,13 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 <!-- ═══ TAB: CALENDAR ═══ -->
 <div id="tab-calendar" class="tab-panel">
   <div class="cal-nav">
-    <button class="btn btn-sm" id="calPrevBtn" onclick="calPrev()">← Prev Week</button>
-    <button class="btn btn-sm" onclick="calToday()">Today</button>
-    <button class="btn btn-sm" onclick="calNext()">Next Week →</button>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap">
+      <button class="btn btn-sm" id="calPrevBtn" onclick="calPrev()">← Prev</button>
+      <button class="btn btn-sm" onclick="calToday()">Today</button>
+      <button class="btn btn-sm" onclick="calNext()">Next →</button>
+    </div>
     <div class="cal-range" id="calRange"></div>
-    <div class="fg" style="margin-left:auto">
+    <div class="fg cal-filter-row">
       <div class="fl">Filter Vehicle</div>
       <select class="fi" id="calVehicleFilter" onchange="renderCalendar()" style="min-width:160px">
         <option value="">All Vehicles</option>
@@ -1646,7 +1667,6 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div class="cal-legend-item"><div class="cal-legend-dot" style="background:var(--blue)"></div>Hourly Booking</div>
     <div class="cal-legend-item"><div class="cal-legend-dot" style="background:var(--green)"></div>Chauffeur</div>
     <div class="cal-legend-item"><div class="cal-legend-dot" style="background:var(--purple)"></div>Has Photoshoot</div>
-    <div style="margin-left:auto;font-size:11px;color:var(--muted)">Click a cell to add a booking for that vehicle & date</div>
   </div>
   <div class="cal-wrap" id="calendarWrap"></div>
 </div>
@@ -7178,15 +7198,32 @@ function getThisWeekStart(){
 }
 function initCalStart(){
   if(calStart) return;
-  calStart=getThisWeekStart();
+  if(_isMobile()){
+    var d=new Date(); d.setHours(0,0,0,0);
+    calStart=d; // mobile: start from today
+  } else {
+    calStart=getThisWeekStart();
+  }
 }
-function calPrev(){ calStart=addDays(calStart,-7); renderCalendar(); }
-function calNext(){ calStart=addDays(calStart,7); renderCalendar(); }
-function calToday(){ calStart=null; initCalStart(); renderCalendar(); }
+function _calDays(){ return _isMobile() ? 3 : 7; }
+function calPrev(){ calStart=addDays(calStart,-_calDays()); renderCalendar(); }
+function calNext(){ calStart=addDays(calStart,_calDays()); renderCalendar(); }
+function calToday(){
+  calStart=null;
+  if(_isMobile()){
+    // center on today
+    var d=new Date(); d.setHours(0,0,0,0);
+    calStart=d;
+  } else {
+    initCalStart();
+  }
+  renderCalendar();
+}
 function updateCalPrevBtn(){}
 
 function getWeekDates(){
-  var res=[]; for(var i=0;i<7;i++) res.push(dateStr(addDays(calStart,i))); return res;
+  var n=_calDays();
+  var res=[]; for(var i=0;i<n;i++) res.push(dateStr(addDays(calStart,i))); return res;
 }
 
 function renderCalendar(){
@@ -7245,19 +7282,21 @@ function renderCalendar(){
         ? '<div class="cal-block-blocked" title="'+esc(blockedRange.reason||'Blocked')+'">🚫 '+esc(blockedRange.reason||'Blocked')+'</div>'
         : '';
       var overlapWarn=bkgs.length>1?'<div style="font-size:9px;color:#ef4444;font-weight:700;padding:2px 4px;background:rgba(239,68,68,.15);border-radius:4px;margin-bottom:2px">⚠ '+bkgs.length+' bookings overlap</div>':'';
-      var blocks=bkgs.slice(0,3).map(function(b){
+      var mob=_isMobile();
+      var blocks=bkgs.slice(0,mob?2:3).map(function(b){
         var hasPhoto=Number(b.photo)>0;
-        var typeCls=b.type;
-        if(hasPhoto) typeCls+=' has-photo';
         var chips=[];
-        if(hasPhoto) chips.push('<span class="cal-chip photo">📷</span>');
-        if(b.delivery) chips.push('<span class="cal-chip delivery">📦 Delivery</span>');
-        if(b.unlimited) chips.push('<span class="cal-chip unlimited">∞ Unlim</span>');
-        if(b.broker) chips.push('<span class="cal-chip broker" title="Broker: '+esc(b.broker)+'">🤝 '+esc(b.broker.split(' ')[0])+'</span>');
-        else if(b.source) chips.push('<span class="cal-chip source" title="Source: '+esc(b.source)+'">'+esc(b.source.split(' ')[0])+'</span>');
+        if(!mob){
+          if(hasPhoto) chips.push('<span class="cal-chip photo">📷</span>');
+          if(b.delivery) chips.push('<span class="cal-chip delivery">📦 Delivery</span>');
+          if(b.unlimited) chips.push('<span class="cal-chip unlimited">∞ Unlim</span>');
+          if(b.broker) chips.push('<span class="cal-chip broker" title="Broker: '+esc(b.broker)+'">🤝 '+esc(b.broker.split(' ')[0])+'</span>');
+          else if(b.source) chips.push('<span class="cal-chip source" title="Source: '+esc(b.source)+'">'+esc(b.source.split(' ')[0])+'</span>');
+        }
+        var displayName=mob ? esc(b.name.split(' ')[0]).substring(0,8) : esc(b.name.split(' ')[0]);
         return '<div class="cal-block '+b.type+(hasPhoto?' has-photo':'')+'" onclick="event.stopPropagation();openModal(\''+b.id+'\')">'+
-          '<div class="cal-block-name">'+esc(b.name.split(' ')[0])+'</div>'+
-          '<div class="cal-block-info">'+b.days+(b.type==='hourly'?'hr':'d')+' · '+$$(totalRevenue(b))+'</div>'+
+          '<div class="cal-block-name">'+displayName+'</div>'+
+          (mob?'':'<div class="cal-block-info">'+b.days+(b.type==='hourly'?'hr':'d')+' · '+$$(totalRevenue(b))+'</div>')+
           (chips.length?'<div class="cal-block-chips">'+chips.join('')+'</div>':'')+
           '</div>';
       }).join('');
@@ -7271,8 +7310,14 @@ function renderCalendar(){
     return '<tr><td class="cal-vc '+rowCls+'">'+vehicle+'</td>'+cells+'</tr>';
   }).join('');
 
+  var mob2=_isMobile();
+  var vehColW=mob2?90:160;
+  var dayColW=mob2?0:110; // 0 = auto/equal share on mobile via table-layout:fixed
+  var colgroup='<colgroup><col style="width:'+vehColW+'px">'+
+    week.map(function(){ return '<col'+(dayColW?(' style="width:'+dayColW+'px"'):'')+'/>'; }).join('')+
+    '</colgroup>';
   $d('calendarWrap').innerHTML=
-    '<table class="cal-table">'+
+    '<table class="cal-table">'+colgroup+
     '<thead><tr><th class="cal-vh">Vehicle</th>'+dayHeaders+'</tr></thead>'+
     '<tbody>'+rows+'</tbody>'+
     '</table>';
@@ -11533,24 +11578,42 @@ function renderOutstanding(){
     return (Number(b.dateLock)||0)===0&&(Number(b.remainingBalance)||0)===0&&(Number(b.deposit)||0)===0;
   }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
   var html='';
+  var isMob=window.innerWidth<=768;
   function makeRow(b){
     var bal=getRemainingBalance(b);
     var lock=Number(b.dateLock)||0;
+    var balHtml=b.balancePaidAt?
+      '✅ Paid '+$$(b.balancePaidAmount||0)+(b.balancePaidMethod?' via '+b.balancePaidMethod:''):
+      bal===0?'✅ $0 Remaining':
+      $$(bal)+
+      ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px">✏</button>'+
+      ' <button class="btn btn-sm" onclick="markBalancePaid(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:2px;border-color:var(--green);color:var(--green)">✅ Paid</button>';
+    if(isMob){
+      var balColor=(b.balancePaidAt||bal===0)?'var(--green)':'var(--red)';
+      return '<div style="background:var(--bg);border-radius:12px;padding:14px;border:1px solid var(--border2);margin-bottom:10px">'+
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'+
+          '<div>'+
+            '<div style="font-size:14px;font-weight:800">'+esc(b.name)+'</div>'+
+            '<div style="font-size:11px;color:var(--muted)">'+esc(b.vehicle)+'</div>'+
+          '</div>'+
+          '<span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span>'+
+        '</div>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px">'+
+          '<div><span style="color:var(--muted)">Date: </span><b>'+fmtDate(b.pickupDate||b.date)+'</b></div>'+
+          '<div><span style="color:var(--muted)">Total: </span><b style="color:var(--gold)">'+$$(totalRevenue(b))+'</b></div>'+
+          '<div><span style="color:var(--muted)">Date Lock: </span><b style="color:var(--green)">'+$$(lock)+'</b></div>'+
+          '<div style="grid-column:1/-1"><span style="color:var(--muted)">Balance: </span><span style="color:'+balColor+';font-weight:700">'+balHtml+'</span></div>'+
+        '</div>'+
+        '<button class="btn btn-sm" style="width:100%" onclick="openModal(\''+b.id+'\')">View / Edit</button>'+
+      '</div>';
+    }
     return '<tr>'+
       '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
       '<td style="font-weight:700">'+esc(b.name)+(b.phone?' <span style="color:var(--muted);font-size:11px">'+esc(b.phone)+'</span>':'')+'</td>'+
       '<td>'+esc(b.vehicle)+'</td>'+
       '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
       '<td style="color:var(--green)">'+$$(lock)+'</td>'+
-      '<td style="color:'+((b.balancePaidAt||bal===0)?'var(--green)':'var(--red)')+';font-weight:700">'+
-        (b.balancePaidAt?
-          '✅ Paid '+$$(b.balancePaidAmount||0)+(b.balancePaidMethod?' via '+b.balancePaidMethod:''):
-          bal===0?'✅ $0 Remaining':
-          $$(bal)+
-          ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px">✏</button>'+
-          ' <button class="btn btn-sm" onclick="markBalancePaid(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:2px;border-color:var(--green);color:var(--green)">✅ Paid</button>'
-        )+
-      '</td>'+
+      '<td style="color:'+((b.balancePaidAt||bal===0)?'var(--green)':'var(--red)')+';font-weight:700">'+balHtml+'</td>'+
       '<td><span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></td>'+
       '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
     '</tr>';
@@ -11560,14 +11623,18 @@ function renderOutstanding(){
     html+='<div class="tbl-card" style="margin-bottom:12px">'+
       '<div class="tbl-head"><div class="tbl-title" style="color:var(--red)">💵 Balance Due ('+balanceDue.length+')</div>'+
       '<div class="tbl-meta" style="font-size:11px;color:var(--muted)">$100 date lock collected upfront — click ✏ to update remaining balance</div></div>'+
-      '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+
-      balanceDue.map(makeRow).join('')+'</tbody></table></div></div>';
+      (isMob ?
+        '<div style="padding:10px 12px">'+balanceDue.map(makeRow).join('')+'</div>' :
+        '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+balanceDue.map(makeRow).join('')+'</tbody></table></div>'
+      )+'</div>';
   }
   if(noLock.length){
     html+='<div class="tbl-card">'+
       '<div class="tbl-head"><div class="tbl-title" style="color:#f97316">⚠ No Payment Collected ('+noLock.length+')</div></div>'+
-      '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+
-      noLock.map(makeRow).join('')+'</tbody></table></div></div>';
+      (isMob ?
+        '<div style="padding:10px 12px">'+noLock.map(makeRow).join('')+'</div>' :
+        '<div class="tbl-wrap"><table><thead><tr>'+hdr+'</tr></thead><tbody>'+noLock.map(makeRow).join('')+'</tbody></table></div>'
+      )+'</div>';
   }
   if(!html) html='<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">✅ All balances collected.</div>';
   el.innerHTML=html;
