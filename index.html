@@ -319,8 +319,8 @@ tr:hover td { background: rgba(255,255,255,.02); }
   .filter-bar { padding: 10px 20px; gap: 8px; }
 }
 
-/* ══ RESPONSIVE — iPad portrait (481–834px) ══ */
-@media (max-width: 834px) and (min-width: 481px) {
+/* ══ RESPONSIVE — iPad portrait (601–834px) ══ */
+@media (max-width: 834px) and (min-width: 601px) {
   .header { padding: 10px 16px; padding-top: max(10px, env(safe-area-inset-top)); gap: 8px; }
   .header-sub { font-size: 10px; }
   .header-actions { gap: 5px; }
@@ -346,12 +346,29 @@ tr:hover td { background: rgba(255,255,255,.02); }
   .budget-grid { grid-template-columns: 1fr 1fr 1fr 1fr; }
 }
 
-/* ══ RESPONSIVE — iPhone / small mobile (≤ 480px) ══ */
+/* ══════════════════════════════════════════════════════
+   UNCONDITIONAL OVERFLOW GUARDS
+   These run on every screen size so a wide table/element
+   never causes iOS Safari to widen the viewport and break
+   the mobile media query.
+══════════════════════════════════════════════════════ */
+html { overflow-x: hidden; }
+body { overflow-x: hidden; max-width: 100vw; }
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Tables always scroll inside their wrapper, never push the page */
+.tbl-wrap  { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tbl-card  { overflow: hidden; max-width: 100%; }
+
+/* Forecast cards never overflow their parent */
+.forecast-card { min-width: 0; }
+
+/* ══ RESPONSIVE — Mobile (≤ 768px) ══ */
 
 /* Mobile filter toggle button — only shown on mobile */
 #mobileFilterToggle { display: none; }
 
-@media (max-width: 480px) {
+@media (max-width: 768px) {
   /* ── Hard containment: viewport is the ceiling ── */
   html { overflow-x: hidden !important; }
   body { overflow-x: hidden !important; width: 100vw !important; max-width: 100vw !important; }
@@ -493,37 +510,23 @@ tr:hover td { background: rgba(255,255,255,.02); }
   .hm-day { width: 9px; height: 9px; }
   .heatmap-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-  /* ── Forecast: stack vertically on mobile ── */
-  #forecastSection { overflow: hidden !important; width: 100% !important; box-sizing: border-box !important; }
-  .forecast-grid {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr !important;
-    gap: 8px !important;
-    width: 100% !important;
-  }
-  .forecast-card { min-width: 0 !important; width: 100% !important; box-sizing: border-box !important; padding: 12px 10px !important; }
-  .forecast-val { font-size: 18px !important; }
+  /* ── Forecast: 2-col grid, no overflow ── */
+  #forecastSection { overflow: hidden; width: 100%; }
+  .forecast-grid { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
+  .forecast-card { padding: 12px 10px !important; }
+  .forecast-val  { font-size: 17px !important; }
 
-  /* ── Forecast header row: stack title + pills vertically ── */
-  #forecastSection > div:first-child { flex-direction: column !important; align-items: flex-start !important; gap: 6px !important; }
+  /* ── Damage claims: rendered as cards by JS on mobile, no table overflow ── */
+  #openClaimsSection { width: 100%; overflow: hidden; }
 
-  /* ── Damage claims table: horizontal scroll inside container ── */
-  #openClaimsSection { width: 100% !important; overflow: hidden !important; }
-  #openClaimsSection .tbl-wrap { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
-  #openClaimsSection table { min-width: 560px; font-size: 11px; }
-  #openClaimsSection th, #openClaimsSection td { padding: 6px 8px !important; white-space: nowrap; }
-
-  /* ── KPI pill bar: constrain wrapper, let pills wrap ── */
-  #kpiPillBar { width: 100% !important; overflow: hidden !important; }
-  #kpiPillBar > div { flex-wrap: wrap !important; gap: 4px !important; }
+  /* ── KPI pill bar: pills wrap to next line ── */
+  #kpiPillBar { overflow: hidden; }
+  #kpiPillBar > div { flex-wrap: wrap !important; }
   #kpiPillBar button { font-size: 10px !important; padding: 3px 9px !important; }
 
-  /* ── All tbl-cards inside .main stay within viewport ── */
-  .main > *, .main .tbl-card, .main .chart-card { max-width: 100% !important; width: 100% !important; box-sizing: border-box !important; }
-
-  /* ── Budget section ── */
-  .budget-section { width: 100% !important; max-width: 100% !important; overflow: hidden !important; }
-  .budget-grid { width: 100% !important; }
+  /* ── Every card and section in .main stays within viewport ── */
+  .main > * { max-width: 100% !important; width: 100% !important; }
+  .tbl-card, .chart-card, .budget-section { max-width: 100% !important; overflow: hidden; }
 
   /* ── Trip cards: compact 2-col (date | info) ── */
   .trip-group { padding: 8px 12px 0; }
@@ -5886,7 +5889,7 @@ Chart.defaults.maintainAspectRatio=true;
 var GOLD='#C9A962',GREEN='#7CFC98',BLUE='#64b4ff',RED='#ff5c5c';
 
 // Detect mobile for chart option tuning
-function _isMobile(){ return window.innerWidth<=480; }
+function _isMobile(){ return window.innerWidth<=768; }
 function _isTablet(){ return window.innerWidth<=834; }
 
 // Shared mobile-aware plugin options
@@ -11467,8 +11470,14 @@ function renderForecast(filteredSet){
   var selP=periods.find(function(p){return p.val===_forecastPeriod;})||periods[2];
   var fSel=fr(selP.days);
   var pillHtml=_pillBar(periods,_forecastPeriod,'setForecastPeriod','Forecast');
+  // On mobile show only 1 context card (2 total) so grid fits without overflow
+  var mob = window.innerWidth <= 768;
+  var contextDays = selP.val==='30' ? (mob?['7']:['7','90'])
+                  : selP.val==='90' ? (mob?['30']:['7','30'])
+                  : (mob?['30']:['30','90']);
+
   el.innerHTML=
-    '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">'+
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">'+
       '<div class="chart-ttl" style="margin-bottom:0">📈 Revenue Forecast</div>'+
       pillHtml+
     '</div>'+
@@ -11478,35 +11487,14 @@ function renderForecast(filteredSet){
         '<div class="forecast-val">'+$$(fSel.rev)+'</div>'+
         '<div class="forecast-sub">'+fSel.count+' booking'+(fSel.count!==1?'s':'')+' confirmed or pending</div>'+
       '</div>'+
-      // Always also show 30/90 day outlook as context cards
-      (selP.val!=='30'&&selP.val!=='90'?
-        ['30','90'].map(function(d){
-          var f=fr(+d);
-          return '<div class="forecast-card" style="opacity:.65">'+
-            '<div class="forecast-lbl">Next '+d+' Days</div>'+
-            '<div class="forecast-val" style="font-size:18px">'+$$(f.rev)+'</div>'+
-            '<div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div>'+
-          '</div>';
-        }).join('')
-      : selP.val==='30'?
-        ['7','90'].map(function(d){
-          var f=fr(+d);
-          return '<div class="forecast-card" style="opacity:.65">'+
-            '<div class="forecast-lbl">Next '+d+' Days</div>'+
-            '<div class="forecast-val" style="font-size:18px">'+$$(f.rev)+'</div>'+
-            '<div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div>'+
-          '</div>';
-        }).join('')
-      :
-        ['7','30'].map(function(d){
-          var f=fr(+d);
-          return '<div class="forecast-card" style="opacity:.65">'+
-            '<div class="forecast-lbl">Next '+d+' Days</div>'+
-            '<div class="forecast-val" style="font-size:18px">'+$$(f.rev)+'</div>'+
-            '<div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div>'+
-          '</div>';
-        }).join('')
-      )+
+      contextDays.map(function(d){
+        var f=fr(+d);
+        return '<div class="forecast-card" style="opacity:.7">'+
+          '<div class="forecast-lbl">Next '+d+' Days</div>'+
+          '<div class="forecast-val" style="font-size:18px">'+$$(f.rev)+'</div>'+
+          '<div class="forecast-sub">'+f.count+' booking'+(f.count!==1?'s':'')+'</div>'+
+        '</div>';
+      }).join('')+
     '</div>';
 }
 
@@ -12306,30 +12294,52 @@ function renderOpenClaims(){
   if(!open.length){ el.innerHTML=''; return; }
   var STAGE_COLOR={'reported':'rgba(255,200,0,.15)','filed':'rgba(100,160,255,.15)','pending':'rgba(201,169,98,.15)','approved':'rgba(100,220,100,.15)','paid':'rgba(100,220,100,.2)','denied':'rgba(255,92,92,.15)'};
   var STAGE_TEXT={'reported':'#ffc800','filed':'#60a5fa','pending':'#C9A962','approved':'#4ade80','paid':'#4ade80','denied':'#f87171'};
+  var isMob = window.innerWidth <= 768;
+  var claimsBody = isMob
+    ? open.map(function(b){
+        var dmg=b.damage||{};
+        var stage=b.claimStatus||'reported';
+        var color=STAGE_TEXT[stage]||'var(--muted)';
+        var bg=STAGE_COLOR[stage]||'transparent';
+        return '<div style="border-bottom:1px solid rgba(239,68,68,.15);padding:10px 14px;display:flex;flex-direction:column;gap:4px">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center">'+
+            '<span style="font-weight:700;font-size:13px">'+esc(b.name)+'</span>'+
+            '<span class="badge" style="background:'+bg+';color:'+color+'">'+esc(CLAIM_LABELS[stage]||stage)+'</span>'+
+          '</div>'+
+          '<div style="font-size:12px;color:var(--muted)">'+esc(b.vehicle)+' · '+fmtDate(b.pickupDate||b.date)+'</div>'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">'+
+            '<span><span class="badge" style="background:rgba(239,68,68,.15);color:#f87171">'+esc(dmg.type||'Damage')+'</span>'+(dmg.estimate?' <span style="font-size:11px;color:var(--muted)">Est. '+$$(dmg.estimate)+'</span>':'')+'</span>'+
+            '<button class="btn btn-sm" onclick="openCloseOut(\''+b.id+'\')">Update</button>'+
+          '</div>'+
+        '</div>';
+      }).join('')
+    : '<div class="tbl-wrap"><table><thead><tr>'+
+        '<th>Customer</th><th>Vehicle</th><th>Trip Date</th><th>Damage Type</th><th>Estimate</th><th>Claim Stage</th><th>Recovered</th><th></th>'+
+      '</tr></thead><tbody>'+
+      open.map(function(b){
+        var dmg=b.damage||{};
+        var stage=b.claimStatus||'reported';
+        var color=STAGE_TEXT[stage]||'var(--muted)';
+        var bg=STAGE_COLOR[stage]||'transparent';
+        return '<tr>'+
+          '<td style="font-weight:700">'+esc(b.name)+'</td>'+
+          '<td>'+esc(b.vehicle)+'</td>'+
+          '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
+          '<td><span class="badge" style="background:rgba(239,68,68,.15);color:#f87171">'+esc(dmg.type||'Damage')+'</span></td>'+
+          '<td style="font-weight:700">'+$$(dmg.estimate||0)+'</td>'+
+          '<td><span class="badge" style="background:'+bg+';color:'+color+'">'+esc(CLAIM_LABELS[stage]||stage)+'</span></td>'+
+          '<td>'+(b.claimRecovered?$$(b.claimRecovered):'—')+'</td>'+
+          '<td><button class="btn btn-sm" onclick="openCloseOut(\''+b.id+'\')">Update</button></td>'+
+        '</tr>';
+      }).join('')+
+      '</tbody></table></div>';
+
   el.innerHTML='<div class="tbl-card" style="border-color:rgba(239,68,68,.25)">'+
     '<div class="tbl-head">'+
       '<div class="tbl-title" style="color:#f87171">🚨 Open Damage Claims ('+open.length+')</div>'+
     '</div>'+
-    '<div class="tbl-wrap"><table><thead><tr>'+
-      '<th>Customer</th><th>Vehicle</th><th>Trip Date</th><th>Damage Type</th><th>Estimate</th><th>Claim Stage</th><th>Recovered</th><th></th>'+
-    '</tr></thead><tbody>'+
-    open.map(function(b){
-      var dmg=b.damage||{};
-      var stage=b.claimStatus||'reported';
-      var color=STAGE_TEXT[stage]||'var(--muted)';
-      var bg=STAGE_COLOR[stage]||'transparent';
-      return '<tr>'+
-        '<td style="font-weight:700">'+esc(b.name)+'</td>'+
-        '<td>'+esc(b.vehicle)+'</td>'+
-        '<td>'+fmtDate(b.pickupDate||b.date)+'</td>'+
-        '<td><span class="badge" style="background:rgba(239,68,68,.15);color:#f87171">'+esc(dmg.type||'Damage')+'</span></td>'+
-        '<td style="font-weight:700">'+$$(dmg.estimate||0)+'</td>'+
-        '<td><span class="badge" style="background:'+bg+';color:'+color+'">'+esc(CLAIM_LABELS[stage]||stage)+'</span></td>'+
-        '<td>'+(b.claimRecovered?$$(b.claimRecovered):'—')+'</td>'+
-        '<td><button class="btn btn-sm" onclick="openCloseOut(\''+b.id+'\')">Update</button></td>'+
-      '</tr>';
-    }).join('')+
-    '</tbody></table></div></div>';
+    claimsBody+
+  '</div>';
 }
 
 // ════════════════════════════════════════════════════════
