@@ -134,6 +134,17 @@ textarea{resize:vertical;min-height:80px;}
 .earn-total{font-size:28px;font-weight:900;color:var(--green);}
 .earn-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;}
 .earn-row:last-child{border-bottom:none;}
+.rev-split{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);}
+.rev-split-title{font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;}
+.rev-bar{display:flex;height:14px;border-radius:7px;overflow:hidden;margin-bottom:12px;font-size:9px;font-weight:800;color:#04110a;line-height:14px;}
+.rev-bar-driver{background:var(--green);text-align:center;}
+.rev-bar-pb{background:var(--gold);text-align:center;color:#1a1405;}
+.rev-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:6px 0;}
+.rev-row span:first-child{color:var(--text2);display:flex;align-items:center;gap:7px;}
+.rev-row-total{border-top:1px solid var(--border);margin-top:4px;padding-top:10px;color:var(--text);}
+.rev-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+.rev-dot-driver{background:var(--green);}
+.rev-dot-pb{background:var(--gold);}
 
 /* Incident / report */
 .incident-card{background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:12px;padding:14px;margin-bottom:10px;}
@@ -508,7 +519,7 @@ try{ _drvToken = localStorage.getItem('pb_drv_token')||''; }catch(e){}
 
 var drvState = {
   email: _drvEmail, token: _drvToken,
-  profile: {}, trips: [], clocks: [], incidents: [],
+  profile: {}, trips: [], clocks: [], incidents: [], reviews: [],
   clockedIn: false, clockStartMs: 0, activeClockId: null,
 };
 
@@ -661,6 +672,7 @@ async function loadDrvData(){
     drvState.trips      = d.trips      || [];
     drvState.clocks     = d.clocks     || [];
     drvState.incidents  = d.incidents  || [];
+    drvState.reviews    = d.reviews    || [];
     // Determine clock state from most recent clock entry
     var lastClock=drvState.clocks.length?drvState.clocks[drvState.clocks.length-1]:null;
     drvState.clockedIn  = lastClock && lastClock.type==='in' && !lastClock.outAt;
@@ -680,6 +692,7 @@ function renderAll(){
   renderReports();
   startClockTick();
   initChauffeurAfterLogin();
+  setDuty(!!drvState.clockedIn);   // sync On-Duty pill to clock state on load
 }
 
 function updateHeader(){
@@ -730,14 +743,17 @@ function handleProfilePhoto(ev){
   reader.onload=function(){
     var img=new Image();
     img.onload=function(){
-      // Center-crop to a square and downscale to 256px, export as JPEG.
-      var size=256;
+      // Center-crop to a square, downscale only if larger than ~1024px, export as JPEG.
+      var side=Math.min(img.width,img.height);
+      var size=Math.min(1024, side);
       var canvas=document.createElement('canvas'); canvas.width=size; canvas.height=size;
       var ctx=canvas.getContext('2d');
-      var side=Math.min(img.width,img.height);
       var sx=(img.width-side)/2, sy=(img.height-side)/2;
       ctx.drawImage(img,sx,sy,side,side,0,0,size,size);
-      var dataUrl=canvas.toDataURL('image/jpeg',0.82);
+      var dataUrl=canvas.toDataURL('image/jpeg',0.9);
+      // Keep under the 4,000,000-char limit; step quality down if needed.
+      var q=0.9;
+      while(dataUrl.length>4000000 && q>0.4){ q-=0.1; dataUrl=canvas.toDataURL('image/jpeg',q); }
       saveProfilePhoto(dataUrl);
     };
     img.onerror=function(){ drvToast('Could not read image','error'); };
@@ -790,8 +806,12 @@ function updateClockDisplay(){
   }
 }
 
+var _clockBusy=false;
 async function drvToggleClock(){
-  var btn=$d('today-clock-btn'); btn.disabled=true;
+  if(_clockBusy) return;
+  _clockBusy=true;
+  var btn=$d('today-clock-btn'); if(btn) btn.disabled=true;
+  var pill=$d('duty-pill'); if(pill) pill.style.pointerEvents='none';
   try{
     var action=drvState.clockedIn?'out':'in';
     var r=await fetch(WORKER+'/driver/clock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:drvState.email,token:drvState.token,action,clockId:drvState.activeClockId})});
@@ -811,7 +831,7 @@ async function drvToggleClock(){
     var ok=await loadDrvData();
     if(ok){ renderEarnings(); renderToday(); }
   }catch(e){ drvToast('Network error','error'); }
-  finally{ btn.disabled=false; }
+  finally{ _clockBusy=false; if(btn) btn.disabled=false; if(pill) pill.style.pointerEvents=''; }
 }
 
 // ── Today tab ──────────────────────────────────────────────────────────────
@@ -863,14 +883,27 @@ function getTodayHours(){
   return total;
 }
 
+// Revenue model: the driver keeps DRIVER_SHARE (35%) of the customer fare;
+// Prestige Black keeps the remaining 65%. Per ride, drivers only ever see
+// their own take — never the gross fare.
+var DRIVER_SHARE = 0.35;
+
+// Gross customer fare for a trip. Prefer the real fare from the booking; fall
+// back to reconstructing it from any legacy owner-set pay so the split math
+// stays consistent (take + PB revenue === fare).
+function calcTripFare(t){
+  var fare=Number(t.fare||0);
+  if(fare>0) return fare;
+  var legacyPay=t.payType==='hourly' ? Number(t.hoursLogged||0)*Number(t.payAmount||0) : Number(t.payAmount||0);
+  return legacyPay>0 ? legacyPay/DRIVER_SHARE : 0;
+}
+// Driver's take — 35% of the customer fare.
 function calcTripPay(t){
-  if(!t.payType) return Number(t.payAmount||0);
-  if(t.payType==='flat') return Number(t.payAmount||0);
-  if(t.payType==='hourly'){
-    var hrs=Number(t.hoursLogged||0);
-    return hrs * Number(t.payAmount||0);
-  }
-  return 0;
+  return calcTripFare(t) * DRIVER_SHARE;
+}
+// Prestige Black's share — the remaining 65%.
+function calcTripPBRevenue(t){
+  return calcTripFare(t) - calcTripPay(t);
 }
 
 // ── Trips tab ──────────────────────────────────────────────────────────────
@@ -891,22 +924,30 @@ function tripCard(t, highlight){
   var badgeCls=isPast?'badge-completed':isToday?'badge-active':'badge-upcoming';
   var badgeLabel=isPast?'Completed':isToday?'Today':'Upcoming';
   var pay=calcTripPay(t);
-  var payLabel=t.payType==='hourly'
-    ? fmt$(t.payAmount||0)+'/hr × '+(t.hoursLogged||0)+'h = '+fmt$(pay)
-    : fmt$(pay)+' (flat)';
+  var hasFare=Number(t.fare||0)>0;
+  var payLabel=hasFare
+    ? fmt$(pay)+' <span style="font-size:11px;color:var(--muted);font-weight:600;">· your take (35%)</span>'
+    : (t.payType==='hourly'
+        ? fmt$(t.payAmount||0)+'/hr × '+(t.hoursLogged||0)+'h = '+fmt$(pay)
+        : fmt$(pay)+' (flat)');
   var stars=t.ownerRating?'★'.repeat(Math.round(t.ownerRating))+'☆'.repeat(5-Math.round(t.ownerRating)):'';
+  var isRide=t.source==='ride';
+  var srcChip=isRide?'<span class="trip-badge" style="background:rgba(201,169,98,.14);color:var(--gold);border:1px solid rgba(201,169,98,.3);margin-right:6px;">Ride-hail</span>':'';
+  var riderStars=isRide&&t.riderRating?'★'.repeat(Math.round(t.riderRating))+'☆'.repeat(5-Math.round(t.riderRating)):'';
 
   return '<div class="trip-card '+(isToday&&highlight?'active-trip':!isPast?'upcoming-trip':'')+'">'
     +'<div class="trip-header">'
     +'<div><div class="trip-vehicle">'+esc(t.vehicle||'Vehicle TBD')+'</div><div class="trip-date">'+fmtDate(date)+(t.pickupTime?' · '+fmtTime(t.pickupTime):'')+'</div></div>'
-    +'<span class="trip-badge '+badgeCls+'">'+badgeLabel+'</span>'
+    +'<div>'+srcChip+'<span class="trip-badge '+badgeCls+'">'+badgeLabel+'</span></div>'
     +'</div>'
     +(t.clientName?'<div class="trip-row"><span class="trip-label">Client</span><span class="trip-val">'+esc(t.clientName)+(t.clientPhone?' · <a href="tel:'+esc(t.clientPhone)+'" style="color:var(--blue)">'+esc(t.clientPhone)+'</a>':'')+'</span></div>':'')
     +(t.pickupAddress?'<div class="trip-row"><span class="trip-label">Pickup</span><span class="trip-val">'+esc(t.pickupAddress)+'</span></div>':'')
     +(t.dropoffAddress?'<div class="trip-row"><span class="trip-label">Dropoff</span><span class="trip-val">'+esc(t.dropoffAddress)+'</span></div>':'')
-    +'<div class="trip-row"><span class="trip-label">Pay</span><span class="trip-val" style="color:var(--green);font-weight:700;">'+payLabel+'</span></div>'
+    +'<div class="trip-row"><span class="trip-label">Your Take</span><span class="trip-val" style="color:var(--green);font-weight:700;">'+payLabel+'</span></div>'
     +(t.notes?'<div class="trip-row"><span class="trip-label">Notes</span><span class="trip-val" style="color:var(--muted);font-style:italic;">'+esc(t.notes)+'</span></div>':'')
     +(stars?'<div class="trip-row"><span class="trip-label">Rating</span><span class="trip-val" style="color:var(--gold);">'+stars+'</span></div>':'')
+    +(riderStars?'<div class="trip-row"><span class="trip-label">Rider Rating</span><span class="trip-val" style="color:var(--gold);">'+riderStars+'</span></div>':'')
+    +(isRide&&t.riderReview?'<div class="trip-row"><span class="trip-label">Review</span><span class="trip-val" style="color:var(--muted);font-style:italic;">“'+esc(t.riderReview)+'”</span></div>':'')
     +'<div class="trip-actions">'
     +(!isPast?'<button class="btn btn-sm" onclick="drvSwitchTab(\'inspect\');setInspTrip(\''+esc(t.bookingId)+'\')">🔍 Inspect</button>':'')
     +(!isPast&&t.pickupAddress?'<a href="https://maps.apple.com/?daddr='+encodeURIComponent(t.pickupAddress)+'&dirflg=d" target="_blank" rel="noopener" class="btn btn-sm" style="background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3);text-decoration:none;display:inline-flex;align-items:center;">🗺️ Navigate</a>':'')
@@ -1031,20 +1072,32 @@ function renderEarnings(){
   var totalTrips=drvState.trips.length;
   var thisMonth=new Date().toISOString().slice(0,7);
   var monthPay=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'').startsWith(thisMonth); }).reduce(function(a,t){ return a+calcTripPay(t); },0);
+  // All-time revenue split: driver keeps 35%, Prestige Black keeps 65%.
+  var grossAll=drvState.trips.reduce(function(a,t){ return a+calcTripFare(t); },0);
+  var pbAll=drvState.trips.reduce(function(a,t){ return a+calcTripPBRevenue(t); },0);
 
   $d('earnings-summary').innerHTML=
     '<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;">'
-    +'<div class="card-title">Total Earnings</div>'
+    +'<div class="card-title">Your Earnings <span style="color:var(--muted);font-weight:700;">· 35% take</span></div>'
     +'</div>'
     +'<div class="earn-total">'+fmt$(totalPay)+'</div>'
-    +'<div style="font-size:12px;color:var(--muted);margin-top:4px;">'+totalTrips+' trip'+(totalTrips!==1?'s':'')+' · This month: <span style="color:var(--green);font-weight:700;">'+fmt$(monthPay)+'</span></div>';
+    +'<div style="font-size:12px;color:var(--muted);margin-top:4px;">'+totalTrips+' trip'+(totalTrips!==1?'s':'')+' · This month: <span style="color:var(--green);font-weight:700;">'+fmt$(monthPay)+'</span></div>'
+    +'<div class="rev-split">'
+    +'<div class="rev-split-title">Revenue Split</div>'
+    +(grossAll>0
+      ?'<div class="rev-bar"><div class="rev-bar-driver" style="width:35%;">35%</div><div class="rev-bar-pb" style="width:65%;">65%</div></div>'
+      :'')
+    +'<div class="rev-row"><span><span class="rev-dot rev-dot-driver"></span>Your take (35%)</span><span style="color:var(--green);font-weight:800;">'+fmt$(totalPay)+'</span></div>'
+    +'<div class="rev-row"><span><span class="rev-dot rev-dot-pb"></span>Prestige Black (65%)</span><span style="color:var(--gold);font-weight:800;">'+fmt$(pbAll)+'</span></div>'
+    +'<div class="rev-row rev-row-total"><span>Gross fares</span><span style="font-weight:800;">'+fmt$(grossAll)+'</span></div>'
+    +'</div>';
 
   var sorted=drvState.trips.slice().sort(function(a,b){ return (b.pickupDate||b.date||'').localeCompare(a.pickupDate||a.date||''); });
   $d('earnings-list').innerHTML=sorted.length?sorted.map(function(t){
     var pay=calcTripPay(t);
-    var desc=t.payType==='hourly'
-      ? (t.hoursLogged||0)+'h × '+fmt$(t.payAmount||0)+'/hr'
-      : 'Flat rate';
+    var desc=Number(t.fare||0)>0
+      ? 'Your take · 35%'
+      : (t.payType==='hourly' ? (t.hoursLogged||0)+'h × '+fmt$(t.payAmount||0)+'/hr' : 'Flat rate');
     return '<div class="earn-row">'
       +'<div><div style="font-weight:600;font-size:13px;">'+esc(t.vehicle||'Trip')+'</div>'
       +'<div style="font-size:11px;color:var(--muted);">'+fmtDate(t.pickupDate||t.date)+' · '+desc+'</div></div>'
@@ -1054,24 +1107,57 @@ function renderEarnings(){
 }
 
 // ── Reports / Incidents ────────────────────────────────────────────────────
+function drvStars(n){ n=Math.round(n||0); return '★'.repeat(n)+'☆'.repeat(Math.max(0,5-n)); }
+function drvReviewDate(v){
+  if(!v) return '';
+  var d=new Date(v); if(isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
 function renderReports(){
-  // Performance
+  // ── Rider rating (from /driver/data: profile.ratingAvg/ratingCount + reviews[]) ──
+  var rAvg=Number(drvState.profile&&drvState.profile.ratingAvg||0);
+  var rCount=Number(drvState.profile&&drvState.profile.ratingCount||0);
+  var reviews=(drvState.reviews||[]).slice();
+  var riderHtml='<div class="card-title">Rider Rating</div>';
+  if(rCount>0){
+    riderHtml+='<div class="perf-avg">'+rAvg.toFixed(1)+' <span style="font-size:18px;color:var(--gold);">★</span></div>'
+      +'<div class="rating-stars" style="color:var(--gold);margin-top:4px;">'+drvStars(rAvg)+'</div>'
+      +'<div style="font-size:12px;color:var(--muted);margin-top:8px;">'+rCount+' rider review'+(rCount!==1?'s':'')+'</div>';
+    if(reviews.length){
+      riderHtml+='<div style="margin-top:14px;">'+reviews.slice(0,10).map(function(rv){
+        return '<div style="padding:8px 0;border-bottom:1px solid var(--border);">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'
+          +'<span style="color:var(--gold);font-size:13px;letter-spacing:1px;">'+drvStars(rv.rating)+'</span>'
+          +'<span style="font-size:11px;color:var(--muted);">'+esc(drvReviewDate(rv.createdAt))+'</span></div>'
+          +(rv.notes?'<div style="font-size:13px;color:var(--text2);line-height:1.4;margin-top:4px;">“'+esc(rv.notes)+'”</div>':'')
+          +(rv.riderFirstName?'<div style="font-size:11px;color:var(--muted);margin-top:3px;">— '+esc(rv.riderFirstName)+'</div>':'')
+          +'</div>';
+      }).join('')+'</div>';
+    }
+  } else {
+    riderHtml+='<div style="color:var(--muted);font-size:13px;">No rider reviews yet. Keep delivering great service!</div>';
+  }
+
+  // ── Owner rating (internal quality ratings on individual trips) ──
   var rated=drvState.trips.filter(function(t){ return t.ownerRating>0; });
   var avg=rated.length?rated.reduce(function(a,t){ return a+t.ownerRating; },0)/rated.length:0;
-  $d('reports-perf').innerHTML=
-    '<div class="card-title">Performance</div>'
+  var ownerHtml='<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);">'
+    +'<div class="card-title" style="font-size:13px;color:var(--muted);">Management Review</div>'
     +(rated.length
-      ?'<div class="perf-avg">'+avg.toFixed(1)+'</div>'
-       +'<div class="rating-stars" style="color:var(--gold);margin-top:4px;">'+'★'.repeat(Math.round(avg))+'☆'.repeat(5-Math.round(avg))+'</div>'
-       +'<div style="font-size:12px;color:var(--muted);margin-top:8px;">Based on '+rated.length+' rated trip'+(rated.length!==1?'s':'')+'</div>'
-       +'<div style="margin-top:12px;">'+rated.map(function(t){
+      ?'<div style="font-size:24px;font-weight:900;color:var(--gold);margin-top:2px;">'+avg.toFixed(1)+'</div>'
+       +'<div class="rating-stars" style="color:var(--gold);font-size:16px;margin-top:2px;">'+drvStars(avg)+'</div>'
+       +'<div style="font-size:12px;color:var(--muted);margin-top:6px;">Based on '+rated.length+' rated trip'+(rated.length!==1?'s':'')+'</div>'
+       +'<div style="margin-top:10px;">'+rated.map(function(t){
            return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">'
              +'<span>'+esc(t.vehicle||'Trip')+' · '+fmtDate(t.pickupDate||t.date)+'</span>'
              +'<span style="color:var(--gold);">'+'★'.repeat(Math.round(t.ownerRating))+'</span>'
              +'</div>';
          }).join('')+'</div>'
-      :'<div style="color:var(--muted);font-size:13px;">No ratings yet. Keep delivering great service!</div>'
-    );
+      :'<div style="color:var(--muted);font-size:13px;">No management ratings yet.</div>'
+    )
+    +'</div>';
+
+  $d('reports-perf').innerHTML=riderHtml+ownerHtml;
 
   // Incidents
   $d('reports-incidents').innerHTML=drvState.incidents.length
@@ -1189,7 +1275,9 @@ function initRidesMap(){
 }
 
 // ── Duty toggle ──────────────────────────────────────────────────────────
-function toggleDuty(){ setDuty(!_onDuty); }
+// Duty and the time clock are unified: tapping the On-Duty pill clocks the
+// driver in/out, and clocking in/out flips the pill (see drvToggleClock).
+function toggleDuty(){ drvToggleClock(); }
 
 // Idempotent duty setter — safe to call from the toggle pill or from clock in/out.
 function setDuty(on){

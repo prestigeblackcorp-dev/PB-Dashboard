@@ -1152,7 +1152,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
       <span id="syncDot" style="color:var(--muted)">●</span> Sync
     </button>
     <button class="btn btn-sm" id="forcePullBtn" onclick="forcePull()" title="Pull latest data from cloud now" style="display:none;border-color:#3b82f6;color:#3b82f6">↓ Pull</button>
-    <button class="btn btn-sm" id="gcalBtn" onclick="connectGCal()" title="Connect Google Calendar">🗓 Calendar</button>
+    <button class="btn btn-sm" id="gcalBtn" onclick="connectGCal()" title="Connect Google Calendar" style="background:var(--red);border-color:var(--red);color:#fff">📅</button>
     <button class="btn btn-sm" id="gcalSyncBtn" onclick="syncAllToGCal()" title="Push all bookings to Google Calendar" style="display:none">↑ Cal Sync</button>
     <button class="btn btn-sm" onclick="lockApp()" title="Lock dashboard">🔒 Lock</button>
   </div>
@@ -1589,6 +1589,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     <div id="openClaimsSection" style="margin-bottom:16px"></div>
     <div id="kpiPillBar" style="margin-bottom:10px"></div>
     <div class="kpi-grid" id="kpiGrid"></div>
+    <div id="chauffeurEconSection" style="margin-bottom:16px"></div>
     <div class="budget-section" id="budgetSection"></div>
     <div class="charts-row">
       <div class="chart-card span2"><div class="chart-ttl">Monthly Revenue vs Est. Cost</div><canvas id="chartMonthly"></canvas></div>
@@ -3380,8 +3381,13 @@ var ALL_VEHICLES = Object.keys(VEHICLE_COSTS);
 //     Authorized JS origins: add the URL you open this file from
 //     (e.g. http://localhost or file://)
 //  4. Copy the Client ID and paste it below
+//
+//  >>> OWNER: paste your Google Cloud OAuth *Web* client ID here. <<<
+//  Leave it as '' to keep the calendar button disabled (it will stay RED).
 // ════════════════════════════════════════════════════════
-var GOOGLE_CLIENT_ID = '860890078603-3av9botn8r4lltj7cb7452s358npdo88.apps.googleusercontent.com';
+var GOOGLE_CALENDAR_CLIENT_ID = '860890078603-3av9botn8r4lltj7cb7452s358npdo88.apps.googleusercontent.com';
+// Backward-compatible alias used throughout the calendar code below.
+var GOOGLE_CLIENT_ID = GOOGLE_CALENDAR_CLIENT_ID;
 
 var gcalTokenClient  = null;
 var gcalAccessToken  = null;
@@ -5397,10 +5403,13 @@ function initGCal(){
 // Fallback: if Google script loads before onload fires, retry after a short delay
 setTimeout(function(){ if(!gcalTokenClient) initGCal(); }, 1500);
 setTimeout(function(){ if(!gcalTokenClient) initGCal(); }, 4000);
+// Reflect connected/disconnected (green/red) immediately on load, even if the
+// Google Identity script is slow or unavailable.
+updateGCalUI();
 
 function connectGCal(){
-  if(!GOOGLE_CLIENT_ID){
-    alert('Setup required:\n\n1. Go to console.cloud.google.com\n2. Create a project & enable "Google Calendar API"\n3. Create an OAuth 2.0 Web Client ID\n4. Paste the Client ID into the GOOGLE_CLIENT_ID variable at the top of the dashboard script.\n\nSee the comments in the file for step-by-step instructions.');
+  if(!GOOGLE_CALENDAR_CLIENT_ID){
+    alert('Google Calendar isn’t set up yet.\n\n1. Go to console.cloud.google.com\n2. Create a project & enable "Google Calendar API"\n3. APIs & Services → Credentials → create an OAuth 2.0 *Web* client ID\n   (add this dashboard’s URL under Authorized JavaScript origins)\n4. Paste the Client ID into the GOOGLE_CALENDAR_CLIENT_ID variable near the top of the dashboard script.\n\nThe 📅 button stays RED until a valid Client ID is set.');
     return;
   }
   if(gcalAccessToken){ disconnectGCal(); return; }
@@ -5419,17 +5428,19 @@ function updateGCalUI(){
   var btn     = $d('gcalBtn');
   var syncBtn = $d('gcalSyncBtn');
   if(!btn) return;
+  // F6: the 📅 button background is GREEN when connected, RED when not.
+  btn.textContent = '📅';
   if(gcalAccessToken){
-    btn.textContent        = '🗓 Calendar: Connected';
-    btn.style.background   = 'rgba(124,252,152,.15)';
-    btn.style.borderColor  = 'rgba(124,252,152,.5)';
-    btn.style.color        = '#7CFC98';
+    btn.style.background   = 'var(--green)';
+    btn.style.borderColor  = 'var(--green)';
+    btn.style.color        = '#062a12';
+    btn.title              = 'Google Calendar connected — click to disconnect';
     if(syncBtn) syncBtn.style.display = '';
   } else {
-    btn.textContent        = '🗓 Connect Calendar';
-    btn.style.background   = '';
-    btn.style.borderColor  = '';
-    btn.style.color        = '';
+    btn.style.background   = 'var(--red)';
+    btn.style.borderColor  = 'var(--red)';
+    btn.style.color        = '#fff';
+    btn.title              = GOOGLE_CALENDAR_CLIENT_ID ? 'Connect Google Calendar' : 'Google Calendar not configured — click for setup';
     if(syncBtn) syncBtn.style.display = 'none';
   }
 }
@@ -6167,9 +6178,14 @@ function renderKPIs(filtered, containerId){
   // Chauffeur ride fares completed in this window (gross-to-PBR; no separate cost tracked here)
   var rideRev   = (containerId==='kpiGrid' && typeof _rideRevForPeriod==='function') ? _rideRevForPeriod() : 0;
   var rideCount = (containerId==='kpiGrid' && typeof _rideCountForPeriod==='function') ? _rideCountForPeriod() : 0;
+  // Chauffeur ride fares split: drivers keep 35%, Prestige Black keeps 65%.
+  // The driver payout is a real cost, so it's deducted in profit below.
+  var CH_DRIVER_SHARE = 0.35;
+  var driverPayouts = rideRev * CH_DRIVER_SHARE;
+  var pbRideNet     = rideRev - driverPayouts;
 
   var revenue   = bookingRev + otherIncome + rideRev;
-  var totalCost = bookingCost + loggedExp;
+  var totalCost = bookingCost + loggedExp + driverPayouts;
   var profit    = revenue - totalCost;
   var margin    = revenue>0 ? profit/revenue*100 : 0;
 
@@ -6236,7 +6252,9 @@ function renderKPIs(filtered, containerId){
   ];
   // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
-    cards.push({label:'🚘 Chauffeur Ride Revenue', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' · included in revenue above', cls:''});
+    cards.push({label:'🚘 Chauffeur Gross Fares', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' · before driver split', cls:''});
+    cards.push({label:'🧑‍✈️ Driver Payouts (35%)', val:$$(driverPayouts), sub:'Paid to chauffeurs · deducted as cost', cls:'red'});
+    cards.push({label:'◆ PB Ride Net (65%)', val:$$(pbRideNet), sub:'Prestige Black share of ride fares', cls:'green'});
     cards.push({label:'⚠ Uncollected Deposits', val:uncollected, sub:'Confirmed/pending, $0 deposit', cls: uncollected>0?'red':''});
     var remainBalSum = active.reduce(function(s,b){ return s+getRemainingBalance(b); },0);
     cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'red':'green'});
@@ -6247,6 +6265,27 @@ function renderKPIs(filtered, containerId){
     var fs=vl>=13?'font-size:12px':vl>=12?'font-size:13px':vl>=11?'font-size:15px':vl>=10?'font-size:17px':vl>=9?'font-size:19px':vl>=8?'font-size:22px':vl>=7?'font-size:25px':'';
     return '<div class="kpi '+k.cls+'"><div class="kpi-label">'+k.label+'</div><div class="kpi-val"'+(fs?' style="'+fs+'"':'')+'>'+k.val+'</div><div class="kpi-sub">'+k.sub+'</div></div>';
   }).join('');
+
+  // ── Chauffeur economics subsection (overview only): driver pay vs PB net ──
+  if(containerId==='kpiGrid'){
+    var _ce=$d('chauffeurEconSection');
+    if(_ce){
+      _ce.innerHTML = rideRev>0
+        ? '<div class="chart-card" style="padding:18px 20px">'
+            +'<div class="chart-ttl" style="margin-bottom:14px">Chauffeur Economics · Driver Pay vs Prestige Black</div>'
+            +'<div style="display:flex;height:18px;border-radius:9px;overflow:hidden;margin-bottom:16px;font-size:10px;font-weight:800;line-height:18px;color:#0a0a0a">'
+              +'<div style="width:35%;background:var(--red);text-align:center">35% DRIVER</div>'
+              +'<div style="width:65%;background:var(--gold);text-align:center">65% PRESTIGE BLACK</div>'
+            +'</div>'
+            +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">'
+              +'<div style="background:var(--card2);border-radius:14px;padding:14px 16px"><div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:6px">GROSS RIDE FARES</div><div style="font-size:21px;font-weight:900;color:var(--text)">'+$$(rideRev)+'</div><div style="font-size:11px;color:var(--muted);margin-top:5px">'+rideCount+' completed ride'+(rideCount!==1?'s':'')+'</div></div>'
+              +'<div style="background:var(--card2);border-radius:14px;padding:14px 16px"><div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:6px">DRIVER PAYOUTS · 35%</div><div style="font-size:21px;font-weight:900;color:var(--red)">'+$$(driverPayouts)+'</div><div style="font-size:11px;color:var(--muted);margin-top:5px">Paid to chauffeurs</div></div>'
+              +'<div style="background:var(--card2);border-radius:14px;padding:14px 16px"><div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:6px">PRESTIGE BLACK · 65%</div><div style="font-size:21px;font-weight:900;color:var(--gold)">'+$$(pbRideNet)+'</div><div style="font-size:11px;color:var(--muted);margin-top:5px">Net ride revenue</div></div>'
+            +'</div>'
+          +'</div>'
+        : '';
+    }
+  }
 }
 
 // ════════════════════════════════════════════════════════
