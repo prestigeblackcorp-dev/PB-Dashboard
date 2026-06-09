@@ -57,7 +57,7 @@
   .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text-muted);font-weight:400;}
 
   /* ── App ─────────────────────────────────────────────────────────────── */
-  #app-screen{display:none;flex-direction:column;height:100vh;overflow:hidden;}
+  #app-screen{display:none;flex-direction:column;height:100dvh;overflow:hidden;}
   .tab-bar{
     display:flex;overflow-x:auto;background:var(--surface);border-bottom:1px solid var(--border);
     -webkit-overflow-scrolling:touch;scrollbar-width:none;flex-shrink:0;
@@ -69,7 +69,7 @@
     transition:color .15s;
   }
   .tab-item.active{color:var(--gold);border-bottom-color:var(--gold);}
-  .tab-content{flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch;}
+  .tab-content{flex:1;overflow-y:auto;padding:16px;overscroll-behavior-y:contain;}
   .tab-pane{display:none;}
   .tab-pane.active{display:block;}
 
@@ -242,7 +242,19 @@
   </div>
   <div class="tab-content">
     <div class="tab-pane active" id="tab-bookings"><div id="trip-countdown"></div><div id="bookings-list"></div></div>
-    <div class="tab-pane" id="tab-fleet"><div id="fleet-list"></div></div>
+    <div class="tab-pane" id="tab-fleet">
+      <div id="fleet-date-bar" style="display:flex;gap:8px;margin-bottom:14px;align-items:flex-end;flex-wrap:wrap;">
+        <div style="flex:1;min-width:120px;">
+          <label style="font-size:10px;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:4px;">Pickup Date</label>
+          <input type="date" id="fleet-pickup" style="width:100%;font-size:13px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);box-sizing:border-box;" oninput="_onFleetDateChange()">
+        </div>
+        <div style="flex:1;min-width:120px;">
+          <label style="font-size:10px;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:4px;">Return Date</label>
+          <input type="date" id="fleet-dropoff" style="width:100%;font-size:13px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);box-sizing:border-box;" oninput="_onFleetDateChange()">
+        </div>
+      </div>
+      <div id="fleet-list"></div>
+    </div>
     <div class="tab-pane" id="tab-saved"><div id="saved-list"></div></div>
     <div class="tab-pane" id="tab-insurance">
       <div id="insurance-display"></div>
@@ -1697,9 +1709,34 @@ var VEHICLE_RATES = {
   "BMW 7 Series":       { rate:125,  deposit:0,    type:'chauffeur', img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_5982.png?v=1779149140&width=600',                             desc:'Chevrolet Suburban · Black — Per hour' },
 };
 
+/* availability map keyed by vehicle name: true=available, false=booked, null=unknown */
+var _fleetAvail = {};
+
+async function _onFleetDateChange(){
+  const pickup = document.getElementById('fleet-pickup')?.value;
+  const dropoff = document.getElementById('fleet-dropoff')?.value;
+  if(!pickup || !dropoff || pickup >= dropoff) return;
+  // reset and re-render with loading state
+  _fleetAvail = {};
+  renderFleet();
+  // check all vehicles in parallel
+  const names = Object.keys(VEHICLE_RATES);
+  await Promise.all(names.map(async name => {
+    try{
+      const r = await fetch(`${WORKER}/available?vehicle=${encodeURIComponent(name)}&pickup=${pickup}&dropoff=${dropoff}`);
+      const d = await r.json();
+      _fleetAvail[name] = d.available !== false;
+    } catch(e){ _fleetAvail[name] = null; }
+  }));
+  renderFleet();
+}
+
 function renderFleet(){
   const el = document.getElementById('fleet-list');
   if(!el) return;
+  const pickup = document.getElementById('fleet-pickup')?.value;
+  const dropoff = document.getElementById('fleet-dropoff')?.value;
+  const datesEntered = !!(pickup && dropoff && pickup < dropoff);
   const rental = Object.entries(VEHICLE_RATES).filter(([,v])=>v.type==='rental');
   const chauffeur = Object.entries(VEHICLE_RATES).filter(([,v])=>v.type==='chauffeur');
   const saved = (state.savedVehicles||[]).map(v=>(v.name||v));
@@ -1711,6 +1748,12 @@ function renderFleet(){
     const imgHtml = v.img
       ? `<div style="width:100%;aspect-ratio:16/10;border-radius:10px;overflow:hidden;margin-bottom:10px;background:#111;"><img src="${v.img}" alt="${esc(name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block;"></div>`
       : `<div style="width:100%;aspect-ratio:16/10;border-radius:10px;margin-bottom:10px;background:linear-gradient(135deg,rgba(201,169,98,.18),rgba(0,0,0,.6));"></div>`;
+    // Show waitlist only when dates are entered AND vehicle is confirmed unavailable
+    const avail = _fleetAvail[name];
+    const isBooked = datesEntered && avail === false;
+    const waitlistBtn = isBooked
+      ? `<button onclick="_showWaitlistForm('${name}')" style="width:100%;margin-top:8px;padding:7px;background:transparent;border:1px dashed rgba(201,169,98,.4);border-radius:8px;font-size:11px;color:var(--gold-dim);cursor:pointer;font-weight:600;">Join Waitlist for Your Dates</button>`
+      : '';
     return `<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;position:relative;">
       ${imgHtml}
       <div style="font-weight:800;font-size:14px;color:var(--text)">${name}</div>
@@ -1718,16 +1761,17 @@ function renderFleet(){
       ${milesLine}
       <div style="font-size:16px;font-weight:900;color:var(--gold);margin-top:8px">${rate}</div>
       ${v.deposit?`<div style="font-size:11px;color:var(--text-muted)">$${v.deposit} deposit</div>`:''}
+      ${datesEntered && avail === false ? `<div style="font-size:10px;font-weight:700;color:#ef4444;margin-top:4px;text-transform:uppercase;letter-spacing:.04em">Unavailable for selected dates</div>` : ''}
       <div style="display:flex;gap:6px;margin-top:10px;">
         <button onclick="_fleetBook('${name}')" style="flex:1;padding:8px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">Book</button>
         <button onclick="_fleetSave('${name}','${v.emoji}')" style="padding:8px 10px;background:transparent;border:1px solid var(--border);border-radius:8px;font-size:14px;cursor:pointer;color:${isSaved?'#ef4444':'var(--text-muted)'}" title="${isSaved?'Remove from saved':'Save vehicle'}">${isSaved?'❤️':'🤍'}</button>
       </div>
-      <button onclick="_showWaitlistForm('${name}')" style="width:100%;margin-top:8px;padding:7px;background:transparent;border:1px dashed rgba(201,169,98,.4);border-radius:8px;font-size:11px;color:var(--gold-dim);cursor:pointer;font-weight:600;">Join Waitlist for Your Dates</button>
+      ${waitlistBtn}
       <div id="wl-form-${name.replace(/\s+/g,'_')}" style="display:none;margin-top:8px;padding:10px;background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.2);border-radius:10px;">
         <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Waitlist — ${esc(name)}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
-          <div><label class="field-label">Pickup Date</label><input type="date" id="wl-pickup-${name.replace(/\s+/g,'_')}" style="font-size:13px;padding:8px 10px;"></div>
-          <div><label class="field-label">Return Date</label><input type="date" id="wl-dropoff-${name.replace(/\s+/g,'_')}" style="font-size:13px;padding:8px 10px;"></div>
+          <div><label class="field-label">Pickup Date</label><input type="date" id="wl-pickup-${name.replace(/\s+/g,'_')}" value="${pickup||''}" style="font-size:13px;padding:8px 10px;"></div>
+          <div><label class="field-label">Return Date</label><input type="date" id="wl-dropoff-${name.replace(/\s+/g,'_')}" value="${dropoff||''}" style="font-size:13px;padding:8px 10px;"></div>
         </div>
         <div style="margin-bottom:8px;"><label class="field-label">Notes (optional)</label><input type="text" id="wl-notes-${name.replace(/\s+/g,'_')}" placeholder="Any details..." style="font-size:13px;padding:8px 10px;"></div>
         <div style="display:flex;gap:6px;">
