@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>PB Fleet Ops — Driver Portal</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#080b10;--surface:#111520;--card:#161c28;--border:#1f2840;
+  --blue:#3b82f6;--blue-dim:#1d4ed8;--green:#22c55e;--red:#ef4444;--gold:#C9A962;--yellow:#eab308;
+  --text:#f0f4ff;--muted:#6b7a9a;--text2:#b0bcd8;
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;overflow-x:hidden;}
+
+/* ── Auth ─────────────────────────────────────────────────────────────── */
+#auth-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px;background:radial-gradient(ellipse at 50% 0%,rgba(59,130,246,.12) 0%,transparent 70%);}
+.auth-logo{font-size:13px;font-weight:900;color:var(--blue);letter-spacing:.25em;text-transform:uppercase;margin-bottom:4px;}
+.auth-sub{font-size:11px;color:var(--muted);margin-bottom:40px;letter-spacing:.04em;}
+.auth-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:28px 24px;width:100%;max-width:380px;}
+.auth-title{font-size:17px;font-weight:700;margin-bottom:6px;}
+.auth-desc{font-size:13px;color:var(--muted);margin-bottom:20px;}
+.field-label{font-size:12px;color:var(--muted);margin-bottom:6px;display:block;font-weight:600;letter-spacing:.02em;}
+input[type=email],input[type=text],input[type=number],select,textarea{
+  background:#0d1117;border:1px solid var(--border);border-radius:10px;color:var(--text);
+  font-size:15px;padding:12px 14px;width:100%;outline:none;-webkit-appearance:none;appearance:none;
+  font-family:inherit;
+}
+input:focus,select:focus,textarea:focus{border-color:var(--blue);}
+textarea{resize:vertical;min-height:80px;}
+.btn{background:var(--blue);border:none;border-radius:10px;color:#fff;cursor:pointer;
+  font-size:15px;font-weight:700;padding:14px;width:100%;margin-top:16px;letter-spacing:.3px;transition:opacity .15s;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn:not(:disabled):active{opacity:.7;}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted);font-weight:500;}
+.btn-sm{padding:8px 14px;font-size:13px;width:auto;margin-top:0;border-radius:8px;}
+.btn-green{background:var(--green);}
+.btn-red{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3);}
+.btn-gold{background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;}
+
+/* OTP boxes */
+.otp-wrap{position:relative;margin-bottom:4px;}
+.otp-hidden{position:absolute;inset:0;opacity:0;width:100%;height:100%;font-size:1px;z-index:2;cursor:text;caret-color:transparent;}
+.otp-row{display:flex;gap:8px;justify-content:center;pointer-events:none;}
+.otp-box{background:#0d1117;border:2px solid var(--border);border-radius:10px;color:var(--text);
+  font-size:22px;font-weight:700;text-align:center;width:46px;height:56px;
+  display:flex;align-items:center;justify-content:center;transition:border-color .15s;flex-shrink:0;}
+.otp-box.active{border-color:var(--blue);}
+.otp-box.filled{border-color:rgba(59,130,246,.5);}
+
+/* ── App ──────────────────────────────────────────────────────────────── */
+#app-screen{display:none;flex-direction:column;position:fixed;inset:0;}
+.app-header{background:rgba(8,11,16,.95);border-bottom:1px solid var(--border);padding:12px 16px;padding-top:max(12px,env(safe-area-inset-top));display:flex;align-items:center;gap:10px;flex-shrink:0;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);}
+.app-logo{font-size:11px;font-weight:900;color:var(--blue);letter-spacing:.2em;text-transform:uppercase;}
+.driver-name{font-size:13px;font-weight:700;color:var(--text);margin-left:auto;}
+.driver-badge{font-size:10px;font-weight:700;color:var(--blue);background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:2px 8px;letter-spacing:.04em;margin-left:6px;}
+.clock-status{font-size:10px;font-weight:700;border-radius:20px;padding:2px 8px;margin-left:6px;}
+.clock-status.in{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.25);}
+.clock-status.out{background:rgba(107,122,154,.12);color:var(--muted);border:1px solid var(--border);}
+
+/* Tab bar */
+.tab-bar{display:flex;border-bottom:1px solid var(--border);background:rgba(8,11,16,.95);flex-shrink:0;overflow-x:auto;scrollbar-width:none;}
+.tab-bar::-webkit-scrollbar{display:none;}
+.tab-btn{flex:1;min-width:64px;padding:10px 4px 8px;text-align:center;border:none;background:transparent;color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.04em;cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;white-space:nowrap;}
+.tab-btn.active{color:var(--blue);border-bottom-color:var(--blue);}
+.tab-icon{font-size:18px;display:block;margin-bottom:2px;}
+
+/* Tab content */
+.tab-content{flex:1;min-height:0;overflow-y:auto;padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;}
+.tab-pane{display:none;}
+.tab-pane.active{display:block;}
+
+/* Cards */
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px;}
+.card-title{font-size:12px;font-weight:800;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;}
+.section-label{font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin:16px 0 8px;}
+
+/* Trip card */
+.trip-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:10px;transition:border-color .15s;}
+.trip-card.active-trip{border-color:rgba(34,197,94,.4);background:rgba(34,197,94,.04);}
+.trip-card.upcoming-trip{border-color:rgba(59,130,246,.3);}
+.trip-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;}
+.trip-vehicle{font-size:15px;font-weight:800;color:var(--text);}
+.trip-date{font-size:11px;color:var(--muted);margin-top:2px;}
+.trip-badge{font-size:10px;font-weight:700;border-radius:20px;padding:3px 9px;flex-shrink:0;}
+.badge-active{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3);}
+.badge-upcoming{background:rgba(59,130,246,.12);color:var(--blue);border:1px solid rgba(59,130,246,.25);}
+.badge-completed{background:rgba(107,122,154,.12);color:var(--muted);border:1px solid var(--border);}
+.trip-row{display:flex;align-items:flex-start;gap:8px;font-size:13px;margin-bottom:5px;}
+.trip-label{color:var(--muted);font-size:12px;min-width:68px;flex-shrink:0;}
+.trip-val{color:var(--text2);flex:1;font-weight:500;}
+.trip-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
+
+/* Clock card */
+.clock-card{background:linear-gradient(135deg,rgba(59,130,246,.1),rgba(59,130,246,.04));border:1px solid rgba(59,130,246,.25);border-radius:14px;padding:18px;margin-bottom:14px;text-align:center;}
+.clock-time{font-size:36px;font-weight:900;color:var(--blue);letter-spacing:.02em;margin-bottom:4px;font-variant-numeric:tabular-nums;}
+.clock-label{font-size:12px;color:var(--muted);font-weight:600;margin-bottom:14px;}
+
+/* Stats row */
+.stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 10px;text-align:center;}
+.stat-val{font-size:20px;font-weight:900;color:var(--text);}
+.stat-label{font-size:10px;color:var(--muted);font-weight:600;margin-top:3px;letter-spacing:.04em;}
+
+/* Inspect */
+.inspect-photo-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+.photo-slot{background:var(--card);border:1.5px dashed var(--border);border-radius:10px;aspect-ratio:4/3;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;position:relative;transition:border-color .2s;}
+.photo-slot.has-photo{border-style:solid;border-color:rgba(59,130,246,.4);}
+.photo-slot img{width:100%;height:100%;object-fit:cover;}
+.photo-slot-label{font-size:11px;color:var(--muted);font-weight:600;margin-top:6px;}
+.photo-slot-icon{font-size:22px;}
+.photo-badge{position:absolute;top:4px;right:4px;background:var(--blue);color:#fff;font-size:9px;font-weight:800;border-radius:6px;padding:2px 5px;}
+
+/* Earnings */
+.earn-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+.earn-total{font-size:28px;font-weight:900;color:var(--green);}
+.earn-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;}
+.earn-row:last-child{border-bottom:none;}
+
+/* Incident / report */
+.incident-card{background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:12px;padding:14px;margin-bottom:10px;}
+
+/* Performance */
+.rating-stars{font-size:20px;letter-spacing:2px;}
+.perf-avg{font-size:36px;font-weight:900;color:var(--gold);}
+
+/* Loading */
+#drv-loading{position:fixed;inset:0;z-index:9999;background:#080b10;display:flex;align-items:center;justify-content:center;}
+.drv-spinner{width:36px;height:36px;border:3px solid rgba(59,130,246,.2);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.hidden{display:none!important;}
+
+/* Toast */
+#drv-toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(80px);z-index:19999;background:#161c28;color:#fff;border:1px solid rgba(59,130,246,.4);border-radius:12px;padding:11px 22px;font-size:13px;font-weight:600;pointer-events:none;opacity:0;transition:opacity .25s,transform .25s;white-space:nowrap;}
+.drv-err{font-size:12px;color:var(--red);margin-top:8px;display:none;}
+.form-group{margin-bottom:14px;}
+
+/* Empty state */
+.empty-state{text-align:center;padding:40px 16px;color:var(--muted);}
+.empty-icon{font-size:36px;margin-bottom:10px;}
+
+/* Divider accent bar */
+.accent-bar{width:3px;height:18px;background:linear-gradient(180deg,var(--blue),var(--blue-dim));border-radius:2px;flex-shrink:0;}
+.section-header{display:flex;align-items:center;gap:8px;margin-bottom:12px;}
+.section-header-title{font-size:13px;font-weight:800;color:var(--blue);letter-spacing:.02em;}
+</style>
+</head>
+<body>
+
+<div id="drv-loading"><div class="drv-spinner"></div></div>
+<div id="drv-toast"></div>
+
+<!-- ── Auth ─────────────────────────────────────────────────────────────── -->
+<div id="auth-screen" style="display:none;">
+  <div class="auth-logo">Prestige Black</div>
+  <div class="auth-sub">FLEET OPS · DRIVER PORTAL</div>
+
+  <div class="auth-card" id="step-email">
+    <div class="auth-title">Driver Sign In</div>
+    <div class="auth-desc">Enter your registered email address to receive a secure login code.</div>
+    <div class="form-group">
+      <label class="field-label" for="drv-login-email">Email address</label>
+      <input type="email" id="drv-login-email" placeholder="driver@email.com" autocomplete="email" oninput="drvEmailInput()" onkeydown="if(event.key==='Enter')drvRequestOTP()">
+    </div>
+    <div id="drv-email-err" class="drv-err"></div>
+    <button class="btn" id="drv-otp-btn" onclick="drvRequestOTP()" disabled>Send Login Code</button>
+  </div>
+
+  <div class="auth-card" id="step-otp" style="display:none;">
+    <div class="auth-title">Enter your code</div>
+    <div class="auth-desc" id="drv-otp-sent-to">We sent a 6-digit code to your email.</div>
+    <div class="otp-wrap">
+      <input class="otp-hidden" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" id="drv-otp-input" oninput="drvOTPInput(this)" onkeydown="drvOTPKey(event)">
+      <div class="otp-row" id="drv-otp-row">
+        <div class="otp-box active" id="drv-ob0"></div>
+        <div class="otp-box" id="drv-ob1"></div>
+        <div class="otp-box" id="drv-ob2"></div>
+        <div class="otp-box" id="drv-ob3"></div>
+        <div class="otp-box" id="drv-ob4"></div>
+        <div class="otp-box" id="drv-ob5"></div>
+      </div>
+    </div>
+    <div id="drv-otp-err" class="drv-err"></div>
+    <button class="btn" id="drv-verify-btn" onclick="drvVerifyOTP()" disabled>Verify Code</button>
+    <button class="btn btn-ghost" onclick="drvBackToEmail()" style="margin-top:8px;">← Back</button>
+  </div>
+</div>
+
+<!-- ── App ──────────────────────────────────────────────────────────────── -->
+<div id="app-screen">
+  <div class="app-header">
+    <div>
+      <div class="app-logo">Fleet Ops</div>
+    </div>
+    <div style="display:flex;align-items:center;margin-left:auto;gap:4px;flex-wrap:wrap;justify-content:flex-end;">
+      <span class="driver-name" id="hdr-name">—</span>
+      <span class="driver-badge">DRIVER</span>
+      <span class="clock-status out" id="hdr-clock-status">OFF</span>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tab-btn-today" onclick="drvSwitchTab('today')">
+      <span class="tab-icon">🏠</span>TODAY
+    </button>
+    <button class="tab-btn" id="tab-btn-trips" onclick="drvSwitchTab('trips')">
+      <span class="tab-icon">🗂</span>TRIPS
+    </button>
+    <button class="tab-btn" id="tab-btn-inspect" onclick="drvSwitchTab('inspect')">
+      <span class="tab-icon">🔍</span>INSPECT
+    </button>
+    <button class="tab-btn" id="tab-btn-earnings" onclick="drvSwitchTab('earnings')">
+      <span class="tab-icon">💰</span>EARNINGS
+    </button>
+    <button class="tab-btn" id="tab-btn-reports" onclick="drvSwitchTab('reports')">
+      <span class="tab-icon">📋</span>REPORTS
+    </button>
+  </div>
+
+  <div class="tab-content">
+    <!-- TODAY -->
+    <div class="tab-pane active" id="tab-today">
+      <div class="clock-card" id="today-clock-card">
+        <div class="clock-time" id="today-clock-display">--:--</div>
+        <div class="clock-label" id="today-clock-label">Not clocked in</div>
+        <button class="btn btn-sm" id="today-clock-btn" onclick="drvToggleClock()" style="display:inline-flex;width:auto;margin-top:0;">Clock In</button>
+      </div>
+      <div class="stats-row" id="today-stats"></div>
+      <div class="section-header">
+        <div class="accent-bar"></div>
+        <div class="section-header-title">Today's Assignments</div>
+      </div>
+      <div id="today-trips"></div>
+    </div>
+
+    <!-- TRIPS -->
+    <div class="tab-pane" id="tab-trips">
+      <div class="section-header">
+        <div class="accent-bar"></div>
+        <div class="section-header-title">Upcoming Assignments</div>
+      </div>
+      <div id="trips-upcoming"></div>
+      <div class="section-label" style="margin-top:20px;">Past Trips</div>
+      <div id="trips-past"></div>
+    </div>
+
+    <!-- INSPECT -->
+    <div class="tab-pane" id="tab-inspect">
+      <div id="inspect-trip-selector"></div>
+      <div id="inspect-content"></div>
+    </div>
+
+    <!-- EARNINGS -->
+    <div class="tab-pane" id="tab-earnings">
+      <div class="card" id="earnings-summary"></div>
+      <div class="section-label">Trip Breakdown</div>
+      <div id="earnings-list"></div>
+    </div>
+
+    <!-- REPORTS -->
+    <div class="tab-pane" id="tab-reports">
+      <div class="section-header" style="margin-bottom:8px;">
+        <div class="accent-bar" style="background:linear-gradient(180deg,var(--gold),#a8893e);"></div>
+        <div class="section-header-title" style="color:var(--gold);">Performance</div>
+      </div>
+      <div id="reports-perf" class="card" style="margin-bottom:14px;"></div>
+      <div class="section-header">
+        <div class="accent-bar" style="background:linear-gradient(180deg,var(--red),#b91c1c);"></div>
+        <div class="section-header-title" style="color:var(--red);">Incident Reports</div>
+      </div>
+      <button class="btn btn-red btn-sm" onclick="openIncidentForm()" style="margin-bottom:12px;display:inline-flex;font-size:12px;">+ File Incident Report</button>
+      <div id="reports-incidents"></div>
+
+      <!-- Incident form -->
+      <div id="incident-form" style="display:none;" class="card" style="border-color:rgba(239,68,68,.3);">
+        <div class="card-title" style="color:var(--red);">New Incident Report</div>
+        <div class="form-group">
+          <label class="field-label">Related Trip (optional)</label>
+          <select id="inc-trip-sel"><option value="">— None —</option></select>
+        </div>
+        <div class="form-group">
+          <label class="field-label">Incident Type</label>
+          <select id="inc-type">
+            <option value="accident">Vehicle Accident</option>
+            <option value="damage">Vehicle Damage (non-accident)</option>
+            <option value="mechanical">Mechanical Issue</option>
+            <option value="client">Client Issue</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="field-label">Description</label>
+          <textarea id="inc-desc" placeholder="Describe what happened, when, where, and any involved parties…"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="field-label">Photos (tap to add)</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;" id="inc-photo-slots">
+            <div class="photo-slot" style="width:90px;height:68px;" onclick="triggerIncidentPhoto(0)"><span class="photo-slot-icon">📷</span></div>
+            <div class="photo-slot" style="width:90px;height:68px;" onclick="triggerIncidentPhoto(1)"><span class="photo-slot-icon">📷</span></div>
+            <div class="photo-slot" style="width:90px;height:68px;" onclick="triggerIncidentPhoto(2)"><span class="photo-slot-icon">📷</span></div>
+          </div>
+          <input type="file" id="inc-photo-input" accept="image/*" style="display:none;" onchange="handleIncidentPhoto(event)">
+        </div>
+        <div id="inc-err" class="drv-err"></div>
+        <div style="display:flex;gap:8px;margin-top:4px;">
+          <button class="btn btn-sm btn-red" onclick="submitIncident()" style="flex:1;">Submit Report</button>
+          <button class="btn btn-sm btn-ghost" onclick="closeIncidentForm()" style="flex:1;">Cancel</button>
+        </div>
+      </div>
+
+      <button class="btn btn-ghost btn-sm" onclick="drvSignOut()" style="margin-top:24px;width:100%;">Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden photo inputs for inspection -->
+<input type="file" id="insp-photo-input" accept="image/*" capture="environment" style="display:none;" onchange="handleInspectionPhoto(event)">
+
+<script>
+'use strict';
+var WORKER = 'https://pb-booking.prestigeblackcorp.workers.dev';
+
+// ── State ──────────────────────────────────────────────────────────────────
+var _drvEmail = '';
+var _drvToken = '';
+try{ _drvEmail = localStorage.getItem('pb_drv_email')||''; }catch(e){}
+try{ _drvToken = localStorage.getItem('pb_drv_token')||''; }catch(e){}
+
+var drvState = {
+  email: _drvEmail, token: _drvToken,
+  profile: {}, trips: [], clocks: [], incidents: [],
+  clockedIn: false, clockStartMs: 0, activeClockId: null,
+};
+
+// Inspection photos: { pre: {slot: dataUrl}, post: {slot: dataUrl} }
+var _inspPhotos = { pre:{}, post:{} };
+var _inspPhase  = 'pre';  // 'pre' | 'post'
+var _inspTrip   = null;   // booking id for current inspection
+var _inspSlot   = null;   // which photo slot is being filled
+var _incPhotos  = {};     // incident report photos {0,1,2}
+var _incPhotoSlot = null;
+var _clockTimerId = null;
+var _verifyingOTP = false;
+var _activeTab = 'today';
+
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function $d(id){ return document.getElementById(id); }
+function fmt$(n){ return '$'+Number(n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
+function fmtDate(d){ if(!d)return'—'; var o=new Date(d+'T12:00:00Z'); return o.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}); }
+function fmtTime(t){ if(!t)return''; var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'PM':'AM',h12=h%12||12; return h12+':'+(m<10?'0':'')+m+' '+ap; }
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function drvToast(msg, type){
+  var t=$d('drv-toast');
+  t.textContent=msg;
+  t.style.borderColor=type==='error'?'rgba(239,68,68,.4)':type==='success'?'rgba(34,197,94,.4)':'rgba(59,130,246,.4)';
+  t.style.opacity='1'; t.style.transform='translateX(-50%) translateY(0)';
+  clearTimeout(t._timer);
+  t._timer=setTimeout(function(){ t.style.opacity='0'; t.style.transform='translateX(-50%) translateY(80px)'; },3200);
+}
+
+// ── Loading ────────────────────────────────────────────────────────────────
+function hideLoading(){ $d('drv-loading').classList.add('hidden'); }
+function showScreen(id){
+  ['auth-screen','app-screen'].forEach(function(s){ $d(s).style.display='none'; });
+  $d(id).style.display=id==='app-screen'?'flex':'flex';
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+(function(){
+  if(_drvToken && _drvEmail){
+    showScreen('app-screen');
+    loadDrvData().then(function(ok){
+      hideLoading();
+      if(ok){ renderAll(); }
+      else { hideLoading(); }
+    });
+  } else {
+    hideLoading();
+    showScreen('auth-screen');
+  }
+})();
+
+// ── Auth ───────────────────────────────────────────────────────────────────
+function drvEmailInput(){
+  var v=$d('drv-login-email').value.trim();
+  $d('drv-otp-btn').disabled=!v.includes('@');
+}
+
+async function drvRequestOTP(){
+  var email=$d('drv-login-email').value.trim().toLowerCase();
+  var errEl=$d('drv-email-err');
+  if(!email){ errEl.textContent='Email required.'; errEl.style.display='block'; return; }
+  errEl.style.display='none';
+  var btn=$d('drv-otp-btn'); btn.disabled=true; btn.textContent='Sending…';
+  try{
+    var r=await fetch(WORKER+'/driver/request-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    var d=await r.json();
+    if(!r.ok){ errEl.textContent=d.error||'Error sending code.'; errEl.style.display='block'; btn.disabled=false; btn.textContent='Send Login Code'; return; }
+    $d('drv-otp-sent-to').textContent='We sent a 6-digit code to '+email;
+    $d('step-email').style.display='none';
+    $d('step-otp').style.display='block';
+    $d('drv-otp-input').focus();
+    drvState.email=email;
+  }catch(e){ errEl.textContent='Network error.'; errEl.style.display='block'; btn.disabled=false; btn.textContent='Send Login Code'; }
+}
+
+function drvOTPInput(inp){
+  var v=inp.value.replace(/\D/g,'').slice(0,6);
+  inp.value=v;
+  for(var i=0;i<6;i++){
+    var box=$d('drv-ob'+i);
+    box.textContent=v[i]||'';
+    box.className='otp-box'+(i===v.length?' active':i<v.length?' filled':'');
+  }
+  $d('drv-verify-btn').disabled=v.length<6;
+  if(v.length===6 && !_verifyingOTP) drvVerifyOTP();
+}
+function drvOTPKey(e){ if(e.key==='Enter') drvVerifyOTP(); }
+
+async function drvVerifyOTP(){
+  if(_verifyingOTP) return;
+  var otp=$d('drv-otp-input').value.replace(/\D/g,'');
+  if(otp.length<6) return;
+  _verifyingOTP=true;
+  var errEl=$d('drv-otp-err');
+  errEl.style.display='none';
+  var btn=$d('drv-verify-btn'); btn.disabled=true; btn.textContent='Verifying…';
+  try{
+    var r=await fetch(WORKER+'/driver/verify-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:drvState.email,otp})});
+    var d=await r.json();
+    if(!r.ok){ errEl.textContent=d.error||'Invalid code.'; errEl.style.display='block'; btn.disabled=false; btn.textContent='Verify Code'; _verifyingOTP=false; return; }
+    drvState.token=d.token;
+    try{ localStorage.setItem('pb_drv_token',d.token); localStorage.setItem('pb_drv_email',drvState.email); }catch(ex){}
+    showScreen('app-screen');
+    var ok=await loadDrvData();
+    if(ok){ renderAll(); }
+  }catch(e){ errEl.textContent='Network error.'; errEl.style.display='block'; btn.disabled=false; btn.textContent='Verify Code'; _verifyingOTP=false; }
+}
+
+function drvBackToEmail(){
+  $d('step-otp').style.display='none';
+  $d('step-email').style.display='block';
+  $d('drv-otp-input').value='';
+  for(var i=0;i<6;i++){ var b=$d('drv-ob'+i); b.textContent=''; b.className='otp-box'+(i===0?' active':''); }
+  $d('drv-verify-btn').disabled=true;
+  $d('drv-otp-btn').disabled=false; $d('drv-otp-btn').textContent='Send Login Code';
+}
+
+function drvSignOut(){
+  try{ localStorage.removeItem('pb_drv_token'); localStorage.removeItem('pb_drv_email'); }catch(e){}
+  drvState.token=''; drvState.email=''; drvState.profile={}; drvState.trips=[];
+  showScreen('auth-screen');
+  $d('step-email').style.display='block'; $d('step-otp').style.display='none';
+  $d('drv-login-email').value=''; $d('drv-otp-btn').disabled=true;
+}
+
+// ── Data loading ───────────────────────────────────────────────────────────
+async function loadDrvData(){
+  try{
+    var r=await fetch(WORKER+'/driver/data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:drvState.email,token:drvState.token})});
+    if(r.status===401){ return false; }
+    if(!r.ok) return false;
+    var d=await r.json();
+    drvState.profile    = d.profile    || {};
+    drvState.trips      = d.trips      || [];
+    drvState.clocks     = d.clocks     || [];
+    drvState.incidents  = d.incidents  || [];
+    // Determine clock state from most recent clock entry
+    var lastClock=drvState.clocks.length?drvState.clocks[drvState.clocks.length-1]:null;
+    drvState.clockedIn  = lastClock && lastClock.type==='in' && !lastClock.outAt;
+    drvState.clockStartMs = drvState.clockedIn ? (lastClock.inAt||Date.now()) : 0;
+    drvState.activeClockId = drvState.clockedIn ? lastClock.id : null;
+    return true;
+  }catch(e){ return false; }
+}
+
+// ── Render all ─────────────────────────────────────────────────────────────
+function renderAll(){
+  updateHeader();
+  renderToday();
+  renderTrips();
+  renderInspect();
+  renderEarnings();
+  renderReports();
+  startClockTick();
+}
+
+function updateHeader(){
+  var n=drvState.profile.name||drvState.email||'Driver';
+  $d('hdr-name').textContent=n.split(' ')[0];
+  var cs=$d('hdr-clock-status');
+  if(drvState.clockedIn){ cs.textContent='ON'; cs.className='clock-status in'; }
+  else { cs.textContent='OFF'; cs.className='clock-status out'; }
+}
+
+// ── Clock ──────────────────────────────────────────────────────────────────
+function startClockTick(){
+  if(_clockTimerId) clearInterval(_clockTimerId);
+  _clockTimerId=setInterval(function(){ updateClockDisplay(); },1000);
+  updateClockDisplay();
+}
+
+function updateClockDisplay(){
+  var nowStr=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  var disp=$d('today-clock-display');
+  if(disp) disp.textContent=nowStr;
+  var lbl=$d('today-clock-label');
+  var btn=$d('today-clock-btn');
+  var card=$d('today-clock-card');
+  if(drvState.clockedIn){
+    var elapsed=Math.floor((Date.now()-drvState.clockStartMs)/1000);
+    var h=Math.floor(elapsed/3600), m=Math.floor((elapsed%3600)/60), s=elapsed%60;
+    if(lbl) lbl.textContent='Shift time: '+h+'h '+m+'m '+s+'s';
+    if(btn){ btn.textContent='Clock Out'; btn.style.background='rgba(239,68,68,.2)'; btn.style.color='var(--red)'; btn.style.border='1px solid rgba(239,68,68,.4)'; }
+    if(card){ card.style.background='linear-gradient(135deg,rgba(34,197,94,.08),rgba(34,197,94,.02))'; card.style.borderColor='rgba(34,197,94,.3)'; }
+    if(disp) disp.style.color='var(--green)';
+  } else {
+    if(lbl) lbl.textContent='Not clocked in';
+    if(btn){ btn.textContent='Clock In'; btn.style.background='var(--blue)'; btn.style.color='#fff'; btn.style.border='none'; }
+    if(card){ card.style.background='linear-gradient(135deg,rgba(59,130,246,.1),rgba(59,130,246,.04))'; card.style.borderColor='rgba(59,130,246,.25)'; }
+    if(disp) disp.style.color='var(--blue)';
+  }
+}
+
+async function drvToggleClock(){
+  var btn=$d('today-clock-btn'); btn.disabled=true;
+  try{
+    var action=drvState.clockedIn?'out':'in';
+    var r=await fetch(WORKER+'/driver/clock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:drvState.email,token:drvState.token,action,clockId:drvState.activeClockId})});
+    var d=await r.json();
+    if(!r.ok){ drvToast(d.error||'Error','error'); return; }
+    if(action==='in'){
+      drvState.clockedIn=true; drvState.clockStartMs=Date.now(); drvState.activeClockId=d.clockId;
+      drvToast('Clocked in ✓','success');
+    } else {
+      drvState.clockedIn=false; drvState.clockStartMs=0; drvState.activeClockId=null;
+      drvToast('Clocked out','success');
+    }
+    updateHeader();
+    updateClockDisplay();
+    var ok=await loadDrvData();
+    if(ok){ renderEarnings(); }
+  }catch(e){ drvToast('Network error','error'); }
+  finally{ btn.disabled=false; }
+}
+
+// ── Today tab ──────────────────────────────────────────────────────────────
+function renderToday(){
+  var today=new Date().toISOString().slice(0,10);
+  var todayTrips=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'')=== today; });
+
+  // Stats
+  var thisMonth=new Date().toISOString().slice(0,7);
+  var monthTrips=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'').startsWith(thisMonth); });
+  var monthPay=monthTrips.reduce(function(a,t){ return a+calcTripPay(t); },0);
+  var todayHours=getTodayHours();
+
+  $d('today-stats').innerHTML=
+    '<div class="stat-card"><div class="stat-val">'+todayTrips.length+'</div><div class="stat-label">TODAY</div></div>'+
+    '<div class="stat-card"><div class="stat-val">'+todayHours.toFixed(1)+'h</div><div class="stat-label">HRS TODAY</div></div>'+
+    '<div class="stat-card"><div class="stat-val">'+fmt$(monthPay)+'</div><div class="stat-label">THIS MONTH</div></div>';
+
+  if(!todayTrips.length){
+    $d('today-trips').innerHTML='<div class="empty-state"><div class="empty-icon">🗓</div><div>No trips assigned today</div></div>';
+    return;
+  }
+  $d('today-trips').innerHTML=todayTrips.map(function(t){ return tripCard(t,true); }).join('');
+}
+
+function getTodayHours(){
+  var today=new Date().toISOString().slice(0,10);
+  var total=0;
+  drvState.clocks.forEach(function(c){
+    var d=new Date(c.inAt||0).toISOString().slice(0,10);
+    if(d!==today) return;
+    var out=c.outAt||Date.now();
+    total+=(out-c.inAt)/3600000;
+  });
+  return total;
+}
+
+function calcTripPay(t){
+  if(!t.payType) return Number(t.payAmount||0);
+  if(t.payType==='flat') return Number(t.payAmount||0);
+  if(t.payType==='hourly'){
+    var hrs=Number(t.hoursLogged||0);
+    return hrs * Number(t.payAmount||0);
+  }
+  return 0;
+}
+
+// ── Trips tab ──────────────────────────────────────────────────────────────
+function renderTrips(){
+  var today=new Date().toISOString().slice(0,10);
+  var upcoming=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'')>=today; }).sort(function(a,b){ return (a.pickupDate||a.date||'').localeCompare(b.pickupDate||b.date||''); });
+  var past=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'')<today; }).sort(function(a,b){ return (b.pickupDate||b.date||'').localeCompare(a.pickupDate||a.date||''); });
+
+  $d('trips-upcoming').innerHTML=upcoming.length?upcoming.map(function(t){ return tripCard(t,false); }).join(''):'<div class="empty-state"><div class="empty-icon">📅</div><div>No upcoming assignments</div></div>';
+  $d('trips-past').innerHTML=past.length?past.slice(0,15).map(function(t){ return tripCard(t,false); }).join(''):'<div style="color:var(--muted);font-size:13px;padding:8px 0;">No past trips yet.</div>';
+}
+
+function tripCard(t, highlight){
+  var today=new Date().toISOString().slice(0,10);
+  var date=t.pickupDate||t.date||'';
+  var isToday=date===today;
+  var isPast=date<today;
+  var badgeCls=isPast?'badge-completed':isToday?'badge-active':'badge-upcoming';
+  var badgeLabel=isPast?'Completed':isToday?'Today':'Upcoming';
+  var pay=calcTripPay(t);
+  var payLabel=t.payType==='hourly'
+    ? fmt$(t.payAmount||0)+'/hr × '+(t.hoursLogged||0)+'h = '+fmt$(pay)
+    : fmt$(pay)+' (flat)';
+  var stars=t.ownerRating?'★'.repeat(Math.round(t.ownerRating))+'☆'.repeat(5-Math.round(t.ownerRating)):'';
+
+  return '<div class="trip-card '+(isToday&&highlight?'active-trip':!isPast?'upcoming-trip':'')+'">'
+    +'<div class="trip-header">'
+    +'<div><div class="trip-vehicle">'+esc(t.vehicle||'Vehicle TBD')+'</div><div class="trip-date">'+fmtDate(date)+(t.pickupTime?' · '+fmtTime(t.pickupTime):'')+'</div></div>'
+    +'<span class="trip-badge '+badgeCls+'">'+badgeLabel+'</span>'
+    +'</div>'
+    +(t.clientName?'<div class="trip-row"><span class="trip-label">Client</span><span class="trip-val">'+esc(t.clientName)+(t.clientPhone?' · <a href="tel:'+esc(t.clientPhone)+'" style="color:var(--blue)">'+esc(t.clientPhone)+'</a>':'')+'</span></div>':'')
+    +(t.pickupAddress?'<div class="trip-row"><span class="trip-label">Pickup</span><span class="trip-val">'+esc(t.pickupAddress)+'</span></div>':'')
+    +(t.dropoffAddress?'<div class="trip-row"><span class="trip-label">Dropoff</span><span class="trip-val">'+esc(t.dropoffAddress)+'</span></div>':'')
+    +'<div class="trip-row"><span class="trip-label">Pay</span><span class="trip-val" style="color:var(--green);font-weight:700;">'+payLabel+'</span></div>'
+    +(t.notes?'<div class="trip-row"><span class="trip-label">Notes</span><span class="trip-val" style="color:var(--muted);font-style:italic;">'+esc(t.notes)+'</span></div>':'')
+    +(stars?'<div class="trip-row"><span class="trip-label">Rating</span><span class="trip-val" style="color:var(--gold);">'+stars+'</span></div>':'')
+    +'<div class="trip-actions">'
+    +(!isPast?'<button class="btn btn-sm" onclick="drvSwitchTab(\'inspect\');setInspTrip(\''+esc(t.bookingId)+'\')">🔍 Inspect</button>':'')
+    +(t.clientPhone?'<a href="tel:'+esc(t.clientPhone)+'" class="btn btn-sm" style="background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.3);text-decoration:none;display:inline-flex;align-items:center;">📞 Call Client</a>':'')
+    +'</div>'
+    +'</div>';
+}
+
+// ── Inspect tab ────────────────────────────────────────────────────────────
+var INSP_SLOTS=[
+  {key:'front',label:'Front Exterior'},
+  {key:'rear',label:'Rear Exterior'},
+  {key:'driver_side',label:'Driver Side'},
+  {key:'passenger_side',label:'Passenger Side'},
+  {key:'interior_front',label:'Interior Front'},
+  {key:'interior_rear',label:'Interior Rear'},
+  {key:'fuel_gauge',label:'Fuel Gauge'},
+  {key:'odometer',label:'Odometer'},
+];
+
+function renderInspect(){
+  var today=new Date().toISOString().slice(0,10);
+  var active=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'')>=today; });
+
+  // Trip selector
+  var selHTML='<div class="form-group"><label class="field-label">Select Trip to Inspect</label><select id="insp-trip-sel" onchange="setInspTrip(this.value)">'
+    +'<option value="">— Choose a trip —</option>';
+  active.forEach(function(t){
+    selHTML+='<option value="'+esc(t.bookingId)+'">'+esc(t.vehicle||'Vehicle')+' · '+fmtDate(t.pickupDate||t.date)+'</option>';
+  });
+  selHTML+='</select></div>';
+
+  // Phase toggle
+  selHTML+='<div style="display:flex;gap:8px;margin-bottom:14px;">'
+    +'<button class="btn btn-sm" id="insp-pre-btn" onclick="setInspPhase(\'pre\')" style="flex:1;'+('' === ''?'':'')+'">Pre-Trip</button>'
+    +'<button class="btn btn-sm btn-ghost" id="insp-post-btn" onclick="setInspPhase(\'post\')" style="flex:1;">Post-Trip</button>'
+    +'</div>';
+
+  $d('inspect-trip-selector').innerHTML=selHTML;
+  renderInspectSlots();
+}
+
+function setInspTrip(id){
+  _inspTrip=id;
+  var sel=$d('insp-trip-sel');
+  if(sel && sel.value!==id) sel.value=id;
+  renderInspectSlots();
+}
+
+function setInspPhase(phase){
+  _inspPhase=phase;
+  var pre=$d('insp-pre-btn'), post=$d('insp-post-btn');
+  if(pre){ pre.style.opacity=phase==='pre'?'1':'0.5'; pre.className='btn btn-sm'+(phase==='pre'?'':' btn-ghost'); }
+  if(post){ post.style.opacity=phase==='post'?'1':'0.5'; post.className='btn btn-sm'+(phase==='post'?'':' btn-ghost'); }
+  renderInspectSlots();
+}
+
+function renderInspectSlots(){
+  var el=$d('inspect-content');
+  if(!el) return;
+  if(!_inspTrip){ el.innerHTML='<div class="empty-state"><div class="empty-icon">🔍</div><div>Select a trip above to begin inspection</div></div>'; return; }
+  var photos=_inspPhotos[_inspPhase]||{};
+  var phase=_inspPhase==='pre'?'Pre-Trip':'Post-Trip';
+  var html='<div class="section-header"><div class="accent-bar"></div><div class="section-header-title">'+phase+' Inspection</div></div>'
+    +'<div class="inspect-photo-grid">';
+  INSP_SLOTS.forEach(function(slot){
+    var hasPhoto=!!photos[slot.key];
+    html+='<div class="photo-slot'+(hasPhoto?' has-photo':'')+'" onclick="triggerInspPhoto(\''+slot.key+'\')">'
+      +(hasPhoto?'<img src="'+photos[slot.key]+'" alt="'+esc(slot.label)+'"><div class="photo-badge">✓</div>':'<span class="photo-slot-icon">📷</span>')
+      +'<div class="photo-slot-label">'+esc(slot.label)+'</div>'
+      +'</div>';
+  });
+  html+='</div>';
+
+  var total=INSP_SLOTS.length;
+  var done=Object.keys(photos).length;
+  html+='<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">'+done+' / '+total+' photos taken</div>';
+  if(done>=4){
+    html+='<button class="btn btn-green" onclick="submitInspection()">Submit '+phase+' Inspection ('+done+' photos)</button>';
+  }
+  el.innerHTML=html;
+}
+
+function triggerInspPhoto(slotKey){
+  _inspSlot=slotKey;
+  $d('insp-photo-input').click();
+}
+
+function handleInspectionPhoto(e){
+  var file=e.target.files[0]; if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(ev){
+    if(!_inspPhotos[_inspPhase]) _inspPhotos[_inspPhase]={};
+    _inspPhotos[_inspPhase][_inspSlot]=ev.target.result;
+    renderInspectSlots();
+    e.target.value='';
+  };
+  reader.readAsDataURL(file);
+}
+
+async function submitInspection(){
+  if(!_inspTrip){ drvToast('Select a trip first','error'); return; }
+  var photos=_inspPhotos[_inspPhase]||{};
+  if(Object.keys(photos).length<4){ drvToast('Add at least 4 photos','error'); return; }
+  var btn=document.querySelector('#inspect-content .btn-green');
+  if(btn){ btn.disabled=true; btn.textContent='Submitting…'; }
+  try{
+    var r=await fetch(WORKER+'/driver/inspection',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:drvState.email,token:drvState.token,bookingId:_inspTrip,phase:_inspPhase,photos})
+    });
+    var d=await r.json();
+    if(!r.ok){ drvToast(d.error||'Error submitting','error'); }
+    else{ drvToast('Inspection submitted ✓','success'); _inspPhotos[_inspPhase]={}; renderInspectSlots(); }
+  }catch(e){ drvToast('Network error','error'); }
+  finally{ if(btn){ btn.disabled=false; } }
+}
+
+// ── Earnings tab ───────────────────────────────────────────────────────────
+function renderEarnings(){
+  var totalPay=drvState.trips.reduce(function(a,t){ return a+calcTripPay(t); },0);
+  var totalTrips=drvState.trips.length;
+  var thisMonth=new Date().toISOString().slice(0,7);
+  var monthPay=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'').startsWith(thisMonth); }).reduce(function(a,t){ return a+calcTripPay(t); },0);
+
+  $d('earnings-summary').innerHTML=
+    '<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;">'
+    +'<div class="card-title">Total Earnings</div>'
+    +'</div>'
+    +'<div class="earn-total">'+fmt$(totalPay)+'</div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-top:4px;">'+totalTrips+' trip'+(totalTrips!==1?'s':'')+' · This month: <span style="color:var(--green);font-weight:700;">'+fmt$(monthPay)+'</span></div>';
+
+  var sorted=drvState.trips.slice().sort(function(a,b){ return (b.pickupDate||b.date||'').localeCompare(a.pickupDate||a.date||''); });
+  $d('earnings-list').innerHTML=sorted.length?sorted.map(function(t){
+    var pay=calcTripPay(t);
+    var desc=t.payType==='hourly'
+      ? (t.hoursLogged||0)+'h × '+fmt$(t.payAmount||0)+'/hr'
+      : 'Flat rate';
+    return '<div class="earn-row">'
+      +'<div><div style="font-weight:600;font-size:13px;">'+esc(t.vehicle||'Trip')+'</div>'
+      +'<div style="font-size:11px;color:var(--muted);">'+fmtDate(t.pickupDate||t.date)+' · '+desc+'</div></div>'
+      +'<div style="font-weight:800;color:var(--green);font-size:15px;">'+fmt$(pay)+'</div>'
+      +'</div>';
+  }).join(''):'<div class="empty-state"><div>No trips yet</div></div>';
+}
+
+// ── Reports / Incidents ────────────────────────────────────────────────────
+function renderReports(){
+  // Performance
+  var rated=drvState.trips.filter(function(t){ return t.ownerRating>0; });
+  var avg=rated.length?rated.reduce(function(a,t){ return a+t.ownerRating; },0)/rated.length:0;
+  $d('reports-perf').innerHTML=
+    '<div class="card-title">Performance</div>'
+    +(rated.length
+      ?'<div class="perf-avg">'+avg.toFixed(1)+'</div>'
+       +'<div class="rating-stars" style="color:var(--gold);margin-top:4px;">'+'★'.repeat(Math.round(avg))+'☆'.repeat(5-Math.round(avg))+'</div>'
+       +'<div style="font-size:12px;color:var(--muted);margin-top:8px;">Based on '+rated.length+' rated trip'+(rated.length!==1?'s':'')+'</div>'
+       +'<div style="margin-top:12px;">'+rated.map(function(t){
+           return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">'
+             +'<span>'+esc(t.vehicle||'Trip')+' · '+fmtDate(t.pickupDate||t.date)+'</span>'
+             +'<span style="color:var(--gold);">'+'★'.repeat(Math.round(t.ownerRating))+'</span>'
+             +'</div>';
+         }).join('')+'</div>'
+      :'<div style="color:var(--muted);font-size:13px;">No ratings yet. Keep delivering great service!</div>'
+    );
+
+  // Incidents
+  $d('reports-incidents').innerHTML=drvState.incidents.length
+    ?drvState.incidents.map(function(inc){
+        return '<div class="incident-card">'
+          +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
+          +'<span style="font-size:12px;font-weight:700;color:var(--red);">'+esc(inc.type||'Incident')+'</span>'
+          +'<span style="font-size:11px;color:var(--muted);">'+fmtDate(new Date(inc.createdAt||0).toISOString().slice(0,10))+'</span>'
+          +'</div>'
+          +'<div style="font-size:13px;color:var(--text2);">'+esc(inc.description||'')+'</div>'
+          +(inc.bookingId?'<div style="font-size:11px;color:var(--muted);margin-top:4px;">Booking: <span style="font-family:monospace">'+esc(inc.bookingId)+'</span></div>':'')
+          +'</div>';
+      }).join('')
+    :'<div style="color:var(--muted);font-size:13px;padding:8px 0;">No incidents reported.</div>';
+
+  // Populate incident trip selector
+  var sel=$d('inc-trip-sel');
+  if(sel){
+    sel.innerHTML='<option value="">— None —</option>';
+    drvState.trips.forEach(function(t){
+      var opt=document.createElement('option');
+      opt.value=t.bookingId||'';
+      opt.textContent=(t.vehicle||'Trip')+' · '+fmtDate(t.pickupDate||t.date);
+      sel.appendChild(opt);
+    });
+  }
+}
+
+function openIncidentForm(){
+  $d('incident-form').style.display='block';
+  $d('incident-form').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function closeIncidentForm(){
+  $d('incident-form').style.display='none';
+  $d('inc-desc').value=''; _incPhotos={}; updateIncidentPhotoSlots();
+}
+
+function triggerIncidentPhoto(idx){
+  _incPhotoSlot=idx;
+  $d('inc-photo-input').click();
+}
+function handleIncidentPhoto(e){
+  var file=e.target.files[0]; if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(ev){
+    _incPhotos[_incPhotoSlot]=ev.target.result;
+    updateIncidentPhotoSlots();
+    e.target.value='';
+  };
+  reader.readAsDataURL(file);
+}
+function updateIncidentPhotoSlots(){
+  for(var i=0;i<3;i++){
+    var slot=document.querySelector('#inc-photo-slots .photo-slot:nth-child('+(i+1)+')');
+    if(!slot) continue;
+    if(_incPhotos[i]){ slot.innerHTML='<img src="'+_incPhotos[i]+'" style="width:100%;height:100%;object-fit:cover;border-radius:8px;">'; slot.classList.add('has-photo'); }
+    else { slot.innerHTML='<span class="photo-slot-icon">📷</span>'; slot.classList.remove('has-photo'); }
+  }
+}
+
+async function submitIncident(){
+  var desc=$d('inc-desc').value.trim();
+  var errEl=$d('inc-err');
+  if(!desc){ errEl.textContent='Please describe the incident.'; errEl.style.display='block'; return; }
+  errEl.style.display='none';
+  var btn=document.querySelector('#incident-form .btn-red');
+  btn.disabled=true; btn.textContent='Submitting…';
+  try{
+    var r=await fetch(WORKER+'/driver/incident',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        email:drvState.email,token:drvState.token,
+        bookingId:$d('inc-trip-sel').value||null,
+        type:$d('inc-type').value,
+        description:desc,
+        photos:_incPhotos
+      })
+    });
+    var d=await r.json();
+    if(!r.ok){ errEl.textContent=d.error||'Error submitting.'; errEl.style.display='block'; }
+    else{ drvToast('Incident reported ✓','success'); closeIncidentForm(); var ok=await loadDrvData(); if(ok) renderReports(); }
+  }catch(e){ errEl.textContent='Network error.'; errEl.style.display='block'; }
+  finally{ btn.disabled=false; btn.textContent='Submit Report'; }
+}
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function drvSwitchTab(name){
+  _activeTab=name;
+  document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
+  document.querySelectorAll('.tab-pane').forEach(function(p){ p.classList.remove('active'); });
+  var btn=$d('tab-btn-'+name), pane=$d('tab-'+name);
+  if(btn) btn.classList.add('active');
+  if(pane) pane.classList.add('active');
+}
+</script>
+</body>
+</html>

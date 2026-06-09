@@ -1095,6 +1095,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div class="hbg-menu hbg-menu-left" id="hbgMenu">
           <button class="hbg-item hbg-item-gold" onclick="openModal();closeHamburger()">✦ New Booking</button>
           <button class="hbg-item" onclick="openVehicleModal();closeHamburger()">🚗 Manage Vehicles</button>
+          <button class="hbg-item" onclick="openDriversModal();closeHamburger()">👤 Manage Drivers</button>
           <button class="hbg-item" onclick="openMaintenanceModal();closeHamburger()">🔧 Log Maintenance</button>
           <button class="hbg-item hbg-item-green" onclick="openIncomeModal();closeHamburger()">💰 Add Income</button>
           <button class="hbg-item hbg-item-red" onclick="openExpenseModal();closeHamburger()">💸 Log Expense</button>
@@ -1227,6 +1228,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
   <button class="tab-btn" onclick="switchTab('tax')">💰 Tax</button>
   <button class="tab-btn" onclick="switchTab('fleet')">🔧 Fleet</button>
   <button class="tab-btn" onclick="switchTab('customers')">👤 Customers</button>
+  <button class="tab-btn" onclick="switchTab('drivers')">🚗 Drivers</button>
   <button class="tab-btn" onclick="switchTab('brokers')">🤝 Brokers</button>
 </div>
 
@@ -1815,6 +1817,67 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
   <div class="main">
     <div id="outstandingSection" style="margin-bottom:16px"></div>
     <div id="customersContent"></div>
+  </div>
+</div>
+
+<!-- ═══ TAB: DRIVERS ═══ -->
+<div id="tab-drivers" class="tab-panel">
+  <div class="main">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px">
+      <div style="font-size:18px;font-weight:800;color:#fff">🚗 Driver Roster</div>
+      <button class="btn btn-gold" onclick="openDriversModal();drvSwitchTab('add')">+ Add Driver</button>
+    </div>
+
+    <!-- Pending Driver Requests -->
+    <div id="tabDriverRequestsPanel" style="margin-bottom:18px"></div>
+
+    <!-- Active Drivers -->
+    <div class="tbl-card">
+      <div class="tbl-title" style="margin-bottom:14px">Active Drivers</div>
+      <div id="tabDriverRosterWrap">
+        <div style="color:var(--muted);font-size:13px;text-align:center;padding:30px">Click the tab to load drivers…</div>
+      </div>
+    </div>
+
+    <!-- Assign Driver -->
+    <div class="tbl-card" style="margin-top:16px">
+      <div class="tbl-title" style="margin-bottom:14px">Assign Driver to a Booking</div>
+      <div style="display:flex;flex-direction:column;gap:12px;max-width:480px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Booking ID</label>
+            <input id="tabDrvAssignBookingId" class="inp" placeholder="BK-…" style="width:100%">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Driver</label>
+            <select id="tabDrvAssignDriver" class="inp" style="width:100%">
+              <option value="">— select —</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pay Type</label>
+            <select id="tabDrvAssignPayType" class="inp" style="width:100%">
+              <option value="flat">Flat per trip</option>
+              <option value="hourly">Hourly</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Amount ($)</label>
+            <input id="tabDrvAssignAmount" class="inp" type="number" placeholder="e.g. 200" style="width:100%">
+          </div>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Special Instructions</label>
+          <textarea id="tabDrvAssignNotes" class="inp" rows="2" placeholder="Notes for driver" style="width:100%;resize:vertical"></textarea>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button class="btn btn-gold" onclick="submitTabAssignDriver()">Assign &amp; Notify Driver</button>
+          <span id="tabDrvAssignStatus" style="font-size:13px;display:none"></span>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -3061,6 +3124,99 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 </div>
 
 <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="handleCSVImport(event)">
+
+<!-- ── Manage Drivers Modal ── -->
+<div class="modal" id="driversModal">
+  <div class="modal-bg" onclick="closeDriversModal()"></div>
+  <div class="modal-card" style="max-width:600px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">
+      <span>👤 Manage Drivers</span>
+      <button class="modal-close" onclick="closeDriversModal()">✕</button>
+    </div>
+
+    <!-- Tabs -->
+    <div style="display:flex;gap:6px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:10px">
+      <button id="drvTab_list" class="btn btn-sm" style="flex:1" onclick="drvSwitchTab('list')">Driver Roster</button>
+      <button id="drvTab_add"  class="btn btn-sm" style="flex:1;border-color:var(--border);color:var(--muted)" onclick="drvSwitchTab('add')">+ Add Driver</button>
+      <button id="drvTab_assign" class="btn btn-sm" style="flex:1;border-color:var(--border);color:var(--muted)" onclick="drvSwitchTab('assign')">Assign Trip</button>
+    </div>
+
+    <!-- Driver Roster -->
+    <div id="drvPane_list">
+      <div id="drvRosterList" style="display:flex;flex-direction:column;gap:10px">
+        <div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading drivers…</div>
+      </div>
+    </div>
+
+    <!-- Add Driver -->
+    <div id="drvPane_add" style="display:none">
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Full Name *</label>
+          <input id="drvAddName" class="inp" placeholder="Driver's full name" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email *</label>
+          <input id="drvAddEmail" class="inp" type="email" placeholder="driver@email.com" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Phone</label>
+          <input id="drvAddPhone" class="inp" placeholder="(555) 555-5555" style="width:100%">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Default Pay Type</label>
+            <select id="drvAddPayType" class="inp" style="width:100%">
+              <option value="flat">Flat per trip</option>
+              <option value="hourly">Hourly</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Default Rate ($)</label>
+            <input id="drvAddRate" class="inp" type="number" placeholder="e.g. 150" style="width:100%">
+          </div>
+        </div>
+        <button class="btn btn-gold" style="width:100%;margin-top:4px" onclick="submitAddDriver()">Send Welcome &amp; Activate</button>
+        <div id="drvAddStatus" style="font-size:13px;text-align:center;display:none"></div>
+      </div>
+    </div>
+
+    <!-- Assign Trip -->
+    <div id="drvPane_assign" style="display:none">
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Booking ID *</label>
+          <input id="drvAssignBookingId" class="inp" placeholder="Booking ID (e.g. BK-…)" style="width:100%">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Driver *</label>
+          <select id="drvAssignDriver" class="inp" style="width:100%">
+            <option value="">— select driver —</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pay Type</label>
+            <select id="drvAssignPayType" class="inp" style="width:100%">
+              <option value="flat">Flat per trip</option>
+              <option value="hourly">Hourly</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Amount ($)</label>
+            <input id="drvAssignAmount" class="inp" type="number" placeholder="e.g. 200" style="width:100%">
+          </div>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Special Instructions</label>
+          <textarea id="drvAssignNotes" class="inp" rows="3" placeholder="Pickup notes, dress code, etc." style="width:100%;resize:vertical"></textarea>
+        </div>
+        <button class="btn btn-gold" style="width:100%;margin-top:4px" onclick="submitAssignDriver()">Assign &amp; Notify Driver</button>
+        <div id="drvAssignStatus" style="font-size:13px;text-align:center;display:none"></div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
 // ════════════════════════════════════════════════════════
@@ -5698,7 +5854,7 @@ function switchTab(name){
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
   $d('tab-'+name).classList.add('active');
   var btns=document.querySelectorAll('.tab-btn');
-  var map={overview:0,upcoming:1,current:2,previous:3,cancelled:4,calendar:5,tax:6,fleet:7,customers:8,brokers:9};
+  var map={overview:0,upcoming:1,current:2,previous:3,cancelled:4,calendar:5,tax:6,fleet:7,customers:8,drivers:9,brokers:10};
   if(btns[map[name]]) btns[map[name]].classList.add('active');
   if(name==='calendar')   renderCalendar();
   else if(name==='upcoming')  renderUpcoming();
@@ -5708,6 +5864,7 @@ function switchTab(name){
   else if(name==='tax')       renderTaxTab();
   else if(name==='fleet')     renderFleetTab();
   else if(name==='customers') renderCustomersTab();
+  else if(name==='drivers')   renderDriversTab();
   else if(name==='brokers')   renderBrokerTab();
 }
 
@@ -6581,18 +6738,23 @@ function renderUpcoming(){
 
 // ── Driver Requests Panel ──────────────────────────────────────────────────
 var _driverReqCache = null;
-function loadDriverRequests(){
-  var panel=$d('driverRequestsPanel'); if(!panel) return;
+function loadDriverRequests(altPanel){
   var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   fetch(WORKER+'/driver-requests?secret='+encodeURIComponent(secret),{cache:'no-store'})
     .then(function(r){return r.ok?r.json():null;})
-    .then(function(d){ if(d&&d.requests) renderDriverRequestsPanel(d.requests); })
+    .then(function(d){
+      if(d&&d.requests){
+        renderDriverRequestsPanel(d.requests);
+        if(altPanel) renderDriverRequestsPanel(d.requests, altPanel);
+      }
+    })
     .catch(function(){});
 }
 
-function renderDriverRequestsPanel(requests){
-  var panel=$d('driverRequestsPanel'); if(!panel) return;
+function renderDriverRequestsPanel(requests, panel){
+  if(!panel) panel=$d('driverRequestsPanel');
+  if(!panel) return;
   var active=requests.filter(function(r){return r.status==='pending'||r.status==='driver_verified';});
   if(!active.length){ panel.innerHTML=''; return; }
   var html='<div style="background:linear-gradient(135deg,rgba(234,179,8,.08),rgba(234,179,8,.03));border:1px solid rgba(234,179,8,.25);border-radius:14px;padding:16px;margin-bottom:4px">'
@@ -6644,6 +6806,204 @@ async function resolveDriverReq(reqId,action){
     // Refresh bookings so dashboard booking card reflects the change
     if(typeof loadData==='function') loadData();
   }catch(e){ alert('Network error. Try again.'); }
+}
+
+// ════════════════════════════════════════════════════════
+//  MANAGE DRIVERS MODAL
+// ════════════════════════════════════════════════════════
+var _drvList=[]; // cached driver roster
+
+async function renderDriversTab(){
+  // Load pending requests into the tab's requests panel
+  var reqPanel=$d('tabDriverRequestsPanel');
+  if(reqPanel) renderDriverRequestsPanel.__tabTarget=reqPanel;
+  loadDriverRequests(reqPanel);
+
+  // Load roster into tab
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var wrap=$d('tabDriverRosterWrap');
+  wrap.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div>';
+  try{
+    var r=await fetch(WORKER+'/dashboard/drivers?secret='+encodeURIComponent(secret));
+    var d=await r.json();
+    if(!r.ok){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">'+(d.error||'Error')+'</div>'; return; }
+    var list=d.drivers||[];
+    // Sync assign dropdowns
+    var popSel=function(selId){
+      var sel=$d(selId); if(!sel) return;
+      sel.innerHTML='<option value="">— select —</option>';
+      list.forEach(function(drv){
+        var o=document.createElement('option');
+        o.value=drv.email; o.textContent=drv.name+' ('+drv.email+')';
+        if(drv.defaultPayType) o.dataset.payType=drv.defaultPayType;
+        if(drv.defaultRate) o.dataset.rate=drv.defaultRate;
+        sel.appendChild(o);
+      });
+    };
+    popSel('tabDrvAssignDriver');
+    popSel('drvAssignDriver');
+    var tabSel=$d('tabDrvAssignDriver');
+    if(tabSel) tabSel.onchange=function(){
+      var opt=tabSel.options[tabSel.selectedIndex];
+      if(opt&&opt.dataset.payType) $d('tabDrvAssignPayType').value=opt.dataset.payType;
+      if(opt&&opt.dataset.rate) $d('tabDrvAssignAmount').value=opt.dataset.rate;
+    };
+    if(!list.length){
+      wrap.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:30px">No active drivers yet. Use "+ Add Driver" above to onboard one.</div>';
+      return;
+    }
+    wrap.innerHTML='<div style="display:flex;flex-direction:column;gap:10px">'+list.map(function(drv){
+      return '<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+        +'<div style="width:40px;height:40px;border-radius:50%;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">👤</div>'
+        +'<div style="flex:1;min-width:0">'
+        +'<div style="font-weight:700;font-size:14px;color:#fff">'+esc(drv.name)+'</div>'
+        +'<div style="font-size:12px;color:var(--muted)">'+esc(drv.email)+(drv.phone?' · '+esc(drv.phone):'')+'</div>'
+        +(drv.defaultRate?'<div style="font-size:11px;color:var(--gold);margin-top:2px">Default: '+(drv.defaultPayType==='hourly'?'$'+drv.defaultRate+'/hr':'$'+drv.defaultRate+' flat')+'</div>':'')
+        +'</div>'
+        +'<a href="https://prestigeblackcorp-dev.github.io/PB-Dashboard/driver.html" target="_blank" style="font-size:12px;color:var(--blue);text-decoration:none;border:1px solid rgba(96,165,250,.3);border-radius:8px;padding:5px 10px">Driver Portal ↗</a>'
+        +'</div>';
+    }).join('')+'</div>';
+  }catch(e){
+    wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:20px">Network error.</div>';
+  }
+}
+
+async function submitTabAssignDriver(){
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var bookingId=$d('tabDrvAssignBookingId').value.trim();
+  var driverEmail=$d('tabDrvAssignDriver').value;
+  var payType=$d('tabDrvAssignPayType').value;
+  var payAmount=parseFloat($d('tabDrvAssignAmount').value)||0;
+  var notes=$d('tabDrvAssignNotes').value.trim();
+  var st=$d('tabDrvAssignStatus');
+  if(!bookingId||!driverEmail||!payAmount){ st.style.display='inline'; st.style.color='var(--red)'; st.textContent='Booking ID, driver and amount required.'; return; }
+  st.style.display='inline'; st.style.color='var(--muted)'; st.textContent='Assigning…';
+  try{
+    var r=await fetch(WORKER+'/dashboard/assign-driver',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret,bookingId,driverEmail,payType,payAmount,notes})
+    });
+    var d=await r.json();
+    if(!r.ok){ st.style.color='var(--red)'; st.textContent=d.error||'Error.'; return; }
+    st.style.color='var(--green)'; st.textContent='✅ Assigned & notified!';
+    $d('tabDrvAssignBookingId').value=''; $d('tabDrvAssignDriver').value=''; $d('tabDrvAssignAmount').value=''; $d('tabDrvAssignNotes').value='';
+    setTimeout(function(){ st.style.display='none'; if(typeof loadData==='function') loadData(); },2000);
+  }catch(e){ st.style.color='var(--red)'; st.textContent='Network error.'; }
+}
+
+function openDriversModal(){
+  $d('driversModal').style.display='flex';
+  drvSwitchTab('list');
+  _drvLoadRoster();
+}
+function closeDriversModal(){ $d('driversModal').style.display='none'; }
+
+function drvSwitchTab(tab){
+  ['list','add','assign'].forEach(function(t){
+    var btn=$d('drvTab_'+t), pane=$d('drvPane_'+t);
+    if(t===tab){
+      btn.style.borderColor='var(--gold)'; btn.style.color='var(--gold)';
+      pane.style.display='block';
+    } else {
+      btn.style.borderColor='var(--border)'; btn.style.color='var(--muted)';
+      pane.style.display='none';
+    }
+  });
+}
+
+async function _drvLoadRoster(){
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var el=$d('drvRosterList');
+  el.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div>';
+  try{
+    var r=await fetch(WORKER+'/dashboard/drivers?secret='+encodeURIComponent(secret));
+    var d=await r.json();
+    if(!r.ok){ el.innerHTML='<div style="color:var(--red);text-align:center;padding:20px">'+(d.error||'Error loading drivers')+'</div>'; return; }
+    _drvList=d.drivers||[];
+    // Populate assign dropdown
+    var sel=$d('drvAssignDriver');
+    sel.innerHTML='<option value="">— select driver —</option>';
+    _drvList.forEach(function(drv){
+      var o=document.createElement('option');
+      o.value=drv.email; o.textContent=drv.name+' ('+drv.email+')';
+      if(drv.defaultPayType) o.dataset.payType=drv.defaultPayType;
+      if(drv.defaultRate) o.dataset.rate=drv.defaultRate;
+      sel.appendChild(o);
+    });
+    sel.onchange=function(){
+      var opt=sel.options[sel.selectedIndex];
+      if(opt && opt.dataset.payType) $d('drvAssignPayType').value=opt.dataset.payType;
+      if(opt && opt.dataset.rate) $d('drvAssignAmount').value=opt.dataset.rate;
+    };
+    if(!_drvList.length){
+      el.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No active drivers. Use "+ Add Driver" to onboard one.</div>';
+      return;
+    }
+    el.innerHTML=_drvList.map(function(drv){
+      return '<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+        +'<div style="width:38px;height:38px;border-radius:50%;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">👤</div>'
+        +'<div style="flex:1;min-width:0">'
+        +'<div style="font-weight:700;font-size:14px;color:#fff">'+esc(drv.name)+'</div>'
+        +'<div style="font-size:12px;color:var(--muted)">'+esc(drv.email)+(drv.phone?' · '+esc(drv.phone):'')+'</div>'
+        +(drv.defaultRate?'<div style="font-size:11px;color:var(--gold);margin-top:2px">Default: '+(drv.defaultPayType==='hourly'?'$'+drv.defaultRate+'/hr':'$'+drv.defaultRate+' flat')+'</div>':'')
+        +'</div>'
+        +'<span style="background:rgba(74,222,128,.15);color:#4ade80;border:1px solid rgba(74,222,128,.3);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:700">Active</span>'
+        +'</div>';
+    }).join('');
+  }catch(e){
+    el.innerHTML='<div style="color:var(--red);text-align:center;padding:20px">Network error loading drivers.</div>';
+  }
+}
+
+async function submitAddDriver(){
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var name=$d('drvAddName').value.trim();
+  var email=$d('drvAddEmail').value.trim().toLowerCase();
+  var phone=$d('drvAddPhone').value.trim();
+  var defaultPayType=$d('drvAddPayType').value;
+  var defaultRate=parseFloat($d('drvAddRate').value)||0;
+  var st=$d('drvAddStatus');
+  if(!name||!email){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Name and email are required.'; return; }
+  st.style.display='block'; st.style.color='var(--muted)'; st.textContent='Adding driver…';
+  try{
+    var r=await fetch(WORKER+'/dashboard/add-driver',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret,name,email,phone,defaultPayType,defaultRate})
+    });
+    var d=await r.json();
+    if(!r.ok){ st.style.color='var(--red)'; st.textContent=d.error||'Error adding driver.'; return; }
+    st.style.color='var(--green)'; st.textContent='✅ Driver added and welcome email sent!';
+    $d('drvAddName').value=''; $d('drvAddEmail').value=''; $d('drvAddPhone').value=''; $d('drvAddRate').value='';
+    setTimeout(function(){ _drvLoadRoster(); drvSwitchTab('list'); st.style.display='none'; }, 1500);
+  }catch(e){ st.style.color='var(--red)'; st.textContent='Network error. Try again.'; }
+}
+
+async function submitAssignDriver(){
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var bookingId=$d('drvAssignBookingId').value.trim();
+  var driverEmail=$d('drvAssignDriver').value;
+  var payType=$d('drvAssignPayType').value;
+  var payAmount=parseFloat($d('drvAssignAmount').value)||0;
+  var notes=$d('drvAssignNotes').value.trim();
+  var st=$d('drvAssignStatus');
+  if(!bookingId||!driverEmail||!payAmount){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Booking ID, driver, and amount are required.'; return; }
+  st.style.display='block'; st.style.color='var(--muted)'; st.textContent='Assigning driver…';
+  try{
+    var r=await fetch(WORKER+'/dashboard/assign-driver',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret,bookingId,driverEmail,payType,payAmount,notes})
+    });
+    var d=await r.json();
+    if(!r.ok){ st.style.color='var(--red)'; st.textContent=d.error||'Error assigning driver.'; return; }
+    st.style.color='var(--green)'; st.textContent='✅ Driver assigned and notified!';
+    $d('drvAssignBookingId').value=''; $d('drvAssignDriver').value=''; $d('drvAssignAmount').value=''; $d('drvAssignNotes').value='';
+    setTimeout(function(){ st.style.display='none'; if(typeof loadData==='function') loadData(); }, 1800);
+  }catch(e){ st.style.color='var(--red)'; st.textContent='Network error. Try again.'; }
 }
 
 // ════════════════════════════════════════════════════════
