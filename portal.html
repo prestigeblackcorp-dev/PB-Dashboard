@@ -425,15 +425,19 @@ const WORKER = 'https://pb-booking.prestigeblackcorp.workers.dev';
 // ─── State ─────────────────────────────────────────────────────────────────
 var _initEmail = ''; try{ _initEmail = localStorage.getItem('pb_portal_email')||''; }catch(e){}
 var _initToken = ''; try{ _initToken = localStorage.getItem('pb_portal_token')||''; }catch(e){}
+// Restore cached portal data so the app shows real content on refresh
+// even before the server responds.
+var _cachedData = null;
+try{ const _c = localStorage.getItem('pb_portal_cache'); if(_c) _cachedData = JSON.parse(_c); }catch(e){}
 let state = {
   email: _initEmail,
   token: _initToken,
-  bookings: [],
-  insurance: null,
-  savedVehicles: [],
+  bookings:       (_cachedData && _cachedData.bookings)       || [],
+  insurance:      (_cachedData && _cachedData.insurance)      || null,
+  savedVehicles:  (_cachedData && _cachedData.savedVehicles)  || [],
   pendingPhotoUpload: null,
-  profile: {},
-  notifications: [],
+  profile:        (_cachedData && _cachedData.profile)        || {},
+  notifications:  (_cachedData && _cachedData.notifications)  || [],
 };
 
 // ─── Vehicle data (mirrors index.html) ────────────────────────────────────
@@ -1311,6 +1315,12 @@ async function loadPortalData(){
     state.savedVehicles = d.savedVehicles || [];
     state.profile = d.profile || {};
     state.notifications = d.notifications || [];
+    // Persist to localStorage so refresh shows real data even before server responds
+    try{ localStorage.setItem('pb_portal_cache', JSON.stringify({
+      bookings: state.bookings, insurance: state.insurance,
+      savedVehicles: state.savedVehicles, profile: state.profile,
+      notifications: state.notifications,
+    })); }catch(e){}
     return true;
   }catch(e){ return 'error'; }   // fetch failed (offline, etc.) — keep session
 }
@@ -2096,6 +2106,7 @@ function renderAccount(){
 function signOut(){
   _safeClear('pb_portal_token');
   _safeClear('pb_portal_email');
+  try{ localStorage.removeItem('pb_portal_cache'); }catch(e){}
   state.token=''; state.email=''; state.bookings=[]; state.insurance=null; state.savedVehicles=[]; state.profile={}; state.notifications=[];
   document.getElementById('app-screen').style.display='none';
   document.getElementById('auth-screen').style.display='flex';
