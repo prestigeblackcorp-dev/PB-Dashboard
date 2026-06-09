@@ -1858,20 +1858,49 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
     </div>
 
     <!-- Active Rides -->
-    <div class="tbl-card" style="margin-bottom:16px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <div class="tbl-title" style="margin-bottom:0">Live Rides</div>
-        <button class="btn" style="font-size:11px;padding:5px 10px" onclick="refreshFleetMap()">↻ Refresh</button>
+    <div class="tbl-card" style="margin-bottom:16px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 16px;padding:14px 16px;background:linear-gradient(135deg,rgba(201,169,98,.12),rgba(201,169,98,.02));border-bottom:1px solid var(--gold-dim)">
+        <div style="width:38px;height:38px;border-radius:11px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🛰️</div>
+        <div style="flex:1;min-width:0">
+          <div class="tbl-title" style="margin-bottom:1px">Live Rides</div>
+          <div style="font-size:11.5px;color:var(--muted)">Trips in progress right now — refreshes every 15s</div>
+        </div>
+        <button class="btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="refreshFleetMap()">↻ Refresh</button>
       </div>
       <div id="live-rides-list"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div></div>
+    </div>
+
+    <!-- Ride History / Transactions / Logs -->
+    <div class="tbl-card" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <div class="tbl-title" style="margin-bottom:0">Ride History &amp; Transactions</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="rideHistFilter" onchange="renderRideHistory()" class="inp" style="width:auto;font-size:11px;padding:6px 30px 6px 11px">
+            <option value="all">All rides</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+            <option value="active">Active</option>
+          </select>
+          <button class="btn" style="font-size:11px;padding:5px 10px" onclick="refreshFleetMap()">↻ Refresh</button>
+        </div>
+      </div>
+      <div id="ride-hist-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:10px;margin-bottom:14px"></div>
+      <div id="ride-hist-list"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div></div>
     </div>
 
     <!-- Pending Driver Requests -->
     <div id="tabDriverRequestsPanel" style="margin-bottom:18px"></div>
 
     <!-- Active Drivers -->
-    <div class="tbl-card">
-      <div class="tbl-title" style="margin-bottom:14px">Active Drivers</div>
+    <div class="tbl-card" style="overflow:hidden">
+      <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 16px;padding:14px 16px;background:linear-gradient(135deg,rgba(201,169,98,.12),rgba(201,169,98,.02));border-bottom:1px solid var(--gold-dim)">
+        <div style="width:38px;height:38px;border-radius:11px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🚘</div>
+        <div style="flex:1;min-width:0">
+          <div class="tbl-title" style="margin-bottom:1px">Active Drivers</div>
+          <div style="font-size:11.5px;color:var(--muted)">Chauffeurs currently on your fleet roster</div>
+        </div>
+        <button class="btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="renderDriversTab()">↻ Refresh</button>
+      </div>
       <div id="tabDriverRosterWrap">
         <div style="color:var(--muted);font-size:13px;text-align:center;padding:30px">Click the tab to load drivers…</div>
       </div>
@@ -6967,8 +6996,10 @@ async function refreshFleetMap(){
   Object.keys(_fleetMarkers).forEach(function(k){ if(!seen[k]){ _fleetMap.removeLayer(_fleetMarkers[k]); delete _fleetMarkers[k]; } });
   var online=(d.locations||[]).filter(function(l){return l&&l.status!=='offline';}).length;
   $d('fleet-map-status').textContent=online+' driver'+(online!==1?'s':'')+' online · '+new Date().toLocaleTimeString();
-  // Render live rides list
-  renderLiveRides(d.rides||[]);
+  // Render live rides list + full history / transactions / logs
+  _rideHist=d.rides||[];
+  renderLiveRides(_rideHist);
+  renderRideHistory();
 }
 
 function renderLiveRides(rides){
@@ -6998,6 +7029,76 @@ function renderLiveRides(rides){
       +'<div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;color:'+sc+';background:'+sc+'1f;border:1px solid '+sc+'40;border-radius:20px;padding:3px 10px;margin-bottom:6px">'+(pulsing?'<span style="width:7px;height:7px;border-radius:50%;background:'+sc+';animation:tabPulse 1.4s ease-in-out infinite"></span>':si)+' '+sl+'</div>'
       +'<div style="font-size:16px;color:var(--gold);font-weight:900;letter-spacing:-.3px">$'+(r.estimatedPrice||0).toFixed(0)+'</div>'
       +'</div>'
+      +'</div>';
+  }).join('');
+}
+
+var _rideHist=[];
+function _rhClock(ts){ if(!ts) return ''; return new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}); }
+function _rhDay(ts){ if(!ts) return ''; var dt=new Date(ts); var n=new Date(); var sameDay=dt.toDateString()===n.toDateString(); return sameDay?'Today':dt.toLocaleDateString([],{month:'short',day:'numeric'}); }
+function renderRideHistory(){
+  var listEl=$d('ride-hist-list'); var sumEl=$d('ride-hist-summary');
+  if(!listEl) return;
+  var rides=(_rideHist||[]).filter(Boolean);
+  // ── Summary across ALL rides ──
+  var nComplete=0,nCancel=0,nActive=0,revenue=0;
+  rides.forEach(function(r){
+    if(r.status==='completed'){ nComplete++; revenue+=Number(r.finalPrice||r.estimatedPrice||0); }
+    else if(r.status==='cancelled'){ nCancel++; }
+    else { nActive++; }
+  });
+  if(sumEl){
+    function sc(label,val,color){ return '<div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:12px;padding:11px 13px"><div style="font-size:19px;font-weight:900;color:'+(color||'#fff')+';letter-spacing:-.5px">'+val+'</div><div style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;font-weight:700">'+label+'</div></div>'; }
+    sumEl.innerHTML=sc('Total Rides',rides.length,'#fff')+sc('Completed',nComplete,'#4ade80')+sc('Cancelled',nCancel,'#f87171')+sc('Revenue','$'+revenue.toFixed(0),'var(--gold)');
+  }
+  // ── Filter + sort newest first ──
+  var filt=($d('rideHistFilter')||{}).value||'all';
+  var view=rides.filter(function(r){
+    if(filt==='completed') return r.status==='completed';
+    if(filt==='cancelled') return r.status==='cancelled';
+    if(filt==='active') return ['searching','accepted','driver_arrived','in_progress'].includes(r.status);
+    return true;
+  }).sort(function(a,b){ return (b.requestedAt||0)-(a.requestedAt||0); });
+  if(!view.length){ listEl.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No rides to show</div>'; return; }
+  var meta={
+    'searching':{l:'Searching',c:'#eab308',i:'🔍'},
+    'accepted':{l:'En Route',c:'#60a5fa',i:'🚗'},
+    'driver_arrived':{l:'Arrived',c:'#C9A962',i:'📍'},
+    'in_progress':{l:'In Progress',c:'#4ade80',i:'🛣️'},
+    'completed':{l:'Completed',c:'#4ade80',i:'✅'},
+    'cancelled':{l:'Cancelled',c:'#f87171',i:'✕'}
+  };
+  listEl.innerHTML=view.map(function(r){
+    var m=meta[r.status]||{l:r.status||'—',c:'#6b7a9a',i:'•'};
+    var rider=esc(r.riderName||r.riderEmail||'Rider');
+    var initial=(r.riderName||r.riderEmail||'R').charAt(0).toUpperCase();
+    var drv=r.assignedDriverName||r.assignedDriver||r.driverName;
+    var fare=Number(r.finalPrice||r.estimatedPrice||0);
+    var dist=r.distanceMiles?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+Number(r.distanceMiles).toFixed(1)+' mi</span>'):'';
+    var hrs=(r.rideType==='hourly'&&r.hours)?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+r.hours+' hr</span>'):'';
+    var when=r.requestedAt?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+_rhDay(r.requestedAt)+' · '+_rhClock(r.requestedAt)+'</span>'):'';
+    // ── status-change log / timeline ──
+    var steps=[['Requested',r.requestedAt],['Accepted',r.acceptedAt],['Arrived',r.arrivedAt],['Started',r.startedAt],[r.status==='cancelled'?'Cancelled':'Completed',r.status==='cancelled'?r.cancelledAt:r.completedAt]].filter(function(s){return s[1];});
+    var timeline=steps.map(function(s){ return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);white-space:nowrap"><b style="color:var(--text2,#b0bcd8);font-weight:700">'+s[0]+'</b> '+_rhClock(s[1])+'</span>'; }).join('<span style="color:var(--border);font-size:11px">›</span>');
+    var route='<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2,#b0bcd8);margin-top:2px"><span style="width:7px;height:7px;border-radius:50%;background:'+m.c+';flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.pickupAddress||'Pickup')+'</span></div>'
+      +(r.dropoffAddress?'<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);margin-top:3px"><span style="width:7px;height:7px;border-radius:2px;background:var(--gold);flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.dropoffAddress)+'</span></div>':'');
+    var priceBlock=r.status==='cancelled'
+      ? '<div style="font-size:11px;color:var(--muted)">No charge</div>'
+      : '<div style="font-size:16px;color:var(--gold);font-weight:900;letter-spacing:-.3px">$'+fare.toFixed(0)+(r.finalPrice?'':' <span style="font-size:9px;color:var(--muted);font-weight:600">est</span>')+'</div>';
+    return '<div style="background:rgba(255,255,255,.02);border:1px solid var(--border);border-left:3px solid '+m.c+';border-radius:13px;padding:12px 15px;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">'
+      +'<div style="width:38px;height:38px;border-radius:11px;background:'+m.c+'1f;border:1px solid '+m.c+'40;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:'+m.c+';flex-shrink:0">'+initial+'</div>'
+      +'<div style="flex:1;min-width:150px">'
+      +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:14px;font-weight:800;color:#fff;letter-spacing:-.2px">'+rider+'</span>'+dist+hrs+when+'</div>'
+      +route
+      +(drv?'<div style="font-size:11px;color:var(--muted);margin-top:4px">👤 '+esc(drv)+'</div>':'')
+      +'</div>'
+      +'<div style="text-align:right;flex-shrink:0">'
+      +'<div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;color:'+m.c+';background:'+m.c+'1f;border:1px solid '+m.c+'40;border-radius:20px;padding:3px 10px;margin-bottom:6px">'+m.i+' '+m.l+'</div>'
+      +priceBlock
+      +'</div>'
+      +'</div>'
+      +(timeline?'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:9px;border-top:1px dashed var(--border)">'+timeline+'</div>':'')
       +'</div>';
   }).join('');
 }
@@ -7117,7 +7218,9 @@ async function submitAddDriver(){
     });
     var d; try{ d=await r.json(); }catch(je){ d={}; }
     if(!r.ok){ st.style.color='var(--red)'; st.textContent=(d&&d.error)||('Error '+r.status+' — check worker is deployed'); return; }
-    st.style.color='var(--green)'; st.textContent='Driver added! Welcome email sent to '+email+'.';
+    st.style.color='var(--green)';
+    var _cnt=(d&&typeof d.driverCount==='number')?d.driverCount:null;
+    st.textContent=(_cnt!==null?('Driver added — '+_cnt+' driver'+(_cnt!==1?'s':'')+' now on file. '):'Driver added! ')+'Welcome email sent to '+email+'.';
     $d('drvAddName').value=''; $d('drvAddEmail').value=''; $d('drvAddPhone').value=''; $d('drvAddRate').value='';
     setTimeout(function(){
       _drvLoadRoster();
