@@ -1279,29 +1279,14 @@ document.addEventListener('DOMContentLoaded',()=>{
     return;
   }
 
-  // Normal portal: auto-login if token exists
-  // Show app immediately (optimistic) — load data in background so refresh feels instant.
-  // Only kick to login if the server comes back with a genuine 401 twice in a row.
+  // Normal portal: show app immediately if token exists — never auto-logout on page load.
+  // Session expiry is only enforced on explicit user actions (booking, saving, etc.).
   hideLoading();
   if(state.token && state.email){
-    showApp(); // render cached state right away
-    loadPortalData().then(async result=>{
-      if(result === true){
-        renderAll(); // refresh with live data
-      } else if(result === 'error'){
-        // network/server issue — stay on app with cached state, silently retry later
-      } else {
-        // Got 401 — retry once before deciding it's really expired
-        await new Promise(res=>setTimeout(res, 1500));
-        const retry = await loadPortalData();
-        if(retry === true || retry === 'error'){
-          if(retry === true) renderAll();
-        } else {
-          // Confirmed invalid — sign out
-          signOut();
-          toast('Session expired — please sign in again','error');
-        }
-      }
+    showApp();
+    loadPortalData().then(result=>{
+      if(result === true) renderAll();
+      // on 'error' or 'unauthorized' — stay on app silently, data loads on next action
     });
   }
 });
