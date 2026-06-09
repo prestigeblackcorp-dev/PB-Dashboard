@@ -1245,7 +1245,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
   <button class="tab-btn active" onclick="switchTab('overview')">📊 Overview</button>
   <div class="tab-sep"></div>
   <button class="tab-btn" onclick="switchTab('upcoming')">📅 Upcoming <span id="tabBadgeUpcoming" class="tab-badge tab-badge-blue" style="display:none"></span></button>
-  <button class="tab-btn" onclick="switchTab('current')">🚗 Current <span id="tabBadgeCurrent" class="tab-badge tab-badge-green" style="display:none"></span></button>
+  <button class="tab-btn" onclick="switchTab('current')">🚗 Current <span id="tabBadgeCurrent" class="tab-badge tab-badge-green" style="display:none"></span> <span id="tabBadgeAwaiting" class="tab-badge pulse" style="display:none;background:#ef4444;color:#fff" title="Trips awaiting completion"></span></button>
   <button class="tab-btn" onclick="switchTab('previous')">🕐 Previous</button>
   <button class="tab-btn" onclick="switchTab('cancelled')">🚫 Cancelled</button>
   <button class="tab-btn" onclick="switchTab('calendar')">🗓 Calendar</button>
@@ -6137,6 +6137,7 @@ function renderKPIs(filtered, containerId){
   // Today-only uses cash-basis so future/unpaid same-day bookings don't inflate revenue.
   var dateLockPeriodRev = 0;
   var bookingRev, pureBase, extChargeTotal=0, pickupBalance=0;
+  var _bfToday=0, _stripeBaseToday=0; // today gross: broker-fee add-back + Stripe card-processing base
 
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     extChargeTotal = active.reduce(function(s,b){
@@ -6190,6 +6191,17 @@ function renderKPIs(filtered, containerId){
         return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
       },0);
     },0);
+    // Gross add-backs (cash-basis): broker fees netted out of today's balances + Stripe card-processing base.
+    // Portal charges are always paid via Stripe, so the whole amount collected today is Stripe base.
+    _stripeBaseToday = portalChargeTodayRev;
+    allActive.forEach(function(b){
+      var _pd  = b.pickupDate || b.date || '';
+      var _pts = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd ? new Date(_pd+'T12:00:00').getTime() : 0) : 0);
+      if(!_pts || dateStr(new Date(_pts))!==tod) return;
+      _bfToday += (Number(b.brokerFee)||0)*(Number(b.days)||1);
+      if(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe')
+        _stripeBaseToday += Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
+    });
     pureBase   = pickupBalance - addons;
     bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev;
 
@@ -6286,10 +6298,27 @@ function renderKPIs(filtered, containerId){
 
   var netBookingRev = active.reduce(function(s,b){ return s+netRevenue(b); },0); // for display only
 
+  // ── Gross revenue (before broker fees) + 13.25% card-processing uplift on Stripe-paid amounts ──
+  var grossRev;
+  if(containerId==='kpiGrid' && _kpiPeriod === 'today'){
+    // Cash-basis: mirror Net, add back broker fees collected today + Stripe card uplift (5% + 8.25% tax)
+    grossRev = revenue + _bfToday + (_stripeBaseToday * 0.1325);
+  } else if(containerId==='kpiGrid'){
+    // 7/30/90/all — accrual gross + uplift on Stripe-paid amounts in the period
+    var _stripeBasePeriod = active.reduce(function(s,b){
+      var _sb = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe'
+        ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
+      return s + _sb + portalChargesTotal(b);
+    },0);
+    grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+dateLockPeriodRev+otherIncome+rideRev + (_stripeBasePeriod * 0.1325);
+  } else {
+    grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+dateLockPeriodRev+otherIncome+rideRev;
+  }
+
   var cards = [
     {label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
+    {label:'Gross Revenue',         val:$$(grossRev),           sub:'Before broker fees · incl. card fees',                cls:''},
     {label:'Net Revenue',           val:$$(revenue),            sub:revSub,                                                cls:''},
-    {label:'Gross Revenue',         val:$$(active.reduce(function(s,b){return s+totalRevenue(b);},0)+dateLockPeriodRev+otherIncome+rideRev), sub:'Before broker fees', cls:''},
     {label:'Date Locks',            val:$$(dateLockCardVal),    sub:dateLockCardSub,                                       cls:'blue'},
     {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(deposits-depositKept)+' returned to clients',      cls:'purple'},
     {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
@@ -6662,6 +6691,7 @@ function renderVehicleTable(filtered){
   var _baseFiltered = getFiltered();
   var allActive = _baseFiltered.filter(function(b){ return !b._deleted && b.status!=='cancelled'; });
   var map={};
+  function _seedV(v){ if(!map[v]) map[v]={bookings:0,revenue:0,deposits:0,addons:0,cost:0,extraIncome:0,brokerFees:0}; }
 
   if(isTodayOnly){
     // TODAY — cash-basis: only count logged payment timestamps
@@ -6673,13 +6703,13 @@ function renderVehicleTable(filtered){
       var _pDate2 = b.pickupDate || b.date || '';
       var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate2 ? new Date(_pDate2+'T12:00:00').getTime() : 0) : 0);
       if(!paidTs||dateStr(new Date(paidTs))!==_kpiDR3.from) return;
-      if(!map[b.vehicle]) return;
+      _seedV(b.vehicle);
       var _bf2=(Number(b.brokerFee)||0)*(Number(b.days)||1);
       map[b.vehicle].revenue+=Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)-_bf2);
     });
     allActive.forEach(function(b){
       if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt||dateStr(new Date(b.dateLockPaidAt))!==_kpiDR3.from) return;
-      if(!map[b.vehicle]) return;
+      _seedV(b.vehicle);
       map[b.vehicle].revenue+=Number(b.dateLock);
     });
     allActive.forEach(function(b){
@@ -6687,7 +6717,7 @@ function renderVehicleTable(filtered){
       b.extensions.forEach(function(ext){
         if(!(Number(ext.additionalCharge)>0)||!ext.createdAt) return;
         if(dateStr(new Date(ext.createdAt))!==_kpiDR3.from) return;
-        if(!map[b.vehicle]) return;
+        _seedV(b.vehicle);
         map[b.vehicle].revenue+=Number(ext.additionalCharge);
       });
     });
@@ -6696,7 +6726,7 @@ function renderVehicleTable(filtered){
       (b.portalCharges||[]).forEach(function(c){
         if(!c||!c.paidAt) return;
         if(dateStr(new Date(c.paidAt))!==_kpiDR3.from) return;
-        if(!map[b.vehicle]) return;
+        _seedV(b.vehicle);
         map[b.vehicle].revenue+=Number(c.amount)||0;
       });
     });
@@ -7767,8 +7797,11 @@ function tripCard(b, showCountdown){
     '<span style="background:rgba(201,169,98,.15);color:#C9A962;border:1px solid rgba(201,169,98,.35);border-radius:5px;padding:1px 7px;font-size:10px;font-weight:800;margin-left:4px" title="Customer updated this booking via portal">🔗 PORTAL</span>':'';
 
   // Feature 6: quick status buttons
-  var statusBtn='';
-  if(b.status==='pending'){
+  var statusBtn='', completeBtn='';
+  if(tripIsOverdue(b)){
+    // Overdue (started, drop-off passed, not completed) → one-tap finish that logs revenue & files under Previous
+    completeBtn='<button class="btn btn-sm" style="border-color:#22c55e;color:#22c55e;font-weight:700;min-width:104px" onclick="markTripComplete(\''+b.id+'\')" title="Mark complete — logs revenue &amp; files under Previous">✓ Complete Trip</button>';
+  } else if(b.status==='pending'){
     statusBtn='<button class="btn btn-sm btn-confirm" onclick="quickStatus(\''+b.id+'\',\'confirmed\')">✓ Confirm</button>';
   } else if(b.status==='confirmed'){
     statusBtn='<button class="btn btn-sm btn-complete" onclick="quickStatus(\''+b.id+'\',\'completed\')">✓ Complete</button>';
@@ -7860,6 +7893,7 @@ function tripCard(b, showCountdown){
       '<button class="btn btn-sm" style="border-color:var(--gold-dim);color:var(--gold)" onclick="generateInvoice(\''+b.id+'\')">📄 Invoice</button>'+
       assignBtn+
       (b.type!=='chauffeur'?'<button class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold)" onclick="openContract(\''+b.id+'\')">📝 Contract</button>':'')+
+      completeBtn+
       statusBtn+
       dupBtn+
       (b.status!=='cancelled'?'<button class="btn btn-sm" style="border-color:rgba(255,92,92,.5);color:var(--red)" onclick="cancelTripCard(\''+b.id+'\')">✕ Cancel</button>':'')+
@@ -7943,6 +7977,7 @@ function renderCurrent(){
   if(!current.length){
     $d('currentList').innerHTML='<div style="padding:60px;text-align:center;color:var(--muted);font-size:15px">🚗 No trips currently active</div>';
     var cb0=$d('tabBadgeCurrent'); if(cb0){ cb0.style.display='none'; cb0.classList.remove('pulse'); }
+    var ab0=$d('tabBadgeAwaiting'); if(ab0){ ab0.style.display='none'; ab0.classList.remove('pulse'); }
     return;
   }
 
@@ -7972,9 +8007,11 @@ function renderCurrent(){
   }
   $d('currentList').innerHTML=html;
   _repeatSetCache=null;
-  // Update nav badge
+  // Update nav badges — green = active count; red pulsing = trips awaiting completion
   var cb=$d('tabBadgeCurrent');
-  if(cb){ var cc=current.length; cb.textContent=cc; cb.style.display=cc?'':'none'; cb.classList.toggle('pulse',cc>0); }
+  if(cb){ var cc=current.length; cb.textContent=cc; cb.style.display=cc?'':'none'; cb.classList.toggle('pulse',cc>0 && awaiting.length===0); }
+  var ab=$d('tabBadgeAwaiting');
+  if(ab){ var ac=awaiting.length; ab.textContent='⚠ '+ac; ab.style.display=ac?'':'none'; ab.classList.toggle('pulse',ac>0); }
 }
 
 // ════════════════════════════════════════════════════════
@@ -12421,6 +12458,21 @@ function cancelTripCard(id){
   if(!b) return;
   if(!confirm('Cancel booking for '+esc(b.name)+'?\n\nThis will mark the booking as cancelled and notify the waitlist if applicable.')) return;
   quickStatus(id,'cancelled');
+}
+
+// One-tap finish for overdue trips on the Current tab — logs revenue (status=completed) and files under Previous.
+// Delegates to quickStatus for DRY (sets _completedAt + history + review email + save + gcal + re-render).
+function markTripComplete(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b) return;
+  if(b.status==='completed'){ toast('Trip already completed.'); return; }
+  var bal=getRemainingBalance(b);
+  var msg='Mark '+(b.name||'this trip')+' complete?\n\n• Logs revenue: '+$(totalRevenue(b))+'\n• Files it under Previous trips';
+  if(bal>0) msg+='\n\n⚠ Outstanding balance still owed: '+$(bal)+'.\nComplete anyway?';
+  if(!confirm(msg)) return;
+  quickStatus(id,'completed');
+  renderPrevious();
+  toast('✅ '+(b.name||'Trip')+' completed — now under Previous.');
 }
 
 // ════════════════════════════════════════════════════════
