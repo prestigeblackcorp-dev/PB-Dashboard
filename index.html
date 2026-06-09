@@ -9423,7 +9423,7 @@ function confirmAddDriver(bookingId){
   var name=($d('addDrvName').value||'').trim();
   if(!name){ showToast('Name is required'); return; }
   var phone=($d('addDrvPhone').value||'').trim();
-  var email=($d('addDrvEmail').value||'').trim();
+  var email=($d('addDrvEmail').value||'').trim().toLowerCase();
   var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
   if(idx===-1){ showToast('Booking not found'); return; }
   if(!bookings[idx].extraDrivers) bookings[idx].extraDrivers=[];
@@ -9431,6 +9431,18 @@ function confirmAddDriver(bookingId){
   bookings[idx]._t=Date.now();
   save();
   $d('addDriverOverlay').remove();
+
+  // Auto-register in driver portal so the driver can log in immediately.
+  // Uses upsert (PUT) so existing accounts are not overwritten if already present.
+  if(email){
+    var _WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+    var _sec=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+    fetch(_WORKER+'/dashboard/add-driver',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret:_sec,name:name,email:email,phone:phone,payRate:0})
+    }).catch(function(){});  // fire-and-forget; failure is non-fatal
+  }
+
   // Close booking detail and open verify modal for the new driver so owner can
   // immediately send the Stripe verification link without extra taps.
   var newDriverIdx = bookings[idx].extraDrivers.length - 1;
