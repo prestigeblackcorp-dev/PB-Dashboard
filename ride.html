@@ -595,11 +595,17 @@ async function fetchSuggestions(field){
   const el=$d(field+'Sugg');
   el.innerHTML=data.features.map((f,i)=>{
     const pr=f.properties||{};
-    const line1=[pr.housenumber,pr.street].filter(Boolean).join(' ');
-    const head=line1||pr.name||'';
-    const sub=[pr.city||pr.district||pr.county||'',pr.state||''].filter(Boolean).join(', ');
+    const addr=[pr.housenumber,pr.street].filter(Boolean).join(' ');
+    const locality=[pr.city||pr.district||pr.county||'',pr.state||''].filter(Boolean).join(', ');
+    // Lead with the place/business name (e.g. "XTC Cabaret") so riders can search by
+    // the name they know; show the street address + city beneath it.
+    const main=pr.name||addr||locality;
+    const subParts=[];
+    if(pr.name&&addr) subParts.push(addr);
+    if(locality) subParts.push(locality);
+    const sub=subParts.join(' · ');
     return `<div class="suggestion" onclick="selectSuggestion('${field}',${i})">
-      <div class="sug-main">${esc(head||sub)}</div>
+      <div class="sug-main">${esc(main)}</div>
       ${sub?`<div class="sug-sub">${esc(sub)}</div>`:''}
     </div>`;
   }).join('');
@@ -610,7 +616,11 @@ function selectSuggestion(field,idx){
   const el=$d(field+'Sugg');
   const f=el._features[idx];
   const [lng,lat]=f.geometry.coordinates;
-  const full=_fmtAddr(f.properties)||f.properties.name||f.properties.display_name||'';
+  const pr=f.properties||{};
+  const addr=_fmtAddr(pr);
+  // Keep the place name in the saved address so the rider sees "XTC Cabaret, 8550 …"
+  // while the driver still gets the full street address for navigation.
+  const full=(pr.name&&(!addr||addr.indexOf(pr.name)!==0))?(pr.name+(addr?(', '+addr):'')):(addr||pr.name||pr.display_name||'');
   if(field==='pickup'){
     $d('pickupInp').value=full;
     _pickup={lat,lng,address:full};
