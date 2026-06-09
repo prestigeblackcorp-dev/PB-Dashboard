@@ -6967,7 +6967,56 @@ async function renderDriversTab(){
 // ══════════════════════════════════════════════════════════════════
 // LIVE FLEET MAP  (dashboard Drivers tab)
 // ══════════════════════════════════════════════════════════════════
-var _fleetMap=null, _fleetMarkers={}, _fleetRefreshTimer=null;
+var _fleetMap=null, _fleetMarkers={}, _fleetRefreshTimer=null, _revGeoCache={};
+
+// Resolve a driver's display NAME (never the raw email). Prefer the authoritative
+// roster name matched by email, then the name stored on the location ping, then a
+// humanized email local-part as a last resort.
+function _drvDisplayName(loc){
+  if(!loc) return 'Driver';
+  var em=(loc.email||'').toLowerCase().trim();
+  var match=(typeof _drvList!=='undefined'&&_drvList&&_drvList.length)
+    ? _drvList.find(function(x){ return x && (x.email||'').toLowerCase().trim()===em; }) : null;
+  if(match&&match.name) return match.name;
+  if(loc.name) return loc.name;
+  var lp=(loc.email||'').split('@')[0].replace(/[._-]+/g,' ').trim();
+  return lp ? lp.replace(/\b\w/g,function(c){ return c.toUpperCase(); }) : 'Driver';
+}
+
+// Reverse-geocode lat/lng → human address via OpenStreetMap Nominatim (cached;
+// lazy — only runs when a driver popup is opened, well within usage limits).
+function _reverseGeocode(lat,lng,cb){
+  if(!isFinite(lat)||!isFinite(lng)){ cb(''); return; }
+  var key=lat.toFixed(4)+','+lng.toFixed(4);
+  if(_revGeoCache[key]!==undefined){ cb(_revGeoCache[key]); return; }
+  fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat='+lat+'&lon='+lng,{headers:{'Accept':'application/json'}})
+    .then(function(r){ return r.ok?r.json():null; })
+    .then(function(j){
+      var addr='';
+      if(j){
+        var a=j.address||{};
+        var line1=((a.house_number?a.house_number+' ':'')+(a.road||a.pedestrian||a.footway||'')).trim();
+        var city=a.city||a.town||a.village||a.hamlet||a.suburb||a.neighbourhood||'';
+        addr=[line1,city,a.state||''].filter(Boolean).join(', ');
+        if(!addr) addr=j.display_name||'';
+      }
+      if(!addr) addr=lat.toFixed(5)+', '+lng.toFixed(5);
+      _revGeoCache[key]=addr; cb(addr);
+    }).catch(function(){ cb(lat.toFixed(5)+', '+lng.toFixed(5)); });
+}
+
+// Popup body for an online-driver marker: NAME (not email), status, live address, last update.
+function _driverPopupHtml(loc){
+  var nm=_drvDisplayName(loc);
+  var st=loc.status==='available'?'Available':loc.status==='busy'?'On a trip':(loc.status||'Online');
+  var col=loc.status==='available'?'#16a34a':loc.status==='busy'?'#b8860b':'#6b7a9a';
+  return '<div style="min-width:190px;font-family:inherit;line-height:1.35">'
+    +'<div style="font-weight:800;font-size:14px;color:#111;margin-bottom:4px">'+esc(nm)+'</div>'
+    +'<div style="display:inline-block;font-size:11px;font-weight:700;color:'+col+';background:'+col+'1f;border-radius:10px;padding:1px 9px;margin-bottom:7px">'+esc(st)+'</div>'
+    +'<div style="font-size:12px;color:#444;margin-bottom:3px"><span style="color:#888">📍 Current location</span><br><span class="pb-addr" style="color:#111;font-weight:600">Locating…</span></div>'
+    +'<div style="font-size:11px;color:#999;margin-top:5px">Updated '+(new Date(loc.updatedAt||0).toLocaleTimeString())+'</div>'
+    +'</div>';
+}
 
 function initFleetMap(){
   if(_fleetMap) return;
@@ -6977,6 +7026,15 @@ function initFleetMap(){
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
     attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',maxZoom:19
   }).addTo(_fleetMap);
+  // When a driver marker is pressed, fill in their current street address (lazy reverse-geocode).
+  _fleetMap.on('popupopen',function(e){
+    var m=e.popup&&e.popup._source; if(!m||!m._pbLoc) return;
+    var root=e.popup.getElement&&e.popup.getElement(); if(!root) return;
+    var addrEl=root.querySelector('.pb-addr'); if(!addrEl||addrEl.dataset.done==='1') return;
+    _reverseGeocode(Number(m._pbLoc.lat),Number(m._pbLoc.lng),function(addr){
+      if(addrEl){ addrEl.textContent=addr; addrEl.dataset.done='1'; }
+    });
+  });
   setTimeout(function(){ _fleetMap.invalidateSize(); },300);
 }
 
@@ -6997,11 +7055,19 @@ async function refreshFleetMap(){
     var isAvail=loc.status==='available';
     var isBusy=loc.status==='busy';
     var color=isAvail?'#22c55e':isBusy?'#C9A962':'#6b7a9a';
+    var label=_drvDisplayName(loc).split(' ')[0];
     var html='<div style="position:relative;"><div style="width:36px;height:36px;background:'+color+';border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;border:2px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.5);">🚘</div>'+
-      '<div style="position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:9px;font-weight:700;color:#fff;background:rgba(0,0,0,.7);border-radius:4px;padding:1px 4px;">'+(loc.name||key.split('_')[0])+'</div></div>';
+      '<div style="position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:9px;font-weight:700;color:#fff;background:rgba(0,0,0,.7);border-radius:4px;padding:1px 4px;">'+esc(label)+'</div></div>';
     var icon=L.divIcon({className:'',html:html,iconSize:[36,54],iconAnchor:[18,18]});
-    if(_fleetMarkers[key]){ _fleetMarkers[key].setLatLng([loc.lat,loc.lng]); _fleetMarkers[key].setIcon(icon); }
-    else { _fleetMarkers[key]=L.marker([loc.lat,loc.lng],{icon:icon}).addTo(_fleetMap).bindPopup('<b>'+(loc.name||loc.email)+'</b><br>Status: '+loc.status+'<br>Updated: '+(new Date(loc.updatedAt||0).toLocaleTimeString())); }
+    var popHtml=_driverPopupHtml(loc);
+    if(_fleetMarkers[key]){
+      var mk=_fleetMarkers[key];
+      mk.setLatLng([loc.lat,loc.lng]); mk.setIcon(icon); mk._pbLoc=loc;
+      if(!mk.isPopupOpen()){ if(mk.getPopup()){ mk.setPopupContent(popHtml); } else { mk.bindPopup(popHtml); } }
+    } else {
+      _fleetMarkers[key]=L.marker([loc.lat,loc.lng],{icon:icon}).addTo(_fleetMap).bindPopup(popHtml);
+      _fleetMarkers[key]._pbLoc=loc;
+    }
   });
   // Remove stale markers
   Object.keys(_fleetMarkers).forEach(function(k){ if(!seen[k]){ _fleetMap.removeLayer(_fleetMarkers[k]); delete _fleetMarkers[k]; } });
@@ -7326,13 +7392,13 @@ function renderPrevious(){
   var prev=bookings.filter(function(b){
     if(b._deleted) return false;
     if(b.status==='cancelled') return false;
-    if(b.status==='completed') return true; // completed always goes to past regardless of end date
+    if(b.status==='completed') return true; // completed always files into Previous
+    // Un-completed trips stay in CURRENT (flagged "Awaiting completion") through their whole
+    // end day — they never bounce out at drop-off time. Only once a trip rolls fully past its
+    // end day does it file here, so nothing ever disappears. (Mutually exclusive with isCurrentTrip.)
     var end=tripEndDate(b);
     if(!end) return false;
-    if(end<today) return true;
-    // Same-day trips: move to Previous once the return time has passed
-    if(end===today){ var retMs=tripReturnMs(b); return !!(retMs && Date.now()>retMs); }
-    return false;
+    return end<today;
   }).sort(function(a,b){
     // Sort by completion time first (most recently checked out/completed at top),
     // fall back to trip end date for trips that were never explicitly marked complete
@@ -7423,6 +7489,17 @@ function tripDuration(b){
   var d=Number(b.days)||1;
   return d+' day'+(d!==1?'s':'');
 }
+// Normalize a booking's authorized (additional) drivers to a plain array — Firebase
+// may hand them back as an array OR as an object keyed by index. Used by tripCard
+// (display) and sendReviewRequest (so the driver also gets a review).
+function _authDrivers(b){
+  var ed=b&&b.extraDrivers;
+  if(!ed) return [];
+  if(Array.isArray(ed)) return ed.filter(Boolean);
+  if(typeof ed==='object') return Object.keys(ed).sort().map(function(k){ return ed[k]; }).filter(Boolean);
+  return [];
+}
+
 function tripCard(b, showCountdown){
   var cd=countdownLabel(b.pickupDate||b.date);
   var addonsArr=[];
@@ -7446,6 +7523,23 @@ function tripCard(b, showCountdown){
   // Logged timestamp — small note shown on the card body
   var loggedLine = b.createdAt ?
     '<div style="font-size:9px;color:var(--muted);margin-top:4px">📋 logged '+new Date(Number(b.createdAt)).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true})+'</div>' : '';
+
+  // Authorized (additional) drivers — always shown on the card whenever the booking has them
+  var _ad=_authDrivers(b);
+  var authBlock=_ad.length?
+    '<div style="margin-top:6px;padding:7px 10px;background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:8px">'+
+      '<div style="font-size:10px;font-weight:800;color:var(--gold);letter-spacing:.04em;margin-bottom:3px">🚗 AUTHORIZED DRIVER'+(_ad.length>1?'S':'')+'</div>'+
+      _ad.map(function(d){
+        var v=d&&(d.idVerified||(d.verify&&d.verify.idVerified));
+        var signed=d&&d.sig&&String(d.sig).indexOf('data:image/')===0;
+        return '<div style="font-size:11px;color:#cfd3da;display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:1px">'+
+          '<span style="font-weight:700;color:#fff">'+esc((d&&d.name)||'Driver')+'</span>'+
+          (d&&d.phone?'<span style="color:var(--muted)">· '+esc(d.phone)+'</span>':'')+
+          (v?'<span title="ID Verified" style="color:#22c55e">🪪 Verified</span>':'<span title="Awaiting ID verification" style="color:#eab308">⏳ Unverified</span>')+
+          (signed?'<span title="Signed agreement">📝</span>':'')+
+        '</div>';
+      }).join('')+
+    '</div>':'';
 
   var idOk=b.verify&&b.verify.idVerified;
   var idCarried=!idOk&&b.verify&&!!b.verify.carriedFromBooking;
@@ -7531,6 +7625,7 @@ function tripCard(b, showCountdown){
       (isBlacklisted(b.phone,b.email,b.name)?'<div style="margin-top:4px"><span style="background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.35);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">⛔ Blacklisted</span></div>':'')+
       (b.notes?'<div style="margin-top:6px;font-size:11px;color:var(--muted);background:rgba(255,255,255,.04);border-left:2px solid var(--gold-dim);padding:4px 8px;border-radius:0 6px 6px 0;white-space:pre-wrap">📝 '+esc(b.notes)+'</div>':'')+
       loggedLine+
+      authBlock+
     '</div>'+
     '<div>'+
       '<div class="trip-detail-label">Duration</div>'+
@@ -7578,19 +7673,30 @@ function isCurrentTrip(b){
   var today=todayStr();
   var start=normDateStr(b.pickupDate||b.date);
   var end=tripEndDate(b);
-  if(!start||start>today||end<today) return false;
+  if(!start) return true;          // no parseable date yet → keep visible in Current so a booking is never lost
+  if(start>today) return false;     // hasn't started yet → Upcoming
+  if(end && end<today) return false;       // fully past its end day → files into Previous
   // On pickup day: enter Current at the scheduled pickup time (overlap with Upcoming until +1hr)
   if(start===today){
     var parts=(b.pickupTime||'00:00').split(':');
     var pickup=new Date(); pickup.setHours(parseInt(parts[0])||0,parseInt(parts[1])||0,0,0);
     if(Date.now() < pickup.getTime()) return false; // before pickup: upcoming only
   }
-  // On return day: exit Current once the dropoff/return time has passed
-  if(end===today){
-    var retMs=tripReturnMs(b);
-    if(retMs && Date.now() > retMs) return false; // trip is over, move to Previous
-  }
+  // A started trip STAYS in Current even after its drop-off/return time passes — it is never
+  // silently removed just because the clock passed drop-off. It remains here (flagged
+  // "Awaiting completion") until the owner marks it complete, or it rolls fully past its end
+  // day and files into Previous. This guarantees a booking can never disappear after drop-off.
   return true;
+}
+// A started, not-yet-completed trip whose drop-off/return time has already passed.
+function tripIsOverdue(b){
+  if(!b||b.status==='completed'||b.status==='cancelled') return false;
+  var today=todayStr();
+  var end=tripEndDate(b);
+  if(!end) return false;
+  if(end<today) return true;                                              // ended on a prior day, never completed
+  if(end===today){ var r=tripReturnMs(b); return !!(r && Date.now()>r); } // today, past drop-off
+  return false;                                                          // multi-day trip still in progress
 }
 function tripEndDate(b){
   var start=normDateStr(b.pickupDate||b.date);
@@ -7619,11 +7725,18 @@ function renderCurrent(){
     return;
   }
 
-  var returns=current.filter(function(b){ return tripEndDate(b)===today; }).sort(sortByTime);
-  var active=current.filter(function(b){ return tripEndDate(b)!==today; }).sort(sortByTime);
+  var awaiting=current.filter(function(b){ return tripIsOverdue(b); }).sort(sortByTime);
+  var returns=current.filter(function(b){ return !tripIsOverdue(b) && tripEndDate(b)===today; }).sort(sortByTime);
+  var active=current.filter(function(b){ return !tripIsOverdue(b) && tripEndDate(b)!==today; }).sort(sortByTime);
 
   _repeatSetCache=buildRepeatSet();
   var html='';
+  if(awaiting.length){
+    html+='<div class="trip-group">'+
+      '<div class="trip-group-label" style="color:#ef4444">⚠ Awaiting Completion ('+awaiting.length+') — drop-off time passed; mark complete to log revenue</div>'+
+      awaiting.map(function(b){ return tripCard(b,false); }).join('')+
+      '</div>';
+  }
   if(returns.length){
     html+='<div class="trip-group">'+
       '<div class="trip-group-label" style="color:#f97316">🔁 Today\'s Returns ('+returns.length+')</div>'+
@@ -11425,25 +11538,18 @@ function getVehicleUtilization(vehicleName){
 // ════════════════════════════════════════════════════════
 //  FEATURE 6: QUICK STATUS WORKFLOW
 // ════════════════════════════════════════════════════════
+// Sends the review email to BOTH the customer and every authorized driver on the booking.
 function sendReviewRequest(b){
-  if(!MESSAGING_URL || !b || !b.email) return;
-  if(b.reviewEmailSentAt) return; // already sent — never double-send
-  // Optimistic local guard — prevents double-send on same device before fetch resolves
-  var _lsKey = 'pb_review_sent_'+b.id;
-  if(localStorage.getItem(_lsKey)) return;
-  localStorage.setItem(_lsKey, '1');
-  // Also stamp in-memory immediately so runAutoScheduledEmails won't re-enter on same tick
-  var _ridxEarly = bookings.findIndex(function(x){ return x.id===b.id; });
-  if(_ridxEarly !== -1){ bookings[_ridxEarly].reviewEmailSentAt = Date.now(); }
-  var firstName = (b.name||'').split(' ')[0] || 'there';
-  fetch(MESSAGING_URL+'/send-email',{
-    method:'POST',
-    headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
-    body:JSON.stringify({
-      to: b.email,
-      subject: 'How was your experience with Prestige Black? ⭐',
-      html:
-        '<div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.10)">'+
+  if(!MESSAGING_URL || !b) return;
+  if(b.email) _sendReviewTo(b, b.email, b.name, 'customer');
+  var _custEm=String(b.email||'').toLowerCase().trim();
+  _authDrivers(b).forEach(function(d){
+    if(d && d.email && String(d.email).toLowerCase().trim()!==_custEm) _sendReviewTo(b, d.email, d.name, 'driver');
+  });
+}
+// Review email HTML — shared by the customer + authorized-driver sends.
+function _reviewEmailHtml(firstName){
+  return '<div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.10)">'+
         '<div style="background:linear-gradient(135deg,#b8982e 0%,#8a6e1e 100%);padding:32px 28px;text-align:center">'+
         '<div style="font-size:48px;margin-bottom:8px">⭐</div>'+
         '<h1 style="margin:0;color:#fff;font-size:24px;font-weight:800;letter-spacing:-.5px">Thank you, '+esc(firstName)+'!</h1>'+
@@ -11460,24 +11566,49 @@ function sendReviewRequest(b){
         '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">'+
         'Prestige Black Rentals · Dallas–Fort Worth'+
         '</div>'+
-        '</div>'
-    })
+        '</div>';
+}
+// Sends ONE review email to a single recipient (customer or authorized driver) with
+// independent dedup guards so the same person is never double-emailed across devices.
+function _sendReviewTo(b, toEmail, toName, role){
+  if(!MESSAGING_URL || !b || !toEmail) return;
+  var isCust=role==='customer';
+  var em=String(toEmail).toLowerCase().trim();
+  if(isCust){ if(b.reviewEmailSentAt) return; }
+  else { if(b._driverReviewsSentAt && b._driverReviewsSentAt[em]) return; }
+  var _lsKey='pb_review_sent_'+b.id+(isCust?'':'_'+em);
+  if(localStorage.getItem(_lsKey)) return;
+  localStorage.setItem(_lsKey,'1');
+  var _ix=bookings.findIndex(function(x){ return x.id===b.id; });
+  if(_ix!==-1){
+    if(isCust){ bookings[_ix].reviewEmailSentAt=Date.now(); }
+    else { if(!bookings[_ix]._driverReviewsSentAt) bookings[_ix]._driverReviewsSentAt={}; bookings[_ix]._driverReviewsSentAt[em]=Date.now(); }
+  }
+  var firstName=(toName||'').split(' ')[0]||'there';
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST',
+    headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
+    body:JSON.stringify({ to: em, subject:'How was your experience with Prestige Black? ⭐', html:_reviewEmailHtml(firstName) })
   }).then(function(r){
     if(r&&r.ok){
-      logNotif('review','Review Request',b.email,b.id);
+      logNotif('review', isCust?'Review Request':'Driver Review Request', em, b.id);
       // Persist to Firebase so other devices won't re-send
-      var _ridx=bookings.findIndex(function(x){return x.id===b.id;});
-      if(_ridx!==-1){ bookings[_ridx].reviewEmailSentAt=bookings[_ridx].reviewEmailSentAt||Date.now(); bookings[_ridx]._t=Date.now(); cloudSave(); }
+      var i=bookings.findIndex(function(x){ return x.id===b.id; });
+      if(i!==-1){
+        if(isCust){ bookings[i].reviewEmailSentAt=bookings[i].reviewEmailSentAt||Date.now(); }
+        else { if(!bookings[i]._driverReviewsSentAt) bookings[i]._driverReviewsSentAt={}; bookings[i]._driverReviewsSentAt[em]=bookings[i]._driverReviewsSentAt[em]||Date.now(); }
+        bookings[i]._t=Date.now(); cloudSave();
+      }
     } else {
       // Send failed — clear guards so it can retry next cycle
       localStorage.removeItem(_lsKey);
-      var _ridx2=bookings.findIndex(function(x){return x.id===b.id;});
-      if(_ridx2!==-1){ delete bookings[_ridx2].reviewEmailSentAt; }
+      var i2=bookings.findIndex(function(x){ return x.id===b.id; });
+      if(i2!==-1){ if(isCust){ delete bookings[i2].reviewEmailSentAt; } else if(bookings[i2]._driverReviewsSentAt){ delete bookings[i2]._driverReviewsSentAt[em]; } }
     }
   }).catch(function(){
     localStorage.removeItem(_lsKey);
-    var _ridx3=bookings.findIndex(function(x){return x.id===b.id;});
-    if(_ridx3!==-1){ delete bookings[_ridx3].reviewEmailSentAt; }
+    var i3=bookings.findIndex(function(x){ return x.id===b.id; });
+    if(i3!==-1){ if(isCust){ delete bookings[i3].reviewEmailSentAt; } else if(bookings[i3]._driverReviewsSentAt){ delete bookings[i3]._driverReviewsSentAt[em]; } }
   });
 }
 
