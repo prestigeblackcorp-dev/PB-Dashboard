@@ -1316,6 +1316,8 @@ function showApp(){
   document.getElementById('app-screen').style.display='flex';
   renderAll();
   hideLoading();
+  // Register push notifications (non-blocking)
+  _initPush().catch(()=>{});
 }
 
 async function loadPortalData(){
@@ -1334,6 +1336,7 @@ async function loadPortalData(){
     // Never overwrite saved vehicles with a shorter list from server (server may return [] on transient errors)
     const freshSaved = d.savedVehicles || [];
     if(freshSaved.length >= state.savedVehicles.length){ state.savedVehicles = freshSaved; }
+    _persistSaved(); // always re-write dedicated key on successful server load (covers sign-back-in)
     state.profile       = d.profile       || state.profile       || {};
     state.notifications = d.notifications || state.notifications || [];
     // Persist to localStorage keyed by email
@@ -2175,6 +2178,54 @@ function signOut(){
   document.getElementById('step-email').style.display='block';
   document.getElementById('login-email').value='';
   toast('Signed out');
+}
+
+// ─── Push Notifications ────────────────────────────────────────────────────
+const VAPID_PUBLIC_KEY = 'BHh2uWSE_fiaWQ6jYCuCN08kaEueP6_Pm_PUNIVnWbxbBNKscJRVImhxjVbLbkDWFTqVxkR-vq44YPQk7gpiAs0';
+
+function _urlB64ToUint8(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const b64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64);
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+async function _initPush() {
+  // Requires: HTTPS, service worker, Notification API
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+  if (!state.token || !state.email) return;
+
+  // Register (or reuse) the service worker
+  let reg;
+  try { reg = await navigator.serviceWorker.register('./sw.js', { scope: './' }); }
+  catch(e) { return; }
+
+  // Ask for permission (only shows dialog once; subsequent calls return cached result)
+  let perm = Notification.permission;
+  if (perm === 'default') {
+    perm = await Notification.requestPermission();
+  }
+  if (perm !== 'granted') return;
+
+  // Subscribe or reuse existing subscription
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    try {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: _urlB64ToUint8(VAPID_PUBLIC_KEY),
+      });
+    } catch(e) { return; }
+  }
+
+  // Send subscription to worker
+  try {
+    await fetch(`${WORKER}/push/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: state.token, subscription: sub.toJSON() }),
+    });
+  } catch(e) {}
 }
 
 // ─── Photos ────────────────────────────────────────────────────────────────
