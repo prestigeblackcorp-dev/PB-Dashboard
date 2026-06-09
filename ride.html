@@ -376,7 +376,8 @@ async function sendOtp(){
   showAuthStatus('Sending code…');
   const r = await fetch(WORKER+'/chauffeur/request-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})}).catch(()=>null);
   $d('sendOtpBtn').disabled=false;
-  if(!r||!r.ok){ showAuthStatus('Could not send code — try again'); return; }
+  if(!r){ showAuthStatus('Network error — check connection','var(--red)'); return; }
+  if(!r.ok){ const e=await r.json().catch(()=>{}); showAuthStatus((e&&e.error)||'Error '+r.status,'var(--red)'); return; }
   $d('auth-email-card').style.display='none';
   $d('auth-otp-card').style.display='block';
   $d('otp-sent-to').textContent='Enter the 6-digit code sent to '+email;
@@ -407,7 +408,8 @@ async function verifyOtp(code){
   const email=$d('emailInp').value.trim().toLowerCase();
   $d('otpStatus').textContent='Verifying…'; $d('otpStatus').style.color='var(--muted)';
   const r=await fetch(WORKER+'/chauffeur/verify-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,otp:code})}).catch(()=>null);
-  if(!r||!r.ok){ $d('otpStatus').textContent='Invalid code — try again'; $d('otpStatus').style.color='var(--red)'; $d('otpHiddenInp').value=''; renderOtp(''); return; }
+  if(!r){ $d('otpStatus').textContent='Network error'; $d('otpStatus').style.color='var(--red)'; return; }
+  if(!r.ok){ const e=await r.json().catch(()=>{}); $d('otpStatus').textContent=(e&&e.error)||'Invalid code — try again'; $d('otpStatus').style.color='var(--red)'; $d('otpHiddenInp').value=''; renderOtp(''); return; }
   const d=await r.json();
   if(!d.token){ $d('otpStatus').textContent='Auth error'; return; }
   _session={email,token:d.token,name:d.name||email.split('@')[0]};
