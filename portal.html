@@ -1731,7 +1731,7 @@ async function _onFleetDateChange(){
   const names = Object.keys(VEHICLE_RATES);
   await Promise.all(names.map(async name => {
     try{
-      const r = await fetch(`${WORKER}/available?vehicle=${encodeURIComponent(name)}&pickup=${pickup}&dropoff=${dropoff}`);
+      const r = await fetch(`${WORKER}/available?vehicle=${encodeURIComponent(name)}&pickupDate=${pickup}&dropoffDate=${dropoff}`);
       const d = await r.json();
       _fleetAvail[name] = d.available !== false;
     } catch(e){ _fleetAvail[name] = null; }
@@ -1756,22 +1756,29 @@ function renderFleet(){
     const imgHtml = v.img
       ? `<div style="width:100%;aspect-ratio:16/10;border-radius:10px;overflow:hidden;margin-bottom:10px;background:#111;"><img src="${v.img}" alt="${esc(name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block;"></div>`
       : `<div style="width:100%;aspect-ratio:16/10;border-radius:10px;margin-bottom:10px;background:linear-gradient(135deg,rgba(201,169,98,.18),rgba(0,0,0,.6));"></div>`;
-    // Show waitlist only when dates are entered AND vehicle is confirmed unavailable
     const avail = _fleetAvail[name];
-    const isBooked = datesEntered && avail === false;
+    const isChecking = datesEntered && avail === null && Object.keys(_fleetAvail).length > 0;
+    const isBooked   = datesEntered && avail === false;
+    const isAvail    = datesEntered && avail === true;
+    // Book button — greyed out and disabled when booked for selected dates
+    const bookBtn = isBooked
+      ? `<button disabled style="flex:1;padding:8px;background:rgba(255,255,255,.07);color:rgba(255,255,255,.3);border:1px solid rgba(255,255,255,.1);border-radius:8px;font-weight:800;font-size:12px;cursor:not-allowed;">Booked</button>`
+      : isChecking
+      ? `<button disabled style="flex:1;padding:8px;background:rgba(201,169,98,.15);color:rgba(201,169,98,.5);border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:wait;">Checking…</button>`
+      : `<button onclick="_fleetBook('${name}')" style="flex:1;padding:8px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">${isAvail ? '✓ Book' : 'Book'}</button>`;
     const waitlistBtn = isBooked
-      ? `<button onclick="_showWaitlistForm('${name}')" style="width:100%;margin-top:8px;padding:7px;background:transparent;border:1px dashed rgba(201,169,98,.4);border-radius:8px;font-size:11px;color:var(--gold-dim);cursor:pointer;font-weight:600;">Join Waitlist for Your Dates</button>`
+      ? `<button onclick="_showWaitlistForm('${name}')" style="width:100%;margin-top:8px;padding:8px;background:transparent;border:1px dashed rgba(201,169,98,.35);border-radius:8px;font-size:11px;color:var(--gold-dim);cursor:pointer;font-weight:700;letter-spacing:.03em;">🔔 Join Waitlist for These Dates</button>`
       : '';
-    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;position:relative;">
+    return `<div style="background:var(--card);border:1px solid ${isBooked ? 'rgba(239,68,68,.2)' : isAvail ? 'rgba(34,197,94,.2)' : 'var(--border)'};border-radius:14px;padding:14px;position:relative;">
       ${imgHtml}
+      ${isBooked ? `<div style="position:absolute;top:10px;right:10px;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:9px;font-weight:800;color:#f87171;padding:3px 7px;letter-spacing:.06em;text-transform:uppercase;">Booked</div>` : isAvail ? `<div style="position:absolute;top:10px;right:10px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);border-radius:6px;font-size:9px;font-weight:800;color:#4ade80;padding:3px 7px;letter-spacing:.06em;text-transform:uppercase;">Available</div>` : ''}
       <div style="font-weight:800;font-size:14px;color:var(--text)">${name}</div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:2px;line-height:1.4">${v.desc}</div>
       ${milesLine}
       <div style="font-size:16px;font-weight:900;color:var(--gold);margin-top:8px">${rate}</div>
       ${v.deposit?`<div style="font-size:11px;color:var(--text-muted)">$${v.deposit} deposit</div>`:''}
-      ${datesEntered && avail === false ? `<div style="font-size:10px;font-weight:700;color:#ef4444;margin-top:4px;text-transform:uppercase;letter-spacing:.04em">Unavailable for selected dates</div>` : ''}
       <div style="display:flex;gap:6px;margin-top:10px;">
-        <button onclick="_fleetBook('${name}')" style="flex:1;padding:8px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">Book</button>
+        ${bookBtn}
         <button onclick="_fleetSave('${name}','${v.emoji}')" style="padding:8px 10px;background:transparent;border:1px solid var(--border);border-radius:8px;font-size:14px;cursor:pointer;color:${isSaved?'#ef4444':'var(--text-muted)'}" title="${isSaved?'Remove from saved':'Save vehicle'}">${isSaved?'❤️':'🤍'}</button>
       </div>
       ${waitlistBtn}
