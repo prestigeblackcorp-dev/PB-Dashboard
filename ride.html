@@ -471,7 +471,7 @@ function locateMe(){
         }
       });
     }
-  },null,{enableHighAccuracy:true,timeout:8000});
+  },null,{enableHighAccuracy:true,timeout:8000,maximumAge:0});
 }
 
 // ── Address Autocomplete ─────────────────────────────────────────────────
@@ -492,13 +492,13 @@ async function fetchSuggestions(field){
   if(!data||!data.features) return;
   const el=$d(field+'Sugg');
   el.innerHTML=data.features.map((f,i)=>{
-    const name=f.properties.name||'';
-    const city=f.properties.city||f.properties.state||'';
-    const country=f.properties.country||'';
-    const full=[name,city,country].filter(Boolean).join(', ');
+    const pr=f.properties||{};
+    const line1=[pr.housenumber,pr.street].filter(Boolean).join(' ');
+    const head=line1||pr.name||'';
+    const sub=[pr.city||pr.district||pr.county||'',pr.state||''].filter(Boolean).join(', ');
     return `<div class="suggestion" onclick="selectSuggestion('${field}',${i})">
-      <div class="sug-main">${esc(name||full)}</div>
-      ${city?`<div class="sug-sub">${esc(city+(country?', '+country:''))}</div>`:''}
+      <div class="sug-main">${esc(head||sub)}</div>
+      ${sub?`<div class="sug-sub">${esc(sub)}</div>`:''}
     </div>`;
   }).join('');
   el._features=data.features;
@@ -508,9 +508,7 @@ function selectSuggestion(field,idx){
   const el=$d(field+'Sugg');
   const f=el._features[idx];
   const [lng,lat]=f.geometry.coordinates;
-  const name=f.properties.name||'';
-  const city=f.properties.city||'';
-  const full=[name,city].filter(Boolean).join(', ')||f.properties.display_name||'';
+  const full=_fmtAddr(f.properties)||f.properties.name||f.properties.display_name||'';
   if(field==='pickup'){
     $d('pickupInp').value=full;
     _pickup={lat,lng,address:full};
@@ -529,7 +527,27 @@ document.addEventListener('click',e=>{ if(!e.target.closest('.addr-field')){ clo
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// Build a precise, human-readable address from a Photon feature's properties.
+// Prefers "<housenumber> <street>" (e.g. "405 N Ervay St"), then POI name,
+// followed by city/district and state.
+function _fmtAddr(pr){
+  if(!pr) return '';
+  const line1=[pr.housenumber,pr.street].filter(Boolean).join(' ');
+  const head=line1||pr.name||'';
+  const locality=pr.city||pr.district||pr.county||pr.locality||'';
+  return [head,locality,pr.state].filter(Boolean).join(', ');
+}
+
 async function reverseGeocode(lat,lng){
+  // Primary: Photon (Komoot) reverse — returns street-level detail (house number
+  // + street name), so the pickup shows the exact address, not just the city.
+  try{
+    const p=await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&limit=1`,{cache:'no-store'}).then(r=>r.json());
+    const f=p&&p.features&&p.features[0];
+    const a=f&&_fmtAddr(f.properties);
+    if(a) return a;
+  }catch(e){}
+  // Fallback: BigDataCloud (locality-level only) if Photon is unavailable.
   const d=await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`).then(r=>r.json()).catch(()=>null);
   if(!d) return null;
   return [d.locality||d.city||'',d.principalSubdivision||''].filter(Boolean).join(', ')||null;
