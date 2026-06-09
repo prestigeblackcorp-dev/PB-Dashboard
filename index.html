@@ -2802,7 +2802,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:12px;font-weight:800;color:var(--muted);letter-spacing:.06em;text-transform:uppercase">📬 Sent Notifications</div>
         <button class="btn btn-sm" onclick="clearNotifLog()" style="font-size:10px;padding:3px 10px;border-color:rgba(239,68,68,.4);color:#f87171">Clear</button>
       </div>
-      <div id="notifLogList" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;font-size:12px;background:var(--surface)"></div>
+      <div id="notifLogList" style="max-height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;font-size:12px;background:var(--surface)"></div>
     </div>
 
     <div id="settUnsavedBanner" style="display:none;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.4);border-radius:8px;padding:8px 12px;font-size:12px;color:#fbbf24;margin-top:12px">⚠ Unsaved changes — click Save Settings to apply</div>
@@ -3324,17 +3324,19 @@ var OWNER_EMAIL    = localStorage.getItem('pb_owner_email')    || '';
 
 // ── Sent notification log ──────────────────────────────────────────────────────
 var _notifLog = [];
+var _notifLogSeq = 0; // monotonic counter to guarantee unique timestamps even for same-ms calls
 function loadNotifLog(){ try { var r=localStorage.getItem('pb_notif_log'); if(r) _notifLog=JSON.parse(r); } catch(e){ _notifLog=[]; } }
-function _saveNotifLog(){ try { localStorage.setItem('pb_notif_log', JSON.stringify(_notifLog.slice(0,200))); } catch(e){} }
+function _saveNotifLog(){ try { localStorage.setItem('pb_notif_log', JSON.stringify(_notifLog.slice(0,500))); } catch(e){} }
 // Merge _commLog entries from all bookings into _notifLog so remote-sent notifications appear in the global log
 function mergeCommLogsIntoNotifLog(){
   var seen = {};
-  _notifLog.forEach(function(n){ seen[n.at+'|'+n.type+'|'+n.to] = true; });
+  // Key includes bookingId so same-type/same-recipient entries for different bookings are never collapsed
+  _notifLog.forEach(function(n){ seen[n.at+'|'+n.type+'|'+n.to+'|'+(n.bookingId||'')] = true; });
   var added = [];
   bookings.forEach(function(b){
     if(!b._commLog) return;
     b._commLog.forEach(function(c){
-      var key = c.at+'|'+c.type+'|'+c.to;
+      var key = c.at+'|'+c.type+'|'+c.to+'|'+b.id;
       if(!seen[key]){
         seen[key] = true;
         added.push({ at:c.at, type:c.type, label:c.label, to:c.to||'', bookingId:b.id });
@@ -3344,22 +3346,23 @@ function mergeCommLogsIntoNotifLog(){
   if(added.length){
     _notifLog = _notifLog.concat(added);
     _notifLog.sort(function(a,b){ return b.at - a.at; });
-    if(_notifLog.length>200) _notifLog=_notifLog.slice(0,200);
+    if(_notifLog.length>500) _notifLog=_notifLog.slice(0,500);
     _saveNotifLog();
   }
 }
 function logNotif(type, label, to, bookingId){
-  var _now=Date.now();
+  // Use a seq-bumped timestamp so rapid same-ms calls each get a unique at value
+  var _now = Date.now() + (++_notifLogSeq % 1000) * 0.001;
   _notifLog.unshift({ at:_now, type:type, label:label, to:to||'', bookingId:bookingId||'' });
-  if(_notifLog.length>200) _notifLog=_notifLog.slice(0,200);
+  if(_notifLog.length>500) _notifLog=_notifLog.slice(0,500);
   _saveNotifLog();
-  // Also append to per-booking communication log
+  // Also append to per-booking communication log (synced to cloud)
   if(bookingId){
     var _clIdx=bookings.findIndex(function(b){ return b.id===bookingId; });
     if(_clIdx!==-1){
       if(!bookings[_clIdx]._commLog) bookings[_clIdx]._commLog=[];
       bookings[_clIdx]._commLog.push({at:_now,type:type,label:label,to:to||''});
-      save();
+      cloudSave();
     }
   }
 }
@@ -9689,13 +9692,18 @@ function renderNotifLog(){
     el.innerHTML='<div style="padding:14px 16px;color:var(--muted);text-align:center;font-size:12px">No notifications sent yet</div>';
     return;
   }
-  var typeIcons={ review:'⭐', verification:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗' };
+  var typeIcons={ review:'⭐', verification:'🪪', verify_nudge:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', owner_id_verified:'🪪', customer_verified:'✅', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗', waitlist_autobook:'📅', waitlist_added:'📅', waitlist_notify:'📅' };
   el.innerHTML = _notifLog.map(function(n, i){
     var dt=new Date(n.at);
     var dateStr=dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});
     var timeStr=dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
     var icon=typeIcons[n.type]||'📨';
-    var ref=n.bookingId?'<span style="color:var(--muted);font-size:10px">PBR-'+n.bookingId.slice(-6).toUpperCase()+'</span>':'';
+    var clientName='';
+    if(n.bookingId){
+      var _nb=bookings.find(function(b){ return b.id===n.bookingId; });
+      if(_nb&&_nb.name) clientName=' · '+esc(_nb.name);
+    }
+    var ref=n.bookingId?'<span style="color:var(--muted);font-size:10px">PBR-'+n.bookingId.slice(-6).toUpperCase()+clientName+'</span>':'';
     var to=n.to?'<span style="color:var(--muted)"> → '+esc(n.to)+'</span>':'';
     return '<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;'+(i<_notifLog.length-1?'border-bottom:1px solid var(--border)':'')+'">'+
       '<span style="font-size:14px;line-height:1.4">'+icon+'</span>'+
