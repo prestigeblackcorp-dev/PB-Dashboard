@@ -565,6 +565,8 @@ let _pickupMarker = null;
 let _dropoffMarker = null;
 let _routeLine = null;
 let _activeSugg = null; // 'pickup' | 'dropoff'
+let _lastFitStatus = '';   // last ride status we auto-framed the map for
+let _lastDriverLoc = null; // last known driver position, for refits on sheet collapse
 
 // ── Auth ─────────────────────────────────────────────────────────────────
 function $d(id){ return document.getElementById(id); }
@@ -920,15 +922,27 @@ function launchApp(){
 function initMap(){
   if(_map) return;
   _map=L.map('map',{zoomControl:false,attributionControl:true}).setView([32.7767,-96.797],12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',{
     attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>',
     subdomains:'abcd', maxZoom:20, detectRetina:true
   }).addTo(_map);
+  // Street/place labels in their own pane, filtered to vibrant white for legibility
+  _map.createPane('labels'); _map.getPane('labels').style.zIndex=250; _map.getPane('labels').style.pointerEvents='none'; _map.getPane('labels').style.filter='brightness(0) invert(1)';
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png',{subdomains:'abcd', maxZoom:20, detectRetina:true, pane:'labels'}).addTo(_map);
   L.control.zoom({position:'topright'}).addTo(_map);
   // Ensure Leaflet measures the now-visible fixed container correctly
   setTimeout(function(){ if(_map) _map.invalidateSize(); },100);
   // Try to get user location
   setTimeout(locateMe,800);
+  // When the bottom sheet finishes sliding (collapse/expand/drag) during an
+  // active trip, re-frame the map so the driver + route stay visible above it.
+  var _bs=$d('bottom-sheet');
+  if(_bs && !_bs._fitHooked){
+    _bs._fitHooked=true;
+    _bs.addEventListener('transitionend',function(e){
+      if(e.propertyName==='transform' && $d('ride-status-view').style.display==='block'){ fitTripView(_lastDriverLoc); }
+    });
+  }
 }
 
 function locateMe(){
@@ -1191,6 +1205,9 @@ function showRideStatusView(){
     $d('routeHoursRow').style.display='none';
     $d('routeDropoff').textContent=_dropoff?_dropoff.address:'—';
   }
+  // Frame the route immediately so the map is useful as soon as the trip view opens.
+  _lastFitStatus='';
+  setTimeout(function(){ if(_map) _map.invalidateSize(); fitTripView(_lastDriverLoc); },180);
 }
 
 function startPolling(){
@@ -1225,6 +1242,24 @@ const STATUS_SUBS={
   cancelled:'Your ride has been cancelled',
   no_driver:'No drivers are currently available. Please try again shortly.',
 };
+
+// Keep pickup, dropoff and the live driver position framed inside the map area
+// that's visible above the bottom sheet, so the rider can watch the whole trip.
+function fitTripView(driverLoc){
+  if(!_map) return;
+  var pts=[];
+  if(_pickup&&_pickup.lat) pts.push([_pickup.lat,_pickup.lng]);
+  if(_dropoff&&_dropoff.lat) pts.push([_dropoff.lat,_dropoff.lng]);
+  if(driverLoc&&driverLoc.lat&&driverLoc.lng) pts.push([driverLoc.lat,driverLoc.lng]);
+  if(!pts.length) return;
+  // Reserve space for the sheet so framed content lands in the visible top area.
+  var sheet=$d('bottom-sheet'), sh=0;
+  if(sheet && !sheet.classList.contains('collapsed')){ sh=Math.min(sheet.offsetHeight, Math.round(window.innerHeight*0.5)); }
+  try{
+    if(pts.length===1){ _map.setView(pts[0],15,{animate:true}); }
+    else { _map.fitBounds(L.latLngBounds(pts),{paddingTopLeft:[40,70],paddingBottomRight:[40,sh+40],maxZoom:16,animate:true}); }
+  }catch(e){}
+}
 
 function updateStatusUI(ride, driverLoc){
   const st=ride.status||'searching';
@@ -1261,6 +1296,11 @@ function updateStatusUI(ride, driverLoc){
   // Driver location on map
   if(driverLoc&&driverLoc.lat&&driverLoc.lng){
     placeDriverMarker(driverLoc.lat,driverLoc.lng,driverLoc.heading);
+    _lastDriverLoc=driverLoc;
+    // Re-frame the whole trip when the phase changes; otherwise just keep the
+    // driver in view (without fighting the rider's own panning).
+    if(_lastFitStatus!==st){ _lastFitStatus=st; fitTripView(driverLoc); }
+    else { try{ if(!_map.getBounds().contains(L.latLng(driverLoc.lat,driverLoc.lng))) _map.panTo([driverLoc.lat,driverLoc.lng],{animate:true}); }catch(e){} }
     // ETA: rough calculation
     if(_pickup&&['accepted','driver_arrived'].includes(st)){
       const dist=haversineKm(_pickup.lat,_pickup.lng,driverLoc.lat,driverLoc.lng);
@@ -1314,6 +1354,7 @@ function newRide(){
   stopPolling();
   _rideId=null; _pickup=null; _dropoff=null; _distanceMiles=0; _estPrice=0;
   _activeDriver=null;
+  _lastFitStatus=''; _lastDriverLoc=null;
   var _dr=$d('driverRating'); if(_dr) _dr.style.display='none';
   var _drb=$d('driverReviewsBtn'); if(_drb) _drb.style.display='none';
   var _dav=$d('driverAvatar'); if(_dav){ _dav.classList.remove('has-photo'); _dav.style.backgroundImage='none'; _dav.textContent='🧑‍✈️'; }

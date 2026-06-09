@@ -2639,7 +2639,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:13px;font-weight:800;color:var(--green)">ID Verified & Locked</div>
         <div id="vIdLockSubtext" style="font-size:11px;color:var(--muted);margin-top:2px">Fields are read-only — data is locked into the contract. Use Override only to correct an error.</div>
       </div>
-      <button class="btn btn-sm" onclick="_applyVerifyIdLock(false)" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
+      <button class="btn btn-sm" onclick="_overrideVerifyId()" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
     </div>
 
     <!-- Insurance Section (hidden in driver mode) -->
@@ -2690,7 +2690,7 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <div style="font-size:13px;font-weight:800;color:var(--green)">Insurance Verified & Locked</div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px">Fields are read-only — insurance data is preserved. Use Override only to correct an error.</div>
       </div>
-      <button class="btn btn-sm" onclick="_applyVerifyInsLock(false)" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
+      <button class="btn btn-sm" onclick="_overrideVerifyIns()" style="border-color:rgba(201,169,98,.5);color:var(--gold);white-space:nowrap;flex-shrink:0">🔓 Override</button>
     </div>
     </div><!-- end #vInsuranceSection -->
 
@@ -3460,6 +3460,24 @@ function logNotif(type, label, to, bookingId){
       cloudSave();
     }
   }
+}
+// Per-booking communication log for display: union the booking's own _commLog
+// with the reliable global _notifLog (localStorage — survives cloud-sync races
+// that can drop the per-booking copy), deduped, so a booking's notification
+// history always matches Settings → Notification Log.
+function _bookingCommLog(b){
+  if(!b) return [];
+  var out=[], seen={};
+  function add(c){
+    if(!c) return;
+    var k=Math.floor(Number(c.at)||0)+'|'+(c.type||'')+'|'+(c.to||'')+'|'+(c.label||'');
+    if(seen[k]) return; seen[k]=true;
+    out.push({at:Number(c.at)||0,type:c.type||'',label:c.label||'',to:c.to||''});
+  }
+  (b._commLog||[]).forEach(add);
+  (_notifLog||[]).forEach(function(n){ if(n&&n.bookingId===b.id) add(n); });
+  out.sort(function(x,y){ return x.at-y.at; });
+  return out;
 }
 var DATE_LOCK_URL  = localStorage.getItem('pb_date_lock_url')  || 'https://book.stripe.com/9B614f3b1eqgaKmewAgUM0i';
 var BALANCE_URL    = localStorage.getItem('pb_balance_url')    || '';
@@ -7075,9 +7093,12 @@ function initFleetMap(){
   var el=document.getElementById('fleet-map');
   if(!el||!window.L) return;
   _fleetMap=L.map('fleet-map',{zoomControl:true,attributionControl:true}).setView([32.7767,-96.797],11);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',{
     attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>',subdomains:'abcd',maxZoom:20,detectRetina:true
   }).addTo(_fleetMap);
+  // Street/place labels in their own pane, filtered to vibrant white for legibility
+  _fleetMap.createPane('labels'); _fleetMap.getPane('labels').style.zIndex=250; _fleetMap.getPane('labels').style.pointerEvents='none'; _fleetMap.getPane('labels').style.filter='brightness(0) invert(1)';
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:20,detectRetina:true,pane:'labels'}).addTo(_fleetMap);
   // When a driver marker is pressed, fill in their current street address (lazy reverse-geocode).
   _fleetMap.on('popupopen',function(e){
     var m=e.popup&&e.popup._source; if(!m||!m._pbLoc) return;
@@ -8092,22 +8113,22 @@ function openBookingDetail(id){
     // Notes
     (b.notes?'<div class="fsec">Notes</div><div style="font-size:13px;color:var(--muted);padding:6px 0;white-space:pre-wrap">'+esc(b.notes)+'</div>':'')+
 
-    // Communication Log (above change history)
-    (b._commLog&&b._commLog.length?
-      '<div class="fsec" style="margin-top:12px">📨 Communication Log</div>'+
-      '<div style="font-size:11px;color:var(--muted)">'+
-      (function(){
-        var _typeIcons={verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
-        return b._commLog.slice().reverse().map(function(c){
+    // Communication Log (above change history) — merged so it always matches Settings
+    (function(){
+      var _cl=_bookingCommLog(b);
+      if(!_cl.length) return '';
+      var _typeIcons={verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
+      return '<div class="fsec" style="margin-top:12px">📨 Communication Log</div>'+
+        '<div style="font-size:11px;color:var(--muted)">'+
+        _cl.slice().reverse().map(function(c){
           var _icon=_typeIcons[c.type]||'📧';
           return '<div style="padding:5px 0;border-bottom:1px solid var(--border)">'+
             '<span style="color:var(--text);font-weight:600">'+new Date(c.at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</span> · '+
             _icon+' '+esc(c.label)+(c.to?'<span style="color:var(--muted)"> → '+esc(c.to)+'</span>':'')+
             '</div>';
-        }).join('');
-      })()+
-      '</div>'
-    : '')+
+        }).join('')+
+        '</div>';
+    })()+
 
     // Change history
     (b._history&&b._history.length?
@@ -9531,6 +9552,7 @@ function openVerify(id){
   var b = bookings.find(function(x){ return x.id===id; });
   if(!b) return;
   verifyId = id;
+  _verifyIdOverridden=false; _verifyInsOverridden=false; // fresh open — normal lock rules
   var v = b.verify||{};
 
   // ── Immediate local carry-over for repeat customers ───────────────────────
@@ -9805,6 +9827,7 @@ function closeVerify(){
   // verification completes even when the owner dismisses the modal.
   $d('verifyModal').classList.remove('open');
   verifyId = null;
+  _verifyIdOverridden=false; _verifyInsOverridden=false;
   verifyDriverIdx = null;
   // Reset driver mode UI
   var _dlabel = $d('verDriverLabel');
@@ -10033,7 +10056,14 @@ function removeExtraDriver(bookingId, driverIdx){
 // NEVER uses .disabled on selects or checkboxes — disabled resets selects
 // visually on unlock and grays out the verified checkbox (looks un-verified).
 // Use readOnly + pointer-events only so all values stay visible and intact.
+// Once the owner clicks 🔓 Override, keep the fields editable until they save or
+// reopen the modal — no background path (Stripe poll, cloud refresh, re-render)
+// may silently re-lock them while the owner is typing the manual fields.
+var _verifyIdOverridden=false, _verifyInsOverridden=false;
+function _overrideVerifyId(){ _verifyIdOverridden=true; _applyVerifyIdLock(false); }
+function _overrideVerifyIns(){ _verifyInsOverridden=true; _applyVerifyInsLock(false); }
 function _applyVerifyIdLock(locked){
+  if(locked && _verifyIdOverridden) return; // override is sticky until save/reopen
   var textFields=['vIdName','vIdDob','vIdNumber','vIdState','vIdExpiry','vIdAddress'];
   var selectFields=['vIdType'];
   var bg=locked?'rgba(34,197,94,.06)':'';
@@ -10062,6 +10092,7 @@ function _applyVerifyIdLock(locked){
 
 // ── Lock / unlock insurance section fields once verified ───────────────────
 function _applyVerifyInsLock(locked){
+  if(locked && _verifyInsOverridden) return; // override is sticky until save/reopen
   var textFields=['vInsCarrier','vInsPolicyNum','vInsExpiry','vInsHolder'];
   var selectFields=['vInsCoverage'];
   var bg=locked?'rgba(34,197,94,.06)':'';
@@ -10102,6 +10133,7 @@ function _onInsVerifiedChange(checked){
 
 function saveVerify(){
   if(!verifyId) return;
+  _verifyIdOverridden=false; _verifyInsOverridden=false; // saving clears override; re-lock on saved data is allowed
   var idx = bookings.findIndex(function(b){ return b.id===verifyId; });
   if(idx===-1) return;
 
