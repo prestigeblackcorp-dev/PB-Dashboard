@@ -1272,42 +1272,38 @@ document.addEventListener('DOMContentLoaded',()=>{
     // Clean URL so refresh doesn't re-trigger
     history.replaceState(null,'',location.pathname);
     hideLoading();
-    // Mark payment on server so dashboard KPIs/revenue update
-    if(paidBkId && state.token && state.email){
-      if(paidChgId){
-        // Ad-hoc portal charge payment
-        fetch(`${WORKER}/portal/mark-charge-paid`,{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({email:state.email,token:state.token,bookingId:paidBkId,chargeId:paidChgId})
-        }).catch(()=>{});
-      } else {
-        // Remaining balance payment
-        fetch(`${WORKER}/portal/mark-balance-paid`,{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({email:state.email,token:state.token,bookingId:paidBkId})
-        }).catch(()=>{});
+
+    // Optimistically mark payment in local state so the UI reflects paid immediately
+    if(paidBkId){
+      var _paidNow = new Date().toISOString();
+      var _pBk = state.bookings.find(function(x){ return x.id===paidBkId; });
+      if(_pBk){
+        if(paidChgId){
+          (_pBk.portalCharges||[]).forEach(function(c){ if(c&&c.id===paidChgId) c.paidAt=_paidNow; });
+        } else {
+          _pBk.balancePaidAt = _paidNow;
+        }
       }
     }
+
     if(state.token && state.email){
       showLoading();
-      loadPortalData().then(ok=>{
-        if(ok){
-          showApp();
-          // Show payment success banner after render
-          setTimeout(()=>{
-            const ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
-            const msg = paidChgId ? '✅ Payment received!' : '✅ Payment received! Balance for '+ref+' has been paid.';
-            toast(msg,'success');
-          }, 600);
-        } else {
-          _safeClear('pb_portal_token');
-          _safeClear('pb_portal_email');
-          state.token=''; state.email='';
-          hideLoading();
-          // Show auth with a note
-          document.getElementById('auth-screen').querySelector('.auth-sub').textContent = '✅ Payment received! Sign in to view your booking.';
-        }
-      });
+      // Await mark-paid so Firebase is written BEFORE we reload data
+      var _markUrl = paidChgId ? `${WORKER}/portal/mark-charge-paid` : `${WORKER}/portal/mark-balance-paid`;
+      var _markBody = paidChgId
+        ? {email:state.email,token:state.token,bookingId:paidBkId,chargeId:paidChgId}
+        : {email:state.email,token:state.token,bookingId:paidBkId};
+      fetch(_markUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_markBody)})
+        .catch(()=>{})
+        .finally(()=>{
+          loadPortalData().then(function(ok){
+            showApp();
+            var ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
+            var msg = paidChgId ? '✅ Payment received! Your receipt will be emailed shortly.' : '✅ Balance paid for '+ref+'! Receipt on its way.';
+            setTimeout(function(){ toast(msg,'success'); }, 400);
+          });
+        });
     } else {
-      // Not logged in — show auth with success note
       document.getElementById('auth-screen').querySelector('.auth-sub').textContent = '✅ Payment received! Sign in to view your booking.';
     }
     return;
@@ -1639,13 +1635,27 @@ async function payBalance(bookingId){
 }
 
 function showPendingCharges(b){
-  const charges = (b.portalCharges||[]).filter(c => c && !c.paidAt && Number(c.amount) >= 0.50);
-  if(!charges.length) return '';
-  return charges.map(c => {
+  const allCharges = (b.portalCharges||[]).filter(c => c && Number(c.amount) >= 0.50);
+  if(!allCharges.length) return '';
+  return allCharges.map(c => {
     const base  = Number(c.amount);
     const fee   = Math.round(base * 0.05 * 100) / 100;
     const tax   = Math.round(base * 0.0825 * 100) / 100;
     const total = Math.round((base + fee + tax) * 100) / 100;
+    const isPaid = !!c.paidAt;
+    if(isPaid){
+      const paidDate = c.paidAt ? new Date(c.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+      return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+        <div style="background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.25);border-radius:12px;padding:12px 14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <div style="font-size:12px;font-weight:700;color:#4ade80;">✅ Paid</div>
+            <div style="font-size:15px;font-weight:800;color:#4ade80;">$${total.toFixed(2)}</div>
+          </div>
+          <div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:2px;">${c.description||''}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.35);">Paid on ${paidDate} &nbsp;·&nbsp; includes 5% fee + 8.25% TX tax</div>
+        </div>
+      </div>`;
+    }
     return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
       <div style="background:rgba(99,91,255,.08);border:1px solid rgba(99,91,255,.3);border-radius:12px;padding:12px 14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
