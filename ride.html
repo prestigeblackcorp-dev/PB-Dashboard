@@ -61,7 +61,9 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 .map-icon-btn:active{opacity:.7;}
 .map-logo-img{height:24px;width:auto;display:block;border-radius:6px;}
 /* Collapsible bottom sheet */
-.sheet-grip{height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;}
+.sheet-grip{height:34px;display:flex;align-items:center;justify-content:center;cursor:grab;flex-shrink:0;touch-action:none;-webkit-user-select:none;user-select:none;}
+.sheet-grip:active{cursor:grabbing;}
+#bottom-sheet.dragging{transition:none!important;}
 #bottom-sheet.collapsed{transform:translateY(calc(100% - var(--sheet-peek,150px)));overflow:hidden;}
 #bottom-sheet.collapsed .sheet-handle{background:var(--gold);opacity:.7;width:48px;}
 /* Rider profile modal */
@@ -77,8 +79,19 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 .profile-signout:active{opacity:.7;}
 /* Keep Leaflet zoom control clear of the overlay header buttons */
 .leaflet-top.leaflet-right{margin-top:calc(var(--safe-top) + 66px);}
-.leaflet-control-zoom{border:1px solid var(--border)!important;box-shadow:0 2px 12px rgba(0,0,0,.4)!important;}
-.leaflet-control-zoom a{background:rgba(7,9,14,.85)!important;color:var(--gold)!important;border-color:var(--border)!important;}
+.leaflet-control-zoom{border:none!important;border-radius:14px!important;overflow:hidden;box-shadow:0 8px 28px rgba(0,0,0,.55)!important;}
+.leaflet-control-zoom a{background:rgba(11,15,24,.82)!important;color:var(--gold)!important;border-color:rgba(201,169,98,.18)!important;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);font-weight:600;transition:background .15s,color .15s;}
+.leaflet-control-zoom a:hover{background:rgba(201,169,98,.22)!important;color:#fff!important;}
+/* Dark luxury basemap theming */
+.leaflet-container{background:#05070b!important;font-family:inherit;}
+.leaflet-tile-pane{filter:saturate(1.12) contrast(1.05) brightness(1.03);}
+#map-wrap::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:2;box-shadow:inset 0 0 180px 50px rgba(0,0,0,.6);}
+.leaflet-control-attribution{background:rgba(5,7,11,.6)!important;color:var(--muted)!important;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:8px 0 0 0;padding:2px 8px!important;font-size:9px!important;}
+.leaflet-control-attribution a{color:rgba(201,169,98,.7)!important;}
+.leaflet-popup-content-wrapper{background:rgba(13,18,28,.97)!important;color:var(--text)!important;border:1px solid var(--border)!important;border-radius:16px!important;box-shadow:0 16px 48px rgba(0,0,0,.65)!important;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);}
+.leaflet-popup-tip{background:rgba(13,18,28,.97)!important;border:1px solid var(--border)!important;box-shadow:none!important;}
+.leaflet-popup-close-button{color:var(--muted)!important;font-size:20px!important;padding:8px 8px 0 0!important;}
+.leaflet-popup-content{margin:13px 17px!important;font-size:13px;line-height:1.45;}
 
 /* Bottom sheet */
 #bottom-sheet{position:fixed;bottom:0;left:0;right:0;z-index:1001;background:var(--surface);border-radius:24px 24px 0 0;border:1px solid var(--border);border-bottom:none;transition:transform .3s cubic-bezier(.32,.72,0,1);will-change:transform;max-height:88vh;overflow-y:auto;padding-bottom:calc(20px + var(--safe-bot));}
@@ -298,7 +311,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 
     <!-- Bottom sheet -->
     <div id="bottom-sheet">
-      <div class="sheet-grip" onclick="toggleSheet()" title="Expand / collapse"><div class="sheet-handle"></div></div>
+      <div class="sheet-grip" id="sheet-grip" title="Drag to expand or collapse"><div class="sheet-handle"></div></div>
 
       <!-- ── BOOKING VIEW ── -->
       <div id="booking-view">
@@ -524,9 +537,54 @@ function openProfile(){
   $d('profileModal').style.display='flex';
 }
 function closeProfile(){ var m=$d('profileModal'); if(m) m.style.display='none'; }
-// ── Bottom-sheet collapse ──────────────────────────────────────────────────
+// ── Bottom-sheet collapse + drag ───────────────────────────────────────────
 function toggleSheet(){ var s=$d('bottom-sheet'); if(s) s.classList.toggle('collapsed'); }
 function expandSheet(){ var s=$d('bottom-sheet'); if(s) s.classList.remove('collapsed'); }
+function collapseSheet(){ var s=$d('bottom-sheet'); if(s) s.classList.add('collapsed'); }
+(function initSheetDrag(){
+  function setup(){
+    var sheet=$d('bottom-sheet'), grip=$d('sheet-grip');
+    if(!sheet||!grip) return;
+    var dragging=false, startY=0, startT=0, curT=0, maxT=0, lastY=0, lastT=0, vel=0, moved=0, downAt=0;
+    function peek(){ var v=parseFloat(getComputedStyle(sheet).getPropertyValue('--sheet-peek')); return isNaN(v)?150:v; }
+    function rangeMax(){ return Math.max(0, sheet.offsetHeight - peek()); }
+    function baseT(){ return sheet.classList.contains('collapsed') ? rangeMax() : 0; }
+    function down(e){
+      dragging=true; moved=0; downAt=Date.now();
+      startY=e.clientY; lastY=e.clientY; lastT=downAt; vel=0;
+      maxT=rangeMax(); startT=baseT(); curT=startT;
+      sheet.classList.add('dragging');
+      try{ grip.setPointerCapture(e.pointerId); }catch(_){}
+    }
+    function move(e){
+      if(!dragging) return;
+      var dy=e.clientY-startY; if(Math.abs(dy)>moved) moved=Math.abs(dy);
+      curT=Math.min(maxT, Math.max(0, startT+dy));
+      sheet.style.transform='translateY('+curT+'px)';
+      var now=Date.now(), dt=now-lastT;
+      if(dt>0){ vel=(e.clientY-lastY)/dt; lastY=e.clientY; lastT=now; }
+    }
+    function up(e){
+      if(!dragging) return;
+      dragging=false;
+      sheet.classList.remove('dragging');
+      sheet.style.transform='';
+      try{ grip.releasePointerCapture(e.pointerId); }catch(_){}
+      // Negligible movement → treat as a tap toggle.
+      if(moved<6 && (Date.now()-downAt)<350){ sheet.classList.toggle('collapsed'); return; }
+      var collapse;
+      if(vel>0.5) collapse=true;           // flicked down
+      else if(vel<-0.5) collapse=false;    // flicked up
+      else collapse = curT > maxT*0.4;     // settled past 40%
+      sheet.classList.toggle('collapsed', collapse);
+    }
+    grip.addEventListener('pointerdown',down);
+    grip.addEventListener('pointermove',move);
+    grip.addEventListener('pointerup',up);
+    grip.addEventListener('pointercancel',up);
+  }
+  if(document.readyState!=='loading') setup(); else document.addEventListener('DOMContentLoaded',setup);
+})();
 // Try restoring session from localStorage
 (function(){
   try{
@@ -546,9 +604,9 @@ function launchApp(){
 function initMap(){
   if(_map) return;
   _map=L.map('map',{zoomControl:false,attributionControl:true}).setView([32.7767,-96.797],12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    maxZoom:19,
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+    attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains:'abcd', maxZoom:20, detectRetina:true
   }).addTo(_map);
   L.control.zoom({position:'topright'}).addTo(_map);
   // Ensure Leaflet measures the now-visible fixed container correctly
