@@ -1318,23 +1318,51 @@ document.addEventListener('DOMContentLoaded',()=>{
 
     if(state.token && state.email){
       showLoading();
-      // Await mark-paid so Firebase is written BEFORE we reload data
+      // Call mark-paid (Firebase writes happen server-side before it returns)
       var _markUrl = paidChgId ? `${WORKER}/portal/mark-charge-paid` : `${WORKER}/portal/mark-balance-paid`;
       var _markBody = paidChgId
         ? {email:state.email,token:state.token,bookingId:paidBkId,chargeId:paidChgId}
         : {email:state.email,token:state.token,bookingId:paidBkId};
+
+      var _markResult = null;
       fetch(_markUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_markBody)})
+        .then(function(r){ return r.ok ? r.json().catch(()=>({})) : {}; })
+        .catch(()=>({}))
+        .then(function(d){ _markResult = d; })
         .catch(()=>{})
-        .finally(()=>{
-          loadPortalData().then(function(ok){
-            showApp();
-            var ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
-            var msg = paidChgId ? '✅ Payment received! Your receipt will be emailed shortly.' : '✅ Balance paid for '+ref+'! Receipt on its way.';
-            setTimeout(function(){ toast(msg,'success'); }, 400);
-          });
+        .finally(function(){
+          loadPortalData()
+            .catch(()=>'error')
+            .then(function(){
+              // Re-apply optimistic paid state as fallback in case Firebase hasn't propagated yet
+              if(paidBkId){
+                var _paidNow = (_markResult && _markResult.paidAt) || new Date().toISOString();
+                var _pBk = state.bookings.find(function(x){ return x.id===paidBkId; });
+                if(_pBk){
+                  if(paidChgId){
+                    (_pBk.portalCharges||[]).forEach(function(c){
+                      if(c && c.id===paidChgId && !c.paidAt) c.paidAt = _paidNow;
+                    });
+                  } else {
+                    if(!_pBk.balancePaidAt) _pBk.balancePaidAt = _paidNow;
+                    if(!_pBk.balancePaidMethod) _pBk.balancePaidMethod = 'Stripe (portal)';
+                    if(!_pBk.balancePaidAmount && _markResult && _markResult.amount != null) _pBk.balancePaidAmount = _markResult.amount;
+                  }
+                }
+              }
+              showApp();
+              switchTab('bookings');
+              var ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
+              var msg = paidChgId ? '✅ Payment received! Receipt is on its way to your email.' : '✅ Balance paid for '+ref+'! Receipt sent to your email.';
+              setTimeout(function(){ toast(msg,'success'); }, 300);
+            });
         });
     } else {
-      document.getElementById('auth-screen').querySelector('.auth-sub').textContent = '✅ Payment received! Sign in to view your booking.';
+      // No session in storage — show auth with a payment-success message so they can sign in
+      hideLoading();
+      document.getElementById('auth-screen').style.display='flex';
+      var _authSub = document.getElementById('auth-screen').querySelector('.auth-sub');
+      if(_authSub) _authSub.textContent = '✅ Payment received! Sign in to view your updated booking.';
     }
     return;
   }
