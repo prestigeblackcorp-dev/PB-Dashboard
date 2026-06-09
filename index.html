@@ -10537,25 +10537,29 @@ function checkVerifyNow(){
   var _checkBookingId = verifyId;
   var _checkDriverIdx = (verifyDriverIdx !== null && verifyDriverIdx !== undefined) ? verifyDriverIdx : null;
 
-  // ── Gather every session ID ever created for this booking ──────────────────
+  // ── Gather session IDs ─────────────────────────────────────────────────────
+  // CRITICAL: in driver mode we look ONLY at the authorized driver's own Stripe
+  // session. Mixing in the primary customer's sessions here caused the original
+  // renter's verified identity to be pulled onto the additional driver and locked.
   var _allSids = [];
-  // 1. localStorage all-sessions list (written at each link-send; survives timeout)
-  try{ _allSids = JSON.parse(localStorage.getItem('pb_all_vsessions_'+_checkBookingId)||'[]'); }catch(e){}
-  // 2. Active pending session (may not be in the list yet if _addVerifySession raced)
-  var _pending=null; try{ _pending=localStorage.getItem('pb_pending_vsession_'+_checkBookingId); }catch(e){}
-  if(_pending && _allSids.indexOf(_pending)===-1) _allSids.push(_pending);
-  // 3. Booking verify data (Firebase-persisted; works on other devices / browsers)
   var _cb=bookings.find(function(x){ return x.id===_checkBookingId; });
-  if(_cb && _cb.verify){
-    if(_cb.verify.stripeSessionId && _allSids.indexOf(_cb.verify.stripeSessionId)===-1)
-      _allSids.push(_cb.verify.stripeSessionId);
-    if(Array.isArray(_cb.verify.stripeSessionIds))
-      _cb.verify.stripeSessionIds.forEach(function(s){ if(s && _allSids.indexOf(s)===-1) _allSids.push(s); });
-  }
-  // 4. In driver mode also check the session stored on the driver object
-  if(_checkDriverIdx !== null && _cb && _cb.extraDrivers && _cb.extraDrivers[_checkDriverIdx]){
-    var _dSid=_cb.extraDrivers[_checkDriverIdx].stripeSessionId;
-    if(_dSid && _allSids.indexOf(_dSid)===-1) _allSids.push(_dSid);
+  if(_checkDriverIdx !== null){
+    var _dSid = _cb && _cb.extraDrivers && _cb.extraDrivers[_checkDriverIdx] && _cb.extraDrivers[_checkDriverIdx].stripeSessionId;
+    if(_dSid) _allSids.push(_dSid);
+  } else {
+    // Primary customer mode — gather every session ever created for this booking.
+    // 1. localStorage all-sessions list (written at each link-send; survives timeout)
+    try{ _allSids = JSON.parse(localStorage.getItem('pb_all_vsessions_'+_checkBookingId)||'[]'); }catch(e){}
+    // 2. Active pending session (may not be in the list yet if _addVerifySession raced)
+    var _pending=null; try{ _pending=localStorage.getItem('pb_pending_vsession_'+_checkBookingId); }catch(e){}
+    if(_pending && _allSids.indexOf(_pending)===-1) _allSids.push(_pending);
+    // 3. Booking verify data (Firebase-persisted; works on other devices / browsers)
+    if(_cb && _cb.verify){
+      if(_cb.verify.stripeSessionId && _allSids.indexOf(_cb.verify.stripeSessionId)===-1)
+        _allSids.push(_cb.verify.stripeSessionId);
+      if(Array.isArray(_cb.verify.stripeSessionIds))
+        _cb.verify.stripeSessionIds.forEach(function(s){ if(s && _allSids.indexOf(s)===-1) _allSids.push(s); });
+    }
   }
   // Sanity-filter: only real Stripe session IDs
   _allSids = _allSids.filter(function(s){ return s && typeof s==='string' && s.indexOf('vs_')===0; });
@@ -10630,6 +10634,13 @@ function checkVerifyNow(){
   if(_allSids.length){
     // ── Local IDs found — check them all in parallel ───────────────────────
     _runChecks(_allSids);
+  } else if(_checkDriverIdx !== null){
+    // ── Driver mode, no session for THIS driver yet ────────────────────────
+    // Never fall back to the booking-level lookup — that returns the primary
+    // customer's sessions and would lock their identity onto this driver.
+    // Prompt the owner to create a dedicated Stripe session for the driver.
+    if(_btn){ _btn.disabled=false; _btn.textContent='🔍 Check Status'; }
+    if(_st){ _st.textContent='❌ No verification link has been sent to this driver yet — use “Send Stripe Verify” to create one for them, or enter their ID fields manually and Save.'; _st.style.color='var(--red)'; }
   } else {
     // ── Nothing in local storage or Firebase — query Stripe by booking ID ──
     // Recovers sessions that predate the tracking code, were wiped after poll
@@ -10760,8 +10771,14 @@ function applyStripeVerification(session, bookingId, driverIdx){
   // Risk level
   extracted.idRisk = _riskLevel;
 
-  // ── 2. Populate form fields — only if the modal is currently open for this booking ──
-  var _modalOpen = (verifyId === _bId && $d('verifyModal').classList.contains('open'));
+  // ── 2. Populate form fields — only if the modal is open for the SAME subject ──
+  // Must match booking AND driver/primary, otherwise a background poll for the
+  // primary customer could overwrite + lock the form while an additional driver
+  // is being edited (pulling the original renter's identity onto the driver).
+  var _sameSubject = (verifyId === _bId) && ((_dIdx===null||_dIdx===undefined)
+      ? (verifyDriverIdx===null||verifyDriverIdx===undefined)
+      : (verifyDriverIdx===_dIdx));
+  var _modalOpen = (_sameSubject && $d('verifyModal').classList.contains('open'));
   if(_modalOpen){
     if(extracted.idName)    $d('vIdName').value    = extracted.idName;
     if(extracted.idDob)     $d('vIdDob').value     = extracted.idDob;
