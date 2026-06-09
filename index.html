@@ -7021,7 +7021,10 @@ function renderPrevious(){
     if(b.status==='completed') return true; // completed always goes to past regardless of end date
     var end=tripEndDate(b);
     if(!end) return false;
-    return end<today;
+    if(end<today) return true;
+    // Same-day trips: move to Previous once the return time has passed
+    if(end===today){ var retMs=tripReturnMs(b); return !!(retMs && Date.now()>retMs); }
+    return false;
   }).sort(function(a,b){
     // Sort by completion time first (most recently checked out/completed at top),
     // fall back to trip end date for trips that were never explicitly marked complete
@@ -7243,6 +7246,25 @@ function tripCard(b, showCountdown){
 // ════════════════════════════════════════════════════════
 //  CURRENT TRIPS TAB
 // ════════════════════════════════════════════════════════
+function tripReturnMs(b){
+  // Returns the timestamp when the trip is considered over (for same-day return checks)
+  var end=tripEndDate(b);
+  if(!end) return 0;
+  var today=todayStr();
+  if(end!==today) return 0; // only relevant when end date is today
+  if(b.dropoffTime){
+    var dp=b.dropoffTime.split(':');
+    var d=new Date(); d.setHours(parseInt(dp[0])||0,parseInt(dp[1])||0,0,0);
+    return d.getTime();
+  }
+  // Hourly/chauffeur: pickup time + hours
+  if((b.type==='hourly'||b.type==='chauffeur') && b.pickupTime && b.days){
+    var pp=b.pickupTime.split(':');
+    var p2=new Date(); p2.setHours(parseInt(pp[0])||0,parseInt(pp[1])||0,0,0);
+    return p2.getTime()+(Number(b.days)||0)*3600000;
+  }
+  return 0; // no return time known — stay in Current until midnight
+}
 function isCurrentTrip(b){
   if(b.status==='cancelled'||b.status==='completed') return false;
   var today=todayStr();
@@ -7254,6 +7276,11 @@ function isCurrentTrip(b){
     var parts=(b.pickupTime||'00:00').split(':');
     var pickup=new Date(); pickup.setHours(parseInt(parts[0])||0,parseInt(parts[1])||0,0,0);
     if(Date.now() < pickup.getTime()) return false; // before pickup: upcoming only
+  }
+  // On return day: exit Current once the dropoff/return time has passed
+  if(end===today){
+    var retMs=tripReturnMs(b);
+    if(retMs && Date.now() > retMs) return false; // trip is over, move to Previous
   }
   return true;
 }
