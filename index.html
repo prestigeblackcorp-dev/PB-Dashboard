@@ -7701,6 +7701,7 @@ function openBookingDetail(id){
           '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'+
             '<button class="btn btn-sm" onclick="openDriverVerify(\''+b.id+'\','+i+');closeBookingDetail()" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">📋 Verify ID</button>'+
             (VERIFY_URL&&d.email?'<button class="btn btn-sm" onclick="sendDriverStripeVerify(\''+b.id+'\','+i+')" style="border-color:#635bff;color:#635bff;font-size:10px">📤 Send Link</button>':'')+
+            (d.email?'<button class="btn btn-sm" onclick="sendDriverSigningLink(\''+b.id+'\','+i+')" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">📲 Send Signing</button>':'')+
             '<button class="btn btn-sm" onclick="removeExtraDriver(\''+b.id+'\','+i+')" style="border-color:rgba(239,68,68,.4);color:var(--red);font-size:10px">🗑 Remove</button>'+
           '</div>'+
         '</div>';
@@ -7713,7 +7714,22 @@ function openBookingDetail(id){
       '<div class="fsec">Customer Signature</div>'+
       '<div style="margin:4px 0 8px;background:#fff;border-radius:8px;padding:8px;display:inline-block">'+
         '<img src="'+b.customerSig+'" style="max-height:60px;max-width:260px;object-fit:contain;display:block">'+
-      '</div>' : '')+
+      '</div>'+
+      (b.customerSigDate?'<div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">Signed '+esc(b.customerSigDate)+'</div>':'') : '')+
+
+    // Authorized Driver Signatures (shown after customer signature)
+    ((b.extraDrivers&&b.extraDrivers.some(function(d){ return d&&d.sig&&d.sig.indexOf('data:image/')===0; }))?
+      '<div class="fsec">Authorized Driver Signature'+(b.extraDrivers.filter(function(d){ return d&&d.sig&&d.sig.indexOf('data:image/')===0; }).length>1?'s':'')+'</div>'+
+      b.extraDrivers.map(function(d){
+        if(!(d&&d.sig&&d.sig.indexOf('data:image/')===0)) return '';
+        return '<div style="margin:4px 0 8px">'+
+          '<div style="font-size:11px;color:var(--gold);font-weight:700;margin-bottom:4px">'+esc(d.name||'Authorized Driver')+'</div>'+
+          '<div style="background:#fff;border-radius:8px;padding:8px;display:inline-block">'+
+            '<img src="'+d.sig+'" style="max-height:60px;max-width:260px;object-fit:contain;display:block">'+
+          '</div>'+
+          (d.sigDate?'<div style="font-size:11px;color:var(--muted);margin-top:2px">Signed '+esc(d.sigDate)+'</div>':'')+
+        '</div>';
+      }).join('') : '')+
 
     // Resend emails
     ((b.email&&MESSAGING_URL)?
@@ -9553,6 +9569,57 @@ function sendDriverStripeVerify(bookingId, driverIdx){
     }
   })
   .catch(function(err){ showToast('Error: '+err.message); });
+}
+
+// Send a signing link to ONE additional authorized driver
+function sendDriverSigningLink(bookingId, driverIdx){
+  var b=bookings.find(function(x){ return x.id===bookingId; });
+  if(!b){ showToast('Booking not found'); return; }
+  var d=(b.extraDrivers&&b.extraDrivers[driverIdx]);
+  if(!d){ showToast('Driver not found'); return; }
+  var base = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
+  var url = base + '?sign=' + encodeURIComponent(bookingId) + '&driver=' + driverIdx;
+  var docType = (b.vehicle==='Polaris Slingshot'&&b.type==='hourly') ? 'Liability Waiver' : 'Rental Agreement';
+
+  if(!d.email){
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(url).then(function(){ showToast('Driver has no email — signing link copied 📋'); });
+    } else { prompt('Copy this signing link for '+(d.name||'driver')+':', url); }
+    return;
+  }
+  if(!MESSAGING_URL){
+    navigator.clipboard.writeText(url).then(function(){ showToast('Link copied! Send to '+(d.name||'driver')+'.'); });
+    return;
+  }
+
+  var firstName=(d.name||'there').split(' ')[0];
+  showToast('Sending signing link to '+(d.name||'driver')+'…');
+  var html=
+    '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
+    '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
+      '<div style="font-size:40px;margin-bottom:10px">✍️</div>'+
+      '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">Ready to Sign, '+esc(firstName)+'!</h1>'+
+      '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">'+esc(docType)+' for '+esc(b.vehicle)+' · <em>Additional Authorized Driver</em></p>'+
+    '</div>'+
+    '<div style="padding:28px">'+
+      '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">You have been listed as an <strong>Additional Authorized Driver</strong> on this rental. Please review and sign the '+esc(docType.toLowerCase())+' for the <strong>'+esc(b.vehicle)+'</strong> rental.</p>'+
+      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">✍️ Sign My '+esc(docType)+'</a></div>'+
+      '<p style="font-size:13px;color:#666;margin:0 0 20px">This link is for you personally. Please do not share it — each driver must sign individually.</p>'+
+      '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+    '</div>'+
+    '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals · Dallas–Fort Worth · (214) 207-2481</div>'+
+    '</div>';
+  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:d.email,subject:'Please Sign Your '+docType+' — Prestige Black Rentals',html:html})})
+  .then(function(r){
+    if(r.ok){
+      showToast('Signing link sent to '+d.email+' ✅');
+      logNotif('signing','Driver Signing Link (Driver '+(driverIdx+1)+')', d.email, bookingId);
+    } else {
+      navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); });
+    }
+  }).catch(function(){
+    navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); });
+  });
 }
 
 // Open an "Add Driver" overlay using a dynamic modal
