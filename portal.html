@@ -427,8 +427,10 @@ var _initEmail = ''; try{ _initEmail = localStorage.getItem('pb_portal_email')||
 var _initToken = ''; try{ _initToken = localStorage.getItem('pb_portal_token')||''; }catch(e){}
 // Restore cached portal data so the app shows real content on refresh
 // even before the server responds.
+// Cache is keyed by email so different users never share data
+var _cacheKey = _initEmail ? 'pb_cache_' + _initEmail.replace(/[^a-z0-9]/gi,'_') : null;
 var _cachedData = null;
-try{ const _c = localStorage.getItem('pb_portal_cache'); if(_c) _cachedData = JSON.parse(_c); }catch(e){}
+try{ if(_cacheKey){ const _c = localStorage.getItem(_cacheKey); if(_c) _cachedData = JSON.parse(_c); } }catch(e){}
 let state = {
   email: _initEmail,
   token: _initToken,
@@ -1310,17 +1312,25 @@ async function loadPortalData(){
     if(r.status === 401){ return 'unauthorized'; }   // only real auth failure clears session
     if(!r.ok){ return 'error'; }                     // network/server error — keep session
     const d = await r.json();
-    state.bookings = d.bookings || [];
-    state.insurance = d.insurance || null;
-    state.savedVehicles = d.savedVehicles || [];
-    state.profile = d.profile || {};
-    state.notifications = d.notifications || [];
-    // Persist to localStorage so refresh shows real data even before server responds
-    try{ localStorage.setItem('pb_portal_cache', JSON.stringify({
-      bookings: state.bookings, insurance: state.insurance,
-      savedVehicles: state.savedVehicles, profile: state.profile,
-      notifications: state.notifications,
-    })); }catch(e){}
+    const freshBookings = d.bookings || [];
+    // Never overwrite non-empty cached bookings with an empty server response
+    // (guards against transient Firebase misses returning [] for a valid session)
+    if(freshBookings.length > 0 || state.bookings.length === 0){
+      state.bookings = freshBookings;
+    }
+    state.insurance     = d.insurance     || state.insurance     || null;
+    state.savedVehicles = d.savedVehicles || state.savedVehicles || [];
+    state.profile       = d.profile       || state.profile       || {};
+    state.notifications = d.notifications || state.notifications || [];
+    // Persist to localStorage keyed by email
+    const ck = state.email ? 'pb_cache_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
+    if(ck && state.bookings.length > 0){
+      try{ localStorage.setItem(ck, JSON.stringify({
+        bookings: state.bookings, insurance: state.insurance,
+        savedVehicles: state.savedVehicles, profile: state.profile,
+        notifications: state.notifications,
+      })); }catch(e){}
+    }
     return true;
   }catch(e){ return 'error'; }   // fetch failed (offline, etc.) — keep session
 }
@@ -2111,9 +2121,10 @@ function renderAccount(){
 }
 
 function signOut(){
+  const _ck = state.email ? 'pb_cache_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
   _safeClear('pb_portal_token');
   _safeClear('pb_portal_email');
-  try{ localStorage.removeItem('pb_portal_cache'); }catch(e){}
+  try{ if(_ck) localStorage.removeItem(_ck); }catch(e){}
   state.token=''; state.email=''; state.bookings=[]; state.insurance=null; state.savedVehicles=[]; state.profile={}; state.notifications=[];
   document.getElementById('app-screen').style.display='none';
   document.getElementById('auth-screen').style.display='flex';
