@@ -69,7 +69,11 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 /* Rider profile modal */
 .profile-overlay{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.62);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:24px;}
 .profile-card{background:var(--surface);border:1px solid var(--border);border-radius:22px;padding:28px 24px;width:100%;max-width:340px;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,.5);}
-.profile-avatar{width:72px;height:72px;border-radius:50%;background:var(--gold-dim);border:1px solid rgba(201,169,98,.4);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;margin:0 auto 14px;}
+.profile-avatar{width:84px;height:84px;border-radius:50%;background:var(--gold-dim);border:1px solid rgba(201,169,98,.4);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:800;margin:0 auto 12px;position:relative;cursor:pointer;overflow:hidden;background-size:cover;background-position:center;}
+.profile-avatar .pa-cam{position:absolute;bottom:0;right:0;width:26px;height:26px;border-radius:50%;background:var(--gold);color:#1a1205;display:flex;align-items:center;justify-content:center;font-size:13px;border:2px solid var(--surface);}
+.profile-changephoto{display:inline-block;margin:0 auto 6px;background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:10px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;}
+.profile-changephoto:active{opacity:.7;}
+.profile-photo-status{font-size:12px;min-height:14px;margin-bottom:2px;color:var(--muted);}
 .profile-name{font-size:20px;font-weight:800;letter-spacing:-.3px;color:var(--text);}
 .profile-email{font-size:13px;color:var(--muted);margin-top:3px;word-break:break-all;}
 .profile-rows{margin:18px 0 8px;border-top:1px solid var(--border);}
@@ -289,7 +293,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
         <div class="map-logo"><img src="icon.png" alt="Prestige Black" class="map-logo-img"></div>
         <div style="display:flex;gap:8px;">
           <div class="map-icon-btn" id="locateMeBtn" onclick="locateMe()" title="My location">📍</div>
-          <div class="map-icon-btn" onclick="openProfile()" title="Profile">👤</div>
+          <div class="map-icon-btn" id="profileBtn" onclick="openProfile()" title="Profile">👤</div>
         </div>
       </div>
     </div>
@@ -297,7 +301,10 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
     <!-- Profile modal -->
     <div id="profileModal" class="profile-overlay" style="display:none" onclick="if(event.target===this)closeProfile()">
       <div class="profile-card">
-        <div class="profile-avatar" id="profileAvatar">👤</div>
+        <div class="profile-avatar" id="profileAvatar" onclick="triggerRiderPhoto()" title="Tap to change photo"><span id="profileAvatarInitial">👤</span><div class="pa-cam">📷</div></div>
+        <button type="button" class="profile-changephoto" id="riderPhotoBtn" onclick="triggerRiderPhoto()">Change Photo</button>
+        <div class="profile-photo-status" id="riderPhotoStatus"></div>
+        <input type="file" id="riderPhotoInput" accept="image/*" style="display:none" onchange="handleRiderPhoto(event)">
         <div class="profile-name" id="profileName">—</div>
         <div class="profile-email" id="profileEmail">—</div>
         <div class="profile-rows">
@@ -515,7 +522,7 @@ async function verifyOtp(code){
   if(!r.ok){ const e=await r.json().catch(()=>{}); $d('otpStatus').textContent=(e&&e.error)||'Invalid code — try again'; $d('otpStatus').style.color='var(--red)'; $d('otpHiddenInp').value=''; renderOtp(''); return; }
   const d=await r.json();
   if(!d.token){ $d('otpStatus').textContent='Auth error'; return; }
-  _session={email,token:d.token,name:d.name||'',phone:d.phone||''};
+  _session={email,token:d.token,name:d.name||'',phone:d.phone||'',photo:d.photo||''};
   try{ localStorage.setItem('pb_ride_session',JSON.stringify(_session)); }catch(e){}
   launchApp();
 }
@@ -529,14 +536,70 @@ function openProfile(){
   var nm=(_session.name||'').trim();
   $d('profileName').textContent=nm||'Guest';
   $d('profileEmail').textContent=_session.email||'';
-  var initial=(nm?nm[0]:(_session.email||'?')[0])||'?';
-  $d('profileAvatar').textContent=initial.toUpperCase();
+  renderRiderAvatar();
   var ph=(_session.phone||'').trim();
   if(ph){ $d('profilePhone').textContent=ph; $d('profilePhoneRow').style.display='flex'; }
   else { $d('profilePhoneRow').style.display='none'; }
+  var st=$d('riderPhotoStatus'); if(st){ st.textContent=''; st.style.color='var(--muted)'; }
   $d('profileModal').style.display='flex';
 }
 function closeProfile(){ var m=$d('profileModal'); if(m) m.style.display='none'; }
+// ── Rider profile photo ─────────────────────────────────────────────────────
+function riderInitial(){
+  var nm=(_session&&_session.name||'').trim();
+  return (nm?nm[0]:((_session&&_session.email)||'?')[0]||'?').toUpperCase();
+}
+function renderRiderAvatar(){
+  var photo=(_session&&_session.photo)||'';
+  var av=$d('profileAvatar'), ini=$d('profileAvatarInitial'), btn=$d('profileBtn');
+  if(av){
+    if(photo){ av.style.backgroundImage='url("'+photo+'")'; if(ini) ini.style.display='none'; }
+    else { av.style.backgroundImage='none'; if(ini){ ini.style.display=''; ini.textContent=riderInitial(); } }
+  }
+  // Mirror onto the on-map profile button so the picture is visible at a glance.
+  if(btn){
+    if(photo){ btn.style.backgroundImage='url("'+photo+'")'; btn.style.backgroundSize='cover'; btn.style.backgroundPosition='center'; btn.textContent=''; }
+    else { btn.style.backgroundImage='none'; btn.textContent='👤'; }
+  }
+}
+function triggerRiderPhoto(){ var i=$d('riderPhotoInput'); if(i) i.click(); }
+function handleRiderPhoto(ev){
+  var file=ev.target.files&&ev.target.files[0]; ev.target.value='';
+  if(!file) return;
+  var st=$d('riderPhotoStatus');
+  function err(m){ if(st){ st.textContent=m; st.style.color='var(--red)'; } }
+  if(!/^image\//.test(file.type||'')){ err('Please choose an image'); return; }
+  var reader=new FileReader();
+  reader.onload=function(){
+    var img=new Image();
+    img.onload=function(){
+      // Center-crop to a square and downscale to 256px, export as JPEG.
+      var size=256, c=document.createElement('canvas'); c.width=size; c.height=size;
+      var ctx=c.getContext('2d'); var side=Math.min(img.width,img.height);
+      ctx.drawImage(img,(img.width-side)/2,(img.height-side)/2,side,side,0,0,size,size);
+      saveRiderPhoto(c.toDataURL('image/jpeg',0.82));
+    };
+    img.onerror=function(){ err('Could not read image'); };
+    img.src=reader.result;
+  };
+  reader.onerror=function(){ err('Could not read file'); };
+  reader.readAsDataURL(file);
+}
+async function saveRiderPhoto(dataUrl){
+  if(!_session) return;
+  _session.photo=dataUrl; renderRiderAvatar();                 // optimistic
+  try{ localStorage.setItem('pb_ride_session',JSON.stringify(_session)); }catch(e){}
+  var btn=$d('riderPhotoBtn'), st=$d('riderPhotoStatus');
+  if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+  if(st){ st.textContent=''; st.style.color='var(--muted)'; }
+  try{
+    var r=await fetch(WORKER+'/chauffeur/profile-photo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,photo:dataUrl})});
+    var d=await r.json().catch(function(){return{};});
+    if(!r.ok){ if(st){ st.textContent=(d&&d.error)||'Upload failed — saved on this device'; st.style.color='var(--red)'; } }
+    else if(st){ st.textContent='Saved ✓'; st.style.color='var(--green)'; }
+  }catch(e){ if(st){ st.textContent='Network error — saved on this device'; st.style.color='var(--red)'; } }
+  finally{ if(btn){ btn.disabled=false; btn.textContent='Change Photo'; } }
+}
 // ── Bottom-sheet collapse + drag ───────────────────────────────────────────
 function toggleSheet(){ var s=$d('bottom-sheet'); if(s) s.classList.toggle('collapsed'); }
 function expandSheet(){ var s=$d('bottom-sheet'); if(s) s.classList.remove('collapsed'); }
@@ -599,6 +662,7 @@ function launchApp(){
   $d('app').style.display='flex';
   initMap();
   if(_session){ var _nm=(_session.name||'').trim(); $d('rider-greeting').textContent=_nm?('Hello, '+_nm.split(' ')[0]):'Welcome back'; }
+  renderRiderAvatar();
 }
 
 function initMap(){
