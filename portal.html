@@ -439,12 +439,16 @@ var _initToken = ''; try{ _initToken = localStorage.getItem('pb_portal_token')||
 var _cacheKey = _initEmail ? 'pb_cache_' + _initEmail.replace(/[^a-z0-9]/gi,'_') : null;
 var _cachedData = null;
 try{ if(_cacheKey){ const _c = localStorage.getItem(_cacheKey); if(_c) _cachedData = JSON.parse(_c); } }catch(e){}
+// Dedicated saved-vehicles key — written on every save/remove action, highest priority source
+var _savedKey = _initEmail ? 'pb_saved_' + _initEmail.replace(/[^a-z0-9]/gi,'_') : null;
+var _initSaved = [];
+try{ if(_savedKey){ const _s = localStorage.getItem(_savedKey); if(_s) _initSaved = JSON.parse(_s); } }catch(e){}
 let state = {
   email: _initEmail,
   token: _initToken,
   bookings:       (_cachedData && _cachedData.bookings)       || [],
   insurance:      (_cachedData && _cachedData.insurance)      || null,
-  savedVehicles:  (_cachedData && _cachedData.savedVehicles)  || [],
+  savedVehicles:  _initSaved.length ? _initSaved : ((_cachedData && _cachedData.savedVehicles) || []),
   pendingPhotoUpload: null,
   profile:        (_cachedData && _cachedData.profile)        || {},
   notifications:  (_cachedData && _cachedData.notifications)  || [],
@@ -1327,7 +1331,9 @@ async function loadPortalData(){
       state.bookings = freshBookings;
     }
     state.insurance     = d.insurance     || state.insurance     || null;
-    state.savedVehicles = d.savedVehicles || state.savedVehicles || [];
+    // Never overwrite saved vehicles with a shorter list from server (server may return [] on transient errors)
+    const freshSaved = d.savedVehicles || [];
+    if(freshSaved.length >= state.savedVehicles.length){ state.savedVehicles = freshSaved; }
     state.profile       = d.profile       || state.profile       || {};
     state.notifications = d.notifications || state.notifications || [];
     // Persist to localStorage keyed by email
@@ -2021,12 +2027,21 @@ async function nbCheckout(type){
   finally{ hideLoading(); if(btn){ btn.disabled=false; } }
 }
 
+function _persistSaved(){
+  // Write dedicated localStorage key immediately so saves survive any server/auth hiccup
+  try{
+    const sk = state.email ? 'pb_saved_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
+    if(sk) localStorage.setItem(sk, JSON.stringify(state.savedVehicles));
+  }catch(e){}
+}
+
 async function _fleetSave(name, emoji){
   const saved = state.savedVehicles||[];
   const idx = saved.findIndex(v=>(v.name||v)===name);
   if(idx>=0){ saved.splice(idx,1); }
   else { saved.push({name, emoji}); }
   state.savedVehicles = saved;
+  _persistSaved(); // write immediately before server call
   renderFleet();
   renderSaved();
   try{
@@ -2050,7 +2065,9 @@ function renderSaved(){
 
 async function removeSaved(idx){
   state.savedVehicles.splice(idx,1);
+  _persistSaved(); // write immediately before server call
   renderSaved();
+  renderFleet();
   try{
     await fetch(`${WORKER}/portal/save-vehicles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,savedVehicles:state.savedVehicles})});
     toast('Vehicle removed','success');
@@ -2146,9 +2163,11 @@ function renderAccount(){
 
 function signOut(){
   const _ck = state.email ? 'pb_cache_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
+  const _sk = state.email ? 'pb_saved_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
   _safeClear('pb_portal_token');
   _safeClear('pb_portal_email');
   try{ if(_ck) localStorage.removeItem(_ck); }catch(e){}
+  try{ if(_sk) localStorage.removeItem(_sk); }catch(e){}
   state.token=''; state.email=''; state.bookings=[]; state.insurance=null; state.savedVehicles=[]; state.profile={}; state.notifications=[];
   document.getElementById('app-screen').style.display='none';
   document.getElementById('auth-screen').style.display='flex';
