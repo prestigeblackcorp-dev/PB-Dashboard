@@ -10981,6 +10981,13 @@ function getVehicleUtilization(vehicleName){
 function sendReviewRequest(b){
   if(!MESSAGING_URL || !b || !b.email) return;
   if(b.reviewEmailSentAt) return; // already sent — never double-send
+  // Optimistic local guard — prevents double-send on same device before fetch resolves
+  var _lsKey = 'pb_review_sent_'+b.id;
+  if(localStorage.getItem(_lsKey)) return;
+  localStorage.setItem(_lsKey, '1');
+  // Also stamp in-memory immediately so runAutoScheduledEmails won't re-enter on same tick
+  var _ridxEarly = bookings.findIndex(function(x){ return x.id===b.id; });
+  if(_ridxEarly !== -1){ bookings[_ridxEarly].reviewEmailSentAt = Date.now(); }
   var firstName = (b.name||'').split(' ')[0] || 'there';
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',
@@ -11011,11 +11018,20 @@ function sendReviewRequest(b){
   }).then(function(r){
     if(r&&r.ok){
       logNotif('review','Review Request',b.email,b.id);
-      // Stamp so this never fires again for this booking
+      // Persist to Firebase so other devices won't re-send
       var _ridx=bookings.findIndex(function(x){return x.id===b.id;});
-      if(_ridx!==-1){ bookings[_ridx].reviewEmailSentAt=Date.now(); bookings[_ridx]._t=Date.now(); save(); }
+      if(_ridx!==-1){ bookings[_ridx].reviewEmailSentAt=bookings[_ridx].reviewEmailSentAt||Date.now(); bookings[_ridx]._t=Date.now(); cloudSave(); }
+    } else {
+      // Send failed — clear guards so it can retry next cycle
+      localStorage.removeItem(_lsKey);
+      var _ridx2=bookings.findIndex(function(x){return x.id===b.id;});
+      if(_ridx2!==-1){ delete bookings[_ridx2].reviewEmailSentAt; }
     }
-  }).catch(function(){});
+  }).catch(function(){
+    localStorage.removeItem(_lsKey);
+    var _ridx3=bookings.findIndex(function(x){return x.id===b.id;});
+    if(_ridx3!==-1){ delete bookings[_ridx3].reviewEmailSentAt; }
+  });
 }
 
 // Auto-trigger verification — skips if already verified, no email, or Worker not configured
