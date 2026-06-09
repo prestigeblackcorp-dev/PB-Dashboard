@@ -413,13 +413,14 @@ body { overflow-x: hidden; max-width: 100vw; }
     align-items: center;
     gap: 8px;
   }
-  .header > div:first-child { flex: 1 1 auto; min-width: 0; overflow: visible; }
-  .header-brand { font-size: 12px; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header > div:first-child { flex: 1 1 auto; min-width: 0; overflow: visible; max-width: calc(100% - 120px); }
+  .header > div:first-child > div { min-width: 0; overflow: hidden; }
+  .header-brand { font-size: 12px; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .header-sub { display: none; }
   /* Logo smaller */
   #pbLogoImg { width: 32px !important; height: 32px !important; }
-  /* Action buttons: hide non-essential ones; show only ⌘K + lock on mobile */
-  .header-actions { gap: 5px; flex-wrap: nowrap; flex-shrink: 0; }
+  /* Action buttons always on top and non-shrinking */
+  .header-actions { gap: 5px; flex-wrap: nowrap; flex-shrink: 0; position: relative; z-index: 5; }
   .header-actions .btn { padding: 5px 9px; font-size: 11px; flex-shrink: 0; white-space: nowrap; }
   /* Hide low-priority header buttons on mobile */
   #syncBtn, #forcePullBtn, #gcalBtn, #gcalSyncBtn { display: none !important; }
@@ -7019,15 +7020,21 @@ function renderPrevious(){
     if(!end) return false;
     return end<today;
   }).sort(function(a,b){
+    // Sort by completion time first (most recently checked out/completed at top),
+    // fall back to trip end date for trips that were never explicitly marked complete
+    var aT = a._completedAt || 0;
+    var bT = b._completedAt || 0;
+    if(aT || bT) return (bT||0) - (aT||0);
     return tripEndDate(b).localeCompare(tripEndDate(a));
   });
 
   var now=new Date(); now.setHours(0,0,0,0);
   var months={};
   prev.forEach(function(b){
-    var d=parseLocalDate(tripEndDate(b))||new Date();
-    var key=d.getFullYear()+'-'+pad(d.getMonth()+1);
-    var label=d.toLocaleString('en-US',{month:'long',year:'numeric'});
+    // Group by completion/checkout date when available, otherwise end date
+    var groupDate = b._completedAt ? new Date(b._completedAt) : (parseLocalDate(tripEndDate(b))||new Date());
+    var key=groupDate.getFullYear()+'-'+pad(groupDate.getMonth()+1);
+    var label=groupDate.toLocaleString('en-US',{month:'long',year:'numeric'});
     if(!months[key]) months[key]={label:label,items:[]};
     months[key].items.push(b);
   });
@@ -10763,7 +10770,7 @@ function renderTodayBanner(){
   var returns=bookings.filter(function(b){
     return !b._deleted && b.status!=='cancelled' && b.status!=='completed' &&
            (b.pickupDate||b.date||'')!==today && // not a pickup today
-           (b.dropoffDate||'')===today; // but drops off today
+           tripEndDate(b)===today; // ends today (works for hourly, daily, chauffeur)
   }).sort(function(a,b){
     var ta=a.dropoffTime||'99:99', tb=b.dropoffTime||'99:99';
     return ta<tb?-1:ta>tb?1:0;
@@ -14197,7 +14204,17 @@ function _renderContractContent(){
     }
     // Only reload the iframe if content actually changed — prevents scroll reset on data refresh
     if(frame.srcdoc !== srcdoc){
+      // Save current scroll position so we can restore after reload
+      var _savedScroll = 0;
+      try{ if(frame.contentWindow) _savedScroll = frame.contentWindow.scrollY || frame.contentWindow.pageYOffset || 0; }catch(e){}
       frame.srcdoc=srcdoc;
+      // Restore scroll after iframe loads (only if user had scrolled down)
+      if(_savedScroll > 10){
+        frame.addEventListener('load', function _restoreScroll(){
+          frame.removeEventListener('load', _restoreScroll);
+          try{ frame.contentWindow.scrollTo(0, _savedScroll); }catch(e){}
+        });
+      }
     }
   } else {
     frame.style.display='none'; $d('contractFilled').style.display=''; rawToggle.style.display='none';
@@ -15402,7 +15419,7 @@ async function submitPortalCharge(){
   b.portalCharges.push(charge);
 
   try {
-    await syncSave(b);
+    cloudSave();
     closePortalChargeModal();
     toast('💸 Charge sent to client portal ✅');
 
