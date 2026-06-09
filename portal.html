@@ -1194,15 +1194,9 @@ function _safeClear(key){
   try{ sessionStorage.removeItem(key); }catch(e){}
 }
 
-// Called whenever any API returns 401 — clears stale session and sends to login
+// Called when a payment API returns 401 — prompts re-login without forcing a page redirect
 function _portalSessionExpired(){
-  _safeClear('pb_portal_token'); _safeClear('pb_portal_email');
-  state.token=''; state.email='';
-  document.getElementById('app-screen').style.display='none';
-  document.getElementById('signing-screen').style.display='none';
-  document.getElementById('auth-screen').style.display='flex';
-  var sub = document.getElementById('auth-screen').querySelector('.auth-sub');
-  if(sub) sub.textContent='Your session expired. Please sign in again to continue.';
+  toast('Session expired — please sign out and sign back in to pay.','error');
 }
 
 var _verifyingOTP = false;
@@ -1320,21 +1314,12 @@ document.addEventListener('DOMContentLoaded',()=>{
   }
 
   // Normal portal: show app immediately if token exists — never auto-logout on page load.
-  // Session expiry is only enforced on explicit user actions (booking, saving, etc.).
   hideLoading();
   if(state.token && state.email){
     showApp();
     loadPortalData().then(result=>{
-      if(result === true){ renderAll(); return; }
-      if(result === 'unauthorized'){
-        // Session expired or invalid — clear and send to login
-        _safeClear('pb_portal_token'); _safeClear('pb_portal_email');
-        state.token=''; state.email='';
-        document.getElementById('app-screen').style.display='none';
-        document.getElementById('auth-screen').style.display='flex';
-        document.getElementById('auth-screen').querySelector('.auth-sub').textContent='Your session expired. Please sign in again.';
-      }
-      // on network 'error' — stay on app silently with cached data
+      if(result === true) renderAll();
+      // on 'error' or 'unauthorized' — stay on app with cached data, session refreshes on next login
     });
   }
 });
