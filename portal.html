@@ -1277,16 +1277,24 @@ document.addEventListener('DOMContentLoaded',()=>{
   hideLoading();
   if(state.token && state.email){
     showLoading();
-    loadPortalData().then(result=>{
+    loadPortalData().then(async result=>{
       if(result === true || result === 'error'){
         // 'error' = network issue — still show app with cached state rather than log out
         showApp();
       } else {
-        // 'unauthorized' = token genuinely invalid/expired — clear and force re-login
-        _safeClear('pb_portal_token');
-        _safeClear('pb_portal_email');
-        state.token=''; state.email='';
-        hideLoading();
+        // Got 'unauthorized' — could be a transient Firebase hiccup on page load.
+        // Retry once after a short delay before clearing the session.
+        await new Promise(res=>setTimeout(res, 1800));
+        const retry = await loadPortalData();
+        if(retry === true || retry === 'error'){
+          showApp();
+        } else {
+          // Two consecutive 401s — token is genuinely invalid/expired — force re-login
+          _safeClear('pb_portal_token');
+          _safeClear('pb_portal_email');
+          state.token=''; state.email='';
+          hideLoading();
+        }
       }
     });
   }
