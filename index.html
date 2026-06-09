@@ -3309,6 +3309,37 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
   </div>
 </div>
 
+<!-- ── Quick Assign Driver (opened from a chauffeur booking card) ──────────── -->
+<div class="modal" id="cardAssignModal">
+  <div class="modal-bg" onclick="closeCardAssign()"></div>
+  <div class="modal-card" style="max-width:460px;max-height:92vh;overflow-y:auto">
+    <div class="modal-title">
+      <span>&#129481; Assign Driver</span>
+      <button class="modal-close" onclick="closeCardAssign()">✕</button>
+    </div>
+    <div id="cardAssignBooking" style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--text);line-height:1.5"></div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Driver *</label>
+        <select id="cardAssignDriver" class="inp" style="width:100%">
+          <option value="">— loading drivers… —</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Driver's Expected Earnings ($) *</label>
+        <input id="cardAssignAmount" class="inp" type="number" min="0" step="1" inputmode="decimal" oninput="_cardAssignPctRefresh()" style="width:100%">
+        <div id="cardAssignPctHint" style="font-size:11px;color:var(--muted);margin-top:5px"></div>
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Notes for Driver</label>
+        <textarea id="cardAssignNotes" class="inp" rows="2" placeholder="Pickup notes, dress code, etc." style="width:100%;resize:vertical"></textarea>
+      </div>
+      <button class="btn btn-gold" style="width:100%;margin-top:2px;font-weight:800;padding:12px" onclick="submitCardAssign()">📲 Assign &amp; Notify Driver</button>
+      <div id="cardAssignStatus" style="font-size:13px;text-align:center;display:none"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ════════════════════════════════════════════════════════
 //  VEHICLE REGISTRY — daily rates from prestigeblackrentals.com
@@ -7458,6 +7489,112 @@ async function submitAssignDriver(){
 }
 
 // ════════════════════════════════════════════════════════
+//  QUICK ASSIGN DRIVER — from a chauffeur booking card
+//  Opens a focused module pre-filled with the booking and a driver
+//  take auto-set to 35% of the fare (editable). The exact amount
+//  entered is what the driver sees as expected earnings, even for
+//  bookings scheduled far in the future.
+// ════════════════════════════════════════════════════════
+var _cardAssignBkId=null;
+
+// Gross customer fare for a booking, mirroring the worker's fare priority
+// (finalPrice → estimatedPrice → totalPrice) then falling back to the
+// dashboard's all-in revenue so chauffeur bookings always have a basis.
+function _bookingGrossFare(b){
+  if(!b) return 0;
+  return Number(b.finalPrice||b.estimatedPrice||b.totalPrice||b.revenue||0)||0;
+}
+
+function _cardAssignPctRefresh(){
+  var b=_cardAssignBkId?bookings.find(function(x){return x.id===_cardAssignBkId;}):null;
+  var fare=_bookingGrossFare(b);
+  var amt=parseFloat($d('cardAssignAmount').value)||0;
+  var hint=$d('cardAssignPctHint');
+  if(!hint) return;
+  if(fare>0){
+    var pct=Math.round(amt/fare*100);
+    hint.innerHTML='Trip fare '+$$(fare)+' · driver keeps <b style="color:var(--gold)">'+pct+'%</b> · Prestige Black '+$$(Math.max(0,fare-amt))+
+      ' <span style="opacity:.6">(default 35% = '+$$(Math.round(fare*0.35))+')</span>';
+  } else {
+    hint.textContent='Flat amount the driver will earn for this trip.';
+  }
+}
+
+function openCardAssign(id){
+  var b=bookings.find(function(x){return x.id===id;});
+  if(!b){ alert('Booking not found.'); return; }
+  _cardAssignBkId=id;
+  var fare=_bookingGrossFare(b);
+  var ad=(b.assignedDriver&&b.assignedDriver.email)?b.assignedDriver:null;
+  var when=(b.pickupDate?fmtDate(b.pickupDate):'No date')+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'');
+  $d('cardAssignBooking').innerHTML=
+    '<div style="font-weight:800;color:var(--gold);margin-bottom:2px">🔖 PBR-'+(b.id||'').slice(-6).toUpperCase()+' · '+esc(b.vehicle||'Chauffeur')+'</div>'+
+    '<div>'+esc(b.name||'Guest')+(b.phone?' · '+esc(b.phone):'')+'</div>'+
+    '<div style="color:var(--muted)">'+esc(when)+'</div>'+
+    (b.address?'<div style="color:var(--muted)">📍 '+esc(b.address)+'</div>':'');
+  // Pre-fill take: existing assigned amount, else auto 35% of the fare.
+  var preAmt=(ad&&Number(ad.payAmount)>0)?Number(ad.payAmount):Math.round(fare*0.35);
+  $d('cardAssignAmount').value=preAmt||'';
+  $d('cardAssignNotes').value=(ad&&ad.notes)||'';
+  var st=$d('cardAssignStatus'); st.style.display='none'; st.textContent='';
+  _loadCardAssignRoster(ad?ad.email:'');
+  _cardAssignPctRefresh();
+  $d('cardAssignModal').style.display='flex';
+}
+
+function closeCardAssign(){ $d('cardAssignModal').style.display='none'; _cardAssignBkId=null; }
+
+async function _loadCardAssignRoster(preEmail){
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var sel=$d('cardAssignDriver');
+  if(!sel) return;
+  var fill=function(list){
+    var keep=sel.value;
+    sel.innerHTML='<option value="">— select driver —</option>';
+    (list||[]).forEach(function(drv){
+      var o=document.createElement('option');
+      o.value=drv.email; o.textContent=drv.name+' ('+drv.email+')';
+      sel.appendChild(o);
+    });
+    var want=preEmail||keep||'';
+    if(want) sel.value=want;
+  };
+  // Show the cached roster instantly, then refresh from the worker.
+  if(_drvList&&_drvList.length) fill(_drvList);
+  else sel.innerHTML='<option value="">— loading drivers… —</option>';
+  try{
+    var r=await fetch(WORKER+'/dashboard/drivers?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'});
+    var d=await r.json();
+    if(r.ok && d && d.drivers){ _drvList=d.drivers; fill(_drvList); }
+  }catch(e){ /* keep whatever is already shown */ }
+}
+
+async function submitCardAssign(){
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var bookingId=_cardAssignBkId;
+  var driverEmail=$d('cardAssignDriver').value;
+  var payAmount=parseFloat($d('cardAssignAmount').value)||0;
+  var notes=$d('cardAssignNotes').value.trim();
+  var st=$d('cardAssignStatus');
+  if(!bookingId){ closeCardAssign(); return; }
+  if(!driverEmail){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Select a driver.'; return; }
+  if(!(payAmount>0)){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Enter the driver\'s expected earnings.'; return; }
+  st.style.display='block'; st.style.color='var(--muted)'; st.textContent='Assigning…';
+  try{
+    var r=await fetch(WORKER+'/dashboard/assign-driver',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret,bookingId,driverEmail,payType:'flat',payAmount,notes})
+    });
+    var d; try{ d=await r.json(); }catch(je){ d={}; }
+    if(!r.ok){ st.style.color='var(--red)'; st.textContent=(d&&d.error)||('Error '+r.status); return; }
+    st.style.color='var(--green)'; st.textContent='✅ Assigned — driver notified · '+$$(payAmount)+' expected earnings.';
+    setTimeout(function(){ closeCardAssign(); if(typeof loadData==='function') loadData(); },1400);
+  }catch(e){ st.style.color='var(--red)'; st.textContent='Network error. Try again.'; }
+}
+
+// ════════════════════════════════════════════════════════
 //  PREVIOUS TRIPS
 // ════════════════════════════════════════════════════════
 function renderPrevious(){
@@ -7640,6 +7777,16 @@ function tripCard(b, showCountdown){
   // Feature 7: duplicate button
   var dupBtn='<button class="btn btn-sm" onclick="duplicateBooking(\''+b.id+'\')" title="Duplicate this booking" style="border-color:rgba(100,180,255,.4);color:var(--blue)">⧉ Duplicate</button>';
 
+  // Chauffeur-only: assign a driver to this (possibly future) booking. Shows the
+  // currently assigned driver's first name when one is set so reassigning is one tap.
+  var assignBtn='';
+  if(b.type==='chauffeur'){
+    var _adrv=(b.assignedDriver&&b.assignedDriver.email)?b.assignedDriver:null;
+    assignBtn=_adrv
+      ? '<button class="btn btn-sm" style="border-color:var(--green);color:var(--green);min-width:96px;font-weight:700" onclick="openCardAssign(\''+b.id+'\')" title="Reassign or edit driver / earnings">👤 '+esc((_adrv.name||'Driver').split(' ')[0])+' · ✏</button>'
+      : '<button class="btn btn-sm" style="border-color:var(--gold);color:var(--gold);min-width:96px;font-weight:700" onclick="openCardAssign(\''+b.id+'\')" title="Assign a driver to this trip">🧑‍✈️ Assign Driver</button>';
+  }
+
   // Feature 11: no-deposit warning chip (shown inline in card)
   var noDepositChip=(Number(b.deposit)||0)===0&&b.status!=='cancelled'?
     '<div style="margin-top:4px"><span class="deposit-chip">⚠️ No deposit collected</span></div>':'';
@@ -7711,6 +7858,7 @@ function tripCard(b, showCountdown){
       '<button class="btn btn-sm" style="border-color:#a855f7;color:#a855f7;min-width:80px" onclick="openCloseOut(\''+b.id+'\')">💰 Close Out</button>'+
       '<button class="btn btn-sm" style="border-color:#3b82f6;color:#3b82f6;min-width:60px" onclick="openVerify(\''+b.id+'\')">📋 Verify</button>'+
       '<button class="btn btn-sm" style="border-color:var(--gold-dim);color:var(--gold)" onclick="generateInvoice(\''+b.id+'\')">📄 Invoice</button>'+
+      assignBtn+
       (b.type!=='chauffeur'?'<button class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold)" onclick="openContract(\''+b.id+'\')">📝 Contract</button>':'')+
       statusBtn+
       dupBtn+

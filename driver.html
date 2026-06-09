@@ -897,8 +897,14 @@ function calcTripFare(t){
   var legacyPay=t.payType==='hourly' ? Number(t.hoursLogged||0)*Number(t.payAmount||0) : Number(t.payAmount||0);
   return legacyPay>0 ? legacyPay/DRIVER_SHARE : 0;
 }
-// Driver's take — 35% of the customer fare.
+// Driver's take. When the owner assigned an explicit amount for this trip — a
+// flat take or an hourly rate — the driver sees that exact figure (this is the
+// "expected earnings" entered when the trip was assigned). Otherwise it's the
+// standard 35% of the customer fare. Ride-hail trips carry payAmount 0, so they
+// always fall through to the 35% split.
 function calcTripPay(t){
+  if(t.payType==='flat'   && Number(t.payAmount)>0) return Number(t.payAmount);
+  if(t.payType==='hourly' && Number(t.payAmount)>0) return Number(t.hoursLogged||0)*Number(t.payAmount);
   return calcTripFare(t) * DRIVER_SHARE;
 }
 // Prestige Black's share — the remaining 65%.
@@ -925,8 +931,9 @@ function tripCard(t, highlight){
   var badgeLabel=isPast?'Completed':isToday?'Today':'Upcoming';
   var pay=calcTripPay(t);
   var hasFare=Number(t.fare||0)>0;
+  var takePct=hasFare?Math.round(pay/Number(t.fare)*100):0;
   var payLabel=hasFare
-    ? fmt$(pay)+' <span style="font-size:11px;color:var(--muted);font-weight:600;">· your take (35%)</span>'
+    ? fmt$(pay)+' <span style="font-size:11px;color:var(--muted);font-weight:600;">· your take'+(takePct?' ('+takePct+'%)':'')+'</span>'
     : (t.payType==='hourly'
         ? fmt$(t.payAmount||0)+'/hr × '+(t.hoursLogged||0)+'h = '+fmt$(pay)
         : fmt$(pay)+' (flat)');
