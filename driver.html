@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>PB Fleet Ops — Driver Portal</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 :root{
@@ -143,6 +145,56 @@ textarea{resize:vertical;min-height:80px;}
 .accent-bar{width:3px;height:18px;background:linear-gradient(180deg,var(--blue),var(--blue-dim));border-radius:2px;flex-shrink:0;}
 .section-header{display:flex;align-items:center;gap:8px;margin-bottom:12px;}
 .section-header-title{font-size:13px;font-weight:800;color:var(--blue);letter-spacing:.02em;}
+
+/* ── Chauffeur / Rides tab ───────────────────────────────────────── */
+.duty-toggle{display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:14px;}
+.duty-toggle.on{border-color:rgba(34,197,94,.4);background:rgba(34,197,94,.04);}
+.duty-info{flex:1;}
+.duty-title{font-size:16px;font-weight:800;}
+.duty-sub{font-size:12px;color:var(--muted);margin-top:2px;}
+.toggle-pill{width:56px;height:30px;border-radius:15px;background:var(--border);position:relative;cursor:pointer;transition:background .2s;flex-shrink:0;border:none;}
+.toggle-pill.on{background:var(--green);}
+.toggle-pill::after{content:'';position:absolute;width:22px;height:22px;border-radius:50%;background:#fff;top:4px;left:4px;transition:left .2s;box-shadow:0 1px 4px rgba(0,0,0,.4);}
+.toggle-pill.on::after{left:30px;}
+#rides-map-container{border-radius:16px;overflow:hidden;border:1px solid var(--border);margin-bottom:14px;position:relative;}
+#rides-map{height:220px;width:100%;}
+.rides-map-label{position:absolute;top:10px;left:10px;z-index:400;background:rgba(8,11,16,.85);backdrop-filter:blur(10px);border:1px solid rgba(201,169,98,.25);border-radius:10px;padding:5px 10px;font-size:11px;font-weight:700;color:var(--gold);letter-spacing:.1em;text-transform:uppercase;}
+
+/* Incoming ride alert */
+#ride-request-overlay{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;justify-content:flex-end;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);}
+.ride-request-sheet{background:var(--surface);border-radius:24px 24px 0 0;border:1px solid var(--border);border-bottom:none;padding:24px 20px;padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));animation:slideUp .3s cubic-bezier(.32,.72,0,1);}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.rr-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;}
+.rr-icon{width:52px;height:52px;border-radius:16px;background:linear-gradient(135deg,rgba(201,169,98,.2),rgba(201,169,98,.05));border:1px solid rgba(201,169,98,.3);display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0;}
+.rr-title{font-size:20px;font-weight:900;}
+.rr-sub{font-size:13px;color:var(--muted);margin-top:2px;}
+.rr-timer-bar{height:4px;background:rgba(201,169,98,.15);border-radius:2px;overflow:hidden;margin-bottom:16px;}
+.rr-timer-fill{height:100%;background:var(--gold);border-radius:2px;transition:width .5s linear;}
+.rr-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;}
+.rr-detail{background:#0a0e18;border:1px solid var(--border);border-radius:12px;padding:12px;}
+.rr-detail-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;}
+.rr-detail-val{font-size:14px;font-weight:700;color:var(--text);}
+.rr-addr{background:#0a0e18;border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:14px;}
+.rr-addr-row{display:flex;gap:8px;align-items:flex-start;padding:4px 0;}
+.rr-addr-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:3px;}
+.rr-addr-text{font-size:13px;color:var(--text2);}
+.rr-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.btn-accept{background:linear-gradient(135deg,var(--green),#16a34a);border:none;border-radius:14px;color:#fff;font-size:16px;font-weight:800;padding:16px;cursor:pointer;}
+.btn-decline{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:14px;color:var(--red);font-size:16px;font-weight:800;padding:16px;cursor:pointer;}
+.btn-accept:active,.btn-decline:active{opacity:.75;}
+
+/* Active ride panel */
+.active-ride-card{background:linear-gradient(135deg,rgba(34,197,94,.06),rgba(201,169,98,.04));border:1px solid rgba(34,197,94,.3);border-radius:16px;padding:16px;margin-bottom:12px;}
+.arc-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3);border-radius:20px;padding:4px 10px;margin-bottom:10px;}
+.arc-rider{font-size:17px;font-weight:800;margin-bottom:2px;}
+.arc-sub{font-size:12px;color:var(--muted);margin-bottom:12px;}
+.arc-actions{display:flex;gap:8px;flex-wrap:wrap;}
+.arc-btn{flex:1;border-radius:12px;padding:12px 8px;font-size:13px;font-weight:800;cursor:pointer;border:none;text-align:center;white-space:nowrap;}
+.arc-btn-nav{background:var(--blue);color:#fff;}
+.arc-btn-arrived{background:var(--gold);color:#000;}
+.arc-btn-start{background:var(--green);color:#fff;}
+.arc-btn-complete{background:var(--gold);color:#000;}
+.arc-btn-call{background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.3);color:var(--blue);}
 </style>
 </head>
 <body>
@@ -214,6 +266,10 @@ textarea{resize:vertical;min-height:80px;}
     </button>
     <button class="tab-btn" id="tab-btn-reports" onclick="drvSwitchTab('reports')">
       <span class="tab-icon">📋</span>REPORTS
+    </button>
+    <button class="tab-btn" id="tab-btn-rides" onclick="drvSwitchTab('rides')" style="position:relative;">
+      <span class="tab-icon">🚘</span>RIDES
+      <span id="rides-badge" style="display:none;position:absolute;top:6px;right:8px;width:8px;height:8px;background:#ef4444;border-radius:50%;"></span>
     </button>
   </div>
 
@@ -310,6 +366,84 @@ textarea{resize:vertical;min-height:80px;}
 
       <button class="btn btn-ghost btn-sm" onclick="drvSignOut()" style="margin-top:24px;width:100%;">Sign Out</button>
     </div>
+
+    <!-- ── RIDES (CHAUFFEUR) TAB ── -->
+    <div class="tab-pane" id="tab-rides">
+      <!-- Duty toggle -->
+      <div class="duty-toggle" id="duty-toggle-card">
+        <div class="duty-info">
+          <div class="duty-title" id="duty-title">Go On Duty</div>
+          <div class="duty-sub" id="duty-sub">Turn on to accept chauffeur rides</div>
+        </div>
+        <button class="toggle-pill" id="duty-pill" onclick="toggleDuty()"></button>
+      </div>
+
+      <!-- Active ride panel (shown when a ride is assigned) -->
+      <div id="active-ride-panel" style="display:none;">
+        <div class="active-ride-card" id="active-ride-card">
+          <div class="arc-status"><span style="width:8px;height:8px;border-radius:50%;background:currentColor;animation:pulse 1.5s ease-in-out infinite;display:inline-block;"></span>&nbsp;ACTIVE RIDE</div>
+          <div class="arc-rider" id="arc-rider-name">—</div>
+          <div class="arc-sub" id="arc-rider-sub">Rider</div>
+          <div style="background:#0a0e18;border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:12px;">
+            <div style="display:flex;gap:8px;align-items:flex-start;padding:3px 0;">
+              <span style="font-size:13px;">🟡</span>
+              <div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Pickup</div><div style="font-size:13px;color:var(--text2);" id="arc-pickup">—</div></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:flex-start;padding:3px 0;" id="arc-dropoff-row">
+              <span style="font-size:13px;">🟢</span>
+              <div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Dropoff</div><div style="font-size:13px;color:var(--text2);" id="arc-dropoff">—</div></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:flex-start;padding:3px 0;" id="arc-hours-row" style="display:none;">
+              <span style="font-size:13px;">⏱️</span>
+              <div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Duration</div><div style="font-size:13px;color:var(--text2);" id="arc-hours">—</div></div>
+            </div>
+          </div>
+          <div class="arc-actions" id="arc-actions"></div>
+        </div>
+      </div>
+
+      <!-- Live mini-map -->
+      <div class="rides-map-container" id="rides-map-container" style="display:none;">
+        <div id="rides-map"></div>
+        <div class="rides-map-label">LIVE MAP</div>
+      </div>
+
+      <!-- Status / no rides -->
+      <div id="ride-idle-msg" style="padding:32px 0;text-align:center;color:var(--muted);font-size:14px;">
+        <div style="font-size:40px;margin-bottom:10px;">🚘</div>
+        <div style="font-weight:700;margin-bottom:4px;">Go on duty to receive rides</div>
+        <div style="font-size:12px;">Toggle the switch above to start accepting chauffeur requests</div>
+      </div>
+    </div>
+
+  </div><!-- /tab-content -->
+</div><!-- /app-screen -->
+
+<!-- ══ INCOMING RIDE REQUEST OVERLAY ══════════════════════════════════════ -->
+<div id="ride-request-overlay">
+  <div class="ride-request-sheet">
+    <div class="rr-header">
+      <div class="rr-icon">🚗</div>
+      <div>
+        <div class="rr-title">New Ride Request</div>
+        <div class="rr-sub" id="rr-sub">Prestige Black Chauffeur</div>
+      </div>
+    </div>
+    <div class="rr-timer-bar"><div class="rr-timer-fill" id="rr-timer-fill" style="width:100%"></div></div>
+    <div class="rr-detail-grid">
+      <div class="rr-detail"><div class="rr-detail-label">Est. Fare</div><div class="rr-detail-val" id="rr-fare">—</div></div>
+      <div class="rr-detail"><div class="rr-detail-label">Distance</div><div class="rr-detail-val" id="rr-dist">—</div></div>
+      <div class="rr-detail"><div class="rr-detail-label">Rider</div><div class="rr-detail-val" id="rr-rider">—</div></div>
+      <div class="rr-detail"><div class="rr-detail-label">Type</div><div class="rr-detail-val" id="rr-type">—</div></div>
+    </div>
+    <div class="rr-addr">
+      <div class="rr-addr-row"><div class="rr-addr-dot" style="background:#C9A962;"></div><div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Pickup</div><div class="rr-addr-text" id="rr-pickup">—</div></div></div>
+      <div class="rr-addr-row" id="rr-dropoff-row"><div class="rr-addr-dot" style="background:#22c55e;border-radius:2px;"></div><div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Dropoff</div><div class="rr-addr-text" id="rr-dropoff">—</div></div></div>
+    </div>
+    <div class="rr-actions">
+      <button class="btn-decline" onclick="declineRide()">✕ Decline</button>
+      <button class="btn-accept" onclick="acceptRide()">✓ Accept</button>
+    </div>
   </div>
 </div>
 
@@ -342,6 +476,20 @@ var _incPhotoSlot = null;
 var _clockTimerId = null;
 var _verifyingOTP = false;
 var _activeTab = 'today';
+
+// ── Chauffeur / Rides state ────────────────────────────────────────────────
+var _onDuty = false;
+var _dutyInterval = null;   // location broadcast
+var _ridesPollTimer = null; // polls for incoming notifications & active ride
+var _pendingRide = null;    // incoming ride notification object
+var _activeRide = null;     // current accepted ride
+var _rrTimerInterval = null;// countdown timer on accept overlay
+var _ridesMap = null;
+var _driverSelfMarker = null;
+var _activeRidePickupMarker = null;
+var _activeRideDropoffMarker = null;
+var _activeRideRouteLine = null;
+var _geoWatchId = null;
 
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function $d(id){ return document.getElementById(id); }
@@ -484,6 +632,7 @@ function renderAll(){
   renderEarnings();
   renderReports();
   startClockTick();
+  initChauffeurAfterLogin();
 }
 
 function updateHeader(){
@@ -881,6 +1030,265 @@ function drvSwitchTab(name){
   var btn=$d('tab-btn-'+name), pane=$d('tab-'+name);
   if(btn) btn.classList.add('active');
   if(pane) pane.classList.add('active');
+  if(name==='rides') onRidesTabOpen();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// CHAUFFEUR / RIDES
+// ══════════════════════════════════════════════════════════════════════════
+
+function onRidesTabOpen(){
+  if(!_ridesMap) initRidesMap();
+  renderActiveRidePanel();
+}
+
+function initRidesMap(){
+  var el = document.getElementById('rides-map');
+  if(!el||_ridesMap) return;
+  document.getElementById('rides-map-container').style.display='block';
+  el.style.height='220px';
+  _ridesMap = L.map('rides-map',{zoomControl:false,attributionControl:false}).setView([32.7767,-96.797],13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(_ridesMap);
+  L.control.attribution({prefix:false}).addTo(_ridesMap);
+  setTimeout(function(){ _ridesMap.invalidateSize(); },200);
+}
+
+// ── Duty toggle ──────────────────────────────────────────────────────────
+function toggleDuty(){
+  _onDuty = !_onDuty;
+  var pill = $d('duty-pill');
+  var card = $d('duty-toggle-card');
+  if(_onDuty){
+    pill.classList.add('on'); card.classList.add('on');
+    $d('duty-title').textContent='On Duty';
+    $d('duty-sub').textContent='You are available for chauffeur rides';
+    $d('ride-idle-msg').innerHTML='<div style="font-size:40px;margin-bottom:10px;">✅</div><div style="font-weight:700;margin-bottom:4px;color:var(--green)">On Duty — Waiting for rides</div><div style="font-size:12px;color:var(--muted)">You\'ll be notified instantly when a rider requests a pickup</div>';
+    startDutyBroadcast();
+    startRidesPoll();
+  } else {
+    pill.classList.remove('on'); card.classList.remove('on');
+    $d('duty-title').textContent='Go On Duty';
+    $d('duty-sub').textContent='Turn on to accept chauffeur rides';
+    $d('ride-idle-msg').innerHTML='<div style="font-size:40px;margin-bottom:10px;">🚘</div><div style="font-weight:700;margin-bottom:4px;">Go on duty to receive rides</div><div style="font-size:12px;color:var(--muted)">Toggle the switch above to start accepting chauffeur requests</div>';
+    stopDutyBroadcast();
+    // Only stop polling if no active ride
+    if(!_activeRide) stopRidesPoll();
+    // Go offline
+    if(drvState.token) fetch(WORKER+'/chauffeur/go-offline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token})}).catch(function(){});
+  }
+}
+
+function startDutyBroadcast(){
+  broadcastLocation();
+  _dutyInterval = setInterval(broadcastLocation, 8000);
+  _geoWatchId = navigator.geolocation && navigator.geolocation.watchPosition(function(pos){
+    updateMapSelfMarker(pos.coords.latitude, pos.coords.longitude, pos.coords.heading);
+  }, null, {enableHighAccuracy:true,timeout:10000,maximumAge:5000});
+}
+function stopDutyBroadcast(){
+  clearInterval(_dutyInterval); _dutyInterval=null;
+  if(_geoWatchId!=null){ navigator.geolocation&&navigator.geolocation.clearWatch(_geoWatchId); _geoWatchId=null; }
+}
+
+function broadcastLocation(){
+  if(!drvState.token||!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(function(pos){
+    var payload={token:drvState.token,lat:pos.coords.latitude,lng:pos.coords.longitude,
+      heading:pos.coords.heading||0,speed:pos.coords.speed||0,
+      status:_activeRide?'busy':'available'};
+    fetch(WORKER+'/chauffeur/update-location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(function(){});
+    updateMapSelfMarker(pos.coords.latitude, pos.coords.longitude, pos.coords.heading);
+  }, null, {enableHighAccuracy:true,timeout:8000,maximumAge:5000});
+}
+
+function updateMapSelfMarker(lat,lng,heading){
+  if(!_ridesMap) return;
+  var rot=heading||0;
+  var html='<div style="width:32px;height:32px;background:linear-gradient(135deg,#C9A962,#a8893e);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:17px;border:2px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.5);transform:rotate('+rot+'deg)">🚘</div>';
+  var icon=L.divIcon({className:'',html:html,iconSize:[32,32],iconAnchor:[16,16]});
+  if(_driverSelfMarker){ _driverSelfMarker.setLatLng([lat,lng]); _driverSelfMarker.setIcon(icon); }
+  else { _driverSelfMarker=L.marker([lat,lng],{icon:icon}).addTo(_ridesMap); }
+  _ridesMap.setView([lat,lng],15);
+}
+
+// ── Poll for incoming requests & active ride ─────────────────────────────
+function startRidesPoll(){
+  pollDriverRides();
+  _ridesPollTimer=setInterval(pollDriverRides,5000);
+}
+function stopRidesPoll(){ clearInterval(_ridesPollTimer); _ridesPollTimer=null; }
+
+async function pollDriverRides(){
+  if(!drvState.token) return;
+  var r=await fetch(WORKER+'/chauffeur/driver-rides?token='+encodeURIComponent(drvState.token),{cache:'no-store'}).catch(function(){return null;});
+  if(!r||!r.ok) return;
+  var d=await r.json().catch(function(){return null;});
+  if(!d) return;
+  // Handle incoming notification
+  if(d.notification&&d.notification.status==='pending'&&d.notification.rideId){
+    if(!_pendingRide||_pendingRide.rideId!==d.notification.rideId){
+      _pendingRide=d.notification;
+      showRideRequestOverlay(_pendingRide);
+      // Flash rides badge
+      var badge=$d('rides-badge');
+      if(badge){ badge.style.display='block'; }
+    }
+  } else {
+    if($d('ride-request-overlay').style.display!=='none'&&!_activeRide){
+      // Notification cleared server-side (another driver accepted)
+      hideRideRequestOverlay();
+    }
+  }
+  // Update active ride
+  if(d.activeRide){
+    _activeRide=d.activeRide;
+    if(!_ridesPollTimer) startRidesPoll(); // keep polling during active ride
+    renderActiveRidePanel();
+    drawActiveRideOnMap(d.activeRide);
+  } else if(!d.activeRide&&_activeRide&&['completed','cancelled'].includes(_activeRide.status)){
+    _activeRide=null;
+    renderActiveRidePanel();
+  }
+}
+
+// ── Incoming ride overlay ────────────────────────────────────────────────
+function showRideRequestOverlay(notif){
+  var o=$d('ride-request-overlay'); o.style.display='flex';
+  $d('rr-fare').textContent='$'+(notif.estimatedPrice||0).toFixed(2);
+  $d('rr-dist').textContent=notif.distanceMiles?(notif.distanceMiles.toFixed(1)+' mi'):(notif.hours?notif.hours+' hrs':'—');
+  $d('rr-rider').textContent=notif.riderName||'Rider';
+  $d('rr-type').textContent=notif.rideType==='hourly'?'Hourly':'Point-to-Point';
+  $d('rr-pickup').textContent=notif.pickupAddress||'—';
+  $d('rr-dropoff').textContent=notif.dropoffAddress||'(Hourly)';
+  $d('rr-dropoff-row').style.display=notif.rideType==='hourly'?'none':'flex';
+  // Timer: 60 seconds
+  var secs=60, fill=$d('rr-timer-fill');
+  clearInterval(_rrTimerInterval);
+  fill.style.width='100%';
+  _rrTimerInterval=setInterval(function(){
+    secs--;
+    fill.style.width=Math.max(0,(secs/60)*100)+'%';
+    if(secs<=0){ clearInterval(_rrTimerInterval); declineRide(); }
+  },1000);
+}
+function hideRideRequestOverlay(){
+  $d('ride-request-overlay').style.display='none';
+  clearInterval(_rrTimerInterval);
+  _pendingRide=null;
+  var badge=$d('rides-badge'); if(badge) badge.style.display='none';
+}
+
+async function acceptRide(){
+  if(!_pendingRide||!drvState.token) return;
+  clearInterval(_rrTimerInterval);
+  var rideId=_pendingRide.rideId;
+  hideRideRequestOverlay();
+  var r=await fetch(WORKER+'/chauffeur/accept-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:rideId})}).catch(function(){return null;});
+  if(!r||!r.ok){ showToast&&showToast('Could not accept ride'); return; }
+  var d=await r.json().catch(function(){return {};});
+  // Switch to rides tab and start ride view
+  drvSwitchTab('rides');
+  pollDriverRides(); // immediate refresh
+}
+async function declineRide(){
+  if(!_pendingRide||!drvState.token) return;
+  var rideId=_pendingRide.rideId;
+  hideRideRequestOverlay();
+  fetch(WORKER+'/chauffeur/decline-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:rideId})}).catch(function(){});
+}
+
+// ── Active ride panel ────────────────────────────────────────────────────
+function renderActiveRidePanel(){
+  var panel=$d('active-ride-panel');
+  if(!panel) return;
+  if(!_activeRide){ panel.style.display='none'; return; }
+  panel.style.display='block';
+  var r=_activeRide;
+  $d('arc-rider-name').textContent=r.riderName||r.riderEmail||'Rider';
+  $d('arc-rider-sub').textContent=r.riderPhone?r.riderPhone:'';
+  $d('arc-pickup').textContent=r.pickupAddress||'—';
+  if(r.rideType==='hourly'){
+    $d('arc-dropoff-row').style.display='none'; $d('arc-hours-row').style.display='flex';
+    $d('arc-hours').textContent=(r.hours||'—')+' hour'+(r.hours!==1?'s':'');
+  } else {
+    $d('arc-dropoff-row').style.display='flex'; $d('arc-hours-row').style.display='none';
+    $d('arc-dropoff').textContent=r.dropoffAddress||'—';
+  }
+  // Actions depend on status
+  var actions=$d('arc-actions'); actions.innerHTML='';
+  var navUrl='https://maps.apple.com/?daddr='+encodeURIComponent(r.status==='in_progress'&&r.dropoffAddress?r.dropoffAddress:r.pickupAddress)+'&dirflg=d';
+  if(['accepted','driver_arrived'].includes(r.status)){
+    actions.innerHTML+=
+      '<a href="'+navUrl+'" target="_blank" class="arc-btn arc-btn-nav" style="flex:1;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:12px;">🗺️ Navigate</a>'+
+      (r.status==='accepted'?'<button class="arc-btn arc-btn-arrived" onclick="markArrived()">✓ I\'ve Arrived</button>':'<button class="arc-btn arc-btn-start" onclick="startRide()">🚀 Start Ride</button>');
+  }
+  if(r.status==='in_progress'){
+    var navDest=r.dropoffAddress?'https://maps.apple.com/?daddr='+encodeURIComponent(r.dropoffAddress)+'&dirflg=d':navUrl;
+    actions.innerHTML='<a href="'+navDest+'" target="_blank" class="arc-btn arc-btn-nav" style="flex:1;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:12px;">🗺️ Navigate</a>'+
+      '<button class="arc-btn arc-btn-complete" onclick="completeRide()">🏁 Complete</button>';
+  }
+  if(r.riderPhone){
+    actions.innerHTML+='<a href="tel:'+r.riderPhone+'" class="arc-btn arc-btn-call" style="text-decoration:none;display:flex;align-items:center;justify-content:center;gap:4px;padding:12px;">📞</a>';
+  }
+  if(r.status==='completed'){
+    panel.innerHTML='<div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:16px;padding:20px;text-align:center;margin-bottom:12px;"><div style="font-size:32px;margin-bottom:6px">✅</div><div style="font-size:18px;font-weight:800;">Ride Complete</div><div style="font-size:24px;font-weight:900;color:var(--gold);margin:8px 0">$'+(r.finalPrice||r.estimatedPrice||0).toFixed(2)+'</div><div style="font-size:12px;color:var(--muted)">Great job! You\'re available for new rides.</div></div>';
+    setTimeout(function(){ _activeRide=null; renderActiveRidePanel(); },5000);
+  }
+}
+
+async function markArrived(){
+  if(!_activeRide||!drvState.token) return;
+  await fetch(WORKER+'/chauffeur/arrived',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){});
+  _activeRide.status='driver_arrived';
+  renderActiveRidePanel();
+}
+async function startRide(){
+  if(!_activeRide||!drvState.token) return;
+  await fetch(WORKER+'/chauffeur/start-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){});
+  _activeRide.status='in_progress';
+  renderActiveRidePanel();
+}
+async function completeRide(){
+  if(!_activeRide||!drvState.token) return;
+  if(!confirm('Mark ride as complete?')) return;
+  var r=await fetch(WORKER+'/chauffeur/complete-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){return null;});
+  var d=r?await r.json().catch(function(){return {};}):{};
+  _activeRide.status='completed'; _activeRide.finalPrice=d.finalPrice||_activeRide.estimatedPrice;
+  renderActiveRidePanel();
+  // Go available
+  if(_onDuty) broadcastLocation();
+}
+
+// ── Draw active ride on mini-map ──────────────────────────────────────────
+function drawActiveRideOnMap(ride){
+  if(!_ridesMap||!ride) return;
+  if(ride.pickupLat&&ride.pickupLng){
+    var pIcon=L.divIcon({className:'',html:'<div style="width:14px;height:14px;background:#C9A962;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>',iconSize:[14,14],iconAnchor:[7,7]});
+    if(_activeRidePickupMarker){ _activeRidePickupMarker.setLatLng([ride.pickupLat,ride.pickupLng]); }
+    else { _activeRidePickupMarker=L.marker([ride.pickupLat,ride.pickupLng],{icon:pIcon}).addTo(_ridesMap); }
+  }
+  if(ride.dropoffLat&&ride.dropoffLng){
+    var dIcon=L.divIcon({className:'',html:'<div style="width:14px;height:14px;background:#22c55e;border-radius:3px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>',iconSize:[14,14],iconAnchor:[7,14]});
+    if(_activeRideDropoffMarker){ _activeRideDropoffMarker.setLatLng([ride.dropoffLat,ride.dropoffLng]); }
+    else { _activeRideDropoffMarker=L.marker([ride.dropoffLat,ride.dropoffLng],{icon:dIcon}).addTo(_ridesMap); }
+  }
+  // Fetch route if we have both endpoints
+  if(ride.pickupLat&&ride.dropoffLat&&!_activeRideRouteLine){
+    var routeUrl='https://router.project-osrm.org/route/v1/driving/'+ride.pickupLng+','+ride.pickupLat+';'+ride.dropoffLng+','+ride.dropoffLat+'?overview=full&geometries=geojson';
+    fetch(routeUrl,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+      if(d&&d.routes&&d.routes[0]){
+        var coords=d.routes[0].geometry.coordinates.map(function(c){return[c[1],c[0]];});
+        _activeRideRouteLine=L.polyline(coords,{color:'#C9A962',weight:3,opacity:.7,dashArray:'8,4'}).addTo(_ridesMap);
+        _ridesMap.fitBounds(_activeRideRouteLine.getBounds(),{padding:[30,30]});
+      }
+    }).catch(function(){});
+  }
+}
+
+// ── Start chauffeur polling after login ───────────────────────────────────
+function initChauffeurAfterLogin(){
+  // Always poll for incoming rides even when off-duty (in case dashboard dispatches manually)
+  startRidesPoll();
 }
 </script>
 </body>

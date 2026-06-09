@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Prestige Black — On-Demand Chauffeur</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#07090e;--surface:#0f1420;--card:#141a28;--border:#1d2640;
+  --gold:#C9A962;--gold2:#a8893e;--gold-dim:rgba(201,169,98,.12);
+  --text:#f0f4ff;--muted:#6b7a9a;--text2:#b0bcd8;
+  --green:#22c55e;--red:#ef4444;--blue:#3b82f6;
+  --safe-top:env(safe-area-inset-top,0px);
+  --safe-bot:env(safe-area-inset-bottom,0px);
+}
+html,body{height:100%;overflow:hidden;background:var(--bg);}
+body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif;}
+
+/* ── Auth ─────────────────────────────────────────────────── */
+#auth{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(201,169,98,.1) 0%,transparent 70%);}
+.pb-wordmark{display:flex;flex-direction:column;align-items:center;margin-bottom:48px;}
+.pb-wordmark-top{font-size:10px;font-weight:900;letter-spacing:.45em;color:var(--gold);text-transform:uppercase;}
+.pb-wordmark-main{font-size:28px;font-weight:900;letter-spacing:.06em;color:#fff;text-transform:uppercase;margin:2px 0;}
+.pb-wordmark-sub{font-size:9px;font-weight:700;letter-spacing:.3em;color:var(--muted);text-transform:uppercase;}
+.pb-divider{width:40px;height:1px;background:linear-gradient(90deg,transparent,var(--gold),transparent);margin:12px 0;}
+.auth-card{background:rgba(15,20,32,.95);border:1px solid var(--border);border-radius:20px;padding:28px 24px;width:100%;max-width:380px;backdrop-filter:blur(20px);}
+.auth-card h2{font-size:18px;font-weight:800;margin-bottom:4px;}
+.auth-card p{font-size:13px;color:var(--muted);margin-bottom:20px;}
+.inp{background:#0a0e18;border:1px solid var(--border);border-radius:12px;color:var(--text);font-size:15px;padding:13px 14px;width:100%;outline:none;font-family:inherit;transition:border-color .15s;}
+.inp:focus{border-color:var(--gold);}
+.btn-gold{background:linear-gradient(135deg,var(--gold),var(--gold2));color:#000;border:none;border-radius:12px;font-size:15px;font-weight:800;padding:14px;width:100%;cursor:pointer;letter-spacing:.3px;transition:opacity .15s;margin-top:14px;}
+.btn-gold:disabled{opacity:.4;cursor:not-allowed;}
+.btn-gold:active{opacity:.75;}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:12px;font-size:14px;font-weight:600;padding:11px;width:100%;cursor:pointer;margin-top:10px;}
+.otp-wrap{position:relative;margin:14px 0 4px;}
+.otp-hidden{position:absolute;inset:0;opacity:0;width:100%;height:100%;font-size:1px;z-index:2;cursor:text;}
+.otp-row{display:flex;gap:10px;justify-content:center;pointer-events:none;}
+.otp-box{background:#0a0e18;border:2px solid var(--border);border-radius:12px;color:var(--text);font-size:24px;font-weight:800;text-align:center;width:50px;height:60px;display:flex;align-items:center;justify-content:center;transition:border-color .15s;flex-shrink:0;}
+.otp-box.active{border-color:var(--gold);}
+.otp-box.filled{border-color:rgba(201,169,98,.5);}
+.auth-status{font-size:13px;text-align:center;margin-top:12px;min-height:18px;font-weight:600;}
+
+/* ── Main App ──────────────────────────────────────────────── */
+#app{position:fixed;inset:0;display:none;flex-direction:column;}
+
+/* Map fills most of screen */
+#map-wrap{flex:1;position:relative;}
+#map{width:100%;height:100%;}
+#map-overlay-top{position:absolute;top:0;left:0;right:0;z-index:10;padding:calc(var(--safe-top) + 12px) 16px 12px;pointer-events:none;}
+#map-overlay-top>*{pointer-events:all;}
+
+/* PB logo on map */
+.map-logo{background:rgba(7,9,14,.85);backdrop-filter:blur(16px);border:1px solid rgba(201,169,98,.25);border-radius:14px;padding:8px 14px;display:inline-flex;align-items:center;gap:8px;}
+.map-logo-text{font-size:11px;font-weight:900;letter-spacing:.25em;color:var(--gold);text-transform:uppercase;}
+.map-icon-btn{background:rgba(7,9,14,.85);backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:12px;width:42px;height:42px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;transition:border-color .15s;}
+.map-icon-btn:active{opacity:.7;}
+
+/* Bottom sheet */
+#bottom-sheet{position:absolute;bottom:0;left:0;right:0;z-index:20;background:var(--surface);border-radius:24px 24px 0 0;border:1px solid var(--border);border-bottom:none;transition:transform .3s cubic-bezier(.32,.72,0,1);will-change:transform;max-height:88vh;overflow-y:auto;padding-bottom:calc(20px + var(--safe-bot));}
+.sheet-handle{width:40px;height:4px;border-radius:2px;background:var(--border);margin:12px auto 16px;flex-shrink:0;}
+.sheet-section{padding:0 20px 16px;}
+.sheet-title{font-size:20px;font-weight:800;letter-spacing:-.3px;margin-bottom:4px;}
+.sheet-sub{font-size:13px;color:var(--muted);margin-bottom:16px;}
+
+/* Address input row */
+.addr-inputs{display:flex;flex-direction:column;gap:8px;margin-bottom:14px;}
+.addr-field{position:relative;}
+.addr-dot{position:absolute;left:14px;top:50%;transform:translateY(-50%);width:10px;height:10px;border-radius:50%;flex-shrink:0;z-index:1;}
+.addr-dot.pickup{background:var(--gold);}
+.addr-dot.dropoff{background:var(--green);border-radius:3px;}
+.addr-inp{background:#0a0e18;border:1px solid var(--border);border-radius:14px;color:var(--text);font-size:14px;padding:13px 14px 13px 34px;width:100%;outline:none;font-family:inherit;transition:border-color .15s;}
+.addr-inp:focus{border-color:var(--gold);}
+.addr-inp::placeholder{color:var(--muted);}
+.suggestions{position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;z-index:50;box-shadow:0 8px 32px rgba(0,0,0,.5);}
+.suggestion{padding:12px 16px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);transition:background .1s;}
+.suggestion:last-child{border-bottom:none;}
+.suggestion:active,.suggestion:hover{background:rgba(201,169,98,.08);}
+.sug-main{font-weight:600;color:var(--text);}
+.sug-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+
+/* Ride type toggle */
+.ride-type-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
+.ride-type-btn{background:#0a0e18;border:1px solid var(--border);border-radius:12px;padding:12px;cursor:pointer;text-align:center;transition:all .15s;}
+.ride-type-btn.active{border-color:var(--gold);background:var(--gold-dim);}
+.ride-type-btn .rtb-icon{font-size:22px;display:block;margin-bottom:4px;}
+.ride-type-btn .rtb-label{font-size:12px;font-weight:700;color:var(--muted);}
+.ride-type-btn.active .rtb-label{color:var(--gold);}
+
+/* Hours selector */
+.hours-row{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
+.hours-label{font-size:13px;color:var(--muted);font-weight:600;white-space:nowrap;}
+.hours-ctrl{display:flex;align-items:center;gap:12px;background:#0a0e18;border:1px solid var(--border);border-radius:12px;padding:4px;}
+.hours-btn{width:36px;height:36px;border:none;background:rgba(201,169,98,.15);border-radius:8px;color:var(--gold);font-size:20px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+.hours-val{font-size:17px;font-weight:800;color:var(--text);min-width:32px;text-align:center;}
+
+/* Price estimate card */
+.price-card{background:var(--gold-dim);border:1px solid rgba(201,169,98,.25);border-radius:16px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
+.price-label{font-size:12px;color:var(--gold);font-weight:700;text-transform:uppercase;letter-spacing:.06em;}
+.price-amount{font-size:28px;font-weight:900;color:var(--gold);}
+.price-sub{font-size:11px;color:rgba(201,169,98,.6);margin-top:2px;}
+.price-detail{font-size:12px;color:var(--muted);}
+
+/* Ride status view */
+#ride-status-view{display:none;}
+.status-card{border-radius:18px;overflow:hidden;margin-bottom:12px;}
+.status-header{background:linear-gradient(135deg,var(--gold-dim),rgba(201,169,98,.05));border:1px solid rgba(201,169,98,.2);border-radius:18px;padding:18px 20px;}
+.status-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:4px 10px;border-radius:20px;margin-bottom:10px;}
+.status-badge.searching{background:rgba(234,179,8,.15);color:#eab308;border:1px solid rgba(234,179,8,.3);}
+.status-badge.accepted,.status-badge.driver_arrived{background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.3);}
+.status-badge.in_progress{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3);}
+.status-badge.completed{background:rgba(201,169,98,.15);color:var(--gold);border:1px solid rgba(201,169,98,.3);}
+.status-badge.no_driver,.status-badge.cancelled{background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.3);}
+.pulse-dot{width:8px;height:8px;border-radius:50%;background:currentColor;animation:pulse 1.5s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.status-title{font-size:19px;font-weight:800;margin-bottom:2px;}
+.status-sub{font-size:13px;color:var(--muted);}
+.eta-chip{display:inline-flex;align-items:center;gap:5px;background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.25);border-radius:20px;padding:5px 12px;font-size:13px;font-weight:700;color:var(--blue);margin-top:10px;}
+
+.driver-info-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;display:flex;align-items:center;gap:14px;margin-bottom:10px;}
+.driver-avatar{width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--gold-dim),rgba(201,169,98,.04));border:2px solid rgba(201,169,98,.3);display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0;}
+.driver-details{flex:1;min-width:0;}
+.driver-name{font-size:16px;font-weight:800;}
+.driver-sub{font-size:12px;color:var(--muted);margin-top:2px;}
+.driver-actions{display:flex;gap:8px;}
+.icon-btn{width:44px;height:44px;border-radius:12px;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;text-decoration:none;transition:border-color .15s;}
+.icon-btn:hover{border-color:var(--gold);}
+
+.route-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:10px;}
+.route-row{display:flex;align-items:flex-start;gap:10px;padding:6px 0;}
+.route-row:not(:last-child){border-bottom:1px solid rgba(255,255,255,.04);}
+.route-icon{font-size:16px;width:24px;text-align:center;margin-top:1px;flex-shrink:0;}
+.route-text{font-size:13px;color:var(--text2);flex:1;}
+.route-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:1px;}
+
+/* Payment done */
+.done-card{background:linear-gradient(135deg,rgba(34,197,94,.08),rgba(201,169,98,.04));border:1px solid rgba(34,197,94,.2);border-radius:18px;padding:24px;text-align:center;margin-bottom:14px;}
+.done-icon{font-size:52px;margin-bottom:8px;}
+.done-title{font-size:22px;font-weight:900;margin-bottom:4px;}
+.done-sub{font-size:14px;color:var(--muted);}
+.done-price{font-size:36px;font-weight:900;color:var(--gold);margin:12px 0;}
+
+/* Cancel / footer actions */
+.sheet-actions{display:flex;flex-direction:column;gap:8px;padding:0 20px 8px;}
+.btn-cancel{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);color:var(--red);border-radius:12px;padding:13px;font-size:14px;font-weight:700;cursor:pointer;}
+.btn-cancel:active{opacity:.7;}
+
+/* Loading spinner */
+.spinner{width:20px;height:20px;border:2px solid rgba(201,169,98,.3);border-top-color:var(--gold);border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Custom marker */
+.car-marker{width:36px;height:36px;background:linear-gradient(135deg,var(--gold),var(--gold2));border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;border:2px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,.5);}
+.rider-marker{width:20px;height:20px;background:var(--gold);border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 4px rgba(201,169,98,.3),0 2px 8px rgba(0,0,0,.4);}
+.rider-pulse{width:50px;height:50px;border-radius:50%;border:2px solid rgba(201,169,98,.4);animation:ripple 2s ease-out infinite;}
+@keyframes ripple{0%{transform:scale(.5);opacity:1}100%{transform:scale(2);opacity:0}}
+</style>
+</head>
+<body>
+
+<!-- ══ AUTH SCREEN ══════════════════════════════════════════════════════ -->
+<div id="auth">
+  <div class="pb-wordmark">
+    <div class="pb-wordmark-top">Dallas, TX</div>
+    <div class="pb-wordmark-main">Prestige Black</div>
+    <div class="pb-divider"></div>
+    <div class="pb-wordmark-sub">On-Demand Chauffeur</div>
+  </div>
+  <div class="auth-card" id="auth-email-card">
+    <h2>Book Your Ride</h2>
+    <p>Sign in with your email to request a chauffeur</p>
+    <input id="emailInp" class="inp" type="email" placeholder="your@email.com" autocomplete="email" style="margin-bottom:0">
+    <div class="auth-status" id="authStatus"></div>
+    <button class="btn-gold" id="sendOtpBtn" onclick="sendOtp()">Continue</button>
+  </div>
+  <div class="auth-card" id="auth-otp-card" style="display:none">
+    <h2>Check your email</h2>
+    <p id="otp-sent-to">Enter the 6-digit code we sent to your email</p>
+    <div class="otp-wrap">
+      <input class="otp-hidden" id="otpHiddenInp" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" oninput="onOtpInput()" onkeydown="onOtpKey(event)">
+      <div class="otp-row" id="otpRow">
+        <div class="otp-box active" id="ob0"></div>
+        <div class="otp-box" id="ob1"></div>
+        <div class="otp-box" id="ob2"></div>
+        <div class="otp-box" id="ob3"></div>
+        <div class="otp-box" id="ob4"></div>
+        <div class="otp-box" id="ob5"></div>
+      </div>
+    </div>
+    <div class="auth-status" id="otpStatus"></div>
+    <button class="btn-ghost" onclick="backToEmail()">← Different email</button>
+  </div>
+</div>
+
+<!-- ══ MAIN APP ═════════════════════════════════════════════════════════ -->
+<div id="app">
+  <!-- Map fills background -->
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="map-overlay-top">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div class="map-logo"><span class="map-logo-text">PB</span></div>
+        <div style="display:flex;gap:8px;">
+          <div class="map-icon-btn" id="locateMeBtn" onclick="locateMe()" title="My location">📍</div>
+          <div class="map-icon-btn" onclick="signOut()" title="Sign out">👤</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom sheet -->
+    <div id="bottom-sheet">
+      <div class="sheet-handle"></div>
+
+      <!-- ── BOOKING VIEW ── -->
+      <div id="booking-view">
+        <div class="sheet-section">
+          <div class="sheet-title">Where to?</div>
+          <div class="sheet-sub" id="rider-greeting">Book a luxury ride</div>
+
+          <!-- Ride type -->
+          <div class="ride-type-row">
+            <button class="ride-type-btn active" id="rtbPtp" onclick="setRideType('point_to_point')">
+              <span class="rtb-icon">🗺️</span>
+              <span class="rtb-label">Point to Point</span>
+            </button>
+            <button class="ride-type-btn" id="rtbHourly" onclick="setRideType('hourly')">
+              <span class="rtb-icon">⏱️</span>
+              <span class="rtb-label">Hourly</span>
+            </button>
+          </div>
+
+          <!-- Address fields -->
+          <div class="addr-inputs">
+            <div class="addr-field">
+              <div class="addr-dot pickup" style="top:50%;transform:translateY(-50%);left:14px;"></div>
+              <input id="pickupInp" class="addr-inp" placeholder="Pickup location" autocomplete="off" oninput="onAddrInput('pickup')" onfocus="onAddrFocus('pickup')">
+              <div class="suggestions" id="pickupSugg" style="display:none"></div>
+            </div>
+            <div class="addr-field" id="dropoffField">
+              <div class="addr-dot dropoff" style="top:50%;transform:translateY(-50%);left:14px;"></div>
+              <input id="dropoffInp" class="addr-inp" placeholder="Dropoff location" autocomplete="off" oninput="onAddrInput('dropoff')" onfocus="onAddrFocus('dropoff')">
+              <div class="suggestions" id="dropoffSugg" style="display:none"></div>
+            </div>
+            <div id="hoursField" style="display:none">
+              <div class="hours-row">
+                <span class="hours-label">Duration</span>
+                <div class="hours-ctrl">
+                  <button class="hours-btn" onclick="changeHours(-1)">−</button>
+                  <span class="hours-val" id="hoursVal">2</span>
+                  <button class="hours-btn" onclick="changeHours(1)">+</button>
+                </div>
+                <span style="font-size:13px;color:var(--muted)">hrs</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Price estimate -->
+          <div class="price-card" id="priceCard" style="display:none">
+            <div>
+              <div class="price-label">Estimated Fare</div>
+              <div class="price-amount" id="priceAmount">$—</div>
+              <div class="price-detail" id="priceDetail"></div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:24px;margin-bottom:2px">🚘</div>
+              <div style="font-size:10px;font-weight:700;color:var(--muted)">LUXURY BLACK</div>
+            </div>
+          </div>
+        </div>
+        <div class="sheet-actions">
+          <button class="btn-gold" id="requestRideBtn" onclick="requestRide()" style="display:none">Request Ride</button>
+        </div>
+      </div>
+
+      <!-- ── RIDE STATUS VIEW ── -->
+      <div id="ride-status-view">
+        <div class="sheet-section">
+          <div class="status-header" id="statusHeader">
+            <div class="status-badge searching" id="statusBadge">
+              <div class="pulse-dot"></div>
+              <span id="statusBadgeText">Searching for driver…</span>
+            </div>
+            <div class="status-title" id="statusTitle">Finding your chauffeur</div>
+            <div class="status-sub" id="statusSub">Please wait while we connect you with the nearest available driver</div>
+            <div class="eta-chip" id="etaChip" style="display:none">🕐 <span id="etaText"></span></div>
+          </div>
+          <br>
+          <div id="driverInfoCard" style="display:none">
+            <div class="driver-info-card">
+              <div class="driver-avatar">🧑‍✈️</div>
+              <div class="driver-details">
+                <div class="driver-name" id="driverName">—</div>
+                <div class="driver-sub" id="driverSub">Your chauffeur</div>
+              </div>
+              <div class="driver-actions">
+                <a id="driverPhoneLink" href="tel:" class="icon-btn" title="Call driver">📞</a>
+                <a id="driverSmsLink" href="sms:" class="icon-btn" title="Text driver">💬</a>
+              </div>
+            </div>
+          </div>
+          <div class="route-card" id="routeCard">
+            <div class="route-row">
+              <div class="route-icon">🟡</div>
+              <div class="route-text">
+                <div class="route-label">Pickup</div>
+                <div id="routePickup">—</div>
+              </div>
+            </div>
+            <div class="route-row" id="routeDropoffRow">
+              <div class="route-icon">🟢</div>
+              <div class="route-text">
+                <div class="route-label">Dropoff</div>
+                <div id="routeDropoff">—</div>
+              </div>
+            </div>
+            <div class="route-row" id="routeHoursRow" style="display:none">
+              <div class="route-icon">⏱️</div>
+              <div class="route-text">
+                <div class="route-label">Duration</div>
+                <div id="routeHours">—</div>
+              </div>
+            </div>
+          </div>
+          <div class="done-card" id="doneCard" style="display:none">
+            <div class="done-icon">⭐</div>
+            <div class="done-title">Ride Complete!</div>
+            <div class="done-price" id="doneFare"></div>
+            <div class="done-sub">Thank you for riding with Prestige Black</div>
+          </div>
+        </div>
+        <div class="sheet-actions">
+          <button class="btn-cancel" id="cancelRideBtn" onclick="cancelRide()">Cancel Ride</button>
+          <button class="btn-gold" id="newRideBtn" onclick="newRide()" style="display:none">Book Another Ride</button>
+        </div>
+      </div>
+
+    </div><!-- /bottom-sheet -->
+  </div><!-- /map-wrap -->
+</div><!-- /app -->
+
+<script>
+const WORKER = 'https://pb-booking.prestigeblackcorp.workers.dev';
+const FIREBASE_URL = (()=>{
+  // Try to read from localStorage (set by portal)
+  try{ return localStorage.getItem('pb_firebase_url')||''; }catch(e){ return ''; }
+})();
+
+let _session = null;
+let _map = null;
+let _rideId = null;
+let _pollTimer = null;
+let _rideType = 'point_to_point';
+let _hours = 2;
+let _pickup = null;  // {lat,lng,address}
+let _dropoff = null;
+let _distanceMiles = 0;
+let _estDuration = 0;
+let _estPrice = 0;
+let _driverMarker = null;
+let _pickupMarker = null;
+let _dropoffMarker = null;
+let _routeLine = null;
+let _activeSugg = null; // 'pickup' | 'dropoff'
+
+// ── Auth ─────────────────────────────────────────────────────────────────
+function $d(id){ return document.getElementById(id); }
+
+async function sendOtp(){
+  const email = $d('emailInp').value.trim().toLowerCase();
+  if(!email||!email.includes('@')){ showAuthStatus('Enter a valid email address'); return; }
+  $d('sendOtpBtn').disabled=true;
+  showAuthStatus('Sending code…');
+  const r = await fetch(WORKER+'/portal/request-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})}).catch(()=>null);
+  $d('sendOtpBtn').disabled=false;
+  if(!r||!r.ok){ showAuthStatus('Could not send code — try again'); return; }
+  $d('auth-email-card').style.display='none';
+  $d('auth-otp-card').style.display='block';
+  $d('otp-sent-to').textContent='Enter the 6-digit code sent to '+email;
+  $d('otpHiddenInp').focus();
+}
+function backToEmail(){
+  $d('auth-otp-card').style.display='none';
+  $d('auth-email-card').style.display='block';
+  $d('otpHiddenInp').value='';
+  renderOtp('');
+}
+function showAuthStatus(msg,col){ $d('authStatus').textContent=msg; $d('authStatus').style.color=col||'var(--muted)'; }
+function onOtpInput(){
+  const val=$d('otpHiddenInp').value.replace(/\D/g,'').slice(0,6);
+  $d('otpHiddenInp').value=val;
+  renderOtp(val);
+  if(val.length===6) verifyOtp(val);
+}
+function onOtpKey(e){ if(e.key==='Backspace'&&!$d('otpHiddenInp').value){ $d('otpHiddenInp').value=''; renderOtp(''); } }
+function renderOtp(val){
+  for(let i=0;i<6;i++){
+    const b=$d('ob'+i);
+    b.textContent=val[i]||'';
+    b.className='otp-box'+(i===val.length?' active':i<val.length?' filled':'');
+  }
+}
+async function verifyOtp(code){
+  const email=$d('emailInp').value.trim().toLowerCase();
+  $d('otpStatus').textContent='Verifying…'; $d('otpStatus').style.color='var(--muted)';
+  const r=await fetch(WORKER+'/portal/verify-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,otp:code})}).catch(()=>null);
+  if(!r||!r.ok){ $d('otpStatus').textContent='Invalid code — try again'; $d('otpStatus').style.color='var(--red)'; $d('otpHiddenInp').value=''; renderOtp(''); return; }
+  const d=await r.json();
+  if(!d.token){ $d('otpStatus').textContent='Auth error'; return; }
+  _session={email,token:d.token,name:d.name||email.split('@')[0]};
+  try{ localStorage.setItem('pb_ride_session',JSON.stringify(_session)); }catch(e){}
+  launchApp();
+}
+function signOut(){
+  try{ localStorage.removeItem('pb_ride_session'); }catch(e){}
+  _session=null; location.reload();
+}
+// Try restoring session from localStorage
+(function(){
+  try{
+    const s=JSON.parse(localStorage.getItem('pb_ride_session')||'null');
+    if(s&&s.token&&s.email){ _session=s; launchApp(); }
+  }catch(e){}
+})();
+
+// ── App Init ─────────────────────────────────────────────────────────────
+function launchApp(){
+  $d('auth').style.display='none';
+  $d('app').style.display='flex';
+  initMap();
+  if(_session) $d('rider-greeting').textContent='Hello, '+(_session.name||_session.email.split('@')[0])+'';
+}
+
+function initMap(){
+  if(_map) return;
+  _map=L.map('map',{zoomControl:false,attributionControl:true}).setView([32.7767,-96.797],12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom:19,
+  }).addTo(_map);
+  L.control.zoom({position:'topright'}).addTo(_map);
+  // Try to get user location
+  setTimeout(locateMe,800);
+}
+
+function locateMe(){
+  if(!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(pos=>{
+    _map.setView([pos.coords.latitude,pos.coords.longitude],15);
+    // Auto-reverse geocode for pickup field
+    if(!$d('pickupInp').value){
+      reverseGeocode(pos.coords.latitude,pos.coords.longitude).then(addr=>{
+        if(addr){
+          $d('pickupInp').value=addr;
+          _pickup={lat:pos.coords.latitude,lng:pos.coords.longitude,address:addr};
+          placePickupMarker(pos.coords.latitude,pos.coords.longitude);
+          updateEstimate();
+        }
+      });
+    }
+  },null,{enableHighAccuracy:true,timeout:8000});
+}
+
+// ── Address Autocomplete ─────────────────────────────────────────────────
+let _suggTimers={};
+function onAddrInput(field){
+  clearTimeout(_suggTimers[field]);
+  _suggTimers[field]=setTimeout(()=>fetchSuggestions(field),280);
+}
+function onAddrFocus(field){
+  _activeSugg=field;
+  closeSuggestions('pickup'); closeSuggestions('dropoff');
+}
+async function fetchSuggestions(field){
+  const q=field==='pickup'?$d('pickupInp').value:$d('dropoffInp').value;
+  if(!q||q.length<3){ closeSuggestions(field); return; }
+  const url=`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=5&lat=32.7767&lon=-96.797`;
+  const data=await fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
+  if(!data||!data.features) return;
+  const el=$d(field+'Sugg');
+  el.innerHTML=data.features.map((f,i)=>{
+    const name=f.properties.name||'';
+    const city=f.properties.city||f.properties.state||'';
+    const country=f.properties.country||'';
+    const full=[name,city,country].filter(Boolean).join(', ');
+    return `<div class="suggestion" onclick="selectSuggestion('${field}',${i})">
+      <div class="sug-main">${esc(name||full)}</div>
+      ${city?`<div class="sug-sub">${esc(city+(country?', '+country:''))}</div>`:''}
+    </div>`;
+  }).join('');
+  el._features=data.features;
+  el.style.display='block';
+}
+function selectSuggestion(field,idx){
+  const el=$d(field+'Sugg');
+  const f=el._features[idx];
+  const [lng,lat]=f.geometry.coordinates;
+  const name=f.properties.name||'';
+  const city=f.properties.city||'';
+  const full=[name,city].filter(Boolean).join(', ')||f.properties.display_name||'';
+  if(field==='pickup'){
+    $d('pickupInp').value=full;
+    _pickup={lat,lng,address:full};
+    placePickupMarker(lat,lng);
+    _map.setView([lat,lng],15);
+  } else {
+    $d('dropoffInp').value=full;
+    _dropoff={lat,lng,address:full};
+    placeDropoffMarker(lat,lng);
+  }
+  closeSuggestions(field);
+  if(_pickup&&(_dropoff||_rideType==='hourly')) fetchRoute();
+}
+function closeSuggestions(field){ const el=$d(field+'Sugg'); if(el) el.style.display='none'; }
+document.addEventListener('click',e=>{ if(!e.target.closest('.addr-field')){ closeSuggestions('pickup'); closeSuggestions('dropoff'); } });
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function reverseGeocode(lat,lng){
+  const d=await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`).then(r=>r.json()).catch(()=>null);
+  if(!d) return null;
+  return [d.locality||d.city||'',d.principalSubdivision||''].filter(Boolean).join(', ')||null;
+}
+
+// ── Ride Type & Hours ─────────────────────────────────────────────────────
+function setRideType(type){
+  _rideType=type;
+  $d('rtbPtp').className='ride-type-btn'+(type==='point_to_point'?' active':'');
+  $d('rtbHourly').className='ride-type-btn'+(type==='hourly'?' active':'');
+  $d('dropoffField').style.display=type==='point_to_point'?'block':'none';
+  $d('hoursField').style.display=type==='hourly'?'block':'none';
+  if(type==='hourly'&&_dropoffMarker){ _map.removeLayer(_dropoffMarker); _dropoffMarker=null; if(_routeLine){ _map.removeLayer(_routeLine); _routeLine=null; } }
+  updateEstimate();
+}
+function changeHours(delta){
+  _hours=Math.max(1,Math.min(24,_hours+delta));
+  $d('hoursVal').textContent=_hours;
+  updateEstimate();
+}
+
+// ── Route & Estimate ──────────────────────────────────────────────────────
+async function fetchRoute(){
+  if(!_pickup||!_dropoff||_rideType!=='point_to_point') return;
+  const url=`https://router.project-osrm.org/route/v1/driving/${_pickup.lng},${_pickup.lat};${_dropoff.lng},${_dropoff.lat}?overview=full&geometries=geojson`;
+  const data=await fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
+  if(!data||!data.routes||!data.routes[0]) return;
+  const route=data.routes[0];
+  _distanceMiles=route.distance/1609.34;
+  _estDuration=route.duration/60;
+  // Draw route on map
+  if(_routeLine) _map.removeLayer(_routeLine);
+  const coords=route.geometry.coordinates.map(([lng,lat])=>[lat,lng]);
+  _routeLine=L.polyline(coords,{color:'#C9A962',weight:4,opacity:.8,dashArray:'8,4'}).addTo(_map);
+  _map.fitBounds(_routeLine.getBounds(),{padding:[60,60]});
+  updateEstimate();
+}
+
+async function updateEstimate(){
+  if(!_pickup&&_rideType==='point_to_point'){ hidePriceCard(); return; }
+  if(_rideType==='point_to_point'&&(!_pickup||!_dropoff)){ hidePriceCard(); return; }
+  if(_rideType==='hourly'&&!_pickup){ hidePriceCard(); return; }
+  const body=_rideType==='hourly'?{rideType:'hourly',hours:_hours}:{rideType:'point_to_point',distanceMiles:_distanceMiles};
+  const d=await fetch(WORKER+'/chauffeur/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
+  if(!d) return;
+  _estPrice=d.price;
+  $d('priceAmount').textContent='$'+d.price.toFixed(2);
+  if(_rideType==='hourly'){
+    $d('priceDetail').textContent=_hours+' hr × $'+d.hourlyRate+'/hr';
+  } else {
+    $d('priceDetail').textContent='~'+_distanceMiles.toFixed(1)+' mi · ~'+Math.round(_estDuration)+' min';
+  }
+  $d('priceCard').style.display='flex';
+  $d('requestRideBtn').style.display='block';
+}
+function hidePriceCard(){ $d('priceCard').style.display='none'; $d('requestRideBtn').style.display='none'; }
+
+// ── Markers ───────────────────────────────────────────────────────────────
+function placePickupMarker(lat,lng){
+  if(_pickupMarker) _map.removeLayer(_pickupMarker);
+  _pickupMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html:'<div class="rider-marker"></div>',iconSize:[20,20],iconAnchor:[10,10]})}).addTo(_map);
+}
+function placeDropoffMarker(lat,lng){
+  if(_dropoffMarker) _map.removeLayer(_dropoffMarker);
+  _dropoffMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html:'<div style="width:22px;height:22px;background:#22c55e;border-radius:4px;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-size:12px;">📍</div>',iconSize:[22,22],iconAnchor:[11,22]})}).addTo(_map);
+}
+function placeDriverMarker(lat,lng,heading){
+  const rot=heading||0;
+  const html=`<div style="width:36px;height:36px;background:linear-gradient(135deg,#C9A962,#a8893e);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;border:2px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,.5);transform:rotate(${rot}deg)">🚘</div>`;
+  if(_driverMarker){
+    _driverMarker.setLatLng([lat,lng]);
+    _driverMarker.setIcon(L.divIcon({className:'',html,iconSize:[36,36],iconAnchor:[18,18]}));
+  } else {
+    _driverMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html,iconSize:[36,36],iconAnchor:[18,18]})}).addTo(_map);
+  }
+}
+
+// ── Request Ride ───────────────────────────────────────────────────────────
+async function requestRide(){
+  if(!_session){ return; }
+  if(!_pickup){ return; }
+  if(_rideType==='point_to_point'&&!_dropoff) return;
+  const btn=$d('requestRideBtn');
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span>Finding driver…';
+  const body={
+    token:_session.token,
+    rideType:_rideType,
+    pickupAddress:_pickup.address,
+    pickupLat:_pickup.lat,
+    pickupLng:_pickup.lng,
+    dropoffAddress:_dropoff?_dropoff.address:'',
+    dropoffLat:_dropoff?_dropoff.lat:0,
+    dropoffLng:_dropoff?_dropoff.lng:0,
+    hours:_hours,
+    distanceMiles:_distanceMiles,
+    estimatedDuration:_estDuration,
+    estimatedPrice:_estPrice,
+  };
+  const d=await fetch(WORKER+'/chauffeur/request-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
+  btn.disabled=false;
+  btn.textContent='Request Ride';
+  if(!d||d.error){ alert(d&&d.error?d.error:'Could not request ride. Try again.'); return; }
+  _rideId=d.rideId;
+  try{ localStorage.setItem('pb_active_ride',_rideId); }catch(e){}
+  showRideStatusView();
+  startPolling();
+}
+
+// ── Ride Status ────────────────────────────────────────────────────────────
+function showRideStatusView(){
+  $d('booking-view').style.display='none';
+  $d('ride-status-view').style.display='block';
+  $d('routePickup').textContent=_pickup?_pickup.address:'—';
+  if(_rideType==='hourly'){
+    $d('routeDropoffRow').style.display='none';
+    $d('routeHoursRow').style.display='flex';
+    $d('routeHours').textContent=_hours+' hour'+(+_hours!==1?'s':'');
+  } else {
+    $d('routeDropoffRow').style.display='flex';
+    $d('routeHoursRow').style.display='none';
+    $d('routeDropoff').textContent=_dropoff?_dropoff.address:'—';
+  }
+}
+
+function startPolling(){
+  clearInterval(_pollTimer);
+  _pollTimer=setInterval(pollRideStatus,4000);
+  pollRideStatus();
+}
+function stopPolling(){ clearInterval(_pollTimer); }
+
+async function pollRideStatus(){
+  if(!_rideId||!_session) return;
+  const d=await fetch(`${WORKER}/chauffeur/ride-status?rideId=${_rideId}&token=${encodeURIComponent(_session.token)}`,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
+  if(!d||!d.ride) return;
+  updateStatusUI(d.ride, d.driverLocation);
+}
+
+const STATUS_LABELS={
+  searching:'Finding your chauffeur…',
+  accepted:'Driver on the way',
+  driver_arrived:'Your driver has arrived!',
+  in_progress:'Ride in progress',
+  completed:'Ride complete',
+  cancelled:'Ride cancelled',
+  no_driver:'No drivers available',
+};
+const STATUS_SUBS={
+  searching:'Connecting you with the nearest available chauffeur',
+  accepted:'Your chauffeur is heading to your pickup location',
+  driver_arrived:'Head outside — your chauffeur is waiting',
+  in_progress:'Sit back and enjoy the ride',
+  completed:'Thank you for choosing Prestige Black',
+  cancelled:'Your ride has been cancelled',
+  no_driver:'No drivers are currently available. Please try again shortly.',
+};
+
+function updateStatusUI(ride, driverLoc){
+  const st=ride.status||'searching';
+  const badge=$d('statusBadge');
+  badge.className='status-badge '+(st);
+  badge.innerHTML=(['searching','accepted','driver_arrived','in_progress'].includes(st)?'<div class="pulse-dot"></div>':'')+`<span id="statusBadgeText">${STATUS_LABELS[st]||st}</span>`;
+  $d('statusTitle').textContent=STATUS_LABELS[st]||st;
+  $d('statusSub').textContent=STATUS_SUBS[st]||'';
+  // Driver info
+  if(ride.assignedDriver&&['accepted','driver_arrived','in_progress'].includes(st)){
+    $d('driverInfoCard').style.display='block';
+    $d('driverName').textContent=ride.assignedDriverName||ride.assignedDriver;
+    $d('driverSub').textContent='Your Prestige Black chauffeur';
+    // phone links - if we have phone from driver profile
+    const ph=ride.assignedDriverPhone||'';
+    $d('driverPhoneLink').href='tel:'+(ph||'');
+    $d('driverSmsLink').href='sms:'+(ph||'');
+  } else {
+    $d('driverInfoCard').style.display='none';
+  }
+  // Driver location on map
+  if(driverLoc&&driverLoc.lat&&driverLoc.lng){
+    placeDriverMarker(driverLoc.lat,driverLoc.lng,driverLoc.heading);
+    // ETA: rough calculation
+    if(_pickup&&['accepted','driver_arrived'].includes(st)){
+      const dist=haversineKm(_pickup.lat,_pickup.lng,driverLoc.lat,driverLoc.lng);
+      const etaMin=Math.max(1,Math.round(dist/0.5)); // approx 30 km/h in city
+      $d('etaChip').style.display='inline-flex';
+      $d('etaText').textContent=etaMin+' min away';
+    } else if(st==='in_progress'&&_dropoff){
+      const dist=haversineKm(_dropoff.lat,_dropoff.lng,driverLoc.lat,driverLoc.lng);
+      const etaMin=Math.max(1,Math.round(dist/0.6));
+      $d('etaChip').style.display='inline-flex';
+      $d('etaText').textContent=etaMin+' min to destination';
+    } else {
+      $d('etaChip').style.display='none';
+    }
+  }
+  // Completed
+  if(st==='completed'){
+    stopPolling();
+    $d('doneCard').style.display='block';
+    $d('doneFare').textContent='$'+(ride.finalPrice||ride.estimatedPrice||0).toFixed(2);
+    $d('cancelRideBtn').style.display='none';
+    $d('newRideBtn').style.display='block';
+    // Remove driver marker
+    if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
+  }
+  if(['cancelled','no_driver'].includes(st)){
+    stopPolling();
+    $d('cancelRideBtn').style.display='none';
+    $d('newRideBtn').style.display='block';
+    if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
+  }
+}
+
+async function cancelRide(){
+  if(!_rideId||!_session) return;
+  if(!confirm('Cancel your ride?')) return;
+  stopPolling();
+  await fetch(WORKER+'/chauffeur/cancel-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId})}).catch(()=>null);
+  try{ localStorage.removeItem('pb_active_ride'); }catch(e){}
+  newRide();
+}
+function newRide(){
+  stopPolling();
+  _rideId=null; _pickup=null; _dropoff=null; _distanceMiles=0; _estPrice=0;
+  try{ localStorage.removeItem('pb_active_ride'); }catch(e){}
+  if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
+  if(_pickupMarker){ _map.removeLayer(_pickupMarker); _pickupMarker=null; }
+  if(_dropoffMarker){ _map.removeLayer(_dropoffMarker); _dropoffMarker=null; }
+  if(_routeLine){ _map.removeLayer(_routeLine); _routeLine=null; }
+  $d('pickupInp').value=''; $d('dropoffInp').value='';
+  $d('priceCard').style.display='none'; $d('requestRideBtn').style.display='none';
+  $d('booking-view').style.display='block'; $d('ride-status-view').style.display='none';
+  $d('doneCard').style.display='none'; $d('cancelRideBtn').style.display='block'; $d('newRideBtn').style.display='none';
+}
+// Restore active ride on refresh
+(function(){
+  try{
+    const rid=localStorage.getItem('pb_active_ride');
+    if(rid&&_session){ _rideId=rid; setTimeout(()=>{ showRideStatusView(); startPolling(); },1000); }
+  }catch(e){}
+})();
+
+function haversineKm(lat1,lng1,lat2,lng2){
+  const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLng=(lng2-lng1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+</script>
+</body>
+</html>

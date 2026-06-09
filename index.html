@@ -12,6 +12,8 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -1825,8 +1827,34 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 <div id="tab-drivers" class="tab-panel">
   <div class="main">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px">
-      <div style="font-size:18px;font-weight:800;color:#fff">🚗 Driver Roster</div>
-      <button class="btn btn-gold" onclick="openDriversModal();drvSwitchTab('add')">+ Add Driver</button>
+      <div style="font-size:18px;font-weight:800;color:#fff">🚗 Fleet Command</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" style="font-size:13px;border-color:rgba(201,169,98,.4);color:var(--gold)" onclick="refreshFleetMap()">🗺️ Refresh Map</button>
+        <button class="btn btn-gold" onclick="openDriversModal();drvSwitchTab('add')">+ Add Driver</button>
+      </div>
+    </div>
+
+    <!-- Live Fleet Map -->
+    <div class="tbl-card" style="margin-bottom:16px;padding:0;overflow:hidden;border-color:rgba(201,169,98,.2)">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;border-bottom:1px solid var(--border)">
+        <div class="tbl-title" style="margin-bottom:0">Live Fleet Map</div>
+        <div id="fleet-map-status" style="font-size:11px;color:var(--muted);font-weight:600">Updating…</div>
+      </div>
+      <div id="fleet-map" style="height:340px;width:100%;"></div>
+      <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:16px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><div style="width:10px;height:10px;border-radius:50%;background:#22c55e;"></div>Available</div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><div style="width:10px;height:10px;border-radius:50%;background:#C9A962;"></div>Busy / On Ride</div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><div style="width:10px;height:10px;border-radius:50%;background:#6b7a9a;"></div>Offline</div>
+      </div>
+    </div>
+
+    <!-- Active Rides -->
+    <div class="tbl-card" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="tbl-title" style="margin-bottom:0">Live Rides</div>
+        <button class="btn" style="font-size:11px;padding:5px 10px" onclick="refreshFleetMap()">↻ Refresh</button>
+      </div>
+      <div id="live-rides-list"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div></div>
     </div>
 
     <!-- Pending Driver Requests -->
@@ -5868,7 +5896,7 @@ function switchTab(name){
   else if(name==='tax')       renderTaxTab();
   else if(name==='fleet')     renderFleetTab();
   else if(name==='customers') renderCustomersTab();
-  else if(name==='drivers')   renderDriversTab();
+  else if(name==='drivers'){  renderDriversTab(); setTimeout(function(){ initFleetMap(); refreshFleetMap(); if(!_fleetRefreshTimer){ _fleetRefreshTimer=setInterval(refreshFleetMap,15000); } },200); }
   else if(name==='brokers')   renderBrokerTab();
 }
 
@@ -6871,6 +6899,74 @@ async function renderDriversTab(){
   }catch(e){
     wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:20px">Network error.</div>';
   }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// LIVE FLEET MAP  (dashboard Drivers tab)
+// ══════════════════════════════════════════════════════════════════
+var _fleetMap=null, _fleetMarkers={}, _fleetRefreshTimer=null;
+
+function initFleetMap(){
+  if(_fleetMap) return;
+  var el=document.getElementById('fleet-map');
+  if(!el||!window.L) return;
+  _fleetMap=L.map('fleet-map',{zoomControl:true,attributionControl:true}).setView([32.7767,-96.797],11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',maxZoom:19
+  }).addTo(_fleetMap);
+  setTimeout(function(){ _fleetMap.invalidateSize(); },300);
+}
+
+async function refreshFleetMap(){
+  if(!_fleetMap){ initFleetMap(); setTimeout(refreshFleetMap,500); return; }
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  var r=await fetch(WORKER+'/chauffeur/dashboard?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'}).catch(function(){return null;});
+  if(!r||!r.ok){ $d('fleet-map-status').textContent='Error'; return; }
+  var d=await r.json().catch(function(){return null;});
+  if(!d){ return; }
+  // Update driver markers
+  var seen={};
+  (d.locations||[]).forEach(function(loc){
+    if(!loc||!loc.email) return;
+    var key=loc.email;
+    seen[key]=true;
+    var isAvail=loc.status==='available';
+    var isBusy=loc.status==='busy';
+    var color=isAvail?'#22c55e':isBusy?'#C9A962':'#6b7a9a';
+    var html='<div style="position:relative;"><div style="width:36px;height:36px;background:'+color+';border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;border:2px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.5);">🚘</div>'+
+      '<div style="position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:9px;font-weight:700;color:#fff;background:rgba(0,0,0,.7);border-radius:4px;padding:1px 4px;">'+(loc.name||key.split('_')[0])+'</div></div>';
+    var icon=L.divIcon({className:'',html:html,iconSize:[36,54],iconAnchor:[18,18]});
+    if(_fleetMarkers[key]){ _fleetMarkers[key].setLatLng([loc.lat,loc.lng]); _fleetMarkers[key].setIcon(icon); }
+    else { _fleetMarkers[key]=L.marker([loc.lat,loc.lng],{icon:icon}).addTo(_fleetMap).bindPopup('<b>'+(loc.name||loc.email)+'</b><br>Status: '+loc.status+'<br>Updated: '+(new Date(loc.updatedAt||0).toLocaleTimeString())); }
+  });
+  // Remove stale markers
+  Object.keys(_fleetMarkers).forEach(function(k){ if(!seen[k]){ _fleetMap.removeLayer(_fleetMarkers[k]); delete _fleetMarkers[k]; } });
+  var online=(d.locations||[]).filter(function(l){return l&&l.status!=='offline';}).length;
+  $d('fleet-map-status').textContent=online+' driver'+(online!==1?'s':'')+' online · '+new Date().toLocaleTimeString();
+  // Render live rides list
+  renderLiveRides(d.rides||[]);
+}
+
+function renderLiveRides(rides){
+  var el=$d('live-rides-list'); if(!el) return;
+  var active=rides.filter(function(r){return r&&['searching','accepted','driver_arrived','in_progress'].includes(r.status);});
+  if(!active.length){ el.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No active rides right now</div>'; return; }
+  var statusLabel={'searching':'🔍 Searching','accepted':'🚗 En Route','driver_arrived':'📍 Arrived','in_progress':'🛣️ In Progress'};
+  var statusColor={'searching':'#eab308','accepted':'#3b82f6','driver_arrived':'#C9A962','in_progress':'#22c55e'};
+  el.innerHTML=active.map(function(r){
+    var sc=statusColor[r.status]||'#6b7a9a'; var sl=statusLabel[r.status]||r.status;
+    return '<div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:13px;font-weight:700;color:#fff;margin-bottom:2px;">'+esc(r.riderName||r.riderEmail||'Rider')+'</div>'
+      +'<div style="font-size:11px;color:var(--muted);">'+esc(r.pickupAddress||'')+(r.dropoffAddress?' → '+esc(r.dropoffAddress):'')+'</div>'
+      +'</div>'
+      +'<div style="text-align:right;flex-shrink:0">'
+      +'<div style="font-size:11px;font-weight:700;color:'+sc+';background:'+sc+'22;border:1px solid '+sc+'44;border-radius:20px;padding:2px 8px;margin-bottom:4px;">'+sl+'</div>'
+      +'<div style="font-size:12px;color:var(--gold);font-weight:700;">$'+(r.estimatedPrice||0).toFixed(2)+'</div>'
+      +'</div>'
+      +'</div>';
+  }).join('');
 }
 
 async function submitTabAssignDriver(){
