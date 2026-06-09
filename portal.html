@@ -1475,11 +1475,11 @@ async function submitAddDriver(){
     const bk = state.bookings.find(b => b.id === _driverModalBookingId);
     if(bk){
       bk.extraDrivers = bk.extraDrivers || [];
-      bk.extraDrivers.push({ name, phone, email, addedByPortal:true, idVerified:false });
+      bk.extraDrivers.push({ name, phone, email, addedByPortal:true, idVerified:false, status:'pending_approval' });
     }
     closeDriverModal();
     renderBookings();
-    toast('Driver added! Share their signing link so they can sign the agreement.','success');
+    toast('Driver submitted! The owner will review and approve shortly.','success');
   }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; btn.disabled=false; btn.textContent='Add Driver'; }
 }
 
@@ -1510,19 +1510,35 @@ function showDrivers(b){
   let html = '<div class="drivers-section">';
   html += '<div class="section-title">Authorized Drivers</div>';
   drivers.forEach((d, i) => {
-    const signed = d.sig && d.sig.startsWith('data:image/');
-    const initial = (d.name||'?')[0].toUpperCase();
-    const sigUrl = `${sigBase}?sign=${encodeURIComponent(b.id)}&driver=${i}`;
+    const signed   = d.sig && d.sig.startsWith('data:image/');
+    const isPending = d.status === 'pending_approval';
+    const isDenied  = d.status === 'denied';
+    const initial   = (d.name||'?')[0].toUpperCase();
+    const sigUrl    = `${sigBase}?sign=${encodeURIComponent(b.id)}&driver=${i}`;
+    // Badge: pending approval overrides signing status
+    let badgeHtml;
+    if(isPending){
+      badgeHtml = `<span class="driver-sig-badge" style="background:rgba(234,179,8,.15);color:#eab308;border:1px solid rgba(234,179,8,.3);">⏳ Awaiting Approval</span>`;
+    } else if(isDenied){
+      badgeHtml = `<span class="driver-sig-badge" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);">✗ Not Approved</span>`;
+    } else if(signed){
+      badgeHtml = `<span class="driver-sig-badge driver-sig-done">✅ Signed</span>`;
+    } else {
+      badgeHtml = `<span class="driver-sig-badge driver-sig-pending">⏳ Signature Pending</span>`;
+    }
     html += `<div class="driver-row">
       <div class="driver-avatar">${initial}</div>
       <div class="driver-info">
         <div class="driver-name">${esc(d.name||'—')}</div>
         <div class="driver-meta">${d.phone?esc(d.phone):''}${d.phone&&d.email?' · ':''}${d.email?esc(d.email):''}</div>
+        ${isPending ? '<div style="font-size:11px;color:rgba(234,179,8,.7);margin-top:2px">Submitted — the owner will review and approve shortly.</div>' : ''}
+        ${isDenied  ? '<div style="font-size:11px;color:rgba(239,68,68,.7);margin-top:2px">This driver was not approved. Contact us if you have questions.</div>' : ''}
       </div>
       <div class="driver-actions">
-        <span class="driver-sig-badge ${signed?'driver-sig-done':'driver-sig-pending'}">${signed?'✅ Signed':'⏳ Pending'}</span>
-        ${!signed ? `<button class="driver-action-btn sign" onclick="copyDriverSignLink('${encodeURIComponent(sigUrl)}')">Copy Link</button>` : ''}
-        ${!signed && d.addedByPortal ? `<button class="driver-action-btn remove" onclick="removeDriver('${b.id}',${i})">Remove</button>` : ''}
+        ${badgeHtml}
+        ${!signed && !isPending && !isDenied ? `<button class="driver-action-btn sign" onclick="copyDriverSignLink('${encodeURIComponent(sigUrl)}')">Copy Link</button>` : ''}
+        ${(isPending || isDenied) && d.addedByPortal ? `<button class="driver-action-btn remove" onclick="removeDriver('${b.id}',${i})">Remove</button>` : ''}
+        ${!signed && !isPending && !isDenied && d.addedByPortal ? `<button class="driver-action-btn remove" onclick="removeDriver('${b.id}',${i})">Remove</button>` : ''}
       </div>
     </div>`;
   });
