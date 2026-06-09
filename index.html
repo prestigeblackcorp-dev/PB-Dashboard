@@ -6147,7 +6147,11 @@ function renderKPIs(filtered, containerId){
     return true;
   }).reduce(function(s,inc){ return s+(Number(inc.amount)||0); }, 0);
 
-  var revenue   = bookingRev + otherIncome;
+  // Chauffeur ride fares completed in this window (gross-to-PBR; no separate cost tracked here)
+  var rideRev   = (containerId==='kpiGrid' && typeof _rideRevForPeriod==='function') ? _rideRevForPeriod() : 0;
+  var rideCount = (containerId==='kpiGrid' && typeof _rideCountForPeriod==='function') ? _rideCountForPeriod() : 0;
+
+  var revenue   = bookingRev + otherIncome + rideRev;
   var totalCost = bookingCost + loggedExp;
   var profit    = revenue - totalCost;
   var margin    = revenue>0 ? profit/revenue*100 : 0;
@@ -6178,6 +6182,7 @@ function renderKPIs(filtered, containerId){
     if(_kpiPeriod==='today'&&portalChargeTodayRev) revParts.push('Portal charges: '+$$(portalChargeTodayRev));
     if(_kpiPeriod!=='today'&&portalChargeRev) revParts.push('Portal charges: '+$$(portalChargeRev));
     if(otherIncome)       revParts.push('Other income: '+$$(otherIncome));
+    if(rideRev)           revParts.push('Chauffeur rides: '+$$(rideRev));
     dateLockCardVal = dateLockPeriodRev;
     dateLockCardSub = _kpiPeriod==='today' ? 'Received today' : 'Held on file for period bookings';
   } else {
@@ -6191,6 +6196,7 @@ function renderKPIs(filtered, containerId){
     if(_allExtCharge)    revParts.push('Extensions: '+$$(_allExtCharge));
     if(portalChargeRev)  revParts.push('Portal charges: '+$$(portalChargeRev));
     if(otherIncome)      revParts.push('Other income: '+$$(otherIncome));
+    if(rideRev)          revParts.push('Chauffeur rides: '+$$(rideRev));
     dateLockCardVal = dateLockTotal;
     dateLockCardSub = 'Total holds on file · applied toward balance';
   }
@@ -6201,7 +6207,7 @@ function renderKPIs(filtered, containerId){
   var cards = [
     {label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
     {label:'Net Revenue',           val:$$(revenue),            sub:revSub,                                                cls:''},
-    {label:'Gross Revenue',         val:$$(active.reduce(function(s,b){return s+totalRevenue(b);},0)+dateLockPeriodRev+otherIncome), sub:'Before broker fees',       cls:''},
+    {label:'Gross Revenue',         val:$$(active.reduce(function(s,b){return s+totalRevenue(b);},0)+dateLockPeriodRev+otherIncome+rideRev), sub:'Before broker fees', cls:''},
     {label:'Date Locks',            val:$$(dateLockCardVal),    sub:dateLockCardSub,                                       cls:'blue'},
     {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(deposits-depositKept)+' returned to clients',      cls:'purple'},
     {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
@@ -6213,6 +6219,7 @@ function renderKPIs(filtered, containerId){
   ];
   // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
+    cards.push({label:'🚘 Chauffeur Ride Revenue', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' · included in revenue above', cls:''});
     cards.push({label:'⚠ Uncollected Deposits', val:uncollected, sub:'Confirmed/pending, $0 deposit', cls: uncollected>0?'red':''});
     var remainBalSum = active.reduce(function(s,b){ return s+getRemainingBalance(b); },0);
     cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'red':'green'});
@@ -7000,6 +7007,7 @@ async function refreshFleetMap(){
   _rideHist=d.rides||[];
   renderLiveRides(_rideHist);
   renderRideHistory();
+  loadRideRevenue(true); // keep Overview ride revenue in sync with live fleet refresh
 }
 
 function renderLiveRides(rides){
@@ -7034,6 +7042,55 @@ function renderLiveRides(rides){
 }
 
 var _rideHist=[];
+// ── Chauffeur ride revenue (every completed ride, uncapped) for Overview KPIs ──
+var _rideTxns=[], _rideRevLoaded=false, _rideRevLoading=false;
+// Sum of completed-ride fares within the current Overview period window (local time)
+function _rideRevForPeriod(){
+  if(!_rideTxns||!_rideTxns.length) return 0;
+  if(_kpiPeriod==='all') return _rideTxns.reduce(function(s,t){ return s+(Number(t.amount)||0); },0);
+  var tod=todayStr();
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  return _rideTxns.reduce(function(s,t){
+    var d=t&&t.completedAt?dateStr(new Date(t.completedAt)):'';
+    if(!d) return s;
+    if(_kpiPeriod==='today') return d===tod?s+(Number(t.amount)||0):s;
+    return (d>=cutoff&&d<=tod)?s+(Number(t.amount)||0):s;
+  },0);
+}
+// Count of completed rides within the current Overview period window
+function _rideCountForPeriod(){
+  if(!_rideTxns||!_rideTxns.length) return 0;
+  if(_kpiPeriod==='all') return _rideTxns.length;
+  var tod=todayStr();
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  return _rideTxns.filter(function(t){
+    var d=t&&t.completedAt?dateStr(new Date(t.completedAt)):'';
+    if(!d) return false;
+    if(_kpiPeriod==='today') return d===tod;
+    return d>=cutoff&&d<=tod;
+  }).length;
+}
+// Fetch every completed-ride fare (uncapped) so Overview revenue reflects all ride income
+function loadRideRevenue(force){
+  if(_rideRevLoading) return;
+  if(_rideRevLoaded && !force) return;
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  if(!secret) return;
+  _rideRevLoading=true;
+  fetch(WORKER+'/chauffeur/revenue?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'})
+    .then(function(r){ return r&&r.ok?r.json():null; })
+    .then(function(d){
+      _rideRevLoading=false;
+      if(!d||!Array.isArray(d.rideTxns)) return;
+      _rideTxns=d.rideTxns; _rideRevLoaded=true;
+      // Re-render just the Overview KPI grid now that ride revenue is available
+      if($d('kpiGrid') && typeof getFiltered==='function' && typeof renderKPIs==='function'){
+        try{ renderKPIs(getFiltered(),'kpiGrid'); }catch(e){}
+      }
+    })
+    .catch(function(){ _rideRevLoading=false; });
+}
 function _rhClock(ts){ if(!ts) return ''; return new Date(ts).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}); }
 function _rhDay(ts){ if(!ts) return ''; var dt=new Date(ts); var n=new Date(); var sameDay=dt.toDateString()===n.toDateString(); return sameDay?'Today':dt.toLocaleDateString([],{month:'short',day:'numeric'}); }
 function renderRideHistory(){
@@ -17258,6 +17315,7 @@ function render(){
   renderTodayBanner();
   renderIncomeList();
   renderExpenseLog();
+  loadRideRevenue(); // lazily fold completed-ride fares into Overview revenue KPIs
 }
 
 // ════════════════════════════════════════════════════════
