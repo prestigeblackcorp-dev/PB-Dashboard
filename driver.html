@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script src="pb-config.js"></script>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>PB Fleet Ops — Driver Portal</title>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
@@ -134,17 +135,6 @@ textarea{resize:vertical;min-height:80px;}
 .earn-total{font-size:28px;font-weight:900;color:var(--green);}
 .earn-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;}
 .earn-row:last-child{border-bottom:none;}
-.rev-split{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);}
-.rev-split-title{font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;}
-.rev-bar{display:flex;height:14px;border-radius:7px;overflow:hidden;margin-bottom:12px;font-size:9px;font-weight:800;color:#04110a;line-height:14px;}
-.rev-bar-driver{background:var(--green);text-align:center;}
-.rev-bar-pb{background:var(--gold);text-align:center;color:#1a1405;}
-.rev-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:6px 0;}
-.rev-row span:first-child{color:var(--text2);display:flex;align-items:center;gap:7px;}
-.rev-row-total{border-top:1px solid var(--border);margin-top:4px;padding-top:10px;color:var(--text);}
-.rev-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
-.rev-dot-driver{background:var(--green);}
-.rev-dot-pb{background:var(--gold);}
 
 /* Incident / report */
 .incident-card{background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:12px;padding:14px;margin-bottom:10px;}
@@ -547,7 +537,7 @@ body:not(.nav-fs) #arc-nav-expand{display:block;}
 
 <script>
 'use strict';
-var WORKER = 'https://pb-booking.prestigeblackcorp.workers.dev';
+var WORKER = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 
 // ── State ──────────────────────────────────────────────────────────────────
 var _drvEmail = '';
@@ -967,10 +957,6 @@ function calcTripPay(t){
   if(t.payType==='hourly' && Number(t.payAmount)>0) return Number(t.hoursLogged||0)*Number(t.payAmount);
   return calcTripFare(t) * DRIVER_SHARE;
 }
-// Prestige Black's share — the remaining 65%.
-function calcTripPBRevenue(t){
-  return calcTripFare(t) - calcTripPay(t);
-}
 
 // ── Trips tab ──────────────────────────────────────────────────────────────
 function renderTrips(){
@@ -991,9 +977,8 @@ function tripCard(t, highlight){
   var badgeLabel=isPast?'Completed':isToday?'Today':'Upcoming';
   var pay=calcTripPay(t);
   var hasFare=Number(t.fare||0)>0;
-  var takePct=hasFare?Math.round(pay/Number(t.fare)*100):0;
   var payLabel=hasFare
-    ? fmt$(pay)+' <span style="font-size:11px;color:var(--muted);font-weight:600;">· your take'+(takePct?' ('+takePct+'%)':'')+'</span>'
+    ? fmt$(pay)
     : (t.payType==='hourly'
         ? fmt$(t.payAmount||0)+'/hr × '+(t.hoursLogged||0)+'h = '+fmt$(pay)
         : fmt$(pay)+' (flat)');
@@ -1010,7 +995,7 @@ function tripCard(t, highlight){
     +(t.clientName?'<div class="trip-row"><span class="trip-label">Client</span><span class="trip-val">'+esc(t.clientName)+(t.clientPhone?' · <a href="tel:'+esc(t.clientPhone)+'" style="color:var(--blue)">'+esc(t.clientPhone)+'</a>':'')+'</span></div>':'')
     +(t.pickupAddress?'<div class="trip-row"><span class="trip-label">Pickup</span><span class="trip-val">'+esc(t.pickupAddress)+'</span></div>':'')
     +(t.dropoffAddress?'<div class="trip-row"><span class="trip-label">Dropoff</span><span class="trip-val">'+esc(t.dropoffAddress)+'</span></div>':'')
-    +'<div class="trip-row"><span class="trip-label">Your Take</span><span class="trip-val" style="color:var(--green);font-weight:700;">'+payLabel+'</span></div>'
+    +'<div class="trip-row"><span class="trip-label">Your Earnings</span><span class="trip-val" style="color:var(--green);font-weight:700;">'+payLabel+'</span></div>'
     +(t.notes?'<div class="trip-row"><span class="trip-label">Notes</span><span class="trip-val" style="color:var(--muted);font-style:italic;">'+esc(t.notes)+'</span></div>':'')
     +(stars?'<div class="trip-row"><span class="trip-label">Rating</span><span class="trip-val" style="color:var(--gold);">'+stars+'</span></div>':'')
     +(riderStars?'<div class="trip-row"><span class="trip-label">Rider Rating</span><span class="trip-val" style="color:var(--gold);">'+riderStars+'</span></div>':'')
@@ -1139,31 +1124,18 @@ function renderEarnings(){
   var totalTrips=drvState.trips.length;
   var thisMonth=new Date().toISOString().slice(0,7);
   var monthPay=drvState.trips.filter(function(t){ return (t.pickupDate||t.date||'').startsWith(thisMonth); }).reduce(function(a,t){ return a+calcTripPay(t); },0);
-  // All-time revenue split: driver keeps 35%, Prestige Black keeps 65%.
-  var grossAll=drvState.trips.reduce(function(a,t){ return a+calcTripFare(t); },0);
-  var pbAll=drvState.trips.reduce(function(a,t){ return a+calcTripPBRevenue(t); },0);
-
   $d('earnings-summary').innerHTML=
     '<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;">'
-    +'<div class="card-title">Your Earnings <span style="color:var(--muted);font-weight:700;">· 35% take</span></div>'
+    +'<div class="card-title">Your Earnings</div>'
     +'</div>'
     +'<div class="earn-total">'+fmt$(totalPay)+'</div>'
-    +'<div style="font-size:12px;color:var(--muted);margin-top:4px;">'+totalTrips+' trip'+(totalTrips!==1?'s':'')+' · This month: <span style="color:var(--green);font-weight:700;">'+fmt$(monthPay)+'</span></div>'
-    +'<div class="rev-split">'
-    +'<div class="rev-split-title">Revenue Split</div>'
-    +(grossAll>0
-      ?'<div class="rev-bar"><div class="rev-bar-driver" style="width:35%;">35%</div><div class="rev-bar-pb" style="width:65%;">65%</div></div>'
-      :'')
-    +'<div class="rev-row"><span><span class="rev-dot rev-dot-driver"></span>Your take (35%)</span><span style="color:var(--green);font-weight:800;">'+fmt$(totalPay)+'</span></div>'
-    +'<div class="rev-row"><span><span class="rev-dot rev-dot-pb"></span>Prestige Black (65%)</span><span style="color:var(--gold);font-weight:800;">'+fmt$(pbAll)+'</span></div>'
-    +'<div class="rev-row rev-row-total"><span>Gross fares</span><span style="font-weight:800;">'+fmt$(grossAll)+'</span></div>'
-    +'</div>';
+    +'<div style="font-size:12px;color:var(--muted);margin-top:4px;">'+totalTrips+' trip'+(totalTrips!==1?'s':'')+' · This month: <span style="color:var(--green);font-weight:700;">'+fmt$(monthPay)+'</span></div>';
 
   var sorted=drvState.trips.slice().sort(function(a,b){ return (b.pickupDate||b.date||'').localeCompare(a.pickupDate||a.date||''); });
   $d('earnings-list').innerHTML=sorted.length?sorted.map(function(t){
     var pay=calcTripPay(t);
     var desc=Number(t.fare||0)>0
-      ? 'Your take · 35%'
+      ? 'Earnings'
       : (t.payType==='hourly' ? (t.hoursLogged||0)+'h × '+fmt$(t.payAmount||0)+'/hr' : 'Flat rate');
     return '<div class="earn-row">'
       +'<div><div style="font-weight:600;font-size:13px;">'+esc(t.vehicle||'Trip')+'</div>'
@@ -1648,7 +1620,7 @@ function renderActiveRidePanel(){
   updateNav();
   if(r.status==='completed'){
     var crPay=(r.finalPrice||r.estimatedPrice||0)*DRIVER_SHARE;
-    panel.innerHTML='<div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:16px;padding:20px;text-align:center;margin-bottom:12px;"><div style="font-size:32px;margin-bottom:6px">✅</div><div style="font-size:18px;font-weight:800;">Ride Complete</div><div style="font-size:24px;font-weight:900;color:var(--green);margin:8px 0 2px">'+fmt$(crPay)+'</div><div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:6px;">Your earnings &middot; 35% take</div><div style="font-size:12px;color:var(--muted)">Great job! You\'re available for new rides.</div></div>';
+    panel.innerHTML='<div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:16px;padding:20px;text-align:center;margin-bottom:12px;"><div style="font-size:32px;margin-bottom:6px">✅</div><div style="font-size:18px;font-weight:800;">Ride Complete</div><div style="font-size:24px;font-weight:900;color:var(--green);margin:8px 0 2px">'+fmt$(crPay)+'</div><div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:6px;">Your earnings</div><div style="font-size:12px;color:var(--muted)">Great job! You\'re available for new rides.</div></div>';
     setTimeout(function(){ _activeRide=null; renderActiveRidePanel(); },5000);
   }
 }

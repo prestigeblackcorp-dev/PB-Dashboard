@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script src="pb-config.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Prestige Black — Client Portal</title>
 <style>
@@ -458,7 +459,7 @@
 </div>
 
 <script>
-const WORKER = 'https://pb-booking.prestigeblackcorp.workers.dev';
+const WORKER = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 
 // ─── State ─────────────────────────────────────────────────────────────────
 var _initEmail = ''; try{ _initEmail = localStorage.getItem('pb_portal_email')||''; }catch(e){}
@@ -2347,24 +2348,48 @@ function triggerPhotoUpload(bookingId, type){
 function handlePhotoUpload(e){
   const file = e.target.files[0]; if(!file) return;
   const reader = new FileReader();
-  reader.onload = async ev => {
-    const photo = ev.target.result;
-    const { bookingId, type } = state.pendingPhotoUpload || {};
-    if(!bookingId) return;
-    showLoading();
+  reader.onload = ev => {
+    const raw = ev.target.result;
+    // Upload helper — unchanged logic, just parameterized by the final photo data.
+    const upload = async (photo) => {
+      const { bookingId, type } = state.pendingPhotoUpload || {};
+      if(!bookingId) return;
+      showLoading();
+      try{
+        const r = await fetch(`${WORKER}/portal/save-photo`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId,type,photo})});
+        const d = await r.json();
+        if(!r.ok){ toast(d.error||'Error uploading','error'); return; }
+        const bk = state.bookings.find(b=>b.id===bookingId);
+        if(bk){
+          if(type==='pre') bk.customerPreTripPhotos = [...(bk.customerPreTripPhotos||[]), photo];
+          else             bk.customerPostTripPhotos = [...(bk.customerPostTripPhotos||[]), photo];
+        }
+        renderBookings();
+        toast('Photo uploaded!','success');
+      }catch(e){ toast('Upload failed','error'); }
+      finally{ hideLoading(); e.target.value=''; state.pendingPhotoUpload=null; }
+    };
+    // Downscale large camera photos before upload so customer trip photos don't bloat
+    // the database (a raw phone photo is several MB). Cap the longest side at 1600px
+    // and step JPEG quality down under ~3.5M chars. Any failure falls back to the
+    // original image so uploads never silently break.
     try{
-      const r = await fetch(`${WORKER}/portal/save-photo`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId,type,photo})});
-      const d = await r.json();
-      if(!r.ok){ toast(d.error||'Error uploading','error'); return; }
-      const bk = state.bookings.find(b=>b.id===bookingId);
-      if(bk){
-        if(type==='pre') bk.customerPreTripPhotos = [...(bk.customerPreTripPhotos||[]), photo];
-        else             bk.customerPostTripPhotos = [...(bk.customerPostTripPhotos||[]), photo];
-      }
-      renderBookings();
-      toast('Photo uploaded!','success');
-    }catch(e){ toast('Upload failed','error'); }
-    finally{ hideLoading(); e.target.value=''; state.pendingPhotoUpload=null; }
+      const img = new Image();
+      img.onload = () => {
+        try{
+          const MAXD = 1600;
+          const scale = Math.min(1, MAXD/Math.max(img.width,img.height));
+          const w = Math.round(img.width*scale), h = Math.round(img.height*scale);
+          const c = document.createElement('canvas'); c.width=w; c.height=h;
+          c.getContext('2d').drawImage(img,0,0,w,h);
+          let q = 0.82, out = c.toDataURL('image/jpeg',q);
+          while(out.length>3500000 && q>0.4){ q-=0.1; out = c.toDataURL('image/jpeg',q); }
+          upload(out && out.length < raw.length ? out : raw);
+        }catch(_){ upload(raw); }
+      };
+      img.onerror = () => upload(raw);
+      img.src = raw;
+    }catch(_){ upload(raw); }
   };
   reader.readAsDataURL(file);
 }

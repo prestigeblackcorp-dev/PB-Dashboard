@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<script src="pb-config.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Prestige Black Rentals — Dashboard</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3449,7 +3450,7 @@ var _gcalPendingIds  = []; // booking IDs queued for GCal sync when token unavai
 //  CLOUD SYNC
 // ════════════════════════════════════════════════════════
 var FIREBASE_URL = localStorage.getItem('pb_firebase_url') || '';
-var _WORKER_URL_DEFAULT    = 'https://pb-booking.prestigeblackcorp.workers.dev';
+var _WORKER_URL_DEFAULT    = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 var _rawWorkerUrl          = localStorage.getItem('pb_worker_url')    || '';
 var _rawMessagingUrl       = localStorage.getItem('pb_messaging_url') || localStorage.getItem('pb_worker_url') || '';
 var WORKER_URL     = (_rawWorkerUrl.indexOf('https://')===0    ? _rawWorkerUrl    : '') || _WORKER_URL_DEFAULT;
@@ -6972,9 +6973,9 @@ function renderUpcoming(){
 // ── Driver Requests Panel ──────────────────────────────────────────────────
 var _driverReqCache = null;
 function loadDriverRequests(altPanel){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
-  fetch(WORKER+'/driver-requests?secret='+encodeURIComponent(secret),{cache:'no-store'})
+  fetch(WORKER+'/driver-requests',{cache:'no-store',headers:{Authorization:'Bearer '+secret}})
     .then(function(r){return r.ok?r.json():null;})
     .then(function(d){
       if(d&&d.requests){
@@ -7025,7 +7026,7 @@ function renderDriverRequestsPanel(requests, panel){
 }
 
 async function resolveDriverReq(reqId,action){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   try{
     var r=await fetch(WORKER+'/portal/approve-driver',{
@@ -7053,12 +7054,12 @@ async function renderDriversTab(){
   loadDriverRequests(reqPanel);
 
   // Load roster into tab
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   var wrap=$d('tabDriverRosterWrap');
   wrap.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div>';
   try{
-    var r=await fetch(WORKER+'/dashboard/drivers?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'});
+    var r=await fetch(WORKER+'/dashboard/drivers?_t='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+secret}});
     var rawText2=await r.text();
     var d; try{ d=JSON.parse(rawText2); }catch(e){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">Bad response ('+r.status+'): '+rawText2.slice(0,200)+'</div>'; return; }
     if(!r.ok){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">'+(d.error||'Error '+r.status)+'</div>'; return; }
@@ -7192,9 +7193,9 @@ function initFleetMap(){
 
 async function refreshFleetMap(){
   if(!_fleetMap){ initFleetMap(); setTimeout(refreshFleetMap,500); return; }
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
-  var r=await fetch(WORKER+'/chauffeur/dashboard?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'}).catch(function(){return null;});
+  var r=await fetch(WORKER+'/chauffeur/dashboard?_t='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+secret}}).catch(function(){return null;});
   if(!r||!r.ok){ $d('fleet-map-status').textContent='Error'; return; }
   var d=await r.json().catch(function(){return null;});
   if(!d){ return; }
@@ -7228,10 +7229,16 @@ async function refreshFleetMap(){
   // Render live rides list + full history / transactions / logs
   _rideHist=d.rides||[];
   _deletedRides=d.deletedRides||[];
-  renderLiveRides(_rideHist);
-  renderRideHistory();
-  renderFleetDeleted();
-  loadRideRevenue(true); // keep Overview ride revenue in sync with live fleet refresh
+  // Only re-render the ride lists when the payload actually changed — driver markers
+  // above still refresh every tick, but rebuilding these lists every 15s is wasted work.
+  var _ridesSig=JSON.stringify(_rideHist)+'|'+JSON.stringify(_deletedRides);
+  if(_ridesSig!==_lastRidesSig){
+    _lastRidesSig=_ridesSig;
+    renderLiveRides(_rideHist);
+    renderRideHistory();
+    renderFleetDeleted();
+  }
+  loadRideRevenue(true); // keep Overview ride revenue in sync (throttled to ~120s)
 }
 
 function renderLiveRides(rides){
@@ -7266,7 +7273,7 @@ function renderLiveRides(rides){
   }).join('');
 }
 
-var _rideHist=[];
+var _rideHist=[], _lastRidesSig='';
 // Owner soft-delete state (Drivers tab): rides & drivers removed by the owner.
 // Populated from the worker (deletedRides / deletedDrivers) and surfaced in the
 // "Recently Deleted — Fleet" panel for restore-within-30-days.
@@ -7274,7 +7281,7 @@ var _deletedRides=[], _deletedDrivers=[];
 // Escape a value for safe embedding inside a single-quoted JS string in an onclick attribute.
 function _jsAttr(s){ return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 // ── Chauffeur ride revenue (every completed ride, uncapped) for Overview KPIs ──
-var _rideTxns=[], _rideRevLoaded=false, _rideRevLoading=false;
+var _rideTxns=[], _rideRevLoaded=false, _rideRevLoading=false, _rideRevLastAt=0;
 // Sum of completed-ride fares within the current Overview period window (local time)
 function _rideRevForPeriod(){
   if(!_rideTxns||!_rideTxns.length) return 0;
@@ -7304,12 +7311,17 @@ function _rideCountForPeriod(){
 // Fetch every completed-ride fare (uncapped) so Overview revenue reflects all ride income
 function loadRideRevenue(force){
   if(_rideRevLoading) return;
+  // Throttle forced refreshes: the fleet map calls this every 15s, but /chauffeur/revenue
+  // is an uncapped lifetime read and revenue barely moves second-to-second. Once we have
+  // data, honor a force at most every 120s. Initial/manual (non-force) loads still run.
+  if(force && _rideRevLoaded && (Date.now()-_rideRevLastAt) < 120000) return;
   if(_rideRevLoaded && !force) return;
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   if(!secret) return;
   _rideRevLoading=true;
-  fetch(WORKER+'/chauffeur/revenue?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'})
+  _rideRevLastAt=Date.now();
+  fetch(WORKER+'/chauffeur/revenue?_t='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+secret}})
     .then(function(r){ return r&&r.ok?r.json():null; })
     .then(function(d){
       _rideRevLoading=false;
@@ -7398,7 +7410,7 @@ function renderRideHistory(){
 // are soft-deleted server-side (worker); bookings reuse the client _deleted flag.
 // ══════════════════════════════════════════════════════════════════
 function _fleetPost(path, body){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   body=body||{}; body.secret=secret;
   return fetch(WORKER+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -7488,7 +7500,7 @@ function renderFleetDeleted(){
 }
 
 async function submitTabAssignDriver(){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   var bookingId=$d('tabDrvAssignBookingId').value.trim();
   var driverEmail=$d('tabDrvAssignDriver').value;
@@ -7537,12 +7549,12 @@ function drvSwitchTab(tab){
 }
 
 async function _drvLoadRoster(){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   var el=$d('drvRosterList');
   el.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div>';
   try{
-    var r=await fetch(WORKER+'/dashboard/drivers?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'});
+    var r=await fetch(WORKER+'/dashboard/drivers?_t='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+secret}});
     var rawText=await r.text();
     var d; try{ d=JSON.parse(rawText); }catch(e){ el.innerHTML='<div style="color:var(--red);text-align:center;padding:20px">Bad response ('+r.status+'): '+rawText.slice(0,200)+'</div>'; return; }
     if(!r.ok){ el.innerHTML='<div style="color:var(--red);text-align:center;padding:20px">'+(d.error||'Error '+r.status)+'</div>'; return; }
@@ -7585,7 +7597,7 @@ async function _drvLoadRoster(){
 }
 
 async function submitAddDriver(){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   var name=$d('drvAddName').value.trim();
   var email=$d('drvAddEmail').value.trim().toLowerCase();
@@ -7618,7 +7630,7 @@ async function submitAddDriver(){
 }
 
 async function submitAssignDriver(){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   var bookingId=$d('drvAssignBookingId').value.trim();
   var driverEmail=$d('drvAssignDriver').value;
@@ -7698,7 +7710,7 @@ function openCardAssign(id){
 function closeCardAssign(){ $d('cardAssignModal').style.display='none'; _cardAssignBkId=null; }
 
 async function _loadCardAssignRoster(preEmail){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   var sel=$d('cardAssignDriver');
   if(!sel) return;
@@ -7717,14 +7729,14 @@ async function _loadCardAssignRoster(preEmail){
   if(_drvList&&_drvList.length) fill(_drvList);
   else sel.innerHTML='<option value="">— loading drivers… —</option>';
   try{
-    var r=await fetch(WORKER+'/dashboard/drivers?secret='+encodeURIComponent(secret)+'&_t='+Date.now(),{cache:'no-store'});
+    var r=await fetch(WORKER+'/dashboard/drivers?_t='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+secret}});
     var d=await r.json();
     if(r.ok && d && d.drivers){ _drvList=d.drivers; fill(_drvList); }
   }catch(e){ /* keep whatever is already shown */ }
 }
 
 async function submitCardAssign(){
-  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
   var bookingId=_cardAssignBkId;
   var driverEmail=$d('cardAssignDriver').value;
@@ -10333,7 +10345,7 @@ function confirmAddDriver(bookingId){
   // Auto-register in driver portal so the driver can log in immediately.
   // Uses upsert (PUT) so existing accounts are not overwritten if already present.
   if(email){
-    var _WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+    var _WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
     var _sec=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
     fetch(_WORKER+'/dashboard/add-driver',{
       method:'POST',headers:{'Content-Type':'application/json'},
@@ -16476,7 +16488,7 @@ function _initSigningMode(bookingId, driverIdx){
   // Hide the normal dashboard so only the signing view is shown
   document.querySelectorAll('.header,.tab-bar,#offlineBadge,#lockScreen,#splashScreen').forEach(function(el){if(el)el.style.display='none';});
   body.innerHTML='<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Loading your contract…</div>';
-  var workerUrl = 'https://pb-booking.prestigeblackcorp.workers.dev';
+  var workerUrl = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   fetch(workerUrl+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(function(r){return r.ok?r.json():null;})
   .then(function(data){
@@ -16712,7 +16724,7 @@ function _smSubmitSig(bookingId, driverIdx){
   var btn=document.getElementById('smSubmitBtn'); if(btn){btn.disabled=true;btn.textContent='Saving…';}
   var sig=c.toDataURL('image/png');
   var t=new Date(); var sigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
-  var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
+  var workerUrl=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 
   function _showSaveErr(msg){
     if(btn){btn.disabled=false;btn.textContent='✍️ Sign & Submit';}
@@ -16846,7 +16858,7 @@ function _initExtensionSigningMode(bookingId, extId){
   var _sls=$d('pbLogoImg'),_slt=$d('signingLogoImg'); if(_sls&&_slt) _slt.src=_sls.src;
   document.querySelectorAll('.header,.tab-bar,#offlineBadge,#lockScreen,#splashScreen').forEach(function(el){if(el)el.style.display='none';});
   body.innerHTML='<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)">Loading extension agreement…</div>';
-  var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
+  var workerUrl=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   fetch(workerUrl+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(function(r){return r.ok?r.json():null;})
   .then(function(data){
@@ -16961,7 +16973,7 @@ function _smSubmitExtSig(bookingId, extId){
   var btn=document.getElementById('smSubmitBtn'); if(btn){btn.disabled=true;btn.textContent='Saving…';}
   var sig=c.toDataURL('image/png');
   var t=new Date(); var sigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
-  var workerUrl='https://pb-booking.prestigeblackcorp.workers.dev';
+  var workerUrl=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 
   function _showSaveErr(msg){
     if(btn){btn.disabled=false;btn.textContent='✍️ Sign & Submit';}
@@ -17060,7 +17072,7 @@ var _pAllData      = null;
 var _pBookingId    = null;
 var _pExtraDays    = 1;
 var _pExtraSel     = {};   // {photo:true, champagne:true, …}
-var _PORTAL_WORKER = 'https://pb-booking.prestigeblackcorp.workers.dev';
+var _PORTAL_WORKER = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 var PORTAL_ADDON_PRICES = {photo:150,champagne:50,decor:75,bouquet:50,delivery:75,pet:50,unlimited:50};
 var PORTAL_ADDONS = [
   {key:'photo',     label:'📸 Photos',           perDay:false},
