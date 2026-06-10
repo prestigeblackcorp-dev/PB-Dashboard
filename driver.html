@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>PB Fleet Ops — Driver Portal</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 :root{
@@ -188,11 +188,14 @@ textarea{resize:vertical;min-height:80px;}
 .rides-map-label{position:absolute;top:10px;left:10px;z-index:400;background:rgba(8,11,16,.85);backdrop-filter:blur(10px);border:1px solid rgba(201,169,98,.25);border-radius:10px;padding:5px 10px;font-size:11px;font-weight:700;color:var(--gold);letter-spacing:.1em;text-transform:uppercase;}
 /* Dark luxury map theming */
 #rides-map{background:#05070b;}
-#rides-map .leaflet-tile-pane{filter:saturate(1.05) contrast(1.02);}
+#rides-map .maplibregl-canvas{outline:none;}
 #rides-map-container::after{content:'';position:absolute;inset:0;pointer-events:none;border-radius:16px;box-shadow:inset 0 0 70px 14px rgba(0,0,0,.55);z-index:399;}
-#rides-map-container .leaflet-popup-content-wrapper{background:rgba(13,18,28,.97);color:var(--text);border:1px solid var(--border);border-radius:14px;box-shadow:0 14px 40px rgba(0,0,0,.6);}
-#rides-map-container .leaflet-popup-tip{background:rgba(13,18,28,.97);border:1px solid var(--border);}
-#rides-map-container .leaflet-popup-close-button{color:var(--muted);}
+#rides-map .maplibregl-ctrl-attrib{background:rgba(8,11,16,.6);border-radius:8px 0 0 0;font-size:9px;}
+#rides-map .maplibregl-ctrl-attrib a{color:var(--muted);}
+#rides-map .maplibregl-ctrl-bottom-right{z-index:398;}
+/* First-person driver chevron */
+.nav-puck{width:34px;height:34px;display:flex;align-items:center;justify-content:center;will-change:transform;}
+.nav-puck svg{filter:drop-shadow(0 3px 7px rgba(0,0,0,.6));}
 
 /* Incoming ride alert */
 #ride-request-overlay{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;justify-content:flex-end;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);}
@@ -568,13 +571,19 @@ var _navLastLng = null;
 var _navFetching = false;
 var _navFollow = true;        // map follows driver (turn-by-turn) vs broad overview
 var _navOverviewPhase = null; // phase the broad overview was last shown for
-var NAV_FOLLOW_ZOOM = 16;     // zoom level when following the driver turn-by-turn
+var NAV_FOLLOW_ZOOM = 17;     // zoom level when following the driver turn-by-turn (tight first-person)
+var NAV_PITCH = 60;           // 3D camera tilt while navigating (Apple-Maps-style first person)
+var _navHeading = 0;          // last finite GPS heading (degrees) — camera bearing in follow mode
+var _ridesMapReady = false;   // MapLibre style finished loading (sources/layers safe to add)
+var _navRoutePending = null;  // route GeoJSON buffered until the style is ready
 var _navRouteCoords = null;   // [[lat,lng],...] current route polyline (for projection)
 var _navRouteCum = null;      // cumulative metres along the route polyline per vertex
 var _navStepCum = null;       // cumulative metres to each step's maneuver point
 var _navTotalDur = 0;         // route duration (s) for the current leg
 var _navLastFetchAt = 0;      // ms timestamp of last route fetch (reroute debounce)
 var OFFROUTE_M = 45;          // metres off the line before we re-route (missed turn / shortcut)
+var _navTgtLat = null;        // destination of the last route fetch — recalc if the
+var _navTgtLng = null;        // pickup/dropoff coords change mid-leg (stop edited, dispatcher update)
 
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function $d(id){ return document.getElementById(id); }
@@ -1303,13 +1312,72 @@ function initRidesMap(){
   if(!el||_ridesMap) return;
   document.getElementById('rides-map-container').style.display='block';
   el.style.height='220px';
-  _ridesMap = L.map('rides-map',{zoomControl:false,attributionControl:false}).setView([32.7767,-96.797],13);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:20,detectRetina:true}).addTo(_ridesMap);
-  // Street/place labels in their own pane, filtered to vibrant white for legibility
-  _ridesMap.createPane('labels'); _ridesMap.getPane('labels').style.zIndex=250; _ridesMap.getPane('labels').style.pointerEvents='none'; _ridesMap.getPane('labels').style.filter='none';
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:20,detectRetina:true,pane:'labels'}).addTo(_ridesMap);
-  L.control.attribution({prefix:false}).addTo(_ridesMap);
-  setTimeout(function(){ _ridesMap.invalidateSize(); },200);
+  if(typeof maplibregl==='undefined'){ return; }   // GL lib failed to load — leave map blank rather than crash nav
+  try{
+    // MapLibre GL vector engine gives us native heading-up rotation + 3D tilt for a
+    // true Apple-Maps-style first-person drive. CARTO's free Voyager GL style needs no API key.
+    _ridesMap = new maplibregl.Map({
+      container:'rides-map',
+      style:'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
+      center:[-96.797,32.7767],
+      zoom:12,
+      pitch:0,
+      bearing:0,
+      attributionControl:false,
+      dragRotate:true,
+      pitchWithRotate:true,
+      maxPitch:75,
+      fadeDuration:120
+    });
+    _ridesMap.addControl(new maplibregl.AttributionControl({compact:true}),'bottom-right');
+    _ridesMap.on('load',function(){
+      _ridesMapReady=true;
+      // Gold route line (with a soft dark casing under it) — driven by a single GeoJSON source.
+      try{
+        if(!_ridesMap.getSource('nav-route')){
+          _ridesMap.addSource('nav-route',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+          _ridesMap.addLayer({id:'nav-route-casing',type:'line',source:'nav-route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#05070b','line-opacity':0.45,'line-width':10}});
+          _ridesMap.addLayer({id:'nav-route-line',type:'line',source:'nav-route',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#C9A962','line-width':6}});
+        }
+      }catch(e){}
+      try{ _add3DBuildings(); }catch(e){}
+      if(_navRoutePending){ try{ _ridesMap.getSource('nav-route').setData(_navRoutePending); _navRoutePending=null; }catch(e){} }
+      try{ _ridesMap.resize(); }catch(e){}
+      // If a ride was already active before the style finished loading, lay it back down.
+      if(_activeRide){ try{ drawActiveRideOnMap(_activeRide); }catch(e){} }
+    });
+  }catch(e){ _ridesMap=null; }
+}
+// Extrude building footprints into 3D so the first-person view has real depth.
+// Schema-agnostic: find the vector source that carries a 'building' source-layer
+// (OpenMapTiles), fall back to the first vector source, and tuck it under the labels.
+function _add3DBuildings(){
+  if(!_ridesMap) return;
+  var style=_ridesMap.getStyle(); if(!style||!style.layers) return;
+  if(_ridesMap.getLayer('pb-3d-buildings')) return;
+  var bSource=null;
+  for(var i=0;i<style.layers.length;i++){ var ly=style.layers[i]; if(ly['source-layer']==='building'&&ly.source){ bSource=ly.source; break; } }
+  if(!bSource){ for(var sid in style.sources){ if(style.sources[sid]&&style.sources[sid].type==='vector'){ bSource=sid; break; } } }
+  if(!bSource) return;
+  var beforeId=null;
+  for(var j=0;j<style.layers.length;j++){ if(style.layers[j].type==='symbol'){ beforeId=style.layers[j].id; break; } }
+  _ridesMap.addLayer({
+    id:'pb-3d-buildings', type:'fill-extrusion', source:bSource, 'source-layer':'building', minzoom:14,
+    paint:{
+      'fill-extrusion-color':'#19202e',
+      'fill-extrusion-height':['coalesce',['get','render_height'],['get','height'],12],
+      'fill-extrusion-base':['coalesce',['get','render_min_height'],['get','min_height'],0],
+      'fill-extrusion-opacity':0.85
+    }
+  }, beforeId||undefined);
+}
+// Push the current route polyline ([[lat,lng],...]) into the GeoJSON source (converts to [lng,lat]).
+function _setRouteData(coords){
+  var gj=(coords&&coords.length>1)
+    ? {type:'Feature',properties:{},geometry:{type:'LineString',coordinates:coords.map(function(c){return [c[1],c[0]];})}}
+    : {type:'FeatureCollection',features:[]};
+  if(!_ridesMap){ _navRoutePending=gj; return; }
+  try{ var src=_ridesMap.getSource('nav-route'); if(src){ src.setData(gj); _navRoutePending=null; } else { _navRoutePending=gj; } }catch(e){ _navRoutePending=gj; }
 }
 
 // ── Duty toggle ──────────────────────────────────────────────────────────
@@ -1379,14 +1447,34 @@ function updateMapSelfMarker(lat,lng,heading){
   _driverLat=lat; _driverLng=lng;
   if(_activeRide) updateNav();
   if(!_ridesMap) return;
-  var rot=heading||0;
-  var html='<div style="width:32px;height:32px;background:linear-gradient(135deg,#C9A962,#a8893e);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:17px;border:2px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.5);transform:rotate('+rot+'deg)">🚘</div>';
-  var icon=L.divIcon({className:'',html:html,iconSize:[32,32],iconAnchor:[16,16]});
-  if(_driverSelfMarker){ _driverSelfMarker.setLatLng([lat,lng]); _driverSelfMarker.setIcon(icon); }
-  else { _driverSelfMarker=L.marker([lat,lng],{icon:icon}).addTo(_ridesMap); }
-  // Only recenter on the driver while in turn-by-turn follow mode; during the
-  // broad overview window we leave the wide framing alone.
-  if(_navFollow) _ridesMap.setView([lat,lng], navTarget(_activeRide)?NAV_FOLLOW_ZOOM:15);
+  if(heading!=null && isFinite(heading)) _navHeading=heading;
+  // Directional first-person chevron (gold arrowhead on a dark disc), heading-up.
+  if(!_driverSelfMarker){
+    try{
+      var elm=document.createElement('div');
+      elm.className='nav-puck';
+      elm.innerHTML='<svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="13" fill="rgba(8,11,16,.55)"/><path d="M15 4 L24 25 L15 19.5 L6 25 Z" fill="#C9A962" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+      _driverSelfMarker=new maplibregl.Marker({element:elm,rotationAlignment:'map',pitchAlignment:'viewport'}).setLngLat([lng,lat]).addTo(_ridesMap);
+    }catch(e){}
+  } else {
+    try{ _driverSelfMarker.setLngLat([lng,lat]); }catch(e){}
+  }
+  try{ if(_driverSelfMarker) _driverSelfMarker.setRotation(_navHeading||0); }catch(e){}
+  // Follow the driver street-by-street: heading-up, tilted 3D, puck low on screen so the
+  // road ahead fills the view. During the broad-overview window we leave the framing alone.
+  if(_navFollow){
+    var following=!!navTarget(_activeRide);
+    try{
+      _ridesMap.easeTo({
+        center:[lng,lat],
+        zoom: following?NAV_FOLLOW_ZOOM:15,
+        pitch: following?NAV_PITCH:0,
+        bearing: following?(_navHeading||0):0,
+        padding: following?{top:80,bottom:0,left:0,right:0}:{top:0,bottom:0,left:0,right:0},
+        duration:700
+      });
+    }catch(e){}
+  }
 }
 
 // ── Poll for incoming requests & active ride ─────────────────────────────
@@ -1480,7 +1568,12 @@ async function declineRide(){
 function renderActiveRidePanel(){
   var panel=$d('active-ride-panel');
   if(!panel) return;
-  if(!_activeRide){ panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; _navRouteCoords=null; _navRouteCum=null; _navStepCum=null; return; }
+  if(!_activeRide){
+    panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; _navRouteCoords=null; _navRouteCum=null; _navStepCum=null;
+    // Clear the route line and drop the 3D camera back to a flat overview between rides.
+    if(_ridesMap){ try{ _setRouteData(null); }catch(e){} try{ _ridesMap.easeTo({pitch:0,bearing:0,zoom:13,padding:{top:0,bottom:0,left:0,right:0},duration:800}); }catch(e){} }
+    return;
+  }
   panel.style.display='block';
   var r=_activeRide;
   $d('arc-rider-name').textContent=r.riderName||r.riderEmail||'Rider';
@@ -1540,14 +1633,12 @@ async function completeRide(){
 function drawActiveRideOnMap(ride){
   if(!_ridesMap||!ride) return;
   if(ride.pickupLat&&ride.pickupLng){
-    var pIcon=L.divIcon({className:'',html:'<div style="width:14px;height:14px;background:#C9A962;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>',iconSize:[14,14],iconAnchor:[7,7]});
-    if(_activeRidePickupMarker){ _activeRidePickupMarker.setLatLng([ride.pickupLat,ride.pickupLng]); }
-    else { _activeRidePickupMarker=L.marker([ride.pickupLat,ride.pickupLng],{icon:pIcon}).addTo(_ridesMap); }
+    if(_activeRidePickupMarker){ try{ _activeRidePickupMarker.setLngLat([ride.pickupLng,ride.pickupLat]); }catch(e){} }
+    else { try{ var pe=document.createElement('div'); pe.innerHTML='<div style="width:14px;height:14px;background:#C9A962;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>'; _activeRidePickupMarker=new maplibregl.Marker({element:pe}).setLngLat([ride.pickupLng,ride.pickupLat]).addTo(_ridesMap); }catch(e){} }
   }
   if(ride.dropoffLat&&ride.dropoffLng){
-    var dIcon=L.divIcon({className:'',html:'<div style="width:14px;height:14px;background:#22c55e;border-radius:3px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>',iconSize:[14,14],iconAnchor:[7,14]});
-    if(_activeRideDropoffMarker){ _activeRideDropoffMarker.setLatLng([ride.dropoffLat,ride.dropoffLng]); }
-    else { _activeRideDropoffMarker=L.marker([ride.dropoffLat,ride.dropoffLng],{icon:dIcon}).addTo(_ridesMap); }
+    if(_activeRideDropoffMarker){ try{ _activeRideDropoffMarker.setLngLat([ride.dropoffLng,ride.dropoffLat]); }catch(e){} }
+    else { try{ var de=document.createElement('div'); de.innerHTML='<div style="width:14px;height:14px;background:#22c55e;border-radius:3px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>'; _activeRideDropoffMarker=new maplibregl.Marker({element:de}).setLngLat([ride.dropoffLng,ride.dropoffLat]).addTo(_ridesMap); }catch(e){} }
   }
   // Drive turn-by-turn navigation (driver -> current target)
   updateNav();
@@ -1570,8 +1661,10 @@ function updateNav(){
     if($d('arc-nav-instr')) $d('arc-nav-instr').textContent='Waiting for your location…';
     return;
   }
-  // First route for this leg, or the leg just changed (driver→pickup vs pickup→dropoff).
-  if(!_navSteps||tgt.phase!==_navPhase){ fetchNav(tgt); return; }
+  // Recalculate from scratch when there's no route yet, the leg changed (driver→pickup vs
+  // pickup→dropoff), or the destination itself moved (rider edited the stop / dispatcher
+  // updated coords) — so the route auto-recomputes to wherever we're actually headed.
+  if(!_navSteps||tgt.phase!==_navPhase||(_navTgtLat!=null&&navDistM(tgt.lat,tgt.lng,_navTgtLat,_navTgtLng)>25)){ fetchNav(tgt); return; }
   // Otherwise advance through the existing route live (no network call) and only
   // re-route when the driver leaves the line — a missed turn, a shortcut, etc.
   advanceNav(tgt);
@@ -1579,7 +1672,7 @@ function updateNav(){
 function fetchNav(tgt){
   if(_navFetching) return;
   _navFetching=true;
-  _navLastLat=_driverLat; _navLastLng=_driverLng; _navPhase=tgt.phase; _navLastFetchAt=Date.now();
+  _navLastLat=_driverLat; _navLastLng=_driverLng; _navPhase=tgt.phase; _navTgtLat=tgt.lat; _navTgtLng=tgt.lng; _navLastFetchAt=Date.now();
   var url='https://router.project-osrm.org/route/v1/driving/'+_driverLng+','+_driverLat+';'+tgt.lng+','+tgt.lat+'?overview=full&geometries=geojson&steps=true';
   fetch(url,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
     _navFetching=false;
@@ -1587,18 +1680,21 @@ function fetchNav(tgt){
     var rt=d.routes[0];
     var coords=(rt.geometry&&rt.geometry.coordinates)?rt.geometry.coordinates.map(function(c){return[c[1],c[0]];}):null;
     if(_ridesMap&&coords){
-      if(_activeRideRouteLine){ _activeRideRouteLine.setLatLngs(coords); }
-      else { _activeRideRouteLine=L.polyline(coords,{color:'#C9A962',weight:5,opacity:.85}).addTo(_ridesMap); }
-      // New leg (driver→pickup, then pickup→dropoff): show the whole route broad,
-      // then ease into turn-by-turn follow — no external maps app required. A mid-leg
-      // reroute keeps the same phase, so it won't re-trigger the broad overview.
+      _setRouteData(coords);
+      // New leg (driver→pickup, then pickup→dropoff): show the whole route broad and flat,
+      // then ease into the tilted turn-by-turn follow — no external maps app required. A
+      // mid-leg reroute keeps the same phase, so it won't re-trigger the broad overview.
       if(_navPhase!==_navOverviewPhase){
         _navOverviewPhase=_navPhase;
         _navFollow=false;
-        try{ _ridesMap.fitBounds(_activeRideRouteLine.getBounds(),{padding:[28,28],maxZoom:16,animate:true}); }catch(e){}
+        try{
+          var b=new maplibregl.LngLatBounds();
+          coords.forEach(function(c){ b.extend([c[1],c[0]]); });
+          _ridesMap.fitBounds(b,{padding:34,maxZoom:15.5,pitch:0,bearing:0,duration:900});
+        }catch(e){}
         setTimeout(function(){
           _navFollow=true;
-          if(_ridesMap&&_driverLat!=null){ try{ _ridesMap.setView([_driverLat,_driverLng],NAV_FOLLOW_ZOOM,{animate:true}); }catch(e){} }
+          if(_ridesMap&&_driverLat!=null){ try{ _ridesMap.easeTo({center:[_driverLng,_driverLat],zoom:NAV_FOLLOW_ZOOM,pitch:NAV_PITCH,bearing:_navHeading||0,padding:{top:80,bottom:0,left:0,right:0},duration:1000}); }catch(e){} }
         },4500);
       }
     }
@@ -1639,7 +1735,7 @@ function renderNav(){
 function advanceNav(tgt){
   var proj=_projectOnRoute(_driverLat,_driverLng);
   if(proj && proj.distM>OFFROUTE_M){
-    if(!_navFetching && (Date.now()-_navLastFetchAt)>4000){ fetchNav(tgt); }
+    if(!_navFetching && (Date.now()-_navLastFetchAt)>3000){ fetchNav(tgt); }
     if($d('arc-nav-instr')) $d('arc-nav-instr').textContent='Rerouting…';
     if($d('arc-nav-arrow')) $d('arc-nav-arrow').textContent='↻';
     return;
