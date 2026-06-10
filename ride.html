@@ -427,6 +427,25 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
       </div>
     </div>
 
+    <!-- Time's-up modal: extend the hourly booking or end the trip -->
+    <div id="extendModal" class="rmodal-overlay" style="display:none">
+      <div class="rmodal-card">
+        <div class="rmodal-title">⏱ Your time is up</div>
+        <div class="rmodal-sub" id="extendSub">Your hourly booking has ended. Need more time with your chauffeur?</div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:18px;margin:18px 0 6px;">
+          <button onclick="extPlus(-1)" style="width:44px;height:44px;border-radius:50%;background:transparent;border:1px solid var(--border);color:var(--text);font-size:20px;cursor:pointer;">−</button>
+          <div style="text-align:center;min-width:90px;">
+            <div style="font-size:30px;font-weight:900;color:var(--gold);"><span id="extHoursVal">1</span></div>
+            <div style="font-size:10px;font-weight:800;letter-spacing:.1em;color:var(--muted);">MORE HOUR(S)</div>
+          </div>
+          <button onclick="extPlus(1)" style="width:44px;height:44px;border-radius:50%;background:transparent;border:1px solid var(--border);color:var(--text);font-size:20px;cursor:pointer;">+</button>
+        </div>
+        <div id="extendStatus" style="font-size:12px;color:var(--muted);text-align:center;margin-bottom:10px;min-height:14px;"></div>
+        <button class="btn-gold" id="extendConfirmBtn" onclick="confirmExtend()">Extend</button>
+        <button id="endTripBtn" onclick="endHourlyNow()" style="width:100%;margin-top:10px;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:14px;padding:14px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">End Trip Now</button>
+      </div>
+    </div>
+
     <!-- Driver reviews modal (read reviews) -->
     <div id="driverReviewsModal" class="rmodal-overlay" style="display:none" onclick="if(event.target===this)closeDriverReviews()">
       <div class="rmodal-card">
@@ -579,6 +598,21 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
               </div>
             </div>
           </div>
+          <!-- Hourly in-trip controls: live countdown + send the driver anywhere, stop after stop -->
+          <div id="hourlyPanel" style="display:none">
+            <div id="hourlyTimeChip" style="display:flex;align-items:center;justify-content:center;gap:7px;background:rgba(201,169,98,.08);border:1px solid rgba(201,169,98,.3);border-radius:12px;padding:10px 14px;margin:10px 0;font-size:13px;font-weight:800;color:var(--gold);" onclick="if(_extPrompted)openExtendModal()">⏱ <span id="hourlyTimeLeft">—</span>&nbsp;remaining</div>
+            <div style="font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin:2px 2px 8px;">Where to? Update your driver live</div>
+            <div class="addr-field" style="position:relative;margin-bottom:8px;">
+              <input id="stopInp" class="addr-inp" placeholder="📍 Current stop — where to now?" autocomplete="off" oninput="onAddrInput('stop')" onfocus="onAddrFocus('stop')">
+              <div class="suggestions" id="stopSugg" style="display:none"></div>
+            </div>
+            <div class="addr-field" style="position:relative;margin-bottom:10px;">
+              <input id="nextstopInp" class="addr-inp" placeholder="⏭ Next stop after that (optional)" autocomplete="off" oninput="onAddrInput('nextstop')" onfocus="onAddrFocus('nextstop')">
+              <div class="suggestions" id="nextstopSugg" style="display:none"></div>
+            </div>
+            <button class="btn-gold" id="sendStopsBtn" onclick="sendStops()" style="width:100%;">Update Driver's Route</button>
+            <div id="stopsStatus" style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px;min-height:15px;"></div>
+          </div>
           <div class="done-card" id="doneCard" style="display:none">
             <div class="done-icon">⭐</div>
             <div class="done-title">Ride Complete!</div>
@@ -615,6 +649,14 @@ let _reviewedRides = {};      // rideId -> true once submitted, to hide "Rate dr
 let _autoPrompted = {};       // rideId -> true once auto-prompted on completion
 let _pastTrips = [];          // last-loaded rider-rides, for index-based rate buttons
 let _rideType = 'point_to_point';
+// Hourly in-trip state: live stop routing + time's-up extend flow
+let _curRide = null;          // latest ride object from the status poll
+let _stopSel = null;          // {lat,lng,address} chosen current stop
+let _nextStopSel = null;      // {lat,lng,address} chosen next stop
+let _hourlyTimerId = null;    // 1s countdown ticker
+let _hourlyEndsAt = 0;        // startedAt + hours (ms epoch)
+let _extPrompted = false;     // time's-up modal already shown for this expiry
+let _extHours = 1;            // hours selected in the extend stepper
 let _hours = 2;
 let _pickup = null;  // {lat,lng,address}
 let _dropoff = null;
@@ -1036,14 +1078,16 @@ function onAddrInput(field){
 }
 function onAddrFocus(field){
   _activeSugg=field;
-  expandSheet();
-  closeSuggestions('pickup'); closeSuggestions('dropoff');
+  if(field==='pickup'||field==='dropoff') expandSheet();
+  closeSuggestions('pickup'); closeSuggestions('dropoff'); closeSuggestions('stop'); closeSuggestions('nextstop');
 }
 // Reference point for ordering suggestions closest-first: for a dropoff we measure
 // from the chosen pickup; otherwise from the rider's live location, then the current
 // map view, then the Dallas default.
 function _suggRef(field){
   if(field==='dropoff'&&_pickup&&_pickup.lat!=null) return {lat:_pickup.lat,lng:_pickup.lng};
+  // Mid-trip stops: measure from where the car actually is right now
+  if((field==='stop'||field==='nextstop')&&_lastDriverLoc&&_lastDriverLoc.lat!=null) return {lat:_lastDriverLoc.lat,lng:_lastDriverLoc.lng};
   if(_lastRiderLoc&&_lastRiderLoc.lat!=null) return {lat:_lastRiderLoc.lat,lng:_lastRiderLoc.lng};
   if(_map){ try{ const c=_map.getCenter(); return {lat:c.lat,lng:c.lng}; }catch(e){} }
   return {lat:32.7767,lng:-96.797};
@@ -1058,7 +1102,7 @@ function _fmtMi(km){
   return mi<0.1?Math.round(mi*5280)+' ft':mi.toFixed(1)+' mi';
 }
 async function fetchSuggestions(field){
-  const q=field==='pickup'?$d('pickupInp').value:$d('dropoffInp').value;
+  const q=(($d(field+'Inp')||{}).value)||'';
   if(!q||q.length<3){ closeSuggestions(field); return; }
   // Pull a wider pool so the closest-first ordering below has real candidates to sort.
   const url=`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&lat=32.7767&lon=-96.797`;
@@ -1108,6 +1152,16 @@ function selectSuggestion(field,idx){
     _pickup={lat,lng,address:full};
     placePickupMarker(lat,lng);
     _map.setView([lat,lng],15);
+  } else if(field==='stop'){
+    $d('stopInp').value=full;
+    _stopSel={lat,lng,address:full};
+    closeSuggestions(field);
+    return;             // mid-trip stop — no booking route refresh
+  } else if(field==='nextstop'){
+    $d('nextstopInp').value=full;
+    _nextStopSel={lat,lng,address:full};
+    closeSuggestions(field);
+    return;
   } else {
     $d('dropoffInp').value=full;
     _dropoff={lat,lng,address:full};
@@ -1117,7 +1171,7 @@ function selectSuggestion(field,idx){
   if(_pickup&&(_dropoff||_rideType==='hourly')) fetchRoute();
 }
 function closeSuggestions(field){ const el=$d(field+'Sugg'); if(el) el.style.display='none'; }
-document.addEventListener('click',e=>{ if(!e.target.closest('.addr-field')){ closeSuggestions('pickup'); closeSuggestions('dropoff'); } });
+document.addEventListener('click',e=>{ if(!e.target.closest('.addr-field')){ closeSuggestions('pickup'); closeSuggestions('dropoff'); closeSuggestions('stop'); closeSuggestions('nextstop'); } });
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -1404,6 +1458,7 @@ function fitTripView(driverLoc){
 
 function updateStatusUI(ride, driverLoc){
   const st=ride.status||'searching';
+  _curRide=ride;
   const badge=$d('statusBadge');
   badge.className='status-badge '+(st);
   badge.innerHTML=(['searching','accepted','driver_arrived','in_progress'].includes(st)?'<div class="pulse-dot"></div>':'')+`<span id="statusBadgeText">${STATUS_LABELS[st]||st}</span>`;
@@ -1457,9 +1512,32 @@ function updateStatusUI(ride, driverLoc){
       $d('etaChip').style.display='none';
     }
   }
+  // Hourly in-trip: live stop editor + countdown to time's-up
+  if(ride.rideType==='hourly' && st==='in_progress'){
+    $d('hourlyPanel').style.display='block';
+    if(ride.startedAt && ride.hours){
+      _hourlyEndsAt=Number(ride.startedAt)+Number(ride.hours)*3600000;  // extensions push this forward on the next poll
+      if(!_hourlyTimerId) _hourlyTimerId=setInterval(_tickHourly,1000);
+      _tickHourly();
+    }
+    $d('routeHours').textContent=ride.hours+' hour'+(+ride.hours!==1?'s':'');
+    // Hydrate the current stop from the server (covers reloads + confirms the driver has it)
+    if(ride.dropoffLat&&ride.dropoffLng&&ride.dropoffAddress&&(!_dropoff||_dropoff.address!==ride.dropoffAddress)){
+      _dropoff={lat:Number(ride.dropoffLat),lng:Number(ride.dropoffLng),address:ride.dropoffAddress};
+      placeDropoffMarker(_dropoff.lat,_dropoff.lng);
+    }
+    var _si=$d('stopInp');
+    if(_si&&!_si.value&&document.activeElement!==_si&&ride.dropoffAddress) _si.value=ride.dropoffAddress;
+    var _ni=$d('nextstopInp');
+    if(_ni&&!_ni.value&&document.activeElement!==_ni&&ride.nextStopAddress) _ni.value=ride.nextStopAddress;
+  } else {
+    $d('hourlyPanel').style.display='none';
+    if(_hourlyTimerId){ clearInterval(_hourlyTimerId); _hourlyTimerId=null; }
+  }
   // Completed
   if(st==='completed'){
     stopPolling();
+    $d('extendModal').style.display='none';
     $d('doneCard').style.display='block';
     $d('doneFare').textContent='$'+(ride.finalPrice||ride.estimatedPrice||0).toFixed(2);
     $d('cancelRideBtn').style.display='none';
@@ -1477,9 +1555,102 @@ function updateStatusUI(ride, driverLoc){
   }
   if(['cancelled','no_driver'].includes(st)){
     stopPolling();
+    $d('extendModal').style.display='none';
     $d('cancelRideBtn').style.display='none';
     $d('newRideBtn').style.display='block';
     if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
+  }
+}
+
+// ── Hourly: countdown, mid-trip stops, time's-up extend/end ────────────────
+function _tickHourly(){
+  var el=$d('hourlyTimeLeft'); if(!el||!_hourlyEndsAt) return;
+  var ms=_hourlyEndsAt-Date.now();
+  var chip=$d('hourlyTimeChip');
+  if(ms<=0){
+    el.textContent='Time up';
+    if(chip){ chip.style.color='var(--red)'; chip.style.borderColor='rgba(239,68,68,.4)'; }
+    if(!_extPrompted){ _extPrompted=true; openExtendModal(); }
+    return;
+  }
+  var h=Math.floor(ms/3600000), m=Math.floor(ms%3600000/60000), s=Math.floor(ms%60000/1000);
+  el.textContent=h>0?(h+'h '+(m<10?'0':'')+m+'m'):(m+':'+(s<10?'0':'')+s);
+  if(chip){
+    var warn=ms<600000;   // under 10 minutes
+    chip.style.color=warn?'var(--red)':'var(--gold)';
+    chip.style.borderColor=warn?'rgba(239,68,68,.4)':'rgba(201,169,98,.3)';
+  }
+}
+
+async function sendStops(){
+  if(!_rideId||!_session) return;
+  var stt=$d('stopsStatus');
+  if(!_stopSel){ if(stt){ stt.textContent='Pick your current stop from the suggestions'; stt.style.color='var(--red)'; } return; }
+  var btn=$d('sendStopsBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Sending to driver…'; }
+  if(stt){ stt.textContent=''; stt.style.color='var(--muted)'; }
+  const body={
+    token:_session.token, rideId:_rideId,
+    stopAddress:_stopSel.address, stopLat:_stopSel.lat, stopLng:_stopSel.lng,
+    nextStopAddress:_nextStopSel?_nextStopSel.address:'', nextStopLat:_nextStopSel?_nextStopSel.lat:0, nextStopLng:_nextStopSel?_nextStopSel.lng:0,
+  };
+  const d=await fetch(WORKER+'/chauffeur/update-stops',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
+  if(btn){ btn.disabled=false; btn.textContent="Update Driver's Route"; }
+  if(d&&d.ok){
+    _dropoff={lat:_stopSel.lat,lng:_stopSel.lng,address:_stopSel.address};
+    placeDropoffMarker(_dropoff.lat,_dropoff.lng);
+    fitTripView(_lastDriverLoc);
+    if(stt){ stt.textContent='✓ Driver is being routed to your stop'; stt.style.color='var(--green)'; }
+  } else {
+    if(stt){ stt.textContent=(d&&d.error)||'Could not update — try again'; stt.style.color='var(--red)'; }
+  }
+}
+
+function _extRate(){
+  if(_curRide&&Number(_curRide.hours)>0&&Number(_curRide.estimatedPrice)>0) return Number(_curRide.estimatedPrice)/Number(_curRide.hours);
+  return 200;
+}
+function _updExtPrice(){
+  var v=$d('extHoursVal'); if(v) v.textContent=_extHours;
+  var b=$d('extendConfirmBtn'); if(b) b.textContent='Extend '+_extHours+' hr'+(_extHours>1?'s':'')+' · $'+Math.round(_extRate()*_extHours);
+}
+function extPlus(d){ _extHours=Math.min(12,Math.max(1,_extHours+d)); _updExtPrice(); }
+function openExtendModal(){
+  _extHours=1; _updExtPrice();
+  var sub=$d('extendSub');
+  if(sub&&_curRide) sub.textContent='Your '+_curRide.hours+'-hour booking has ended. Need more time with your chauffeur?';
+  var stt=$d('extendStatus'); if(stt) stt.textContent='';
+  var b=$d('extendConfirmBtn'); if(b) b.disabled=false;
+  var e=$d('endTripBtn'); if(e){ e.disabled=false; e.textContent='End Trip Now'; }
+  $d('extendModal').style.display='flex';
+}
+async function confirmExtend(){
+  if(!_rideId||!_session) return;
+  var b=$d('extendConfirmBtn'), stt=$d('extendStatus');
+  if(b){ b.disabled=true; b.textContent='Extending…'; }
+  const d=await fetch(WORKER+'/chauffeur/extend-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId,additionalHours:_extHours})}).then(r=>r.json()).catch(()=>null);
+  if(d&&d.ok){
+    _extPrompted=false;                          // re-arm the prompt for the new expiry
+    if(_curRide){ _curRide.hours=d.hours; _curRide.estimatedPrice=d.estimatedPrice; }
+    $d('extendModal').style.display='none';
+    var chip=$d('hourlyTimeChip'); if(chip){ chip.style.color='var(--gold)'; chip.style.borderColor='rgba(201,169,98,.3)'; }
+    pollRideStatus();                            // pull the new hours → countdown extends
+  } else {
+    if(b){ b.disabled=false; _updExtPrice(); }
+    if(stt){ stt.textContent=(d&&d.error)||'Could not extend — try again'; stt.style.color='var(--red)'; }
+  }
+}
+async function endHourlyNow(){
+  if(!_rideId||!_session) return;
+  var e=$d('endTripBtn'), stt=$d('extendStatus');
+  if(e){ e.disabled=true; e.textContent='Ending trip…'; }
+  const d=await fetch(WORKER+'/chauffeur/complete-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId})}).then(r=>r.json()).catch(()=>null);
+  if(d&&d.ok){
+    $d('extendModal').style.display='none';
+    pollRideStatus();                            // status flips to completed → done card + star-rating review
+  } else {
+    if(e){ e.disabled=false; e.textContent='End Trip Now'; }
+    if(stt){ stt.textContent=(d&&d.error)||'Could not end the trip — your driver can also end it'; stt.style.color='var(--red)'; }
   }
 }
 
@@ -1495,6 +1666,14 @@ function newRide(){
   stopPolling();
   _rideId=null; _pickup=null; _dropoff=null; _distanceMiles=0; _estPrice=0;
   _activeDriver=null;
+  // Hourly in-trip state
+  _curRide=null; _stopSel=null; _nextStopSel=null; _extPrompted=false; _extHours=1; _hourlyEndsAt=0;
+  if(_hourlyTimerId){ clearInterval(_hourlyTimerId); _hourlyTimerId=null; }
+  var _sIn=$d('stopInp'); if(_sIn) _sIn.value='';
+  var _nIn=$d('nextstopInp'); if(_nIn) _nIn.value='';
+  var _sSt=$d('stopsStatus'); if(_sSt) _sSt.textContent='';
+  $d('hourlyPanel').style.display='none';
+  $d('extendModal').style.display='none';
   _lastFitStatus=''; _lastDriverLoc=null; _lastRiderLoc=null;
   var _dr=$d('driverRating'); if(_dr) _dr.style.display='none';
   var _drb=$d('driverReviewsBtn'); if(_drb) _drb.style.display='none';
