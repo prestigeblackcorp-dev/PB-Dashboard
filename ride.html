@@ -11,6 +11,10 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
+/* No page pinch/double-tap zoom — panning (scroll) only. The Leaflet map is
+   unaffected: it sets touch-action:none on its container and runs its own
+   pinch-zoom from raw touch events, so the MAP still zooms normally. */
+html,body{touch-action:pan-x pan-y;}
 :root{
   --bg:#07090e;--surface:#0f1420;--card:#141a28;--border:#1d2640;
   --gold:#C9A962;--gold2:#a8893e;--gold-dim:rgba(201,169,98,.12);
@@ -632,6 +636,14 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 
 <script>
 const WORKER = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+
+// iOS Safari ignores user-scalable=no and pinch-zooms the whole page anyway.
+// Block its native gesture events globally — the page can no longer pinch or
+// double-tap zoom. The map is NOT affected: Leaflet's pinch-zoom is built on
+// raw touch events (touchstart/touchmove), not these gesture events.
+['gesturestart','gesturechange','gestureend'].forEach(function(ev){
+  document.addEventListener(ev,function(e){ e.preventDefault(); },{passive:false});
+});
 const FIREBASE_URL = (()=>{
   // Try to read from localStorage (set by portal)
   try{ return localStorage.getItem('pb_firebase_url')||''; }catch(e){ return ''; }
@@ -1039,8 +1051,8 @@ function initMap(){
   L.control.zoom({position:'topright'}).addTo(_map);
   // Ensure Leaflet measures the now-visible fixed container correctly
   setTimeout(function(){ if(_map) _map.invalidateSize(); },100);
-  // Try to get user location
-  setTimeout(locateMe,800);
+  // Try to get user location, then keep it live while the booking view is open
+  setTimeout(function(){ locateMe(); startBookingWatch(); },800);
   // When the bottom sheet finishes sliding (collapse/expand/drag) during an
   // active trip, re-frame the map so the driver + route stay visible above it.
   var _bs=$d('bottom-sheet');
@@ -1062,6 +1074,7 @@ function locateMe(){
         if(addr){
           $d('pickupInp').value=addr;
           _pickup={lat:pos.coords.latitude,lng:pos.coords.longitude,address:addr};
+          _pickupAuto=true;
           placePickupMarker(pos.coords.latitude,pos.coords.longitude);
           updateEstimate();
         }
@@ -1070,9 +1083,63 @@ function locateMe(){
   },null,{enableHighAccuracy:true,timeout:8000,maximumAge:0});
 }
 
+// ── Live pickup while booking ────────────────────────────────────────────────
+// locateMe() runs once at launch, so the pickup went stale the moment the rider
+// moved. While the Where to? view is open we keep a geolocation watch running:
+// the suggestion ranking always measures from where the rider is NOW, and as
+// long as the pickup is still the auto-detected one (not typed, picked, or
+// pin-dragged), it follows the rider — even while they're mid-request.
+let _pickupAuto=false;      // pickup is auto-detected (safe to follow the rider)
+let _bookingWatchId=null;   // geolocation watch active during the booking view
+let _pickupGeoAt=0;         // last reverse-geocode time (throttle)
+function startBookingWatch(){
+  if(_bookingWatchId!=null || !navigator.geolocation) return;
+  _bookingWatchId=navigator.geolocation.watchPosition(function(pos){
+    const lat=pos.coords.latitude, lng=pos.coords.longitude;
+    _lastRiderLoc={lat,lng};                      // live closest-first suggestion ranking
+    if(!_pickup){
+      // First fix landed after locateMe gave up — fill the pickup now.
+      if(!$d('pickupInp').value){
+        _pickup={lat,lng,address:''};
+        _pickupAuto=true;
+        placePickupMarker(lat,lng);
+        _refreshPickupLabel(lat,lng);
+        updateEstimate();
+      }
+      return;
+    }
+    if(!_pickupAuto) return;                      // rider chose a specific pickup — leave it
+    const moved=haversineKm(_pickup.lat,_pickup.lng,lat,lng)*1000;
+    if(moved<40) return;                          // GPS jitter — not a real move
+    _pickup.lat=lat; _pickup.lng=lng;             // coords follow immediately (what the driver gets)
+    if(_pickupMarker){ try{ _pickupMarker.setLatLng([lat,lng]); }catch(e){} } else { placePickupMarker(lat,lng); }
+    _refreshPickupLabel(lat,lng);
+    updateEstimate();
+  },null,{enableHighAccuracy:true,timeout:10000,maximumAge:3000});
+}
+function stopBookingWatch(){
+  if(_bookingWatchId!=null && navigator.geolocation) navigator.geolocation.clearWatch(_bookingWatchId);
+  _bookingWatchId=null;
+}
+// Refresh the pickup label from coords — throttled, and never while the rider
+// is typing in the field.
+function _refreshPickupLabel(lat,lng){
+  if(Date.now()-_pickupGeoAt<10000) return;
+  _pickupGeoAt=Date.now();
+  reverseGeocode(lat,lng).then(function(addr){
+    if(!addr||!_pickup||!_pickupAuto) return;
+    _pickup.address=addr;
+    const inp=$d('pickupInp');
+    if(inp && document.activeElement!==inp) inp.value=addr;
+  }).catch(function(){});
+}
+
 // ── Address Autocomplete ─────────────────────────────────────────────────
 let _suggTimers={};
 function onAddrInput(field){
+  // Typing a pickup pins it (stop following the rider); clearing it re-arms
+  // auto-follow so the next GPS fix refills it with the current location.
+  if(field==='pickup') _pickupAuto=!(($d('pickupInp').value||'').trim());
   clearTimeout(_suggTimers[field]);
   _suggTimers[field]=setTimeout(()=>fetchSuggestions(field),280);
 }
@@ -1150,6 +1217,7 @@ function selectSuggestion(field,idx){
   if(field==='pickup'){
     $d('pickupInp').value=full;
     _pickup={lat,lng,address:full};
+    _pickupAuto=false;   // rider chose an exact pickup — stop following their GPS
     placePickupMarker(lat,lng);
     _map.setView([lat,lng],15);
   } else if(field==='stop'){
@@ -1309,6 +1377,7 @@ function placePickupMarker(lat,lng){
   // Let the rider drag the pin to pinpoint an exact pickup; refresh the address.
   _pickupMarker.on('dragend',function(){
     const ll=_pickupMarker.getLatLng();
+    _pickupAuto=false;   // pin was placed by hand — stop following the rider's GPS
     _pickup={lat:ll.lat,lng:ll.lng,address:(_pickup&&_pickup.address)||''};
     reverseGeocode(ll.lat,ll.lng).then(function(addr){ if(addr){ _pickup.address=addr; const inp=$d('pickupInp'); if(inp) inp.value=addr; } });
     if(_pickup&&(_dropoff||_rideType==='hourly')) fetchRoute();
@@ -1368,6 +1437,7 @@ async function requestRide(){
 
 // ── Ride Status ────────────────────────────────────────────────────────────
 function showRideStatusView(){
+  stopBookingWatch();   // trip view has its own rider watch (startRiderWatch)
   $d('booking-view').style.display='none';
   $d('ride-status-view').style.display='block';
   $d('routePickup').textContent=_pickup?_pickup.address:'—';
@@ -1674,6 +1744,9 @@ function newRide(){
   var _sSt=$d('stopsStatus'); if(_sSt) _sSt.textContent='';
   $d('hourlyPanel').style.display='none';
   $d('extendModal').style.display='none';
+  // Back to the booking view — re-arm the live pickup follow
+  _pickupAuto=true;
+  startBookingWatch();
   _lastFitStatus=''; _lastDriverLoc=null; _lastRiderLoc=null;
   var _dr=$d('driverRating'); if(_dr) _dr.style.display='none';
   var _drb=$d('driverReviewsBtn'); if(_drb) _drb.style.display='none';

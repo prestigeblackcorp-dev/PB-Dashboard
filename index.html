@@ -2328,6 +2328,21 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
         <label class="flbl">Description</label>
         <input class="finput" type="text" id="pcDesc" placeholder="e.g. Hourly extension — 2 additional hrs">
       </div>
+      <div>
+        <label class="flbl">Category <span style="color:var(--muted);font-weight:400">(for revenue breakdown)</span></label>
+        <select class="finput" id="pcCategory">
+          <option value="">Auto-detect from description</option>
+          <option value="late">Late fee</option>
+          <option value="mileage">Mileage overage</option>
+          <option value="fuel">Fuel</option>
+          <option value="cleaning">Cleaning</option>
+          <option value="damage">Damage</option>
+          <option value="tolls">Tolls</option>
+          <option value="extension">Extension</option>
+          <option value="deposit">Deposit</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
       <div id="pcPreview" style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:12px 14px;font-size:12px;display:none">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="color:var(--muted)">Charge amount</span><span id="pcBase">—</span></div>
         <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="color:var(--muted)">Processing fee (5%)</span><span id="pcFee">—</span></div>
@@ -5883,6 +5898,39 @@ function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_CO
 function extensionCharge(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e.additionalCharge)||0);},0); }
 // Sum of portal charges that have been paid (base amount only — fee/tax go to Stripe/processor)
 function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return c&&c.paidAt ? s+(Number(c.amount)||0) : s; },0); }
+// ── Portal-charge surcharge categorization ─────────────────────────────────
+// A charge carries an explicit category when one was picked in the send-charge
+// modal; otherwise it's classified from its description at read time — which
+// makes categorization fully retroactive for past charges with no migration.
+function chargeCategory(c){
+  if(c && c.category) return c.category;
+  var d=String(c&&c.description||'').toLowerCase();
+  if(/late/.test(d)) return 'late';
+  if(/mile|overage|odomet/.test(d)) return 'mileage';
+  if(/fuel|gas\b|refuel/.test(d)) return 'fuel';
+  if(/clean|detail|smok/.test(d)) return 'cleaning';
+  if(/damage|repair|scratch|dent|windshield|tire|wheel|curb/.test(d)) return 'damage';
+  if(/toll/.test(d)) return 'tolls';
+  if(/deposit/.test(d)) return 'deposit';
+  if(/extend|extension|extra (day|hour)|additional (day|hour)|added (day|hour)/.test(d)) return 'extension';
+  return 'other';
+}
+var CHARGE_CAT_LABEL={late:'Late fee',mileage:'Mileage overage',fuel:'Fuel',cleaning:'Cleaning',damage:'Damage',tolls:'Tolls',deposit:'Deposit',extension:'Extension',other:'Other'};
+// Sum PAID portal charges by category across bookings; onlyDate (YYYY-MM-DD)
+// restricts to charges paid on that day (cash-basis "today" KPIs).
+function splitPaidCharges(list,onlyDate){
+  var out={late:0,mileage:0,fuel:0,cleaning:0,damage:0,tolls:0,deposit:0,extension:0,other:0,total:0};
+  (list||[]).forEach(function(b){
+    (b.portalCharges||[]).forEach(function(c){
+      if(!c||!c.paidAt) return;
+      if(onlyDate && dateStr(new Date(c.paidAt))!==onlyDate) return;
+      var amt=Number(c.amount)||0;
+      out[chargeCategory(c)]+=amt;
+      out.total+=amt;
+    });
+  });
+  return out;
+}
 function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesTotal(b); }
 function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1)); }
 
@@ -6278,19 +6326,28 @@ function renderKPIs(filtered, containerId){
   var netToOwner  = revenue - totalCost; // revenue is already net of broker fees
 
   // ── Revenue breakdown label ───────────────────────────────────────────────
+  // Paid portal charges are split by surcharge category (late fee, mileage
+  // overage, fuel, …) and folded into the matching lines, so a charge described
+  // "Late fee" reads as late-fee revenue — not a generic "portal charge".
+  // Display-only: the revenue/profit math above is untouched (no double count).
+  var chgCat = (containerId==='kpiGrid' && _kpiPeriod==='today')
+    ? splitPaidCharges(allActive,tod)
+    : splitPaidCharges(active,null);
   var revParts, dateLockCardVal, dateLockCardSub;
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     var _baseLabel = _kpiPeriod==='today' ? 'Balance collected today' : 'Rental revenue';
     revParts = [_baseLabel+': '+$$(pickupBalance)];
     if(dateLockPeriodRev) revParts.push('Date locks: '+$$(dateLockPeriodRev));
     if(addons)            revParts.push('Add-ons: '+$$(addons));
-    if(fuelTotal)         revParts.push('Fuel: '+$$(fuelTotal));
-    if(mileTotal)         revParts.push('Mileage: '+$$(mileTotal));
-    if(depositKept)       revParts.push('Deposit kept: '+$$(depositKept));
-    if(lateReturnTotal)   revParts.push('Late fees: '+$$(lateReturnTotal));
-    if(extChargeTotal)    revParts.push('Extensions: '+$$(extChargeTotal));
-    if(_kpiPeriod==='today'&&portalChargeTodayRev) revParts.push('Portal charges: '+$$(portalChargeTodayRev));
-    if(_kpiPeriod!=='today'&&portalChargeRev) revParts.push('Portal charges: '+$$(portalChargeRev));
+    if(fuelTotal+chgCat.fuel)         revParts.push('Fuel: '+$$(fuelTotal+chgCat.fuel));
+    if(mileTotal+chgCat.mileage)      revParts.push('Mileage: '+$$(mileTotal+chgCat.mileage));
+    if(depositKept+chgCat.deposit)    revParts.push('Deposit kept: '+$$(depositKept+chgCat.deposit));
+    if(lateReturnTotal+chgCat.late)   revParts.push('Late fees: '+$$(lateReturnTotal+chgCat.late));
+    if((extChargeTotal||0)+chgCat.extension) revParts.push('Extensions: '+$$((extChargeTotal||0)+chgCat.extension));
+    if(chgCat.cleaning)   revParts.push('Cleaning: '+$$(chgCat.cleaning));
+    if(chgCat.damage)     revParts.push('Damage: '+$$(chgCat.damage));
+    if(chgCat.tolls)      revParts.push('Tolls: '+$$(chgCat.tolls));
+    if(chgCat.other)      revParts.push('Other charges: '+$$(chgCat.other));
     if(otherIncome)       revParts.push('Other income: '+$$(otherIncome));
     if(rideRev)           revParts.push('Chauffeur rides: '+$$(rideRev));
     dateLockCardVal = dateLockPeriodRev;
@@ -6299,12 +6356,15 @@ function renderKPIs(filtered, containerId){
     var _allExtCharge = active.reduce(function(s,b){ return s+extensionCharge(b); },0);
     revParts = ['Base: '+$$(pureBase)];
     if(addons)           revParts.push('Add-ons: '+$$(addons));
-    if(fuelTotal)        revParts.push('Fuel: '+$$(fuelTotal));
-    if(mileTotal)        revParts.push('Mileage: '+$$(mileTotal));
-    if(depositKept)      revParts.push('Deposit kept: '+$$(depositKept));
-    if(lateReturnTotal)  revParts.push('Late fees: '+$$(lateReturnTotal));
-    if(_allExtCharge)    revParts.push('Extensions: '+$$(_allExtCharge));
-    if(portalChargeRev)  revParts.push('Portal charges: '+$$(portalChargeRev));
+    if(fuelTotal+chgCat.fuel)        revParts.push('Fuel: '+$$(fuelTotal+chgCat.fuel));
+    if(mileTotal+chgCat.mileage)     revParts.push('Mileage: '+$$(mileTotal+chgCat.mileage));
+    if(depositKept+chgCat.deposit)   revParts.push('Deposit kept: '+$$(depositKept+chgCat.deposit));
+    if(lateReturnTotal+chgCat.late)  revParts.push('Late fees: '+$$(lateReturnTotal+chgCat.late));
+    if(_allExtCharge+chgCat.extension) revParts.push('Extensions: '+$$(_allExtCharge+chgCat.extension));
+    if(chgCat.cleaning)  revParts.push('Cleaning: '+$$(chgCat.cleaning));
+    if(chgCat.damage)    revParts.push('Damage: '+$$(chgCat.damage));
+    if(chgCat.tolls)     revParts.push('Tolls: '+$$(chgCat.tolls));
+    if(chgCat.other)     revParts.push('Other charges: '+$$(chgCat.other));
     if(otherIncome)      revParts.push('Other income: '+$$(otherIncome));
     if(rideRev)          revParts.push('Chauffeur rides: '+$$(rideRev));
     dateLockCardVal = dateLockTotal;
@@ -8284,15 +8344,17 @@ function openBookingDetail(id){
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' — '+esc(b.addlIncome.desc):'')+'</span></div>':'')+
     (Number(b.lateReturnFee)?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">🕒 Late Return Fee</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.lateReturnFee)+'</span></div>':'')+
     (extensionCharge(b)>0?'<div class="detail-row"><span class="detail-label" style="color:#a78bfa">📅 Extension Charges</span><span class="detail-val" style="color:#a78bfa;font-weight:700">+'+$$(extensionCharge(b))+'<span style="font-size:10px;font-weight:400;color:var(--muted)"> across '+(b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length+' extension'+(((b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length!==1)?'s':'')+'</span></span></div>':'')+
-    (portalChargesTotal(b)>0 ?
+    ((b.portalCharges||[]).length>0 ?
       '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">💸 Portal Charges</div>'+
       (b.portalCharges||[]).map(function(c){
         if(!c) return '';
         var amt=Number(c.amount)||0;
+        var catTag='<span style="font-size:9px;font-weight:700;color:var(--gold);background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.3);border-radius:6px;padding:1px 6px;margin-left:6px;white-space:nowrap">'+esc(CHARGE_CAT_LABEL[chargeCategory(c)]||'Other')+'</span>';
         var paidHtml=c.paidAt
-          ? ' <span style="color:var(--green);font-size:10px">✅ Paid '+new Date(c.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>'
-          : ' <span style="color:#fb923c;font-size:10px">⏳ Pending</span>';
-        return '<div class="detail-row"><span class="detail-label" style="color:#a78bfa">'+esc(c.description||'Charge')+'</span>'+
+          ? ' <span style="color:var(--green);font-size:10px">✅ Paid '+new Date(c.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+(c.paidMethod&&c.paidMethod!=='stripe'?' ('+esc(c.paidMethod)+')':'')+'</span>'
+          : ' <span style="color:#fb923c;font-size:10px">⏳ Pending</span>'+
+            ' <button class="btn btn-sm" onclick="markChargePaid(\''+esc(b.id)+'\',\''+esc(c.id)+'\')" style="background:rgba(34,197,94,.15);color:#22c55e;border:1px solid rgba(34,197,94,.35);padding:2px 8px;font-size:10px;border-radius:6px;cursor:pointer;margin-left:6px">✓ Mark Paid</button>';
+        return '<div class="detail-row"><span class="detail-label" style="color:#a78bfa">'+esc(c.description||'Charge')+catTag+'</span>'+
           '<span class="detail-val" style="color:'+(c.paidAt?'var(--green)':'#fb923c')+';font-weight:700">'+$$(amt)+paidHtml+'</span></div>';
       }).join('')
     : '')+
@@ -16392,6 +16454,7 @@ function openPortalChargeModal(bookingId){
   _portalChargeBookingId = bookingId;
   var inp = $d('pcAmount'); if(inp) inp.value = '';
   var desc = $d('pcDesc'); if(desc) desc.value = '';
+  var cat = $d('pcCategory'); if(cat) cat.value = '';
   var prev = $d('pcPreview'); if(prev) prev.style.display = 'none';
   $d('portalChargeModal').classList.add('open');
 }
@@ -16428,6 +16491,9 @@ async function submitPortalCharge(){
   // Generate charge ID
   var chargeId = 'chg_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
   var charge = { id: chargeId, amount: amt, description: desc, createdAt: new Date().toISOString() };
+  // Explicit surcharge category (blank = auto-classified from description at read time)
+  var pcCat = ($d('pcCategory')&&$d('pcCategory').value)||'';
+  if(pcCat) charge.category = pcCat;
 
   if(!b.portalCharges) b.portalCharges = [];
   b.portalCharges.push(charge);
@@ -16471,6 +16537,30 @@ async function submitPortalCharge(){
     // roll back
     b.portalCharges = (b.portalCharges||[]).filter(function(c){ return c.id !== chargeId; });
   }
+}
+
+// Owner received a sent charge outside Stripe (Zelle, cash, …) — log the payment
+// so the charge gets a paidAt timestamp and flows into revenue, KPIs and charts
+// exactly like a card payment (Stripe payments are marked paid automatically).
+function markChargePaid(bookingId, chargeId){
+  var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
+  if(idx===-1){ toast('Booking not found'); return; }
+  var charges=bookings[idx].portalCharges||[];
+  var cIdx=charges.findIndex(function(c){ return c && c.id===chargeId; });
+  if(cIdx===-1){ toast('Charge not found'); return; }
+  if(charges[cIdx].paidAt){ toast('Already marked paid'); return; }
+  var method=prompt('Payment method received (Zelle, Cash App, Venmo, Cash, Card, Other):','Zelle');
+  if(method===null) return;
+  charges[cIdx]=Object.assign({},charges[cIdx],{paidAt:Date.now(),paidMethod:(method||'manual').trim().toLowerCase()});
+  bookings[idx].portalCharges=charges;
+  bookings[idx]._t=Date.now();
+  bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['charge "'+(charges[cIdx].description||chargeId)+'" marked paid ('+(method||'manual')+')']}]);
+  save();
+  toast('💸 Charge marked paid ✅');
+  render();
+  if(activeTab==='upcoming')  renderUpcoming();
+  if(activeTab==='current')   renderCurrent();
+  if(activeTab==='previous')  renderPrevious();
 }
 
 // ════════════════════════════════════════════════════════
