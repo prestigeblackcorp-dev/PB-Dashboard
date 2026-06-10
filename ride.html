@@ -287,7 +287,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 
 /* ══ Fleet modal (browse + availability; book in member portal) ══════════ */
 .fleet-overlay{position:fixed;inset:0;z-index:2200;background:rgba(0,0,0,.72);backdrop-filter:blur(7px);display:flex;align-items:flex-end;justify-content:center;}
-.fleet-card{background:var(--surface);border:1px solid var(--border);border-bottom:none;border-radius:24px 24px 0 0;width:100%;max-width:520px;height:92vh;display:flex;flex-direction:column;box-shadow:0 -10px 50px rgba(0,0,0,.6);overflow:hidden;}
+.fleet-card{background:var(--surface);border:1px solid var(--border);border-bottom:none;border-radius:24px 24px 0 0;width:100%;max-width:520px;position:absolute;left:0;right:0;margin:0 auto;top:calc(var(--safe-top) + 30px);bottom:0;display:flex;flex-direction:column;box-shadow:0 -10px 50px rgba(0,0,0,.6);overflow:hidden;}
 .fleet-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:20px 20px 12px;flex-shrink:0;}
 .fleet-title{font-size:21px;font-weight:800;letter-spacing:-.3px;}
 .fleet-sub{font-size:12px;color:var(--muted);margin-top:2px;}
@@ -1601,8 +1601,25 @@ function closeFleet(){ var m=document.getElementById('fleetModal'); if(m) m.styl
 
 // Booking happens in the member portal (same origin) — the ride app only browses.
 function _fleetBookPortal(){
-  var url=location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
-  try{ window.open(url,'_blank','noopener'); }catch(e){ location.href=url; }
+  var dest=location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
+  // Pre-fill the portal email so even the fallback path is one tap from a login code.
+  try{ if(_session && _session.email) localStorage.setItem('pb_portal_email', _session.email); }catch(e){}
+  // Open the tab synchronously (keeps the click gesture so it isn't popup-blocked),
+  // then auto sign-in: exchange the ride-app token for a real member-portal session,
+  // write it to same-origin localStorage, and only then point the tab at portal.html —
+  // which reads that session on load and lands the client straight in, no second code.
+  var win=null; try{ win=window.open('','_blank'); }catch(e){}
+  function go(){
+    if(win && !win.closed){ try{ win.location.replace(dest); return; }catch(e){} }
+    try{ window.open(dest,'_blank','noopener'); }catch(e){ location.href=dest; }
+  }
+  if(_session && _session.token){
+    fetch(WORKER+'/portal/session-from-rider',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({riderToken:_session.token})})
+      .then(function(r){ return r.json().catch(function(){return null;}); })
+      .then(function(d){ if(d && d.token){ try{ localStorage.setItem('pb_portal_token', d.token); localStorage.setItem('pb_portal_email', d.email||(_session&&_session.email)||''); }catch(e){} } })
+      .catch(function(){})
+      .finally(go);
+  } else { go(); }
 }
 
 async function _onFleetDateChange(){

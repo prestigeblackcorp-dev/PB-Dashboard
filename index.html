@@ -7775,19 +7775,20 @@ function renderPrevious(){
     if(!end) return false;
     return end<today;
   }).sort(function(a,b){
-    // Sort by completion time first (most recently checked out/completed at top),
-    // fall back to trip end date for trips that were never explicitly marked complete
-    var aT = a._completedAt || 0;
-    var bT = b._completedAt || 0;
-    if(aT || bT) return (bT||0) - (aT||0);
-    return tripEndDate(b).localeCompare(tripEndDate(a));
+    // Sort by the trip's END date + drop-off time, most recent first (time breaks
+    // same-day ties). Completion-click time (_completedAt) is intentionally ignored
+    // so the list stays in true chronological end order instead of jumping around
+    // by when each trip happened to be marked complete.
+    var aE = tripEndDate(a) + 'T' + (a.dropoffTime || '00:00');
+    var bE = tripEndDate(b) + 'T' + (b.dropoffTime || '00:00');
+    return bE.localeCompare(aE);
   });
 
   var now=new Date(); now.setHours(0,0,0,0);
   var months={};
   prev.forEach(function(b){
-    // Group by completion/checkout date when available, otherwise end date
-    var groupDate = b._completedAt ? new Date(b._completedAt) : (parseLocalDate(tripEndDate(b))||new Date());
+    // Group by the month the trip ended so the month headers match the end-date sort
+    var groupDate = parseLocalDate(tripEndDate(b)) || (b._completedAt ? new Date(b._completedAt) : new Date());
     var key=groupDate.getFullYear()+'-'+pad(groupDate.getMonth()+1);
     var label=groupDate.toLocaleString('en-US',{month:'long',year:'numeric'});
     if(!months[key]) months[key]={label:label,items:[]};
