@@ -433,8 +433,8 @@ body { overflow-x: hidden; max-width: 100vw; }
   /* Action buttons always on top and non-shrinking */
   .header-actions { gap: 5px; flex-wrap: nowrap; flex-shrink: 0; position: relative; z-index: 5; }
   .header-actions .btn { padding: 5px 9px; font-size: 11px; flex-shrink: 0; white-space: nowrap; }
-  /* Hide low-priority header buttons on mobile */
-  #syncBtn, #forcePullBtn, #gcalBtn, #gcalSyncBtn { display: none !important; }
+  /* Hide low-priority header buttons on mobile (keep the 📅 Google Calendar connect/sync buttons visible) */
+  #syncBtn, #forcePullBtn { display: none !important; }
   #offlineBadge { padding: 3px 6px; font-size: 9px; flex-shrink: 0; }
 
   /* ── Tab bar: horizontally scrollable, no wrap ── */
@@ -1967,6 +1967,21 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
           <button class="btn btn-gold" onclick="submitTabAssignDriver()" style="padding:11px 20px;font-weight:800">📲 Assign &amp; Notify Driver</button>
           <span id="tabDrvAssignStatus" style="font-size:13px;display:none;font-weight:600"></span>
         </div>
+      </div>
+    </div>
+
+    <!-- Recently Deleted — Fleet (owner-only restore of rides, drivers & bookings) -->
+    <div class="tbl-card" style="margin-top:16px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 16px;padding:14px 16px;background:linear-gradient(135deg,rgba(239,68,68,.1),rgba(239,68,68,.02));border-bottom:1px solid rgba(239,68,68,.25)">
+        <div style="width:38px;height:38px;border-radius:11px;background:rgba(239,68,68,.14);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🗃</div>
+        <div style="flex:1;min-width:0">
+          <div class="tbl-title" style="margin-bottom:1px">Recently Deleted — Fleet</div>
+          <div style="font-size:11.5px;color:var(--muted)">Rides, drivers &amp; bookings you removed — restore within 30 days</div>
+        </div>
+        <button class="btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="renderFleetDeleted()">↻ Refresh</button>
+      </div>
+      <div id="fleetDeletedWrap">
+        <div style="color:var(--muted);font-size:13px;text-align:center;padding:24px">Nothing deleted recently.</div>
       </div>
     </div>
   </div>
@@ -7048,6 +7063,8 @@ async function renderDriversTab(){
     var d; try{ d=JSON.parse(rawText2); }catch(e){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">Bad response ('+r.status+'): '+rawText2.slice(0,200)+'</div>'; return; }
     if(!r.ok){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">'+(d.error||'Error '+r.status)+'</div>'; return; }
     var list=d.drivers||[];
+    _deletedDrivers=d.deletedDrivers||[];
+    renderFleetDeleted();
     // Sync assign dropdowns
     var popSel=function(selId){
       var sel=$d(selId); if(!sel) return;
@@ -7088,6 +7105,7 @@ async function renderDriversTab(){
         +(rate?'<span style="font-size:10px;font-weight:700;color:var(--gold);background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:20px;padding:2px 8px">'+rate+'</span>':'')
         +'</div>'
         +'</div>'
+        +'<button onclick="deleteFleetDriver(\''+_jsAttr(drv.email)+'\')" title="Remove driver from fleet (restorable)" style="flex-shrink:0;align-self:flex-start;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">🗑</button>'
         +'</div>';
     }).join('')+'</div>';
   }catch(e){
@@ -7209,8 +7227,10 @@ async function refreshFleetMap(){
   $d('fleet-map-status').textContent=online+' driver'+(online!==1?'s':'')+' online · '+new Date().toLocaleTimeString();
   // Render live rides list + full history / transactions / logs
   _rideHist=d.rides||[];
+  _deletedRides=d.deletedRides||[];
   renderLiveRides(_rideHist);
   renderRideHistory();
+  renderFleetDeleted();
   loadRideRevenue(true); // keep Overview ride revenue in sync with live fleet refresh
 }
 
@@ -7240,12 +7260,19 @@ function renderLiveRides(rides){
       +'<div style="text-align:right;flex-shrink:0">'
       +'<div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;color:'+sc+';background:'+sc+'1f;border:1px solid '+sc+'40;border-radius:20px;padding:3px 10px;margin-bottom:6px">'+(pulsing?'<span style="width:7px;height:7px;border-radius:50%;background:'+sc+';animation:tabPulse 1.4s ease-in-out infinite"></span>':si)+' '+sl+'</div>'
       +'<div style="font-size:16px;color:var(--gold);font-weight:900;letter-spacing:-.3px">$'+(r.estimatedPrice||0).toFixed(0)+'</div>'
+      +'<div style="margin-top:7px"><button onclick="deleteRideRecord(\''+_jsAttr(r.id)+'\')" title="Delete this ride record (restorable)" style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.28);color:#f87171;border-radius:8px;padding:3px 9px;font-size:10.5px;font-weight:700;cursor:pointer">🗑</button></div>'
       +'</div>'
       +'</div>';
   }).join('');
 }
 
 var _rideHist=[];
+// Owner soft-delete state (Drivers tab): rides & drivers removed by the owner.
+// Populated from the worker (deletedRides / deletedDrivers) and surfaced in the
+// "Recently Deleted — Fleet" panel for restore-within-30-days.
+var _deletedRides=[], _deletedDrivers=[];
+// Escape a value for safe embedding inside a single-quoted JS string in an onclick attribute.
+function _jsAttr(s){ return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 // ── Chauffeur ride revenue (every completed ride, uncapped) for Overview KPIs ──
 var _rideTxns=[], _rideRevLoaded=false, _rideRevLoading=false;
 // Sum of completed-ride fares within the current Overview period window (local time)
@@ -7357,11 +7384,107 @@ function renderRideHistory(){
       +'<div style="text-align:right;flex-shrink:0">'
       +'<div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;color:'+m.c+';background:'+m.c+'1f;border:1px solid '+m.c+'40;border-radius:20px;padding:3px 10px;margin-bottom:6px">'+m.i+' '+m.l+'</div>'
       +priceBlock
+      +'<div style="margin-top:8px"><button onclick="deleteRideRecord(\''+_jsAttr(r.id)+'\')" title="Delete this ride record (restorable)" style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.28);color:#f87171;border-radius:8px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer">🗑 Delete</button></div>'
       +'</div>'
       +'</div>'
       +(timeline?'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:9px;border-top:1px dashed var(--border)">'+timeline+'</div>':'')
       +'</div>';
   }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════
+// OWNER SOFT-DELETE / RESTORE — Drivers tab (rides, drivers, bookings)
+// Owner-only: removes records to a 30-day restorable bin. Rides & drivers
+// are soft-deleted server-side (worker); bookings reuse the client _deleted flag.
+// ══════════════════════════════════════════════════════════════════
+function _fleetPost(path, body){
+  var WORKER='https://pb-booking.prestigeblackcorp.workers.dev';
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
+  body=body||{}; body.secret=secret;
+  return fetch(WORKER+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+}
+async function deleteRideRecord(id){
+  if(!id) return;
+  if(!confirm('Delete this ride record?\n\nIt moves to Recently Deleted (Fleet) and can be restored within 30 days.')) return;
+  try{
+    var r=await _fleetPost('/chauffeur/delete-ride',{id:id});
+    if(!r||!r.ok){ var t=r?await r.text().catch(function(){return'';}):''; alert('Could not delete ride'+(r?' ('+r.status+')':'')+'. '+(t||'').slice(0,160)); return; }
+    if(typeof showToast==='function') showToast('Ride moved to Recently Deleted.');
+    refreshFleetMap();
+  }catch(e){ alert('Network error deleting ride.'); }
+}
+async function restoreRideRecord(id){
+  if(!id) return;
+  try{
+    var r=await _fleetPost('/chauffeur/restore-ride',{id:id});
+    if(!r||!r.ok){ alert('Could not restore ride'+(r?' ('+r.status+')':'')+'.'); return; }
+    if(typeof showToast==='function') showToast('Ride restored.');
+    refreshFleetMap();
+  }catch(e){ alert('Network error restoring ride.'); }
+}
+async function deleteFleetDriver(email){
+  if(!email) return;
+  if(!confirm('Remove this driver from the fleet?\n\nThey move to Recently Deleted (Fleet) and can be restored within 30 days.')) return;
+  try{
+    var r=await _fleetPost('/dashboard/delete-driver',{email:email});
+    if(!r||!r.ok){ var t=r?await r.text().catch(function(){return'';}):''; alert('Could not remove driver'+(r?' ('+r.status+')':'')+'. '+(t||'').slice(0,160)); return; }
+    if(typeof showToast==='function') showToast('Driver moved to Recently Deleted.');
+    renderDriversTab();
+  }catch(e){ alert('Network error removing driver.'); }
+}
+async function restoreFleetDriver(email){
+  if(!email) return;
+  try{
+    var r=await _fleetPost('/dashboard/restore-driver',{email:email});
+    if(!r||!r.ok){ alert('Could not restore driver'+(r?' ('+r.status+')':'')+'.'); return; }
+    if(typeof showToast==='function') showToast('Driver restored.');
+    renderDriversTab();
+  }catch(e){ alert('Network error restoring driver.'); }
+}
+// Restore a soft-deleted booking from the fleet panel (no modal pop, unlike restoreBooking).
+function restoreFleetBooking(id){
+  var arr=(typeof bookings!=='undefined'&&bookings)?bookings:[];
+  var idx=arr.findIndex(function(b){return b.id===id;});
+  if(idx===-1) return;
+  delete arr[idx]._deleted; arr[idx]._t=Date.now();
+  if(typeof save==='function') save();
+  if(typeof render==='function') render();
+  if(typeof showToast==='function') showToast('Booking restored.');
+  renderFleetDeleted();
+}
+function renderFleetDeleted(){
+  var wrap=$d('fleetDeletedWrap'); if(!wrap) return;
+  var row=function(icon,iconBg,iconBd,title,tag,tagCol,sub,when,restoreCall){
+    return '<div style="display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:8px">'
+      +'<div style="width:30px;height:30px;border-radius:8px;background:'+iconBg+';border:1px solid '+iconBd+';display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">'+icon+'</div>'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-weight:700;font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+title+' <span style="font-size:9.5px;font-weight:800;color:'+tagCol+';background:'+tagCol+'1f;border-radius:10px;padding:1px 7px;margin-left:3px;vertical-align:middle">'+tag+'</span></div>'
+      +(sub?'<div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+sub+'</div>':'')
+      +(when?'<div style="font-size:10px;color:var(--muted);margin-top:1px">Deleted '+when+'</div>':'')
+      +'</div>'
+      +'<button class="btn btn-sm" onclick="'+restoreCall+'" style="border-color:var(--green);color:var(--green);white-space:nowrap;flex-shrink:0">↩ Restore</button>'
+      +'</div>';
+  };
+  var fmtWhen=function(ts){ return ts?new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):''; };
+  var html='';
+  (_deletedRides||[]).forEach(function(r){
+    if(!r) return;
+    var rider=esc(r.riderName||r.riderEmail||'Rider');
+    var route=esc(r.pickupAddress||'Pickup')+(r.dropoffAddress?' → '+esc(r.dropoffAddress):'');
+    html+=row('🚘','rgba(96,165,250,.14)','rgba(96,165,250,.3)',rider,'RIDE','#60a5fa',route,fmtWhen(r._deletedAt),'restoreRideRecord(\''+_jsAttr(r.id)+'\')');
+  });
+  (_deletedDrivers||[]).forEach(function(d){
+    if(!d) return;
+    html+=row('👤','rgba(201,169,98,.14)','var(--gold-dim)',esc(d.name||d.email||'Driver'),'DRIVER','#C9A962',esc(d.email||''),fmtWhen(d.deletedAt),'restoreFleetDriver(\''+_jsAttr(d.email)+'\')');
+  });
+  var cutoff=Date.now()-(30*24*60*60*1000);
+  var delBk=(typeof bookings!=='undefined'&&bookings?bookings:[]).filter(function(b){ return b&&b._deleted&&b._t&&b._t>=cutoff; }).sort(function(a,b){ return b._t-a._t; });
+  delBk.forEach(function(b){
+    var sub=esc((b.vehicle||'')+((b.pickupDate||b.date)?' · '+(b.pickupDate||b.date):''));
+    html+=row('📋','rgba(34,197,94,.12)','rgba(34,197,94,.3)',esc(b.name||'Booking'),'BOOKING','#22c55e',sub,fmtWhen(b._t),'restoreFleetBooking(\''+_jsAttr(b.id)+'\')');
+  });
+  if(!html){ wrap.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:24px">Nothing deleted recently.</div>'; return; }
+  wrap.innerHTML=html;
 }
 
 async function submitTabAssignDriver(){

@@ -196,6 +196,26 @@ textarea{resize:vertical;min-height:80px;}
 /* First-person driver chevron */
 .nav-puck{width:34px;height:34px;display:flex;align-items:center;justify-content:center;will-change:transform;}
 .nav-puck svg{filter:drop-shadow(0 3px 7px rgba(0,0,0,.6));}
+/* ── Full-screen turn-by-turn nav (engages once a route is mapped) ────────── */
+body.nav-fs #rides-map-container{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;margin:0;border:none;border-radius:0;z-index:1500;}
+body.nav-fs #rides-map{height:100vh!important;height:100dvh!important;}
+body.nav-fs #rides-map-container::after{border-radius:0;}
+body.nav-fs .rides-map-label{display:none;}
+/* directions header pinned to the top, written instructions overlaid on the map */
+body.nav-fs #arc-nav{position:fixed;top:0;left:0;right:0;z-index:1600;margin:0;padding:max(8px,env(safe-area-inset-top)) 12px 12px;background:linear-gradient(180deg,rgba(8,11,16,.94) 60%,rgba(8,11,16,0));}
+body.nav-fs #arc-nav-meta{padding-left:4px;}
+/* full directions list drops down on tap; collapsed by default in full-screen */
+body.nav-fs #arc-nav-steps{display:none;max-height:48vh;margin-top:8px;background:rgba(10,14,24,.97);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 20px 50px rgba(0,0,0,.6);}
+body.nav-fs.nav-steps-open #arc-nav-steps{display:block;}
+/* ride action buttons pinned to the bottom while navigating */
+body.nav-fs #arc-actions{position:fixed;bottom:0;left:0;right:0;z-index:1600;margin:0;padding:12px 14px calc(14px + env(safe-area-inset-bottom,0px));background:linear-gradient(0deg,rgba(8,11,16,.96) 55%,rgba(8,11,16,0));}
+#arc-nav-banner{cursor:pointer;}
+#arc-nav-caret{transition:transform .2s ease;}
+body.nav-steps-open #arc-nav-caret{transform:rotate(180deg);}
+#arc-nav-min{position:fixed;top:max(10px,env(safe-area-inset-top));right:12px;z-index:1700;width:38px;height:38px;border-radius:50%;background:rgba(8,11,16,.82);border:1px solid var(--border);color:#fff;display:none;align-items:center;justify-content:center;font-size:15px;cursor:pointer;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+body.nav-fs #arc-nav-min{display:flex;}
+#arc-nav-expand{display:none;}
+body:not(.nav-fs) #arc-nav-expand{display:block;}
 
 /* Incoming ride alert */
 #ride-request-overlay{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;justify-content:flex-end;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);}
@@ -439,15 +459,18 @@ textarea{resize:vertical;min-height:80px;}
           </div>
           <!-- Turn-by-turn navigation -->
           <div id="arc-nav" style="display:none;margin-bottom:12px;">
-            <div style="display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,#16306b,#0f1f44);border:1px solid #2a4a8a;border-radius:12px;padding:14px 16px;">
+            <div id="arc-nav-banner" onclick="navStepsToggle()" style="display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,#16306b,#0f1f44);border:1px solid #2a4a8a;border-radius:12px;padding:14px 16px;">
               <div id="arc-nav-arrow" style="font-size:30px;line-height:1;color:#fff;min-width:30px;text-align:center;">&#8593;</div>
               <div style="flex:1;min-width:0;">
                 <div id="arc-nav-dist" style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-.02em;">&mdash;</div>
                 <div id="arc-nav-instr" style="font-size:14px;font-weight:600;color:#cfe0ff;line-height:1.25;">Calculating route&hellip;</div>
               </div>
+              <div id="arc-nav-caret" style="font-size:15px;color:#9db4e6;flex-shrink:0;">&#9662;</div>
             </div>
             <div id="arc-nav-meta" style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:7px 2px 2px;"></div>
             <div id="arc-nav-steps" style="max-height:168px;overflow-y:auto;border:1px solid var(--border);border-radius:12px;background:#0a0e18;"></div>
+            <button id="arc-nav-expand" onclick="navFsEnter()" style="width:100%;margin-top:10px;padding:10px;border-radius:10px;background:rgba(201,169,98,.14);border:1px solid rgba(201,169,98,.32);color:var(--gold);font-weight:800;font-size:12px;letter-spacing:.05em;cursor:pointer;">&#10530;&nbsp; FULL-SCREEN NAVIGATION</button>
+            <button id="arc-nav-min" onclick="navFsMinimize()" aria-label="Exit full screen">&#10005;</button>
           </div>
           <div class="arc-actions" id="arc-actions"></div>
         </div>
@@ -1379,6 +1402,29 @@ function _setRouteData(coords){
   if(!_ridesMap){ _navRoutePending=gj; return; }
   try{ var src=_ridesMap.getSource('nav-route'); if(src){ src.setData(gj); _navRoutePending=null; } else { _navRoutePending=gj; } }catch(e){ _navRoutePending=gj; }
 }
+// ── Full-screen turn-by-turn (auto-engages once a route is mapped) ──────────
+var _navFs=false;               // full-screen nav currently engaged
+var _navFsUserCollapsed=false;  // driver tapped minimize — stay inline until they re-expand / next ride
+function setNavFullscreen(on){
+  on=!!on;
+  _navFs=on;
+  document.body.classList.toggle('nav-fs',on);
+  if(!on) document.body.classList.remove('nav-steps-open');
+  // MapLibre recomputes its canvas when the container resizes — now, then again once the CSS settles.
+  if(_ridesMap){ try{ _ridesMap.resize(); }catch(e){} setTimeout(function(){ try{ if(_ridesMap) _ridesMap.resize(); }catch(e){} },260); }
+}
+function navStepsToggle(){
+  if(!_navFs){ navFsEnter(); return; }                 // inline: tapping the directions opens full-screen
+  document.body.classList.toggle('nav-steps-open');    // full-screen: drop / collapse the full directions list
+}
+function navFsEnter(){ _navFsUserCollapsed=false; setNavFullscreen(true); }
+function navFsMinimize(){ _navFsUserCollapsed=true; setNavFullscreen(false); }
+// Engage full-screen the moment a route exists; drop out of it when navigation ends.
+function maybeAutoFullscreen(){
+  var navActive=!!(_activeRide && navTarget(_activeRide) && _navSteps && _navSteps.length);
+  if(navActive){ if(!_navFs && !_navFsUserCollapsed) setNavFullscreen(true); }
+  else if(_navFs){ setNavFullscreen(false); }
+}
 
 // ── Duty toggle ──────────────────────────────────────────────────────────
 // Duty and the time clock are unified: tapping the On-Duty pill clocks the
@@ -1570,7 +1616,8 @@ function renderActiveRidePanel(){
   if(!panel) return;
   if(!_activeRide){
     panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; _navRouteCoords=null; _navRouteCum=null; _navStepCum=null;
-    // Clear the route line and drop the 3D camera back to a flat overview between rides.
+    // Exit full-screen nav, clear the route line, and drop the 3D camera to a flat overview between rides.
+    _navFsUserCollapsed=false; setNavFullscreen(false);
     if(_ridesMap){ try{ _setRouteData(null); }catch(e){} try{ _ridesMap.easeTo({pitch:0,bearing:0,zoom:13,padding:{top:0,bottom:0,left:0,right:0},duration:800}); }catch(e){} }
     return;
   }
@@ -1654,7 +1701,7 @@ function navTarget(r){
 function updateNav(){
   var nav=$d('arc-nav'); if(!nav) return;
   var tgt=navTarget(_activeRide);
-  if(!tgt){ nav.style.display='none'; return; }
+  if(!tgt){ nav.style.display='none'; if(_navFs) setNavFullscreen(false); return; }
   nav.style.display='block';
   if(_driverLat==null||_driverLng==null){
     if($d('arc-nav-dist')) $d('arc-nav-dist').textContent='';
@@ -1728,6 +1775,7 @@ function renderNav(){
   }
   if($d('arc-nav-steps')) $d('arc-nav-steps').innerHTML=html;
   liveBanner(_projectOnRoute(_driverLat,_driverLng));
+  maybeAutoFullscreen();   // route just (re)built → expand to full-screen first-person nav
 }
 // Advance along the current route as the driver moves: re-route if they've left the
 // line (missed turn / shortcut), refresh occasionally as a safety net, otherwise
@@ -1800,8 +1848,8 @@ function _projPointSeg(plat,plng,alat,alng,blat,blng){
 function fmtDist(m){
   if(m==null) return '';
   if(m<15) return 'Now';
-  if(m>=1609.34) return (m/1609.34).toFixed(1)+' mi';
-  return (Math.round((m/0.3048)/10)*10)+' ft';
+  if(m>=304.8) return (m/1609.34).toFixed(1)+' mi';   // 1000 ft and up → show miles
+  return (Math.round((m/0.3048)/10)*10)+' ft';         // under 1000 ft → show feet
 }
 function fmtDur(s){
   if(s==null) return '';
