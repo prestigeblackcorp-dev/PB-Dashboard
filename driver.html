@@ -434,6 +434,18 @@ textarea{resize:vertical;min-height:80px;}
               <div><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Duration</div><div style="font-size:13px;color:var(--text2);" id="arc-hours">—</div></div>
             </div>
           </div>
+          <!-- Turn-by-turn navigation -->
+          <div id="arc-nav" style="display:none;margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,#16306b,#0f1f44);border:1px solid #2a4a8a;border-radius:12px;padding:14px 16px;">
+              <div id="arc-nav-arrow" style="font-size:30px;line-height:1;color:#fff;min-width:30px;text-align:center;">&#8593;</div>
+              <div style="flex:1;min-width:0;">
+                <div id="arc-nav-dist" style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-.02em;">&mdash;</div>
+                <div id="arc-nav-instr" style="font-size:14px;font-weight:600;color:#cfe0ff;line-height:1.25;">Calculating route&hellip;</div>
+              </div>
+            </div>
+            <div id="arc-nav-meta" style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:7px 2px 2px;"></div>
+            <div id="arc-nav-steps" style="max-height:168px;overflow-y:auto;border:1px solid var(--border);border-radius:12px;background:#0a0e18;"></div>
+          </div>
           <div class="arc-actions" id="arc-actions"></div>
         </div>
       </div>
@@ -547,6 +559,16 @@ var _activeRidePickupMarker = null;
 var _activeRideDropoffMarker = null;
 var _activeRideRouteLine = null;
 var _geoWatchId = null;
+var _driverLat = null;      // live driver position (for routing origin)
+var _driverLng = null;
+var _navSteps = null;       // composed OSRM turn steps for current leg
+var _navPhase = null;       // 'pick' (→pickup) or 'drop' (→dropoff)
+var _navLastLat = null;     // origin used for the last route fetch (throttle)
+var _navLastLng = null;
+var _navFetching = false;
+var _navFollow = true;        // map follows driver (turn-by-turn) vs broad overview
+var _navOverviewPhase = null; // phase the broad overview was last shown for
+var NAV_FOLLOW_ZOOM = 16;     // zoom level when following the driver turn-by-turn
 
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function $d(id){ return document.getElementById(id); }
@@ -1348,13 +1370,17 @@ function broadcastLocation(){
 }
 
 function updateMapSelfMarker(lat,lng,heading){
+  _driverLat=lat; _driverLng=lng;
+  if(_activeRide) updateNav();
   if(!_ridesMap) return;
   var rot=heading||0;
   var html='<div style="width:32px;height:32px;background:linear-gradient(135deg,#C9A962,#a8893e);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:17px;border:2px solid #fff;box-shadow:0 2px 10px rgba(0,0,0,.5);transform:rotate('+rot+'deg)">🚘</div>';
   var icon=L.divIcon({className:'',html:html,iconSize:[32,32],iconAnchor:[16,16]});
   if(_driverSelfMarker){ _driverSelfMarker.setLatLng([lat,lng]); _driverSelfMarker.setIcon(icon); }
   else { _driverSelfMarker=L.marker([lat,lng],{icon:icon}).addTo(_ridesMap); }
-  _ridesMap.setView([lat,lng],15);
+  // Only recenter on the driver while in turn-by-turn follow mode; during the
+  // broad overview window we leave the wide framing alone.
+  if(_navFollow) _ridesMap.setView([lat,lng], navTarget(_activeRide)?NAV_FOLLOW_ZOOM:15);
 }
 
 // ── Poll for incoming requests & active ride ─────────────────────────────
@@ -1447,7 +1473,7 @@ async function declineRide(){
 function renderActiveRidePanel(){
   var panel=$d('active-ride-panel');
   if(!panel) return;
-  if(!_activeRide){ panel.style.display='none'; return; }
+  if(!_activeRide){ panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; return; }
   panel.style.display='block';
   var r=_activeRide;
   $d('arc-rider-name').textContent=r.riderName||r.riderEmail||'Rider';
@@ -1462,22 +1488,20 @@ function renderActiveRidePanel(){
   }
   // Actions depend on status
   var actions=$d('arc-actions'); actions.innerHTML='';
-  var navUrl='https://maps.apple.com/?daddr='+encodeURIComponent(r.status==='in_progress'&&r.dropoffAddress?r.dropoffAddress:r.pickupAddress)+'&dirflg=d';
+  // Navigation is handled in-app (turn-by-turn below the route) — no external maps app needed.
   if(['accepted','driver_arrived'].includes(r.status)){
-    actions.innerHTML+=
-      '<a href="'+navUrl+'" target="_blank" class="arc-btn arc-btn-nav" style="flex:1;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:12px;">🗺️ Navigate</a>'+
-      (r.status==='accepted'?'<button class="arc-btn arc-btn-arrived" onclick="markArrived()">✓ I\'ve Arrived</button>':'<button class="arc-btn arc-btn-start" onclick="startRide()">🚀 Start Ride</button>');
+    actions.innerHTML+=(r.status==='accepted'?'<button class="arc-btn arc-btn-arrived" onclick="markArrived()">✓ I\'ve Arrived</button>':'<button class="arc-btn arc-btn-start" onclick="startRide()">🚀 Start Ride</button>');
   }
   if(r.status==='in_progress'){
-    var navDest=r.dropoffAddress?'https://maps.apple.com/?daddr='+encodeURIComponent(r.dropoffAddress)+'&dirflg=d':navUrl;
-    actions.innerHTML='<a href="'+navDest+'" target="_blank" class="arc-btn arc-btn-nav" style="flex:1;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:12px;">🗺️ Navigate</a>'+
-      '<button class="arc-btn arc-btn-complete" onclick="completeRide()">🏁 Complete</button>';
+    actions.innerHTML='<button class="arc-btn arc-btn-complete" onclick="completeRide()">🏁 Complete</button>';
   }
   if(r.riderPhone){
     actions.innerHTML+='<a href="tel:'+r.riderPhone+'" class="arc-btn arc-btn-call" style="text-decoration:none;display:flex;align-items:center;justify-content:center;gap:4px;padding:12px;">📞</a>';
   }
+  updateNav();
   if(r.status==='completed'){
-    panel.innerHTML='<div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:16px;padding:20px;text-align:center;margin-bottom:12px;"><div style="font-size:32px;margin-bottom:6px">✅</div><div style="font-size:18px;font-weight:800;">Ride Complete</div><div style="font-size:24px;font-weight:900;color:var(--gold);margin:8px 0">$'+(r.finalPrice||r.estimatedPrice||0).toFixed(2)+'</div><div style="font-size:12px;color:var(--muted)">Great job! You\'re available for new rides.</div></div>';
+    var crPay=(r.finalPrice||r.estimatedPrice||0)*DRIVER_SHARE;
+    panel.innerHTML='<div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:16px;padding:20px;text-align:center;margin-bottom:12px;"><div style="font-size:32px;margin-bottom:6px">✅</div><div style="font-size:18px;font-weight:800;">Ride Complete</div><div style="font-size:24px;font-weight:900;color:var(--green);margin:8px 0 2px">'+fmt$(crPay)+'</div><div style="font-size:11px;color:var(--muted);font-weight:700;margin-bottom:6px;">Your earnings &middot; 35% take</div><div style="font-size:12px;color:var(--muted)">Great job! You\'re available for new rides.</div></div>';
     setTimeout(function(){ _activeRide=null; renderActiveRidePanel(); },5000);
   }
 }
@@ -1518,16 +1542,150 @@ function drawActiveRideOnMap(ride){
     if(_activeRideDropoffMarker){ _activeRideDropoffMarker.setLatLng([ride.dropoffLat,ride.dropoffLng]); }
     else { _activeRideDropoffMarker=L.marker([ride.dropoffLat,ride.dropoffLng],{icon:dIcon}).addTo(_ridesMap); }
   }
-  // Fetch route if we have both endpoints
-  if(ride.pickupLat&&ride.dropoffLat&&!_activeRideRouteLine){
-    var routeUrl='https://router.project-osrm.org/route/v1/driving/'+ride.pickupLng+','+ride.pickupLat+';'+ride.dropoffLng+','+ride.dropoffLat+'?overview=full&geometries=geojson';
-    fetch(routeUrl,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
-      if(d&&d.routes&&d.routes[0]){
-        var coords=d.routes[0].geometry.coordinates.map(function(c){return[c[1],c[0]];});
-        _activeRideRouteLine=L.polyline(coords,{color:'#C9A962',weight:3,opacity:.7,dashArray:'8,4'}).addTo(_ridesMap);
-        _ridesMap.fitBounds(_activeRideRouteLine.getBounds(),{padding:[30,30]});
+  // Drive turn-by-turn navigation (driver -> current target)
+  updateNav();
+}
+
+// ── In-app turn-by-turn navigation ────────────────────────────────────────
+function navTarget(r){
+  if(!r) return null;
+  if(r.status==='in_progress'){ return (r.dropoffLat&&r.dropoffLng)?{lat:r.dropoffLat,lng:r.dropoffLng,phase:'drop'}:null; }
+  if(r.status==='accepted'||r.status==='driver_arrived'){ return (r.pickupLat&&r.pickupLng)?{lat:r.pickupLat,lng:r.pickupLng,phase:'pick'}:null; }
+  return null;
+}
+function updateNav(){
+  var nav=$d('arc-nav'); if(!nav) return;
+  var tgt=navTarget(_activeRide);
+  if(!tgt){ nav.style.display='none'; return; }
+  nav.style.display='block';
+  if(_driverLat==null||_driverLng==null){
+    if($d('arc-nav-dist')) $d('arc-nav-dist').textContent='';
+    if($d('arc-nav-instr')) $d('arc-nav-instr').textContent='Waiting for your location…';
+    return;
+  }
+  var moved=(_navLastLat==null)?Infinity:navDistM(_driverLat,_driverLng,_navLastLat,_navLastLng);
+  if(!_navSteps||tgt.phase!==_navPhase||moved>40){ fetchNav(tgt); }
+}
+function fetchNav(tgt){
+  if(_navFetching) return;
+  _navFetching=true;
+  _navLastLat=_driverLat; _navLastLng=_driverLng; _navPhase=tgt.phase;
+  var url='https://router.project-osrm.org/route/v1/driving/'+_driverLng+','+_driverLat+';'+tgt.lng+','+tgt.lat+'?overview=full&geometries=geojson&steps=true';
+  fetch(url,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    _navFetching=false;
+    if(!d||!d.routes||!d.routes[0]) return;
+    var rt=d.routes[0];
+    if(_ridesMap&&rt.geometry&&rt.geometry.coordinates){
+      var coords=rt.geometry.coordinates.map(function(c){return[c[1],c[0]];});
+      if(_activeRideRouteLine){ _activeRideRouteLine.setLatLngs(coords); }
+      else { _activeRideRouteLine=L.polyline(coords,{color:'#C9A962',weight:5,opacity:.85}).addTo(_ridesMap); }
+      // New leg (driver→pickup, then pickup→dropoff): show the whole route broad,
+      // then ease into turn-by-turn follow — no external maps app required.
+      if(_navPhase!==_navOverviewPhase){
+        _navOverviewPhase=_navPhase;
+        _navFollow=false;
+        try{ _ridesMap.fitBounds(_activeRideRouteLine.getBounds(),{padding:[28,28],maxZoom:16,animate:true}); }catch(e){}
+        setTimeout(function(){
+          _navFollow=true;
+          if(_ridesMap&&_driverLat!=null){ try{ _ridesMap.setView([_driverLat,_driverLng],NAV_FOLLOW_ZOOM,{animate:true}); }catch(e){} }
+        },4500);
       }
-    }).catch(function(){});
+    }
+    var steps=[];
+    (rt.legs||[]).forEach(function(lg){ (lg.steps||[]).forEach(function(s){ steps.push(s); }); });
+    _navSteps=steps;
+    renderNav(rt);
+  }).catch(function(){ _navFetching=false; });
+}
+function renderNav(rt){
+  var steps=_navSteps||[];
+  if(!steps.length) return;
+  var bIdx=steps.length>2?1:steps.length-1;
+  var dTo=0; for(var i=0;i<bIdx;i++){ dTo+=steps[i].distance||0; }
+  if($d('arc-nav-dist')) $d('arc-nav-dist').textContent=fmtDist(dTo);
+  if($d('arc-nav-instr')) $d('arc-nav-instr').textContent=maneuverText(steps[bIdx]);
+  if($d('arc-nav-arrow')) $d('arc-nav-arrow').textContent=navArrow(steps[bIdx]);
+  if($d('arc-nav-meta')) $d('arc-nav-meta').textContent=fmtDist(rt.distance||0)+'  ·  '+fmtDur(rt.duration||0)+(_navPhase==='pick'?'  to pickup':'  to dropoff');
+  var html='';
+  for(var j=0;j<steps.length;j++){
+    var s=steps[j], txt=maneuverText(s);
+    var dchip=(j<steps.length-1)?fmtDist(s.distance||0):'';
+    html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.05);">'+
+      '<span style="font-size:17px;color:#C9A962;min-width:20px;text-align:center;">'+navArrow(s)+'</span>'+
+      '<span style="flex:1;font-size:13px;color:var(--text2);line-height:1.3;">'+esc(txt)+'</span>'+
+      (dchip?'<span style="font-size:11px;font-weight:800;color:var(--muted);white-space:nowrap;">'+dchip+'</span>':'')+
+    '</div>';
+  }
+  if($d('arc-nav-steps')) $d('arc-nav-steps').innerHTML=html;
+}
+function fmtDist(m){
+  if(m==null) return '';
+  if(m<15) return 'Now';
+  if(m>=1609.34) return (m/1609.34).toFixed(1)+' mi';
+  return (Math.round((m/0.3048)/10)*10)+' ft';
+}
+function fmtDur(s){
+  if(s==null) return '';
+  var min=Math.round(s/60);
+  if(min<1) return '<1 min';
+  if(min<60) return min+' min';
+  return Math.floor(min/60)+' hr '+(min%60)+' min';
+}
+function navDistM(la1,lo1,la2,lo2){
+  var R=6371000,p=Math.PI/180;
+  var dLa=(la2-la1)*p,dLo=(lo2-lo1)*p;
+  var a=Math.sin(dLa/2)*Math.sin(dLa/2)+Math.cos(la1*p)*Math.cos(la2*p)*Math.sin(dLo/2)*Math.sin(dLo/2);
+  return 2*R*Math.asin(Math.min(1,Math.sqrt(a)));
+}
+function bearingCompass(deg){
+  if(deg==null) return '';
+  var dirs=['north','northeast','east','southeast','south','southwest','west','northwest'];
+  return dirs[Math.round((((deg%360)+360)%360)/45)%8];
+}
+function turnVerb(mod){
+  switch(mod){
+    case 'uturn': return 'Make a U-turn';
+    case 'sharp left': return 'Sharp left';
+    case 'left': return 'Turn left';
+    case 'slight left': return 'Slight left';
+    case 'sharp right': return 'Sharp right';
+    case 'right': return 'Turn right';
+    case 'slight right': return 'Slight right';
+    case 'straight': return 'Continue straight';
+    default: return 'Continue';
+  }
+}
+function modSide(mod){ return (mod&&mod.indexOf('left')>=0)?'left':(mod&&mod.indexOf('right')>=0)?'right':''; }
+function navArrow(step){
+  var m=(step&&step.maneuver)||{},t=m.type||'',mod=m.modifier||'';
+  if(t==='arrive') return '◉';
+  if(t==='depart') return '↑';
+  if(t==='roundabout'||t==='rotary'||t==='roundabout turn') return '↻';
+  if(mod==='uturn') return '⮩';
+  if(mod==='slight left') return '↖';
+  if(mod==='slight right') return '↗';
+  if(mod==='left'||mod==='sharp left') return '←';
+  if(mod==='right'||mod==='sharp right') return '→';
+  return '↑';
+}
+function maneuverText(step){
+  if(!step) return '';
+  var m=step.maneuver||{},t=m.type||'',mod=m.modifier||'',name=step.name||'';
+  var onName=name?' onto '+name:'', onRoad=name?' on '+name:'';
+  switch(t){
+    case 'depart': return 'Head '+bearingCompass(m.bearing_after)+onRoad;
+    case 'arrive': return 'Arrive at '+(_navPhase==='pick'?'pickup':'destination')+(mod==='left'?' on your left':mod==='right'?' on your right':'');
+    case 'turn': return turnVerb(mod)+onName;
+    case 'new name': return 'Continue'+onRoad;
+    case 'continue': return (mod&&mod!=='straight'?turnVerb(mod):'Continue')+onRoad;
+    case 'merge': return 'Merge'+(modSide(mod)?' '+modSide(mod):'')+onName;
+    case 'on ramp': return 'Take the ramp'+(modSide(mod)?' on the '+modSide(mod):'')+onName;
+    case 'off ramp': return 'Take the exit'+(modSide(mod)?' on the '+modSide(mod):'')+onName;
+    case 'fork': return 'Keep '+(modSide(mod)||'straight')+' at the fork'+onName;
+    case 'end of road': return turnVerb(mod)+onName;
+    case 'roundabout': case 'rotary': return 'Enter the roundabout'+(m.exit?', take exit '+m.exit:'')+onName;
+    case 'roundabout turn': return turnVerb(mod)+onName;
+    default: return turnVerb(mod)+onName;
   }
 }
 

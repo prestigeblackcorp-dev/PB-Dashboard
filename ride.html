@@ -567,6 +567,9 @@ let _routeLine = null;
 let _activeSugg = null; // 'pickup' | 'dropoff'
 let _lastFitStatus = '';   // last ride status we auto-framed the map for
 let _lastDriverLoc = null; // last known driver position, for refits on sheet collapse
+let _riderMarker = null;   // rider's own live location dot ("you")
+let _riderWatchId = null;  // geolocation watch active during a ride
+let _lastRiderLoc = null;  // last known rider position, for framing both
 
 // ── Auth ─────────────────────────────────────────────────────────────────
 function $d(id){ return document.getElementById(id); }
@@ -1158,6 +1161,11 @@ function placeDriverMarker(lat,lng,heading){
     _driverMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html,iconSize:[36,36],iconAnchor:[18,18]})}).addTo(_map);
   }
 }
+function placeRiderMarker(lat,lng){
+  const html='<div style="width:16px;height:16px;border-radius:50%;background:#3b82f6;border:3px solid #fff;box-shadow:0 0 0 6px rgba(59,130,246,.22),0 2px 8px rgba(0,0,0,.45);"></div>';
+  if(_riderMarker){ _riderMarker.setLatLng([lat,lng]); }
+  else { _riderMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html,iconSize:[16,16],iconAnchor:[8,8]}),zIndexOffset:600}).addTo(_map); }
+}
 
 // ── Request Ride ───────────────────────────────────────────────────────────
 async function requestRide(){
@@ -1214,8 +1222,27 @@ function startPolling(){
   clearInterval(_pollTimer);
   _pollTimer=setInterval(pollRideStatus,4000);
   pollRideStatus();
+  startRiderWatch();
 }
-function stopPolling(){ clearInterval(_pollTimer); }
+function stopPolling(){ clearInterval(_pollTimer); stopRiderWatch(); }
+
+// Track the rider's own device location live while a ride is active, so the
+// rider (client) and driver both move on the map. Before pickup the rider sees
+// their own dot with the car approaching; once picked up both move together.
+function startRiderWatch(){
+  if(_riderWatchId!=null || !navigator.geolocation) return;
+  _riderWatchId=navigator.geolocation.watchPosition(function(pos){
+    _lastRiderLoc={lat:pos.coords.latitude,lng:pos.coords.longitude};
+    placeRiderMarker(_lastRiderLoc.lat,_lastRiderLoc.lng);
+    // Keep both framed if the rider drifts well outside the current view, but
+    // don't fight gentle manual panning.
+    try{ if(_map && !_map.getBounds().pad(-0.18).contains(L.latLng(_lastRiderLoc.lat,_lastRiderLoc.lng))) fitTripView(_lastDriverLoc); }catch(e){}
+  },null,{enableHighAccuracy:true,timeout:10000,maximumAge:3000});
+}
+function stopRiderWatch(){
+  if(_riderWatchId!=null && navigator.geolocation) navigator.geolocation.clearWatch(_riderWatchId);
+  _riderWatchId=null;
+}
 
 async function pollRideStatus(){
   if(!_rideId||!_session) return;
@@ -1251,6 +1278,7 @@ function fitTripView(driverLoc){
   if(_pickup&&_pickup.lat) pts.push([_pickup.lat,_pickup.lng]);
   if(_dropoff&&_dropoff.lat) pts.push([_dropoff.lat,_dropoff.lng]);
   if(driverLoc&&driverLoc.lat&&driverLoc.lng) pts.push([driverLoc.lat,driverLoc.lng]);
+  if(_lastRiderLoc&&_lastRiderLoc.lat) pts.push([_lastRiderLoc.lat,_lastRiderLoc.lng]);
   if(!pts.length) return;
   // Reserve space for the sheet so framed content lands in the visible top area.
   var sheet=$d('bottom-sheet'), sh=0;
@@ -1354,12 +1382,13 @@ function newRide(){
   stopPolling();
   _rideId=null; _pickup=null; _dropoff=null; _distanceMiles=0; _estPrice=0;
   _activeDriver=null;
-  _lastFitStatus=''; _lastDriverLoc=null;
+  _lastFitStatus=''; _lastDriverLoc=null; _lastRiderLoc=null;
   var _dr=$d('driverRating'); if(_dr) _dr.style.display='none';
   var _drb=$d('driverReviewsBtn'); if(_drb) _drb.style.display='none';
   var _dav=$d('driverAvatar'); if(_dav){ _dav.classList.remove('has-photo'); _dav.style.backgroundImage='none'; _dav.textContent='🧑‍✈️'; }
   try{ localStorage.removeItem('pb_active_ride'); }catch(e){}
   if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
+  if(_riderMarker){ _map.removeLayer(_riderMarker); _riderMarker=null; }
   if(_pickupMarker){ _map.removeLayer(_pickupMarker); _pickupMarker=null; }
   if(_dropoffMarker){ _map.removeLayer(_dropoffMarker); _dropoffMarker=null; }
   if(_routeLine){ _map.removeLayer(_routeLine); _routeLine=null; }
