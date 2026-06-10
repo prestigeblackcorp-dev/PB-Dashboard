@@ -479,7 +479,7 @@ textarea{resize:vertical;min-height:80px;}
     </div>
     <div class="rr-timer-bar"><div class="rr-timer-fill" id="rr-timer-fill" style="width:100%"></div></div>
     <div class="rr-detail-grid">
-      <div class="rr-detail"><div class="rr-detail-label">Est. Fare</div><div class="rr-detail-val" id="rr-fare">—</div></div>
+      <div class="rr-detail"><div class="rr-detail-label">You Earn</div><div class="rr-detail-val" id="rr-fare">—</div></div>
       <div class="rr-detail"><div class="rr-detail-label">Distance</div><div class="rr-detail-val" id="rr-dist">—</div></div>
       <div class="rr-detail"><div class="rr-detail-label">Rider</div><div class="rr-detail-val" id="rr-rider">—</div></div>
       <div class="rr-detail"><div class="rr-detail-label">Type</div><div class="rr-detail-val" id="rr-type">—</div></div>
@@ -569,6 +569,12 @@ var _navFetching = false;
 var _navFollow = true;        // map follows driver (turn-by-turn) vs broad overview
 var _navOverviewPhase = null; // phase the broad overview was last shown for
 var NAV_FOLLOW_ZOOM = 16;     // zoom level when following the driver turn-by-turn
+var _navRouteCoords = null;   // [[lat,lng],...] current route polyline (for projection)
+var _navRouteCum = null;      // cumulative metres along the route polyline per vertex
+var _navStepCum = null;       // cumulative metres to each step's maneuver point
+var _navTotalDur = 0;         // route duration (s) for the current leg
+var _navLastFetchAt = 0;      // ms timestamp of last route fetch (reroute debounce)
+var OFFROUTE_M = 45;          // metres off the line before we re-route (missed turn / shortcut)
 
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function $d(id){ return document.getElementById(id); }
@@ -1426,7 +1432,8 @@ async function pollDriverRides(){
 // ── Incoming ride overlay ────────────────────────────────────────────────
 function showRideRequestOverlay(notif){
   var o=$d('ride-request-overlay'); o.style.display='flex';
-  $d('rr-fare').textContent='$'+(notif.estimatedPrice||0).toFixed(2);
+  // Drivers only ever see their own take (35%) — never the gross customer fare.
+  $d('rr-fare').textContent='$'+((notif.estimatedPrice||0)*DRIVER_SHARE).toFixed(2);
   $d('rr-dist').textContent=notif.distanceMiles?(notif.distanceMiles.toFixed(1)+' mi'):(notif.hours?notif.hours+' hrs':'—');
   $d('rr-rider').textContent=notif.riderName||'Rider';
   $d('rr-type').textContent=notif.rideType==='hourly'?'Hourly':'Point-to-Point';
@@ -1473,7 +1480,7 @@ async function declineRide(){
 function renderActiveRidePanel(){
   var panel=$d('active-ride-panel');
   if(!panel) return;
-  if(!_activeRide){ panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; return; }
+  if(!_activeRide){ panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; _navRouteCoords=null; _navRouteCum=null; _navStepCum=null; return; }
   panel.style.display='block';
   var r=_activeRide;
   $d('arc-rider-name').textContent=r.riderName||r.riderEmail||'Rider';
@@ -1563,24 +1570,28 @@ function updateNav(){
     if($d('arc-nav-instr')) $d('arc-nav-instr').textContent='Waiting for your location…';
     return;
   }
-  var moved=(_navLastLat==null)?Infinity:navDistM(_driverLat,_driverLng,_navLastLat,_navLastLng);
-  if(!_navSteps||tgt.phase!==_navPhase||moved>40){ fetchNav(tgt); }
+  // First route for this leg, or the leg just changed (driver→pickup vs pickup→dropoff).
+  if(!_navSteps||tgt.phase!==_navPhase){ fetchNav(tgt); return; }
+  // Otherwise advance through the existing route live (no network call) and only
+  // re-route when the driver leaves the line — a missed turn, a shortcut, etc.
+  advanceNav(tgt);
 }
 function fetchNav(tgt){
   if(_navFetching) return;
   _navFetching=true;
-  _navLastLat=_driverLat; _navLastLng=_driverLng; _navPhase=tgt.phase;
+  _navLastLat=_driverLat; _navLastLng=_driverLng; _navPhase=tgt.phase; _navLastFetchAt=Date.now();
   var url='https://router.project-osrm.org/route/v1/driving/'+_driverLng+','+_driverLat+';'+tgt.lng+','+tgt.lat+'?overview=full&geometries=geojson&steps=true';
   fetch(url,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
     _navFetching=false;
     if(!d||!d.routes||!d.routes[0]) return;
     var rt=d.routes[0];
-    if(_ridesMap&&rt.geometry&&rt.geometry.coordinates){
-      var coords=rt.geometry.coordinates.map(function(c){return[c[1],c[0]];});
+    var coords=(rt.geometry&&rt.geometry.coordinates)?rt.geometry.coordinates.map(function(c){return[c[1],c[0]];}):null;
+    if(_ridesMap&&coords){
       if(_activeRideRouteLine){ _activeRideRouteLine.setLatLngs(coords); }
       else { _activeRideRouteLine=L.polyline(coords,{color:'#C9A962',weight:5,opacity:.85}).addTo(_ridesMap); }
       // New leg (driver→pickup, then pickup→dropoff): show the whole route broad,
-      // then ease into turn-by-turn follow — no external maps app required.
+      // then ease into turn-by-turn follow — no external maps app required. A mid-leg
+      // reroute keeps the same phase, so it won't re-trigger the broad overview.
       if(_navPhase!==_navOverviewPhase){
         _navOverviewPhase=_navPhase;
         _navFollow=false;
@@ -1591,32 +1602,104 @@ function fetchNav(tgt){
         },4500);
       }
     }
+    // Flatten legs→steps and pre-compute the cumulative distances we advance against.
     var steps=[];
     (rt.legs||[]).forEach(function(lg){ (lg.steps||[]).forEach(function(s){ steps.push(s); }); });
     _navSteps=steps;
-    renderNav(rt);
+    _navStepCum=[0];
+    for(var i=1;i<steps.length;i++){ _navStepCum[i]=_navStepCum[i-1]+(steps[i-1].distance||0); }
+    _navRouteCoords=coords;
+    _navRouteCum=[0];
+    if(coords){ for(var k=1;k<coords.length;k++){ _navRouteCum[k]=_navRouteCum[k-1]+navDistM(coords[k-1][0],coords[k-1][1],coords[k][0],coords[k][1]); } }
+    _navTotalDur=rt.duration||0;
+    renderNav();
   }).catch(function(){ _navFetching=false; });
 }
-function renderNav(rt){
+// Build the scrollable step list once per route; the live banner + highlight update
+// every GPS tick via advanceNav → liveBanner.
+function renderNav(){
   var steps=_navSteps||[];
   if(!steps.length) return;
-  var bIdx=steps.length>2?1:steps.length-1;
-  var dTo=0; for(var i=0;i<bIdx;i++){ dTo+=steps[i].distance||0; }
-  if($d('arc-nav-dist')) $d('arc-nav-dist').textContent=fmtDist(dTo);
-  if($d('arc-nav-instr')) $d('arc-nav-instr').textContent=maneuverText(steps[bIdx]);
-  if($d('arc-nav-arrow')) $d('arc-nav-arrow').textContent=navArrow(steps[bIdx]);
-  if($d('arc-nav-meta')) $d('arc-nav-meta').textContent=fmtDist(rt.distance||0)+'  ·  '+fmtDur(rt.duration||0)+(_navPhase==='pick'?'  to pickup':'  to dropoff');
   var html='';
   for(var j=0;j<steps.length;j++){
     var s=steps[j], txt=maneuverText(s);
     var dchip=(j<steps.length-1)?fmtDist(s.distance||0):'';
-    html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.05);">'+
+    html+='<div id="arc-nav-step-'+j+'" style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.05);border-left:3px solid transparent;transition:background .2s,opacity .2s;">'+
       '<span style="font-size:17px;color:#C9A962;min-width:20px;text-align:center;">'+navArrow(s)+'</span>'+
       '<span style="flex:1;font-size:13px;color:var(--text2);line-height:1.3;">'+esc(txt)+'</span>'+
       (dchip?'<span style="font-size:11px;font-weight:800;color:var(--muted);white-space:nowrap;">'+dchip+'</span>':'')+
     '</div>';
   }
   if($d('arc-nav-steps')) $d('arc-nav-steps').innerHTML=html;
+  liveBanner(_projectOnRoute(_driverLat,_driverLng));
+}
+// Advance along the current route as the driver moves: re-route if they've left the
+// line (missed turn / shortcut), refresh occasionally as a safety net, otherwise
+// just update the live banner — no network call.
+function advanceNav(tgt){
+  var proj=_projectOnRoute(_driverLat,_driverLng);
+  if(proj && proj.distM>OFFROUTE_M){
+    if(!_navFetching && (Date.now()-_navLastFetchAt)>4000){ fetchNav(tgt); }
+    if($d('arc-nav-instr')) $d('arc-nav-instr').textContent='Rerouting…';
+    if($d('arc-nav-arrow')) $d('arc-nav-arrow').textContent='↻';
+    return;
+  }
+  // Periodic safety refresh keeps the ETA honest on long legs.
+  if(!_navFetching && _navLastLat!=null && navDistM(_driverLat,_driverLng,_navLastLat,_navLastLng)>250 && (Date.now()-_navLastFetchAt)>8000){ fetchNav(tgt); return; }
+  liveBanner(proj);
+}
+// Big banner = the next maneuver ahead of the driver + a live countdown to it.
+function liveBanner(proj){
+  var steps=_navSteps||[]; if(!steps.length||!_navStepCum) return;
+  var prog=proj?proj.prog:0;
+  var k=1;
+  while(k<steps.length-1 && _navStepCum[k]<=prog+8){ k++; }   // 8m hysteresis past a turn
+  var distToManeuver=Math.max(0,_navStepCum[k]-prog);
+  if($d('arc-nav-dist')) $d('arc-nav-dist').textContent=fmtDist(distToManeuver);
+  if($d('arc-nav-instr')) $d('arc-nav-instr').textContent=maneuverText(steps[k]);
+  if($d('arc-nav-arrow')) $d('arc-nav-arrow').textContent=navArrow(steps[k]);
+  var totalLen=(_navRouteCum&&_navRouteCum.length)?_navRouteCum[_navRouteCum.length-1]:0;
+  var remain=Math.max(0,totalLen-prog);
+  var remainDur=(_navTotalDur&&totalLen>0)?_navTotalDur*(remain/totalLen):0;
+  if($d('arc-nav-meta')) $d('arc-nav-meta').textContent=fmtDist(remain)+'  ·  '+fmtDur(remainDur)+(_navPhase==='pick'?'  to pickup':'  to dropoff');
+  highlightStep(k);
+}
+// Highlight the upcoming step, dim the ones already passed, keep it centred in the list.
+function highlightStep(k){
+  var box=$d('arc-nav-steps'); if(!box) return;
+  var steps=_navSteps||[];
+  for(var j=0;j<steps.length;j++){
+    var row=document.getElementById('arc-nav-step-'+j);
+    if(!row) continue;
+    if(j===k){ row.style.background='rgba(201,169,98,.16)'; row.style.borderLeftColor='#C9A962'; row.style.opacity='1'; }
+    else if(j<k){ row.style.background='transparent'; row.style.borderLeftColor='transparent'; row.style.opacity='0.4'; }
+    else { row.style.background='transparent'; row.style.borderLeftColor='transparent'; row.style.opacity='1'; }
+  }
+  var active=document.getElementById('arc-nav-step-'+k);
+  if(active){ box.scrollTop=Math.max(0,active.offsetTop-box.clientHeight/2+active.clientHeight/2); }
+}
+// Project the driver onto the route polyline → {distM: how far off the line, prog: metres travelled along the route}.
+function _projectOnRoute(lat,lng){
+  var coords=_navRouteCoords; if(lat==null||!coords||coords.length<2||!_navRouteCum) return null;
+  var best=null;
+  for(var i=0;i<coords.length-1;i++){
+    var a=coords[i], b=coords[i+1];
+    var pr=_projPointSeg(lat,lng,a[0],a[1],b[0],b[1]);
+    if(!best||pr.d<best.distM){
+      var segLen=navDistM(a[0],a[1],b[0],b[1]);
+      best={distM:pr.d, prog:_navRouteCum[i]+pr.t*segLen};
+    }
+  }
+  return best;
+}
+// Clamped projection of P onto segment AB via a local equirectangular approximation.
+function _projPointSeg(plat,plng,alat,alng,blat,blng){
+  var R=6371000, p=Math.PI/180, cosRef=Math.cos(alat*p);
+  var ax=alng*p*cosRef, ay=alat*p, bx=blng*p*cosRef, by=blat*p, px=plng*p*cosRef, py=plat*p;
+  var dx=bx-ax, dy=by-ay, len2=dx*dx+dy*dy;
+  var t=len2>0?((px-ax)*dx+(py-ay)*dy)/len2:0; t=Math.max(0,Math.min(1,t));
+  var cx=ax+t*dx, cy=ay+t*dy, ex=px-cx, ey=py-cy;
+  return {d:R*Math.sqrt(ex*ex+ey*ey), t:t};
 }
 function fmtDist(m){
   if(m==null) return '';

@@ -977,14 +977,36 @@ function onAddrFocus(field){
   expandSheet();
   closeSuggestions('pickup'); closeSuggestions('dropoff');
 }
+// Reference point for ordering suggestions closest-first: for a dropoff we measure
+// from the chosen pickup; otherwise from the rider's live location, then the current
+// map view, then the Dallas default.
+function _suggRef(field){
+  if(field==='dropoff'&&_pickup&&_pickup.lat!=null) return {lat:_pickup.lat,lng:_pickup.lng};
+  if(_lastRiderLoc&&_lastRiderLoc.lat!=null) return {lat:_lastRiderLoc.lat,lng:_lastRiderLoc.lng};
+  if(_map){ try{ const c=_map.getCenter(); return {lat:c.lat,lng:c.lng}; }catch(e){} }
+  return {lat:32.7767,lng:-96.797};
+}
+function _featDistKm(f,ref){
+  const c=f&&f.geometry&&f.geometry.coordinates;
+  if(!c||c.length<2) return Infinity;
+  return haversineKm(ref.lat,ref.lng,c[1],c[0]);
+}
+function _fmtMi(km){
+  const mi=km*0.621371;
+  return mi<0.1?Math.round(mi*5280)+' ft':mi.toFixed(1)+' mi';
+}
 async function fetchSuggestions(field){
   const q=field==='pickup'?$d('pickupInp').value:$d('dropoffInp').value;
   if(!q||q.length<3){ closeSuggestions(field); return; }
-  const url=`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=5&lat=32.7767&lon=-96.797`;
+  // Pull a wider pool so the closest-first ordering below has real candidates to sort.
+  const url=`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&lat=32.7767&lon=-96.797`;
   const data=await fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
   if(!data||!data.features) return;
   const el=$d(field+'Sugg');
-  el.innerHTML=data.features.map((f,i)=>{
+  // Order strictly by distance from the reference point — closest first, then outward.
+  const ref=_suggRef(field);
+  const feats=data.features.slice().sort((a,b)=>_featDistKm(a,ref)-_featDistKm(b,ref));
+  el.innerHTML=feats.map((f,i)=>{
     const pr=f.properties||{};
     const addr=[pr.housenumber,pr.street].filter(Boolean).join(' ');
     const locality=[pr.city||pr.district||pr.county||'',pr.state||''].filter(Boolean).join(', ');
@@ -992,15 +1014,22 @@ async function fetchSuggestions(field){
     // the name they know; show the street address + city beneath it.
     const main=pr.name||addr||locality;
     const subParts=[];
+    // Lead the sub-line with how far the result is from the reference, so riders
+    // can see the ordering at a glance.
+    const dkm=_featDistKm(f,ref);
+    if(isFinite(dkm)) subParts.push(_fmtMi(dkm));
     if(pr.name&&addr) subParts.push(addr);
     if(locality) subParts.push(locality);
+    // Flag results that don't pinpoint a specific address (no house number and not
+    // a named place) so riders prefer exact ones or refine by dragging the pin.
+    if(!pr.housenumber&&!pr.name) subParts.push(pr.street?'street only':'area');
     const sub=subParts.join(' · ');
     return `<div class="suggestion" onclick="selectSuggestion('${field}',${i})">
       <div class="sug-main">${esc(main)}</div>
       ${sub?`<div class="sug-sub">${esc(sub)}</div>`:''}
     </div>`;
   }).join('');
-  el._features=data.features;
+  el._features=feats;
   el.style.display='block';
 }
 function selectSuggestion(field,idx){
@@ -1042,15 +1071,30 @@ function _fmtAddr(pr){
 }
 
 async function reverseGeocode(lat,lng){
-  // Primary: Photon (Komoot) reverse — returns street-level detail (house number
-  // + street name), so the pickup shows the exact address, not just the city.
+  let approx='';
+  // Primary: Nominatim at building zoom — most reliable for the house number that
+  // goes in front of the street (e.g. "1920 Greenville Ave"), so the pickup
+  // pinpoints an exact address instead of just the street.
   try{
-    const p=await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&limit=1`,{cache:'no-store'}).then(r=>r.json());
-    const f=p&&p.features&&p.features[0];
-    const a=f&&_fmtAddr(f.properties);
-    if(a) return a;
+    const n=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,{cache:'no-store'}).then(r=>r.json());
+    const a=n&&n.address;
+    if(a){
+      const road=a.road||a.pedestrian||a.footway||a.path||a.cycleway||'';
+      const city=a.city||a.town||a.village||a.suburb||a.neighbourhood||a.hamlet||a.county||'';
+      if(a.house_number&&road) return [a.house_number+' '+road,city,a.state].filter(Boolean).join(', ');
+      approx=[road||a.name,city,a.state].filter(Boolean).join(', ');
+    }
   }catch(e){}
-  // Fallback: BigDataCloud (locality-level only) if Photon is unavailable.
+  // Secondary: Photon reverse — prefer a returned feature that has a house number.
+  try{
+    const p=await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&limit=8`,{cache:'no-store'}).then(r=>r.json());
+    const fs=(p&&p.features)||[];
+    const withNum=fs.find(f=>f.properties&&f.properties.housenumber);
+    if(withNum) return _fmtAddr(withNum.properties);
+    if(!approx&&fs[0]) approx=_fmtAddr(fs[0].properties);
+  }catch(e){}
+  if(approx) return approx;
+  // Fallback: BigDataCloud (locality-level only) if both are unavailable.
   const d=await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`).then(r=>r.json()).catch(()=>null);
   if(!d) return null;
   return [d.locality||d.city||'',d.principalSubdivision||''].filter(Boolean).join(', ')||null;
@@ -1145,7 +1189,14 @@ function toggleFareBreakdown(){
 // ── Markers ───────────────────────────────────────────────────────────────
 function placePickupMarker(lat,lng){
   if(_pickupMarker) _map.removeLayer(_pickupMarker);
-  _pickupMarker=L.marker([lat,lng],{icon:L.divIcon({className:'',html:'<div class="rider-marker"></div>',iconSize:[20,20],iconAnchor:[10,10]})}).addTo(_map);
+  _pickupMarker=L.marker([lat,lng],{draggable:true,autoPan:true,icon:L.divIcon({className:'',html:'<div class="rider-marker"></div>',iconSize:[20,20],iconAnchor:[10,10]})}).addTo(_map);
+  // Let the rider drag the pin to pinpoint an exact pickup; refresh the address.
+  _pickupMarker.on('dragend',function(){
+    const ll=_pickupMarker.getLatLng();
+    _pickup={lat:ll.lat,lng:ll.lng,address:(_pickup&&_pickup.address)||''};
+    reverseGeocode(ll.lat,ll.lng).then(function(addr){ if(addr){ _pickup.address=addr; const inp=$d('pickupInp'); if(inp) inp.value=addr; } });
+    if(_pickup&&(_dropoff||_rideType==='hourly')) fetchRoute();
+  });
 }
 function placeDropoffMarker(lat,lng){
   if(_dropoffMarker) _map.removeLayer(_dropoffMarker);

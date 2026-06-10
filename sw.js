@@ -1,5 +1,5 @@
-const CACHE = 'pb-v30';
-const ASSETS = ['./index.html', './icon.png', './ride.html'];
+const CACHE = 'pb-v31';
+const ASSETS = ['./index.html', './icon.png', './ride.html', './driver.html'];
 
 self.addEventListener('install', function(e) {
   e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(ASSETS); }));
