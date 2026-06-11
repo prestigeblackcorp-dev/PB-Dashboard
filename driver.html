@@ -246,6 +246,11 @@ body.map-fs #map-expand-btn{top:max(12px,env(safe-area-inset-top));}
 body.map-fs #map-fs-status{display:flex;top:max(12px,env(safe-area-inset-top));}
 body.map-fs #map-earn-chip{bottom:calc(16px + env(safe-area-inset-bottom,0px));}
 body.nav-fs #map-expand-btn,body.nav-fs #map-fs-status,body.nav-fs #map-earn-chip{display:none;}
+/* Full-screen LIVE map: when the driver zooms OUT, drop the map below the header+tabs
+   so they can switch tabs; zoom back in for the immersive view. (--fs-chrome-h is the
+   measured header+tabs height, set in JS.) */
+body.map-fs.fs-chrome #rides-map-container{top:var(--fs-chrome-h,104px);height:calc(100dvh - var(--fs-chrome-h,104px));}
+body.map-fs.fs-chrome #map-fs-status{top:calc(var(--fs-chrome-h,104px) + 8px);}
 
 /* Incoming ride alert */
 #ride-request-overlay{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;justify-content:flex-end;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);}
@@ -655,7 +660,7 @@ var _navLastLng = null;
 var _navFetching = false;
 var _navFollow = true;        // map follows driver (turn-by-turn) vs broad overview
 var _navOverviewPhase = null; // phase the broad overview was last shown for
-var NAV_FOLLOW_ZOOM = 18;     // zoom level when following the driver turn-by-turn (tighter first-person)
+var NAV_FOLLOW_ZOOM = 18.7;   // zoom level when following the driver turn-by-turn (tighter first-person)
 var NAV_PITCH = 64;           // 3D camera tilt while navigating (Apple-Maps-style first person)
 var IDLE_ZOOM = 13;           // parked / waiting between trips — pulled back for area overview
 var _navHeading = 0;          // last finite GPS heading (degrees) — camera bearing in follow mode
@@ -1444,6 +1449,11 @@ function drvSwitchTab(name){
   if(btn) btn.classList.add('active');
   if(pane) pane.classList.add('active');
   if(name==='rides') onRidesTabOpen();
+  else if(name==='earnings'){
+    try{ renderEarnings(); }catch(e){}
+    // Re-fetch so the tab always reflects the latest trips/pay (it previously only rendered once at load).
+    loadDrvData().then(function(ok){ if(ok){ try{ renderEarnings(); renderToday(); }catch(e){} } });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1510,6 +1520,7 @@ function initRidesMap(){
         document.body.classList.add('nav-roam');
       }
     });
+    _ridesMap.on('zoom', _fsChromeOnZoom);   // full-screen live map: reveal header+tabs when zoomed out
     _ridesMap.on('load',function(){
       _ridesMapReady=true;
       // Gold route line (with a soft dark casing under it) — driven by a single GeoJSON source.
@@ -1567,7 +1578,8 @@ function setNavFullscreen(on){
   if(on) setMapFullscreen(false);   // turn-by-turn takes over from the waiting map
   _navFs=on;
   document.body.classList.toggle('nav-fs',on);
-  if(!on) document.body.classList.remove('nav-steps-open');
+  // Show the step-by-step list by default in full-screen (was collapsed); driver can tap the caret to collapse.
+  if(on) document.body.classList.add('nav-steps-open'); else document.body.classList.remove('nav-steps-open');
   // MapLibre recomputes its canvas when the container resizes — now, then again once the CSS settles.
   if(_ridesMap){ try{ _ridesMap.resize(); }catch(e){} setTimeout(function(){ try{ if(_ridesMap) _ridesMap.resize(); }catch(e){} },260); }
 }
@@ -1598,8 +1610,27 @@ function setMapFullscreen(on){
   if(on===_mapFs) return;
   _mapFs=on;
   document.body.classList.toggle('map-fs',on);
+  if(!on) document.body.classList.remove('fs-chrome'); else _fsChromeOnZoom();
   var b=$d('map-expand-btn'); if(b){ b.textContent=on?'✕':'⛶'; }
   if(_ridesMap){ try{ _ridesMap.resize(); }catch(e){} setTimeout(function(){ try{ if(_ridesMap) _ridesMap.resize(); }catch(e){} },260); }
+}
+// While watching the live map full-screen, reveal the header+tabs when the driver zooms
+// OUT (so they can reach the tabs) and hide them again when they zoom back in.
+var CHROME_ZOOM = 14.5;
+function _fsChromeOnZoom(){
+  if(!_mapFs || !_ridesMap){ if(document.body.classList.contains('fs-chrome')) _setFsChrome(false); return; }
+  var z; try{ z=_ridesMap.getZoom(); }catch(e){ return; }
+  _setFsChrome(z < CHROME_ZOOM);
+}
+function _setFsChrome(on){
+  if(on===document.body.classList.contains('fs-chrome')) return;
+  if(on){
+    var h=0, hd=document.querySelector('.app-header'), tb=document.querySelector('.tab-bar');
+    if(hd) h+=hd.offsetHeight; if(tb) h+=tb.offsetHeight;
+    if(h>0) document.body.style.setProperty('--fs-chrome-h', h+'px');
+    document.body.classList.add('fs-chrome');
+  } else { document.body.classList.remove('fs-chrome'); }
+  if(_ridesMap){ try{ _ridesMap.resize(); }catch(e){} }
 }
 // Engage full-screen the moment a route exists; drop out of it when navigation ends.
 function maybeAutoFullscreen(){
@@ -1676,6 +1707,25 @@ function broadcastLocation(){
   }, null, {enableHighAccuracy:true,timeout:8000,maximumAge:5000});
 }
 
+// Glide the driver puck between discrete GPS fixes with a short rAF tween so the car
+// moves smoothly like Apple Maps instead of skipping. Big jumps (first fix / GPS warp) snap.
+var _mkAnimRAF=null;
+function _moveMarkerSmooth(lng,lat){
+  if(!_driverSelfMarker) return;
+  if(_mkAnimRAF){ cancelAnimationFrame(_mkAnimRAF); _mkAnimRAF=null; }
+  var from=null; try{ from=_driverSelfMarker.getLngLat(); }catch(e){}
+  if(!from){ try{ _driverSelfMarker.setLngLat([lng,lat]); }catch(e){} return; }
+  var fLng=from.lng, fLat=from.lat;
+  if(Math.abs(fLng-lng)+Math.abs(fLat-lat) > 0.05){ try{ _driverSelfMarker.setLngLat([lng,lat]); }catch(e){} return; } // teleport on a big jump
+  var t0=Date.now(), dur=900;
+  function _step(){
+    var p=Math.min(1,(Date.now()-t0)/dur);
+    var e=p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;   // easeInOutQuad
+    try{ _driverSelfMarker.setLngLat([fLng+(lng-fLng)*e, fLat+(lat-fLat)*e]); }catch(err){}
+    _mkAnimRAF = p<1 ? requestAnimationFrame(_step) : null;
+  }
+  _mkAnimRAF=requestAnimationFrame(_step);
+}
 function updateMapSelfMarker(lat,lng,heading){
   _driverLat=lat; _driverLng=lng;
   if(_activeRide) updateNav();
@@ -1690,7 +1740,7 @@ function updateMapSelfMarker(lat,lng,heading){
       _driverSelfMarker=new maplibregl.Marker({element:elm,rotationAlignment:'map',pitchAlignment:'viewport'}).setLngLat([lng,lat]).addTo(_ridesMap);
     }catch(e){}
   } else {
-    try{ _driverSelfMarker.setLngLat([lng,lat]); }catch(e){}
+    _moveMarkerSmooth(lng,lat);   // glide between GPS fixes instead of teleporting (Apple-Maps feel)
   }
   try{ if(_driverSelfMarker) _driverSelfMarker.setRotation(_navHeading||0); }catch(e){}
   // Follow the driver street-by-street: heading-up, tilted 3D, puck low on screen so the
@@ -1770,6 +1820,9 @@ async function pollDriverRides(){
   if(d.activeRide){
     var _prevRide=_activeRide;
     _activeRide=d.activeRide;
+    // New ride (not just a poll refresh of the same one): keep the screen awake and
+    // let full-screen auto-engage again even if the driver minimized it on a prior trip.
+    if(!_prevRide || _prevRide.id!==d.activeRide.id){ _navFsUserCollapsed=false; if(typeof _drvAcquireWake==='function') _drvAcquireWake(); }
     // Hourly riders can redirect the trip / extend their time mid-ride — make
     // sure the driver notices the change (nav re-routes automatically).
     if(_prevRide && _prevRide.id===d.activeRide.id){

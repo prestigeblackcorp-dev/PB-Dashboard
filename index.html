@@ -13629,18 +13629,72 @@ function getRemainingBalance(b){
   return Math.max(0, base - portalChargesTotal(b));
 }
 
+// Update-balance module — now a modal with the SAME "Mark as Paid" checkbox +
+// payment-method picker as the booking form, so marking a balance paid here stamps
+// balancePaidAt (→ shows in Today's KPI) and stays in sync with the form. Setting the
+// balance to 0 auto-checks "paid" so a zeroed balance is always recorded as a payment.
 function editRemainingBalance(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   var cur=getRemainingBalance(b);
-  var val=prompt('Update remaining balance for '+b.name+' — '+b.vehicle+':\n\nCurrent: $'+cur+'\n\nEnter new balance (enter 0 if paid in full):', cur);
-  if(val===null) return;
-  var num=parseFloat(val);
-  if(isNaN(num)||num<0){ alert('Please enter a valid amount.'); return; }
-  b.remainingBalance=num;
+  var _old=$d('balanceModalOverlay'); if(_old) _old.remove();
+  var paidAlready=!!b.balancePaidAt;
+  var methods=['','Cash','Zelle','Venmo','CashApp','Stripe','Card','Apple Pay','Wire','Check','Other'];
+  var ov=document.createElement('div');
+  ov.id='balanceModalOverlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML=
+    '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:420px">'+
+      '<div style="font-size:16px;font-weight:800;margin-bottom:4px">Update Balance</div>'+
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:18px">'+esc(b.name||'')+' · '+esc(b.vehicle||'')+'</div>'+
+      '<div style="margin-bottom:14px"><div class="flabel">Remaining Balance ($)</div>'+
+        '<input id="bmBalance" type="number" min="0" step="0.01" class="finput" style="width:100%" value="'+cur+'" oninput="_bmSync()"></div>'+
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'+
+        '<input type="checkbox" id="bmPaidChk" '+(paidAlready?'checked':'')+' style="width:16px;height:16px;accent-color:var(--green);cursor:pointer" onchange="_bmSync()">'+
+        '<label for="bmPaidChk" style="font-size:13px;font-weight:700;cursor:pointer;color:var(--green)">✅ Mark Balance as Paid</label>'+
+      '</div>'+
+      '<div id="bmPaidFields" style="display:'+(paidAlready?'block':'none')+'">'+
+        '<div style="margin-bottom:12px"><div class="flabel">Amount Paid ($)</div>'+
+          '<input id="bmAmt" type="number" min="0" step="0.01" class="finput" style="width:100%" value="'+(b.balancePaidAmount||cur||'')+'"></div>'+
+        '<div style="margin-bottom:18px"><div class="flabel">Payment Method</div>'+
+          '<select id="bmMethod" class="finput" style="width:100%">'+
+            methods.map(function(m){ return '<option value="'+m+'"'+(m===(b.balancePaidMethod||'')?' selected':'')+'>'+(m||'— method —')+'</option>'; }).join('')+
+          '</select></div>'+
+      '</div>'+
+      '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+        '<button class="btn" onclick="$d(\'balanceModalOverlay\').remove()" style="border-color:var(--border)">Cancel</button>'+
+        '<button class="btn" onclick="saveBalanceModal(\''+b.id+'\')" style="background:var(--gold);color:#000;border-color:var(--gold);font-weight:700">Save</button>'+
+      '</div>'+
+    '</div>';
+  document.body.appendChild(ov);
+  setTimeout(function(){ var el=$d('bmBalance'); if(el){ el.focus(); if(el.select) el.select(); } },50);
+}
+function _bmSync(){
+  var bal=parseFloat(($d('bmBalance')||{}).value);
+  var chk=$d('bmPaidChk');
+  if(bal===0 && chk && !chk.checked) chk.checked=true;   // zero balance ⇒ paid in full
+  var f=$d('bmPaidFields'); if(f) f.style.display=(chk&&chk.checked)?'block':'none';
+}
+function saveBalanceModal(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
+  var bal=parseFloat(($d('bmBalance')||{}).value);
+  if(isNaN(bal)||bal<0){ alert('Please enter a valid amount.'); return; }
+  var paid=$d('bmPaidChk')&&$d('bmPaidChk').checked;
+  if(paid){
+    var amt=parseFloat(($d('bmAmt')||{}).value);
+    // Stamp the collection time → counts in Today's KPI; preserve an existing date if already set (matches the form).
+    b.balancePaidAt     = b.balancePaidAt || Date.now();
+    b.balancePaidAmount = isNaN(amt) ? bal : amt;
+    b.balancePaidMethod = ($d('bmMethod')||{}).value||'';
+    b.remainingBalance  = 0;
+  } else {
+    b.remainingBalance  = bal;   // unchecking does not auto-clear a prior payment record
+  }
   b._t=Date.now();
   save();
-  renderOutstanding();
-  toast(b.name+' remaining balance updated to $'+num);
+  if(typeof renderOutstanding==='function') renderOutstanding();
+  if(typeof render==='function') render();   // refresh KPIs so Today reflects the payment immediately
+  var ov=$d('balanceModalOverlay'); if(ov) ov.remove();
+  toast(b.name+(paid?' — balance marked paid'+(b.balancePaidMethod?' via '+b.balancePaidMethod:'')+'.':' — remaining balance updated to $'+bal));
 }
 function markBalancePaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
