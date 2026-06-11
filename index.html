@@ -6444,13 +6444,15 @@ function renderKPIs(filtered, containerId){
   ];
   // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
-    // Cancellation losses: prospective revenue that walked away. Cancelled
-    // bookings (net of any deposit kept) + cancelled chauffeur rides. Display
-    // only — cancelled records are already excluded from every revenue figure.
+    // Cancellation losses = DRIVER WAGES MISSED: what the assigned chauffeur(s)
+    // would have earned on cancelled trips. Cancelled rides pay 35% of the fare;
+    // cancelled bookings pay the assigned driver's amount (flat/hourly, or 35% if
+    // none) and $0 when no chauffeur was assigned — a self-drive rental that
+    // cancels costs the company revenue but costs no driver any wage. Display only.
     var bkCancelLoss = filtered.filter(function(b){ return b&&!b._deleted&&b.status==='cancelled'; })
-      .reduce(function(s,b){ return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)); },0);
-    var rideCancelLoss = (typeof _rideCancelLossForPeriod==='function')?_rideCancelLossForPeriod():0;
-    cards.push({label:'🚫 Cancellation Losses', val:$$(bkCancelLoss+rideCancelLoss), sub:$$(bkCancelLoss)+' bookings · '+$$(rideCancelLoss)+' rides — excluded from revenue', cls:(bkCancelLoss+rideCancelLoss)>0?'red':''});
+      .reduce(function(s,b){ return s+_bkDriverWageMissed(b); },0);
+    var rideCancelLoss = (typeof _rideCancelLossForPeriod==='function')?_rideCancelLossForPeriod()*CH_DRIVER_SHARE:0;
+    cards.push({label:'🚫 Cancellation Losses', val:$$(bkCancelLoss+rideCancelLoss), sub:'Driver wages missed · '+$$(rideCancelLoss)+' rides · '+$$(bkCancelLoss)+' bookings', cls:(bkCancelLoss+rideCancelLoss)>0?'red':''});
     cards.push({label:'🚘 Chauffeur Gross Fares', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' · before driver split', cls:''});
     cards.push({label:'🧑‍✈️ Driver Payouts (35%)', val:$$(driverPayouts), sub:'Paid to chauffeurs · deducted as cost', cls:'red'});
     cards.push({label:'◆ PB Ride Net (65%)', val:$$(pbRideNet), sub:'Prestige Black share of ride fares', cls:'green'});
@@ -7416,6 +7418,17 @@ function _jsAttr(s){ return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/
 // ── Chauffeur ride revenue (every completed ride, uncapped) for Overview KPIs ──
 var _rideTxns=[], _rideRevLoaded=false, _rideRevLoading=false, _rideRevLastAt=0;
 var _rideCancelTxns=[];   // cancelled rides [{at, amount, byDriver}] — loss KPI, never revenue
+// Estimated driver wage a cancelled BOOKING would have paid the assigned chauffeur.
+// Mirrors the driver app's pay model: explicit flat/hourly amount when assigned,
+// else 35% of the fare; $0 when no chauffeur was assigned (self-drive rental).
+function _bkDriverWageMissed(b){
+  var ad = b && b.assignedDriver;
+  if(!ad || !ad.email) return 0;
+  var amt = Number(ad.payAmount)||0;
+  if(ad.payType==='flat'   && amt>0) return amt;
+  if(ad.payType==='hourly' && amt>0) return amt*Math.max(1, Number(b.days)||1);
+  return (Number(b.revenue)||0)*0.35;
+}
 // Cancelled-ride losses within the current Overview period window
 function _rideCancelLossForPeriod(){
   if(!_rideCancelTxns||!_rideCancelTxns.length) return 0;
