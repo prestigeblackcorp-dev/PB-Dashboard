@@ -7149,6 +7149,7 @@ async function renderDriversTab(){
     var d; try{ d=JSON.parse(rawText2); }catch(e){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">Bad response ('+r.status+'): '+rawText2.slice(0,200)+'</div>'; return; }
     if(!r.ok){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">'+(d.error||'Error '+r.status)+'</div>'; return; }
     var list=d.drivers||[];
+    _rosterDrivers=list;   // cache for edit / invite actions
     _deletedDrivers=d.deletedDrivers||[];
     renderFleetDeleted();
     // Sync assign dropdowns
@@ -7191,7 +7192,12 @@ async function renderDriversTab(){
         +(rate?'<span style="font-size:10px;font-weight:700;color:var(--gold);background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:20px;padding:2px 8px">'+rate+'</span>':'')
         +'</div>'
         +'</div>'
-        +'<button onclick="deleteFleetDriver(\''+_jsAttr(drv.email)+'\')" title="Remove driver from fleet (restorable)" style="flex-shrink:0;align-self:flex-start;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">🗑</button>'
+        +'<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-self:flex-start">'
+        +'<button onclick="openEditDriverModal(\''+_jsAttr(drv.email)+'\')" title="Edit driver (name, phone, rate)" style="background:var(--gold-faint);border:1px solid var(--gold-dim);color:var(--gold);border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">✏️</button>'
+        +'<button onclick="sendDriverPortalInvite(\''+_jsAttr(drv.email)+'\')" title="Send / resend portal invite email" style="background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.3);color:#60a5fa;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">📨</button>'
+        +(drv.phone?'<a href="tel:'+esc(String(drv.phone).replace(/[^0-9+]/g,''))+'" title="Call driver" style="background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.3);color:#4ade80;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none">📞</a>':'')
+        +'<button onclick="deleteFleetDriver(\''+_jsAttr(drv.email)+'\')" title="Remove driver from fleet (restorable)" style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">🗑</button>'
+        +'</div>'
         +'</div>';
     }).join('')+'</div>';
   }catch(e){
@@ -7537,6 +7543,88 @@ async function restoreFleetDriver(email){
     if(typeof showToast==='function') showToast('Driver restored.');
     renderDriversTab();
   }catch(e){ alert('Network error restoring driver.'); }
+}
+
+// ── Chauffeur roster actions: edit profile + portal invite ─────────────────
+var _rosterDrivers=[];   // cached from /dashboard/drivers by renderDriversTab
+
+function openEditDriverModal(email){
+  var drv=(_rosterDrivers||[]).find(function(x){ return x&&(x.email||'').toLowerCase()===(email||'').toLowerCase(); });
+  if(!drv){ showToast('Driver not found — refresh the tab'); return; }
+  var _old=$d('editDriverOverlay'); if(_old) _old.remove();
+  var _ov=document.createElement('div');
+  _ov.id='editDriverOverlay';
+  _ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
+  _ov.innerHTML=
+    '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:420px">'+
+      '<div style="font-size:16px;font-weight:800;margin-bottom:4px">✏️ Edit Chauffeur Driver</div>'+
+      '<div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">'+esc(drv.email)+' <span style="opacity:.6">(email is the account key — to change it, add a new driver)</span></div>'+
+      '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Full Name *</div>'+
+        '<input id="edDrvName" type="text" class="finput" style="width:100%" value="'+esc(drv.name||'')+'"></div>'+
+      '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Phone</div>'+
+        '<input id="edDrvPhone" type="tel" class="finput" style="width:100%" value="'+esc(drv.phone||'')+'"></div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">'+
+        '<div><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Default Pay Type</div>'+
+          '<select id="edDrvPayType" class="finput" style="width:100%"><option value="flat"'+((drv.defaultPayType||'flat')==='flat'?' selected':'')+'>Flat per trip</option><option value="hourly"'+(drv.defaultPayType==='hourly'?' selected':'')+'>Hourly</option></select></div>'+
+        '<div><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Default Rate ($)</div>'+
+          '<input id="edDrvRate" type="number" min="0" step="0.01" class="finput" style="width:100%" value="'+(Number(drv.defaultRate||drv.payRate)||0)+'"></div>'+
+      '</div>'+
+      '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+        '<button class="btn" onclick="$d(\'editDriverOverlay\').remove()" style="border-color:var(--border)">Cancel</button>'+
+        '<button class="btn" onclick="saveEditDriver(\''+_jsAttr(drv.email)+'\')" id="edDrvSaveBtn" style="background:var(--gold);color:#000;border-color:var(--gold);font-weight:700">Save Changes</button>'+
+      '</div>'+
+    '</div>';
+  document.body.appendChild(_ov);
+  setTimeout(function(){ var el=$d('edDrvName'); if(el) el.focus(); },50);
+}
+
+async function saveEditDriver(email){
+  var name=($d('edDrvName').value||'').trim();
+  if(!name){ showToast('Name is required'); return; }
+  var phone=($d('edDrvPhone').value||'').trim();
+  var payType=$d('edDrvPayType').value||'flat';
+  var rate=parseFloat($d('edDrvRate').value)||0;
+  var btn=$d('edDrvSaveBtn'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+  try{
+    // /dashboard/add-driver is an upsert keyed by email — safe for edits
+    var r=await _fleetPost('/dashboard/add-driver',{name:name,email:email,phone:phone,payRate:rate,defaultPayType:payType});
+    if(!r||!r.ok){ var t=r?await r.text().catch(function(){return'';}):''; alert('Could not save driver'+(r?' ('+r.status+')':'')+'. '+(t||'').slice(0,160)); return; }
+    showToast('✏️ Driver updated ✅');
+    var _ov=$d('editDriverOverlay'); if(_ov) _ov.remove();
+    renderDriversTab();
+  }catch(e){ alert('Network error saving driver.'); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent='Save Changes'; } }
+}
+
+// Send (or resend) the driver-portal invite email. The worker only sends its
+// welcome email on FIRST add, so this is the way to re-invite an existing
+// driver who lost the email or never got set up.
+async function sendDriverPortalInvite(email){
+  var drv=(_rosterDrivers||[]).find(function(x){ return x&&(x.email||'').toLowerCase()===(email||'').toLowerCase(); });
+  if(!drv){ showToast('Driver not found — refresh the tab'); return; }
+  if(!MESSAGING_URL){ alert('Messaging worker URL not configured (Settings).'); return; }
+  var firstName=esc((drv.name||'Driver').split(' ')[0]);
+  var portalUrl=location.origin+location.pathname.replace(/[^\/]*$/,'')+'driver.html';
+  var html=
+    '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#0d0d0d;border:1px solid rgba(201,169,98,.35);border-radius:14px;overflow:hidden">'+
+      '<div style="background:linear-gradient(135deg,#1a1408,#0d0d0d);padding:30px;text-align:center;border-bottom:1px solid rgba(201,169,98,.25)">'+
+        '<div style="font-size:34px;font-weight:900;color:#C9A962;font-family:Georgia,serif;line-height:1">P</div>'+
+        '<div style="font-size:9px;letter-spacing:.3em;color:#C9A962;text-transform:uppercase;margin-top:4px">Prestige Black</div>'+
+        '<h1 style="margin:16px 0 0;color:#f5f1e6;font-size:21px;font-weight:800">Your Chauffeur Portal Access</h1>'+
+      '</div>'+
+      '<div style="padding:28px;color:#cfc4a8">'+
+        '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">Hi '+firstName+', here\'s your access to the PB Chauffeur Portal — view assignments, go on duty for rides, log hours, submit inspections, and track your earnings.</p>'+
+        '<div style="text-align:center;margin:24px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Open Chauffeur Portal →</a></div>'+
+        '<p style="font-size:13px;color:#998d72;margin:0;text-align:center">Sign in with this email: <strong style="color:#C9A962">'+esc(drv.email)+'</strong><br>You\'ll receive a 6-digit code — no password needed.</p>'+
+      '</div>'+
+      '<div style="background:#0a0907;padding:14px 28px;text-align:center;font-size:12px;color:#665c44;border-top:1px solid rgba(201,169,98,.15)">Prestige Black · Dallas–Fort Worth · (214) 207-2481</div>'+
+    '</div>';
+  try{
+    var r=await fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:drv.email,subject:'Your PB Chauffeur Portal Access — Prestige Black',html:html})});
+    if(!r.ok){ alert('Could not send invite ('+r.status+').'); return; }
+    showToast('📨 Portal invite sent to '+drv.email+' ✅');
+    logNotif('driver-invite','Portal Invite',drv.email,'');
+  }catch(e){ alert('Network error sending invite.'); }
 }
 // Restore a soft-deleted booking from the fleet panel (no modal pop, unlike restoreBooking).
 function restoreFleetBooking(id){
