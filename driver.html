@@ -17,6 +17,9 @@
   --text:#f5f1e6;--muted:#998d72;--text2:#cfc4a8;
 }
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;overflow-x:hidden;}
+/* No page pinch/double-tap zoom — panning only. The live map is unaffected:
+   MapLibre sets its own touch-action and runs pinch from raw touch events. */
+html,body{touch-action:pan-x pan-y;}
 
 /* ── Auth ─────────────────────────────────────────────────────────────── */
 #auth-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px;background:radial-gradient(ellipse at 50% 0%,rgba(201,169,98,.12) 0%,transparent 70%);}
@@ -108,6 +111,7 @@ textarea{resize:vertical;min-height:80px;}
 .badge-active{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3);}
 .badge-upcoming{background:rgba(201,169,98,.12);color:var(--blue);border:1px solid rgba(201,169,98,.25);}
 .badge-completed{background:rgba(107,122,154,.12);color:var(--muted);border:1px solid var(--border);}
+.badge-cancelled{background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.3);}
 .trip-row{display:flex;align-items:flex-start;gap:8px;font-size:13px;margin-bottom:5px;}
 .trip-label{color:var(--muted);font-size:12px;min-width:68px;flex-shrink:0;}
 .trip-val{color:var(--text2);flex:1;font-weight:500;}
@@ -576,6 +580,13 @@ body.nav-fs #map-expand-btn,body.nav-fs #map-fs-status,body.nav-fs #map-earn-chi
 'use strict';
 var WORKER = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 
+// iOS Safari ignores user-scalable=no and pinch-zooms the page anyway — block
+// its native gesture events so only the map zooms (MapLibre's pinch is built
+// on raw touch events, not these gesture events, so it keeps working).
+['gesturestart','gesturechange','gestureend'].forEach(function(ev){
+  document.addEventListener(ev,function(e){ e.preventDefault(); },{passive:false});
+});
+
 // ── State ──────────────────────────────────────────────────────────────────
 var _drvEmail = '';
 var _drvToken = '';
@@ -621,8 +632,9 @@ var _navLastLng = null;
 var _navFetching = false;
 var _navFollow = true;        // map follows driver (turn-by-turn) vs broad overview
 var _navOverviewPhase = null; // phase the broad overview was last shown for
-var NAV_FOLLOW_ZOOM = 17;     // zoom level when following the driver turn-by-turn (tight first-person)
-var NAV_PITCH = 60;           // 3D camera tilt while navigating (Apple-Maps-style first person)
+var NAV_FOLLOW_ZOOM = 18;     // zoom level when following the driver turn-by-turn (tighter first-person)
+var NAV_PITCH = 64;           // 3D camera tilt while navigating (Apple-Maps-style first person)
+var IDLE_ZOOM = 13;           // parked / waiting between trips — pulled back for area overview
 var _navHeading = 0;          // last finite GPS heading (degrees) — camera bearing in follow mode
 var _ridesMapReady = false;   // MapLibre style finished loading (sources/layers safe to add)
 var _navRoutePending = null;  // route GeoJSON buffered until the style is ready
@@ -991,6 +1003,8 @@ function calcTripFare(t){
 // standard 35% of the customer fare. Ride-hail trips carry payAmount 0, so they
 // always fall through to the 35% split.
 function calcTripPay(t){
+  // Cancelled trips never pay — the estimate must not count as earnings
+  if((t.status||'')==='cancelled') return 0;
   if(t.payType==='flat'   && Number(t.payAmount)>0) return Number(t.payAmount);
   if(t.payType==='hourly' && Number(t.payAmount)>0) return Number(t.hoursLogged||0)*Number(t.payAmount);
   return calcTripFare(t) * DRIVER_SHARE;
@@ -1011,11 +1025,14 @@ function tripCard(t, highlight){
   var date=t.pickupDate||t.date||'';
   var isToday=date===today;
   var isPast=date<today;
-  var badgeCls=isPast?'badge-completed':isToday?'badge-active':'badge-upcoming';
-  var badgeLabel=isPast?'Completed':isToday?'Today':'Upcoming';
+  var isCancelled=(t.status||'')==='cancelled';
+  var badgeCls=isCancelled?'badge-cancelled':isPast?'badge-completed':isToday?'badge-active':'badge-upcoming';
+  var badgeLabel=isCancelled?'Cancelled':isPast?'Completed':isToday?'Today':'Upcoming';
   var pay=calcTripPay(t);
   var hasFare=Number(t.fare||0)>0;
-  var payLabel=hasFare
+  var payLabel=isCancelled
+    ? '$0.00 — cancelled'
+    : hasFare
     ? fmt$(pay)
     : (t.payType==='hourly'
         ? fmt$(t.payAmount||0)+'/hr × '+(t.hoursLogged||0)+'h = '+fmt$(pay)
@@ -1360,7 +1377,30 @@ function drvSwitchTab(name){
 function onRidesTabOpen(){
   if(!_ridesMap) initRidesMap();
   renderActiveRidePanel();
+  _applyOrientation();   // rotated before opening the tab → go straight to full map
 }
+
+// ── Landscape = immersive full map on the Rides tab ────────────────────────
+// Rotating the phone horizontal removes the header/tabs by entering the
+// existing full-screen live-map mode (its fixed overlay covers them); pinch
+// zoom in/out works exactly as in portrait. Rotating back exits. Turn-by-turn
+// full-screen (nav-fs) always wins and is left alone.
+var _mqLand = window.matchMedia ? window.matchMedia('(orientation: landscape)') : null;
+function _applyOrientation(){
+  if(!_mqLand) return;
+  if(_mqLand.matches && _activeTab==='rides' && !_navFs){ setMapFullscreen(true); }
+  else if(!_mqLand.matches && _mapFs){ setMapFullscreen(false); }
+}
+if(_mqLand){
+  try{ _mqLand.addEventListener('change',_applyOrientation); }
+  catch(e){ try{ _mqLand.addListener(_applyOrientation); }catch(_e){} }
+}
+// Some browsers don't fire the media-query change on rotation — resize and
+// orientationchange both cover it (debounced into one check).
+var _orientT=null;
+function _queueOrientation(){ clearTimeout(_orientT); _orientT=setTimeout(_applyOrientation,150); }
+window.addEventListener('resize',_queueOrientation);
+window.addEventListener('orientationchange',_queueOrientation);
 
 function initRidesMap(){
   var el = document.getElementById('rides-map');
@@ -1564,7 +1604,7 @@ function updateMapSelfMarker(lat,lng,heading){
     try{
       _ridesMap.easeTo({
         center:[lng,lat],
-        zoom: following?NAV_FOLLOW_ZOOM:15,
+        zoom: following?NAV_FOLLOW_ZOOM:IDLE_ZOOM,   // tight first-person on a route, pulled back when parked
         pitch: following?NAV_PITCH:0,
         bearing: following?(_navHeading||0):0,
         padding: following?{top:80,bottom:0,left:0,right:0}:{top:0,bottom:0,left:0,right:0},
@@ -1729,6 +1769,8 @@ function renderActiveRidePanel(){
   if(r.riderPhone){
     actions.innerHTML+='<a href="tel:'+r.riderPhone+'" class="arc-btn arc-btn-call" style="text-decoration:none;display:flex;align-items:center;justify-content:center;gap:4px;padding:12px;">📞</a>';
   }
+  // Driver bail-out — the ride re-dispatches to the next nearest driver
+  actions.innerHTML+='<button class="arc-btn" style="flex:0 0 auto;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#f87171;padding:12px 14px;" onclick="driverCancelRide()">✕</button>';
   updateNav();
   if(r.status==='completed'){
     var crPay=(r.finalPrice||r.estimatedPrice||0)*DRIVER_SHARE;
@@ -1749,6 +1791,18 @@ async function startRide(){
   _activeRide.status='in_progress';
   renderActiveRidePanel();
 }
+async function driverCancelRide(){
+  if(!_activeRide||!drvState.token) return;
+  if(!confirm('Cancel this ride?\n\n• The rider is notified and the system immediately searches for the next available driver\n• Cancelled rides pay $0')) return;
+  var r=await fetch(WORKER+'/chauffeur/driver-cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){return null;});
+  var d=r?await r.json().catch(function(){return {};}):{};
+  if(!r||!r.ok){ drvToast(d.error||'Could not cancel ride','error'); return; }
+  _activeRide=null;
+  renderActiveRidePanel();
+  drvToast('Ride cancelled — rerouting to the next driver','error');
+  if(_onDuty) broadcastLocation();   // mark yourself available again right away
+}
+
 async function completeRide(){
   if(!_activeRide||!drvState.token) return;
   if(!confirm('Mark ride as complete?')) return;

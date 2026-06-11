@@ -1527,6 +1527,47 @@ function fitTripView(driverLoc){
   }catch(e){}
 }
 
+// ── Live driver route (gold) on the rider's map ────────────────────────────
+// Mirrors the driver's laid route — same OSRM engine, same origin/destination
+// (driver position → pickup before the trip, → current drop-off during it, so
+// hourly stop changes re-route here too). Just the gold line on the open map;
+// no street-by-street instructions on the rider side.
+let _rrLine=null,_rrCasing=null,_rrFetching=false,_rrLastLat=null,_rrLastLng=null,_rrPhase=null,_rrTgtLat=null,_rrTgtLng=null,_rrAt=0;
+function _riderRouteTarget(ride){
+  const st=(ride&&ride.status)||'';
+  if(st==='in_progress') return (ride.dropoffLat&&ride.dropoffLng)?{lat:+ride.dropoffLat,lng:+ride.dropoffLng,phase:'drop'}:null;
+  if(st==='accepted'||st==='driver_arrived') return (ride.pickupLat&&ride.pickupLng)?{lat:+ride.pickupLat,lng:+ride.pickupLng,phase:'pick'}:null;
+  return null;
+}
+function _clearRiderRoute(){
+  if(_rrLine){ try{ _map.removeLayer(_rrLine); }catch(e){} _rrLine=null; }
+  if(_rrCasing){ try{ _map.removeLayer(_rrCasing); }catch(e){} _rrCasing=null; }
+  _rrPhase=null; _rrLastLat=null; _rrLastLng=null; _rrTgtLat=null; _rrTgtLng=null;
+}
+function _updateRiderRoute(ride, driverLoc){
+  const tgt=_riderRouteTarget(ride);
+  if(!tgt||!driverLoc||!driverLoc.lat||!driverLoc.lng||!_map){ if(!tgt) _clearRiderRoute(); return; }
+  if(_rrFetching) return;
+  // Re-lay the line when the leg changes, the driver has really moved, or the
+  // destination itself moved (hourly stop update) — same triggers as the driver.
+  const moved   = _rrLastLat==null ? 1e9 : haversineKm(driverLoc.lat,driverLoc.lng,_rrLastLat,_rrLastLng)*1000;
+  const tgtMoved= _rrTgtLat==null ? 1e9 : haversineKm(tgt.lat,tgt.lng,_rrTgtLat,_rrTgtLng)*1000;
+  if(tgt.phase===_rrPhase && moved<120 && tgtMoved<25 && Date.now()-_rrAt<30000) return;
+  _rrFetching=true;
+  fetch(`https://router.project-osrm.org/route/v1/driving/${driverLoc.lng},${driverLoc.lat};${tgt.lng},${tgt.lat}?overview=full&geometries=geojson`,{cache:'no-store'})
+    .then(r=>r.json())
+    .then(d=>{
+      _rrFetching=false;
+      const c=d&&d.routes&&d.routes[0]&&d.routes[0].geometry&&d.routes[0].geometry.coordinates;
+      if(!c||c.length<2) return;
+      _rrLastLat=driverLoc.lat; _rrLastLng=driverLoc.lng; _rrPhase=tgt.phase; _rrTgtLat=tgt.lat; _rrTgtLng=tgt.lng; _rrAt=Date.now();
+      const ll=c.map(p=>[p[1],p[0]]);
+      if(_rrCasing){ _rrCasing.setLatLngs(ll); } else { _rrCasing=L.polyline(ll,{color:'#05070b',opacity:.45,weight:9,interactive:false}).addTo(_map); }
+      if(_rrLine){ _rrLine.setLatLngs(ll); } else { _rrLine=L.polyline(ll,{color:'#C9A962',opacity:.95,weight:5,interactive:false}).addTo(_map); }
+    })
+    .catch(()=>{ _rrFetching=false; });
+}
+
 function updateStatusUI(ride, driverLoc){
   const st=ride.status||'searching';
   _curRide=ride;
@@ -1535,6 +1576,14 @@ function updateStatusUI(ride, driverLoc){
   badge.innerHTML=(['searching','accepted','driver_arrived','in_progress'].includes(st)?'<div class="pulse-dot"></div>':'')+`<span id="statusBadgeText">${STATUS_LABELS[st]||st}</span>`;
   $d('statusTitle').textContent=STATUS_LABELS[st]||st;
   $d('statusSub').textContent=STATUS_SUBS[st]||'';
+  // Back to searching (driver cancelled & we're re-dispatching): clear every
+  // trace of the previous driver so the map matches "Finding your chauffeur…"
+  if(st==='searching'){
+    _activeDriver=null;
+    if(_driverMarker){ try{ _map.removeLayer(_driverMarker); }catch(e){} _driverMarker=null; }
+    _clearRiderRoute();
+    $d('etaChip').style.display='none';
+  }
   // Driver info
   if(ride.assignedDriver&&['accepted','driver_arrived','in_progress'].includes(st)){
     // Cache the driver object so we don't refetch the photo on every poll.
@@ -1564,6 +1613,7 @@ function updateStatusUI(ride, driverLoc){
   if(driverLoc&&driverLoc.lat&&driverLoc.lng){
     placeDriverMarker(driverLoc.lat,driverLoc.lng,driverLoc.heading);
     _lastDriverLoc=driverLoc;
+    _updateRiderRoute(ride, driverLoc);   // gold route line, updating as the driver moves
     // Re-frame the whole trip when the phase changes; otherwise just keep the
     // driver in view (without fighting the rider's own panning).
     if(_lastFitStatus!==st){ _lastFitStatus=st; fitTripView(driverLoc); }
@@ -1608,6 +1658,7 @@ function updateStatusUI(ride, driverLoc){
   // Completed
   if(st==='completed'){
     stopPolling();
+    _clearRiderRoute();
     $d('extendModal').style.display='none';
     $d('doneCard').style.display='block';
     $d('doneFare').textContent='$'+(ride.finalPrice||ride.estimatedPrice||0).toFixed(2);
@@ -1626,6 +1677,7 @@ function updateStatusUI(ride, driverLoc){
   }
   if(['cancelled','no_driver'].includes(st)){
     stopPolling();
+    _clearRiderRoute();
     $d('extendModal').style.display='none';
     $d('cancelRideBtn').style.display='none';
     $d('newRideBtn').style.display='block';
@@ -1745,6 +1797,7 @@ function newRide(){
   var _sSt=$d('stopsStatus'); if(_sSt) _sSt.textContent='';
   $d('hourlyPanel').style.display='none';
   $d('extendModal').style.display='none';
+  _clearRiderRoute();
   // Back to the booking view — re-arm the live pickup follow
   _pickupAuto=true;
   startBookingWatch();

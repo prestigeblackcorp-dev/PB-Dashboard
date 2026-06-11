@@ -6444,6 +6444,13 @@ function renderKPIs(filtered, containerId){
   ];
   // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
+    // Cancellation losses: prospective revenue that walked away. Cancelled
+    // bookings (net of any deposit kept) + cancelled chauffeur rides. Display
+    // only — cancelled records are already excluded from every revenue figure.
+    var bkCancelLoss = filtered.filter(function(b){ return b&&!b._deleted&&b.status==='cancelled'; })
+      .reduce(function(s,b){ return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)); },0);
+    var rideCancelLoss = (typeof _rideCancelLossForPeriod==='function')?_rideCancelLossForPeriod():0;
+    cards.push({label:'🚫 Cancellation Losses', val:$$(bkCancelLoss+rideCancelLoss), sub:$$(bkCancelLoss)+' bookings · '+$$(rideCancelLoss)+' rides — excluded from revenue', cls:(bkCancelLoss+rideCancelLoss)>0?'red':''});
     cards.push({label:'🚘 Chauffeur Gross Fares', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' · before driver split', cls:''});
     cards.push({label:'🧑‍✈️ Driver Payouts (35%)', val:$$(driverPayouts), sub:'Paid to chauffeurs · deducted as cost', cls:'red'});
     cards.push({label:'◆ PB Ride Net (65%)', val:$$(pbRideNet), sub:'Prestige Black share of ride fares', cls:'green'});
@@ -7408,6 +7415,20 @@ var _deletedRides=[], _deletedDrivers=[];
 function _jsAttr(s){ return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 // ── Chauffeur ride revenue (every completed ride, uncapped) for Overview KPIs ──
 var _rideTxns=[], _rideRevLoaded=false, _rideRevLoading=false, _rideRevLastAt=0;
+var _rideCancelTxns=[];   // cancelled rides [{at, amount, byDriver}] — loss KPI, never revenue
+// Cancelled-ride losses within the current Overview period window
+function _rideCancelLossForPeriod(){
+  if(!_rideCancelTxns||!_rideCancelTxns.length) return 0;
+  if(_kpiPeriod==='all') return _rideCancelTxns.reduce(function(s,t){ return s+(Number(t.amount)||0); },0);
+  var tod=todayStr();
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  return _rideCancelTxns.reduce(function(s,t){
+    var d=t&&t.at?dateStr(new Date(t.at)):'';
+    if(!d) return s;
+    if(_kpiPeriod==='today') return d===tod?s+(Number(t.amount)||0):s;
+    return (d>=cutoff&&d<=tod)?s+(Number(t.amount)||0):s;
+  },0);
+}
 // Sum of completed-ride fares within the current Overview period window (local time)
 function _rideRevForPeriod(){
   if(!_rideTxns||!_rideTxns.length) return 0;
@@ -7453,6 +7474,7 @@ function loadRideRevenue(force){
       _rideRevLoading=false;
       if(!d||!Array.isArray(d.rideTxns)) return;
       _rideTxns=d.rideTxns; _rideRevLoaded=true;
+      _rideCancelTxns=Array.isArray(d.cancelledTxns)?d.cancelledTxns:[];
       // Re-render just the Overview KPI grid now that ride revenue is available
       if($d('kpiGrid') && typeof getFiltered==='function' && typeof renderKPIs==='function'){
         try{ renderKPIs(getFiltered(),'kpiGrid'); }catch(e){}
