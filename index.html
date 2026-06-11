@@ -7557,8 +7557,10 @@ function openEditDriverModal(email){
   _ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
   _ov.innerHTML=
     '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:420px">'+
-      '<div style="font-size:16px;font-weight:800;margin-bottom:4px">✏️ Edit Chauffeur Driver</div>'+
-      '<div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">'+esc(drv.email)+' <span style="opacity:.6">(email is the account key — to change it, add a new driver)</span></div>'+
+      '<div style="font-size:16px;font-weight:800;margin-bottom:16px">✏️ Edit Chauffeur Driver</div>'+
+      '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Email (account key)</div>'+
+        '<input id="edDrvEmail" type="email" class="finput" style="width:100%" value="'+esc(drv.email||'')+'">'+
+        '<div style="font-size:10.5px;color:var(--muted);margin-top:4px;opacity:.8">Changing the email transfers the whole account — profile, trips, earnings, clocks and reviews move to the new email and the old one can no longer sign in.</div></div>'+
       '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Full Name *</div>'+
         '<input id="edDrvName" type="text" class="finput" style="width:100%" value="'+esc(drv.name||'')+'"></div>'+
       '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Phone</div>'+
@@ -7584,12 +7586,25 @@ async function saveEditDriver(email){
   var phone=($d('edDrvPhone').value||'').trim();
   var payType=$d('edDrvPayType').value||'flat';
   var rate=parseFloat($d('edDrvRate').value)||0;
+  var oldEmail=(email||'').toLowerCase().trim();
+  var newEmail=($d('edDrvEmail')&&$d('edDrvEmail').value||email||'').toLowerCase().trim();
+  if(!newEmail||newEmail.indexOf('@')===-1){ showToast('Valid email required'); return; }
   var btn=$d('edDrvSaveBtn'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
   try{
+    // Email changed → transfer the whole account FIRST (old key dies, the new
+    // one inherits profile, trips, earnings, clocks, reviews, live ride).
+    if(newEmail!==oldEmail){
+      if(!confirm('Transfer this driver to '+newEmail+'?\n\n• The OLD email can no longer sign in\n• Profile, trips, earnings, clocks, reviews and any live ride all move to the new email\n• The driver signs into the portal with the NEW email from now on')){ return; }
+      if(btn) btn.textContent='Transferring…';
+      var tr=await _fleetPost('/dashboard/change-driver-email',{oldEmail:oldEmail,newEmail:newEmail});
+      var td=tr?await tr.json().catch(function(){return{};}):{};
+      if(!tr||!tr.ok){ alert(td.error||'Transfer failed'+(tr?' ('+tr.status+')':'')+'.'); return; }
+      if(btn) btn.textContent='Saving…';
+    }
     // /dashboard/add-driver is an upsert keyed by email — safe for edits
-    var r=await _fleetPost('/dashboard/add-driver',{name:name,email:email,phone:phone,payRate:rate,defaultPayType:payType});
+    var r=await _fleetPost('/dashboard/add-driver',{name:name,email:newEmail,phone:phone,payRate:rate,defaultPayType:payType});
     if(!r||!r.ok){ var t=r?await r.text().catch(function(){return'';}):''; alert('Could not save driver'+(r?' ('+r.status+')':'')+'. '+(t||'').slice(0,160)); return; }
-    showToast('✏️ Driver updated ✅');
+    showToast(newEmail!==oldEmail?'🔁 Account transferred to '+newEmail+' ✅':'✏️ Driver updated ✅');
     var _ov=$d('editDriverOverlay'); if(_ov) _ov.remove();
     renderDriversTab();
   }catch(e){ alert('Network error saving driver.'); }

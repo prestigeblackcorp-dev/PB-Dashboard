@@ -345,6 +345,19 @@
 <!-- Hidden file inputs -->
 <input type="file" id="photo-upload-input" accept="image/*" style="display:none;" onchange="handlePhotoUpload(event)">
 
+<!-- Trip photo module: clients add/remove their own photos ONLY while this is
+     open and unlocked; Save & Finish locks the phase to view-only forever. -->
+<div id="tripPhotoModal" style="display:none;position:fixed;inset:0;z-index:9990;background:rgba(0,0,0,.78);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeTripPhotoModule()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:22px;width:100%;max-width:420px;max-height:86vh;overflow-y:auto">
+    <div id="tpm-title" style="font-size:17px;font-weight:800;margin-bottom:6px;color:var(--text)">Trip Photos</div>
+    <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5">Add or remove your photos now. When you tap <b style="color:var(--gold)">Save &amp; Finish</b>, they lock for your protection — you can view them anytime, but nothing can be added or removed.</div>
+    <div id="tpm-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0 6px"></div>
+    <div id="tpm-count" style="font-size:11px;color:var(--text-muted);text-align:center;margin-bottom:14px"></div>
+    <button onclick="finishTripPhotoModule()" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:12px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">🔒 Save &amp; Finish</button>
+    <button onclick="closeTripPhotoModule()" style="width:100%;margin-top:10px;background:transparent;border:1px solid var(--border);color:var(--text-muted);border-radius:12px;padding:13px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Close — keep editing later</button>
+  </div>
+</div>
+
 <!-- Notification Bottom Sheet -->
 <div id="notif-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9991;" onclick="if(event.target===this)closeNotifications()">
   <div style="position:absolute;bottom:0;left:0;right:0;background:#1a1a1a;border:1px solid var(--border);border-radius:22px 22px 0 0;width:100%;max-width:480px;margin:0 auto;padding:20px 18px 32px;max-height:75vh;overflow-y:auto;">
@@ -1527,40 +1540,68 @@ function progressBar(status){
   return html;
 }
 
+// Effective trip end day — dropoffDate pushed forward by any extensions, so after
+// an extension/date change the post-trip window moves to the NEW return date.
+function tripEffEndDay(b){
+  let end = String(b.dropoffDate||b.returnDate||b.pickupDate||b.date||'').split('T')[0];
+  const exts = Array.isArray(b.extensions)?b.extensions:Object.values(b.extensions||{});
+  exts.forEach(e=>{ const t=e&&String(e.toDate||e.newEndDate||'').split('T')[0]; if(t&&t>end) end=t; });
+  return end;
+}
+function _fmtDayShort(s){ return s?fmtDate(s):''; }
+
+// Owner check-in/check-out photos — fetched read-only per booking, cached.
+var _ownerPhotos = {};        // bookingId -> {checkIn:[],checkOut:[]}
+var _ownerPhotosLoading = {};
+function _loadOwnerPhotos(bid){
+  if(_ownerPhotos[bid]||_ownerPhotosLoading[bid]||!state.token) return;
+  const b = state.bookings.find(x=>x.id===bid);
+  if(!b || (!(b.checkInPhotoIds||[]).length && !(b.checkOutPhotoIds||[]).length)) return;
+  _ownerPhotosLoading[bid]=true;
+  fetch(`${WORKER}/portal/booking-photos?bookingId=${encodeURIComponent(bid)}&token=${encodeURIComponent(state.token)}`,{cache:'no-store'})
+    .then(r=>r.ok?r.json():null)
+    .then(d=>{
+      _ownerPhotosLoading[bid]=false;
+      if(d&&(d.checkIn||d.checkOut)){ _ownerPhotos[bid]={checkIn:d.checkIn||[],checkOut:d.checkOut||[]}; renderBookings(); }
+    })
+    .catch(()=>{ _ownerPhotosLoading[bid]=false; });
+}
+
 function showCondition(booking){
   const s = (booking.status||'').toLowerCase();
   if(!['confirmed','in-progress','in_progress','active','completed'].includes(s)) return '';
-  const preOwner = booking.checkInPhotos||[];
-  const postOwner = booking.incPhotoData||[];
-  const preCust = booking.customerPreTripPhotos||[];
-  const postCust = booking.customerPostTripPhotos||[];
-  // Pre-trip: only allow upload on the day of pickup (or later, before post-trip phase)
-  // Post-trip: only allow upload when booking is active/in-progress
-  const bStatus = (booking.status||'').toLowerCase();
-  const isActive = ['in-progress','in_progress','active'].includes(bStatus);
-  const pickupDay = booking.pickupDate ? booking.pickupDate.split('T')[0] : null;
-  const todayStr = new Date().toLocaleDateString('en-CA',{timeZone:'America/Chicago'}); // YYYY-MM-DD, Central Time
-  const isDayOf = pickupDay && todayStr >= pickupDay;
+  const owner = _ownerPhotos[booking.id]||{};
+  if(!_ownerPhotos[booking.id]) setTimeout(()=>_loadOwnerPhotos(booking.id),0);
+  const preOwner = owner.checkIn||[];
+  const postOwner = owner.checkOut||[];
+  const preCust = (booking.customerPreTripPhotos||[]).filter(Boolean);
+  const postCust = (booking.customerPostTripPhotos||[]).filter(Boolean);
+  const preLocked = !!booking.customerPreTripLockedAt;
+  const postLocked = !!booking.customerPostTripLockedAt;
+  const pickupDay = String(booking.pickupDate||booking.date||'').split('T')[0];
+  const endDay = tripEffEndDay(booking);
+  const todayStr = new Date().toLocaleDateString('en-CA',{timeZone:'America/Chicago'}); // CT
+  const preOpen  = pickupDay && todayStr >= pickupDay && !preLocked;
+  const postOpen = endDay && todayStr >= endDay && !postLocked;
 
-  const renderPhotos = (arr, type, bookingId) => {
-    let html = '<div class="photo-grid">';
-    arr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')">`; });
-    if(type==='pre' && isDayOf && !isActive){
-      html += `<button class="add-photo-btn" onclick="triggerPhotoUpload('${bookingId}','pre')" title="Upload pre-trip photo">+</button>`;
-    } else if(type==='post' && isActive){
-      html += `<button class="add-photo-btn" onclick="triggerPhotoUpload('${bookingId}','post')" title="Upload post-trip photo">+</button>`;
-    } else if(type==='pre' && !isDayOf){
-      html += `<div style="font-size:11px;color:var(--text-muted);padding:4px 0">Available day of trip</div>`;
-    } else if(type==='post' && !isActive){
-      html += `<div style="font-size:11px;color:var(--text-muted);padding:4px 0">Available when trip is active</div>`;
-    }
+  const col = (label, ownerArr, custArr, type, open, locked, notYetMsg) => {
+    let html = `<div><div class="condition-col-label">${label}</div><div class="photo-grid">`;
+    ownerArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Uploaded by Prestige Black">`; });
+    custArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Your photo">`; });
     html += '</div>';
-    return html;
+    if(open){
+      html += `<button onclick="openTripPhotoModule('${esc(booking.id)}','${type}')" style="margin-top:6px;width:100%;padding:8px;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.35);color:var(--gold);border-radius:9px;font-size:11px;font-weight:800;cursor:pointer">📷 ${custArr.length?'Manage':'Add'} ${label} Photos</button>`;
+    } else if(locked){
+      html += `<div style="font-size:10.5px;color:var(--text-muted);padding:5px 0">🔒 Locked — view only</div>`;
+    } else {
+      html += `<div style="font-size:10.5px;color:var(--text-muted);padding:5px 0">${notYetMsg}</div>`;
+    }
+    return html+'</div>';
   };
   return `<div class="section-title">Vehicle Condition</div>
     <div class="condition-cols">
-      <div><div class="condition-col-label">Pre-Trip</div>${renderPhotos([...preOwner,...preCust],'pre',booking.id)}</div>
-      <div><div class="condition-col-label">Post-Trip</div>${renderPhotos([...postOwner,...postCust],'post',booking.id)}</div>
+      ${col('Pre-Trip', preOwner, preCust, 'pre', preOpen, preLocked, 'Opens on pickup day'+(pickupDay?' · '+_fmtDayShort(pickupDay):''))}
+      ${col('Post-Trip', postOwner, postCust, 'post', postOpen, postLocked, 'Opens on return day'+(endDay?' · '+_fmtDayShort(endDay):''))}
     </div>`;
 }
 
@@ -2446,6 +2487,66 @@ function triggerPhotoUpload(bookingId, type){
   document.getElementById('photo-upload-input').click();
 }
 
+// ── Trip photo module (pre/post) — add & remove only here, then lock ───────
+var _tripModule=null;   // {bookingId,type} while the module is open
+function openTripPhotoModule(bookingId,type){
+  _tripModule={bookingId,type};
+  _renderTripModule();
+  const m=document.getElementById('tripPhotoModal');
+  m.style.display='flex';
+}
+function closeTripPhotoModule(){
+  _tripModule=null;
+  document.getElementById('tripPhotoModal').style.display='none';
+}
+function _renderTripModule(){
+  if(!_tripModule) return;
+  const bk=state.bookings.find(b=>b.id===_tripModule.bookingId); if(!bk) return;
+  const type=_tripModule.type;
+  const arr=((type==='pre'?bk.customerPreTripPhotos:bk.customerPostTripPhotos)||[]).filter(Boolean);
+  document.getElementById('tpm-title').textContent=(type==='pre'?'Pre-Trip':'Post-Trip')+' Photos — '+(bk.vehicle||'');
+  let g='';
+  arr.forEach((src,i)=>{
+    g+=`<div style="position:relative"><img class="photo-thumb" src="${src}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${src}')"><button onclick="deleteTripPhoto(${i})" title="Remove photo" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#ef4444;color:#fff;border:2px solid var(--surface);font-size:11px;font-weight:800;cursor:pointer;line-height:1">✕</button></div>`;
+  });
+  if(arr.length<12){
+    g+=`<button onclick="triggerPhotoUpload('${esc(bk.id)}','${type}')" title="Add photo" style="height:84px;border:1.5px dashed rgba(201,169,98,.4);border-radius:10px;background:transparent;color:var(--gold);font-size:22px;cursor:pointer">+</button>`;
+  }
+  document.getElementById('tpm-grid').innerHTML=g;
+  document.getElementById('tpm-count').textContent=arr.length+' / 12 photos';
+}
+async function deleteTripPhoto(index){
+  if(!_tripModule) return;
+  const {bookingId,type}=_tripModule;
+  showLoading();
+  try{
+    const r=await fetch(`${WORKER}/portal/delete-photo`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,bookingId,type,index})});
+    const d=await r.json();
+    if(!r.ok){ toast(d.error||'Could not remove photo','error'); return; }
+    const bk=state.bookings.find(b=>b.id===bookingId);
+    if(bk){ const f=type==='pre'?'customerPreTripPhotos':'customerPostTripPhotos'; const a=(bk[f]||[]).filter(Boolean); a.splice(index,1); bk[f]=a; }
+    _renderTripModule(); renderBookings();
+    toast('Photo removed','success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+async function finishTripPhotoModule(){
+  if(!_tripModule) return;
+  const {bookingId,type}=_tripModule;
+  if(!confirm('Save & lock these photos?\n\nOnce saved you can VIEW them anytime, but you can NO LONGER add or remove photos for this phase. Make sure everything is added first.')) return;
+  showLoading();
+  try{
+    const r=await fetch(`${WORKER}/portal/lock-photos`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,bookingId,type})});
+    const d=await r.json();
+    if(!r.ok){ toast(d.error||'Could not save','error'); return; }
+    const bk=state.bookings.find(b=>b.id===bookingId);
+    if(bk){ if(type==='pre') bk.customerPreTripLockedAt=Date.now(); else bk.customerPostTripLockedAt=Date.now(); }
+    closeTripPhotoModule(); renderBookings();
+    toast('🔒 Photos saved & locked','success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+
 function handlePhotoUpload(e){
   const file = e.target.files[0]; if(!file) return;
   const reader = new FileReader();
@@ -2466,6 +2567,7 @@ function handlePhotoUpload(e){
           else             bk.customerPostTripPhotos = [...(bk.customerPostTripPhotos||[]), photo];
         }
         renderBookings();
+        if(_tripModule) _renderTripModule();   // refresh the open module grid
         toast('Photo uploaded!','success');
       }catch(e){ toast('Upload failed','error'); }
       finally{ hideLoading(); e.target.value=''; state.pendingPhotoUpload=null; }
