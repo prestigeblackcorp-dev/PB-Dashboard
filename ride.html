@@ -431,12 +431,21 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
       </div>
     </div>
 
-    <!-- Time's-up modal: extend the hourly booking or end the trip -->
+    <!-- Time's-up module: thank the guest, show any overtime, extend or end -->
     <div id="extendModal" class="rmodal-overlay" style="display:none">
       <div class="rmodal-card">
-        <div class="rmodal-title">⏱ Your time is up</div>
-        <div class="rmodal-sub" id="extendSub">Your hourly booking has ended. Need more time with your chauffeur?</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:18px;margin:18px 0 6px;">
+        <div style="text-align:center;font-size:34px;line-height:1;margin-bottom:8px;">🥂</div>
+        <div class="rmodal-title" id="extendTitle" style="text-align:center;">Thank you for riding with us</div>
+        <div class="rmodal-sub" id="extendSub" style="text-align:center;">Your hourly time is up. Add more time, or end the trip and we'll wrap up your charges.</div>
+        <!-- Live overtime breakdown (only past the booked time + 5-min grace) -->
+        <div id="overtimeBox" style="display:none;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.25);border-radius:12px;padding:12px 14px;margin:14px 0 4px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);"><span>Overtime</span><span id="otMinutes">0 min</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:4px;"><span>Rate</span><span>$200/hr · $3.33/min</span></div>
+          <div style="display:flex;justify-content:space-between;font-weight:800;color:#f87171;font-size:15px;border-top:1px solid rgba(239,68,68,.2);padding-top:7px;margin-top:7px;"><span>Overtime charge</span><span id="otCharge">$0.00</span></div>
+          <div id="otStatus" style="font-size:10.5px;color:var(--muted);margin-top:7px;text-align:center;line-height:1.4;"></div>
+        </div>
+        <div style="font-size:10px;font-weight:800;letter-spacing:.1em;color:var(--muted);text-align:center;margin:16px 0 4px;">ADD MORE TIME</div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:18px;margin:2px 0 6px;">
           <button onclick="extPlus(-1)" style="width:44px;height:44px;border-radius:50%;background:transparent;border:1px solid var(--border);color:var(--text);font-size:20px;cursor:pointer;">−</button>
           <div style="text-align:center;min-width:90px;">
             <div style="font-size:30px;font-weight:900;color:var(--gold);"><span id="extHoursVal">1</span></div>
@@ -446,7 +455,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
         </div>
         <div id="extendStatus" style="font-size:12px;color:var(--muted);text-align:center;margin-bottom:10px;min-height:14px;"></div>
         <button class="btn-gold" id="extendConfirmBtn" onclick="confirmExtend()">Extend</button>
-        <button id="endTripBtn" onclick="endHourlyNow()" style="width:100%;margin-top:10px;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:14px;padding:14px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">End Trip Now</button>
+        <button id="endTripBtn" onclick="endHourlyNow()" style="width:100%;margin-top:10px;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:14px;padding:14px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">Mark Trip Complete &amp; Accept Charges</button>
       </div>
     </div>
 
@@ -523,7 +532,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
                 <span class="hours-label">Duration</span>
                 <div class="hours-ctrl">
                   <button class="hours-btn" onclick="changeHours(-1)">−</button>
-                  <span class="hours-val" id="hoursVal">2</span>
+                  <span class="hours-val" id="hoursVal">1</span>
                   <button class="hours-btn" onclick="changeHours(1)">+</button>
                 </div>
                 <span style="font-size:13px;color:var(--muted)">hrs</span>
@@ -616,6 +625,9 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
             </div>
             <button class="btn-gold" id="sendStopsBtn" onclick="sendStops()" style="width:100%;">Update Driver's Route</button>
             <div id="stopsStatus" style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px;min-height:15px;"></div>
+            <!-- End trip early — only the rider can end an hourly trip; guarded by a
+                 confirm so it isn't tapped by accident -->
+            <button id="endEarlyBtn" onclick="endTripEarly()" style="width:100%;margin-top:10px;background:transparent;border:1px solid rgba(239,68,68,.3);color:#f87171;border-radius:12px;padding:11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;opacity:.85;">⏹ End trip early</button>
           </div>
           <div class="done-card" id="doneCard" style="display:none">
             <div class="done-icon">⭐</div>
@@ -667,9 +679,10 @@ let _stopSel = null;          // {lat,lng,address} chosen current stop
 let _nextStopSel = null;      // {lat,lng,address} chosen next stop
 let _hourlyTimerId = null;    // 1s countdown ticker
 let _hourlyEndsAt = 0;        // startedAt + hours (ms epoch)
-let _extPrompted = false;     // time's-up modal already shown for this expiry
+let _extPrompted = false;     // time's-up module already shown for this expiry
 let _extHours = 1;            // hours selected in the extend stepper
-let _hours = 2;
+let _autoEnding = false;      // auto-end (2 min after route complete) already firing
+let _hours = 1;
 let _pickup = null;  // {lat,lng,address}
 let _dropoff = null;
 let _distanceMiles = 0;
@@ -1354,10 +1367,10 @@ function renderFareBreakdown(d){
   var fb=$d('fareBreakdown'); if(!fb) return;
   var rows='';
   if(_rideType==='hourly'){
-    var hrs=Math.max(2,_hours);
+    var hrs=Math.max(1,_hours);
     rows+=fbRow('Hourly rate','$'+Number(d.hourlyRate||0).toFixed(0)+'/hr');
     rows+=fbRow('Duration',hrs+' hr'+(hrs!==1?'s':''));
-    if(_hours<2) rows+=fbRow2('2 hr minimum','','note');
+    if(_hours<1) rows+=fbRow2('1 hr minimum','','note');
   } else {
     var rtThresh=Number(d.rtThreshold)||20;
     var real=_distanceMiles;
@@ -1719,24 +1732,72 @@ function updateStatusUI(ride, driverLoc){
   }
 }
 
-// ── Hourly: countdown, mid-trip stops, time's-up extend/end ────────────────
+// ── Hourly: countdown → overtime meter → 2-min auto-end ────────────────────
+// Overtime accrues past the booked time but only once it exceeds a 5-minute
+// grace, billed by the minute at the hourly rate, and STOPS when the driver
+// marks the route complete (routeCompleteAt). Mirrors the worker exactly.
+function _overtime(){
+  var ride=_curRide||{};
+  if(!_hourlyEndsAt) return {ms:0,charge:0,min:0,final:false};
+  var stopAt=ride.routeCompleteAt?Number(ride.routeCompleteAt):Date.now();
+  var otMs=stopAt-_hourlyEndsAt;
+  if(otMs<=5*60000) otMs=0;                       // 5-minute grace
+  var rate=_extRate();
+  return { ms:otMs, charge:Math.round((otMs/3600000)*rate*100)/100, min:Math.max(0,Math.round(otMs/60000)), final:!!ride.routeCompleteAt };
+}
 function _tickHourly(){
   var el=$d('hourlyTimeLeft'); if(!el||!_hourlyEndsAt) return;
   var ms=_hourlyEndsAt-Date.now();
   var chip=$d('hourlyTimeChip');
-  if(ms<=0){
-    el.textContent='Time up';
-    if(chip){ chip.style.color='var(--red)'; chip.style.borderColor='rgba(239,68,68,.4)'; }
-    if(!_extPrompted){ _extPrompted=true; openExtendModal(); }
+  if(ms>0){
+    var h=Math.floor(ms/3600000), m=Math.floor(ms%3600000/60000), s=Math.floor(ms%60000/1000);
+    el.textContent=h>0?(h+'h '+(m<10?'0':'')+m+'m'):(m+':'+(s<10?'0':'')+s);
+    if(chip){ var warn=ms<600000; chip.style.color=warn?'var(--red)':'var(--gold)'; chip.style.borderColor=warn?'rgba(239,68,68,.4)':'rgba(201,169,98,.3)'; }
     return;
   }
-  var h=Math.floor(ms/3600000), m=Math.floor(ms%3600000/60000), s=Math.floor(ms%60000/1000);
-  el.textContent=h>0?(h+'h '+(m<10?'0':'')+m+'m'):(m+':'+(s<10?'0':'')+s);
-  if(chip){
-    var warn=ms<600000;   // under 10 minutes
-    chip.style.color=warn?'var(--red)':'var(--gold)';
-    chip.style.borderColor=warn?'rgba(239,68,68,.4)':'rgba(201,169,98,.3)';
+  // Past the booked time — overtime mode.
+  var ride=_curRide||{};
+  if(ride.routeCompleteAt){
+    var ot=_overtime();
+    el.textContent=ot.charge>0?('+'+ot.min+'m overtime'):'Wrapping up';
+  } else {
+    var over=Math.floor((Date.now()-_hourlyEndsAt)/1000), om=Math.floor(over/60), os=over%60;
+    el.textContent='+'+om+':'+(os<10?'0':'')+os+' over';
   }
+  if(chip){ chip.style.color='var(--red)'; chip.style.borderColor='rgba(239,68,68,.4)'; }
+  if(!_extPrompted){ _extPrompted=true; openExtendModal(); }
+  if($d('extendModal').style.display==='flex') _refreshEndModule();
+  // Auto-end 2 min after the later of booked-end / route-complete — only once the
+  // driver has finished the route and the rider hasn't extended.
+  if(ride.routeCompleteAt && !_autoEnding){
+    var autoAt=Math.max(_hourlyEndsAt, Number(ride.routeCompleteAt))+120000;
+    if(Date.now()>=autoAt){ _autoEnding=true; endHourlyNow(true); }
+  }
+}
+// Keep the open end-module's overtime + button total live.
+function _refreshEndModule(){
+  var ride=_curRide||{}, ot=_overtime();
+  var box=$d('overtimeBox');
+  if(box){
+    if(ot.ms>0 || ride.routeCompleteAt){
+      box.style.display='block';
+      if($d('otMinutes')) $d('otMinutes').textContent=ot.min+' min';
+      if($d('otCharge')) $d('otCharge').textContent='$'+ot.charge.toFixed(2);
+      var st=$d('otStatus');
+      if(st){
+        if(ride.routeCompleteAt){
+          var autoAt=Math.max(_hourlyEndsAt,Number(ride.routeCompleteAt))+120000;
+          var left=Math.max(0,Math.ceil((autoAt-Date.now())/1000));
+          st.textContent='✓ Your driver has finished — trip auto-completes in '+left+'s. Extend to keep going.';
+        } else {
+          st.textContent='Your driver is still finishing the route — charges finalise the moment they\'re done.';
+        }
+      }
+    } else { box.style.display='none'; }
+  }
+  var base=Number(ride.estimatedPrice)||0, total=base+ot.charge;
+  var e=$d('endTripBtn');
+  if(e && !e.disabled){ e.textContent= ot.charge>0 ? ('Mark Complete & Accept · $'+total.toFixed(2)) : 'Mark Trip Complete & Accept Charges'; }
 }
 
 async function sendStops(){
@@ -1775,10 +1836,11 @@ function extPlus(d){ _extHours=Math.min(12,Math.max(1,_extHours+d)); _updExtPric
 function openExtendModal(){
   _extHours=1; _updExtPrice();
   var sub=$d('extendSub');
-  if(sub&&_curRide) sub.textContent='Your '+_curRide.hours+'-hour booking has ended. Need more time with your chauffeur?';
+  if(sub) sub.textContent='Your '+((_curRide&&_curRide.hours)||'')+'-hour time is up. Thank you for choosing Prestige Black — add more time, or end the trip and we\'ll finalise your charges.';
   var stt=$d('extendStatus'); if(stt) stt.textContent='';
   var b=$d('extendConfirmBtn'); if(b) b.disabled=false;
-  var e=$d('endTripBtn'); if(e){ e.disabled=false; e.textContent='End Trip Now'; }
+  var e=$d('endTripBtn'); if(e) e.disabled=false;
+  _refreshEndModule();
   $d('extendModal').style.display='flex';
 }
 async function confirmExtend(){
@@ -1787,9 +1849,10 @@ async function confirmExtend(){
   if(b){ b.disabled=true; b.textContent='Extending…'; }
   const d=await fetch(WORKER+'/chauffeur/extend-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId,additionalHours:_extHours})}).then(r=>r.json()).catch(()=>null);
   if(d&&d.ok){
-    _extPrompted=false;                          // re-arm the prompt for the new expiry
-    if(_curRide){ _curRide.hours=d.hours; _curRide.estimatedPrice=d.estimatedPrice; }
+    _extPrompted=false; _autoEnding=false;       // re-arm for the new expiry
+    if(_curRide){ _curRide.hours=d.hours; _curRide.estimatedPrice=d.estimatedPrice; _curRide.routeCompleteAt=0; }
     $d('extendModal').style.display='none';
+    var ob=$d('overtimeBox'); if(ob) ob.style.display='none';
     var chip=$d('hourlyTimeChip'); if(chip){ chip.style.color='var(--gold)'; chip.style.borderColor='rgba(201,169,98,.3)'; }
     pollRideStatus();                            // pull the new hours → countdown extends
   } else {
@@ -1797,7 +1860,7 @@ async function confirmExtend(){
     if(stt){ stt.textContent=(d&&d.error)||'Could not extend — try again'; stt.style.color='var(--red)'; }
   }
 }
-async function endHourlyNow(){
+async function endHourlyNow(auto){
   if(!_rideId||!_session) return;
   var e=$d('endTripBtn'), stt=$d('extendStatus');
   if(e){ e.disabled=true; e.textContent='Ending trip…'; }
@@ -1806,9 +1869,20 @@ async function endHourlyNow(){
     $d('extendModal').style.display='none';
     pollRideStatus();                            // status flips to completed → done card + star-rating review
   } else {
-    if(e){ e.disabled=false; e.textContent='End Trip Now'; }
-    if(stt){ stt.textContent=(d&&d.error)||'Could not end the trip — your driver can also end it'; stt.style.color='var(--red)'; }
+    _autoEnding=false;
+    if(e){ e.disabled=false; _refreshEndModule(); }
+    if(stt){ stt.textContent=(d&&d.error)||'Could not end the trip — try again in a moment'; stt.style.color='var(--red)'; }
   }
+}
+// End trip BEFORE the booked time is up. Guarded by a confirm so it isn't tapped
+// by accident. Hourly is pay-for-booked-time, so ending early still bills in full.
+async function endTripEarly(){
+  if(!_rideId||!_session) return;
+  if(!confirm('End your hourly trip now?\n\nYou booked a set number of hours, so ending early still charges the full booked time. This cannot be undone.')) return;
+  var btn=$d('endEarlyBtn'); if(btn){ btn.disabled=true; btn.textContent='Ending…'; }
+  const d=await fetch(WORKER+'/chauffeur/complete-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId})}).then(r=>r.json()).catch(()=>null);
+  if(d&&d.ok){ pollRideStatus(); }
+  else { if(btn){ btn.disabled=false; btn.textContent='⏹ End trip early'; } toast((d&&d.error)||'Could not end the trip — try again','error'); }
 }
 
 async function cancelRide(){
@@ -1824,7 +1898,7 @@ function newRide(){
   _rideId=null; _pickup=null; _dropoff=null; _distanceMiles=0; _estPrice=0;
   _activeDriver=null;
   // Hourly in-trip state
-  _curRide=null; _stopSel=null; _nextStopSel=null; _extPrompted=false; _extHours=1; _hourlyEndsAt=0;
+  _curRide=null; _stopSel=null; _nextStopSel=null; _extPrompted=false; _autoEnding=false; _extHours=1; _hourlyEndsAt=0;
   if(_hourlyTimerId){ clearInterval(_hourlyTimerId); _hourlyTimerId=null; }
   var _sIn=$d('stopInp'); if(_sIn) _sIn.value='';
   var _nIn=$d('nextstopInp'); if(_nIn) _nIn.value='';
