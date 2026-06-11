@@ -7,6 +7,17 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Prestige Black — On-Demand Chauffeur</title>
+<meta name="theme-color" content="#0a0a0a">
+<link rel="manifest" href="ride.manifest.json">
+<link rel="apple-touch-icon" href="icon.png">
+<script>
+/* PWA (quick-win C): register the service worker for installability + push foundation.
+   Network-first SW (sw.js) keeps content fresh; we deliberately do NOT auto-reload on
+   update here (unlike the dashboard) so a new deploy never interrupts a live trip. */
+if((window.PB_FLAGS||{}).pwa && 'serviceWorker' in navigator){
+  window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); });
+}
+</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -543,7 +554,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
           <!-- Price estimate -->
           <div class="price-card fare-toggle" id="priceCard" style="display:none" onclick="toggleFareBreakdown()">
             <div>
-              <div class="price-label">Estimated Fare</div>
+              <div class="price-label" id="priceLabel">Estimated Fare</div>
               <div class="price-amount" id="priceAmount">$—</div>
               <div class="price-detail" id="priceDetail"></div>
             </div>
@@ -579,6 +590,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
               <div class="driver-details">
                 <div class="driver-name" id="driverName">—</div>
                 <div class="driver-sub" id="driverSub">Your chauffeur</div>
+                <div id="driverVehicle" style="display:none;font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4"></div>
                 <div class="driver-rating" id="driverRating" style="display:none"></div>
                 <button class="driver-reviews-link" id="driverReviewsBtn" style="display:none" onclick="openDriverReviews()">See reviews ›</button>
               </div>
@@ -634,6 +646,8 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
             <div class="done-title">Ride Complete!</div>
             <div class="done-price" id="doneFare"></div>
             <div class="done-sub">Thank you for riding with Prestige Black</div>
+            <!-- Demo payment receipt + tip (quick-win H, simulation until real Stripe) -->
+            <div id="donePayBlock" style="display:none;margin-top:16px;text-align:left"></div>
           </div>
         </div>
         <div class="sheet-actions">
@@ -926,6 +940,17 @@ function renderActiveDriverCard(){
     else { av.classList.remove('has-photo'); av.style.backgroundImage='none'; av.textContent=(_activeDriver.name?_activeDriver.name[0].toUpperCase():'🧑‍✈️'); }
   }
   $d('driverName').textContent=_activeDriver.name||'Your chauffeur';
+  // Vehicle + "PB Verified Chauffeur" badge (quick-win B). Renders only when present.
+  var veh=$d('driverVehicle');
+  if(veh){
+    var _ad=_activeDriver;
+    var _vparts=[_ad.vehicleColor,_ad.vehicleMake,_ad.vehicleModel].filter(Boolean).join(' ');
+    var _plate=_ad.vehiclePlate?'<span style="font-weight:800;color:#ead9b0;letter-spacing:.04em;border:1px solid rgba(201,169,98,.32);border-radius:4px;padding:0 5px;margin-left:6px">'+esc(_ad.vehiclePlate)+'</span>':'';
+    var _vbadge=_ad.verified?'<span style="display:inline-block;margin-left:6px;font-size:10px;font-weight:800;color:#C9A962;border:1px solid rgba(201,169,98,.4);border-radius:10px;padding:1px 7px;white-space:nowrap">✓ PB Verified</span>':'';
+    if((window.PB_FLAGS||{}).vehicleBadge && (_vparts||_plate||_vbadge)){
+      veh.style.display='block'; veh.innerHTML=(_vparts?esc(_vparts):'')+_plate+_vbadge;
+    } else { veh.style.display='none'; veh.innerHTML=''; }
+  }
   renderActiveDriverRating();
 }
 // Update just the rating line + reviews affordance (cheap, safe to call every poll).
@@ -1350,6 +1375,9 @@ async function updateEstimate(){
   _estPrice=d.price;
   _estQuote=d;
   $d('priceAmount').textContent='$'+d.price.toFixed(2);
+  // Price-lock label (quick-win E): the quote is server-frozen on request, so say so.
+  var _pl=$d('priceLabel');
+  if(_pl){ _pl.textContent=(window.PB_FLAGS||{}).priceLock?(_rideType==='hourly'?'🔒 Rate locked':'🔒 Your fare · price locked'):'Estimated Fare'; }
   if(_rideType==='hourly'){
     $d('priceDetail').textContent=_hours+' hr × $'+d.hourlyRate+'/hr';
   } else {
@@ -1484,8 +1512,32 @@ function startPolling(){
   _pollTimer=setInterval(pollRideStatus,4000);
   pollRideStatus();
   startRiderWatch();
+  _rideAcquireWake();
 }
-function stopPolling(){ clearInterval(_pollTimer); stopRiderWatch(); }
+function stopPolling(){ clearInterval(_pollTimer); _pollTimer=null; stopRiderWatch(); _rideReleaseWake(); }
+
+// ── Resilience (quick-win F): wake-lock + reconnect on visibility/online ──
+// Additive only — 4s poll cadence unchanged; just re-acquires the wake lock and
+// fires one catch-up poll when the tab returns to the foreground or regains network.
+let _wakeLock=null;
+async function _rideAcquireWake(){
+  try{
+    if(!(window.PB_FLAGS||{}).resilience || !('wakeLock' in navigator)) return;
+    if(document.visibilityState!=='visible' || !_rideId || _wakeLock) return;
+    _wakeLock=await navigator.wakeLock.request('screen');
+    if(_wakeLock&&_wakeLock.addEventListener) _wakeLock.addEventListener('release',function(){ _wakeLock=null; });
+  }catch(e){ _wakeLock=null; }
+}
+function _rideReleaseWake(){ try{ if(_wakeLock){ _wakeLock.release(); } }catch(e){} _wakeLock=null; }
+function _rideResume(){
+  if(!(window.PB_FLAGS||{}).resilience || document.visibilityState!=='visible') return;
+  _rideAcquireWake();
+  if(_rideId && _pollTimer){ pollRideStatus(); startRiderWatch(); }
+}
+if(typeof document!=='undefined'){
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') _rideResume(); });
+  window.addEventListener('online', _rideResume);
+}
 
 // Track the rider's own device location live while a ride is active, so the
 // rider (client) and driver both move on the map. Before pickup the rider sees
@@ -1578,7 +1630,7 @@ function updateRecenterPin(){
 // (driver position → pickup before the trip, → current drop-off during it, so
 // hourly stop changes re-route here too). Just the gold line on the open map;
 // no street-by-street instructions on the rider side.
-let _rrLine=null,_rrCasing=null,_rrFetching=false,_rrLastLat=null,_rrLastLng=null,_rrPhase=null,_rrTgtLat=null,_rrTgtLng=null,_rrAt=0;
+let _rrLine=null,_rrCasing=null,_rrFetching=false,_rrLastLat=null,_rrLastLng=null,_rrPhase=null,_rrTgtLat=null,_rrTgtLng=null,_rrAt=0,_rrEtaSec=0,_rrEtaAt=0;
 function _riderRouteTarget(ride){
   const st=(ride&&ride.status)||'';
   if(st==='in_progress') return (ride.dropoffLat&&ride.dropoffLng)?{lat:+ride.dropoffLat,lng:+ride.dropoffLng,phase:'drop'}:null;
@@ -1607,6 +1659,7 @@ function _updateRiderRoute(ride, driverLoc){
       const c=d&&d.routes&&d.routes[0]&&d.routes[0].geometry&&d.routes[0].geometry.coordinates;
       if(!c||c.length<2) return;
       _rrLastLat=driverLoc.lat; _rrLastLng=driverLoc.lng; _rrPhase=tgt.phase; _rrTgtLat=tgt.lat; _rrTgtLng=tgt.lng; _rrAt=Date.now();
+      var _rd=d.routes[0].duration; if(typeof _rd==='number'){ _rrEtaSec=_rd; _rrEtaAt=Date.now(); }  // routed ETA seconds (quick-win A)
       const ll=c.map(p=>[p[1],p[0]]);
       if(_rrCasing){ _rrCasing.setLatLngs(ll); } else { _rrCasing=L.polyline(ll,{color:'#05070b',opacity:.45,weight:9,interactive:false}).addTo(_map); }
       if(_rrLine){ _rrLine.setLatLngs(ll); } else { _rrLine=L.polyline(ll,{color:'#C9A962',opacity:.95,weight:5,interactive:false}).addTo(_map); }
@@ -1637,7 +1690,7 @@ function updateStatusUI(ride, driverLoc){
     const dName=dInfo.name||ride.assignedDriverName||ride.assignedDriver;
     const dEmail=dInfo.email||ride.assignedDriver||'';
     if(!_activeDriver||_activeDriver.email!==dEmail||_activeDriver.photo!==(dInfo.photo||_activeDriver.photo)){
-      _activeDriver={name:dName,email:dEmail,photo:dInfo.photo||'',ratingAvg:dInfo.ratingAvg||0,ratingCount:dInfo.ratingCount||0};
+      _activeDriver={name:dName,email:dEmail,photo:dInfo.photo||'',ratingAvg:dInfo.ratingAvg||0,ratingCount:dInfo.ratingCount||0,vehicleMake:dInfo.vehicleMake||'',vehicleModel:dInfo.vehicleModel||'',vehicleColor:dInfo.vehicleColor||'',vehiclePlate:dInfo.vehiclePlate||'',verified:!!dInfo.verified};
       renderActiveDriverCard();
     } else {
       // keep rating fresh without re-touching the photo
@@ -1665,15 +1718,15 @@ function updateStatusUI(ride, driverLoc){
     // 📍 to come back). Phase change always re-frames and ends roam mode.
     if(_lastFitStatus!==st){ _lastFitStatus=st; _riderUserMoved=false; updateRecenterPin(); fitTripView(driverLoc); }
     else if(!_riderUserMoved){ try{ if(!_map.getBounds().contains(L.latLng(driverLoc.lat,driverLoc.lng))){ _progMove=true; _map.panTo([driverLoc.lat,driverLoc.lng],{animate:true}); setTimeout(function(){ _progMove=false; },50); } }catch(e){} }
-    // ETA: rough calculation
+    // ETA: prefer the routed OSRM duration captured in _updateRiderRoute (quick-win A);
+    // fall back to the original haversine/assumed-speed estimate when stale or flag-off.
+    var _etaFresh=(window.PB_FLAGS||{}).routedEta && _rrEtaSec>0 && (Date.now()-_rrEtaAt)<20000;
     if(_pickup&&['accepted','driver_arrived'].includes(st)){
-      const dist=haversineKm(_pickup.lat,_pickup.lng,driverLoc.lat,driverLoc.lng);
-      const etaMin=Math.max(1,Math.round(dist/0.5)); // approx 30 km/h in city
+      const etaMin=(_etaFresh&&_rrPhase==='pick')?Math.max(1,Math.round(_rrEtaSec/60)):Math.max(1,Math.round(haversineKm(_pickup.lat,_pickup.lng,driverLoc.lat,driverLoc.lng)/0.5)); // ~30 km/h city fallback
       $d('etaChip').style.display='inline-flex';
       $d('etaText').textContent=fmtDuration(etaMin)+' away';
     } else if(st==='in_progress'&&_dropoff){
-      const dist=haversineKm(_dropoff.lat,_dropoff.lng,driverLoc.lat,driverLoc.lng);
-      const etaMin=Math.max(1,Math.round(dist/0.6));
+      const etaMin=(_etaFresh&&_rrPhase==='drop')?Math.max(1,Math.round(_rrEtaSec/60)):Math.max(1,Math.round(haversineKm(_dropoff.lat,_dropoff.lng,driverLoc.lat,driverLoc.lng)/0.6));
       $d('etaChip').style.display='inline-flex';
       $d('etaText').textContent=fmtDuration(etaMin)+' to destination · ETA '+fmtArrivalCT(etaMin);
     } else {
@@ -1708,13 +1761,15 @@ function updateStatusUI(ride, driverLoc){
     _clearRiderRoute();
     $d('extendModal').style.display='none';
     $d('doneCard').style.display='block';
-    $d('doneFare').textContent='$'+(ride.finalPrice||ride.estimatedPrice||0).toFixed(2);
+    $d('doneFare').textContent='$'+(ride.finalPrice||ride.lockedPrice||ride.estimatedPrice||0).toFixed(2);
     $d('cancelRideBtn').style.display='none';
     $d('newRideBtn').style.display='block';
+    _doneTip=0; renderDoneCardPay(ride);   // demo payment receipt + tip
     // Remove driver marker
     if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
-    // F3: auto-prompt a review once for this completed ride.
-    if(_rideId && !_reviewedRides[_rideId] && !_autoPrompted[_rideId]){
+    // F3: auto-prompt a review once — but when the pay block is on, the done card
+    // drives rating via its own "Rate your chauffeur" button, so don't pop the modal.
+    if(!(window.PB_FLAGS||{}).cardOnFile && _rideId && !_reviewedRides[_rideId] && !_autoPrompted[_rideId]){
       const drvEmail=(_activeDriver&&_activeDriver.email)||ride.assignedDriver||'';
       const drvName=(_activeDriver&&_activeDriver.name)||ride.assignedDriverName||'';
       const rid=_rideId;
@@ -1730,6 +1785,61 @@ function updateStatusUI(ride, driverLoc){
     $d('newRideBtn').style.display='block';
     if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
   }
+}
+
+// ── Demo payments (quick-win H) — a NO-CHARGE Stripe stand-in so the whole customer
+// pay flow can be walked end-to-end with a fake card. Flip PB_FLAGS.demoPay off and
+// add real Stripe keys closer to launch; these same surfaces then drive real
+// card-on-file + tipping. Nothing here ever contacts Stripe or moves money.
+var _doneTip=0;
+function _payMethod(){ try{ return JSON.parse(localStorage.getItem('pb_pay_method')||'null'); }catch(e){ return null; } }
+function _savePayMethod(m){ try{ localStorage.setItem('pb_pay_method', JSON.stringify(m)); }catch(e){} }
+function addDemoCard(){ _savePayMethod({brand:'Visa',last4:'4242',exp:'12/34',demo:true,addedAt:Date.now()}); renderDoneCardPay(_curRide); }
+function removePayMethod(){ try{ localStorage.removeItem('pb_pay_method'); }catch(e){} renderDoneCardPay(_curRide); }
+function _fareOf(ride){ return Number((ride&&(ride.finalPrice||ride.lockedPrice||ride.estimatedPrice))||0); }
+function setDoneTip(v){ _doneTip=Number(v)||0; renderDoneCardPay(_curRide); }
+function payRateDriver(){
+  var rid=_rideId; if(!rid) return;
+  var de=(_activeDriver&&_activeDriver.email)||(_curRide&&_curRide.assignedDriver)||'';
+  var dn=(_activeDriver&&_activeDriver.name)||(_curRide&&_curRide.assignedDriverName)||'';
+  openReview(rid, de, dn);
+}
+function renderDoneCardPay(ride){
+  var box=$d('donePayBlock'); if(!box) return;
+  var F=(window.PB_FLAGS||{});
+  if(!F.cardOnFile){ box.style.display='none'; return; }
+  box.style.display='block';
+  var fare=_fareOf(ride), pm=_payMethod();
+  var demoNote=F.demoPay?'<div style="font-size:10px;color:var(--muted);opacity:.7;text-align:center;margin-top:10px">Demo mode — no real card or charge</div>':'';
+  if(!pm){
+    box.innerHTML='<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;padding:16px;text-align:center">'
+      +'<div style="font-size:13px;color:var(--muted);margin-bottom:12px">Add a card to settle <b style="color:#fff">$'+fare.toFixed(2)+'</b></div>'
+      +'<button class="btn-gold" style="width:100%" onclick="addDemoCard()">＋ Add a card</button>'
+      +demoNote+'</div>';
+    return;
+  }
+  var tip=_doneTip, total=fare+tip;
+  var presets=[0,Math.round(fare*0.15*100)/100,Math.round(fare*0.20*100)/100,Math.round(fare*0.25*100)/100];
+  var labels=['No tip','15%','20%','25%'];
+  var chips=presets.map(function(p,i){
+    var on=Math.abs(p-tip)<0.005;
+    return '<button onclick="setDoneTip('+p+')" style="flex:1;padding:9px 4px;border-radius:10px;border:1px solid '+(on?'#C9A962':'var(--border)')+';background:'+(on?'rgba(201,169,98,.14)':'transparent')+';color:'+(on?'#C9A962':'#cfd3da')+';font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;line-height:1.3">'+labels[i]+(p>0?'<br><span style="font-size:10px;opacity:.8">$'+p.toFixed(0)+'</span>':'')+'</button>';
+  }).join('');
+  box.innerHTML=
+    '<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;padding:16px">'
+     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
+       +'<span style="font-size:13px;color:#cfd3da">💳 '+esc(pm.brand)+' •••• '+esc(pm.last4)+(pm.demo?' <span style="font-size:9px;color:#C9A962;border:1px solid rgba(201,169,98,.35);border-radius:6px;padding:0 5px;margin-left:4px">DEMO</span>':'')+'</span>'
+       +'<span style="font-size:11px;font-weight:700;color:#22c55e">✓ Paid</span>'
+     +'</div>'
+     +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Add a tip for your chauffeur</div>'
+     +'<div style="display:flex;gap:6px;margin-bottom:12px">'+chips+'</div>'
+     +'<div style="display:flex;align-items:center;justify-content:space-between;font-size:15px;font-weight:800">'
+       +'<span style="color:#cfd3da">Total</span><span style="color:#fff">$'+total.toFixed(2)+'</span>'
+     +'</div>'
+     +(tip>0?'<div style="font-size:11px;color:#22c55e;margin-top:6px;text-align:right">Includes $'+tip.toFixed(2)+' tip — thank you!</div>':'')
+     +'<button class="btn-gold" style="width:100%;margin-top:14px" onclick="payRateDriver()">Rate your chauffeur ›</button>'
+     +demoNote
+    +'</div>';
 }
 
 // ── Hourly: countdown → overtime meter → 2-min auto-end ────────────────────

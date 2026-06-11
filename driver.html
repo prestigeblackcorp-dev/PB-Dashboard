@@ -5,6 +5,19 @@
 <script src="pb-config.js"></script>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>PB Chauffeur Portal — Prestige Black</title>
+<meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="driver.manifest.json">
+<link rel="apple-touch-icon" href="icon.png">
+<script>
+/* PWA (quick-win C): register the service worker for installability + push foundation.
+   Network-first SW (sw.js) keeps content fresh; we deliberately do NOT auto-reload on
+   update here (unlike the dashboard) so a new deploy never interrupts an active ride. */
+if((window.PB_FLAGS||{}).pwa && 'serviceWorker' in navigator){
+  window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); });
+}
+</script>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <style>
@@ -489,6 +502,7 @@ body.nav-fs #map-expand-btn,body.nav-fs #map-fs-status,body.nav-fs #map-earn-chi
                 <div id="arc-nav-dist" style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-.02em;">&mdash;</div>
                 <div id="arc-nav-instr" style="font-size:14px;font-weight:600;color:#ead9b0;line-height:1.25;">Calculating route&hellip;</div>
               </div>
+              <div id="arc-nav-mute" onclick="event.stopPropagation();toggleNavVoice()" title="Voice guidance" style="font-size:17px;color:#c4ad77;flex-shrink:0;cursor:pointer;padding:0 2px;">&#128266;</div>
               <div id="arc-nav-caret" style="font-size:15px;color:#c4ad77;flex-shrink:0;">&#9662;</div>
             </div>
             <div id="arc-nav-meta" style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:7px 2px 2px;"></div>
@@ -633,6 +647,8 @@ var _geoWatchId = null;
 var _driverLat = null;      // live driver position (for routing origin)
 var _driverLng = null;
 var _navSteps = null;       // composed OSRM turn steps for current leg
+var _voiceMuted = false; try{ _voiceMuted=(localStorage.getItem('pb_drv_voice_muted')==='1'); }catch(e){}
+var _lastSpokenInstr = '';  // voice-nav: last maneuver spoken (text-dedup, survives reroutes)
 var _navPhase = null;       // 'pick' (→pickup) or 'drop' (→dropoff)
 var _navLastLat = null;     // origin used for the last route fetch (throttle)
 var _navLastLng = null;
@@ -1606,10 +1622,11 @@ function setDuty(on){
   if(on){
     startDutyBroadcast();
     startRidesPoll();
+    _drvAcquireWake();
   } else {
     stopDutyBroadcast();
     // Only stop polling if no active ride
-    if(!_activeRide) stopRidesPoll();
+    if(!_activeRide){ stopRidesPoll(); _drvReleaseWake(); }
     // Go offline
     if(drvState.token) fetch(WORKER+'/chauffeur/go-offline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token})}).catch(function(){});
   }
@@ -1699,6 +1716,34 @@ function startRidesPoll(){
   _ridesPollTimer=setInterval(pollDriverRides,5000);
 }
 function stopRidesPoll(){ clearInterval(_ridesPollTimer); _ridesPollTimer=null; }
+
+// ── Resilience (quick-win F): screen wake-lock + reconnect on visibility/online ──
+// Additive only — poll cadence (5s) and broadcast (8s) are unchanged; this merely
+// re-acquires the wake lock and fires one catch-up poll when the tab returns/online.
+var _wakeLock=null;
+function _drvWantWake(){ return _onDuty || !!_activeRide; }
+async function _drvAcquireWake(){
+  try{
+    if(!(window.PB_FLAGS||{}).resilience || !('wakeLock' in navigator)) return;
+    if(document.visibilityState!=='visible' || !_drvWantWake() || _wakeLock) return;
+    _wakeLock=await navigator.wakeLock.request('screen');
+    if(_wakeLock&&_wakeLock.addEventListener) _wakeLock.addEventListener('release',function(){ _wakeLock=null; });
+  }catch(e){ _wakeLock=null; }
+}
+function _drvReleaseWake(){ try{ if(_wakeLock){ _wakeLock.release(); } }catch(e){} _wakeLock=null; }
+function _drvResume(){
+  if(!(window.PB_FLAGS||{}).resilience || document.visibilityState!=='visible') return;
+  _drvAcquireWake();
+  if(_onDuty || _activeRide){
+    if(!_ridesPollTimer) startRidesPoll(); else pollDriverRides();
+    if(_onDuty && !_dutyInterval) startDutyBroadcast();
+  }
+}
+if(typeof document!=='undefined'){
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') _drvResume(); });
+  window.addEventListener('online', function(){ _drvResume(); if((window.PB_FLAGS||{}).resilience && _drvWantWake() && typeof drvToast==='function') drvToast('Back online'); });
+  window.addEventListener('offline', function(){ if((window.PB_FLAGS||{}).resilience && _drvWantWake() && typeof drvToast==='function') drvToast('Connection lost — reconnecting…'); });
+}
 
 async function pollDriverRides(){
   if(!drvState.token) return;
@@ -1804,6 +1849,7 @@ function renderActiveRidePanel(){
   if(!panel) return;
   if(!_activeRide){
     panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; _navRouteCoords=null; _navRouteCum=null; _navStepCum=null;
+    _lastSpokenInstr=''; try{ if('speechSynthesis' in window) speechSynthesis.cancel(); }catch(e){}  // voice-nav: leg ended, reset
     _navUserRoam=false; document.body.classList.remove('nav-roam');
     // Exit full-screen nav, clear the route line, and drop the 3D camera to a flat overview between rides.
     _navFsUserCollapsed=false; setNavFullscreen(false);
@@ -2021,7 +2067,7 @@ function fetchNav(tgt){
     // Flatten legs→steps and pre-compute the cumulative distances we advance against.
     var steps=[];
     (rt.legs||[]).forEach(function(lg){ (lg.steps||[]).forEach(function(s){ steps.push(s); }); });
-    _navSteps=steps;
+    _navSteps=steps; _syncVoiceBtn();
     _navStepCum=[0];
     for(var i=1;i<steps.length;i++){ _navStepCum[i]=_navStepCum[i-1]+(steps[i-1].distance||0); }
     _navRouteCoords=coords;
@@ -2069,6 +2115,22 @@ function advanceNav(tgt){
   if(!_navFetching && _navLastLat!=null && navDistM(_driverLat,_driverLng,_navLastLat,_navLastLng)>250 && (Date.now()-_navLastFetchAt)>8000){ fetchNav(tgt); return; }
   liveBanner(proj);
 }
+// Voice turn-by-turn (quick-win D): spoken guidance via the Web Speech API.
+function _speakNav(text){
+  try{
+    if(!('speechSynthesis' in window)) return;
+    var u=new SpeechSynthesisUtterance(text);
+    u.rate=1; u.pitch=1; u.volume=1; u.lang='en-US';
+    window.speechSynthesis.speak(u);
+  }catch(e){}
+}
+function _syncVoiceBtn(){ var b=$d('arc-nav-mute'); if(b) b.innerHTML=_voiceMuted?'&#128263;':'&#128266;'; }
+function toggleNavVoice(){
+  _voiceMuted=!_voiceMuted;
+  try{ localStorage.setItem('pb_drv_voice_muted',_voiceMuted?'1':'0'); }catch(e){}
+  if(_voiceMuted){ try{ if('speechSynthesis' in window) speechSynthesis.cancel(); }catch(e){} }
+  _syncVoiceBtn();
+}
 // Big banner = the next maneuver ahead of the driver + a live countdown to it.
 function liveBanner(proj){
   var steps=_navSteps||[]; if(!steps.length||!_navStepCum) return;
@@ -2077,7 +2139,10 @@ function liveBanner(proj){
   while(k<steps.length-1 && _navStepCum[k]<=prog+8){ k++; }   // 8m hysteresis past a turn
   var distToManeuver=Math.max(0,_navStepCum[k]-prog);
   if($d('arc-nav-dist')) $d('arc-nav-dist').textContent=fmtDist(distToManeuver);
-  if($d('arc-nav-instr')) $d('arc-nav-instr').textContent=maneuverText(steps[k]);
+  var _instr=maneuverText(steps[k]);
+  if($d('arc-nav-instr')) $d('arc-nav-instr').textContent=_instr;
+  // voice guidance (quick-win D): speak each NEW maneuver once; text-dedup so reroutes don't repeat it
+  if((window.PB_FLAGS||{}).voiceNav && !_voiceMuted && _instr && _instr!==_lastSpokenInstr){ _speakNav(_instr); _lastSpokenInstr=_instr; }
   if($d('arc-nav-arrow')) $d('arc-nav-arrow').textContent=navArrow(steps[k]);
   var totalLen=(_navRouteCum&&_navRouteCum.length)?_navRouteCum[_navRouteCum.length-1]:0;
   var remain=Math.max(0,totalLen-prog);

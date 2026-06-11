@@ -21,6 +21,32 @@
   // ID-verification worker (owner dashboard only).
   g.PB_VERIFY_WORKER = 'https://idverify.prestigeblackcorp.workers.dev';
 
+  // ── Feature flags ─────────────────────────────────────────────────────────
+  // Every roadmap feature is gated here so it can be killed instantly without a
+  // code redeploy — just flip a flag and re-push this one small file. Apps read
+  // via a guarded fallback: (window.PB_FLAGS||{}).x, so a failed load → all
+  // falsy → exactly today's behavior. Client-only wins that are verified safe
+  // default ON; features needing owner-provisioned keys default OFF until the
+  // keys exist (the worker also self-gates on env presence).
+  g.PB_FLAGS = {
+    routedEta:   true,   // A — OSRM .duration live ETA (client-only)
+    vehicleBadge:true,   // B — vehicle + "PB Verified Chauffeur" on rider card
+    pwa:         true,   // C — register service worker + installable manifest
+    voiceNav:    true,   // D — spoken turn-by-turn for the driver
+    priceLock:   true,   // E — "Your fare · price locked"
+    resilience:  true,   // F — wake-lock + reconnect/visibility resume
+    webPush:     false,  // G — needs VAPID keys wired into push code (built later)
+    cardOnFile:  true,   // H — card-on-file (DEMO simulation until real Stripe keys added)
+    tipping:     true,   // H — tipping (DEMO simulation)
+    demoPay:     true    // payments are a no-charge simulation; flip OFF when real Stripe keys exist
+  };
+
+  // Web Push VAPID public key (non-secret). Generated 2026-06; the matching private
+  // key lives in the Cloudflare Worker env as VAPID_PRIVATE.
+  g.PB_VAPID_PUBLIC = 'BPbEQQK8ZUQ1WWe2rsY9x0S-sueuHXrdD-71OE3HXLInCSMoy7-xOSrctEUsQoS8z7BQ8KsR95VlnFnIFNCzR2o';
+  // Stripe publishable key (non-secret, pk_live_…; paste here when ready).
+  g.PB_STRIPE_PK = '';
+
   // ── localStorage key registry ─────────────────────────────────────────────
   // The canonical list of keys the apps read/write, so they live in one place.
   // Adopt gradually (PB_KEYS.dashboardSecret instead of 'pb_dashboard_secret');
