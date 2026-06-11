@@ -786,7 +786,8 @@ function starsHtml(n){
 function fmtRideDate(v){
   if(!v) return '';
   var d=new Date(v); if(isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  // Always Central Time — trip history reads the same on any device, anywhere
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'America/Chicago'});
 }
 var TRIP_STATUS_LABEL={searching:'Searching',accepted:'Accepted',driver_arrived:'Arrived',in_progress:'In progress',completed:'Completed',cancelled:'Cancelled',no_driver:'No driver'};
 
@@ -1842,8 +1843,8 @@ function _fmtFreeTime(freeDate, freeTime, requestedPickup){
 function openFleet(){
   var m=document.getElementById('fleetModal'); if(!m) return;
   var pk=document.getElementById('fleet-pickup'), dp=document.getElementById('fleet-dropoff');
-  var todayStr=new Date().toLocaleDateString('en-CA');
-  var tmwStr=new Date(Date.now()+86400000).toLocaleDateString('en-CA');
+  var todayStr=new Date().toLocaleDateString('en-CA',{timeZone:'America/Chicago'});
+  var tmwStr=new Date(Date.now()+86400000).toLocaleDateString('en-CA',{timeZone:'America/Chicago'});
   if(pk){ pk.min=todayStr; if(!pk.value) pk.value=todayStr; }
   if(dp){ dp.min=todayStr; if(!dp.value) dp.value=tmwStr; }
   m.style.display='flex';
@@ -1852,10 +1853,27 @@ function openFleet(){
 function closeFleet(){ var m=document.getElementById('fleetModal'); if(m) m.style.display='none'; }
 
 // Booking happens in the member portal (same origin) — the ride app only browses.
-function _fleetBookPortal(){
+// The clicked vehicle + the dates/times entered here ride along via localStorage,
+// so the portal opens straight into a prefilled booking for that exact car.
+function _fleetBookPortal(vehicleName){
   var dest=location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
   // Pre-fill the portal email so even the fallback path is one tap from a login code.
   try{ if(_session && _session.email) localStorage.setItem('pb_portal_email', _session.email); }catch(e){}
+  // Hand off the selected car + entered dates/times (same-origin localStorage,
+  // with a URL-hash fallback for private/incognito mode where storage can fail —
+  // the hash stays client-side and is never sent to any server)
+  try{
+    var _pk=document.getElementById('fleet-pickup'), _dp=document.getElementById('fleet-dropoff');
+    var _pkt=document.getElementById('fleet-pickup-time'), _dpt=document.getElementById('fleet-dropoff-time');
+    var _pf={
+      vehicle: vehicleName||'',
+      pickupDate: (_pk&&_pk.value)||'',  pickupTime: (_pkt&&_pkt.value)||'10:00',
+      dropoffDate: (_dp&&_dp.value)||'', dropoffTime: (_dpt&&_dpt.value)||'10:00',
+      at: Date.now()
+    };
+    try{ localStorage.setItem('pb_portal_prefill', JSON.stringify(_pf)); }catch(e){}
+    dest+='#pbf='+encodeURIComponent(JSON.stringify(_pf));
+  }catch(e){}
   // Open the tab synchronously (keeps the click gesture so it isn't popup-blocked),
   // then auto sign-in: exchange the ride-app token for a real member-portal session,
   // write it to same-origin localStorage, and only then point the tab at portal.html —
@@ -1916,7 +1934,7 @@ function renderFleet(){
       ? '<button class="fv-btn" disabled>Booked</button>'
       : (isChecking
         ? '<button class="fv-btn fv-btn-checking" disabled>Checking…</button>'
-        : '<button class="fv-btn" onclick="_fleetBookPortal()">'+(isAvail?'✓ Book':'Book')+'</button>');
+        : '<button class="fv-btn" onclick="_fleetBookPortal(\''+name.replace(/'/g,"\\'")+'\')">'+(isAvail?'✓ Book':'Book')+'</button>');
     var borderCol=isBooked?'rgba(239,68,68,.25)':(isAvail?'rgba(34,197,94,.25)':'var(--border)');
     return '<div class="fv-card" style="border-color:'+borderCol+'">'
       +imgHtml+badge

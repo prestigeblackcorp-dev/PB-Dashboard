@@ -541,9 +541,12 @@ function toast(msg, type='info'){
 
 function fmtDate(d){
   if(!d) return '';
-  const dt = new Date(d);
+  // Calendar dates ('2026-06-14') anchor at noon UTC so the day never shifts on
+  // any device; real timestamps always render in Central Time (business tz).
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(String(d).trim());
+  const dt = new Date(isDateOnly ? d+'T12:00:00Z' : d);
   if(isNaN(dt)) return d;
-  return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:isDateOnly?'UTC':'America/Chicago'});
 }
 
 function parseLocalDate(s){
@@ -1258,6 +1261,7 @@ async function verifyOTP(){
     _safeStore('pb_portal_email', state.email);
     await loadPortalData();
     showApp();
+    _consumeRidePrefill();   // ride-app fleet Book → prefilled booking after fresh sign-in
   }catch(e){ toast('Error: '+e.message,'error'); }
   finally{ hideLoading(); _verifyingOTP=false; }
 }
@@ -1383,6 +1387,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     loadPortalData().then(result=>{
       if(result === true) renderAll();
       // on 'error' or 'unauthorized' — stay on app with cached data, session refreshes on next login
+      _consumeRidePrefill();   // ride-app fleet Book → prefilled booking
     });
   }
 });
@@ -1534,7 +1539,7 @@ function showCondition(booking){
   const bStatus = (booking.status||'').toLowerCase();
   const isActive = ['in-progress','in_progress','active'].includes(bStatus);
   const pickupDay = booking.pickupDate ? booking.pickupDate.split('T')[0] : null;
-  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const todayStr = new Date().toLocaleDateString('en-CA',{timeZone:'America/Chicago'}); // YYYY-MM-DD, Central Time
   const isDayOf = pickupDay && todayStr >= pickupDay;
 
   const renderPhotos = (arr, type, bookingId) => {
@@ -1766,7 +1771,7 @@ function showPendingCharges(b){
     const total = Math.round((base + fee + tax) * 100) / 100;
     const isPaid = !!c.paidAt;
     if(isPaid){
-      const paidDate = c.paidAt ? new Date(c.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+      const paidDate = c.paidAt ? new Date(c.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'America/Chicago'}) : '';
       return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
         <div style="background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.25);border-radius:12px;padding:12px 14px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -2044,6 +2049,38 @@ function _instantChauffeur(){
   } else { go(); }
 }
 
+// Ride-app → portal booking handoff: the ride app's fleet "Book" button stores
+// the clicked car + entered dates/times in pb_portal_prefill (same origin).
+// Once the member is in the portal, open the normal new-booking flow for that
+// exact car with everything prefilled — then it proceeds through the standard
+// 3-button payment step (date lock / pay in full / Zelle).
+function _consumeRidePrefill(){
+  let pf=null;
+  try{ pf=JSON.parse(localStorage.getItem('pb_portal_prefill')||'null'); }catch(e){}
+  // Private-mode fallback: localStorage can be unavailable — the ride app also
+  // puts the payload in the URL hash (client-side only, never sent to a server).
+  if(!pf && location.hash.indexOf('#pbf=')===0){
+    try{ pf=JSON.parse(decodeURIComponent(location.hash.slice(5))); }catch(e){}
+  }
+  if(location.hash.indexOf('#pbf=')===0){ try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){} }
+  if(!pf || !pf.vehicle) return;
+  try{ localStorage.removeItem('pb_portal_prefill'); }catch(e){}   // one-shot
+  // Generous window: timestamps come from the ride-app device's clock, which can
+  // drift from this one's — 60 min still expires genuinely abandoned handoffs.
+  if(Date.now()-(pf.at||0) > 60*60000) return;
+  if(!VEHICLE_RATES[pf.vehicle]) return;                           // unknown car
+  _navTo('fleet');
+  // Mirror the dates into the fleet availability bar so it matches the ride app
+  const fmap={'fleet-pickup':pf.pickupDate,'fleet-pickup-time':pf.pickupTime,'fleet-dropoff':pf.dropoffDate,'fleet-dropoff-time':pf.dropoffTime};
+  Object.keys(fmap).forEach(id=>{ const el=document.getElementById(id); if(el&&fmap[id]) el.value=fmap[id]; });
+  if(pf.pickupDate&&pf.dropoffDate) _onFleetDateChange();
+  // Open the normal booking modal for the clicked car, dates/times carried over
+  _fleetBook(pf.vehicle);
+  const dmap={'nb-pickup-date':pf.pickupDate,'nb-pickup-time':pf.pickupTime,'nb-dropoff-date':pf.dropoffDate,'nb-dropoff-time':pf.dropoffTime};
+  Object.keys(dmap).forEach(id=>{ const el=document.getElementById(id); if(el&&dmap[id]) el.value=dmap[id]; });
+  toast('🚘 '+pf.vehicle+' — your dates carried over. Finish your booking below.','success');
+}
+
 function _fleetBook(vehicleName){
   _nbVehicle = vehicleName;
   _nbBookingId = '';
@@ -2057,10 +2094,19 @@ function _fleetBook(vehicleName){
   // Set type default
   const typeEl = document.getElementById('nb-type');
   if(typeEl) typeEl.value = rates.type==='chauffeur' ? 'chauffeur' : 'daily';
-  // Set min date to today
-  const today = new Date().toLocaleDateString('en-CA');
+  // Set min date to today (Central Time — the business timezone)
+  const today = new Date().toLocaleDateString('en-CA',{timeZone:'America/Chicago'});
   document.getElementById('nb-pickup-date').min = today;
   document.getElementById('nb-dropoff-date').min = today;
+  // Fresh dates on every open — otherwise a previous booking's dates linger on
+  // Rebook. Default from the fleet availability bar when set (the dates you just
+  // checked availability for are the dates you book); cleared otherwise.
+  const _fbPk=document.getElementById('fleet-pickup'), _fbDp=document.getElementById('fleet-dropoff');
+  const _fbPkt=document.getElementById('fleet-pickup-time'), _fbDpt=document.getElementById('fleet-dropoff-time');
+  document.getElementById('nb-pickup-date').value=(_fbPk&&_fbPk.value)||'';
+  document.getElementById('nb-dropoff-date').value=(_fbDp&&_fbDp.value)||'';
+  document.getElementById('nb-pickup-time').value=(_fbPkt&&_fbPkt.value)||'10:00';
+  document.getElementById('nb-dropoff-time').value=(_fbDpt&&_fbDpt.value)||'10:00';
   // Reset steps
   document.getElementById('nb-step1').style.display = 'block';
   document.getElementById('nb-step2').style.display = 'none';
@@ -2185,9 +2231,32 @@ async function nbZelle(){
     document.getElementById('nb-step3').style.display='block';
     const info = d.zelleInfo || {};
     const totalAmt = d.revenue ? '$'+Number(d.revenue).toFixed(2) : '';
-    // Build pre-filled SMS body for owner notification
+    // Build pre-filled SMS body for owner notification — every booking detail,
+    // read from the actual form fields (the old ids nb-vehicle/nb-pickup/nb-dropoff
+    // never existed, so the texted message used to arrive with blanks).
     const bkData = _nbBookingId ? `Booking ID: ${_nbBookingId}` : '';
-    const smsText = `Zelle Payment Request - Prestige Black\nCustomer: ${state.name||''}\nEmail: ${state.email||''}\nVehicle: ${document.getElementById('nb-vehicle')?.value||''}\nPickup: ${document.getElementById('nb-pickup')?.value||''}\nReturn: ${document.getElementById('nb-dropoff')?.value||''}\nAmount: ${totalAmt}\n${bkData}`;
+    const _zNm = document.getElementById('nb-name')?.value || (state.profile&&state.profile.name) || '';
+    const _zPh = document.getElementById('nb-phone')?.value || '';
+    const _zPd = document.getElementById('nb-pickup-date')?.value || '';
+    const _zPt = document.getElementById('nb-pickup-time')?.value || '';
+    const _zDd = document.getElementById('nb-dropoff-date')?.value || '';
+    const _zDt = document.getElementById('nb-dropoff-time')?.value || '';
+    const _zTy = document.getElementById('nb-type')?.value || '';
+    const _zNo = document.getElementById('nb-notes')?.value || '';
+    // All times are Central Time (business timezone) — label them explicitly
+    const _zFD = s=>{ const p=String(s||'').split('-'); return p.length===3 ? Number(p[1])+'/'+Number(p[2])+'/'+p[0] : (s||''); };
+    const _zFT = t=>{ if(!t) return ''; const p=String(t).split(':'); let h=Number(p[0]); const ap=h>=12?'PM':'AM'; h=h%12||12; return h+':'+(p[1]||'00')+' '+ap+' CT'; };
+    const smsText = `Zelle Payment Request - Prestige Black`+
+      `\nCustomer: ${_zNm}`+
+      `\nEmail: ${state.email||''}`+
+      (_zPh?`\nPhone: ${_zPh}`:'')+
+      `\nVehicle: ${_nbVehicle||''}`+
+      (_zTy?`\nType: ${_zTy}`:'')+
+      `\nPickup: ${_zFD(_zPd)}${_zPt?' @ '+_zFT(_zPt):''}`+
+      `\nReturn: ${_zFD(_zDd)}${_zDt?' @ '+_zFT(_zDt):''}`+
+      `\nAmount: ${totalAmt}`+
+      (_zNo?`\nNotes: ${_zNo}`:'')+
+      (bkData?`\n${bkData}`:'');
     const ownerRaw = info.ownerPhone || info.phone || '';
     const ownerDigits = ownerRaw.replace(/\D/g,'');
     const smsHref = ownerDigits ? `sms:${ownerDigits}?body=${encodeURIComponent(smsText)}` : '';
