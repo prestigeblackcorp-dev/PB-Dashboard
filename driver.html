@@ -205,7 +205,7 @@ body.nav-fs #arc-nav-meta{padding-left:4px;}
 body.nav-fs #arc-nav-steps{display:none;max-height:48vh;margin-top:8px;background:rgba(10,14,24,.97);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 20px 50px rgba(0,0,0,.6);}
 body.nav-fs.nav-steps-open #arc-nav-steps{display:block;}
 /* ride action buttons pinned to the bottom while navigating */
-body.nav-fs #arc-actions{position:fixed;bottom:0;left:0;right:0;z-index:1600;margin:0;padding:12px 14px calc(14px + env(safe-area-inset-bottom,0px));background:linear-gradient(0deg,rgba(10,8,5,.96) 55%,rgba(10,8,5,0));}
+body.nav-fs #arc-actions{position:fixed;bottom:0;left:0;right:0;z-index:1600;margin:0;padding:12px 14px calc(34px + env(safe-area-inset-bottom,0px));background:linear-gradient(0deg,rgba(10,8,5,.96) 62%,rgba(10,8,5,0));}
 #arc-nav-banner{cursor:pointer;}
 #arc-nav-caret{transition:transform .2s ease;}
 body.nav-steps-open #arc-nav-caret{transform:rotate(180deg);}
@@ -213,6 +213,10 @@ body.nav-steps-open #arc-nav-caret{transform:rotate(180deg);}
 body.nav-fs #arc-nav-min{display:flex;}
 #arc-nav-expand{display:none;}
 body:not(.nav-fs) #arc-nav-expand{display:block;}
+/* Recenter / resume-follow button — lower-right, above the trip action buttons.
+   Shown only once the driver has hand-panned away from the first-person view. */
+#arc-recenter{display:none;position:fixed;right:16px;z-index:1660;width:50px;height:50px;border-radius:50%;background:rgba(10,8,5,.92);border:1.5px solid var(--gold);color:var(--gold);font-size:22px;align-items:center;justify-content:center;cursor:pointer;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:0 6px 20px rgba(0,0,0,.55);bottom:calc(118px + env(safe-area-inset-bottom,0px));}
+body.nav-roam #arc-recenter{display:flex;}
 @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
 
 /* ── Full-screen LIVE map (waiting-for-rides mode, separate from turn-by-turn nav-fs) ── */
@@ -356,6 +360,7 @@ body.nav-fs #map-expand-btn,body.nav-fs #map-fs-status,body.nav-fs #map-earn-chi
         <button class="btn btn-sm" id="today-clock-btn" onclick="drvToggleClock()" style="display:inline-flex;width:auto;margin-top:0;">Clock In</button>
       </div>
       <div class="stats-row" id="today-stats"></div>
+      <div id="today-eval"></div>
       <div class="section-header">
         <div class="accent-bar"></div>
         <div class="section-header-title">Today's Assignments</div>
@@ -491,6 +496,7 @@ body.nav-fs #map-expand-btn,body.nav-fs #map-fs-status,body.nav-fs #map-earn-chi
             <button id="arc-nav-expand" onclick="navFsEnter()" style="width:100%;margin-top:10px;padding:10px;border-radius:10px;background:rgba(201,169,98,.14);border:1px solid rgba(201,169,98,.32);color:var(--gold);font-weight:800;font-size:12px;letter-spacing:.05em;cursor:pointer;">&#10530;&nbsp; FULL-SCREEN NAVIGATION</button>
             <button id="arc-nav-min" onclick="navFsMinimize()" aria-label="Exit full screen">&#10005;</button>
           </div>
+          <button id="arc-recenter" onclick="navRecenter()" aria-label="Recenter navigation" title="Back to turn-by-turn">&#10148;</button>
           <div class="arc-actions" id="arc-actions"></div>
         </div>
       </div>
@@ -621,6 +627,7 @@ var _ridesMap = null;
 var _driverSelfMarker = null;
 var _activeRidePickupMarker = null;
 var _activeRideDropoffMarker = null;
+var _activeRideNextStopMarker = null;   // hourly: queued next stop (rendered after current)
 var _activeRideRouteLine = null;
 var _geoWatchId = null;
 var _driverLat = null;      // live driver position (for routing origin)
@@ -643,7 +650,8 @@ var _navRouteCum = null;      // cumulative metres along the route polyline per 
 var _navStepCum = null;       // cumulative metres to each step's maneuver point
 var _navTotalDur = 0;         // route duration (s) for the current leg
 var _navLastFetchAt = 0;      // ms timestamp of last route fetch (reroute debounce)
-var OFFROUTE_M = 45;          // metres off the line before we re-route (missed turn / shortcut)
+var OFFROUTE_M = 28;          // metres off the line before we re-route — tight, Apple-Maps-like
+var _navUserRoam = false;     // driver panned/zoomed the map by hand → stop auto-follow until recenter
 var _navTgtLat = null;        // destination of the last route fetch — recalc if the
 var _navTgtLng = null;        // pickup/dropoff coords change mid-leg (stop edited, dispatcher update)
 
@@ -886,7 +894,7 @@ function updateClockDisplay(){
   var disp=$d('today-clock-display');
   if(disp) disp.textContent=nowStr;
   // Keep HRS TODAY ticking live while the Today tab is mounted.
-  var hrsEl=$d('stat-hrs-today'); if(hrsEl) hrsEl.textContent=getTodayHours().toFixed(1)+'h';
+  var hrsEl=$d('stat-hrs-today'); if(hrsEl){ hrsEl.textContent=getTodayHours().toFixed(1)+'h'; if(_activeTab==='today') renderTodayEval(getTodayHours()); }
   var lbl=$d('today-clock-label');
   var btn=$d('today-clock-btn');
   var card=$d('today-clock-card');
@@ -960,12 +968,45 @@ function renderToday(){
     '<div class="stat-card"><div class="stat-val">'+fmt$(weekPay)+'</div><div class="stat-label">THIS WEEK</div></div>'+
     '<div class="stat-card"><div class="stat-val">'+fmt$(monthPay)+'</div><div class="stat-label">THIS MONTH</div></div>';
   updateEarnChip();
+  renderTodayEval(todayHours);
 
   if(!todayTrips.length){
     $d('today-trips').innerHTML='<div class="empty-state"><div class="empty-icon">🗓</div><div>No trips assigned today</div></div>';
     return;
   }
   $d('today-trips').innerHTML=todayTrips.map(function(t){ return tripCard(t,true); }).join('');
+}
+
+// Sum of time spent actually driving CLIENTS today (chauffeur rides: started→
+// completed; an in-progress ride counts up to now). Rentals are self-drive, so
+// they don't count as the driver driving a client.
+function getTodayDrivingHours(){
+  var today=new Date().toLocaleDateString('en-CA');
+  var ms=0;
+  (drvState.trips||[]).forEach(function(t){
+    if(t.source!=='ride') return;
+    var s=Number(t.startedAt||0); if(!s) return;
+    if(new Date(s).toLocaleDateString('en-CA')!==today) return;
+    var e=Number(t.completedAt||0)||Date.now();
+    if(e>s) ms+=(e-s);
+  });
+  return ms/3600000;
+}
+// Small "clocked in but not on a trip" eval — clocked / driving / idle today.
+function renderTodayEval(clockedHrs){
+  var el=$d('today-eval'); if(!el) return;
+  if(!drvState.clockedIn && (clockedHrs||0)<=0){ el.innerHTML=''; return; }
+  var driving=getTodayDrivingHours();
+  var idle=Math.max(0,(clockedHrs||0)-driving);
+  var hm=function(h){ var m=Math.round(h*60); return (Math.floor(m/60))+'h '+(m%60)+'m'; };
+  el.innerHTML=
+    '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:13px 15px;margin-bottom:12px;">'
+    +'<div style="font-size:11px;font-weight:800;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px;">Shift Activity'+(drvState.clockedIn?' · <span style="color:#4ade80">On the clock</span>':'')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">'
+    +'<div><div style="font-size:16px;font-weight:900;color:var(--gold);">'+hm(clockedHrs||0)+'</div><div style="font-size:9.5px;color:var(--muted);font-weight:700;letter-spacing:.04em;margin-top:2px;">CLOCKED IN</div></div>'
+    +'<div><div style="font-size:16px;font-weight:900;color:#4ade80;">'+hm(driving)+'</div><div style="font-size:9.5px;color:var(--muted);font-weight:700;letter-spacing:.04em;margin-top:2px;">DRIVING CLIENTS</div></div>'
+    +'<div><div style="font-size:16px;font-weight:900;color:var(--text2);">'+hm(idle)+'</div><div style="font-size:9.5px;color:var(--muted);font-weight:700;letter-spacing:.04em;margin-top:2px;">IDLE</div></div>'
+    +'</div></div>';
 }
 
 function getTodayHours(){
@@ -1007,6 +1048,13 @@ function calcTripPay(t){
   if((t.status||'')==='cancelled') return 0;
   if(t.payType==='flat'   && Number(t.payAmount)>0) return Number(t.payAmount);
   if(t.payType==='hourly' && Number(t.payAmount)>0) return Number(t.hoursLogged||0)*Number(t.payAmount);
+  return calcTripFare(t) * DRIVER_SHARE;
+}
+// What THIS driver would have earned on a cancelled trip — the wage they missed
+// (uses estimated hours/days for hourly since the trip never logged real hours).
+function driverMissedPay(t){
+  if(t.payType==='flat'   && Number(t.payAmount)>0) return Number(t.payAmount);
+  if(t.payType==='hourly' && Number(t.payAmount)>0) return Number(t.payAmount)*Math.max(1,Number(t.hoursLogged||t.days||1));
   return calcTripFare(t) * DRIVER_SHARE;
 }
 
@@ -1199,13 +1247,25 @@ function renderEarnings(){
     +'</div>'
     +'<div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;margin-top:8px;text-align:center;">LAST 7 DAYS</div>';
 
+  // Cancellation losses — wages THIS driver missed on their cancelled trips
+  var _cancelled=drvState.trips.filter(function(t){ return (t.status||'')==='cancelled'; });
+  var _cancelMissed=_cancelled.reduce(function(a,t){ return a+driverMissedPay(t); },0);
+  var _cancelHtml=_cancelMissed>0
+    ? '<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.22);border-radius:11px;padding:11px 13px;margin-top:14px;">'
+      +'<div><div style="font-size:11px;font-weight:800;color:#f87171;letter-spacing:.04em;text-transform:uppercase;">🚫 Cancellation Losses</div>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:2px;">Wages missed · '+_cancelled.length+' cancelled trip'+(_cancelled.length!==1?'s':'')+'</div></div>'
+      +'<div style="font-size:18px;font-weight:900;color:#f87171;">'+fmt$(_cancelMissed)+'</div>'
+      +'</div>'
+    : '';
+
   $d('earnings-summary').innerHTML=
     '<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;">'
     +'<div class="card-title">Your Earnings</div>'
     +'</div>'
     +'<div class="earn-total">'+fmt$(totalPay)+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:4px;">'+totalTrips+' trip'+(totalTrips!==1?'s':'')+' · This month: <span style="color:var(--green);font-weight:700;">'+fmt$(monthPay)+'</span></div>'
-    +_wkChart;
+    +_wkChart
+    +_cancelHtml;
 
   var sorted=drvState.trips.slice().sort(function(a,b){ return (b.pickupDate||b.date||'').localeCompare(a.pickupDate||a.date||''); });
   $d('earnings-list').innerHTML=sorted.length?sorted.map(function(t){
@@ -1425,6 +1485,15 @@ function initRidesMap(){
       fadeDuration:120
     });
     _ridesMap.addControl(new maplibregl.AttributionControl({compact:true}),'bottom-right');
+    // Hand-pan/zoom (user gesture, not our easeTo) → stop auto-following so the
+    // driver can freely inspect the whole route + endpoint; the ⌖ recenter button
+    // appears to snap back to first-person turn-by-turn.
+    _ridesMap.on('movestart',function(e){
+      if(e && e.originalEvent && _activeRide && navTarget(_activeRide)){
+        _navUserRoam=true; _navFollow=false;
+        document.body.classList.add('nav-roam');
+      }
+    });
     _ridesMap.on('load',function(){
       _ridesMapReady=true;
       // Gold route line (with a soft dark casing under it) — driven by a single GeoJSON source.
@@ -1492,6 +1561,16 @@ function navStepsToggle(){
 }
 function navFsEnter(){ _navFsUserCollapsed=false; setNavFullscreen(true); }
 function navFsMinimize(){ _navFsUserCollapsed=true; setNavFullscreen(false); }
+// Snap back to first-person turn-by-turn after the driver has roamed the map.
+function navRecenter(){
+  _navUserRoam=false; _navFollow=true;
+  document.body.classList.remove('nav-roam');
+  if(_ridesMap && _driverLat!=null){
+    try{
+      _ridesMap.easeTo({center:[_driverLng,_driverLat],zoom:NAV_FOLLOW_ZOOM,pitch:NAV_PITCH,bearing:_navHeading||0,padding:{top:80,bottom:0,left:0,right:0},duration:600});
+    }catch(e){}
+  }
+}
 
 // ── Full-screen LIVE map while waiting on riders to book ───────────────────
 // Separate from nav-fs (turn-by-turn): this is the Uber-style "online, watching
@@ -1649,7 +1728,10 @@ async function pollDriverRides(){
     // Hourly riders can redirect the trip / extend their time mid-ride — make
     // sure the driver notices the change (nav re-routes automatically).
     if(_prevRide && _prevRide.id===d.activeRide.id){
+      // Reroute notice whenever the rider changes EITHER stop (the current stop
+      // moves the nav target so it reroutes; the next stop updates the queue).
       if(d.activeRide.dropoffAddress && d.activeRide.dropoffAddress!==_prevRide.dropoffAddress){ drvToast('📍 New stop: '+d.activeRide.dropoffAddress,'success'); }
+      else if((d.activeRide.nextStopAddress||'')!==(_prevRide.nextStopAddress||'')){ drvToast(d.activeRide.nextStopAddress?'⏭️ Next stop updated':'Next stop cleared','info'); }
       if(Number(d.activeRide.hours||0)>Number(_prevRide.hours||0)){ drvToast('⏱ Trip extended to '+d.activeRide.hours+' hours','success'); }
     }
     if(!_ridesPollTimer) startRidesPoll(); // keep polling during active ride
@@ -1722,6 +1804,7 @@ function renderActiveRidePanel(){
   if(!panel) return;
   if(!_activeRide){
     panel.style.display='none'; _navSteps=null; _navPhase=null; _navLastLat=null; _navOverviewPhase=null; _navFollow=true; _navRouteCoords=null; _navRouteCum=null; _navStepCum=null;
+    _navUserRoam=false; document.body.classList.remove('nav-roam');
     // Exit full-screen nav, clear the route line, and drop the 3D camera to a flat overview between rides.
     _navFsUserCollapsed=false; setNavFullscreen(false);
     if(_ridesMap){ try{ _setRouteData(null); }catch(e){} try{ _ridesMap.easeTo({pitch:0,bearing:0,zoom:13,padding:{top:0,bottom:0,left:0,right:0},duration:800}); }catch(e){} }
@@ -1764,7 +1847,13 @@ function renderActiveRidePanel(){
     actions.innerHTML+='<button class="arc-btn" style="background:rgba(201,169,98,.14);border:1px solid rgba(201,169,98,.35);color:var(--gold);" onclick="openPickupSign()">🪧 Sign</button>';
   }
   if(r.status==='in_progress'){
-    actions.innerHTML='<button class="arc-btn arc-btn-complete" onclick="completeRide()">🏁 Complete</button>';
+    var _ip='';
+    // Hourly with a queued next stop → let the driver advance to it.
+    if(r.rideType==='hourly' && r.nextStopAddress){
+      _ip+='<button class="arc-btn" style="background:rgba(201,169,98,.16);border:1px solid rgba(201,169,98,.4);color:var(--gold);" onclick="advanceStop()">⏭️ Next Stop</button>';
+    }
+    _ip+='<button class="arc-btn arc-btn-complete" onclick="completeRide()">🏁 Complete</button>';
+    actions.innerHTML=_ip;
   }
   if(r.riderPhone){
     actions.innerHTML+='<a href="tel:'+r.riderPhone+'" class="arc-btn arc-btn-call" style="text-decoration:none;display:flex;align-items:center;justify-content:center;gap:4px;padding:12px;">📞</a>';
@@ -1803,6 +1892,23 @@ async function driverCancelRide(){
   if(_onDuty) broadcastLocation();   // mark yourself available again right away
 }
 
+// Hourly: driver finished the current stop → promote the queued next stop.
+async function advanceStop(){
+  if(!_activeRide||!drvState.token) return;
+  if(!_activeRide.nextStopAddress){ drvToast('No next stop set','error'); return; }
+  if(!confirm('Mark "'+(_activeRide.dropoffAddress||'current stop')+'" complete and route to the next stop?')) return;
+  var r=await fetch(WORKER+'/chauffeur/advance-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){return null;});
+  var d=r?await r.json().catch(function(){return {};}):{};
+  if(!r||!r.ok){ drvToast(d.error||'Could not advance stop','error'); return; }
+  // Optimistic: promote locally so nav reroutes immediately, then confirm via poll.
+  _activeRide.dropoffAddress=d.dropoffAddress||_activeRide.nextStopAddress;
+  _activeRide.dropoffLat=_activeRide.nextStopLat; _activeRide.dropoffLng=_activeRide.nextStopLng;
+  _activeRide.nextStopAddress=''; _activeRide.nextStopLat=0; _activeRide.nextStopLng=0;
+  renderActiveRidePanel(); drawActiveRideOnMap(_activeRide); updateNav();
+  drvToast('📍 Routing to next stop','success');
+  pollDriverRides();
+}
+
 async function completeRide(){
   if(!_activeRide||!drvState.token) return;
   if(!confirm('Mark ride as complete?')) return;
@@ -1825,6 +1931,11 @@ function drawActiveRideOnMap(ride){
     if(_activeRideDropoffMarker){ try{ _activeRideDropoffMarker.setLngLat([ride.dropoffLng,ride.dropoffLat]); }catch(e){} }
     else { try{ var de=document.createElement('div'); de.innerHTML='<div style="width:14px;height:14px;background:#22c55e;border-radius:3px;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>'; _activeRideDropoffMarker=new maplibregl.Marker({element:de}).setLngLat([ride.dropoffLng,ride.dropoffLat]).addTo(_ridesMap); }catch(e){} }
   }
+  // Hourly queued NEXT stop — a hollow gold pin shown after the current stop.
+  if(ride.nextStopLat&&ride.nextStopLng){
+    if(_activeRideNextStopMarker){ try{ _activeRideNextStopMarker.setLngLat([ride.nextStopLng,ride.nextStopLat]); }catch(e){} }
+    else { try{ var ne=document.createElement('div'); ne.innerHTML='<div style="width:13px;height:13px;background:rgba(201,169,98,.25);border-radius:3px;border:2px solid #C9A962;box-shadow:0 1px 6px rgba(0,0,0,.5);"></div>'; _activeRideNextStopMarker=new maplibregl.Marker({element:ne}).setLngLat([ride.nextStopLng,ride.nextStopLat]).addTo(_ridesMap); }catch(e){} }
+  } else if(_activeRideNextStopMarker){ try{ _activeRideNextStopMarker.remove(); }catch(e){} _activeRideNextStopMarker=null; }
   // Drive turn-by-turn navigation (driver -> current target)
   updateNav();
 }
@@ -1921,7 +2032,11 @@ function renderNav(){
 function advanceNav(tgt){
   var proj=_projectOnRoute(_driverLat,_driverLng);
   if(proj && proj.distM>OFFROUTE_M){
-    if(!_navFetching && (Date.now()-_navLastFetchAt)>3000){ fetchNav(tgt); }
+    // Off the line (missed turn / shortcut): lay a fresh course from the driver's
+    // CURRENT position almost immediately — short 1.1s debounce just guards OSRM
+    // from spam. The new route always starts at _driverLat/Lng, so it snaps to
+    // where the car actually is instead of leaving them "driving through buildings".
+    if(!_navFetching && (Date.now()-_navLastFetchAt)>1100){ fetchNav(tgt); }
     if($d('arc-nav-instr')) $d('arc-nav-instr').textContent='Rerouting…';
     if($d('arc-nav-arrow')) $d('arc-nav-arrow').textContent='↻';
     return;

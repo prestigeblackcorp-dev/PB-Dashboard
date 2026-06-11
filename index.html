@@ -6444,15 +6444,15 @@ function renderKPIs(filtered, containerId){
   ];
   // Remaining balances card — only on overview
   if(containerId==='kpiGrid'){
-    // Cancellation losses = DRIVER WAGES MISSED: what the assigned chauffeur(s)
-    // would have earned on cancelled trips. Cancelled rides pay 35% of the fare;
-    // cancelled bookings pay the assigned driver's amount (flat/hourly, or 35% if
-    // none) and $0 when no chauffeur was assigned — a self-drive rental that
-    // cancels costs the company revenue but costs no driver any wage. Display only.
-    var bkCancelLoss = filtered.filter(function(b){ return b&&!b._deleted&&b.status==='cancelled'; })
-      .reduce(function(s,b){ return s+_bkDriverWageMissed(b); },0);
-    var rideCancelLoss = (typeof _rideCancelLossForPeriod==='function')?_rideCancelLossForPeriod()*CH_DRIVER_SHARE:0;
-    cards.push({label:'🚫 Cancellation Losses', val:$$(bkCancelLoss+rideCancelLoss), sub:'Driver wages missed · '+$$(rideCancelLoss)+' rides · '+$$(bkCancelLoss)+' bookings', cls:(bkCancelLoss+rideCancelLoss)>0?'red':''});
+    // Cancellation losses = MY (owner's) net that walked away on trips cancelled
+    // and NOT rebooked within 30 min (slot recovered → not a loss). Rides: PB's
+    // 65% of the fare. Bookings: revenue − deposit kept − the assigned driver's
+    // wage (the net rental income lost). The per-driver wage-missed figure lives
+    // in the driver portal instead. Display only.
+    var _cancelBks = filtered.filter(function(b){ return b&&!b._deleted&&b.status==='cancelled' && !_bkRebooked(b, bookings); });
+    var bkCancelLoss = _cancelBks.reduce(function(s,b){ return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)-_bkDriverWageMissed(b)); },0);
+    var rideCancelLoss = (typeof _rideOwnerLossForPeriod==='function')?_rideOwnerLossForPeriod():0;
+    cards.push({label:'🚫 Cancellation Losses', val:$$(bkCancelLoss+rideCancelLoss), sub:'My net lost · excl. rebooked <30m · '+$$(rideCancelLoss)+' rides · '+$$(bkCancelLoss)+' bookings', cls:(bkCancelLoss+rideCancelLoss)>0?'red':''});
     cards.push({label:'🚘 Chauffeur Gross Fares', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' · before driver split', cls:''});
     cards.push({label:'🧑‍✈️ Driver Payouts (35%)', val:$$(driverPayouts), sub:'Paid to chauffeurs · deducted as cost', cls:'red'});
     cards.push({label:'◆ PB Ride Net (65%)', val:$$(pbRideNet), sub:'Prestige Black share of ride fares', cls:'green'});
@@ -7428,6 +7428,34 @@ function _bkDriverWageMissed(b){
   if(ad.payType==='flat'   && amt>0) return amt;
   if(ad.payType==='hourly' && amt>0) return amt*Math.max(1, Number(b.days)||1);
   return (Number(b.revenue)||0)*0.35;
+}
+// A cancelled booking is "rebooked" if the same customer created another booking
+// within 30 min of cancelling — the slot was recovered, so it's not a real loss.
+function _bkRebooked(b, all){
+  var email=String((b.email||b.customerEmail||'')).toLowerCase().trim();
+  var cancelAt=Number(b._t)||0;
+  if(!email || !cancelAt) return false;
+  return (all||[]).some(function(o){
+    if(!o || o.id===b.id || o._deleted) return false;
+    if(String((o.email||o.customerEmail||'')).toLowerCase().trim()!==email) return false;
+    var t=Number(o.createdAt)||Number(o._t)||0;
+    return t>cancelAt && (t-cancelAt)<=30*60000;
+  });
+}
+// Owner's 65% net lost to cancelled chauffeur rides (excl. rebooked <30m) in the
+// current Overview period window. _rideCancelTxns carries {at, amount, rebooked}.
+function _rideOwnerLossForPeriod(){
+  if(!_rideCancelTxns||!_rideCancelTxns.length) return 0;
+  var tod=todayStr();
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  return _rideCancelTxns.reduce(function(s,t){
+    if(!t || t.rebooked) return s;
+    var amt=(Number(t.amount)||0)*0.65;
+    if(_kpiPeriod==='all') return s+amt;
+    var d=t.at?dateStr(new Date(t.at)):''; if(!d) return s;
+    if(_kpiPeriod==='today') return d===tod?s+amt:s;
+    return (d>=cutoff&&d<=tod)?s+amt:s;
+  },0);
 }
 // Cancelled-ride losses within the current Overview period window
 function _rideCancelLossForPeriod(){
