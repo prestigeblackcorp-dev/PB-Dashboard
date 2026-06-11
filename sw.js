@@ -1,4 +1,4 @@
-const CACHE = 'pb-v46';
+const CACHE = 'pb-v47';
 const ASSETS = ['./index.html', './icon.png', './ride.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
