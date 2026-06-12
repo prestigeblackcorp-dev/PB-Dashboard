@@ -3753,7 +3753,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v65';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v66';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -6792,55 +6792,48 @@ function renderKPIs(filtered, containerId){
       if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt) return;
       if(dateStr(new Date(b.dateLockPaidAt))===tod) dateLockPeriodRev+=Number(b.dateLock);
     });
-    pickupBalance = allActive.reduce(function(s,b){
-      // Count if explicitly marked paid today, OR if remaining balance is 0 (manually zeroed).
-      // For manually-zeroed, anchor to pickup date — NOT _t (last-modified), which would
-      // incorrectly pull old bookings into today's revenue whenever they're edited.
-      var _pDate = b.pickupDate || b.date || '';
-      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate ? new Date(_pDate+'T12:00:00').getTime() : 0) : 0);
-      if(!paidTs || dateStr(new Date(paidTs))!==tod) return s;
-      var _bf=(Number(b.brokerFee)||0)*brokerRateDays(b); // BASE broker only — extension broker nets via _extBfToday below (tied to ext-created-today, not balance-paid-today)
-      return s+Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0)-_bf);
-    },0);
-    // Extension CHARGES created today (full value → gross). Any booking.
+    // Per-booking BASE collected today (strict cash-basis). Count only the portion of TODAY's payment
+    // that went to the BASE rental — NEVER the full revenue, and NEVER an extension paid today (those
+    // are counted on the Extensions line below). Uses balancePaidAmount (what was ACTUALLY collected)
+    // when present, clamped to the base balance — so a big extension payment that zeroed the booking's
+    // balance can't drag the whole base into today (the bug that read $580 instead of $230).
+    pickupBalance = 0; _baseBfToday = 0;
+    allActive.forEach(function(b){
+      // Count if explicitly marked paid today, OR if remaining balance is 0 (manually zeroed → anchor
+      // to pickup date, NOT _t, so editing an old booking doesn't pull it into today).
+      var _pd = b.pickupDate || b.date || '';
+      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd ? new Date(_pd+'T12:00:00').getTime() : 0) : 0);
+      if(!paidTs || dateStr(new Date(paidTs))!==tod) return;
+      var baseBalance  = Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
+      var extPaidToday = (b.extensions||[]).reduce(function(es,e){ return (e&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.additionalCharge)||0):es; },0);
+      var collected    = (b.balancePaidAmount!=null && !isNaN(Number(b.balancePaidAmount))) ? Number(b.balancePaidAmount) : baseBalance;
+      var baseGross    = Math.max(0, Math.min(collected - extPaidToday, baseBalance)); // base cash collected today
+      var ratio        = baseBalance>0 ? (baseGross/baseBalance) : 0;
+      var baseBroker   = (Number(b.brokerFee)||0)*brokerRateDays(b)*ratio;             // base broker, proportional to base collected
+      pickupBalance += baseGross - baseBroker;
+      _baseBfToday  += baseBroker;
+      if(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe') _stripeBaseToday += baseGross;
+    });
+    // Extension value COLLECTED today (ext.paidAt today, ANY booking) → full value to gross on the
+    // Extensions line; its broker subtracts into net. Cash-basis: an extension counts when its money is
+    // collected, not when it was created — and ONLY here, never via the parent booking's base above.
     extChargeTotal = allActive.reduce(function(s,b){
-      if(!b.extensions) return s;
-      return s+b.extensions.reduce(function(es,ext){
-        if(!(Number(ext.additionalCharge)>0)||!ext.createdAt) return es;
-        return dateStr(new Date(ext.createdAt))===tod ? es+(Number(ext.additionalCharge)||0) : es;
-      },0);
+      return s+(b.extensions||[]).reduce(function(es,e){ return (e&&Number(e.additionalCharge)>0&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.additionalCharge)||0):es; },0);
     },0);
-    // Extension BROKER fees for those same extensions → subtracted into net (your spec: "extensions are
-    // only full value add on gross and broker fees to subtract into net"). Tied to ext-created-today so
-    // an extension paid on its own (booking balance not settled today) STILL gets its broker netted out.
     _extBfToday = allActive.reduce(function(s,b){
-      if(!b.extensions) return s;
-      return s+b.extensions.reduce(function(es,ext){
-        if(!(Number(ext.brokerFee)>0)||!ext.createdAt) return es;
-        return dateStr(new Date(ext.createdAt))===tod ? es+(Number(ext.brokerFee)||0) : es;
-      },0);
+      return s+(b.extensions||[]).reduce(function(es,e){ return (e&&Number(e.brokerFee)>0&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.brokerFee)||0):es; },0);
     },0);
-    // Portal charges paid today (cash-basis)
+    // Portal charges paid today (cash-basis, non-extension — extension-linked charges excluded)
     var portalChargeTodayRev = allActive.reduce(function(s,b){
       return s+(b.portalCharges||[]).reduce(function(cs,c){
         if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return cs;
         return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
       },0);
     },0);
-    // Gross add-backs (cash-basis): broker fees netted out of today's balances + Stripe card-processing base.
-    // Portal charges are always paid via Stripe, so the whole amount collected today is Stripe base.
-    _stripeBaseToday = portalChargeTodayRev;
-    allActive.forEach(function(b){
-      var _pd  = b.pickupDate || b.date || '';
-      var _pts = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd ? new Date(_pd+'T12:00:00').getTime() : 0) : 0);
-      if(!_pts || dateStr(new Date(_pts))!==tod) return;
-      _baseBfToday += (Number(b.brokerFee)||0)*brokerRateDays(b); // BASE broker only (extension broker added once below)
-      if(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe')
-        _stripeBaseToday += Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
-    });
-    _bfToday   = _baseBfToday + _extBfToday; // total broker netted out of net today = base (balance-paid-today) + extension (created-today)
+    _stripeBaseToday += portalChargeTodayRev; // portal charges are Stripe-collected → part of the card-fee base
+    _bfToday   = _baseBfToday + _extBfToday;   // total broker netted out of net today = base + extension
     pureBase   = pickupBalance - addons;
-    // Net: base balances + add-ons + extension full value − extension broker (base broker already netted in pickupBalance).
+    // Net: base cash collected + add-ons + extension full value − extension broker (base broker already netted in pickupBalance).
     bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev - _extBfToday;
 
   } else if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
@@ -17085,13 +17078,19 @@ function _renderExtensionView(b, extIdx){
 function _originalReturnDate(b){
   var exts=(b&&b.extensions)||[];
   if(!exts.length) return (b&&b.dropoffDate)||'';
+  var e0=exts[0], f0=(e0&&e0.fromDate)||'';
+  // The FIRST extension's recorded fromDate IS the original return — it's stamped at creation as the
+  // dropoff BEFORE the extension moved it. Trust it whenever it's sane (a real date earlier than that
+  // extension's new return). Only a legacy/mis-set fromDate (>= the new return) falls through to
+  // day-math. (Day-math can drift when a stored extensionDays count is off by one vs the date span.)
+  if(f0 && (!e0.toDate || f0 < e0.toDate)) return f0;
   var allDays=exts.every(function(e){ return e && e.extensionUnit!=='hours'; });
   var totalDays=exts.reduce(function(s,e){ return s+((e&&e.extensionUnit!=='hours')?(Number(e.extensionDays)||0):0); },0);
   if(allDays && b.dropoffDate && totalDays>0){
     var d=parseLocalDate(b.dropoffDate);
     if(d && !isNaN(d.getTime())) return dateStr(addDays(d,-totalDays));
   }
-  return (exts[0]&&exts[0].fromDate) || (b.dropoffDate||'');
+  return f0 || (b.dropoffDate||'');
 }
 // Signature date + TIME stamp, e.g. "Jun 11, 2026 · 3:42 PM" — uses the exact captured timestamp
 // (sigAt, ms epoch) when present, falling back to the stored date string. Device-local time (DFW = CT).
@@ -17114,13 +17113,15 @@ function _buildExtensionContractHtml(b, extIdx){
   // ORIGINAL return = before ANY extension (b.dropoffDate has been moved forward by each extension).
   var origReturnRaw = _originalReturnDate(b);
   var origReturn  = fmtDateFull(origReturnRaw);
-  // "Extended From" for THIS extension = the return right before it: the prior extension's new return,
-  // else (first extension) the original return. Computed — never trusts a possibly-stale ext.fromDate.
-  var extFromRaw = (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
+  // "Extended From" for THIS extension = the return right before it. Trust the extension's own recorded
+  // fromDate when sane (earlier than its new return); else the prior extension's new return, else original.
+  var extFromRaw = (ext.fromDate && (!ext.toDate || ext.fromDate < ext.toDate)) ? ext.fromDate
+                 : (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
   // ORIGINAL total = the original booking's charges ONLY — exclude every extension's additionalCharge.
   var rev = Math.max(0, totalRevenue(b) - extensionCharge(b));
-  // Owner signature ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
-  var ownerSigHtml = OWNER_SIGNATURE
+  // Owner signature ALWAYS appears: the uploaded image ONLY when it's a valid data:image, else a typed
+  // cursive signature (a non-empty but invalid OWNER_SIGNATURE must NOT render a broken <img>).
+  var ownerSigHtml = (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)
     ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain">'
     : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
   var custSigHtml = (ext.signed && ext.sig && ext.sig.startsWith('data:image/'))
@@ -18695,7 +18696,7 @@ function _initExtensionSigningMode(bookingId, extId){
     var _ipOrigReturnRaw=_originalReturnDate(bk);
     var origReturn=fmtDateFull(_ipOrigReturnRaw);
     // "Extended From" for THIS extension = the return right before it (prior ext's new return, else original).
-    var _ipExtFromRaw=(extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : _ipOrigReturnRaw;
+    var _ipExtFromRaw=(ext.fromDate && (!ext.toDate || ext.fromDate < ext.toDate)) ? ext.fromDate : (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : _ipOrigReturnRaw;
     var todayObj=new Date(); var todayFmt=(todayObj.getMonth()+1)+'/'+todayObj.getDate()+'/'+todayObj.getFullYear();
     var extHtml='<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+
       '<style>*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;padding:24px 28px;line-height:1.6}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:20px 0 8px;padding-bottom:4px;border-bottom:2px solid #111}table{width:100%;border-collapse:collapse}th{background:#222;color:#fff;text-align:left;padding:7px 10px;font-size:12px}td{vertical-align:top}.sig-box{border-bottom:1.5px solid #666;min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px}</style>'+
