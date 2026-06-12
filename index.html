@@ -1481,6 +1481,9 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
 
       <!-- EDIT: shown when no signature on file -->
       <div id="sigEditView">
+        <div id="custSigSignerRow" style="display:none;margin-bottom:8px;font-size:12px;font-weight:700;color:var(--gold)">✍ Signing as:
+          <select id="custSigSigner" class="finput" style="width:auto;display:inline-block;margin-left:6px;font-weight:700" onchange="_onSigSignerChange()"></select>
+        </div>
         <canvas id="custSigCanvas" width="480" height="110" style="width:100%;max-width:480px;height:110px;border:1px dashed var(--border);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
           <button class="btn btn-sm" onclick="clearCustSig()">✕ Clear</button>
@@ -3706,7 +3709,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v60';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v61';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -8610,7 +8613,7 @@ function tripDuration(b){
     if(pD&&dD&&!isNaN(pD)&&!isNaN(dD)){
       var diff=Math.round((dD-pD)/86400000);
       if(diff>=0){
-        var n=Math.max(1,diff+1); // INCLUSIVE: count pickup..dropoff so the last day IS the return day
+        var n=Math.max(1,diff); // 24h periods between pickup & drop-off (Jun10 11PM→Jun14 11PM = 4 days)
         return n+' day'+(n!==1?'s':'');
       }
     }
@@ -9051,7 +9054,7 @@ function openBookingDetail(id){
     '<div class="detail-row"><span class="detail-label">Booking Date</span><span class="detail-val">'+fmtDate(b.date)+'</span></div>'+
     (b.pickupDate?'<div class="detail-row"><span class="detail-label">Pickup</span><span class="detail-val">'+fmtDate(b.pickupDate)+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+(_isWeekdayDiscount&&_isWeekdayDiscount(b.pickupDate)&&b.type==='daily'?' <span style="background:rgba(59,130,246,.15);color:#60a5fa;border-radius:5px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:4px">MON–THU RATE</span>':'')+'</span></div>':'')+
     (b.dropoffDate?'<div class="detail-row"><span class="detail-label">Drop-off</span><span class="detail-val">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</span></div>':'')+
-    '<div class="detail-row"><span class="detail-label">Duration</span><span class="detail-val">'+b.days+' '+((b.type==='hourly'||b.type==='chauffeur')?'hr':'day')+(b.days!==1?'s':'')+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Duration</span><span class="detail-val">'+tripDuration(b)+'</span></div>'+
 
     // Revenue
     '<div class="fsec">Revenue</div>'+
@@ -15916,28 +15919,28 @@ function _unlockColorPicker(){
 
 function initCustSigCanvas(){
   var lockView=$d('sigLockView'), editView=$d('sigEditView');
-  // If booking already has a signature, show locked view — no editing allowed
-  if(_contractBookingId){
-    var b=bookings.find(function(x){return x.id===_contractBookingId;});
-    if(b&&b.customerSig&&b.customerSig.startsWith('data:image/')){
-      if(lockView) lockView.style.display='';
-      if(editView) editView.style.display='none';
-      var preview=$d('sigLockPreview');
-      if(preview) preview.src=b.customerSig;
-      var dateEl=$d('sigLockDate');
-      if(dateEl) dateEl.textContent=b.customerSigDate?'· Signed '+b.customerSigDate:'';
-      // Restore the signed color so the contract re-renders correctly on reopen
-      if(b.customerSigColor && b.vehicle==='Polaris Slingshot'){
-        if(b.customerSigColor!==_slingshotColor) switchSlingshotColor(b.customerSigColor);
-      }
-      // Lock the color picker so it can't be changed after signing
-      _lockColorPicker(true);
-      return; // skip canvas init entirely
-    }
+  var b=_contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
+  var primarySigned=!!(b&&b.customerSig&&b.customerSig.startsWith('data:image/'));
+  var drivers=(b&&b.extraDrivers)||[];
+  var unsigned=drivers.filter(function(d){ return !(d&&d.sig&&String(d.sig).indexOf('data:image/')===0); });
+  // Lock fully only when the primary AND every authorized driver have signed. While any party still
+  // needs to sign, keep the pad open so the owner can capture them all in person via the switch.
+  if(b && primarySigned && unsigned.length===0){
+    if(lockView) lockView.style.display='';
+    if(editView) editView.style.display='none';
+    var preview=$d('sigLockPreview');
+    if(preview) preview.src=b.customerSig;
+    var dateEl=$d('sigLockDate');
+    if(dateEl) dateEl.textContent=b.customerSigDate?'· Signed '+b.customerSigDate:'';
+    if(b.customerSigColor && b.vehicle==='Polaris Slingshot' && b.customerSigColor!==_slingshotColor) switchSlingshotColor(b.customerSigColor);
+    _lockColorPicker(true);
+    return; // everyone signed — skip canvas init entirely
   }
-  // No signature yet — show editable canvas
+  // Someone still needs to sign — show the editable canvas + the "signing as" switch.
   if(lockView) lockView.style.display='none';
   if(editView) editView.style.display='';
+  // Default the switch to the first party still needing a signature (primary first, then drivers).
+  _populateSigSignerSelect(!primarySigned ? 'primary' : (unsigned.length ? String(drivers.indexOf(unsigned[0])) : 'primary'));
   var oldCanvas=$d('custSigCanvas');
   if(!oldCanvas) return;
   var cv=oldCanvas.cloneNode(true);
@@ -15953,6 +15956,35 @@ function initCustSigCanvas(){
   cv.onmousemove=cv.ontouchmove=function(e){ e.preventDefault(); if(!_custSigDrawing) return; var p=pos(e); ctx.lineTo(p.x,p.y); ctx.stroke(); };
   cv.onmouseup=cv.ontouchend=function(){ _custSigDrawing=false; };
   cv.onmouseleave=function(){ _custSigDrawing=false; };
+}
+// Fill the in-person "signing as" switch with the primary customer + each authorized driver
+// (✓ marks who's already signed). Hidden entirely when there are no authorized drivers.
+function _populateSigSignerSelect(defaultVal){
+  var sel=$d('custSigSigner'), row=$d('custSigSignerRow');
+  if(!sel) return;
+  var b=bookings.find(function(x){return x.id===_contractBookingId;});
+  var drivers=(b&&b.extraDrivers)||[];
+  if(!drivers.length){ if(row) row.style.display='none'; sel.innerHTML='<option value="primary">'+esc((b&&b.name)||'Customer')+'</option>'; sel.value='primary'; _onSigSignerChange(); return; }
+  if(row) row.style.display='';
+  var primarySigned=!!(b&&b.customerSig&&b.customerSig.startsWith('data:image/'));
+  var opts='<option value="primary">'+esc((b&&b.name)||'Primary customer')+' — primary'+(primarySigned?' ✓':'')+'</option>';
+  drivers.forEach(function(d,i){
+    var signed=d&&d.sig&&String(d.sig).indexOf('data:image/')===0;
+    opts+='<option value="'+i+'">'+esc(d.name||('Driver '+(i+1)))+' — driver'+(signed?' ✓':'')+'</option>';
+  });
+  sel.innerHTML=opts;
+  if(defaultVal!=null && sel.querySelector('option[value="'+defaultVal+'"]')) sel.value=String(defaultVal);
+  _onSigSignerChange();
+}
+// Update the status line to show who the pad is currently capturing (and if they already signed).
+function _onSigSignerChange(){
+  var sel=$d('custSigSigner'), st=$d('custSigStatus');
+  if(!sel||!st) return;
+  var b=bookings.find(function(x){return x.id===_contractBookingId;});
+  var v=sel.value, name='Customer', already=false;
+  if(v==='primary'){ name=(b&&b.name)||'Primary customer'; already=!!(b&&b.customerSig&&b.customerSig.startsWith('data:image/')); }
+  else { var d=b&&b.extraDrivers&&b.extraDrivers[Number(v)]; name=(d&&d.name)||('Driver '+(Number(v)+1)); already=!!(d&&d.sig&&String(d.sig).indexOf('data:image/')===0); }
+  st.textContent = already ? ('✓ '+name+' already signed — re-sign to replace') : ('Capturing '+name+'’s signature');
 }
 function overrideCustSig(){
   if(!confirm('Remove the stored signature and unlock the contract for editing?\nThis cannot be undone.')) return;
@@ -15978,18 +16010,33 @@ function saveCustSig(){
   var cv=$d('custSigCanvas'); if(!cv||!_contractBookingId) return;
   var dataUrl=cv.toDataURL('image/png');
   var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
-  if(idx!==-1){
-    var t2=new Date();
-    bookings[idx].customerSig=dataUrl;
-    bookings[idx].customerSigDate=(t2.getMonth()+1)+'/'+t2.getDate()+'/'+t2.getFullYear();
-    bookings[idx].customerSigAt=t2.getTime();   // precise timestamp for the communication log
-    // Log which vehicle + color (Slingshot) were active when the contract was signed
-    bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
-    if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
+  if(idx===-1) return;
+  var signer=($d('custSigSigner')&&$d('custSigSigner').value)||'primary';
+  var t2=new Date();
+  var dateStr=(t2.getMonth()+1)+'/'+t2.getDate()+'/'+t2.getFullYear();
+  // ── Authorized driver, signed in person on this device → write to extraDrivers[i].sig ──
+  if(signer!=='primary'){
+    var di=Number(signer);
+    var d=bookings[idx].extraDrivers && bookings[idx].extraDrivers[di];
+    if(!d) return;
+    d.sig=dataUrl; d.sigDate=dateStr; d.sigAt=t2.getTime();
     bookings[idx]._t=Date.now();
     save();
+    var dn=d.name||('Driver '+(di+1));
+    initCustSigCanvas();      // fresh blank pad for the next unsigned party, or lock once all are done
+    _renderContractContent();
+    toast('📝 '+dn+'’s signature captured');
+    return;
   }
-  // Switch to locked view immediately
+  // ── Primary customer (original behavior) ──
+  bookings[idx].customerSig=dataUrl;
+  bookings[idx].customerSigDate=dateStr;
+  bookings[idx].customerSigAt=t2.getTime();   // precise timestamp for the communication log
+  // Log which vehicle + color (Slingshot) were active when the contract was signed
+  bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
+  if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
+  bookings[idx]._t=Date.now();
+  save();
   initCustSigCanvas();
   _renderContractContent();
   // Auto-send signed copy to customer if email + messaging worker are available
