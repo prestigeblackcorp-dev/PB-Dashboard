@@ -3753,7 +3753,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v68';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v69';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -16442,7 +16442,7 @@ function _renderContractContent(){
     .replace(/\{\{pet_fee\}\}/gi,            sr(petFee))
     .replace(/\{\{odometer_in\}\}/gi,        sr(odomIn))
     .replace(/\{\{date_lock\}\}/gi,          sr(b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
-    .replace(/\{\{owner_signature\}\}/gi,      (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img src="'+OWNER_SIGNATURE+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+(_contractIsWaiver?';filter:invert(1)':'')+'">'  :'<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+(_contractIsWaiver?'#fff':'#111')+';line-height:1">Jalen Nguyen</span>')
+    .replace(/\{\{owner_signature\}\}/gi,      (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img src="'+OWNER_SIGNATURE+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom;filter:'+(_contractIsWaiver?'brightness(0)':'brightness(0) invert(1)')+'">'  :'<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+(_contractIsWaiver?'#111':'#fff')+';line-height:1">Jalen Nguyen</span>')
     .replace(/\{\{customer_signature\}\}/gi,   (b.customerSig&&b.customerSig.startsWith('data:image/'))?'<img src="'+b.customerSig+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+(_contractIsWaiver?'':';filter:invert(1)')+'">':'_______________________________')
     .replace(/\{\{customer_signed_date\}\}/gi, sr(b.customerSigDate||todayFmt))
     .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee?'$'+b.brokerFee+'/day':'N/A')
@@ -17119,10 +17119,12 @@ function _buildExtensionContractHtml(b, extIdx){
                  : (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
   // ORIGINAL total = the original booking's charges ONLY — exclude every extension's additionalCharge.
   var rev = Math.max(0, totalRevenue(b) - extensionCharge(b));
-  // Owner signature ALWAYS appears: the uploaded image ONLY when it's a valid data:image, else a typed
-  // cursive signature (a non-empty but invalid OWNER_SIGNATURE must NOT render a broken <img>).
+  // Owner signature ALWAYS appears: the uploaded image (valid data:image) else a typed cursive signature.
+  // The saved signature is WHITE — it's shown un-inverted on the DARK main contract — so on THIS
+  // light-background extension document it must be inverted to be visible (identical to how the waiver
+  // renders it). Without this the white signature is invisible on white and the box looks blank.
   var ownerSigHtml = (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)
-    ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain">'
+    ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
     : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
   var custSigHtml = (ext.signed && ext.sig && ext.sig.startsWith('data:image/'))
     ? '<img src="'+ext.sig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:invert(0)">'
@@ -18424,7 +18426,7 @@ function _initSigningMode(bookingId, driverIdx){
       .replace(/\{\{fuel_policy\}\}/gi,'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
       .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-brokerFeeTotal(bk)).toFixed(2)))
       .replace(/\{\{additional_drivers\}\}/gi,_sr(_buildAdditionalDriversHtml(bk, true, /#0d0d0d/.test(_origSigningTmpl))))
-      .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
+      .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block;filter:'+(/#0d0d0d/.test(_origSigningTmpl)?'brightness(0) invert(1)':'brightness(0)')+'">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
       // customer_signature: primary signs → canvas placeholder; driver signs → primary's actual sig (or blank)
       .replace(/\{\{customer_signature\}\}/gi,
         (_smSigningDriverIdx===null)
@@ -18682,7 +18684,7 @@ function _initExtensionSigningMode(bookingId, extId){
     // Build extension contract HTML for display (no owner sig img src — inline it). Owner signature
     // ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
     var ownerSig = (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
-      ? '<img src="'+data.owner_signature+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain">'
+      ? '<img src="'+data.owner_signature+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
       : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
 
     // Build prior extensions rows
