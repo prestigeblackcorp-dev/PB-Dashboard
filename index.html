@@ -6065,7 +6065,7 @@ function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0
 function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
 function extensionCharge(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e.additionalCharge)||0);},0); }
 // Sum of portal charges that have been paid (base amount only — fee/tax go to Stripe/processor)
-function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue) ? s+(Number(c.amount)||0) : s; },0); }
+function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment) ? s+(Number(c.amount)||0) : s; },0); }
 // Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
 // raw b.revenue AND also bucket portal charges by paidAt would otherwise count a folded
 // fee twice — subtract this from the base term so it's counted once (via the paidAt loop).
@@ -6129,12 +6129,23 @@ function _reconcilePaidExtensionCharges(){
   (bookings||[]).forEach(function(b){
     if(!b||b._deleted||!b.portalCharges||!b.portalCharges.length) return;
     b.portalCharges.forEach(function(c){
-      if(c && c.paidAt && !c._extApplied && chargeCategory(c)==='extension' && (parseInt(c.extensionDays,10)||0)>0){
+      if(c && c.paidAt && !c._extApplied && !c._extPayment && chargeCategory(c)==='extension' && (parseInt(c.extensionDays,10)||0)>0){
         var _q=parseInt(c.extensionDays,10)||0, _u=(c.extensionUnit==='hours')?'hr':'d';
         _applyExtensionCharge(b, c);
         b._t=Date.now();
         changed=true;
         logNotif('charge','Extension auto-applied after card payment — '+(c.description||'Charge')+' +'+_q+_u,(b.name||''),b.id);
+      }
+      // An extension-AGREEMENT card payment (_extPayment) was paid in the portal → mark that
+      // extension PAID + clear its amount from the balance (collection only — no new revenue).
+      if(c && c.paidAt && c._extPayment && c._extId){
+        var _ext=(b.extensions||[]).find(function(e){ return e&&e.id===c._extId; });
+        if(_ext && !_ext.paid){
+          _markExtPaidInternal(b, _ext, 'stripe');
+          b._t=Date.now(); changed=true;
+          var _en=(b.extensions||[]).findIndex(function(e){ return e&&e.id===c._extId; })+1;
+          logNotif('payment','Extension #'+_en+' paid via card (portal) — $'+(Number(_ext.additionalCharge)||0).toFixed(2),(b.name||''),b.id);
+        }
       }
     });
   });
@@ -6164,7 +6175,7 @@ function splitPaidCharges(list,onlyDate){
   var out={late:0,mileage:0,fuel:0,cleaning:0,damage:0,tolls:0,deposit:0,extension:0,other:0,total:0};
   (list||[]).forEach(function(b){
     (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt) return;
+      if(!c||!c.paidAt||c._extPayment) return;
       if(onlyDate && dateStr(new Date(c.paidAt))!==onlyDate) return;
       var amt=Number(c.amount)||0;
       out[chargeCategory(c)]+=amt;
@@ -6501,7 +6512,7 @@ function renderKPIs(filtered, containerId){
     // Portal charges paid today (cash-basis)
     var portalChargeTodayRev = allActive.reduce(function(s,b){
       return s+(b.portalCharges||[]).reduce(function(cs,c){
-        if(!c||!c.paidAt) return cs;
+        if(!c||!c.paidAt||c._extPayment) return cs;
         return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
       },0);
     },0);
@@ -6770,7 +6781,7 @@ function renderCharts(filtered){
     });
     // Portal charges: bucket by paidAt month
     (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt) return;
+      if(!c||!c.paidAt||c._extPayment) return;
       var pm=dateStr(new Date(c.paidAt)).substring(0,7);
       mR[pm]=(mR[pm]||0)+(Number(c.amount)||0);
     });
@@ -7077,7 +7088,7 @@ function renderVehicleTable(filtered){
     // Portal charges paid today — bucket by vehicle
     allActive.forEach(function(b){
       (b.portalCharges||[]).forEach(function(c){
-        if(!c||!c.paidAt) return;
+        if(!c||!c.paidAt||c._extPayment) return;
         if(dateStr(new Date(c.paidAt))!==_kpiDR3.from) return;
         _seedV(b.vehicle);
         map[b.vehicle].revenue+=Number(c.amount)||0;
@@ -8843,7 +8854,7 @@ function openBookingDetail(id){
         return '<div class="detail-row"><span class="detail-label" style="color:'+(signed?'#22c55e':'#fb923c')+'">Ext #'+(i+1)+' '+(signed?'✅':'⏳')+'</span>'+
           '<span class="detail-val">'+fmtDateFull(ext.fromDate)+' &rarr; <strong>'+fmtDateFull(ext.toDate)+'</strong>'+
           ' <span style="color:var(--muted);font-size:10px">+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</span>'+
-          (ext.additionalCharge?' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(ext.additionalCharge).toFixed(2)+'</span>':'')+
+          (ext.additionalCharge?' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(ext.additionalCharge).toFixed(2)+'</span>'+(ext.paid?' <span style="color:#22c55e;font-size:10px;font-weight:700">✅ Paid</span>':' <span style="color:#fb923c;font-size:10px;font-weight:700">⏳ Payment pending</span>'):'')+
           (signed?' <span style="color:var(--muted);font-size:10px">Signed '+esc(ext.sigDate||'')+'</span>':' <span style="color:#fb923c;font-size:10px">Pending signature</span>')+
           ' <button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_contractShowTab('+i+');_updateExtensionTabs();},200)" style="padding:2px 8px;font-size:10px;margin-left:4px">View</button>'+
           '</span></div>';
@@ -8970,7 +8981,7 @@ function openBookingDetail(id){
     (function(){
       var _cl=_bookingCommLog(b);
       if(!_cl.length) return '';
-      var _typeIcons={contractsigned:'✍️',verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',extsigned:'✍️',toggle:'🔁',charge:'💸',payment:'💵',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
+      var _typeIcons={contractsigned:'✍️',verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',extsigned:'✍️',toggle:'🔁',charge:'💸',payment:'💵',extension:'📅',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
       return '<div class="fsec" style="margin-top:12px">📨 Communication Log</div>'+
         '<div style="font-size:11px;color:var(--muted)">'+
         _cl.slice().reverse().map(function(c){
@@ -11321,7 +11332,7 @@ function renderNotifLog(){
     el.innerHTML='<div style="padding:14px 16px;color:var(--muted);text-align:center;font-size:12px">No notifications sent yet</div>';
     return;
   }
-  var typeIcons={ review:'⭐', verification:'🪪', verify_nudge:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', owner_id_verified:'🪪', customer_verified:'✅', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗', extsigned:'✍️', toggle:'🔁', charge:'💸', payment:'💵', waitlist_autobook:'📅', waitlist_added:'📅', waitlist_notify:'📅' };
+  var typeIcons={ review:'⭐', verification:'🪪', verify_nudge:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', owner_id_verified:'🪪', customer_verified:'✅', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗', extsigned:'✍️', toggle:'🔁', charge:'💸', payment:'💵', extension:'📅', waitlist_autobook:'📅', waitlist_added:'📅', waitlist_notify:'📅' };
   el.innerHTML = _notifLog.map(function(n, i){
     var dt=new Date(n.at);
     var dateStr=dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});
@@ -16491,6 +16502,24 @@ function _renderExtensionView(b, extIdx){
   var _statusBadge=_esc2.signed>=_esc2.total
     ? '<span style="color:#22c55e;font-weight:800;font-size:12px">✅ Fully Signed</span>'
     : '<span style="color:#f97316;font-weight:700;font-size:12px">⏳ '+_esc2.signed+' of '+_esc2.total+' signed</span>';
+  // Payment status for this extension (separate from signing). ⏳ pending / ✅ paid.
+  var _extAmt=Number(ext.additionalCharge)||0, _extPaid=!!ext.paid, _isStripe=(ext.paymentMethod==='stripe');
+  var _payBadge=_extAmt>0 ? (_extPaid
+      ? '<span style="color:#22c55e;font-weight:800;font-size:12px">✅ Paid</span>'
+      : '<span style="color:#f97316;font-weight:700;font-size:12px">⏳ Payment pending</span>') : '';
+  var _payPanel='';
+  if(_extAmt>0){
+    _payPanel='<div style="background:rgba(201,169,98,.05);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+      '<span style="font-weight:700">💵 Extension payment: $'+_extAmt.toFixed(2)+'</span>'+
+      (_extPaid
+        ? '<span style="color:#22c55e;font-weight:700">✅ Paid'+(ext.paymentMethod?(' via '+esc(ext.paymentMethod==='stripe'?'card':ext.paymentMethod)):'')+(ext.paidAt?(' · '+new Date(ext.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})):'')+'</span>'
+        : '<span style="color:#f97316;font-weight:700">⏳ Pending</span>'+
+          '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'+
+            (((_isStripe||!ext.paymentMethod)&&b.email)?'<button class="btn btn-sm" onclick="_sendExtensionStripePayment(\''+b.id+'\',\''+ext.id+'\')" style="border-color:#635bff;color:#635bff;font-size:10px">💳 Send Card Link to Portal</button>':'')+
+            '<button class="btn btn-sm" onclick="markExtensionPaid(\''+b.id+'\',\''+ext.id+'\')" style="border-color:rgba(34,197,94,.4);color:#22c55e;font-size:10px">✓ Mark Paid</button>'+
+          '</span>')+
+    '</div>';
+  }
   // Roster of EVERYONE who must sign this extension — the primary renter first, then
   // each additional authorized driver — each with their signed/pending status and an
   // individual "Send Signing" (or "Copy Link" when no email) button while pending.
@@ -16521,8 +16550,8 @@ function _renderExtensionView(b, extIdx){
     '<strong>Extension #'+extNum+'</strong> <span>'+esc(b.vehicle)+'</span> <span>'+esc(b.name)+'</span>'+
     '<span style="color:var(--muted)">'+fromFmt+' &rarr; '+toFmt+'</span>'+
     (ext.additionalCharge?'<span style="color:var(--gold)">+$'+Number(ext.additionalCharge).toFixed(2)+'</span>':'')+
-    '<span style="margin-left:auto">'+_statusBadge+'</span>'+
-    '</div>'+_drvPanel;
+    '<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+(_payBadge?_payBadge:'')+_statusBadge+'</span>'+
+    '</div>'+_payPanel+_drvPanel;
   // Update extension signature view
   var lockView = $d('extSigLockView');
   var editView = $d('extSigEditView');
@@ -16720,82 +16749,82 @@ function _extSignCommEntries(b){
 function addExtensionContract(){
   var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
   if(!b){ showToast('No booking selected'); return; }
-  // Determine current end date (last extension's toDate or booking dropoffDate)
   var exts = b.extensions || [];
   var currentEnd = exts.length ? exts[exts.length-1].toDate : (b.dropoffDate || b.date || '');
+  // Calendar can't go before TODAY and can't be on/before the current return date.
+  var _td = todayStr();
+  var _afterEnd = currentEnd ? dateStr(addDays(parseLocalDate(currentEnd), 1)) : _td;
+  var _minDate = (_afterEnd > _td) ? _afterEnd : _td;
+  var _hasBroker = !!(b.broker || Number(b.brokerFee) > 0);
 
-  // Show a simple dialog
-  var newEndDate = prompt(
-    'Extension #'+(exts.length+1)+' for '+b.name+'\n'+
-    'Current return date: '+(currentEnd ? fmtDateFull(currentEnd) : 'unknown')+'\n\n'+
-    'Enter new return date (YYYY-MM-DD):',
-    ''
-  );
-  if(!newEndDate || !newEndDate.trim()) return;
-  newEndDate = newEndDate.trim();
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(newEndDate)){
-    showToast('Invalid date format — use YYYY-MM-DD'); return;
-  }
+  var _old=$d('extCreateOverlay'); if(_old) _old.remove();
+  var ov=document.createElement('div');
+  ov.id='extCreateOverlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML=
+    '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:22px;width:100%;max-width:440px;max-height:90vh;overflow:auto">'+
+      '<div style="font-size:16px;font-weight:800;margin-bottom:4px">📅 Create Extension #'+(exts.length+1)+'</div>'+
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:16px">'+esc(b.name||'')+' &middot; '+esc(b.vehicle||'')+' &middot; current return '+(currentEnd?fmtDateFull(currentEnd):'unknown')+'</div>'+
+      '<div style="margin-bottom:12px"><div class="flabel">New return date</div>'+
+        '<input id="extNewDate" type="date" class="finput" style="width:100%" min="'+_minDate+'" value="'+_minDate+'"></div>'+
+      '<div style="margin-bottom:12px"><div class="flabel">Additional charge ($)</div>'+
+        '<input id="extCharge" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00"></div>'+
+      (_hasBroker?('<div style="margin-bottom:12px"><div class="flabel">Broker fee for this extension ($)</div>'+
+        '<input id="extBroker" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00"></div>'):'')+
+      '<div style="margin-bottom:12px"><div class="flabel">Payment method</div>'+
+        '<select id="extPayMethod" class="finput" style="width:100%">'+
+          '<option value="">— choose later —</option>'+
+          '<option value="stripe">💳 Stripe — send card link to client portal</option>'+
+          '<option value="Zelle">Zelle</option>'+
+          '<option value="Cash App">Cash App</option>'+
+          '<option value="Venmo">Venmo</option>'+
+          '<option value="Cash">Cash</option>'+
+          '<option value="Other">Other</option>'+
+        '</select>'+
+        '<div style="font-size:10.5px;color:var(--muted);margin-top:5px">Stripe → a card payment request is sent to the client portal automatically. Any other method → mark it paid manually once received.</div></div>'+
+      '<div style="margin-bottom:18px"><div class="flabel">Notes (optional)</div>'+
+        '<input id="extNotes" type="text" class="finput" style="width:100%" placeholder="—"></div>'+
+      '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+        '<button class="btn" onclick="$d(\'extCreateOverlay\').remove()" style="border-color:var(--border)">Cancel</button>'+
+        '<button class="btn" onclick="confirmAddExtension()" style="background:var(--gold);color:#000;border-color:var(--gold);font-weight:700">Create Extension</button>'+
+      '</div>'+
+    '</div>';
+  document.body.appendChild(ov);
+  setTimeout(function(){ var el=$d('extNewDate'); if(el) el.focus(); },50);
+}
 
-  // Calculate days added
+function confirmAddExtension(){
+  var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
+  if(!b){ showToast('No booking selected'); return; }
+  var exts = b.extensions || [];
+  var currentEnd = exts.length ? exts[exts.length-1].toDate : (b.dropoffDate || b.date || '');
+  var newEndDate = ($d('extNewDate')&&$d('extNewDate').value)||'';
+  if(!newEndDate){ alert('Pick a new return date.'); return; }
   var fromMs = currentEnd ? new Date(currentEnd+'T12:00:00').getTime() : Date.now();
   var toMs   = new Date(newEndDate+'T12:00:00').getTime();
+  if(!(toMs > fromMs)){ alert('The new return date must be AFTER the current return date.'); return; }
   var extDays = Math.max(1, Math.round((toMs - fromMs) / 86400000));
-
-  var chargeStr = prompt('Additional charge for this extension (leave blank for $0):', '');
-  var addlCharge = chargeStr ? Math.max(0, parseFloat(chargeStr.replace(/[^0-9.]/g,''))||0) : 0;
-
-  // Broker logic for the extended days — only prompts when this booking has a broker.
-  // Defaults to the per-day rate × added days (matching a normal broker booking) but is
-  // fully editable, so the broker can take more, less, or nothing on the extension.
-  var extBrokerFee = 0;
-  if(b.broker || Number(b.brokerFee) > 0){
-    var _bfSuggest = Number(b.brokerFee) > 0 ? (Number(b.brokerFee)*extDays).toFixed(2) : '';
-    var bfStr = prompt('Broker fee for this extension'+(b.broker?(' — '+b.broker):'')+' (+'+extDays+' day'+(extDays!==1?'s':'')+').\nEnter $ amount, leave blank for $0:', _bfSuggest);
-    extBrokerFee = bfStr ? Math.max(0, parseFloat(String(bfStr).replace(/[^0-9.]/g,''))||0) : 0;
-  }
-
-  var notes = prompt('Notes for extension (optional — leave blank to skip):', '') || '';
-
-  // Confirm
-  if(!confirm(
-    'Create Extension #'+(exts.length+1)+'?\n'+
-    'From: '+fmtDateFull(currentEnd)+'\n'+
-    'To: '+fmtDateFull(newEndDate)+' (+'+extDays+' day'+(extDays!==1?'s':'')+')\n'+
-    (addlCharge?'Additional Charge: $'+addlCharge.toFixed(2)+'\n':'')+
-    (extBrokerFee?'Broker Fee (this extension): $'+extBrokerFee.toFixed(2)+'\n':'')+
-    (notes?'Notes: '+notes+'\n':'')
-  )) return;
+  var addlCharge   = Math.max(0, parseFloat(($d('extCharge')&&$d('extCharge').value)||'0')||0);
+  var extBrokerFee = Math.max(0, parseFloat(($d('extBroker')&&$d('extBroker').value)||'0')||0);
+  var payMethod    = ($d('extPayMethod')&&$d('extPayMethod').value)||'';
+  var notes        = (($d('extNotes')&&$d('extNotes').value)||'').trim();
 
   var newExt = {
-    id: 'ext_' + Date.now(),
-    createdAt: Date.now(),
-    fromDate: currentEnd,
-    toDate: newEndDate,
-    extensionDays: extDays,
-    additionalCharge: addlCharge,
-    brokerFee: extBrokerFee,
-    notes: notes,
-    sentAt: null,
-    signed: false,
-    sig: '',
-    sigDate: ''
+    id: 'ext_' + Date.now(), createdAt: Date.now(),
+    fromDate: currentEnd, toDate: newEndDate, extensionDays: extDays,
+    additionalCharge: addlCharge, brokerFee: extBrokerFee, notes: notes,
+    paymentMethod: payMethod, paid: false, paidAt: null,
+    sentAt: null, signed: false, sig: '', sigDate: ''
   };
   var idx = bookings.findIndex(function(x){return x.id===_contractBookingId;});
   if(idx === -1) return;
   if(!bookings[idx].extensions) bookings[idx].extensions = [];
   bookings[idx].extensions.push(newExt);
-  // Update booking's return date and day count to reflect the extension
   bookings[idx].dropoffDate = newEndDate;
-  // Recalculate days from pickup to new end date
   var _pickupMs = new Date((bookings[idx].pickupDate||bookings[idx].date)+'T12:00:00').getTime();
   var _newEndMs = new Date(newEndDate+'T12:00:00').getTime();
-  if(_pickupMs && _newEndMs > _pickupMs){
-    bookings[idx].days = Math.round((_newEndMs - _pickupMs) / 86400000);
-  }
-  // The extension's additional charge is now owed by the customer — roll it into the
-  // balance due (unless the balance is already marked paid in full). Base off the
-  // stored balance, or Revenue+Deposit−DateLock when none was set yet.
+  if(_pickupMs && _newEndMs > _pickupMs){ bookings[idx].days = Math.round((_newEndMs - _pickupMs) / 86400000); }
+  // The extension's additional charge is now owed — roll it into the balance due.
   if(addlCharge>0 && !bookings[idx].balancePaidAt){
     var _curBal = (bookings[idx].remainingBalance!=null)
       ? (Number(bookings[idx].remainingBalance)||0)
@@ -16803,15 +16832,89 @@ function addExtensionContract(){
     bookings[idx].remainingBalance = _curBal + addlCharge;
   }
   bookings[idx]._t = Date.now();
-  save();
-  showToast('Extension #'+(bookings[idx].extensions.length)+' created ✅');
-  // Sync updated end date to Google Calendar
+  var _extNum = bookings[idx].extensions.length;
+  save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  logNotif('extension','Extension #'+_extNum+' created — +'+extDays+' day'+(extDays!==1?'s':'')+', new return '+newEndDate+(addlCharge?(' · $'+addlCharge.toFixed(2)):'')+(payMethod?(' · '+payMethod):''),(b.name||''),bookings[idx].id);
   syncToGCal(bookings[idx]);
-  // Re-render calendar so extended days appear immediately
   if(activeTab==='calendar') renderCalendar();
-  // Auto-switch to the new extension tab
+  var _ov=$d('extCreateOverlay'); if(_ov) _ov.remove();
+  // Stripe → send a card payment request to the client portal automatically.
+  if(payMethod==='stripe' && addlCharge>0){ _sendExtensionStripePayment(bookings[idx].id, newExt.id); }
+  showToast('Extension #'+_extNum+' created ✅'+(payMethod==='stripe'&&addlCharge>0?' — card request sent to portal':''));
   _contractShowTab(bookings[idx].extensions.length - 1);
   _updateExtensionTabs();
+}
+
+// Stripe extension payment → a card request in the client portal. Creates a portal charge
+// flagged _extPayment: a COLLECTION only — excluded from EVERY revenue/cash total (the
+// revenue is already booked via extensionCharge), linked to the extension via _extId so
+// paying it (card in portal, or owner mark-paid) marks the extension paid + clears the balance.
+function _sendExtensionStripePayment(bookingId, extId){
+  var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
+  if(idx===-1) return;
+  var b=bookings[idx];
+  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
+  if(!ext || !(Number(ext.additionalCharge)>0)) return;
+  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var amt=Number(ext.additionalCharge)||0;
+  if(!b.portalCharges) b.portalCharges=[];
+  if(!(b.portalCharges||[]).some(function(c){ return c && c._extId===extId && !c.paidAt; })){
+    b.portalCharges.push({
+      id:'chg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),
+      amount:amt, description:'Extension #'+extNum+' — rental extended to '+fmtDate(ext.toDate),
+      category:'extension', _extPayment:true, _extId:extId, createdAt:new Date().toISOString()
+    });
+  }
+  ext.sentAt=Date.now(); ext.paymentMethod='stripe';
+  b._t=Date.now();
+  save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  logNotif('charge','Extension #'+extNum+' card payment request sent to portal — $'+amt.toFixed(2),(b.email||b.name||''),bookingId);
+  if(b.email && MESSAGING_URL){
+    var fee=Math.round(amt*0.05*100)/100, tax=Math.round(amt*0.0825*100)/100, total=Math.round((amt+fee+tax)*100)/100;
+    var portalUrl=location.origin+location.pathname.replace(/[^\/]*$/,'')+'portal.html';
+    var firstName=(b.name||'there').split(' ')[0];
+    var html='<div style="font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden">'+
+      '<div style="background:linear-gradient(135deg,#b8982e,#7a6320);padding:26px;text-align:center"><div style="font-size:38px">📅</div>'+
+      '<h1 style="margin:6px 0 0;color:#fff;font-size:21px;font-weight:800">Extension Payment</h1>'+
+      '<p style="margin:6px 0 0;color:rgba(255,255,255,.85);font-size:14px">Extension #'+extNum+' &middot; '+esc(b.vehicle)+'</p></div>'+
+      '<div style="padding:26px"><p style="font-size:15px;line-height:1.6;margin:0 0 18px">Hi '+esc(firstName)+', your rental has been extended to <strong>'+esc(fmtDateFull(ext.toDate))+'</strong>. Please complete the payment below.</p>'+
+      '<div style="background:#f7f7f7;border-radius:10px;padding:18px;margin:0 0 18px"><div style="font-size:13px;color:#555">Extension #'+extNum+'</div><div style="font-size:26px;font-weight:800;color:#b8982e">$'+total.toFixed(2)+'</div><div style="font-size:12px;color:#999;margin-top:2px">Includes processing fee &amp; TX sales tax</div></div>'+
+      '<div style="text-align:center;margin:22px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Pay Now →</a></div>'+
+      '<p style="font-size:13px;color:#888;margin:18px 0 0">Questions? Call or text <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p></div></div>';
+    fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Extension Payment — Prestige Black Rentals',html:html})})
+      .then(function(r){ if(r.ok) logNotif('charge','Extension #'+extNum+' payment email sent',b.email,bookingId); });
+  } else {
+    toast('Card request added to portal — no email on file to notify the client.');
+  }
+}
+
+// Shared paid-state writer: marks the extension paid + clears its amount from the balance once.
+function _markExtPaidInternal(b, ext, method){
+  if(!ext || ext.paid) return;
+  ext.paid=true; ext.paidAt=Date.now(); if(method) ext.paymentMethod=method;
+  var amt=Number(ext.additionalCharge)||0;
+  if(amt>0 && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
+}
+// Manual mark-paid for an extension (non-Stripe methods, or any pending extension).
+function markExtensionPaid(bookingId, extId, method){
+  var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
+  if(idx===-1) return;
+  var b=bookings[idx];
+  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
+  if(!ext) return;
+  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  if(ext.paid){ toast('Extension #'+extNum+' is already paid'); return; }
+  var _m = method || prompt('Payment method received for Extension #'+extNum+' (Zelle, Cash App, Venmo, Cash, Card, Other):', (ext.paymentMethod && ext.paymentMethod!=='stripe') ? ext.paymentMethod : 'Zelle');
+  if(_m===null) return;
+  _markExtPaidInternal(b, ext, (_m||'manual').trim());
+  // Settle any pending card request for this extension so the client can't double-pay it.
+  (b.portalCharges||[]).forEach(function(c){ if(c && c._extId===extId && !c.paidAt){ c.paidAt=Date.now(); c.paidMethod=(ext.paymentMethod||'manual'); } });
+  b._t=Date.now();
+  save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  logNotif('payment','Extension #'+extNum+' marked PAID — $'+(Number(ext.additionalCharge)||0).toFixed(2)+' ('+(ext.paymentMethod||'manual')+')',(b.name||''),bookingId);
+  render();
+  if(_contractBookingId===bookingId){ var _ei=(b.extensions||[]).findIndex(function(e){return e&&e.id===extId;}); if(_ei>=0) _renderExtensionView(b,_ei); }
+  toast('✅ Extension #'+extNum+' marked paid');
 }
 
 function _initExtSigCanvas(){
@@ -17544,6 +17647,8 @@ function markChargePaid(bookingId, chargeId){
   charges[cIdx]=Object.assign({},charges[cIdx],{paidAt:Date.now(),paidMethod:(method||'manual').trim().toLowerCase()});
   bookings[idx].portalCharges=charges;
   var _cp=charges[cIdx];
+  // Extension-AGREEMENT card payment marked paid → mark that extension paid + clear its balance.
+  if(_cp._extPayment && _cp._extId){ var _xe=(bookings[idx].extensions||[]).find(function(e){ return e&&e.id===_cp._extId; }); if(_xe && !_xe.paid) _markExtPaidInternal(bookings[idx], _xe, _cp.paidMethod||'manual'); }
   // Extension charge → fold the days into the rental (new dropoff + day count + revenue).
   var _foldedQty=(chargeCategory(_cp)==='extension' && (parseInt(_cp.extensionDays,10)||0)>0 && !_cp._extApplied) ? (parseInt(_cp.extensionDays,10)||0) : 0;
   var _foldedUnit=(_cp.extensionUnit==='hours')?'hr':'day';
