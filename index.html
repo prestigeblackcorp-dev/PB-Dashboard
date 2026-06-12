@@ -1175,7 +1175,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
       <span style="font-size:11px;opacity:.6;font-family:monospace">⌘K</span> Search
     </button>
     <span id="offlineBadge" style="display:none;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.4);border-radius:8px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.06em">● OFFLINE</span>
-    <button class="btn btn-sm" onclick="openSyncSetup()" id="syncBtn" title="Set up cross-device sync">
+    <button class="btn btn-sm" onclick="syncBtnTap()" id="syncBtn" title="Tap to force a full sync now — pushes this device's bookings up and pulls the latest">
       <span id="syncDot" style="color:var(--muted)">●</span> Sync
     </button>
     <button class="btn btn-sm" id="forcePullBtn" onclick="forcePull()" title="Pull latest data from cloud now" style="display:none;border-color:#3b82f6;color:#3b82f6">↓ Pull</button>
@@ -3963,6 +3963,33 @@ function setSyncStatus(status) {
   dot.textContent = labels[status] || labels.off;
   updatePhotoSyncHints();
   stickyTabFix();
+}
+// Tap-the-Sync-button handler: force a full sync when configured, else open first-time setup.
+function syncBtnTap(){
+  if(!WORKER_URL){ if(typeof openSyncSetup==='function') openSyncSetup(); return; }
+  forceSyncNow();
+}
+// Force a full sync NOW from this device: push local changes (including anything created on
+// this device that hasn't reached the cloud yet) immediately, then pull the merged result.
+// Reports a clear success/failure so it works as a fix AND a diagnostic on phones (no console).
+function forceSyncNow(){
+  if(!WORKER_URL){ if(typeof openSyncSetup==='function') openSyncSetup(); return; }
+  if(!navigator.onLine){ setSyncStatus('off'); toast('📴 Offline — connect to the internet, then tap Sync again.'); return; }
+  setSyncStatus('syncing');
+  toast('🔄 Pushing this device’s changes…');
+  _pendingCloudSave = true;          // ensure there is work to flush
+  clearTimeout(_cloudSaveTimer);
+  _cloudSaveNow();                   // push local → cloud (reports ok/error via setSyncStatus)
+  // Pull the merged result a moment later so this device matches the cloud + we can report the count.
+  setTimeout(function(){
+    if(!navigator.onLine){ setSyncStatus('off'); toast('📴 Lost connection during sync — try again.'); return; }
+    cloudLoad(function(ok){
+      if(typeof afterCloudLoad==='function') afterCloudLoad(ok);
+      var n=(bookings||[]).filter(function(b){ return b && !b._deleted; }).length;
+      if(ok){ setSyncStatus('ok'); toast('✅ Synced — '+n+' bookings on this device now match the cloud.'); }
+      else  { setSyncStatus('error'); toast('❌ Sync failed — open Settings and check your Worker URL / internet.'); }
+    });
+  }, 1600);
 }
 function updatePhotoSyncHints(){
   var connected = !!WORKER_URL;
