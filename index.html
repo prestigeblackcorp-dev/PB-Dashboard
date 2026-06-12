@@ -3917,10 +3917,12 @@ function cloudLoad(callback) {
           try { localStorage.setItem('pb_dashboard_secret', DASHBOARD_SECRET); } catch(e) {}
         }
         _cloudLoading = false;
-        mergeCommLogsIntoNotifLog();
-        _reconcilePaidExtensionCharges(); // fold any Stripe/portal-paid extension charge into the rental
-        // If local had items cloud didn't, push merged result so all devices get it
+        // CRITICAL: push local-only items (e.g. a just-created booking) FIRST and unconditionally.
+        // No post-load processing below may ever block a booking from reaching the cloud — a thrown
+        // error here used to skip this push and strand local bookings (signing links 404'd).
         if (needsPush) cloudSave();
+        try { mergeCommLogsIntoNotifLog(); } catch(e){ try{ console.warn('mergeCommLogs skipped:', e); }catch(_e){} }
+        try { _reconcilePaidExtensionCharges(); } catch(e){ try{ console.warn('reconcile ext charges skipped:', e); }catch(_e){} } // fold paid extension charges (guarded)
       }
       setSyncStatus('ok');
       // Update _lastSavedAt so cloudSave's staleness guard sees fresh state and doesn't loop
