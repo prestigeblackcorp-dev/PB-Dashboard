@@ -436,7 +436,11 @@ body { overflow-x: hidden; max-width: 100vw; }
   .header-actions { gap: 5px; flex-wrap: nowrap; flex-shrink: 0; position: relative; z-index: 5; }
   .header-actions .btn { padding: 5px 9px; font-size: 11px; flex-shrink: 0; white-space: nowrap; }
   /* Hide low-priority header buttons on mobile (keep the 📅 Google Calendar connect/sync buttons visible) */
-  #syncBtn, #forcePullBtn { display: none !important; }
+  #forcePullBtn { display: none !important; }
+  /* Keep the Sync status dot tappable on mobile, but compact: show just the colored ● (hide the text label) */
+  #syncBtn { padding: 5px 8px !important; }
+  #syncBtn #syncLabel { display: none; }
+  #syncBtn #syncDot { font-size: 13px; }
   #offlineBadge { padding: 3px 6px; font-size: 9px; flex-shrink: 0; }
 
   /* ── Tab bar: horizontally scrollable, no wrap ── */
@@ -1176,7 +1180,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
     </button>
     <span id="offlineBadge" style="display:none;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.4);border-radius:8px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.06em">● OFFLINE</span>
     <button class="btn btn-sm" onclick="syncBtnTap()" id="syncBtn" title="Tap to force a full sync now — pushes this device's bookings up and pulls the latest">
-      <span id="syncDot" style="color:var(--muted)">●</span> Sync
+      <span id="syncDot" style="color:var(--muted)">●</span><span id="syncLabel"> Sync</span>
     </button>
     <button class="btn btn-sm" id="forcePullBtn" onclick="forcePull()" title="Pull latest data from cloud now" style="display:none;border-color:#3b82f6;color:#3b82f6">↓ Pull</button>
     <button class="btn btn-sm" id="gcalBtn" onclick="connectGCal()" title="Connect Google Calendar" style="background:var(--red);border-color:var(--red);color:#fff">📅</button>
@@ -3958,9 +3962,10 @@ function setSyncStatus(status) {
   var colors = { ok:'var(--green)', syncing:'#fbbf24', error:'var(--red)', off:'var(--muted)' };
   var now = new Date();
   var timeStr = now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-  var labels = { ok:'● Synced '+timeStr, syncing:'● Syncing…', error:'● Sync error — tap to reconnect', off:'● Tap to set up sync' };
-  dot.style.color = colors[status] || colors.off;
-  dot.textContent = labels[status] || labels.off;
+  var labels = { ok:' Synced '+timeStr, syncing:' Syncing…', error:' Sync error — tap to reconnect', off:' Tap to set up sync' };
+  dot.style.color = colors[status] || colors.off;   // the ● dot carries the green/red/amber status color
+  dot.textContent = '●';                             // keep the dot a clean ● (mobile shows only this)
+  var lbl = $d('syncLabel'); if(lbl) lbl.textContent = labels[status] || labels.off;
   updatePhotoSyncHints();
   stickyTabFix();
 }
@@ -5715,16 +5720,26 @@ function gcalFetch(method, path, body, _attempt){
     }
     // 204 No Content (DELETE) or 410 Gone (already deleted) are fine
     if(r.status === 204 || r.status === 410) return null;
-    // 429 Rate Limit — exponential backoff up to 4 retries
-    if(r.status === 429){
-      if(_attempt >= 4) throw new Error('Google Calendar rate limit — too many requests. Wait a moment and try again.');
-      var delay = (Math.pow(2, _attempt) * 1000) + Math.round(Math.random() * 500);
-      return new Promise(function(resolve){
-        setTimeout(function(){ resolve(gcalFetch(method, path, body, _attempt + 1)); }, delay);
-      });
-    }
-    if(!r.ok) return r.json().then(function(e){ throw new Error(e.error && e.error.message || r.status); });
-    return r.json();
+    if(r.ok) return r.json();
+    // Error path — read the body once and classify. Google returns the per-minute
+    // "Queries per minute per user" quota error as HTTP 403 rateLimitExceeded (NOT 429),
+    // so treat BOTH as retryable with exponential backoff (up to 5 attempts).
+    return r.json().catch(function(){ return {}; }).then(function(e){
+      var gErr   = (e && e.error) || {};
+      var reason = (gErr.errors && gErr.errors[0] && gErr.errors[0].reason) || '';
+      var msg    = gErr.message || ('Google Calendar error ' + r.status);
+      var isRate = r.status === 429 ||
+        /rateLimitExceeded|userRateLimitExceeded|quotaExceeded|dailyLimitExceeded/i.test(reason) ||
+        /rate limit|quota|usage limit/i.test(msg);
+      if(isRate){
+        if(_attempt >= 5) throw new Error('Google Calendar rate limit — Google is throttling. Wait a minute, then tap Cal Sync again to finish.');
+        var delay = (Math.pow(2, _attempt) * 1500) + Math.round(Math.random() * 750);
+        return new Promise(function(resolve){
+          setTimeout(function(){ resolve(gcalFetch(method, path, body, _attempt + 1)); }, delay);
+        });
+      }
+      throw new Error(msg);
+    });
   });
 }
 
@@ -5778,38 +5793,63 @@ function buildGCalEvent(b){
   };
 }
 
+// Bulk-sync state + change detection. _gcalSig is a fingerprint of the fields that
+// appear on the calendar event; we only re-push a booking whose fingerprint changed
+// since its last successful sync — this keeps repeat "Cal Sync" taps from re-writing
+// every event and tripping Google's per-minute quota.
+var _gcalBulkMode = false;
+function _gcalSig(b){
+  return [b.vehicle,b.name,b.phone,b.email,b.type,b.days,b.pickupDate||b.date,b.dropoffDate||'',b.pickupTime||'',b.dropoffTime||'',b.address||'',b.notes||'',getAddons(b),b.status||''].join('|');
+}
+function _gcalNeedsSync(b){
+  if(!b.gcalEventId) return true;          // never synced
+  return b._gcalSig !== _gcalSig(b);       // changed since last sync
+}
+function _markGcalSynced(b){
+  var sig = _gcalSig(b);
+  var idx = bookings.findIndex(function(x){ return x.id===b.id; });
+  if(idx !== -1){ bookings[idx]._gcalSig = sig; }
+  b._gcalSig = sig;
+  if(!_gcalBulkMode) save();               // bulk saves once at the very end
+}
+
+// Returns a Promise<boolean> (true = synced/handled, false = failed) so the bulk
+// sequencer can count results. Individual failure toasts are suppressed during bulk.
 function syncToGCal(b, _isRetry){
-  if(!gcalAccessToken){ _queueGCalSync(b); return; }
-  if(b.status === 'cancelled' || b._deleted){ removeFromGCal(b); return; }
+  if(!gcalAccessToken){ _queueGCalSync(b); return Promise.resolve(false); }
+  if(b.status === 'cancelled' || b._deleted){ removeFromGCal(b); return Promise.resolve(true); }
   var event = buildGCalEvent(b);
-  var p;
   if(b.gcalEventId && !_isRetry){
-    p = gcalFetch('PATCH', '/events/' + b.gcalEventId, event)
+    return gcalFetch('PATCH', '/events/' + b.gcalEventId, event)
+      .then(function(){ _markGcalSynced(b); return true; })
       .catch(function(err){
         // If event was deleted from Google, clear the stale ID and create fresh
         var msg = String(err && err.message || err);
         if(msg.indexOf('404') !== -1 || msg.indexOf('410') !== -1 || msg.toLowerCase().indexOf('not found') !== -1 || msg.toLowerCase().indexOf('deleted') !== -1){
           var idx = bookings.findIndex(function(x){ return x.id===b.id; });
-          if(idx !== -1){ bookings[idx].gcalEventId = null; save(); b = bookings[idx]; }
+          if(idx !== -1){ bookings[idx].gcalEventId = null; if(!_gcalBulkMode) save(); b = bookings[idx]; }
           else { b.gcalEventId = null; }
-          syncToGCal(b, true); // retry as new POST
-        } else {
-          console.error('GCal PATCH failed:', err);
-          showToast('Google Calendar sync failed — '+msg);
+          return syncToGCal(b, true); // retry as new POST
         }
+        console.error('GCal PATCH failed:', err);
+        if(!_gcalBulkMode) showToast('Google Calendar sync failed — '+msg);
+        return false;
       });
-  } else {
-    p = gcalFetch('POST', '/events', event).then(function(data){
-      if(data && data.id){
-        var idx = bookings.findIndex(function(x){ return x.id===b.id; });
-        if(idx !== -1){ bookings[idx].gcalEventId = data.id; save(); }
-        b.gcalEventId = data.id;
-      }
-    }).catch(function(err){
-      console.error('GCal POST failed:', err);
-      showToast('Google Calendar sync failed — '+(err&&err.message||err));
-    });
   }
+  return gcalFetch('POST', '/events', event).then(function(data){
+    if(data && data.id){
+      var idx = bookings.findIndex(function(x){ return x.id===b.id; });
+      if(idx !== -1){ bookings[idx].gcalEventId = data.id; }
+      b.gcalEventId = data.id;
+      save(); // persist the new event ID immediately so an interrupted bulk run can't create duplicates
+    }
+    _markGcalSynced(b);
+    return true;
+  }).catch(function(err){
+    console.error('GCal POST failed:', err);
+    if(!_gcalBulkMode) showToast('Google Calendar sync failed — '+(err&&err.message||err));
+    return false;
+  });
 }
 
 function removeFromGCal(b){
@@ -5853,13 +5893,28 @@ _loadGCalPending();
 
 function syncAllToGCal(){
   if(!gcalAccessToken){ alert('Connect Google Calendar first.'); return; }
-  var toSync = bookings.filter(function(b){ return !b._deleted && b.status !== 'cancelled'; });
-  if(!toSync.length){ alert('No active bookings to sync.'); return; }
-  // Stagger requests slightly to avoid rate limits
-  toSync.forEach(function(b, i){
-    setTimeout(function(){ syncToGCal(b); }, i * 120);
-  });
-  alert('Syncing ' + toSync.length + ' booking' + (toSync.length!==1?'s':'') + ' to Google Calendar.\nCheck your calendar in a few seconds.');
+  if(_gcalBulkMode){ showToast('📅 A calendar sync is already running…'); return; }
+  var active = bookings.filter(function(b){ return !b._deleted && b.status !== 'cancelled'; });
+  if(!active.length){ alert('No active bookings to sync.'); return; }
+  // Only push bookings that are new or changed since their last successful sync —
+  // this is what keeps repeat taps from re-writing all 153 events and hitting the quota.
+  var queue = active.filter(_gcalNeedsSync);
+  if(!queue.length){ showToast('✅ Google Calendar already up to date — nothing changed since the last sync.'); return; }
+  // Sequential: one request at a time, ~500ms apart, so we stay well under Google's
+  // per-minute write quota instead of firing every event at once and getting throttled.
+  _gcalBulkMode = true;
+  var i = 0, ok = 0, fail = 0, total = queue.length;
+  showToast('📅 Syncing ' + total + ' booking' + (total!==1?'s':'') + ' to Google Calendar…');
+  (function next(){
+    if(i >= total){
+      _gcalBulkMode = false; save();
+      showToast('📅 Calendar sync complete — ' + ok + ' synced' + (fail ? (', ' + fail + ' left (rate-limited — tap Cal Sync again to finish)') : '') + '.');
+      return;
+    }
+    var b = queue[i++];
+    syncToGCal(b).then(function(okFlag){ if(okFlag){ ok++; } else { fail++; } })
+      .then(function(){ setTimeout(next, 500); });
+  })();
 }
 
 // ════════════════════════════════════════════════════════
