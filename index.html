@@ -3753,7 +3753,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v64';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v65';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -4069,6 +4069,7 @@ function cloudLoad(callback) {
         // error here used to skip this push and strand local bookings (signing links 404'd).
         if (needsPush) cloudSave();
         try { mergeCommLogsIntoNotifLog(); } catch(e){ try{ console.warn('mergeCommLogs skipped:', e); }catch(_e){} }
+        try { _unfoldLegacyExtRevenue(); } catch(e){ try{ console.warn('unfold legacy ext revenue skipped:', e); }catch(_e){} } // one-time: undo the brief fold-on-paid (v63/v64) that inflated b.revenue
         try { _reconcilePaidExtensionCharges(); } catch(e){ try{ console.warn('reconcile ext charges skipped:', e); }catch(_e){} } // fold paid extension charges (guarded)
       }
       setSyncStatus('ok');
@@ -6252,9 +6253,10 @@ function fmtTime(t){
 }
 function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0); },0); }
 function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
-// Extension revenue still owed/pending (gross). Once an extension is PAID it folds into b.revenue
-// (ext._revenueFolded) and is counted there instead — skipping it here keeps revenue counted ONCE.
-function extensionCharge(b){ return (b.extensions||[]).reduce(function(s,e){return (e&&!e._revenueFolded)?s+(Number(e.additionalCharge)||0):s;},0); }
+// Extension revenue (gross). Each extension's additionalCharge is counted here exactly once — an
+// extension adds its FULL value to gross; its broker fee is subtracted in net via extensionBrokerTotal.
+// NEVER fold an extension into b.revenue (that double-counts it against this sum + today's KPI).
+function extensionCharge(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.additionalCharge)||0);},0); }
 
 // ── Unified extension recorder — SINGLE SOURCE OF TRUTH for all extension paths ──────────────
 // Create-Extension modal, Send-Extension-Link (portal self-extend), and portal "Extension"
@@ -6301,21 +6303,19 @@ function recordExtension(b, opts){
       b.days = Math.max(1,(Number(b.days)||1)+qty);
     }
   }
-  if(charge>0){
-    if(paid){
-      // Paid at creation (e.g. a paid portal Extension charge) → fold into base revenue NOW, so it
-      // shows in the booking's revenue field. extensionCharge() skips _revenueFolded → counted once.
-      b.revenue=(Number(b.revenue)||0)+charge; ext._revenueFolded=true;
-    } else if(!b.balancePaidAt){
-      // Unpaid → owed: add to the balance due (counted in gross via extensionCharge until paid).
-      if(b.remainingBalance==null) b.remainingBalance=Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock)||0));
-      b.remainingBalance = (Number(b.remainingBalance)||0) + charge;
-    }
+  // An extension's value is ALWAYS counted in gross via extensionCharge() — paid or unpaid. We never
+  // fold it into b.revenue (that double-counts against extensionCharge + today's KPI). Only effect of
+  // "unpaid" here is that the customer still owes it → add it to the balance due.
+  if(charge>0 && !paid && !b.balancePaidAt){
+    if(b.remainingBalance==null) b.remainingBalance=Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock)||0));
+    b.remainingBalance = (Number(b.remainingBalance)||0) + charge;
   }
   return ext;
 }
-// Sum of portal charges that have been paid (base amount only — fee/tax go to Stripe/processor)
-function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded) ? s+(Number(c.amount)||0) : s; },0); }
+// Sum of portal charges that have been paid (base amount only — fee/tax go to Stripe/processor).
+// EXCLUDES every extension-linked charge (_extPayment collection, _extId/_extRecorded contract entry,
+// legacy _foldedIntoRevenue) — those are revenue ONLY via extensionCharge(), never counted twice here.
+function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId) ? s+(Number(c.amount)||0) : s; },0); }
 // Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
 // raw b.revenue AND also bucket portal charges by paidAt would otherwise count a folded
 // fee twice — subtract this from the base term so it's counted once (via the paidAt loop).
@@ -6370,17 +6370,41 @@ function _revertExtensionCharge(b, c){
   else { var _sd=b.dropoffDate?parseLocalDate(b.dropoffDate):null; if(_sd&&!isNaN(_sd.getTime())) b.dropoffDate=dateStr(addDays(_sd,-n)); }
   b.days=Math.max(1,(Number(b.days)||1)-n);
   if(c._extId){
-    // Entry model: undo wherever this extension's money landed, then drop the contract entry.
+    // Entry model: drop the contract entry (removes its value from extensionCharge/gross). If it was
+    // still UNPAID it had been added to the balance due — take it back out. Paid entries never touched
+    // b.revenue (counted only via extensionCharge), so there's nothing to un-fold.
     var _ext=(b.extensions||[]).find(function(e){ return e&&e.id===c._extId; });
     var _amt=_ext?(Number(_ext.additionalCharge)||0):fee;
-    if(_ext && _ext._revenueFolded){ b.revenue=Math.max(0,(Number(b.revenue)||0)-_amt); }       // paid → un-fold from revenue
-    else if(_amt>0 && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-_amt); } // owed → un-bill from balance
+    if(_ext && !_ext.paid && _amt>0 && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-_amt); }
     b.extensions=(b.extensions||[]).filter(function(e){ return !(e&&e.id===c._extId); });
   } else {
     // Legacy fold model (older charges): the fee had been added straight into b.revenue.
     b.revenue=Math.max(0,(Number(b.revenue)||0)-fee);
   }
   c._extApplied=false; c._foldedIntoRevenue=false; c._extRecorded=false; c._extId=null;
+}
+// ONE-TIME cleanup migration. A brief build (fold-on-paid, v63/v64) added a PAID extension's
+// additionalCharge straight into b.revenue and flagged the entry `ext._revenueFolded`. We've since
+// reverted to counting every extension's value ONLY via extensionCharge() (full value in gross,
+// broker subtracted in net) — so any amount left folded in b.revenue is now DOUBLE-counted (once in
+// b.revenue, once via extensionCharge). Undo it: subtract the folded amount back out of b.revenue and
+// drop the flag. Idempotent — the flag is deleted, so it self-heals once per device/copy and is a
+// no-op forever after. Does NOT touch legacy `_foldedIntoRevenue` portal charges (those have no ext
+// entry, stay counted once via b.revenue, and portalChargesTotal already skips them).
+function _unfoldLegacyExtRevenue(){
+  var changed=false;
+  (bookings||[]).forEach(function(b){
+    if(!b || !b.extensions || !b.extensions.length) return;
+    b.extensions.forEach(function(ext){
+      if(ext && ext._revenueFolded){
+        var amt=Number(ext.additionalCharge)||0;
+        if(amt>0) b.revenue=Math.max(0,(Number(b.revenue)||0)-amt);
+        delete ext._revenueFolded;
+        b._t=Date.now(); changed=true;
+      }
+    });
+  });
+  if(changed){ try{ save(); }catch(e){} if(typeof render==='function') try{ render(); }catch(e){} }
 }
 // Stripe/portal card payments mark an Extension charge paid OUTSIDE the manual Mark Paid
 // path (the worker sets paidAt when the customer pays by card). This runs after every
@@ -6452,7 +6476,7 @@ function splitPaidCharges(list,onlyDate){
   var out={late:0,mileage:0,fuel:0,cleaning:0,damage:0,tolls:0,deposit:0,extension:0,other:0,total:0};
   (list||[]).forEach(function(b){
     (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt||c._extPayment) return;
+      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return;
       if(onlyDate && dateStr(new Date(c.paidAt))!==onlyDate) return;
       var amt=Number(c.amount)||0;
       out[chargeCategory(c)]+=amt;
@@ -6739,7 +6763,7 @@ function renderKPIs(filtered, containerId){
   // Today-only uses cash-basis so future/unpaid same-day bookings don't inflate revenue.
   var dateLockPeriodRev = 0;
   var bookingRev, pureBase, extChargeTotal=0, pickupBalance=0;
-  var _bfToday=0, _stripeBaseToday=0; // today gross: broker-fee add-back + Stripe card-processing base
+  var _bfToday=0, _stripeBaseToday=0, _baseBfToday=0, _extBfToday=0; // today gross: broker add-back (base + extension) + Stripe card base
 
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     extChargeTotal = active.reduce(function(s,b){
@@ -6775,10 +6799,10 @@ function renderKPIs(filtered, containerId){
       var _pDate = b.pickupDate || b.date || '';
       var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate ? new Date(_pDate+'T12:00:00').getTime() : 0) : 0);
       if(!paidTs || dateStr(new Date(paidTs))!==tod) return s;
-      var _bf=brokerFeeTotal(b);
+      var _bf=(Number(b.brokerFee)||0)*brokerRateDays(b); // BASE broker only — extension broker nets via _extBfToday below (tied to ext-created-today, not balance-paid-today)
       return s+Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0)-_bf);
     },0);
-    // Extension charges created today (any booking)
+    // Extension CHARGES created today (full value → gross). Any booking.
     extChargeTotal = allActive.reduce(function(s,b){
       if(!b.extensions) return s;
       return s+b.extensions.reduce(function(es,ext){
@@ -6786,10 +6810,20 @@ function renderKPIs(filtered, containerId){
         return dateStr(new Date(ext.createdAt))===tod ? es+(Number(ext.additionalCharge)||0) : es;
       },0);
     },0);
+    // Extension BROKER fees for those same extensions → subtracted into net (your spec: "extensions are
+    // only full value add on gross and broker fees to subtract into net"). Tied to ext-created-today so
+    // an extension paid on its own (booking balance not settled today) STILL gets its broker netted out.
+    _extBfToday = allActive.reduce(function(s,b){
+      if(!b.extensions) return s;
+      return s+b.extensions.reduce(function(es,ext){
+        if(!(Number(ext.brokerFee)>0)||!ext.createdAt) return es;
+        return dateStr(new Date(ext.createdAt))===tod ? es+(Number(ext.brokerFee)||0) : es;
+      },0);
+    },0);
     // Portal charges paid today (cash-basis)
     var portalChargeTodayRev = allActive.reduce(function(s,b){
       return s+(b.portalCharges||[]).reduce(function(cs,c){
-        if(!c||!c.paidAt||c._extPayment) return cs;
+        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return cs;
         return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
       },0);
     },0);
@@ -6800,12 +6834,14 @@ function renderKPIs(filtered, containerId){
       var _pd  = b.pickupDate || b.date || '';
       var _pts = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd ? new Date(_pd+'T12:00:00').getTime() : 0) : 0);
       if(!_pts || dateStr(new Date(_pts))!==tod) return;
-      _bfToday += brokerFeeTotal(b);
+      _baseBfToday += (Number(b.brokerFee)||0)*brokerRateDays(b); // BASE broker only (extension broker added once below)
       if(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe')
         _stripeBaseToday += Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
     });
+    _bfToday   = _baseBfToday + _extBfToday; // total broker netted out of net today = base (balance-paid-today) + extension (created-today)
     pureBase   = pickupBalance - addons;
-    bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev;
+    // Net: base balances + add-ons + extension full value − extension broker (base broker already netted in pickupBalance).
+    bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev - _extBfToday;
 
   } else if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     // 7 / 30 / 90 DAYS — accrual by pickup date; net to PBR (broker fees deducted)
@@ -6877,7 +6913,7 @@ function renderKPIs(filtered, containerId){
     // Today: show the GROSS balance actually collected from the client; the broker fee
     // appears as its own deduction line below so the figure reads as the real cash taken
     // (e.g. $710, not $350 net). Revenue/profit math is unchanged (still net of broker).
-    var _pickupBalanceGross = pickupBalance + _bfToday;
+    var _pickupBalanceGross = pickupBalance + _baseBfToday; // base balance grossed up by BASE broker only; extension shows on its own line
     revParts = [_baseLabel+': '+$$(_pickupBalanceGross)];
     if(dateLockPeriodRev) revParts.push('Date locks: '+$$(dateLockPeriodRev));
     if(addons)            revParts.push('Add-ons: '+$$(addons));
@@ -7058,7 +7094,7 @@ function renderCharts(filtered){
     });
     // Portal charges: bucket by paidAt month
     (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt||c._extPayment) return;
+      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return;
       var pm=dateStr(new Date(c.paidAt)).substring(0,7);
       mR[pm]=(mR[pm]||0)+(Number(c.amount)||0);
     });
@@ -7365,7 +7401,7 @@ function renderVehicleTable(filtered){
     // Portal charges paid today — bucket by vehicle
     allActive.forEach(function(b){
       (b.portalCharges||[]).forEach(function(c){
-        if(!c||!c.paidAt||c._extPayment) return;
+        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return;
         if(dateStr(new Date(c.paidAt))!==_kpiDR3.from) return;
         _seedV(b.vehicle);
         map[b.vehicle].revenue+=Number(c.amount)||0;
@@ -16856,11 +16892,10 @@ function deleteExtension(bookingId, extId){
   if(ext.extensionUnit==='hours'){ _shiftDropoffHours(b, -n); }
   else { var _sd=b.dropoffDate?parseLocalDate(b.dropoffDate):null; if(_sd&&!isNaN(_sd.getTime())) b.dropoffDate=dateStr(addDays(_sd,-n)); }
   b.days=Math.max(1,(Number(b.days)||1)-n);
-  // 2) Reverse the money exactly where it landed.
-  if(amt>0){
-    if(ext._revenueFolded){ b.revenue=Math.max(0,(Number(b.revenue)||0)-amt); }
-    else if(b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
-  }
+  // 2) Reverse the money. The value was counted in gross via extensionCharge() (never folded into
+  //    b.revenue), so dropping the entry below removes it from gross. If it was still UNPAID it also
+  //    sat in the balance due — take it back out here.
+  if(amt>0 && !ext.paid && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
   // 3) Wipe children: every portal charge linked to this extension (card request + fold source).
   var _kids=0;
   if(b.portalCharges&&b.portalCharges.length){
@@ -17043,6 +17078,32 @@ function _renderExtensionView(b, extIdx){
   }
 }
 
+// The rental's return date BEFORE any extension was created — the TRUE original return. b.dropoffDate
+// has been moved forward by every extension, so it can't be read directly. Prefer day-math (current
+// dropoff − Σ day-extensions, robust even if a stored fromDate is legacy/wrong); fall back to the
+// first extension's recorded fromDate only when hours are involved or there's no dropoff.
+function _originalReturnDate(b){
+  var exts=(b&&b.extensions)||[];
+  if(!exts.length) return (b&&b.dropoffDate)||'';
+  var allDays=exts.every(function(e){ return e && e.extensionUnit!=='hours'; });
+  var totalDays=exts.reduce(function(s,e){ return s+((e&&e.extensionUnit!=='hours')?(Number(e.extensionDays)||0):0); },0);
+  if(allDays && b.dropoffDate && totalDays>0){
+    var d=parseLocalDate(b.dropoffDate);
+    if(d && !isNaN(d.getTime())) return dateStr(addDays(d,-totalDays));
+  }
+  return (exts[0]&&exts[0].fromDate) || (b.dropoffDate||'');
+}
+// Signature date + TIME stamp, e.g. "Jun 11, 2026 · 3:42 PM" — uses the exact captured timestamp
+// (sigAt, ms epoch) when present, falling back to the stored date string. Device-local time (DFW = CT).
+function _fmtSigStamp(sigAt, sigDate){
+  var t=Number(sigAt)||0;
+  if(t>0){
+    var d=new Date(t), MO=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var hr=d.getHours(), ap=hr>=12?'PM':'AM', h12=hr%12||12, mi=d.getMinutes();
+    return MO[d.getMonth()]+' '+d.getDate()+', '+d.getFullYear()+' · '+h12+':'+(mi<10?'0'+mi:mi)+' '+ap;
+  }
+  return sigDate||'';
+}
 function _buildExtensionContractHtml(b, extIdx){
   var exts = b.extensions || [];
   var ext  = exts[extIdx];
@@ -17050,14 +17111,25 @@ function _buildExtensionContractHtml(b, extIdx){
   var today  = new Date();
   var todayFmt = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
   var origPickup  = fmtDateFull(b.pickupDate || b.date || '');
-  var origReturn  = fmtDateFull(b.dropoffDate || '');
-  var rev = totalRevenue(b);
+  // ORIGINAL return = before ANY extension (b.dropoffDate has been moved forward by each extension).
+  var origReturnRaw = _originalReturnDate(b);
+  var origReturn  = fmtDateFull(origReturnRaw);
+  // "Extended From" for THIS extension = the return right before it: the prior extension's new return,
+  // else (first extension) the original return. Computed — never trusts a possibly-stale ext.fromDate.
+  var extFromRaw = (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
+  // ORIGINAL total = the original booking's charges ONLY — exclude every extension's additionalCharge.
+  var rev = Math.max(0, totalRevenue(b) - extensionCharge(b));
+  // Owner signature ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
   var ownerSigHtml = OWNER_SIGNATURE
     ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain">'
-    : '<span style="color:#aaa;font-size:11px;font-style:italic">not yet signed</span>';
+    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
   var custSigHtml = (ext.signed && ext.sig && ext.sig.startsWith('data:image/'))
     ? '<img src="'+ext.sig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:invert(0)">'
     : '<span style="color:#aaa;font-size:11px;font-style:italic">pending signature</span>';
+  var _sc = _extSignedCount(b, ext);
+  var _execBadge = _extFullySigned(b, ext)
+    ? '<span style="display:inline-block;background:#e6f4ea;color:#1a7f37;border:1px solid #1a7f37;border-radius:20px;padding:2px 12px;font-size:11px;font-weight:700">&#x2713; Fully Executed — all '+_sc.total+' part'+(_sc.total!==1?'ies':'y')+' signed</span>'
+    : '<span style="display:inline-block;background:#fff7e6;color:#9a6a00;border:1px solid #d4a017;border-radius:20px;padding:2px 12px;font-size:11px;font-weight:700">Awaiting signatures — '+_sc.signed+' of '+_sc.total+' signed</span>';
 
   // Build previous extensions summary rows
   var prevExtRows = '';
@@ -17111,7 +17183,7 @@ function _buildExtensionContractHtml(b, extIdx){
 
   '<h2>This Extension (#'+extNum+')</h2>'+
   '<div class="section" style="display:flex;gap:24px;flex-wrap:wrap;background:#fffbe8;border:1.5px solid #d4a017;border-radius:6px;padding:12px 16px">'+
-    '<div><span style="color:#555;font-size:11px;text-transform:uppercase;letter-spacing:.05em">Extended From</span><br><strong>'+fmtDateFull(ext.fromDate)+'</strong></div>'+
+    '<div><span style="color:#555;font-size:11px;text-transform:uppercase;letter-spacing:.05em">Extended From</span><br><strong>'+fmtDateFull(extFromRaw)+'</strong></div>'+
     '<div><span style="color:#555;font-size:11px;text-transform:uppercase;letter-spacing:.05em">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
     '<div><span style="color:#555;font-size:11px;text-transform:uppercase;letter-spacing:.05em">Days Added</span><br><strong>+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</strong></div>'+
     (ext.additionalCharge ? '<div><span style="color:#555;font-size:11px;text-transform:uppercase;letter-spacing:.05em">Additional Charge</span><br><strong style="color:#b8982e">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>' : '')+
@@ -17125,35 +17197,42 @@ function _buildExtensionContractHtml(b, extIdx){
     '<p style="margin:0">Any additional charges for this extension are due at or before the new return date. All other fees, deposits, mileage policies, and damage responsibilities remain unchanged from the original agreement.</p>'+
   '</div>'+
 
-  '<hr style="border:none;border-top:1.5px solid #aaa;margin:24px 0 18px">'+
-  '<div style="display:flex;gap:28px;flex-wrap:wrap">'+
-    '<div style="flex:1;min-width:200px">'+
+  '<hr style="border:none;border-top:1.5px solid #aaa;margin:24px 0 14px">'+
+  '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px"><h2 style="margin:0;border:none;padding:0">Signatures</h2>'+_execBadge+'</div>'+
+  '<div class="section" style="display:flex;gap:30px;flex-wrap:wrap;align-items:flex-start">'+
+    // ── Owner / Lessor (always signed) ──
+    '<div style="flex:1 1 210px;min-width:190px">'+
       '<div class="sig-box">'+ownerSigHtml+'</div>'+
-      '<div style="font-size:11px;margin-bottom:2px">Date: '+todayFmt+'</div>'+
-      '<div style="font-size:11px">Prestige Black Corp. — Jalen Nguyen</div>'+
+      '<div style="font-size:11px;font-weight:700">Prestige Black Corp. — Jalen Nguyen</div>'+
+      '<div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em">Owner / Lessor</div>'+
+      '<div style="font-size:10px;color:#666">'+_fmtSigStamp(ext.createdAt)+'</div>'+
     '</div>'+
-    '<div style="flex:1;min-width:200px">'+
-      '<div class="sig-box">'+custSigHtml+'</div>'+
-      '<div style="font-size:11px;margin-bottom:2px">Date: '+(ext.sigDate||'_________________')+'</div>'+
-      '<div style="font-size:11px">Customer: '+esc(b.name)+'</div>'+
+    // ── Renter party: primary renter + every authorized driver, signed side-by-side ──
+    '<div style="flex:2 1 320px;min-width:200px">'+
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px 22px">'+
+        '<div>'+
+          '<div class="sig-box">'+custSigHtml+'</div>'+
+          '<div style="font-size:11px;font-weight:700">'+esc(b.name||'')+'</div>'+
+          '<div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em">Primary Renter</div>'+
+          '<div style="font-size:10px;color:#666">'+(ext.signed ? _fmtSigStamp(ext.sigAt, ext.sigDate) : '<span style="color:#aaa;font-style:italic">Pending signature</span>')+'</div>'+
+        '</div>'+
+        (b.extraDrivers||[]).map(function(d,i){
+          var ds=(ext.driverSigs&&ext.driverSigs[i])||null;
+          var signed=!!(ds&&ds.sig&&String(ds.sig).indexOf('data:image/')===0);
+          var sigImg=signed
+            ? '<img src="'+ds.sig+'" style="max-height:72px;max-width:240px;display:block;object-fit:contain">'
+            : '<span style="color:#aaa;font-size:11px;font-style:italic">pending signature</span>';
+          return '<div>'+
+            '<div class="sig-box">'+sigImg+'</div>'+
+            '<div style="font-size:11px;font-weight:700">'+esc(d.name||'')+'</div>'+
+            '<div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em">Authorized Driver</div>'+
+            '<div style="font-size:10px;color:#666">'+(signed ? _fmtSigStamp(ds.sigAt, ds.sigDate) : '<span style="color:#aaa;font-style:italic">Pending signature</span>')+'</div>'+
+          '</div>';
+        }).join('')+
+      '</div>'+
+      ((b.extraDrivers&&b.extraDrivers.length) ? '<div style="font-size:10px;color:#888;margin-top:10px">Each additional authorized driver listed on the original agreement must also sign this extension and remains subject to all terms and conditions herein.</div>' : '')+
     '</div>'+
   '</div>'+
-
-  ((b.extraDrivers&&b.extraDrivers.length) ? (
-    '<h2>Additional Authorized Drivers</h2>'+
-    '<div class="section" style="font-size:11px;color:#555">Each additional authorized driver listed on the original agreement must also sign this extension and remains subject to all terms and conditions herein.</div>'+
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:28px">'+
-    b.extraDrivers.map(function(d,i){
-      var ds=(ext.driverSigs&&ext.driverSigs[i])||null;
-      var sigImg=(ds&&ds.sig&&String(ds.sig).indexOf('data:image/')===0)
-        ? '<img src="'+ds.sig+'" style="max-height:72px;max-width:240px;display:block;object-fit:contain">'
-        : '<span style="color:#aaa;font-size:11px;font-style:italic">pending signature</span>';
-      return '<div><div class="sig-box">'+sigImg+'</div>'+
-        '<div style="font-size:11px;margin-bottom:2px">Date: '+esc((ds&&ds.sigDate)||'_________________')+'</div>'+
-        '<div style="font-size:11px">Authorized Driver: '+esc(d.name||'')+'</div></div>';
-    }).join('')+
-    '</div>'
-  ) : '')+
 
   '</body></html>';
 }
@@ -17348,14 +17427,11 @@ function _sendExtensionStripePayment(bookingId, extId){
 function _markExtPaidInternal(b, ext, method){
   if(!ext || ext.paid) return;
   ext.paid=true; ext.paidAt=Date.now(); if(method) ext.paymentMethod=method;
+  // Only effect of paying: clear the amount off the balance due (it was owed). The extension's value is
+  // counted in gross via extensionCharge() whether paid or not — NEVER fold it into b.revenue here
+  // (that double-counts it against extensionCharge + today's KPI). Broker reads off the entry regardless.
   var amt=Number(ext.additionalCharge)||0;
-  if(amt>0){
-    // Clear it off the balance (was owed) AND fold it into base revenue (now realized). Counted once:
-    // extensionCharge() skips _revenueFolded entries, so the total revenue is unchanged — it just
-    // moves from the pending bucket into the booking's revenue + reflects in broker math via b.days.
-    if(b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
-    if(!ext._revenueFolded){ b.revenue=(Number(b.revenue)||0)+amt; ext._revenueFolded=true; }
-  }
+  if(amt>0 && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
 }
 // Manual mark-paid for an extension (non-Stripe methods, or any pending extension).
 function markExtensionPaid(bookingId, extId, method){
@@ -18602,10 +18678,11 @@ function _initExtensionSigningMode(bookingId, extId){
     window._smData = data;
     window._smBookings = _bkArr;
 
-    // Build extension contract HTML for display (no owner sig img src — inline it)
+    // Build extension contract HTML for display (no owner sig img src — inline it). Owner signature
+    // ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
     var ownerSig = (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
       ? '<img src="'+data.owner_signature+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain">'
-      : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>';
+      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
 
     // Build prior extensions rows
     var prevExtRows='';
@@ -18614,7 +18691,11 @@ function _initExtensionSigningMode(bookingId, extId){
       prevExtRows+='<tr style="border-top:1px solid #eee"><td style="padding:6px 10px;font-size:12px">#'+(pi+1)+'</td><td style="padding:6px 10px;font-size:12px">'+fmtDateFull(pe.fromDate)+' &rarr; '+fmtDateFull(pe.toDate)+'</td><td style="padding:6px 10px;font-size:12px">+'+pe.extensionDays+' day'+(pe.extensionDays!==1?'s':'')+'</td><td style="padding:6px 10px;font-size:12px">'+(pe.additionalCharge?'$'+Number(pe.additionalCharge).toFixed(2):'&mdash;')+'</td><td style="padding:6px 10px;font-size:12px">'+(pe.signed?'<span style="color:green;font-weight:700">Signed '+esc(pe.sigDate||'')+'</span>':'Pending')+'</td></tr>';
     }
     var origPickup=fmtDateFull(bk.pickupDate||bk.date||'');
-    var origReturn=fmtDateFull(bk.dropoffDate||'');
+    // ORIGINAL return = before any extension (bk.dropoffDate has been moved forward by each extension).
+    var _ipOrigReturnRaw=_originalReturnDate(bk);
+    var origReturn=fmtDateFull(_ipOrigReturnRaw);
+    // "Extended From" for THIS extension = the return right before it (prior ext's new return, else original).
+    var _ipExtFromRaw=(extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : _ipOrigReturnRaw;
     var todayObj=new Date(); var todayFmt=(todayObj.getMonth()+1)+'/'+todayObj.getDate()+'/'+todayObj.getFullYear();
     var extHtml='<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+
       '<style>*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;padding:24px 28px;line-height:1.6}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:20px 0 8px;padding-bottom:4px;border-bottom:2px solid #111}table{width:100%;border-collapse:collapse}th{background:#222;color:#fff;text-align:left;padding:7px 10px;font-size:12px}td{vertical-align:top}.sig-box{border-bottom:1.5px solid #666;min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px}</style>'+
@@ -18636,7 +18717,7 @@ function _initExtensionSigningMode(bookingId, extId){
       (prevExtRows?('<h2>Previous Extensions</h2><table><thead><tr><th>Ext #</th><th>Period</th><th>Days Added</th><th>Charge</th><th>Status</th></tr></thead><tbody>'+prevExtRows+'</tbody></table>'):'')+
       '<h2>This Extension (#'+(extIdx+1)+')</h2>'+
       '<div style="background:#fffbe8;border:1.5px solid #d4a017;border-radius:6px;padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px">'+
-        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(ext.fromDate)+'</strong></div>'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(_ipExtFromRaw)+'</strong></div>'+
         '<div><span style="color:#555;font-size:11px;text-transform:uppercase">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
         '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Days Added</span><br><strong>+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</strong></div>'+
         (ext.additionalCharge?'<div><span style="color:#555;font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#b8982e">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>':'')+

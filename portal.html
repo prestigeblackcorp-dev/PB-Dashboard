@@ -918,6 +918,20 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
   });
 }
 
+// Original return BEFORE any extension. b.dropoffDate has been moved forward by each extension, so
+// prefer day-math (current dropoff − Σ day-extensions, robust even if a stored fromDate is wrong),
+// falling back to the first extension's fromDate for hour-based extensions.
+function _smOrigReturn(bk){
+  var exts=(bk&&bk.extensions)||[];
+  if(!exts.length) return (bk&&bk.dropoffDate)||'';
+  var allDays=exts.every(function(e){ return e && e.extensionUnit!=='hours'; });
+  var totalDays=exts.reduce(function(s,e){ return s+((e&&e.extensionUnit!=='hours')?(Number(e.extensionDays)||0):0); },0);
+  if(allDays && bk.dropoffDate && totalDays>0){
+    var d=parseLocalDate(bk.dropoffDate);
+    if(d && !isNaN(d.getTime())){ d.setDate(d.getDate()-totalDays); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+  }
+  return (exts[0]&&exts[0].fromDate) || (bk.dropoffDate||'');
+}
 function _initExtensionSigningMode(bookingId, extId, driverIdx){
   var _exIsDrv=(driverIdx!==null&&driverIdx!==undefined&&!isNaN(Number(driverIdx))); var _exDIdx=_exIsDrv?Number(driverIdx):null;
   _smFromPortal = false;
@@ -957,9 +971,10 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
     }
 
     window._smData = data;
+    // Owner signature ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
     var ownerSig = (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
       ? '<img src="'+data.owner_signature+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain">'
-      : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>';
+      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
 
     var prevExtRows = '';
     for(var pi=0;pi<extIdx;pi++){
@@ -967,7 +982,11 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
       prevExtRows += '<tr style="border-top:1px solid #eee"><td style="padding:6px 10px;font-size:12px">#'+(pi+1)+'</td><td style="padding:6px 10px;font-size:12px">'+fmtDateFull(pe.fromDate)+' → '+fmtDateFull(pe.toDate)+'</td><td style="padding:6px 10px;font-size:12px">+'+pe.extensionDays+' day'+(pe.extensionDays!==1?'s':'')+'</td><td style="padding:6px 10px;font-size:12px">'+(pe.additionalCharge?'$'+Number(pe.additionalCharge).toFixed(2):'—')+'</td><td style="padding:6px 10px;font-size:12px">'+(pe.signed?'<span style="color:green;font-weight:700">Signed '+esc(pe.sigDate||'')+'</span>':'Pending')+'</td></tr>';
     }
     var origPickup = fmtDateFull(bk.pickupDate||bk.date||'');
-    var origReturn = fmtDateFull(bk.dropoffDate||'');
+    // ORIGINAL return = before any extension (bk.dropoffDate has been moved forward by each extension).
+    var origReturnRaw = _smOrigReturn(bk);
+    var origReturn = fmtDateFull(origReturnRaw);
+    // "Extended From" for THIS extension = the return right before it (prior ext's new return, else original).
+    var _extFromRaw = (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
     var todayObj = new Date();
     var todayFmt = (todayObj.getMonth()+1)+'/'+todayObj.getDate()+'/'+todayObj.getFullYear();
 
@@ -991,7 +1010,7 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
       (prevExtRows?'<h2>Previous Extensions</h2><table><thead><tr><th>Ext #</th><th>Period</th><th>Days Added</th><th>Charge</th><th>Status</th></tr></thead><tbody>'+prevExtRows+'</tbody></table>':'')+
       '<h2>This Extension (#'+(extIdx+1)+')</h2>'+
       '<div style="background:#fffbe8;border:1.5px solid #d4a017;border-radius:6px;padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px">'+
-        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(ext.fromDate)+'</strong></div>'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(_extFromRaw)+'</strong></div>'+
         '<div><span style="color:#555;font-size:11px;text-transform:uppercase">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
         '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Days Added</span><br><strong>+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</strong></div>'+
         (ext.additionalCharge?'<div><span style="color:#555;font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#b8982e">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>':'')+
