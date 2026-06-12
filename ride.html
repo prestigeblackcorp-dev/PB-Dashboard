@@ -1455,6 +1455,26 @@ function placeRiderMarker(lat,lng){
 }
 
 // ── Request Ride ───────────────────────────────────────────────────────────
+// ── Web Push subscribe (Phase 2.1) — gated by PB_FLAGS.webPush; no-ops until the
+//    owner sets VAPID keys + deploys the worker. Prompts on the Request-Ride gesture.
+function _pbUrlB64(s){ s=(s||'').replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='='; var bin=atob(s); var u=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u; }
+async function ensurePushSubscription(role){
+  try{
+    if(!(window.PB_FLAGS||{}).webPush) return;
+    if(!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+    var vapid=window.PB_VAPID_PUBLIC; if(!vapid) return;
+    if(Notification.permission==='denied') return;
+    var tok=_session&&_session.token; if(!tok) return;
+    var reg=await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      if(Notification.permission!=='granted'){ var p=await Notification.requestPermission(); if(p!=='granted') return; }
+      sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_pbUrlB64(vapid)});
+    }
+    if(navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({type:'pb-push-auth', role:role, token:tok, worker:WORKER, vapid:vapid});
+    fetch(WORKER+'/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:role, token:tok, subscription:sub.toJSON()})}).catch(function(){});
+  }catch(e){}
+}
 async function requestRide(){
   if(!_session){ return; }
   if(!_pickup){ return; }
@@ -1481,6 +1501,7 @@ async function requestRide(){
   btn.textContent='Request Ride';
   if(!d||d.error){ alert(d&&d.error?d.error:'Could not request ride. Try again.'); return; }
   _rideId=d.rideId;
+  ensurePushSubscription('rider');
   try{ localStorage.setItem('pb_active_ride',_rideId); }catch(e){}
   showRideStatusView();
   startPolling();

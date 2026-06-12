@@ -1645,6 +1645,27 @@ function maybeAutoFullscreen(){
 function toggleDuty(){ drvToggleClock(); }
 
 // Idempotent duty setter — safe to call from the toggle pill or from clock in/out.
+// ── Web Push subscribe (Phase 2.1) — gated by PB_FLAGS.webPush; no-ops until the
+//    owner sets VAPID keys + deploys the worker. Prompts for permission on a user
+//    gesture (going on-duty), never on load. Push is purely additive to poll+email.
+function _pbUrlB64(s){ s=(s||'').replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='='; var bin=atob(s); var u=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u; }
+async function ensurePushSubscription(role){
+  try{
+    if(!(window.PB_FLAGS||{}).webPush) return;
+    if(!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+    var vapid=window.PB_VAPID_PUBLIC; if(!vapid) return;
+    if(Notification.permission==='denied') return;
+    var tok=drvState&&drvState.token; if(!tok) return;
+    var reg=await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      if(Notification.permission!=='granted'){ var p=await Notification.requestPermission(); if(p!=='granted') return; }
+      sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_pbUrlB64(vapid)});
+    }
+    if(navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({type:'pb-push-auth', role:role, token:tok, worker:WORKER, vapid:vapid});
+    fetch(WORKER+'/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:role, token:tok, subscription:sub.toJSON()})}).catch(function(){});
+  }catch(e){}
+}
 function setDuty(on){
   on = !!on;
   if(on === _onDuty){ syncDutyUI(); return; }
@@ -1654,6 +1675,7 @@ function setDuty(on){
     startDutyBroadcast();
     startRidesPoll();
     _drvAcquireWake();
+    ensurePushSubscription('driver');
   } else {
     stopDutyBroadcast();
     // Only stop polling if no active ride

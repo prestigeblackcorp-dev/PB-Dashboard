@@ -35,7 +35,7 @@
     voiceNav:    true,   // D — spoken turn-by-turn for the driver
     priceLock:   true,   // E — "Your fare · price locked"
     resilience:  true,   // F — wake-lock + reconnect/visibility resume
-    webPush:     false,  // G — needs VAPID keys wired into push code (built later)
+    webPush:     true,   // G — live: VAPID keys set in Cloudflare + webpush worker deployed
     cardOnFile:  true,   // H — card-on-file (DEMO simulation until real Stripe keys added)
     tipping:     true,   // H — tipping (DEMO simulation)
     demoPay:     true    // payments are a no-charge simulation; flip OFF when real Stripe keys exist
