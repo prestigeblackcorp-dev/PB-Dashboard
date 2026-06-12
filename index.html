@@ -3685,6 +3685,35 @@ var _offlinePending = false; // queues a cloudSave for when we come back online
 
 // Merge two arrays by ID — newer _t wins for conflicts, items from both sides kept
 // Items marked _deleted:true are kept (tombstones) so deletions propagate across devices
+function _isSigStr(s){ return !!(s && typeof s==='string' && s.indexOf('data:image/')===0); }
+// Signatures are monotonic "signed" events — a stale local edit (newer _t) must NEVER un-sign a
+// booking. After picking the newer-_t winner, graft in any signature the OTHER copy has that the
+// winner is missing: primary contract, each authorized driver, AND every extension (primary + its
+// per-driver sigs). This is what was silently losing extension driver signatures (captured in the
+// cloud after the booking had been edited locally) on the next autosave.
+function _graftSignatures(base, other){
+  if(!base || !other || typeof base!=='object' || typeof other!=='object') return base;
+  if(!_isSigStr(base.customerSig) && _isSigStr(other.customerSig)){
+    base.customerSig=other.customerSig; base.customerSigDate=other.customerSigDate;
+    base.customerSigAt=other.customerSigAt; base.customerSigVehicle=other.customerSigVehicle; base.customerSigColor=other.customerSigColor;
+  }
+  if(Array.isArray(base.extraDrivers) && Array.isArray(other.extraDrivers)){
+    base.extraDrivers.forEach(function(d,i){ var o=other.extraDrivers[i]; if(d && o && !_isSigStr(d.sig) && _isSigStr(o.sig)){ d.sig=o.sig; d.sigDate=o.sigDate; d.sigAt=o.sigAt; } });
+  }
+  if(Array.isArray(base.extensions) && Array.isArray(other.extensions)){
+    base.extensions.forEach(function(ext){
+      if(!ext) return;
+      var oe=other.extensions.find(function(x){ return x && x.id===ext.id; });
+      if(!oe) return;
+      if(!_isSigStr(ext.sig) && _isSigStr(oe.sig)){ ext.sig=oe.sig; ext.sigDate=oe.sigDate; ext.signed=true; }
+      if(oe.driverSigs){
+        if(!ext.driverSigs) ext.driverSigs={};
+        Object.keys(oe.driverSigs).forEach(function(k){ var os=oe.driverSigs[k]; if(os && _isSigStr(os.sig) && !(ext.driverSigs[k] && _isSigStr(ext.driverSigs[k].sig))){ ext.driverSigs[k]=os; } });
+      }
+    });
+  }
+  return base;
+}
 function mergeArray(local, cloud) {
   var map = {};
   (local || []).forEach(function(item) { if (item && item.id) map[item.id] = item; });
@@ -3695,7 +3724,9 @@ function mergeArray(local, cloud) {
     } else {
       var lt = Number(map[item.id]._t) || Number(map[item.id].createdAt) || 0;
       var ct = Number(item._t)         || Number(item.createdAt)         || 0;
-      if (ct > lt) map[item.id] = item;
+      var winner = (ct > lt) ? item : map[item.id];
+      var loser  = (ct > lt) ? map[item.id] : item;
+      map[item.id] = _graftSignatures(winner, loser); // never drop a signature on merge
     }
   });
   var result = [];
@@ -3709,7 +3740,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v61';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v62';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
