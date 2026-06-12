@@ -3700,14 +3700,24 @@ var _cloudSaveRetries = 0;
 var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
 var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from overlapping
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
+var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 
 // cloudSave is debounced: rapid back-to-back calls (GCal callback, form save, etc.)
 // collapse into a single network request fired 800ms after the last call.
 function cloudSave() {
   if (!WORKER_URL) return;
+  _pendingCloudSave = true;
   if (!navigator.onLine) { _offlinePending = true; setSyncStatus('off'); return; }
   clearTimeout(_cloudSaveTimer);
   _cloudSaveTimer = setTimeout(_cloudSaveNow, 800);
+}
+// Force any queued cloud save to fire NOW instead of waiting out the 800ms debounce — used
+// right after a booking is created (so it can't be lost) and when the app is hidden/closed
+// (critical on mobile, where backgrounding can drop a pending debounced save before it fires).
+function flushCloudSave() {
+  if (!WORKER_URL || !_pendingCloudSave) return;
+  clearTimeout(_cloudSaveTimer);
+  _cloudSaveNow();
 }
 
 function _cloudSaveNow() {
@@ -3755,6 +3765,7 @@ function _cloudSaveNow() {
         if (res && res.ok) {
           setSyncStatus('ok');
           _offlinePending = false;
+          _pendingCloudSave = false;
           _cloudSaveRetries = 0;
           _lastSavedAt = data.savedAt;
           localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString());
@@ -9731,7 +9742,7 @@ function saveBooking(){
     }
   }
 
-  save(); closeModal(); initSelects();
+  save(); flushCloudSave(); closeModal(); initSelects();
   _saving = false;
   _autoCarryVerifyForAll(); // immediate pass — catches the just-saved booking + any others for same customer
   syncToGCal(entry); // create or update Google Calendar event
@@ -9751,7 +9762,7 @@ function confirmDelete(id){
   var idx=bookings.findIndex(function(b){return b.id===id;});
   if(idx!==-1){ bookings[idx]._deleted=true; bookings[idx]._t=Date.now(); }
   if(toDelete && toDelete.status!=='cancelled') checkWaitlistOnCancel(toDelete);
-  save(); closeModal(); initSelects();
+  save(); flushCloudSave(); closeModal(); initSelects();
   render();
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
@@ -19593,10 +19604,12 @@ if(!(new URLSearchParams(location.search).get('sign'))&&!(new URLSearchParams(lo
   });
   // Auto-pull whenever the app is brought back to the foreground (e.g. switching tabs on iPhone)
   document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'hidden') { flushCloudSave(); return; } // push pending changes before the OS suspends a backgrounded tab (mobile)
     if (document.visibilityState === 'visible' && WORKER_URL) {
       cloudLoad(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });
     }
   });
+  window.addEventListener('pagehide', flushCloudSave); // last-ditch flush when the tab is being closed/unloaded
   // Auto-pull every 15 seconds so all changes propagate to every active device
   setInterval(function() {
     if (WORKER_URL && document.visibilityState === 'visible') {
