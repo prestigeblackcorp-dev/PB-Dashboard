@@ -787,6 +787,10 @@ html,body{touch-action:pan-x pan-y;}
   .pb-printable .fr{ flex-direction:row!important; gap:8px!important; margin-bottom:6px!important; }
   .pb-printable .fl{ width:180px!important; font-size:11px!important; }
   .pb-printable .sig-grid{ grid-template-columns:1fr 1fr!important; }
+  /* Never let an oversized signature image or wide table spill past the page. */
+  .pb-printable img{ max-width:100%!important; height:auto!important; }
+  .pb-printable table{ max-width:100%!important; }
+  .pb-printable, .pb-printable *{ overflow:visible!important; }
 }
 #invoicePrintArea, #contractPrintArea{ display:none; }
 .inv-wrap{ font-family:Arial,sans-serif; color:#111; max-width:560px; margin:0 auto; }
@@ -3631,6 +3635,15 @@ function _bookingCommLog(b){
   }
   (b._commLog||[]).forEach(add);
   (_notifLog||[]).forEach(function(n){ if(n&&n.bookingId===b.id) add(n); });
+  // Derived "Contract/Waiver signed" entry so the log shows it for ALL bookings (old +
+  // new): signing stores customerSig/customerSigDate but isn't always logged. Uses the
+  // precise customerSigAt when present (new signings), else the signed date at noon.
+  if(b.customerSig && !out.some(function(e){ return e.type==='contractsigned'; })){
+    var _st=Number(b.customerSigAt)||0;
+    if(!_st && b.customerSigDate){ var _pd=new Date(b.customerSigDate+' 12:00:00'); if(!isNaN(_pd.getTime())) _st=_pd.getTime(); }
+    var _isW=String(b.customerSigVehicle||b.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
+    add({at:_st||0, type:'contractsigned', label:(_isW?'Waiver':'Contract')+' signed', to:b.name||''});
+  }
   out.sort(function(x,y){ return x.at-y.at; });
   return out;
 }
@@ -8799,7 +8812,7 @@ function openBookingDetail(id){
     (function(){
       var _cl=_bookingCommLog(b);
       if(!_cl.length) return '';
-      var _typeIcons={verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
+      var _typeIcons={contractsigned:'✍️',verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
       return '<div class="fsec" style="margin-top:12px">📨 Communication Log</div>'+
         '<div style="font-size:11px;color:var(--muted)">'+
         _cl.slice().reverse().map(function(c){
@@ -14907,6 +14920,7 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
     <li>To operate the Vehicle only for lawful personal use.</li>
     <li>Not to use the Vehicle for racing, towing, transporting passengers for hire, or any illegal purpose.</li>
     <li>Not to permit any person other than the authorized driver(s) to operate the Vehicle.</li>
+    <li><strong style="color:#e0e0e0">Unauthorized Drivers — Consequences:</strong> Allowing or permitting any individual who is not listed and authorized under this Agreement to operate the Vehicle constitutes a material breach. In such event, the <strong>entire Security Deposit shall be forfeited and retained in full</strong>, and the Owner reserves the right to <strong>immediately repossess and pick up the Vehicle</strong>, ending the rental. <strong>No refund will be issued for any remaining or additional rental days</strong>, and the Renter remains responsible for the full rental term and any retrieval, towing, or administrative costs.</li>
     <li>To operate the Vehicle in full compliance with all applicable federal, state, and local traffic laws, ordinances, and regulations. In the event Renter commits, causes, or is cited for any traffic violation, moving violation, reckless driving, excessive speeding, illegal racing, improper use of the Vehicle, or other unlawful operation during the rental period, Owner reserves the right to withhold all or a portion of the Security Deposit to cover fines, penalties, administrative costs, towing, impound fees, increased insurance exposure, or damages resulting from such violation.</li>
     <li>Any evidence of reckless operation, including but not limited to excessive speeding (20+ mph over posted limit), racing, burnouts, drifting, launch control abuse, track use, or operation in a manner that materially increases risk shall constitute a material breach of this Agreement and may result in immediate termination of the rental without refund and forfeiture of the Security Deposit.</li>
     <li><strong style="color:#e0e0e0">100 MPH Speed Policy — Three-Strike Rule:</strong> Operating the Vehicle at or above 100 mph constitutes a serious violation of this Agreement and will be tracked as follows:
@@ -14933,6 +14947,7 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
   <!-- 10. RETURN OF VEHICLE -->
   <h2>10. Return of Vehicle</h2>
   <p>The Vehicle must be returned to the agreed location on or before the return date and time. <strong>Late returns are subject to a $75 per hour late fee</strong>, applied after a 1-hour grace period. Failure to return the Vehicle within 24 hours of the scheduled time without notice shall be considered vehicle theft and reported to law enforcement.</p>
+  <p><strong style="color:#e0e0e0">Personal Belongings:</strong> Prestige Black is not responsible or liable for any personal items, valuables, or belongings left in, lost from, or forgotten in any Vehicle before, during, or after the rental. It is the Renter's sole responsibility to remove and verify all personal belongings before completing the return. Any items left behind are surrendered at the Renter's own risk.</p>
 
   <!-- 11. GOVERNING LAW -->
   <h2>11. Governing Law</h2>
@@ -15069,6 +15084,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
   <ul>
     <li>Must be <span class="bold">21+ years old</span> with a valid driver&rsquo;s license</li>
     <li>Will <span class="bold">not allow unauthorized drivers</span></li>
+    <li><span class="bold">Unauthorized driver consequences:</span> If any unauthorized driver operates the Vehicle, the <span class="bold">entire Security Deposit is forfeited and retained in full</span>, the Vehicle may be <span class="bold">immediately repossessed and picked up</span>, and <span class="bold">no refund is issued for any remaining or additional rental days</span>. Renter remains responsible for all retrieval and administrative costs.</li>
     <li>Will not operate under <span class="bold">alcohol, drugs, or impairment</span></li>
     <li>Will obey all <span class="bold">Texas traffic laws</span></li>
     <li>Will not use vehicle for <span class="bold">racing, reckless driving, or illegal activity</span></li>
@@ -15094,6 +15110,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
   </ul>
   <p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>
   <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 15-minute grace period.</p>
+  <p><span class="bold">Personal Belongings:</span> Prestige Black Corporation is not responsible or liable for any personal items, valuables, or belongings left in, lost from, or forgotten in the Vehicle. It is the Renter's sole responsibility to remove and verify all personal belongings before completing the return. Any items left behind are surrendered at the Renter's own risk.</p>
 
   <hr class="hr">
 
@@ -15220,6 +15237,24 @@ function _migrateContractTemplate(){
     );
     changed = true;
   }
+  // Add Unauthorized-Drivers consequence clause to Section 6 (Use of Vehicle) if missing.
+  if(contractTemplate.indexOf('Unauthorized Drivers') === -1 &&
+     contractTemplate.indexOf('Not to permit any person other than the authorized driver(s) to operate the Vehicle.</li>') !== -1){
+    contractTemplate = contractTemplate.replace(
+      'Not to permit any person other than the authorized driver(s) to operate the Vehicle.</li>',
+      'Not to permit any person other than the authorized driver(s) to operate the Vehicle.</li>\n    <li><strong style="color:#e0e0e0">Unauthorized Drivers — Consequences:</strong> Allowing or permitting any individual who is not listed and authorized under this Agreement to operate the Vehicle constitutes a material breach. In such event, the <strong>entire Security Deposit shall be forfeited and retained in full</strong>, and the Owner reserves the right to <strong>immediately repossess and pick up the Vehicle</strong>, ending the rental. <strong>No refund will be issued for any remaining or additional rental days</strong>, and the Renter remains responsible for the full rental term and any retrieval, towing, or administrative costs.</li>'
+    );
+    changed = true;
+  }
+  // Add Personal Belongings clause to Section 10 (Return of Vehicle) if missing.
+  if(contractTemplate.indexOf('Personal Belongings') === -1 &&
+     contractTemplate.indexOf('considered vehicle theft and reported to law enforcement.</p>') !== -1){
+    contractTemplate = contractTemplate.replace(
+      'considered vehicle theft and reported to law enforcement.</p>',
+      'considered vehicle theft and reported to law enforcement.</p>\n  <p><strong style="color:#e0e0e0">Personal Belongings:</strong> Prestige Black is not responsible or liable for any personal items, valuables, or belongings left in, lost from, or forgotten in any Vehicle before, during, or after the rental. It is the Renter\'s sole responsibility to remove and verify all personal belongings before completing the return. Any items left behind are surrendered at the Renter\'s own risk.</p>'
+    );
+    changed = true;
+  }
   if(changed) try{ localStorage.setItem('pb_contract_template', contractTemplate); }catch(e){}
 }
 
@@ -15263,6 +15298,24 @@ function _migrateWaiverTemplate(){
       slingshotWaiverTemplate = slingshotWaiverTemplate.replace(
         '<p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>',
         '<p>Renter agrees that the <span class="bold">security deposit does NOT limit liability</span>.</p>\n  <p><span class="bold">Late Return Fee:</span> Vehicles returned after the agreed return time are subject to a <span class="bold">$75 per hour late fee</span>, applied after a 15-minute grace period.</p>'
+      );
+      wChanged = true;
+    }
+    // Add Unauthorized-driver consequences to Section 6 (Driver Responsibility) if missing.
+    if(slingshotWaiverTemplate.indexOf('Unauthorized driver consequences') === -1 &&
+       slingshotWaiverTemplate.indexOf('Will <span class="bold">not allow unauthorized drivers</span></li>') !== -1){
+      slingshotWaiverTemplate = slingshotWaiverTemplate.replace(
+        'Will <span class="bold">not allow unauthorized drivers</span></li>',
+        'Will <span class="bold">not allow unauthorized drivers</span></li>\n    <li><span class="bold">Unauthorized driver consequences:</span> If any unauthorized driver operates the Vehicle, the <span class="bold">entire Security Deposit is forfeited and retained in full</span>, the Vehicle may be <span class="bold">immediately repossessed and picked up</span>, and <span class="bold">no refund is issued for any remaining or additional rental days</span>. Renter remains responsible for all retrieval and administrative costs.</li>'
+      );
+      wChanged = true;
+    }
+    // Add Personal Belongings clause to Section 7 if missing.
+    if(slingshotWaiverTemplate.indexOf('Personal Belongings') === -1 &&
+       slingshotWaiverTemplate.indexOf('applied after a 15-minute grace period.</p>') !== -1){
+      slingshotWaiverTemplate = slingshotWaiverTemplate.replace(
+        'applied after a 15-minute grace period.</p>',
+        'applied after a 15-minute grace period.</p>\n  <p><span class="bold">Personal Belongings:</span> Prestige Black Corporation is not responsible or liable for any personal items, valuables, or belongings left in, lost from, or forgotten in the Vehicle. It is the Renter\'s sole responsibility to remove and verify all personal belongings before completing the return. Any items left behind are surrendered at the Renter\'s own risk.</p>'
       );
       wChanged = true;
     }
@@ -15409,6 +15462,7 @@ function saveCustSig(){
     var t2=new Date();
     bookings[idx].customerSig=dataUrl;
     bookings[idx].customerSigDate=(t2.getMonth()+1)+'/'+t2.getDate()+'/'+t2.getFullYear();
+    bookings[idx].customerSigAt=t2.getTime();   // precise timestamp for the communication log
     // Log which vehicle + color (Slingshot) were active when the contract was signed
     bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
     if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
@@ -15435,6 +15489,7 @@ function uploadSignedContract(input){
     var t=new Date();
     bookings[idx].customerSig=dataUrl;
     bookings[idx].customerSigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+    bookings[idx].customerSigAt=t.getTime();   // precise timestamp for the communication log
     bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
     if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
     bookings[idx]._t=Date.now();
@@ -15970,7 +16025,11 @@ function sendSignedCopyToClient(){
   if(!MESSAGING_URL){ showToast('Messaging worker not configured — go to ⚙ Settings to add it'); return; }
   var firstName=(b.name||'').split(' ')[0]||'there';
   var docType=_contractIsWaiver?'Liability Waiver':'Rental Agreement';
-  var subj='Your Signed '+docType+' — '+b.vehicle+' ('+fmtDate(b.pickupDate||b.date)+')';
+  var _docShort=_contractIsWaiver?'Waiver':'Contract';
+  // Subject doubles as the client's saved-PDF name — Gmail/Apple Mail name the printed
+  // file after the email subject → "{Name} - Signed {Contract|Waiver} - {signed date}".
+  var _sigDateF=((b.customerSigDate?(b.customerSigDate+''):fmtDate(b.pickupDate||b.date))+'').replace(/[\/\\:*?"<>|]/g,'-');
+  var subj=(((b.name||'Client').trim())||'Client')+' - Signed '+_docShort+' - '+_sigDateF;
   var rev=totalRevenue(b), dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
   var addons=[];
   if(Number(b.photo))     addons.push({l:'Photoshoot',v:b.photo});
@@ -16017,11 +16076,12 @@ function sendSignedCopyToClient(){
       // Embed the full rendered contract below the signature
       var _raw=$d('contractFilled')?($d('contractFilled').value||''):'';
       if(!_raw) return '';
-      // Strip outer <!DOCTYPE>/<html>/<head>/<body> wrapper — keep only body content
+      // Keep only the <body> content; strip <script> for email safety; then LIGHTEN the
+      // contract's dark inline colors so text isn't invisible on the white email bg
+      // (the dark <style> block is intentionally dropped — email clients strip it anyway).
       var _bodyMatch=_raw.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
       var _contractBody=_bodyMatch?_bodyMatch[1]:_raw;
-      // Remove any <script> tags for email safety
-      _contractBody=_contractBody.replace(/<script[\s\S]*?<\/script>/gi,'');
+      _contractBody=_contractEmailLight(_contractBody.replace(/<script[\s\S]*?<\/script>/gi,''));
       return '<div style="margin-top:28px;border-top:2px solid #e8e2d4;padding-top:24px">'+
         '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'+
           '<div style="font-size:20px">📄</div>'+
@@ -16033,7 +16093,7 @@ function sendSignedCopyToClient(){
         '<div style="font-size:11px;background:#fffbf0;border:1px solid #e8dfc0;border-radius:8px;padding:10px 14px;margin-bottom:16px;color:#7a6320;line-height:1.5">'+
           '💾 <strong>Save to PDF on mobile:</strong> Tap the three-dot menu (⋮) in your email app → <em>Print</em> → pinch to zoom out → <em>Save as PDF</em>'+
         '</div>'+
-        '<div style="border:1.5px solid #e5e5e5;border-radius:12px;overflow:hidden;background:#fff">'+
+        '<div style="border:1.5px solid #e5e5e5;border-radius:12px;overflow:visible;background:#fff;padding:18px 20px">'+
           _contractBody+
         '</div>'+
       '</div>';
@@ -16589,9 +16649,52 @@ function copyContract(){
   }
 }
 
+// Build the saved-file name: "{Client Name} {Contract|Waiver} {signed date}".
+// Used both as the print-to-PDF document.title (browsers name the saved PDF after it)
+// and the PDF-download filename → a saved doc lands as e.g. "John Smith Contract 6-11-2026".
+function _contractFileBase(){
+  var b=_contractBookingId?bookings.find(function(x){return x.id===_contractBookingId;}):null;
+  var nm=(((b&&b.name)||'Client')+'').trim().replace(/\s+/g,' ')||'Client';
+  var typ=_contractIsWaiver?'Waiver':'Contract';
+  var dnow=new Date();
+  var dt=(b&&b.customerSigDate)?(b.customerSigDate+''):((dnow.getMonth()+1)+'/'+dnow.getDate()+'/'+dnow.getFullYear());
+  dt=dt.replace(/[\/\\:*?"<>|]/g,'-');
+  return (nm+' '+typ+' '+dt).replace(/\s+/g,' ').trim();
+}
+
+// The contract template is dark-themed (gold-on-black) for on-screen viewing, which
+// prints as a black page / near-invisible gray text. These turn it printer-friendly
+// (black-on-white) for the saved/printed/emailed document so it doesn't "load weird".
+// _contractLightCss: a scoped <style> override (browsers honor it) for Print + PDF.
+function _contractLightCss(scope){
+  var s=scope+' ';
+  return scope+'{background:#fff!important;color:#111!important}'+
+    s+'*{color:#111!important;background-color:transparent!important;box-shadow:none!important}'+
+    s+'.wrap{background:#fff!important;border:1px solid #ccc!important}'+
+    s+'.fv{border-bottom:1px solid #999!important}'+
+    s+'.sig-line{border-bottom:1.5px solid #555!important}'+
+    s+'.logo-p,'+s+'.logo-sub{color:#a8893e!important}'+
+    s+'th{background:#eee!important;color:#111!important}'+
+    s+'img{filter:none!important}';
+}
+// _contractEmailLight: email clients honor INLINE styles, not <style> blocks, so lighten
+// the contract's dark inline colors directly (else dark text is invisible on white).
+function _contractEmailLight(html){
+  return (html||'')
+    .replace(/filter\s*:\s*invert\(1\)/gi,'filter:none')
+    .replace(/(color\s*:\s*)#(?:e0e0e0|f5f5f5|ffffff|fff|eeeeee|eee)\b/gi,'$1#111111')
+    .replace(/(color\s*:\s*)#(?:cccccc|ccc|dddddd|ddd)\b/gi,'$1#333333')
+    .replace(/(color\s*:\s*)#(?:999999|999|aaaaaa|aaa|bbbbbb|bbb)\b/gi,'$1#555555')
+    .replace(/(background(?:-color)?\s*:\s*)#(?:0d0d0d|111111|111|0a0a0a|1a1a1a)\b/gi,'$1#ffffff');
+}
+
 function printContract(){
   var text=$d('contractFilled').value;
   var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
+  // Auto-name the saved PDF: the browser's Save-as-PDF uses document.title, so set it
+  // to the contract filename for the print dialog, then restore it afterward.
+  var _oldDocTitle=document.title; document.title=_contractFileBase();
+  window.onafterprint=function(){ document.title=_oldDocTitle; window.onafterprint=null; };
 
   // Helper: inject HTML into the current page and print (mobile-safe; no popup needed)
   function _printInPage(html){
@@ -16604,11 +16707,11 @@ function printContract(){
     // URL/date footer, and its body{} rules darken the page behind the card —
     // strip both; the trailing style below wins the @page cascade (last rule).
     inner=inner.replace(/@page[^{]*\{[^}]*\}/gi,'');
-    inner+='<style>@page{margin:0;size:letter}</style>';
+    inner+='<style>@page{margin:0;size:letter}'+_contractLightCss('.pb-printable')+'</style>';
     el.innerHTML=inner;
     el.classList.add('pb-printable');
     window.print();
-    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; },1800);
+    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; document.title=_oldDocTitle; },1800);
   }
 
   if(isHtml){
@@ -16622,7 +16725,7 @@ function printContract(){
     el.innerHTML='<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap;max-width:700px;margin:0 auto">'+text+'</div>';
     el.classList.add('pb-printable');
     window.print();
-    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; },1500);
+    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; document.title=_oldDocTitle; },1500);
   }
 }
 
@@ -16631,7 +16734,7 @@ function printContract(){
 // ════════════════════════════════════════════════════════
 function downloadContractPdf(){
   var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
-  var fname = 'contract' + (b ? '-'+b.name.replace(/\s+/g,'-').toLowerCase()+'-'+fmtDate(b.pickupDate||b.date).replace(/\//g,'-') : '') + '.pdf';
+  var fname = _contractFileBase() + '.pdf';
   var text = $d('contractFilled').value;
   if(!text.trim()){ toast('No contract to download'); return; }
   // On mobile, html2pdf/html2canvas is unreliable — use the browser's native print-to-PDF instead
@@ -16655,8 +16758,9 @@ function downloadContractPdf(){
         var innerDoc = inner.contentDocument || inner.contentWindow.document;
         var cloned = innerDoc.documentElement.cloneNode(true);
         var tmp = document.createElement('div');
+        tmp.className = 'pb-pdf-doc';
         tmp.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;color:#000;font-family:serif';
-        tmp.innerHTML = cloned.outerHTML;
+        tmp.innerHTML = cloned.outerHTML + '<style>'+_contractLightCss('.pb-pdf-doc')+'</style>';
         document.body.appendChild(tmp);
         html2pdf().set({margin:[8,8,8,8],filename:fname,image:{type:'jpeg',quality:.95},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'mm',format:'letter',orientation:'portrait'}})
           .from(tmp).save().then(function(){ document.body.removeChild(tmp); document.body.removeChild(container); });
