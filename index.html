@@ -10743,7 +10743,8 @@ function openDriverVerify(bookingId, driverIdx){
 
   // Show driver mode banner; hide insurance + card auth sections (drivers don't need those)
   var _dlabel=$d('verDriverLabel');
-  if(_dlabel){ _dlabel.innerHTML='👤 Verifying additional driver: <strong>'+esc(d.name||'Driver '+(driverIdx+1))+'</strong>'; _dlabel.style.display=''; }
+  var _dHasData=!!(d.idVerified||d.idName||d.idNumber||d.idDob||d.idAddress);
+  if(_dlabel){ _dlabel.innerHTML='👤 Verifying additional driver: <strong>'+esc(d.name||'Driver '+(driverIdx+1))+'</strong>'+(_dHasData?' <button class="btn btn-sm" onclick="resetDriverVerify(\''+bookingId+'\','+driverIdx+')" style="border-color:var(--red);color:var(--red);font-size:10px;margin-left:8px;white-space:nowrap" title="Clear this driver&#39;s ID and re-verify with their own link only">🔄 Reset &amp; re-verify</button>':''); _dlabel.style.display=''; }
   var _insSection=$d('vInsuranceSection');
   if(_insSection) _insSection.style.display='none';
   var _cardSection=$d('vCardAuthSection');
@@ -10765,6 +10766,25 @@ function openDriverVerify(bookingId, driverIdx){
   _applyVerifyIdLock(!!d.idVerified && !!(d.idName||d.idNumber));
 
   $d('verifyModal').classList.add('open');
+}
+
+// Wipe an authorized driver's ID verification so a fresh link (verifying ONLY this driver)
+// can be sent. Use to clean up any driver record that picked up the primary renter's
+// identity before the driver-scoped verify fix. Clears only this driver — never the primary.
+function resetDriverVerify(bookingId, driverIdx){
+  var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
+  if(idx===-1) return;
+  var d=(bookings[idx].extraDrivers&&bookings[idx].extraDrivers[driverIdx]);
+  if(!d) return;
+  if(!confirm('Reset verification for '+(d.name||'this driver')+'?\n\nThis clears their ID fields so you can send a NEW link that verifies ONLY this driver. It does NOT affect the primary renter\'s verification.')) return;
+  ['idVerified','idName','idDob','idType','idNumber','idState','idExpiry','idAddress','idRisk','verifiedAt','stripeSessionId','stripeSessionIds'].forEach(function(k){ delete d[k]; });
+  bookings[idx]._t=Date.now();
+  try{ localStorage.removeItem(_vPendKey(bookingId, driverIdx)); }catch(e){}
+  try{ localStorage.removeItem(_vAllKey(bookingId, driverIdx)); }catch(e){}
+  save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  logNotif('verification','Driver verification reset — '+(d.name||('#'+(driverIdx+1))),(d.name||''),bookingId);
+  openDriverVerify(bookingId, driverIdx); // reopen clean: fields blank, unlocked, Send Link enabled
+  toast('🔄 '+(d.name||'Driver')+' verification cleared — send a new link to re-verify just them.');
 }
 
 // Send a Stripe verification link to an extra driver's email
