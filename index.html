@@ -3705,6 +3705,7 @@ var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
 var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from overlapping
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
+var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
 
 // cloudSave is debounced: rapid back-to-back calls (GCal callback, form save, etc.)
 // collapse into a single network request fired 800ms after the last call.
@@ -3787,25 +3788,27 @@ function _cloudSaveNow() {
             else { setSyncStatus('error'); }
           });
         } else {
+          _lastSyncErr = 'save ' + ((res && res.error) ? res.error : ('HTTP ' + ((res && res.status) || '?'))) + ' (' + Math.round(JSON.stringify(data).length / 1024) + 'KB)';
           setSyncStatus('error');
           if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
           else { _cloudSaveRetries = 0; setSyncStatus('error'); }
         }
-      }).catch(function() {
+      }).catch(function(e) {
         _cloudSaving = false;
+        _lastSyncErr = 'save network: ' + ((e && e.message) ? e.message : 'fetch failed') + ' (' + Math.round(JSON.stringify(data).length / 1024) + 'KB)';
         setSyncStatus('error');
         if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
         else { _cloudSaveRetries = 0; }
       });
     })
-    .catch(function(){ _cloudSaving = false; setSyncStatus('error'); });
+    .catch(function(e){ _cloudSaving = false; _lastSyncErr = 'savedAt: ' + ((e && e.message) ? e.message : 'fetch failed'); setSyncStatus('error'); });
 }
 
 function cloudLoad(callback) {
   if (!WORKER_URL) { if (callback) callback(false); return; }
   setSyncStatus('syncing');
   fetch(WORKER_URL + '/sync/load?_=' + Date.now(), { cache: 'no-store', headers: _authHeader() })
-    .then(function(r) { return r.json(); })
+    .then(function(r) { if(!r.ok){ _lastSyncErr = 'load HTTP ' + r.status; } return r.json(); })
     .then(function(data) {
       if (data && typeof data === 'object') {
         _cloudLoading = true;
@@ -3951,8 +3954,9 @@ function cloudLoad(callback) {
         localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString());
       }
       if (callback) callback(true);
-    }).catch(function() {
+    }).catch(function(e) {
       _cloudLoading = false;
+      if(!_lastSyncErr) _lastSyncErr = 'load: ' + ((e && e.message) ? e.message : 'fetch/parse failed');
       setSyncStatus('error');
       // don't let a failed load trigger cloudSave — that would overwrite newer cloud data with stale local
       _offlinePending = false;
@@ -3985,6 +3989,7 @@ function syncBtnTap(){
 function forceSyncNow(){
   if(!WORKER_URL){ if(typeof openSyncSetup==='function') openSyncSetup(); return; }
   if(!navigator.onLine){ setSyncStatus('off'); toast('📴 Offline — connect to the internet, then tap Sync again.'); return; }
+  _lastSyncErr = '';                 // clear so the toast reflects ONLY this attempt's failure (if any)
   setSyncStatus('syncing');
   toast('🔄 Pushing this device’s changes…');
   _pendingCloudSave = true;          // ensure there is work to flush
@@ -3996,8 +4001,8 @@ function forceSyncNow(){
     cloudLoad(function(ok){
       if(typeof afterCloudLoad==='function') afterCloudLoad(ok);
       var n=(bookings||[]).filter(function(b){ return b && !b._deleted; }).length;
-      if(ok){ setSyncStatus('ok'); toast('✅ Synced — '+n+' bookings on this device now match the cloud.'); }
-      else  { setSyncStatus('error'); toast('❌ Sync failed — open Settings and check your Worker URL / internet.'); }
+      if(ok && !_lastSyncErr){ setSyncStatus('ok'); toast('✅ Synced — '+n+' bookings on this device now match the cloud.'); }
+      else  { setSyncStatus('error'); toast('❌ Sync failed: ' + (_lastSyncErr || 'load error') + ' — screenshot this & send it'); }
     });
   }, 1600);
 }
