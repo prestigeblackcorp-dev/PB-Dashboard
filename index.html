@@ -2394,7 +2394,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
       </div>
       <div>
         <label class="flbl">Category <span style="color:var(--muted);font-weight:400">(for revenue breakdown)</span></label>
-        <select class="finput" id="pcCategory">
+        <select class="finput" id="pcCategory" onchange="_pcToggleExtDays()">
           <option value="">Auto-detect from description</option>
           <option value="late">Late fee</option>
           <option value="mileage">Mileage overage</option>
@@ -2406,6 +2406,16 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <option value="deposit">Deposit</option>
           <option value="other">Other</option>
         </select>
+      </div>
+      <div id="pcExtDaysRow" style="display:none">
+        <label class="flbl">Extension length <span style="color:var(--muted);font-weight:400">(folds into the rental — new dropoff + revenue — when marked paid)</span></label>
+        <div style="display:flex;gap:8px">
+          <input class="finput" type="number" id="pcDays" placeholder="0" min="0" step="1" style="flex:1">
+          <select class="finput" id="pcExtUnit" style="width:120px">
+            <option value="days">Days</option>
+            <option value="hours">Hours</option>
+          </select>
+        </div>
       </div>
       <div id="pcPreview" style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:12px 14px;font-size:12px;display:none">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="color:var(--muted)">Charge amount</span><span id="pcBase">—</span></div>
@@ -3908,6 +3918,7 @@ function cloudLoad(callback) {
         }
         _cloudLoading = false;
         mergeCommLogsIntoNotifLog();
+        _reconcilePaidExtensionCharges(); // fold any Stripe/portal-paid extension charge into the rental
         // If local had items cloud didn't, push merged result so all devices get it
         if (needsPush) cloudSave();
       }
@@ -6014,7 +6025,81 @@ function sumK(arr,k){ return arr.reduce(function(s,b){ return s+(Number(b[k])||0
 function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_COSTS[b.vehicle]) d=Number(VEHICLE_COSTS[b.vehicle].deposit)||0; return d; }
 function extensionCharge(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e.additionalCharge)||0);},0); }
 // Sum of portal charges that have been paid (base amount only — fee/tax go to Stripe/processor)
-function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return c&&c.paidAt ? s+(Number(c.amount)||0) : s; },0); }
+function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue) ? s+(Number(c.amount)||0) : s; },0); }
+// Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
+// raw b.revenue AND also bucket portal charges by paidAt would otherwise count a folded
+// fee twice — subtract this from the base term so it's counted once (via the paidAt loop).
+function _foldedChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c._foldedIntoRevenue) ? s+(Number(c.amount)||0) : s; },0); }
+// Fold a paid Extension charge into the rental: push the dropoff date, grow the day
+// count, and add the fee into base revenue (so the new total shows in the edit module
+// AND trip details). Idempotent via _extApplied; the fee is flagged _foldedIntoRevenue
+// so portalChargesTotal skips it — nothing double-counts. The amount owed is held
+// stable (the customer paid this extension, so it must not inflate the balance due).
+// Shift the dropoff DATETIME by h hours (negative rolls back), updating BOTH
+// b.dropoffDate and b.dropoffTime — used for hour-based extensions (hourly/chauffeur).
+function _shiftDropoffHours(b, h){
+  var dDate=b.dropoffDate||b.pickupDate||b.date;
+  if(!dDate) return;
+  var dTime=(b.dropoffTime&&/^\d{1,2}:\d{2}$/.test(b.dropoffTime))?b.dropoffTime:(b.pickupTime||'00:00');
+  var dt=new Date(dDate+'T'+('0'+dTime).slice(-5)+':00');
+  if(isNaN(dt.getTime())) return;
+  dt.setHours(dt.getHours()+h);
+  b.dropoffDate=dt.getFullYear()+'-'+pad(dt.getMonth()+1)+'-'+pad(dt.getDate());
+  b.dropoffTime=pad(dt.getHours())+':'+pad(dt.getMinutes());
+}
+function _applyExtensionCharge(b, c){
+  if(!b||!c) return;
+  var n=Math.max(0, parseInt(c.extensionDays,10)||0);
+  if(n<=0 || c._extApplied) return;
+  var fee=Number(c.amount)||0;
+  if(b.remainingBalance==null) b.remainingBalance=Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock)||0));
+  if(c.extensionUnit==='hours'){
+    _shiftDropoffHours(b, n);
+  } else {
+    var _end=b.dropoffDate||tripEndDate(b)||b.pickupDate||b.date;
+    var _sd=_end?parseLocalDate(_end):null;
+    if(_sd&&!isNaN(_sd.getTime())) b.dropoffDate=dateStr(addDays(_sd,n));
+  }
+  b.days=Math.max(1,(Number(b.days)||1)+n); // days field = hour count for hourly/chauffeur bookings
+  b.revenue=(Number(b.revenue)||0)+fee;
+  c._extApplied=true; c._foldedIntoRevenue=true;
+}
+// Exact reverse of _applyExtensionCharge — rolls the dropoff, day/hour count and fee back out.
+function _revertExtensionCharge(b, c){
+  if(!b||!c||!c._extApplied) return;
+  var n=Math.max(0, parseInt(c.extensionDays,10)||0);
+  var fee=Number(c.amount)||0;
+  if(c.extensionUnit==='hours'){
+    _shiftDropoffHours(b, -n);
+  } else {
+    var _sd=b.dropoffDate?parseLocalDate(b.dropoffDate):null;
+    if(_sd&&!isNaN(_sd.getTime())) b.dropoffDate=dateStr(addDays(_sd,-n));
+  }
+  b.days=Math.max(1,(Number(b.days)||1)-n);
+  b.revenue=Math.max(0,(Number(b.revenue)||0)-fee);
+  c._extApplied=false; c._foldedIntoRevenue=false;
+}
+// Stripe/portal card payments mark an Extension charge paid OUTSIDE the manual Mark Paid
+// path (the worker sets paidAt when the customer pays by card). This runs after every
+// cloud load and folds any paid, not-yet-applied extension charge into the rental using
+// the SAME _applyExtensionCharge as Mark Paid — idempotent via _extApplied, so each charge
+// folds exactly once across repeated loads and devices.
+function _reconcilePaidExtensionCharges(){
+  var changed=false;
+  (bookings||[]).forEach(function(b){
+    if(!b||b._deleted||!b.portalCharges||!b.portalCharges.length) return;
+    b.portalCharges.forEach(function(c){
+      if(c && c.paidAt && !c._extApplied && chargeCategory(c)==='extension' && (parseInt(c.extensionDays,10)||0)>0){
+        var _q=parseInt(c.extensionDays,10)||0, _u=(c.extensionUnit==='hours')?'hr':'d';
+        _applyExtensionCharge(b, c);
+        b._t=Date.now();
+        changed=true;
+        logNotif('charge','Extension auto-applied after card payment — '+(c.description||'Charge')+' +'+_q+_u,(b.name||''),b.id);
+      }
+    });
+  });
+  if(changed){ save(); if(typeof render==='function') render(); }
+}
 // ── Portal-charge surcharge categorization ─────────────────────────────────
 // A charge carries an explicit category when one was picked in the send-charge
 // modal; otherwise it's classified from its description at read time — which
@@ -6363,7 +6448,7 @@ function renderKPIs(filtered, containerId){
       var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate ? new Date(_pDate+'T12:00:00').getTime() : 0) : 0);
       if(!paidTs || dateStr(new Date(paidTs))!==tod) return s;
       var _bf=brokerFeeTotal(b);
-      return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)-_bf);
+      return s+Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0)-_bf);
     },0);
     // Extension charges created today (any booking)
     extChargeTotal = allActive.reduce(function(s,b){
@@ -6389,7 +6474,7 @@ function renderKPIs(filtered, containerId){
       if(!_pts || dateStr(new Date(_pts))!==tod) return;
       _bfToday += brokerFeeTotal(b);
       if(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe')
-        _stripeBaseToday += Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
+        _stripeBaseToday += Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
     });
     pureBase   = pickupBalance - addons;
     bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev;
@@ -6635,7 +6720,7 @@ function renderCharts(filtered){
     // Base revenue without extension charges (those go into their own month bucket below)
     // Subtract broker fees so monthly trend reflects net to PBR
     var _brkDeduct=brokerFeeTotal(b);
-    var baseRev=(Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)-_brkDeduct;
+    var baseRev=(Number(b.revenue)||0)-_foldedChargesTotal(b)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)-_brkDeduct;
     mR[m]=(mR[m]||0)+baseRev;
     // Extension charges: bucket by extension createdAt month
     (b.extensions||[]).forEach(function(ext){
@@ -6933,7 +7018,7 @@ function renderVehicleTable(filtered){
       if(!paidTs||dateStr(new Date(paidTs))!==_kpiDR3.from) return;
       _seedV(b.vehicle);
       var _bf2=brokerFeeTotal(b);
-      map[b.vehicle].revenue+=Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)-_bf2);
+      map[b.vehicle].revenue+=Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0)-_bf2);
     });
     allActive.forEach(function(b){
       if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt||dateStr(new Date(b.dateLockPaidAt))!==_kpiDR3.from) return;
@@ -8687,7 +8772,7 @@ function openBookingDetail(id){
     (Number(b.lateReturnFee)?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">🕒 Late Return Fee</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.lateReturnFee)+'</span></div>':'')+
     (extensionCharge(b)>0?'<div class="detail-row"><span class="detail-label" style="color:#a78bfa">📅 Extension Charges</span><span class="detail-val" style="color:#a78bfa;font-weight:700">+'+$$(extensionCharge(b))+'<span style="font-size:10px;font-weight:400;color:var(--muted)"> across '+(b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length+' extension'+(((b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length!==1)?'s':'')+'</span></span></div>':'')+
     ((b.portalCharges||[]).length>0 ?
-      '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">💸 Portal Charges</div>'+
+      '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0;display:flex;align-items:center;justify-content:space-between">💸 Portal Charges<button class="btn btn-sm" onclick="deleteAllPortalCharges(\''+esc(b.id)+'\')" title="Delete ALL portal charges on this booking — totals revert" style="background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.3);padding:1px 7px;font-size:9px;border-radius:6px;cursor:pointer;font-weight:700">🗑 Delete all</button></div>'+
       (b.portalCharges||[]).map(function(c){
         if(!c) return '';
         var amt=Number(c.amount)||0;
@@ -8697,7 +8782,7 @@ function openBookingDetail(id){
           : ' <span style="color:#fb923c;font-size:10px">⏳ Pending</span>'+
             ' <button class="btn btn-sm" onclick="markChargePaid(\''+esc(b.id)+'\',\''+esc(c.id)+'\')" style="background:rgba(34,197,94,.15);color:#22c55e;border:1px solid rgba(34,197,94,.35);padding:2px 8px;font-size:10px;border-radius:6px;cursor:pointer;margin-left:6px">✓ Mark Paid</button>';
         return '<div class="detail-row"><span class="detail-label" style="color:#a78bfa">'+esc(c.description||'Charge')+catTag+'</span>'+
-          '<span class="detail-val" style="color:'+(c.paidAt?'var(--green)':'#fb923c')+';font-weight:700">'+$$(amt)+paidHtml+'</span></div>';
+          '<span class="detail-val" style="color:'+(c.paidAt?'var(--green)':'#fb923c')+';font-weight:700">'+$$(amt)+paidHtml+' <button class="btn btn-sm" onclick="deletePortalCharge(\''+esc(b.id)+'\',\''+esc(c.id)+'\')" title="Delete this charge — booking totals revert" style="background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.35);padding:2px 7px;font-size:10px;border-radius:6px;cursor:pointer;margin-left:6px">🗑</button></span></div>';
       }).join('')
     : '')+
 
@@ -8778,6 +8863,7 @@ function openBookingDetail(id){
             (d.idVerified?
               '<span style="background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);color:#4ade80;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px">🪪 Verified</span>':
               '<span style="background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);color:#fbbf24;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px">⚠ Not Verified</span>')+
+            (!d.idVerified&&d.signWithoutVerify?'<span title="Owner waived ID verification — this driver may sign without verifying" style="background:rgba(201,169,98,.12);border:1px solid var(--gold-dim);color:var(--gold);font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px">✍ May sign unverified</span>':'')+
             (d.phone?'<span style="color:var(--muted);font-size:11px">'+esc(d.phone)+'</span>':'')+
             (d.email?'<span style="color:var(--muted);font-size:11px">'+esc(d.email)+'</span>':'')+
           '</div>'+
@@ -8786,6 +8872,7 @@ function openBookingDetail(id){
             '<button class="btn btn-sm" onclick="openAddDriverModal(\''+b.id+'\','+i+')" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">✏️ Edit</button>'+
             '<button class="btn btn-sm" onclick="openDriverVerify(\''+b.id+'\','+i+');closeBookingDetail()" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">📋 Verify ID</button>'+
             (VERIFY_URL&&d.email?'<button class="btn btn-sm" onclick="sendDriverStripeVerify(\''+b.id+'\','+i+')" style="border-color:#635bff;color:#635bff;font-size:10px">📤 Send Link</button>':'')+
+            (!d.idVerified?'<button class="btn btn-sm" onclick="toggleDriverSignOverride(\''+b.id+'\','+i+')" style="border-color:'+(d.signWithoutVerify?'rgba(239,68,68,.4)':'rgba(201,169,98,.4)')+';color:'+(d.signWithoutVerify?'var(--red)':'var(--gold)')+';font-size:10px" title="'+(d.signWithoutVerify?'Re-require ID verification before this driver can sign':'Let this driver sign the agreement without verifying their ID')+'">'+(d.signWithoutVerify?'🔒 Require Verify':'✍ Allow Sign Unverified')+'</button>':'')+
             (d.email?'<button class="btn btn-sm" onclick="sendDriverSigningLink(\''+b.id+'\','+i+')" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">📲 Send Signing</button>':'')+
             '<button class="btn btn-sm" onclick="removeExtraDriver(\''+b.id+'\','+i+')" style="border-color:rgba(239,68,68,.4);color:var(--red);font-size:10px">🗑 Remove</button>'+
           '</div>'+
@@ -8843,7 +8930,7 @@ function openBookingDetail(id){
     (function(){
       var _cl=_bookingCommLog(b);
       if(!_cl.length) return '';
-      var _typeIcons={contractsigned:'✍️',verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',extsigned:'✍️',toggle:'🔁',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
+      var _typeIcons={contractsigned:'✍️',verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',extsigned:'✍️',toggle:'🔁',charge:'💸',payment:'💵',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
       return '<div class="fsec" style="margin-top:12px">📨 Communication Log</div>'+
         '<div style="font-size:11px;color:var(--muted)">'+
         _cl.slice().reverse().map(function(c){
@@ -10661,6 +10748,10 @@ function sendDriverStripeVerify(bookingId, driverIdx){
     // background poll pull ONLY from this link — never the primary renter's sessions.
     try{ localStorage.setItem(_vPendKey(bookingId, driverIdx), data.id); }catch(e){}
     _addVerifySession(bookingId, data.id, driverIdx);
+    // Register this session → driver map server-side so the verification webhook persists
+    // the result to THIS driver (extraDrivers[idx]) even if the dashboard is closed when
+    // they finish. Fire-and-forget; the dashboard poll below is the live-path fallback.
+    if(WORKER_URL){ fetch(WORKER_URL+'/verify/map-driver-session',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({sessionId:data.id,bookingId:bookingId,driverIdx:driverIdx})}).catch(function(){}); }
     // Start polling for this driver
     var _pollBookingId=bookingId;
     var _pollDriverIdx=driverIdx;
@@ -10890,6 +10981,25 @@ function removeExtraDriver(bookingId, driverIdx){
   save();
   showToast('Driver removed');
   openBookingDetail(bookingId);
+}
+
+// Owner override: let ONE authorized driver sign the agreement WITHOUT completing ID
+// verification (or revoke that waiver). The portal reads extraDrivers[i].signWithoutVerify
+// to bypass its ID gate for that driver only. Logged on the booking like every toggle.
+function toggleDriverSignOverride(bookingId, driverIdx){
+  var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
+  if(idx===-1) return;
+  var d=(bookings[idx].extraDrivers||[])[driverIdx];
+  if(!d) return;
+  var _now=!d.signWithoutVerify;
+  if(_now && !confirm('Allow '+(d.name||'this driver')+' to sign WITHOUT verifying their ID?\n\nUse this only when you have confirmed their identity another way — a signed agreement from an unverified driver carries the same liability as the primary renter.')) return;
+  d.signWithoutVerify=_now;
+  bookings[idx]._t=Date.now();
+  bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['driverSignWaiver['+(d.name||('#'+(driverIdx+1)))+']|'+(_now?'off→on':'on→off')]}]);
+  logNotif('toggle','ID-verification waiver '+(_now?'GRANTED':'revoked')+' — authorized driver '+(d.name||('#'+(driverIdx+1))),(d.name||''),bookingId);
+  save();
+  openBookingDetail(bookingId);
+  showToast(_now?('✍ '+(d.name||'Driver')+' may now sign without ID verification'):('🔒 '+(d.name||'Driver')+' must verify ID before signing'));
 }
 
 // ── Lock / unlock ID section fields once verified ──────────────────────────
@@ -11151,7 +11261,7 @@ function renderNotifLog(){
     el.innerHTML='<div style="padding:14px 16px;color:var(--muted);text-align:center;font-size:12px">No notifications sent yet</div>';
     return;
   }
-  var typeIcons={ review:'⭐', verification:'🪪', verify_nudge:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', owner_id_verified:'🪪', customer_verified:'✅', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗', extsigned:'✍️', toggle:'🔁', waitlist_autobook:'📅', waitlist_added:'📅', waitlist_notify:'📅' };
+  var typeIcons={ review:'⭐', verification:'🪪', verify_nudge:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', owner_id_verified:'🪪', customer_verified:'✅', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗', extsigned:'✍️', toggle:'🔁', charge:'💸', payment:'💵', waitlist_autobook:'📅', waitlist_added:'📅', waitlist_notify:'📅' };
   el.innerHTML = _notifLog.map(function(n, i){
     var dt=new Date(n.at);
     var dateStr=dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});
@@ -17257,8 +17367,20 @@ function openPortalChargeModal(bookingId){
   var inp = $d('pcAmount'); if(inp) inp.value = '';
   var desc = $d('pcDesc'); if(desc) desc.value = '';
   var cat = $d('pcCategory'); if(cat) cat.value = '';
+  var days = $d('pcDays'); if(days) days.value = '';
+  // Default the extension unit to match the booking type (hourly/chauffeur → Hours).
+  var _pcB = bookings.find(function(x){ return x.id===bookingId; });
+  var unit = $d('pcExtUnit'); if(unit) unit.value = (_pcB&&(_pcB.type==='hourly'||_pcB.type==='chauffeur'))?'hours':'days';
+  _pcToggleExtDays();
   var prev = $d('pcPreview'); if(prev) prev.style.display = 'none';
   $d('portalChargeModal').classList.add('open');
+}
+// Show the "Extension days" field only when the charge is explicitly an Extension —
+// those days fold into the rental (dropoff + day count + revenue) when marked paid.
+function _pcToggleExtDays(){
+  var cat=($d('pcCategory')&&$d('pcCategory').value)||'';
+  var row=$d('pcExtDaysRow');
+  if(row) row.style.display=(cat==='extension')?'':'none';
 }
 
 function closePortalChargeModal(){
@@ -17296,6 +17418,12 @@ async function submitPortalCharge(){
   // Explicit surcharge category (blank = auto-classified from description at read time)
   var pcCat = ($d('pcCategory')&&$d('pcCategory').value)||'';
   if(pcCat) charge.category = pcCat;
+  // Extension days — folded into the rental (dropoff + day count + revenue) when this
+  // charge is marked paid; reversed if the charge is deleted.
+  if(pcCat==='extension'){
+    var _pcD=Math.max(0, parseInt(($d('pcDays')&&$d('pcDays').value)||'0',10)||0);
+    if(_pcD>0){ charge.extensionDays=_pcD; charge.extensionUnit=(($d('pcExtUnit')&&$d('pcExtUnit').value)==='hours')?'hours':'days'; }
+  }
 
   if(!b.portalCharges) b.portalCharges = [];
   b.portalCharges.push(charge);
@@ -17355,14 +17483,83 @@ function markChargePaid(bookingId, chargeId){
   if(method===null) return;
   charges[cIdx]=Object.assign({},charges[cIdx],{paidAt:Date.now(),paidMethod:(method||'manual').trim().toLowerCase()});
   bookings[idx].portalCharges=charges;
+  var _cp=charges[cIdx];
+  // Extension charge → fold the days into the rental (new dropoff + day count + revenue).
+  var _foldedQty=(chargeCategory(_cp)==='extension' && (parseInt(_cp.extensionDays,10)||0)>0 && !_cp._extApplied) ? (parseInt(_cp.extensionDays,10)||0) : 0;
+  var _foldedUnit=(_cp.extensionUnit==='hours')?'hr':'day';
+  if(_foldedQty) _applyExtensionCharge(bookings[idx], _cp);
   bookings[idx]._t=Date.now();
-  bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['charge "'+(charges[cIdx].description||chargeId)+'" marked paid ('+(method||'manual')+')']}]);
+  var _newDrop=(bookings[idx].dropoffDate||'')+((_foldedUnit==='hr'&&bookings[idx].dropoffTime)?(' '+bookings[idx].dropoffTime):'');
+  bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['charge "'+(_cp.description||chargeId)+'" marked paid ('+(method||'manual')+')'+(_foldedQty?(' — extended +'+_foldedQty+_foldedUnit+', new dropoff '+_newDrop):'')]}]);
+  logNotif('charge','Charge marked paid — '+(_cp.description||'Charge')+' '+$$(Number(_cp.amount)||0)+' ('+(_cp.paidMethod||'manual')+')'+(_foldedQty?(' · +'+_foldedQty+_foldedUnit+' extension'):''),(bookings[idx].name||''),bookingId);
   save();
-  toast('💸 Charge marked paid ✅');
+  toast(_foldedQty?('💸 Paid + rental extended +'+_foldedQty+' '+(_foldedUnit==='hr'?'hour':'day')+(_foldedQty!==1?'s':'')+' ✅'):'💸 Charge marked paid ✅');
   render();
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
+}
+
+// Fully delete ONE portal charge. Booking totals are DERIVED from b.portalCharges
+// (portalChargesTotal → totalRevenue + getRemainingBalance), so removing the charge
+// reverts every number automatically — a paid charge drops revenue by its amount and
+// restores that amount to the balance due; a pending request just disappears.
+function deletePortalCharge(bookingId, chargeId){
+  var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
+  if(idx===-1){ toast('Booking not found'); return; }
+  var charges=bookings[idx].portalCharges||[];
+  var c=charges.find(function(x){ return x && x.id===chargeId; });
+  if(!c){ toast('Charge not found'); return; }
+  var _amt=Number(c.amount)||0;
+  var _isExt=!!c._extApplied;
+  var _extN=_isExt?(parseInt(c.extensionDays,10)||0):0;
+  var _extU=(c.extensionUnit==='hours')?'hour':'day';
+  var _extUAbbr=(c.extensionUnit==='hours')?'hr':'d';
+  var _msg='Delete this portal charge?\n\n'+(c.description||'Charge')+' — '+$$(_amt)+(c.paidAt?' (paid)':' (pending)')+'\n\n'+
+    (_isExt
+      ? ('Removes the +'+_extN+'-'+_extU+(_extN!==1?'s':'')+' extension: revenue drops by '+$$(_amt)+', and the '+(_extU==='hour'?'hour count + dropoff time':'day count + dropoff date')+' roll back.')
+      : (c.paidAt?('Revenue drops by '+$$(_amt)+' and '+$$(_amt)+' returns to the balance due.'):'This pending request will be removed.'))+
+    '\nBooking totals revert immediately. (This does not refund any card payment.)';
+  if(!confirm(_msg)) return;
+  if(_isExt) _revertExtensionCharge(bookings[idx], c);
+  bookings[idx].portalCharges=charges.filter(function(x){ return !x || x.id!==chargeId; });
+  bookings[idx]._t=Date.now();
+  bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['portal charge deleted: "'+(c.description||chargeId)+'" '+$$(_amt)+(c.paidAt?' (was paid)':'')+(_isExt?(' — extension reverted (-'+_extN+_extUAbbr+')'):'')]}]);
+  logNotif('charge','Portal charge deleted — '+(c.description||'Charge')+' '+$$(_amt)+(_isExt?(' (-'+_extN+_extUAbbr+' extension reverted)'):''),(bookings[idx].name||''),bookingId);
+  save();
+  render();
+  if(activeTab==='upcoming')  renderUpcoming();
+  if(activeTab==='current')   renderCurrent();
+  if(activeTab==='previous')  renderPrevious();
+  openBookingDetail(bookingId);
+  toast(_isExt?'🗑 Charge deleted — extension + totals reverted':'🗑 Charge deleted — totals reverted');
+}
+
+// Fully delete ALL portal charges on a booking (the whole section + every child charge).
+function deleteAllPortalCharges(bookingId){
+  var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
+  if(idx===-1){ toast('Booking not found'); return; }
+  var charges=bookings[idx].portalCharges||[];
+  if(!charges.length){ toast('No portal charges to delete'); return; }
+  var _paidTotal=charges.reduce(function(s,c){ return c&&c.paidAt?s+(Number(c.amount)||0):s; },0);
+  var _extCount=charges.filter(function(c){ return c&&c._extApplied; }).length;
+  var _msg='Delete ALL '+charges.length+' portal charge'+(charges.length!==1?'s':'')+' on this booking?\n\n'+
+    (_paidTotal>0?('Revenue drops by '+$$(_paidTotal)+'. '):'')+
+    (_extCount>0?('Any extensions roll back ('+_extCount+' extension'+(_extCount!==1?'s':'')+' — dropoff restored). '):'')+
+    '\nBooking totals revert immediately. This cannot be undone. (Does not refund any card payment.)';
+  if(!confirm(_msg)) return;
+  charges.forEach(function(c){ if(c&&c._extApplied) _revertExtensionCharge(bookings[idx], c); });
+  bookings[idx].portalCharges=[];
+  bookings[idx]._t=Date.now();
+  bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['ALL portal charges deleted ('+charges.length+', '+$$(_paidTotal)+' paid'+(_extCount?(', '+_extCount+' ext reverted'):'')+')']}]);
+  logNotif('charge','All portal charges deleted ('+charges.length+')',(bookings[idx].name||''),bookingId);
+  save();
+  render();
+  if(activeTab==='upcoming')  renderUpcoming();
+  if(activeTab==='current')   renderCurrent();
+  if(activeTab==='previous')  renderPrevious();
+  openBookingDetail(bookingId);
+  toast('🗑 All portal charges deleted — totals reverted');
 }
 
 // ════════════════════════════════════════════════════════
