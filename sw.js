@@ -1,5 +1,5 @@
-const CACHE = 'pb-v48';
-const ASSETS = ['./index.html', './icon.png', './ride.html', './driver.html', './pb-config.js'];
+const CACHE = 'pb-v49';
+const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
   e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(ASSETS); }));
@@ -48,7 +48,7 @@ self.addEventListener('message', function(e){
 
 self.addEventListener('push', function(e){
   e.waitUntil(_pbReadAuth().then(function(auth){
-    var title='Prestige Black', body='Tap to open', data={app:'./ride.html'};
+    var title='Prestige Black', body='Tap to open', data={app:'./obsidian.html'};
     var show=function(){ return self.registration.showNotification(title, { body:body, icon:'./icon.png', badge:'./icon.png', tag:'pb-'+(data.rideId||'update'), renotify:true, data:data }); };
     if(auth && auth.role==='driver' && auth.worker && auth.token){
       return fetch(auth.worker+'/chauffeur/driver-rides?token='+encodeURIComponent(auth.token)+'&_='+Date.now(), {cache:'no-store'})
@@ -66,14 +66,14 @@ self.addEventListener('push', function(e){
         .catch(function(){ title='🚗 New ride request'; body='Open the driver app to accept'; data={app:'./driver.html'}; return show(); });
     }
     // rider / unknown — generic update; the app shows the live status when opened
-    title='Prestige Black'; body='Your chauffeur — tap for an update'; data={app:'./ride.html'};
+    title='Prestige Black'; body='Your chauffeur — tap for an update'; data={app:'./obsidian.html'};
     return show();
   }));
 });
 
 self.addEventListener('notificationclick', function(e){
   e.notification.close();
-  var url=(e.notification.data && e.notification.data.app) || './ride.html';
+  var url=(e.notification.data && e.notification.data.app) || './obsidian.html';
   var want=url.replace('./','');
   e.waitUntil(clients.matchAll({type:'window', includeUncontrolled:true}).then(function(cl){
     for(var i=0;i<cl.length;i++){ if(cl[i].url.indexOf(want)>=0 && 'focus' in cl[i]) return cl[i].focus(); }

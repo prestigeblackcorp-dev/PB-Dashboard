@@ -2,7 +2,7 @@
  * Prestige Black — shared front-end config (single source of truth).
  *
  * Loaded synchronously (no defer/async) in the <head> of index.html,
- * ride.html, driver.html and portal.html, BEFORE the inline app scripts.
+ * obsidian.html, driver.html and portal.html, BEFORE the inline app scripts.
  *
  * Every consumer reads these via a guarded fallback, e.g.
  *     var WORKER = (typeof PB_WORKER !== 'undefined' ? PB_WORKER : '<literal>');
@@ -88,7 +88,7 @@
     gcalConnected:    'pb_gcal_connected',
     gcalPending:      'pb_gcal_pending',
 
-    // rider app (ride.html)
+    // rider app (obsidian.html)
     rideSession:      'pb_ride_session',
     activeRide:       'pb_active_ride',
 
