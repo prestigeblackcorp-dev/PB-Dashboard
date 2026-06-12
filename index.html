@@ -3758,7 +3758,12 @@ function _cloudSaveNow() {
         owner_email: OWNER_EMAIL || '',
         review_url: REVIEW_URL || '',
         dashboard_secret: DASHBOARD_SECRET || '',
-        savedAt: Date.now()
+        // Monotonic timestamp: never send a savedAt behind the last cloud value we've seen.
+        // A device with a skewed (behind) clock would otherwise have every push rejected as
+        // "stale" by the worker's conflict guard → infinite reload/retry loop (the sync-dot
+        // flicker) AND its local bookings could never reach the cloud. max() keeps correct-clock
+        // devices byte-identical (Date.now() always wins) while letting a slow clock still push.
+        savedAt: Math.max(Date.now(), (Number(_lastSavedAt) || 0) + 1)
       };
       fetch(WORKER_URL + '/sync/save', {
         method: 'POST', body: JSON.stringify(data),
