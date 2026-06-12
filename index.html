@@ -3706,7 +3706,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v58';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v59';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -17086,8 +17086,15 @@ function addExtensionContract(){
         '<input id="extNewDate" type="date" class="finput" style="width:100%" min="'+_minDate+'" value="'+_minDate+'"></div>'+
       '<div style="margin-bottom:12px"><div class="flabel">Additional charge ($)</div>'+
         '<input id="extCharge" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00"></div>'+
-      (_hasBroker?('<div style="margin-bottom:12px"><div class="flabel">Broker fee for this extension ($)</div>'+
-        '<input id="extBroker" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00"></div>'):'')+
+      (_hasBroker?('<div style="margin-bottom:12px"><div class="flabel">Broker fee for this extension</div>'+
+        '<div style="display:flex;gap:8px;align-items:center">'+
+          '<input id="extBroker" type="number" min="0" step="0.01" class="finput" style="flex:1" placeholder="0.00">'+
+          '<select id="extBrokerMode" class="finput" style="width:auto;flex-shrink:0">'+
+            '<option value="total">$ total</option>'+
+            '<option value="perday">$ / day</option>'+
+          '</select>'+
+        '</div>'+
+        '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">"$ / day" × the extended days at creation.'+((Number(b.brokerFee)||0)>0?(' Base broker rate: $'+(Number(b.brokerFee)||0)+'/day.'):'')+'</div></div>'):'')+
       '<div style="margin-bottom:12px"><div class="flabel">Payment method</div>'+
         '<select id="extPayMethod" class="finput" style="width:100%">'+
           '<option value="">— choose later —</option>'+
@@ -17122,7 +17129,10 @@ function confirmAddExtension(){
   if(!(toMs > fromMs)){ alert('The new return date must be AFTER the current return date.'); return; }
   var extDays = Math.max(1, Math.round((toMs - fromMs) / 86400000));
   var addlCharge   = Math.max(0, parseFloat(($d('extCharge')&&$d('extCharge').value)||'0')||0);
-  var extBrokerFee = Math.max(0, parseFloat(($d('extBroker')&&$d('extBroker').value)||'0')||0);
+  var _extBrokerInput = Math.max(0, parseFloat(($d('extBroker')&&$d('extBroker').value)||'0')||0);
+  var _extBrokerMode  = ($d('extBrokerMode')&&$d('extBrokerMode').value)||'total';
+  // "per day" multiplies the entered rate by the number of extended days; "total" is a flat amount.
+  var extBrokerFee = (_extBrokerMode==='perday') ? Math.round(_extBrokerInput * extDays * 100)/100 : _extBrokerInput;
   var payMethod    = ($d('extPayMethod')&&$d('extPayMethod').value)||'';
   var notes        = (($d('extNotes')&&$d('extNotes').value)||'').trim();
 
@@ -17135,6 +17145,8 @@ function confirmAddExtension(){
     additionalCharge: addlCharge, brokerFee: extBrokerFee,
     paymentMethod: payMethod, paid:false, notes: notes, source:'modal'
   });
+  // Remember how the broker fee was entered, for the per-day breakdown on the contract.
+  if(newExt && _extBrokerMode==='perday'){ newExt.brokerMode='perday'; newExt.brokerPerDay=_extBrokerInput; }
   bookings[idx]._t = Date.now();
   var _extNum = bookings[idx].extensions.length;
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
