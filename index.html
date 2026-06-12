@@ -3753,7 +3753,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v63';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v64';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -16884,6 +16884,38 @@ function deleteExtension(bookingId, extId){
   toast('🗑 Extension #'+extNum+' deleted — all data reversed');
 }
 
+// Carry an EXISTING main-contract signature over to an extension — so a party who already signed the
+// original agreement (and shows signed in trip details) doesn't have to re-sign. Copies the captured
+// image + date + exact sigAt into ext.sig / ext.driverSigs[i], flagged _carriedFromMain.
+function _carryMainSigToExt(bookingId, extId, who){
+  var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
+  if(idx===-1) return;
+  var b=bookings[idx];
+  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
+  if(!ext){ toast('Extension not found'); return; }
+  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var _td=new Date(), _tds=(_td.getMonth()+1)+'/'+_td.getDate()+'/'+_td.getFullYear();
+  if(who==='primary'){
+    if(!(b.customerSig && b.customerSig.indexOf('data:image/')===0)){ toast('No main-contract signature on file for the customer'); return; }
+    if(!confirm('Use '+(b.name||'the customer')+'’s signature from the MAIN contract for Extension #'+extNum+'?')) return;
+    ext.sig=b.customerSig; ext.sigDate=b.customerSigDate||_tds; ext.sigAt=Number(b.customerSigAt)||Date.now(); ext.signed=true; ext._carriedFromMain=true;
+  } else {
+    var di=Number(who); var d=b.extraDrivers && b.extraDrivers[di];
+    if(!d){ toast('Driver not found'); return; }
+    if(!(d.sig && String(d.sig).indexOf('data:image/')===0)){ toast('No main-contract signature on file for this driver'); return; }
+    if(!confirm('Use '+(d.name||'this driver')+'’s signature from the MAIN contract for Extension #'+extNum+'?')) return;
+    if(!ext.driverSigs) ext.driverSigs={};
+    ext.driverSigs[di]={ sig:d.sig, sigDate:(d.sigDate||_tds), sigAt:(Number(d.sigAt)||Date.now()), signed:true, _carriedFromMain:true };
+  }
+  b._t=Date.now();
+  save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  var _who = who==='primary' ? (b.name||'customer') : ((b.extraDrivers[Number(who)]||{}).name||('Driver '+(Number(who)+1)));
+  logNotif('extsigned','Extension #'+extNum+' — '+_who+'’s signature carried over from main contract',(b.name||''),bookingId);
+  if(_contractBookingId===bookingId){ var _ei=(b.extensions||[]).indexOf(ext); if(_ei>=0) _renderExtensionView(b,_ei); }
+  render();
+  toast('✍ '+_who+'’s signature carried over to Extension #'+extNum);
+}
+
 function _renderExtensionView(b, extIdx){
   if(!b || !b.extensions || !b.extensions[extIdx]) return;
   var ext = b.extensions[extIdx];
@@ -16949,6 +16981,7 @@ function _renderExtensionView(b, extIdx){
       '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border)">'+
         '<span style="flex:1">'+esc(b.name||'Primary renter')+' <span style="color:var(--muted);font-size:10px">· primary renter</span>'+
           (_primDone?' <span style="color:#22c55e;font-weight:700">✓ Signed '+esc(ext.sigDate||'')+'</span>':' <span style="color:#f97316">⏳ Pending</span>')+'</span>'+
+        (!_primDone && b.customerSig && b.customerSig.indexOf('data:image/')===0 ? '<button class="btn btn-sm" onclick="_carryMainSigToExt(\''+b.id+'\',\''+ext.id+'\',\'primary\')" style="border-color:rgba(34,197,94,.4);color:#22c55e;font-size:10px" title="Reuse the customer’s signature from the main contract">📋 Use main sig</button>' : '')+
         (_primDone?'':'<button class="btn btn-sm" onclick="sendExtensionSigningLink()" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">'+(b.email?'📲 Send Signing':'📋 Copy Link')+'</button>')+
       '</div>'+
       b.extraDrivers.map(function(d,i){
@@ -16956,6 +16989,7 @@ function _renderExtensionView(b, extIdx){
         var done=!!(s&&s.sig&&String(s.sig).indexOf('data:image/')===0);
         return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">'+
           '<span style="flex:1">'+esc(d.name||('Driver '+(i+1)))+' <span style="color:var(--muted);font-size:10px">· authorized driver</span>'+(done?' <span style="color:#22c55e;font-weight:700">✓ Signed '+esc(s.sigDate||'')+'</span>':' <span style="color:#f97316">⏳ Pending</span>')+'</span>'+
+          (!done && d.sig && String(d.sig).indexOf('data:image/')===0 ? '<button class="btn btn-sm" onclick="_carryMainSigToExt(\''+b.id+'\',\''+ext.id+'\','+i+')" style="border-color:rgba(34,197,94,.4);color:#22c55e;font-size:10px" title="Reuse this driver’s signature from the main contract">📋 Use main sig</button>' : '')+
           (done?'':'<button class="btn btn-sm" onclick="sendExtDriverSigningLink(\''+b.id+'\',\''+ext.id+'\','+i+')" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">'+(d.email?'📲 Send Signing':'📋 Copy Link')+'</button>')+
         '</div>';
       }).join('');
@@ -17150,13 +17184,13 @@ function _extSignCommEntries(b){
     if(!ext) return;
     var n=i+1, times=[];
     if(ext.signed && _isImg(ext.sig)){
-      var pt=_ts(ext.sigDate, ext.sentAt); times.push(pt);
+      var pt=Number(ext.sigAt)||_ts(ext.sigDate, ext.sentAt); times.push(pt); // exact time when captured
       out.push({at:pt, type:'extsigned', label:'Extension #'+n+' signed by '+(b.name||'client'), to:(b.name||'')});
     }
     drivers.forEach(function(d,j){
       var s=ext.driverSigs && ext.driverSigs[j];
       if(s && _isImg(s.sig)){
-        var dt=_ts(s.sigDate, ext.sentAt); times.push(dt);
+        var dt=Number(s.sigAt)||_ts(s.sigDate, ext.sentAt); times.push(dt); // exact time when captured
         out.push({at:dt, type:'extsigned', label:'Extension #'+n+' signed by '+((d&&d.name)||('Driver '+(j+1)))+' (authorized driver)', to:((d&&d.name)||'')});
       }
     });
