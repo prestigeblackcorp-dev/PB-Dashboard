@@ -3706,7 +3706,9 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v57';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v58';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
+var _individualPushActive = false;
 
 // Old iOS Safari's JSON.stringify can emit RAW unpaired (lone) surrogates — pre-ES2019 it is NOT
 // "well-formed" — producing invalid UTF-8 that the Worker rejects with HTTP 400 "Invalid JSON",
@@ -3758,8 +3760,44 @@ function flushCloudSave() {
   _cloudSaveNow();
 }
 
+// Per-booking push fallback (engaged by _fullSyncTooBig): send each locally-changed booking on its
+// OWN (tens of KB) to /sync/save-booking — the worker merges it under pb_data/bookings/{id} and the
+// desktop folds it back into the full array on its next sync. Lets a device that can't POST the full
+// ~1MB+ blob still get its new/edited bookings to the cloud. Only bookings changed since the last
+// successful sync (_t > _lastSavedAt) are sent, so it's just the stranded/edited ones.
+function _pushBookingsIndividually(){
+  if(!WORKER_URL || _individualPushActive) return;
+  if(!navigator.onLine){ setSyncStatus('off'); return; }
+  var dirty=(bookings||[]).filter(function(b){ return b && !b._deleted && b.id && (Number(b._t)||0) > _lastSavedAt; });
+  if(!dirty.length){ _pendingCloudSave=false; return; }
+  _individualPushActive=true;
+  setSyncStatus('syncing');
+  toast('⚠ Full sync too large for this device — pushing '+dirty.length+' changed booking'+(dirty.length!==1?'s':'')+' one at a time…');
+  var i=0, ok=0, fail=0, skipped=0;
+  (function next(){
+    if(i>=dirty.length){
+      _individualPushActive=false;
+      // Advance _lastSavedAt even for skipped duplicates so the worker-rejected copy isn't retried forever.
+      if(ok>0||skipped>0){ _lastSavedAt=Date.now(); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} _pendingCloudSave=false; }
+      setSyncStatus(fail?'error':'ok');
+      var _sk = skipped?(' · '+skipped+' duplicate'+(skipped!==1?'s':'')+' skipped'):'';
+      toast(fail ? ('⚠ Pushed '+ok+' of '+dirty.length+_sk+' — tap Sync to retry the rest') : ('✅ '+ok+' booking'+(ok!==1?'s':'')+' pushed'+_sk));
+      return;
+    }
+    var b=dirty[i++];
+    fetch(WORKER_URL+'/sync/save-booking',{
+      method:'POST', body:_encodeSyncBody(_safeSyncStringify({booking:b})),
+      headers:Object.assign({'Content-Type':'application/json'},_authHeader())
+    }).then(function(r){ var _ok=r.ok; return r.json().catch(function(){return {};}).then(function(j){ return {ok:_ok && j && j.ok, skipped:(j&&j.skipped), err:(j&&j.error)}; }); })
+      .then(function(res){ if(res.skipped){ skipped++; } else if(res.ok){ ok++; } else { fail++; if(res.err) _lastSyncErr='save-booking: '+res.err; } })
+      .catch(function(e){ fail++; _lastSyncErr='save-booking net: '+((e&&e.message)||'fail'); })
+      .then(function(){ setTimeout(next, 250); });
+  })();
+}
+
 function _cloudSaveNow() {
   if (!WORKER_URL || _cloudLoading || _cloudSaving) return;
+  if (_fullSyncTooBig) { _pushBookingsIndividually(); return; } // this device can't POST the full blob → per-booking
   _cloudSaving = true;
   setSyncStatus('syncing');
   // Staleness check via Worker so Firebase rules can be locked
@@ -3821,9 +3859,14 @@ function _cloudSaveNow() {
             else { setSyncStatus('error'); }
           });
         } else {
-          _lastSyncErr = 'save ' + ((res && res.error) ? res.error : ('HTTP ' + ((res && res.status) || '?'))) + ' (' + Math.round(JSON.stringify(data).length / 1024) + 'KB)';
+          var _se = (res && res.error) ? String(res.error) : ('HTTP ' + ((res && res.status) || '?'));
+          _lastSyncErr = 'save ' + _se + ' (' + Math.round(JSON.stringify(data).length / 1024) + 'KB)';
           setSyncStatus('error');
-          if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
+          if (/Invalid JSON|too large|Payload/i.test(_se)) {
+            // The full dataset is too big for THIS device to POST in one piece (old phones truncate it
+            // → the worker sees partial JSON → 400). Switch to per-booking pushes and send the changes.
+            _fullSyncTooBig = true; _cloudSaveRetries = 0; _pushBookingsIndividually();
+          } else if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
           else { _cloudSaveRetries = 0; setSyncStatus('error'); }
         }
       }).catch(function(e) {
