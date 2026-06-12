@@ -10711,6 +10711,47 @@ function sendDriverSigningLink(bookingId, driverIdx){
   });
 }
 
+// Send an EXTENSION signing link to ONE additional authorized driver — mirrors
+// sendDriverSigningLink but targets a specific extension (portal.html?sign=…&driver=N&extId=…).
+function sendExtDriverSigningLink(bookingId, extId, driverIdx){
+  var b=bookings.find(function(x){ return x.id===bookingId; });
+  if(!b){ showToast('Booking not found'); return; }
+  var d=(b.extraDrivers&&b.extraDrivers[driverIdx]);
+  if(!d){ showToast('Driver not found'); return; }
+  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
+  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var base = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
+  var url = base + '?sign=' + encodeURIComponent(bookingId) + '&extId=' + encodeURIComponent(extId) + '&driver=' + driverIdx;
+  if(!d.email){
+    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(function(){ showToast('Driver has no email — extension signing link copied 📋'); }); }
+    else { prompt('Copy this extension signing link for '+(d.name||'driver')+':', url); }
+    return;
+  }
+  if(!MESSAGING_URL){ navigator.clipboard.writeText(url).then(function(){ showToast('Link copied! Send to '+(d.name||'driver')+'.'); }); return; }
+  var firstName=(d.name||'there').split(' ')[0];
+  showToast('Sending extension signing link to '+(d.name||'driver')+'…');
+  var html=
+    '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
+    '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
+      '<div style="font-size:40px;margin-bottom:10px">✍️</div>'+
+      '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:-.3px;line-height:1.2">Sign Extension #'+extNum+', '+esc(firstName)+'</h1>'+
+      '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">Rental Agreement Extension for '+esc(b.vehicle)+' \u{00B7} <em>Additional Authorized Driver</em></p>'+
+    '</div>'+
+    '<div style="padding:28px">'+
+      '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">The rental for the <strong>'+esc(b.vehicle)+'</strong> has been extended. As an <strong>Additional Authorized Driver</strong>, please review and sign <strong>Extension #'+extNum+'</strong>'+((ext&&ext.toDate)?(' (new return '+fmtDate(ext.toDate)+')'):'')+'.</p>'+
+      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u{270D}\u{FE0F} Sign Extension #'+extNum+'</a></div>'+
+      '<p style="font-size:13px;color:#666;margin:0 0 20px">This link is for you personally. Please do not share it \u{2014} each driver must sign individually.</p>'+
+      '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+    '</div>'+
+    '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u{00B7} Dallas\u{2013}Fort Worth \u{00B7} (214) 207-2481</div>'+
+    '</div>';
+  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:d.email,subject:'Please Sign Extension #'+extNum+' \u{2014} Prestige Black Rentals',html:html})})
+  .then(function(r){
+    if(r.ok){ showToast('Extension signing link sent to '+d.email+' \u{2705}'); logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+')', d.email, bookingId); }
+    else { navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); }
+  }).catch(function(){ navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); });
+}
+
 // Open an "Add / Edit Driver" overlay using a dynamic modal.
 // editIdx omitted/null → Add mode; a number → Edit that existing driver in place.
 function openAddDriverModal(bookingId, editIdx){
@@ -16231,13 +16272,31 @@ function _renderExtensionView(b, extIdx){
   var extNum = extIdx + 1;
   var fromFmt = fmtDateFull(ext.fromDate);
   var toFmt   = fmtDateFull(ext.toDate);
+  var _esc2=_extSignedCount(b, ext);
+  var _statusBadge=_esc2.signed>=_esc2.total
+    ? '<span style="color:#22c55e;font-weight:800;font-size:12px">✅ Fully Signed</span>'
+    : '<span style="color:#f97316;font-weight:700;font-size:12px">⏳ '+_esc2.signed+' of '+_esc2.total+' signed</span>';
+  var _drvPanel='';
+  if(b.extraDrivers&&b.extraDrivers.length){
+    _drvPanel='<div style="background:rgba(201,169,98,.05);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:12px">'+
+      '<div style="font-weight:700;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Additional Authorized Drivers — must sign this extension</div>'+
+      b.extraDrivers.map(function(d,i){
+        var s=ext.driverSigs&&ext.driverSigs[i];
+        var done=!!(s&&s.sig&&String(s.sig).indexOf('data:image/')===0);
+        return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0">'+
+          '<span style="flex:1">'+esc(d.name||('Driver '+(i+1)))+(done?' <span style="color:#22c55e;font-weight:700">✓ Signed '+esc(s.sigDate||'')+'</span>':' <span style="color:#f97316">⏳ Pending</span>')+'</span>'+
+          (done?'':'<button class="btn btn-sm" onclick="sendExtDriverSigningLink(\''+b.id+'\',\''+ext.id+'\','+i+')" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">'+(d.email?'📲 Send Signing':'📋 Copy Link')+'</button>')+
+        '</div>';
+      }).join('')+
+    '</div>';
+  }
   $d('contractHeader').innerHTML =
     '<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:13px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'+
     '<strong>Extension #'+extNum+'</strong> <span>'+esc(b.vehicle)+'</span> <span>'+esc(b.name)+'</span>'+
     '<span style="color:var(--muted)">'+fromFmt+' &rarr; '+toFmt+'</span>'+
     (ext.additionalCharge?'<span style="color:var(--gold)">+$'+Number(ext.additionalCharge).toFixed(2)+'</span>':'')+
-    '<span style="margin-left:auto">'+(ext.signed?'<span style="color:#22c55e;font-weight:800;font-size:12px">✅ Signed</span>':'<span style="color:#f97316;font-weight:700;font-size:12px">⏳ Awaiting Signature</span>')+'</span>'+
-    '</div>';
+    '<span style="margin-left:auto">'+_statusBadge+'</span>'+
+    '</div>'+_drvPanel;
   // Update extension signature view
   var lockView = $d('extSigLockView');
   var editView = $d('extSigEditView');
@@ -16368,8 +16427,33 @@ function _buildExtensionContractHtml(b, extIdx){
     '</div>'+
   '</div>'+
 
+  ((b.extraDrivers&&b.extraDrivers.length) ? (
+    '<h2>Additional Authorized Drivers</h2>'+
+    '<div class="section" style="font-size:11px;color:#555">Each additional authorized driver listed on the original agreement must also sign this extension and remains subject to all terms and conditions herein.</div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:28px">'+
+    b.extraDrivers.map(function(d,i){
+      var ds=(ext.driverSigs&&ext.driverSigs[i])||null;
+      var sigImg=(ds&&ds.sig&&String(ds.sig).indexOf('data:image/')===0)
+        ? '<img src="'+ds.sig+'" style="max-height:72px;max-width:240px;display:block;object-fit:contain">'
+        : '<span style="color:#aaa;font-size:11px;font-style:italic">pending signature</span>';
+      return '<div><div class="sig-box">'+sigImg+'</div>'+
+        '<div style="font-size:11px;margin-bottom:2px">Date: '+esc((ds&&ds.sigDate)||'_________________')+'</div>'+
+        '<div style="font-size:11px">Authorized Driver: '+esc(d.name||'')+'</div></div>';
+    }).join('')+
+    '</div>'
+  ) : '')+
+
   '</body></html>';
 }
+// Extension is "fully executed" only when the primary renter AND every additional
+// authorized driver on the booking have signed THIS extension.
+function _extSignedCount(b, ext){
+  var ds=(b&&b.extraDrivers)||[];
+  var n=(ext&&ext.signed&&ext.sig&&String(ext.sig).indexOf('data:image/')===0)?1:0;
+  ds.forEach(function(d,i){ var s=ext&&ext.driverSigs&&ext.driverSigs[i]; if(s&&s.sig&&String(s.sig).indexOf('data:image/')===0) n++; });
+  return { signed:n, total:1+ds.length };
+}
+function _extFullySigned(b, ext){ var c=_extSignedCount(b,ext); return c.signed>=c.total; }
 
 // Create a new extension — shows inline form in the contract area
 function addExtensionContract(){
@@ -16511,7 +16595,10 @@ function sendSignedExtCopyToClient(){
   if(!MESSAGING_URL){ showToast('Messaging worker not configured'); return; }
   var extIdx = _contractActiveExtIdx;
   var ext = (b.extensions||[])[extIdx];
-  if(!ext||!ext.signed||!ext.sig){ showToast('Extension not yet signed'); return; }
+  if(!ext||!ext.signed||!ext.sig){ showToast('Extension not yet signed by the renter'); return; }
+  if(b.extraDrivers&&b.extraDrivers.length&&!_extFullySigned(b,ext)){
+    if(!confirm('Not all additional authorized drivers have signed this extension yet. Send the signed copy to everyone anyway?')) return;
+  }
   var extNum = extIdx + 1;
   var firstName = (b.name||'there').split(' ')[0];
   var html = _buildExtensionContractHtml(b, extIdx);
@@ -16541,18 +16628,20 @@ function sendSignedExtCopyToClient(){
     '</div>'+
     '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals &middot; Dallas&ndash;Fort Worth &middot; (214) 207-2481</div>'+
     '</div>';
+  // Both parties receive the executed copy: the primary renter AND every additional driver.
+  var _recips=[]; if(b.email) _recips.push(b.email);
+  (b.extraDrivers||[]).forEach(function(d){ if(d&&d.email && _recips.indexOf(d.email)===-1) _recips.push(d.email); });
   var btn = $d('extSendSignedBtn');
   if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
-  fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:subj,html:emailHtml})})
-  .then(function(r){
+  Promise.all(_recips.map(function(_to){
+    return fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:_to,subject:subj,html:emailHtml})}).then(function(r){ return r.ok; }).catch(function(){ return false; });
+  })).then(function(results){
     if(btn){ btn.disabled=false; btn.textContent='📧 Send Signed Copy to Client'; }
-    if(r.ok){
-      showToast('Signed extension sent to '+b.email+' ✅');
-      logNotif('signedcopy','Signed Extension #'+extNum+' Copy',b.email,b.id);
+    var okCount=results.filter(Boolean).length;
+    if(okCount>0){
+      showToast('Signed extension sent to '+okCount+' recipient'+(okCount!==1?'s':'')+' ✅');
+      logNotif('signedcopy','Signed Extension #'+extNum+' Copy → '+okCount+' recipient'+(okCount!==1?'s':''),_recips.join(', '),b.id);
     } else { showToast('Email failed — check messaging worker'); }
-  }).catch(function(){
-    if(btn){ btn.disabled=false; btn.textContent='📧 Send Signed Copy to Client'; }
-    showToast('Email failed — check messaging worker');
   });
 }
 

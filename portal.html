@@ -914,14 +914,15 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
   });
 }
 
-function _initExtensionSigningMode(bookingId, extId){
+function _initExtensionSigningMode(bookingId, extId, driverIdx){
+  var _exIsDrv=(driverIdx!==null&&driverIdx!==undefined&&!isNaN(Number(driverIdx))); var _exDIdx=_exIsDrv?Number(driverIdx):null;
   _smFromPortal = false;
   document.getElementById('signing-screen').style.display = 'block';
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app-screen').style.display = 'none';
   var backBtn = document.getElementById('sign-back-btn');
   if(backBtn) backBtn.style.display = 'none';
-  document.getElementById('sign-tag').textContent = 'Extension Agreement';
+  document.getElementById('sign-tag').textContent = _exIsDrv ? 'Extension — Additional Driver' : 'Extension Agreement';
   var body = document.getElementById('signing-body');
 
   fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
@@ -937,11 +938,14 @@ function _initExtensionSigningMode(bookingId, extId){
     if(extIdx === -1){ body.innerHTML = '<div style="color:#f87171;padding:20px">Extension not found. Please contact Prestige Black Rentals.</div>'; return; }
     var ext = exts[extIdx];
 
-    if(ext.signed&&ext.sig&&ext.sig.startsWith('data:image/')){
+    var _exDrvSig = _exIsDrv ? ((ext.driverSigs&&ext.driverSigs[_exDIdx])||null) : null;
+    var _exAlready = _exIsDrv ? !!(_exDrvSig&&_exDrvSig.sig&&String(_exDrvSig.sig).startsWith('data:image/')) : !!(ext.signed&&ext.sig&&ext.sig.startsWith('data:image/'));
+    var _exWhoName = _exIsDrv ? (((bk.extraDrivers&&bk.extraDrivers[_exDIdx]&&bk.extraDrivers[_exDIdx].name)||'there').split(' ')[0]) : ((bk.name||'').split(' ')[0]||'there');
+    if(_exAlready){
       body.innerHTML = '<div style="text-align:center;padding:30px">'+
         '<div style="font-size:48px;margin-bottom:12px">✅</div>'+
         '<div style="font-size:18px;font-weight:700;color:#22c55e;margin-bottom:8px">Extension Already Signed!</div>'+
-        '<div style="color:rgba(255,255,255,.5);font-size:14px">Extension #'+(extIdx+1)+' was signed on '+(ext.sigDate||'file')+'. Thank you, '+esc((bk.name||'').split(' ')[0]||'there')+'!</div>'+
+        '<div style="color:rgba(255,255,255,.5);font-size:14px">Extension #'+(extIdx+1)+' was signed on '+((_exIsDrv?_exDrvSig.sigDate:ext.sigDate)||'file')+'. Thank you, '+esc(_exWhoName)+'!</div>'+
         '<div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,.3)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
         _signerPortalPrompt(bk)+
         '</div>';
@@ -1003,11 +1007,12 @@ function _initExtensionSigningMode(bookingId, extId){
       '</div>'+
       '<div id="smSignSection" style="background:rgba(201,169,98,.08);border:2px solid rgba(201,169,98,.4);border-radius:14px;padding:20px;margin-bottom:24px">'+
         '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">✍️ Sign Extension Below</div>'+
+        (_exIsDrv?'<div style="font-size:12px;color:#C9A962;margin-bottom:6px;font-weight:700">Signing as: '+esc((bk.extraDrivers&&bk.extraDrivers[_exDIdx]&&bk.extraDrivers[_exDIdx].name)||'Additional Driver')+' · Additional Authorized Driver</div>':'')+
         '<div style="font-size:12px;color:rgba(255,255,255,.45);margin-bottom:14px">Draw your signature in the box below, then tap <strong style="color:#fff">Sign & Submit</strong>.</div>'+
         '<canvas id="smSigCanvas" width="480" height="160" style="width:100%;max-width:480px;height:clamp(120px,22vw,160px);border:2px dashed rgba(201,169,98,.5);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>'+
         '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'+
           '<button onclick="_smClearSig()" style="padding:8px 16px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:transparent;color:rgba(255,255,255,.7);cursor:pointer;font-size:13px">✕ Clear</button>'+
-          '<button onclick="_smSubmitExtSig(\''+bookingId+'\',\''+extId+'\')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">✍️ Sign & Submit</button>'+
+          '<button onclick="_smSubmitExtSig(\''+bookingId+'\',\''+extId+'\','+(_exIsDrv?_exDIdx:'null')+')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">✍️ Sign & Submit</button>'+
         '</div>'+
         '<div id="smSigMsg" style="font-size:12px;color:rgba(255,255,255,.4);margin-top:8px">By signing, you agree to the extension terms above.</div>'+
       '</div>';
@@ -1136,7 +1141,8 @@ function _smSubmitSig(bookingId, driverIdx){
   }).catch(err => _showSaveErr('Network error — '+err));
 }
 
-function _smSubmitExtSig(bookingId, extId){
+function _smSubmitExtSig(bookingId, extId, driverIdx){
+  var _exIsDrv=(driverIdx!==null&&driverIdx!==undefined&&!isNaN(Number(driverIdx))); var _exDIdx=_exIsDrv?Number(driverIdx):null;
   var c = document.getElementById('smSigCanvas'); if(!c) return;
   var ctx = c.getContext('2d');
   var px = ctx.getImageData(0,0,c.width,c.height).data;
@@ -1157,11 +1163,12 @@ function _smSubmitExtSig(bookingId, extId){
   .then(function(freshData){
     var bkFresh = freshData&&freshData.booking ? freshData.booking : null;
     if(!bkFresh){ _showSaveErr('Error loading data — please refresh.'); return; }
-    return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bookingId,sig,sigDate,extId})})
+    var _exPayload={bookingId,sig,sigDate,extId}; if(_exIsDrv) _exPayload.driverIdx=_exDIdx;
+    return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_exPayload)})
       .then(r => r.json())
       .then(function(res){
         if(res&&res.ok){
-          var name = (bkFresh.name||'').split(' ')[0]||'there';
+          var name = _exIsDrv ? (((bkFresh.extraDrivers&&bkFresh.extraDrivers[_exDIdx]&&bkFresh.extraDrivers[_exDIdx].name)||'Driver').split(' ')[0]) : ((bkFresh.name||'').split(' ')[0]||'there');
           var exts = bkFresh.extensions||[];
           var extIdx = exts.findIndex(e => e.id === extId);
           var extNum = extIdx+1;
@@ -1316,7 +1323,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(signId){
     hideLoading();
     if(extId){
-      _initExtensionSigningMode(signId, extId);
+      _initExtensionSigningMode(signId, extId, driverIdx);
     } else {
       _initSigningMode(signId, driverIdx);
     }

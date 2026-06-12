@@ -643,12 +643,12 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
           <div class="addr-inputs">
             <div class="addr-field">
               <div class="addr-dot pickup" style="top:50%;transform:translateY(-50%);left:14px;"></div>
-              <input id="pickupInp" class="addr-inp" placeholder="Pickup location" autocomplete="off" oninput="onAddrInput('pickup')" onfocus="onAddrFocus('pickup')">
+              <input id="pickupInp" class="addr-inp" placeholder="Pickup location" autocomplete="off" enterkeyhint="search" oninput="onAddrInput('pickup')" onfocus="onAddrFocus('pickup')" onkeydown="if(event.key==='Enter'){event.preventDefault();_useTyped('pickup');}">
               <div class="suggestions" id="pickupSugg" style="display:none"></div>
             </div>
             <div class="addr-field" id="dropoffField">
               <div class="addr-dot dropoff" style="top:50%;transform:translateY(-50%);left:14px;"></div>
-              <input id="dropoffInp" class="addr-inp" placeholder="Dropoff location" autocomplete="off" oninput="onAddrInput('dropoff')" onfocus="onAddrFocus('dropoff')">
+              <input id="dropoffInp" class="addr-inp" placeholder="Dropoff location" autocomplete="off" enterkeyhint="search" oninput="onAddrInput('dropoff')" onfocus="onAddrFocus('dropoff')" onkeydown="if(event.key==='Enter'){event.preventDefault();_useTyped('dropoff');}">
               <div class="suggestions" id="dropoffSugg" style="display:none"></div>
             </div>
             <div id="hoursField" style="display:none">
@@ -1332,18 +1332,43 @@ function _fmtMi(km){
   const mi=km*0.621371;
   return mi<0.1?Math.round(mi*5280)+' ft':mi.toFixed(1)+' mi';
 }
+// Category keywords → Photon osm_tag filters, so a search like "food", "liquor",
+// "restaurants", "coffee", "gas" surfaces those kinds of places (Apple-Maps-style),
+// not just things literally named that. A bare/worded category triggers the filter;
+// a specific name ("McDonald's") matches none and searches normally.
+const _CAT_TAGS={
+  food:['amenity:restaurant','amenity:fast_food','amenity:cafe'],restaurant:['amenity:restaurant'],
+  'fast food':['amenity:fast_food'],coffee:['amenity:cafe'],cafe:['amenity:cafe'],tea:['amenity:cafe'],
+  bar:['amenity:bar','amenity:pub'],pub:['amenity:pub'],club:['amenity:nightclub'],nightclub:['amenity:nightclub'],
+  liquor:['shop:alcohol'],alcohol:['shop:alcohol'],wine:['shop:wine','shop:alcohol'],
+  gas:['amenity:fuel'],fuel:['amenity:fuel'],ev:['amenity:charging_station'],charging:['amenity:charging_station'],
+  hotel:['tourism:hotel'],motel:['tourism:motel'],lodging:['tourism:hotel'],
+  pharmacy:['amenity:pharmacy'],hospital:['amenity:hospital'],clinic:['amenity:clinic'],
+  grocery:['shop:supermarket','shop:convenience'],supermarket:['shop:supermarket'],store:['shop:convenience'],
+  bank:['amenity:bank'],atm:['amenity:atm'],mall:['shop:mall'],shopping:['shop:mall'],
+  park:['leisure:park'],gym:['leisure:fitness_centre'],parking:['amenity:parking'],airport:['aeroway:aerodrome']
+};
+function _categoryTags(q){
+  const s=' '+(q||'').toLowerCase().trim().replace(/[^a-z ]/g,' ').replace(/\s+/g,' ')+' ';
+  for(const k in _CAT_TAGS){ if(s.indexOf(' '+k+' ')!==-1 || s.indexOf(' '+k+'s ')!==-1) return _CAT_TAGS[k]; }
+  return [];
+}
 async function fetchSuggestions(field){
-  const q=(($d(field+'Inp')||{}).value)||'';
-  if(!q||q.length<3){ closeSuggestions(field); return; }
-  // Pull a wider pool so the closest-first ordering below has real candidates to sort.
-  const url=`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&lat=32.7767&lon=-96.797`;
-  const data=await fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
-  if(!data||!data.features) return;
-  const el=$d(field+'Sugg');
-  // Order strictly by distance from the reference point — closest first, then outward.
+  const q=(($d(field+'Inp')||{}).value)||''; const qt=q.trim();
+  if(!qt||qt.length<2){ closeSuggestions(field); return; }
   const ref=_suggRef(field);
-  const feats=data.features.slice().sort((a,b)=>_featDistKm(a,ref)-_featDistKm(b,ref));
-  el.innerHTML=feats.map((f,i)=>{
+  // Bias results to the rider's area, pull a wide pool, and apply category filters so
+  // typing a kind of place returns those places. Always keep an "use what I typed" row.
+  const tags=_categoryTags(qt);
+  const tagQS=tags.map(t=>'&osm_tag='+encodeURIComponent(t)).join('');
+  const url=`https://photon.komoot.io/api/?q=${encodeURIComponent(qt)}&limit=20&lat=${ref.lat}&lon=${ref.lng}${tagQS}`;
+  const data=await fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
+  const el=$d(field+'Sugg'); if(!el) return;
+  // De-dupe (same name @ ~same spot) then order closest-first.
+  const seen={};
+  let feats=((data&&data.features)?data.features.slice():[]).filter(f=>{ const c=(f.geometry&&f.geometry.coordinates)||[]; const k=((f.properties&&f.properties.name)||'')+'@'+(Number(c[1])||0).toFixed(4)+','+(Number(c[0])||0).toFixed(4); if(seen[k])return false; seen[k]=true; return true; });
+  feats.sort((a,b)=>_featDistKm(a,ref)-_featDistKm(b,ref));
+  let rows=feats.map((f,i)=>{
     const pr=f.properties||{};
     const addr=[pr.housenumber,pr.street].filter(Boolean).join(' ');
     const locality=[pr.city||pr.district||pr.county||'',pr.state||''].filter(Boolean).join(', ');
@@ -1366,18 +1391,28 @@ async function fetchSuggestions(field){
       ${sub?`<div class="sug-sub">${esc(sub)}</div>`:''}
     </div>`;
   }).join('');
-  el._features=feats;
+  // Always-enterable fallback (Apple-Maps "use what you typed") — geocodes the exact text
+  // so a rider can never get stuck unable to enter a place that didn't auto-appear.
+  rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">📍 Use “'+esc(qt)+'”</div><div class="sug-sub">'+(feats.length?'Pin the closest match':'Search & drop a pin')+'</div></div>';
+  el.innerHTML=rows;
+  el._features=feats; el._typed=qt;
   el.style.display='block';
 }
 function selectSuggestion(field,idx){
   const el=$d(field+'Sugg');
-  const f=el._features[idx];
+  const f=el&&el._features&&el._features[idx];
+  if(!f||!f.geometry) return;
   const [lng,lat]=f.geometry.coordinates;
   const pr=f.properties||{};
   const addr=_fmtAddr(pr);
   // Keep the place name in the saved address so the rider sees "XTC Cabaret, 8550 …"
   // while the driver still gets the full street address for navigation.
   const full=(pr.name&&(!addr||addr.indexOf(pr.name)!==0))?(pr.name+(addr?(', '+addr):'')):(addr||pr.name||pr.display_name||'');
+  _applySel(field, lat, lng, full);
+}
+// Apply a resolved {lat,lng,label} to a field — shared by tap-a-suggestion and use-typed.
+function _applySel(field, lat, lng, label){
+  const full=label||'';
   if(field==='pickup'){
     $d('pickupInp').value=full;
     _pickup={lat,lng,address:full};
@@ -1401,6 +1436,22 @@ function selectSuggestion(field,idx){
   }
   closeSuggestions(field);
   if(_pickup&&(_dropoff||_rideType==='hourly')) fetchRoute();
+}
+// Use exactly what the rider typed: prefer the closest live match, else forward-geocode
+// the text — so any place/address can ALWAYS be entered even if it didn't auto-appear.
+async function _useTyped(field){
+  const el=$d(field+'Sugg');
+  const q=((el&&el._typed)||((($d(field+'Inp')||{}).value)||'')).trim();
+  if(!q) return;
+  let f=(el&&el._features&&el._features[0])||null;
+  if(!f){
+    const ref=_suggRef(field);
+    const d=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1&lat=${ref.lat}&lon=${ref.lng}`,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
+    f=d&&d.features&&d.features[0];
+  }
+  if(!f||!f.geometry){ alert("Couldn't find that location — try a nearby address or place name."); return; }
+  const c=f.geometry.coordinates;
+  _applySel(field, c[1], c[0], q);
 }
 function closeSuggestions(field){ const el=$d(field+'Sugg'); if(el) el.style.display='none'; }
 document.addEventListener('click',e=>{ if(!e.target.closest('.addr-field')){ closeSuggestions('pickup'); closeSuggestions('dropoff'); closeSuggestions('stop'); closeSuggestions('nextstop'); } });
