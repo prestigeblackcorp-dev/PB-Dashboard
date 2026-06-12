@@ -3707,6 +3707,30 @@ var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls int
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
 
+// Old iOS Safari's JSON.stringify can emit RAW unpaired (lone) surrogates — pre-ES2019 it is NOT
+// "well-formed" — producing invalid UTF-8 that the Worker rejects with HTTP 400 "Invalid JSON",
+// silently stranding that device (its bookings never reach the cloud). Replace any lone surrogate
+// with U+FFFD so EVERY device emits valid JSON, and the broken half-character gets cleaned in the
+// cloud copy on the next save. The regex fast-path skips strings with none, so base64 images and
+// normal text cost a single native scan and nothing more.
+function _wellFormedStr(s){
+  if(!/[\uD800-\uDFFF]/.test(s)) return s;          // fast path: no surrogate code units at all
+  var out='', n=s.length;
+  for(var i=0;i<n;i++){
+    var c=s.charCodeAt(i);
+    if(c>=0xD800 && c<=0xDBFF){                       // high surrogate
+      var lo=s.charCodeAt(i+1);
+      if(lo>=0xDC00 && lo<=0xDFFF){ out+=s.charAt(i)+s.charAt(i+1); i++; } // valid pair — keep both
+      else out+='�';                             // lone high surrogate
+    } else if(c>=0xDC00 && c<=0xDFFF){ out+='�'; } // lone low surrogate
+    else out+=s.charAt(i);
+  }
+  return out;
+}
+function _safeSyncStringify(data){
+  return JSON.stringify(data, function(k,v){ return typeof v==='string' ? _wellFormedStr(v) : v; });
+}
+
 // cloudSave is debounced: rapid back-to-back calls (GCal callback, form save, etc.)
 // collapse into a single network request fired 800ms after the last call.
 function cloudSave() {
@@ -3767,7 +3791,7 @@ function _cloudSaveNow() {
         savedAt: Math.max(Date.now(), (Number(_lastSavedAt) || 0) + 1)
       };
       fetch(WORKER_URL + '/sync/save', {
-        method: 'POST', body: JSON.stringify(data),
+        method: 'POST', body: _safeSyncStringify(data),
         headers: Object.assign({'Content-Type':'application/json'}, _authHeader())
       }).then(function(r){ return r.json(); })
       .then(function(res) {
@@ -6034,7 +6058,7 @@ function clearAllData(){
       budgets: JSON.parse(localStorage.getItem('pb_budgets')||'{}'),
       savedAt: Date.now() };
     fetch(WORKER_URL+'/sync/save',{
-      method:'POST', body:JSON.stringify(data),
+      method:'POST', body:_safeSyncStringify(data),
       headers:Object.assign({'Content-Type':'application/json'},_authHeader())
     }).then(function(r){ return r.json(); })
       .then(function(res){ setSyncStatus(res&&res.ok?'ok':'error'); })
@@ -8470,6 +8494,21 @@ function _authDrivers(b){
   return [];
 }
 
+// Clickable Apple Maps pill for an address on a trip card. Stops card-click propagation so
+// tapping the address opens Maps instead of the booking detail; opens in a new context so the
+// dashboard stays put. On iOS/Mac this launches the Maps app; elsewhere it falls back to web.
+function _mapsLink(addr, label){
+  var a=(addr==null?'':String(addr)).trim();
+  if(!a) return '';
+  var url='https://maps.apple.com/?q='+encodeURIComponent(a);
+  return '<a href="'+url+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="Open in Apple Maps — '+esc(a)+'" '+
+    'style="display:flex;align-items:center;gap:6px;margin-top:5px;padding:6px 10px;background:rgba(201,169,98,.1);border:1px solid var(--gold-dim);border-radius:8px;color:var(--gold);text-decoration:none;font-size:12px;max-width:100%">'+
+    '<span style="flex-shrink:0;font-weight:800;white-space:nowrap">'+label+'</span>'+
+    '<span style="color:#e8eaed;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+esc(a)+'</span>'+
+    '<span style="flex-shrink:0;opacity:.85">🗺️ ↗</span>'+
+  '</a>';
+}
+
 function tripCard(b, showCountdown){
   var cd=countdownLabel(b.pickupDate||b.date);
   var addonsArr=[];
@@ -8595,6 +8634,15 @@ function tripCard(b, showCountdown){
     '</div>';
   }
 
+  // Clickable Apple Maps address pills — delivery / chauffeur pickup + drop-off, easily seen & tappable.
+  // Point-to-point chauffeur uses pickupAddress/dropoffAddress; delivery rentals + as-directed chauffeur use address.
+  var addrBlock='';
+  if(b.pickupAddress)  addrBlock += _mapsLink(b.pickupAddress, '📍 Pickup');
+  if(b.dropoffAddress) addrBlock += _mapsLink(b.dropoffAddress, '🎯 Drop-off');
+  if(b.address && b.address!==b.pickupAddress && b.address!==b.dropoffAddress){
+    addrBlock += _mapsLink(b.address, (Number(b.delivery)>0) ? '🚚 Delivery' : (b.type==='chauffeur' ? '📍 Pickup/Drop-off' : '📍 Address'));
+  }
+
   // Vehicle image thumbnail
   var vc=VEHICLE_COSTS[b.vehicle]||{};
   var vImgHtml=vc.image?'<img src="'+vc.image+'" style="width:32px;height:32px;border-radius:6px;object-fit:cover;margin-right:6px;vertical-align:middle" onerror="this.style.display=\'none\'">':'';
@@ -8604,6 +8652,7 @@ function tripCard(b, showCountdown){
     '<div>'+
       '<div class="trip-vehicle">'+vImgHtml+esc(b.vehicle)+'</div>'+
       pdLine+
+      addrBlock+
       '<div class="trip-customer">'+esc(b.name)+repeatBadge+webBadge+portalBadge+(b.phone?' · '+esc(b.phone):'')+' '+verBadges+'</div>'+
       '<div style="font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:.5px">🔖 PBR-'+(b.id||'').slice(-6).toUpperCase()+'</div>'+
       '<div style="margin-top:5px"><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span> <span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></div>'+
