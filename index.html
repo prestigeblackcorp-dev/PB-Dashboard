@@ -3753,7 +3753,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v71';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v72';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -12505,7 +12505,12 @@ function applyStripeVerification(session, bookingId, driverIdx){
   // when the verify modal is closed (verifyId would be null in that case).
   var _bId = bookingId || verifyId;
   // driverIdx: if a number, save to extraDrivers[driverIdx] instead of booking.verify
-  var _dIdx = (driverIdx !== undefined && driverIdx !== null) ? driverIdx : verifyDriverIdx;
+  // Route the result to the CORRECT pool. Every caller passes an explicit subject: null = the primary
+  // renter (→ b.verify), a number = that authorized driver (→ extraDrivers[idx]). ONLY fall back to the
+  // open modal's verifyDriverIdx when driverIdx is genuinely undefined (no caller does this today). The
+  // old `!==null` test made a PRIMARY result (null) fall through to verifyDriverIdx — so if a driver
+  // modal was last opened, the primary's ID leaked into that driver's pool. null must mean primary.
+  var _dIdx = (driverIdx !== undefined) ? driverIdx : verifyDriverIdx;
   // Stripe Flow sessions expose extracted data in two places:
   //   • session.verified_outputs  — always present on verified sessions; no expansion needed
   //   • session.last_verification_report.document — only present for document-scan flows
