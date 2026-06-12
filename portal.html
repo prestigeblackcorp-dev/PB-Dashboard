@@ -918,20 +918,21 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
   });
 }
 
-// Original return BEFORE any extension. b.dropoffDate has been moved forward by each extension. The
-// FIRST extension's recorded fromDate IS the original return (stamped at creation) — trust it when sane
-// (earlier than its new return); only a legacy/mis-set fromDate falls through to day-math.
+// Return BEFORE a given extension = ITS OWN new return − the days IT added (the exact values shown as
+// "New Return Date" / "Days Added"), so it always matches the display and is immune to both a stale
+// stored fromDate AND a drifted dropoff. Falls back to the recorded fromDate for hour-extensions.
+function _smExtFrom(ext){
+  if(ext && ext.extensionUnit!=='hours' && ext.toDate && Number(ext.extensionDays)>0){
+    var d=parseLocalDate(ext.toDate);
+    if(d && !isNaN(d.getTime())){ d.setDate(d.getDate()-(Number(ext.extensionDays)||0)); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+  }
+  return (ext && ext.fromDate) || '';
+}
+// Original return = the FIRST extension's computed "from" (before any extension moved the dropoff).
 function _smOrigReturn(bk){
   var exts=(bk&&bk.extensions)||[];
   if(!exts.length) return (bk&&bk.dropoffDate)||'';
-  // COMPUTE: original return = current dropoff − total days added (immune to a stale stored fromDate).
-  var allDays=exts.every(function(e){ return e && e.extensionUnit!=='hours'; });
-  var totalDays=exts.reduce(function(s,e){ return s+((e&&e.extensionUnit!=='hours')?(Number(e.extensionDays)||0):0); },0);
-  if(allDays && bk.dropoffDate && totalDays>0){
-    var d=parseLocalDate(bk.dropoffDate);
-    if(d && !isNaN(d.getTime())){ d.setDate(d.getDate()-totalDays); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
-  }
-  return (exts[0]&&exts[0].fromDate) || (bk.dropoffDate||'');
+  return _smExtFrom(exts[0]) || (bk.dropoffDate||'');
 }
 function _initExtensionSigningMode(bookingId, extId, driverIdx){
   var _exIsDrv=(driverIdx!==null&&driverIdx!==undefined&&!isNaN(Number(driverIdx))); var _exDIdx=_exIsDrv?Number(driverIdx):null;
@@ -987,7 +988,7 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
     var origReturnRaw = _smOrigReturn(bk);
     var origReturn = fmtDateFull(origReturnRaw);
     // "Extended From" for THIS extension = the return right before it (prior ext's new return, else original).
-    var _extFromRaw = (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
+    var _extFromRaw = _smExtFrom(ext) || origReturnRaw;
     var todayObj = new Date();
     var todayFmt = (todayObj.getMonth()+1)+'/'+todayObj.getDate()+'/'+todayObj.getFullYear();
 
