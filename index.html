@@ -3753,7 +3753,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v69';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v70';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -16973,9 +16973,11 @@ function _renderExtensionView(b, extIdx){
       }
     }
   }
-  // Update the booking info header
+  // Update the booking info header. "From" is COMPUTED (prior extension's new return, else the computed
+  // original return) so it matches the contract document and never shows a stale stored ext.fromDate.
   var extNum = extIdx + 1;
-  var fromFmt = fmtDateFull(ext.fromDate);
+  var _hdrFrom = (extIdx>0 && b.extensions[extIdx-1] && b.extensions[extIdx-1].toDate) ? b.extensions[extIdx-1].toDate : _originalReturnDate(b);
+  var fromFmt = fmtDateFull(_hdrFrom);
   var toFmt   = fmtDateFull(ext.toDate);
   var _esc2=_extSignedCount(b, ext);
   var _statusBadge=_esc2.signed>=_esc2.total
@@ -17078,19 +17080,18 @@ function _renderExtensionView(b, extIdx){
 function _originalReturnDate(b){
   var exts=(b&&b.extensions)||[];
   if(!exts.length) return (b&&b.dropoffDate)||'';
-  var e0=exts[0], f0=(e0&&e0.fromDate)||'';
-  // The FIRST extension's recorded fromDate IS the original return — it's stamped at creation as the
-  // dropoff BEFORE the extension moved it. Trust it whenever it's sane (a real date earlier than that
-  // extension's new return). Only a legacy/mis-set fromDate (>= the new return) falls through to
-  // day-math. (Day-math can drift when a stored extensionDays count is off by one vs the date span.)
-  if(f0 && (!e0.toDate || f0 < e0.toDate)) return f0;
+  // COMPUTE it: original return = current return (dropoff) − total days added across all extensions.
+  // Correct BY DEFINITION for day-extensions (return − days added = original) and immune to a stale or
+  // off-by-one stored fromDate (which is just a one-time snapshot — e.g. on this 1-day booking the
+  // fromDate saved Jun 10 but Jun 14 − 3 days = Jun 11). Falls back to the recorded fromDate only for
+  // hour-based extensions or when there's no dropoff to compute from.
   var allDays=exts.every(function(e){ return e && e.extensionUnit!=='hours'; });
   var totalDays=exts.reduce(function(s,e){ return s+((e&&e.extensionUnit!=='hours')?(Number(e.extensionDays)||0):0); },0);
   if(allDays && b.dropoffDate && totalDays>0){
     var d=parseLocalDate(b.dropoffDate);
     if(d && !isNaN(d.getTime())) return dateStr(addDays(d,-totalDays));
   }
-  return f0 || (b.dropoffDate||'');
+  return (exts[0]&&exts[0].fromDate) || (b.dropoffDate||'');
 }
 // Signature date + TIME stamp, e.g. "Jun 11, 2026 · 3:42 PM" — uses the exact captured timestamp
 // (sigAt, ms epoch) when present, falling back to the stored date string. Device-local time (DFW = CT).
@@ -17114,9 +17115,8 @@ function _buildExtensionContractHtml(b, extIdx){
   var origReturnRaw = _originalReturnDate(b);
   var origReturn  = fmtDateFull(origReturnRaw);
   // "Extended From" for THIS extension = the return right before it. Trust the extension's own recorded
-  // fromDate when sane (earlier than its new return); else the prior extension's new return, else original.
-  var extFromRaw = (ext.fromDate && (!ext.toDate || ext.fromDate < ext.toDate)) ? ext.fromDate
-                 : (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
+  // computed return before it: the prior extension's new return, else the (computed) original return.
+  var extFromRaw = (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : origReturnRaw;
   // ORIGINAL total = the original booking's charges ONLY — exclude every extension's additionalCharge.
   var rev = Math.max(0, totalRevenue(b) - extensionCharge(b));
   // Owner signature ALWAYS appears: the uploaded image (valid data:image) else a typed cursive signature.
@@ -18698,7 +18698,7 @@ function _initExtensionSigningMode(bookingId, extId){
     var _ipOrigReturnRaw=_originalReturnDate(bk);
     var origReturn=fmtDateFull(_ipOrigReturnRaw);
     // "Extended From" for THIS extension = the return right before it (prior ext's new return, else original).
-    var _ipExtFromRaw=(ext.fromDate && (!ext.toDate || ext.fromDate < ext.toDate)) ? ext.fromDate : (extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : _ipOrigReturnRaw;
+    var _ipExtFromRaw=(extIdx>0 && exts[extIdx-1] && exts[extIdx-1].toDate) ? exts[extIdx-1].toDate : _ipOrigReturnRaw;
     var todayObj=new Date(); var todayFmt=(todayObj.getMonth()+1)+'/'+todayObj.getDate()+'/'+todayObj.getFullYear();
     var extHtml='<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+
       '<style>*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;padding:24px 28px;line-height:1.6}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:20px 0 8px;padding-bottom:4px;border-bottom:2px solid #111}table{width:100%;border-collapse:collapse}th{background:#222;color:#fff;text-align:left;padding:7px 10px;font-size:12px}td{vertical-align:top}.sig-box{border-bottom:1.5px solid #666;min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px}</style>'+
