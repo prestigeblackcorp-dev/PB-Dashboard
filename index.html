@@ -3710,6 +3710,19 @@ function _graftSignatures(base, other){
         if(!ext.driverSigs) ext.driverSigs={};
         Object.keys(oe.driverSigs).forEach(function(k){ var os=oe.driverSigs[k]; if(os && _isSigStr(os.sig) && !(ext.driverSigs[k] && _isSigStr(ext.driverSigs[k].sig))){ ext.driverSigs[k]=os; } });
       }
+      // "Paid" is monotonic too — a stale edit must never un-pay an extension.
+      if(!ext.paid && oe.paid){ ext.paid=true; ext.paidAt=oe.paidAt||ext.paidAt; if(oe.paymentMethod) ext.paymentMethod=oe.paymentMethod; }
+    });
+  }
+  // Portal charges: preserve a confirmed payment (paidAt) + its extension link (_extId) across merges,
+  // so a payment made via the portal can't be lost and always reconciles the extension to "paid".
+  if(Array.isArray(base.portalCharges) && Array.isArray(other.portalCharges)){
+    base.portalCharges.forEach(function(c){
+      if(!c) return;
+      var oc=other.portalCharges.find(function(x){ return x && x.id===c.id; });
+      if(!oc) return;
+      if(!c.paidAt && oc.paidAt){ c.paidAt=oc.paidAt; if(oc.paidMethod) c.paidMethod=oc.paidMethod; }
+      if(!c._extId && oc._extId){ c._extId=oc._extId; }
     });
   }
   return base;
@@ -3740,7 +3753,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v62';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v63';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -6386,16 +6399,30 @@ function _reconcilePaidExtensionCharges(){
         changed=true;
         logNotif('charge','Extension auto-applied after card payment — '+(c.description||'Charge')+' +'+_q+_u,(b.name||''),b.id);
       }
-      // An extension-AGREEMENT card payment (_extPayment) was paid in the portal → mark that
-      // extension PAID + clear its amount from the balance (collection only — no new revenue).
-      if(c && c.paidAt && c._extPayment && c._extId){
+      // Any paid portal charge LINKED to an extension (card request, recorded charge, etc.) → mark
+      // that extension PAID + clear its amount from the balance — no matter which flow paid it.
+      if(c && c.paidAt && c._extId){
         var _ext=(b.extensions||[]).find(function(e){ return e&&e.id===c._extId; });
         if(_ext && !_ext.paid){
-          _markExtPaidInternal(b, _ext, 'stripe');
+          _markExtPaidInternal(b, _ext, c.paidMethod||(c._extPayment?'stripe':'card'));
           b._t=Date.now(); changed=true;
           var _en=(b.extensions||[]).findIndex(function(e){ return e&&e.id===c._extId; })+1;
-          logNotif('payment','Extension #'+_en+' paid via card (portal) — $'+(Number(_ext.additionalCharge)||0).toFixed(2),(b.name||''),b.id);
+          logNotif('payment','Extension #'+_en+' paid (portal) — $'+(Number(_ext.additionalCharge)||0).toFixed(2)+' via '+(c.paidMethod||'card'),(b.name||''),b.id);
         }
+      }
+    });
+    // Fallback — an unpaid extension whose exact amount was paid via a portal extension charge that
+    // never got linked (_extId missing): match by amount + extension category, then link + mark paid.
+    (b.extensions||[]).forEach(function(ext){
+      if(!ext || ext.paid || !(Number(ext.additionalCharge)>0)) return;
+      var _amt=Number(ext.additionalCharge)||0;
+      var _m=(b.portalCharges||[]).find(function(c){ return c && c.paidAt && !c._extId && (c._extPayment || chargeCategory(c)==='extension') && Math.abs((Number(c.amount)||0)-_amt)<0.005; });
+      if(_m){
+        _m._extId=ext.id;
+        _markExtPaidInternal(b, ext, _m.paidMethod||'card');
+        b._t=Date.now(); changed=true;
+        var _en2=(b.extensions||[]).indexOf(ext)+1;
+        logNotif('payment','Extension #'+_en2+' marked paid — matched $'+_amt.toFixed(2)+' portal payment',(b.name||''),b.id);
       }
     });
   });
@@ -18048,8 +18075,9 @@ function markChargePaid(bookingId, chargeId){
   charges[cIdx]=Object.assign({},charges[cIdx],{paidAt:Date.now(),paidMethod:(method||'manual').trim().toLowerCase()});
   bookings[idx].portalCharges=charges;
   var _cp=charges[cIdx];
-  // Extension-AGREEMENT card payment marked paid → mark that extension paid + clear its balance.
-  if(_cp._extPayment && _cp._extId){ var _xe=(bookings[idx].extensions||[]).find(function(e){ return e&&e.id===_cp._extId; }); if(_xe && !_xe.paid) _markExtPaidInternal(bookings[idx], _xe, _cp.paidMethod||'manual'); }
+  // Any extension-linked card payment marked paid → mark that extension paid + clear its balance,
+  // no matter which flow created the link.
+  if(_cp._extId){ var _xe=(bookings[idx].extensions||[]).find(function(e){ return e&&e.id===_cp._extId; }); if(_xe && !_xe.paid) _markExtPaidInternal(bookings[idx], _xe, _cp.paidMethod||'manual'); }
   // Extension charge → fold the days into the rental (new dropoff + day count + revenue).
   var _foldedQty=(chargeCategory(_cp)==='extension' && (parseInt(_cp.extensionDays,10)||0)>0 && !_cp._extApplied) ? (parseInt(_cp.extensionDays,10)||0) : 0;
   var _foldedUnit=(_cp.extensionUnit==='hours')?'hr':'day';
