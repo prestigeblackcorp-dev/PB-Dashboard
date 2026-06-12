@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Prestige Black — On-Demand Chauffeur</title>
 <meta name="theme-color" content="#0a0a0a">
+<link rel="icon" type="image/png" href="icon.png">
 <link rel="manifest" href="ride.manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
 <script>
@@ -513,6 +514,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
         <div class="sheet-section">
           <div class="sheet-title">Where to?</div>
           <div class="sheet-sub" id="rider-greeting">Book a luxury ride</div>
+          <div id="upcomingCard" style="display:none;margin-top:12px"></div>
 
           <!-- Ride type -->
           <div class="ride-type-row">
@@ -524,6 +526,16 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
               <span class="rtb-icon">⏱️</span>
               <span class="rtb-label">Hourly</span>
             </button>
+          </div>
+
+          <!-- When: Now or Schedule in advance (reserve-ahead) -->
+          <div class="ride-type-row" id="whenRow" style="margin-top:8px">
+            <button class="ride-type-btn active" id="wtbNow" onclick="setScheduleMode('now')"><span class="rtb-icon">⚡</span><span class="rtb-label">Now</span></button>
+            <button class="ride-type-btn" id="wtbLater" onclick="setScheduleMode('later')"><span class="rtb-icon">📅</span><span class="rtb-label">Schedule</span></button>
+          </div>
+          <div id="scheduleField" style="display:none;margin-top:8px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:5px">Pickup date &amp; time (CT)</div>
+            <input id="scheduledAt" type="datetime-local" class="addr-inp" style="width:100%;color:#fff;color-scheme:dark" onchange="onScheduledChange()">
           </div>
 
           <!-- Address fields -->
@@ -843,7 +855,7 @@ async function loadPastTrips(){
     var canRate=(st==='completed' && r.hasReview===false && !_reviewedRides[r.rideId]);
     html+='<div class="trip-row">'
       +'<div class="trip-top"><div class="trip-route">'+route+'</div>'
-      +'<div class="trip-price">$'+Math.round(price)+'</div></div>'
+      +'<div class="trip-price">$'+Math.round(price)+(Number(r.tipAmount)>0?' <span style="font-size:10px;color:#22c55e;font-weight:700">+$'+Math.round(r.tipAmount)+' tip</span>':'')+'</div></div>'
       +'<div class="trip-meta"><span class="trip-date">'+esc(when)+(r.driverName?' · '+esc(r.driverName):'')+'</span>'
       +'<span class="trip-badge '+esc(st)+'">'+esc(TRIP_STATUS_LABEL[st]||st)+'</span></div>';
     if(canRate){
@@ -889,11 +901,13 @@ async function submitReview(){
   var stt=$d('reviewStatus'); if(stt){ stt.textContent=''; stt.style.color='var(--muted)'; }
   var notes=($d('reviewNotes')&&$d('reviewNotes').value||'').trim();
   try{
-    var r=await fetch(WORKER+'/chauffeur/submit-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_reviewCtx.rideId,rating:_reviewRating,notes:notes})});
+    var r=await fetch(WORKER+'/chauffeur/submit-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_reviewCtx.rideId,rating:_reviewRating,notes:notes,tip:_doneTip||0})});
     var d=await r.json().catch(function(){return{};});
     if(!r.ok){ if(stt){ stt.textContent=(d&&d.error)||'Could not submit. Try again.'; stt.style.color='var(--red)'; } if(btn){ btn.disabled=false; btn.textContent='Submit Review'; } return; }
     _reviewedRides[_reviewCtx.rideId]=true;
-    if(stt){ stt.textContent='Thank you for your feedback ✓'; stt.style.color='var(--green)'; }
+    if(_doneTip>0 && stt){ stt.textContent='Thank you — $'+_doneTip.toFixed(2)+' tip added for your chauffeur ✓'; stt.style.color='var(--green)'; }
+    else if(stt){ stt.textContent='Thank you for your feedback ✓'; stt.style.color='var(--green)'; }
+    _doneTip=0;
     // If this was the active ride, clear it now that it's reviewed.
     if(_rideId && _reviewCtx.rideId===_rideId){ try{ localStorage.removeItem('pb_active_ride'); }catch(e){} }
     setTimeout(function(){ closeReview(); loadPastTrips(); },1100);
@@ -1072,6 +1086,7 @@ function launchApp(){
   initMap();
   if(_session){ var _nm=(_session.name||'').trim(); $d('rider-greeting').textContent=_nm?('Hello, '+_nm.split(' ')[0]):'Welcome back'; }
   renderRiderAvatar();
+  try{ loadUpcomingRides(); }catch(e){}
   // F3 (b): deep link from receipt email — ?review=<rideId> opens the review UI.
   try{
     var rev=new URLSearchParams(location.search).get('review');
@@ -1475,10 +1490,95 @@ async function ensurePushSubscription(role){
     fetch(WORKER+'/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:role, token:tok, subscription:sub.toJSON()})}).catch(function(){});
   }catch(e){}
 }
+// ── Schedule a ride in advance (reserve-ahead) ──────────────────────────────
+var _scheduleMode='now', _scheduledFor=0;
+function _toLocalInput(d){ var p=function(n){return String(n).padStart(2,'0');}; return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
+function setScheduleMode(m){
+  _scheduleMode=(m==='later')?'later':'now';
+  var n=$d('wtbNow'), l=$d('wtbLater');
+  if(n) n.classList.toggle('active', _scheduleMode==='now');
+  if(l) l.classList.toggle('active', _scheduleMode==='later');
+  var f=$d('scheduleField'); if(f) f.style.display=_scheduleMode==='later'?'block':'none';
+  if(_scheduleMode==='later'){ var s=$d('scheduledAt'); if(s && !s.value){ var dt=new Date(Date.now()+60*60000); s.value=_toLocalInput(dt); _scheduledFor=dt.getTime(); } }
+  var b=$d('requestRideBtn'); if(b) b.textContent=_scheduleMode==='later'?'Reserve Ride':'Request Ride';
+}
+function onScheduledChange(){ var s=$d('scheduledAt'); _scheduledFor = s&&s.value ? new Date(s.value).getTime() : 0; }
+async function reserveRide(){
+  if(!_session){ alert('Please sign in first.'); return; }
+  if(!_pickup){ alert('Set a pickup location.'); return; }
+  if(_rideType==='point_to_point' && !_dropoff){ alert('Set a dropoff location.'); return; }
+  var when=_scheduledFor || ($d('scheduledAt')&&$d('scheduledAt').value ? new Date($d('scheduledAt').value).getTime() : 0);
+  if(!when || when < Date.now()+10*60000){ alert('Pick a pickup time at least 10 minutes from now.'); return; }
+  var btn=$d('requestRideBtn'); btn.disabled=true; var _t=btn.textContent; btn.textContent='Reserving…';
+  var body={ token:_session.token, rideType:_rideType, pickupAddress:_pickup.address, pickupLat:_pickup.lat, pickupLng:_pickup.lng, scheduledFor:when };
+  if(_rideType==='point_to_point' && _dropoff){ body.dropoffAddress=_dropoff.address; body.dropoffLat=_dropoff.lat; body.dropoffLng=_dropoff.lng; body.distanceMiles=_distanceMiles; body.estimatedDuration=_estDuration; }
+  if(_rideType==='hourly'){ body.hours=_hours; }
+  var d=await fetch(WORKER+'/chauffeur/reserve-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
+  btn.disabled=false; btn.textContent=_t;
+  if(!d||d.error){ alert(d&&d.error?d.error:'Could not reserve. Try again.'); return; }
+  setScheduleMode('now'); var s2=$d('scheduledAt'); if(s2) s2.value=''; _scheduledFor=0;
+  loadUpcomingRides();
+  alert('✅ Ride reserved for '+new Date(when).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'. Fare locked at $'+Number(d.price||0).toFixed(2)+'. We\'ll dispatch your driver shortly before pickup.');
+}
+async function loadUpcomingRides(){
+  if(!_session) return;
+  var d=await fetch(WORKER+'/chauffeur/upcoming-rides?token='+encodeURIComponent(_session.token)+'&_='+Date.now(),{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
+  var card=$d('upcomingCard'); if(!card) return;
+  var rides=(d&&d.rides)||[];
+  if(!rides.length){ card.style.display='none'; card.innerHTML=''; return; }
+  card.style.display='block';
+  card.innerHTML='<div style="font-size:11px;font-weight:800;color:var(--gold);letter-spacing:.05em;margin-bottom:6px">📅 UPCOMING RIDES</div>'+
+    rides.map(function(r){
+      var when=new Date(r.scheduledFor).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+      var route=r.rideType==='hourly'?(r.hours+' hr · '+esc(r.pickupAddress||'')):(esc(r.pickupAddress||'')+' → '+esc(r.dropoffAddress||'—'));
+      return '<div style="background:rgba(255,255,255,.05);border:1px solid var(--border,rgba(255,255,255,.1));border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px">'+
+        '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px;color:#fff">'+when+' <span style="color:var(--gold)">· $'+Number(r.price||0).toFixed(0)+'</span></div>'+
+        '<div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+route+'</div></div>'+
+        '<button onclick="cancelReservation(\''+r.id+'\')" style="background:transparent;border:1px solid rgba(239,68,68,.4);color:#f87171;border-radius:8px;padding:6px 11px;font-size:11px;font-weight:700;cursor:pointer;flex-shrink:0">Cancel</button>'+
+      '</div>';
+    }).join('');
+}
+async function cancelReservation(id){
+  if(!_session || !confirm('Cancel this reserved ride?')) return;
+  var d=await fetch(WORKER+'/chauffeur/cancel-reservation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token, rideId:id})}).then(r=>r.json()).catch(()=>null);
+  if(d&&d.ok){ loadUpcomingRides(); } else { alert((d&&d.error)||'Could not cancel.'); }
+}
 async function requestRide(){
+  if(_scheduleMode==='later'){ return reserveRide(); }
   if(!_session){ return; }
   if(!_pickup){ return; }
   if(_rideType==='point_to_point'&&!_dropoff) return;
+  // Collect the fare up front (demo), THEN dispatch to drivers.
+  _collectFareThen(_estPrice||0, _dispatchRide);
+}
+// Pre-dispatch payment sheet (demo): add a card if needed, "pay" the fare, then run runFn.
+function _collectFareThen(fareAmt, runFn){
+  var F=(window.PB_FLAGS||{});
+  if(!F.cardOnFile){ runFn(); return; }   // payment off → dispatch directly (old behavior)
+  var ov=document.getElementById('payOverlay'); if(ov) ov.remove();
+  ov=document.createElement('div'); ov.id='payOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,.72);display:flex;align-items:flex-end;justify-content:center';
+  function render(){
+    var p=_payMethod();
+    var demoNote=F.demoPay?'<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:10px;opacity:.7">Demo mode — no real card or charge</div>':'';
+    ov.innerHTML='<div style="background:#14110c;border:1px solid rgba(255,255,255,.08);border-radius:20px 20px 0 0;width:100%;max-width:480px;padding:22px 20px calc(20px + env(safe-area-inset-bottom,0px))">'
+      +'<div style="font-size:18px;font-weight:900;color:#fff;margin-bottom:3px">Confirm &amp; Pay</div>'
+      +'<div style="font-size:12px;color:var(--muted);margin-bottom:16px">Your driver is dispatched once payment is accepted.</div>'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><span style="font-size:13px;color:var(--muted);font-weight:700">Fare</span><span style="font-size:22px;font-weight:900;color:#C9A962">$'+fareAmt.toFixed(2)+'</span></div>'
+      +(p
+        ? '<div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#cfd3da;margin-bottom:14px">💳 '+esc(p.brand)+' •••• '+esc(p.last4)+(p.demo?' <span style="font-size:9px;color:#C9A962;border:1px solid rgba(201,169,98,.35);border-radius:6px;padding:0 5px">DEMO</span>':'')+'</div><button class="btn-gold" style="width:100%" onclick="_payConfirmDispatch()">Pay $'+fareAmt.toFixed(2)+' &amp; Request</button>'
+        : '<div style="font-size:13px;color:var(--muted);margin-bottom:12px">Add a card to continue</div><button class="btn-gold" style="width:100%" onclick="_payAddCard()">＋ Add a card</button>')
+      +'<button onclick="_payCancel()" style="width:100%;margin-top:8px;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:12px;padding:11px;font-size:13px;cursor:pointer">Cancel</button>'
+      +demoNote+'</div>';
+  }
+  window._payAddCard=function(){ _savePayMethod({brand:'Visa',last4:'4242',exp:'12/34',demo:true,addedAt:Date.now()}); render(); };
+  window._payCancel=function(){ var o=document.getElementById('payOverlay'); if(o) o.remove(); };
+  window._payConfirmDispatch=function(){ var o=document.getElementById('payOverlay'); if(o) o.remove(); runFn(); };
+  render();
+  document.body.appendChild(ov);
+}
+async function _dispatchRide(){
+  if(!_session||!_pickup) return;
   const btn=$d('requestRideBtn');
   btn.disabled=true;
   btn.innerHTML='<span class="spinner"></span>Finding driver…';
@@ -1850,12 +1950,12 @@ function renderDoneCardPay(ride){
     '<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;padding:16px">'
      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
        +'<span style="font-size:13px;color:#cfd3da">💳 '+esc(pm.brand)+' •••• '+esc(pm.last4)+(pm.demo?' <span style="font-size:9px;color:#C9A962;border:1px solid rgba(201,169,98,.35);border-radius:6px;padding:0 5px;margin-left:4px">DEMO</span>':'')+'</span>'
-       +'<span style="font-size:11px;font-weight:700;color:#22c55e">✓ Paid</span>'
+       +'<span style="font-size:11px;font-weight:700;color:#22c55e">✓ Fare paid</span>'
      +'</div>'
-     +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Add a tip for your chauffeur</div>'
+     +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Add a tip for your chauffeur (they keep 100%)</div>'
      +'<div style="display:flex;gap:6px;margin-bottom:12px">'+chips+'</div>'
      +'<div style="display:flex;align-items:center;justify-content:space-between;font-size:15px;font-weight:800">'
-       +'<span style="color:#cfd3da">Total</span><span style="color:#fff">$'+total.toFixed(2)+'</span>'
+       +'<span style="color:#cfd3da">Tip</span><span style="color:#fff">$'+tip.toFixed(2)+'</span>'
      +'</div>'
      +(tip>0?'<div style="font-size:11px;color:#22c55e;margin-top:6px;text-align:right">Includes $'+tip.toFixed(2)+' tip — thank you!</div>':'')
      +'<button class="btn-gold" style="width:100%;margin-top:14px" onclick="payRateDriver()">Rate your chauffeur ›</button>'

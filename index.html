@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-title" content="PB Rentals">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0a0a0a">
+<link rel="icon" type="image/png" href="icon.png">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
@@ -8289,6 +8290,14 @@ function tripCard(b, showCountdown){
   // Feature 7: duplicate button
   var dupBtn='<button class="btn btn-sm" onclick="duplicateBooking(\''+b.id+'\')" title="Duplicate this booking" style="border-color:rgba(100,180,255,.4);color:var(--blue)">⧉ Duplicate</button>';
 
+  // Per-booking "send review" toggle (default ON). Off = this client is NEVER sent a
+  // review request; everything else (confirmations, reminders, driver reviews) is unaffected.
+  var _revOn=!b.noClientReview;
+  var reviewToggle='<label class="btn btn-sm" onclick="event.stopPropagation()" title="'+(_revOn?'Client WILL be sent a review request':'Client will NOT be sent a review request')+'" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;border-color:'+(_revOn?'rgba(201,169,98,.4)':'rgba(255,255,255,.12)')+';color:'+(_revOn?'var(--gold)':'var(--muted)')+'">'+
+    '<input type="checkbox" '+(_revOn?'checked':'')+' onchange="event.stopPropagation();toggleClientReview(\''+b.id+'\',this.checked)" style="width:13px;height:13px;accent-color:var(--gold);cursor:pointer">'+
+    '⭐ '+(_revOn?'Review':'No review')+
+  '</label>';
+
   // Chauffeur-only: assign a driver to this (possibly future) booking. Shows the
   // currently assigned driver's first name when one is set so reassigning is one tap.
   var assignBtn='';
@@ -8375,6 +8384,7 @@ function tripCard(b, showCountdown){
       completeBtn+
       statusBtn+
       dupBtn+
+      reviewToggle+
       (b.status!=='cancelled'?'<button class="btn btn-sm" style="border-color:rgba(255,92,92,.5);color:var(--red)" onclick="cancelTripCard(\''+b.id+'\')">✕ Cancel</button>':'')+
     '</div>'+
     '</div>';
@@ -12383,11 +12393,26 @@ function getVehicleUtilization(vehicleName){
 // Sends the review email to BOTH the customer and every authorized driver on the booking.
 function sendReviewRequest(b){
   if(!MESSAGING_URL || !b) return;
-  if(b.email) _sendReviewTo(b, b.email, b.name, 'customer');
+  // Per-booking opt-out: when noClientReview is set, the CLIENT is never sent a review
+  // request (the authorized-driver review sends below are unaffected).
+  if(b.email && !b.noClientReview) _sendReviewTo(b, b.email, b.name, 'customer');
   var _custEm=String(b.email||'').toLowerCase().trim();
   _authDrivers(b).forEach(function(d){
     if(d && d.email && String(d.email).toLowerCase().trim()!==_custEm) _sendReviewTo(b, d.email, d.name, 'driver');
   });
+}
+// Card toggle: flip whether this booking's CLIENT gets a review request (default on).
+function toggleClientReview(id, checked){
+  var idx=bookings.findIndex(function(b){ return b.id===id; });
+  if(idx===-1) return;
+  bookings[idx].noClientReview = !checked;
+  bookings[idx]._t=Date.now();
+  save();
+  if(activeTab==='upcoming')  renderUpcoming();
+  if(activeTab==='current')   renderCurrent();
+  if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='cancelled') renderCancelled();
+  showToast(checked?('Review request ON for '+(bookings[idx].name||'client')):('Review OFF — '+(bookings[idx].name||'client')+' won\'t be asked'));
 }
 // Review email HTML — shared by the customer + authorized-driver sends.
 function _reviewEmailHtml(firstName){

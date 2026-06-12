@@ -8,6 +8,7 @@
 <meta name="theme-color" content="#0a0a0a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" type="image/png" href="icon.png">
 <link rel="manifest" href="driver.manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
 <script>
@@ -251,6 +252,10 @@ body.nav-fs #map-expand-btn,body.nav-fs #map-fs-status,body.nav-fs #map-earn-chi
    measured header+tabs height, set in JS.) */
 body.map-fs.fs-chrome #rides-map-container{top:var(--fs-chrome-h,104px);height:calc(100dvh - var(--fs-chrome-h,104px));}
 body.map-fs.fs-chrome #map-fs-status{top:calc(var(--fs-chrome-h,104px) + 8px);}
+/* When chrome is revealed, the header+tabs must sit ABOVE the full-screen map and stay clickable. */
+body.map-fs.fs-chrome .app-header, body.map-fs.fs-chrome .tab-bar{position:relative;z-index:1450;}
+/* Keep the full-screen exit (✕) button reliably on top + tappable. */
+body.map-fs #map-expand-btn{z-index:1460;}
 
 /* Incoming ride alert */
 #ride-request-overlay{position:fixed;inset:0;z-index:9999;display:none;flex-direction:column;justify-content:flex-end;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);}
@@ -1067,9 +1072,10 @@ function calcTripFare(t){
 function calcTripPay(t){
   // Cancelled trips never pay — the estimate must not count as earnings
   if((t.status||'')==='cancelled') return 0;
-  if(t.payType==='flat'   && Number(t.payAmount)>0) return Number(t.payAmount);
-  if(t.payType==='hourly' && Number(t.payAmount)>0) return Number(t.hoursLogged||0)*Number(t.payAmount);
-  return calcTripFare(t) * DRIVER_SHARE;
+  var _tip=Number(t.tipAmount||0);   // drivers keep 100% of tips, on top of fare/take
+  if(t.payType==='flat'   && Number(t.payAmount)>0) return Number(t.payAmount)+_tip;
+  if(t.payType==='hourly' && Number(t.payAmount)>0) return Number(t.hoursLogged||0)*Number(t.payAmount)+_tip;
+  return calcTripFare(t) * DRIVER_SHARE + _tip;
 }
 // What THIS driver would have earned on a cancelled trip — the wage they missed
 // (uses estimated hours/days for hourly since the trip never logged real hours).
@@ -1616,7 +1622,7 @@ function setMapFullscreen(on){
 }
 // While watching the live map full-screen, reveal the header+tabs when the driver zooms
 // OUT (so they can reach the tabs) and hide them again when they zoom back in.
-var CHROME_ZOOM = 14.5;
+var CHROME_ZOOM = 12.5;   // below the idle zoom (13) so full-screen stays immersive until the driver zooms way out
 function _fsChromeOnZoom(){
   if(!_mapFs || !_ridesMap){ if(document.body.classList.contains('fs-chrome')) _setFsChrome(false); return; }
   var z; try{ z=_ridesMap.getZoom(); }catch(e){ return; }
