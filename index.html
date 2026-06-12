@@ -3597,6 +3597,15 @@ function mergeCommLogsIntoNotifLog(){
       }
     });
   });
+  // Surface extension signatures (primary renter + each additional authorized driver)
+  // and the "fully signed" milestone in the main log too. Stable signed-date stamps
+  // make this idempotent — re-running never duplicates an entry.
+  bookings.forEach(function(b){
+    _extSignCommEntries(b).forEach(function(c){
+      var key = c.at+'|'+c.type+'|'+c.to+'|'+b.id;
+      if(!seen[key]){ seen[key]=true; added.push({ at:c.at, type:c.type, label:c.label, to:c.to||'', bookingId:b.id }); }
+    });
+  });
   if(added.length){
     _notifLog = _notifLog.concat(added);
     _notifLog.sort(function(a,b){ return b.at - a.at; });
@@ -3644,6 +3653,8 @@ function _bookingCommLog(b){
     var _isW=String(b.customerSigVehicle||b.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
     add({at:_st||0, type:'contractsigned', label:(_isW?'Waiver':'Contract')+' signed', to:b.name||''});
   }
+  // Extension signatures (primary + each authorized driver) + fully-signed milestone
+  _extSignCommEntries(b).forEach(add);
   out.sort(function(x,y){ return x.at-y.at; });
   return out;
 }
@@ -6038,7 +6049,14 @@ function splitPaidCharges(list,onlyDate){
   return out;
 }
 function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesTotal(b); }
-function netRevenue(b){ return totalRevenue(b)-((Number(b.brokerFee)||0)*(Number(b.days)||1)); }
+// Days the per-day broker rate covers — the ORIGINAL rental only. Extensions each carry
+// their own broker fee (entered per extension), so extending never auto-scales the rate.
+function brokerRateDays(b){ var x=(b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
+function extensionBrokerTotal(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.brokerFee)||0);},0); }
+// Total broker fee owed: original days × rate + each extension's own broker fee. For a
+// booking with no extensions this is identical to the old brokerFee × days.
+function brokerFeeTotal(b){ return (Number(b.brokerFee)||0)*brokerRateDays(b)+extensionBrokerTotal(b); }
+function netRevenue(b){ return totalRevenue(b)-(brokerFeeTotal(b)); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
 
@@ -6324,7 +6342,7 @@ function renderKPIs(filtered, containerId){
   var deposits        = sumK(active,'deposit');
   var depositKept     = sumK(active,'depositKept');
   var bookingCost     = active.reduce(function(s,b){ return s+getEstCost(b); },0);
-  var totalBrokerFees = active.reduce(function(s,b){ return s+((Number(b.brokerFee)||0)*(Number(b.days)||1)); },0);
+  var totalBrokerFees = active.reduce(function(s,b){ return s+(brokerFeeTotal(b)); },0);
   var fuelTotal       = sumK(active,'fuelCharge');
   var mileTotal       = sumK(active,'mileageCharge');
   var lateReturnTotal = sumK(active,'lateReturnFee');
@@ -6344,7 +6362,7 @@ function renderKPIs(filtered, containerId){
       var _pDate = b.pickupDate || b.date || '';
       var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate ? new Date(_pDate+'T12:00:00').getTime() : 0) : 0);
       if(!paidTs || dateStr(new Date(paidTs))!==tod) return s;
-      var _bf=(Number(b.brokerFee)||0)*(Number(b.days)||1);
+      var _bf=brokerFeeTotal(b);
       return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)-_bf);
     },0);
     // Extension charges created today (any booking)
@@ -6369,7 +6387,7 @@ function renderKPIs(filtered, containerId){
       var _pd  = b.pickupDate || b.date || '';
       var _pts = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd ? new Date(_pd+'T12:00:00').getTime() : 0) : 0);
       if(!_pts || dateStr(new Date(_pts))!==tod) return;
-      _bfToday += (Number(b.brokerFee)||0)*(Number(b.days)||1);
+      _bfToday += brokerFeeTotal(b);
       if(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe')
         _stripeBaseToday += Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0));
     });
@@ -6616,7 +6634,7 @@ function renderCharts(filtered){
     var m=((b.pickupDate||b.date)||'').substring(0,7); if(!m) return;
     // Base revenue without extension charges (those go into their own month bucket below)
     // Subtract broker fees so monthly trend reflects net to PBR
-    var _brkDeduct=(Number(b.brokerFee)||0)*(Number(b.days)||1);
+    var _brkDeduct=brokerFeeTotal(b);
     var baseRev=(Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)-_brkDeduct;
     mR[m]=(mR[m]||0)+baseRev;
     // Extension charges: bucket by extension createdAt month
@@ -6642,22 +6660,35 @@ function renderCharts(filtered){
   // Mobile chart helper: set canvas to explicit pixel size BEFORE Chart.js reads it.
   // Chart.js measures the canvas element dimensions at construction time.
   // Setting style.height after new Chart() does nothing — Chart.js ignores it.
-  function _mobileSize(canvasId, w, h){
-    if(!mobile) return;
+  // Size a chart canvas crisply on BOTH mobile and desktop. Charts use responsive:false,
+  // so the canvas drawing buffer must be set to (display size × devicePixelRatio) BEFORE
+  // Chart.js reads it. Previously desktop bailed out → kept the tiny 300×150 default and
+  // got CSS-stretched (blurry, distorted text). Now desktop fills its card at full density.
+  function _mobileSize(canvasId, w, h, dRatio){
     var c=$d(canvasId);
     if(!c) return;
     var dpr=window.devicePixelRatio||1;
-    c.width=Math.round(w*dpr);
-    c.height=Math.round(h*dpr);
-    c.style.width=w+'px';
-    c.style.height=h+'px';
+    var cssW, cssH;
+    if(mobile){ cssW=w; cssH=h; }
+    else {
+      var p=c.parentElement, cs=p?getComputedStyle(p):null;
+      var pad=cs?(parseFloat(cs.paddingLeft||0)+parseFloat(cs.paddingRight||0)):44;
+      cssW=(p?p.clientWidth:0)-pad;
+      if(!cssW||cssW<120) cssW=560;                        // not laid out yet → sane default
+      cssH=Math.min(Math.round(cssW*(dRatio||0.45)), 340); // keep a tidy, non-stretched aspect
+    }
+    if(!cssW||cssW<60) return;
+    c.width=Math.round(cssW*dpr);
+    c.height=Math.round(cssH*dpr);
+    c.style.width=cssW+'px';
+    c.style.height=cssH+'px';
   }
 
   // Available width: viewport minus padding (12px each side)
   var mW = mobile ? Math.min(window.innerWidth, 400) - 24 : 0;
 
   dc('monthly');
-  _mobileSize('chartMonthly', mW, Math.round(mW * 0.5));
+  _mobileSize('chartMonthly', mW, Math.round(mW * 0.5), 0.42);
   charts['monthly']=new Chart($d('chartMonthly'),{type:'line',data:{labels:mLabels,datasets:[
     {label:'Revenue',data:months.map(function(m){return mR[m]||0;}),borderColor:GOLD,backgroundColor:'rgba(201,169,98,.08)',fill:true,tension:.4,pointBackgroundColor:GOLD,pointRadius:mobile?2:4},
     {label:'Est. Cost',data:months.map(function(m){return mC[m]||0;}),borderColor:'rgba(255,92,92,.7)',backgroundColor:'rgba(255,92,92,.06)',fill:true,tension:.4,pointBackgroundColor:RED,pointRadius:mobile?2:4}
@@ -6667,7 +6698,7 @@ function renderCharts(filtered){
   var tc={daily:0,hourly:0,chauffeur:0};
   active.forEach(function(b){ tc[b.type]=(tc[b.type]||0)+1; });
   dc('type');
-  _mobileSize('chartType', mW, Math.round(mW * 0.75));
+  _mobileSize('chartType', mW, Math.round(mW * 0.75), 0.82);
   charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur],backgroundColor:[GOLD,BLUE,GREEN],borderWidth:0,hoverOffset:8}]},options:{responsive:false,maintainAspectRatio:false,cutout:'64%',plugins:_chartPlugins('bottom')}});
 
   // Revenue by vehicle — horizontal bar
@@ -6677,7 +6708,7 @@ function renderCharts(filtered){
   var vlLabels=vl.map(function(v){ return mobile&&v.length>10?v.slice(0,9)+'…':v; });
   dc('rvv');
   var rvvH = mobile ? Math.max(120, vl.length * 34) : 0;
-  _mobileSize('chartRevVehicle', mW, rvvH);
+  _mobileSize('chartRevVehicle', mW, rvvH, 0.52);
   charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vlLabels,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{responsive:false,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return vl[items[0].dataIndex]; }}}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();},font:{size:mobile?11:13,weight:'600'},maxTicksLimit:mobile?3:6},grid:{display:false}},y:{grid:{display:false},ticks:{font:{size:mobile?11:13,weight:'600'}}}}}});
 
   // Bookings per vehicle
@@ -6686,7 +6717,7 @@ function renderCharts(filtered){
   var bl=Object.keys(bv).sort(function(a,b){return bv[b]-bv[a];});
   var blLabels=bl.map(function(v){ return mobile&&v.length>8?v.slice(0,7)+'…':v; });
   dc('bvv');
-  _mobileSize('chartBkVehicle', mW, mobile ? Math.round(mW * 0.45) : 0);
+  _mobileSize('chartBkVehicle', mW, mobile ? Math.round(mW * 0.45) : 0, 0.45);
   charts['bvv']=new Chart($d('chartBkVehicle'),{type:'bar',data:{labels:blLabels,datasets:[{label:'Bookings',data:bl.map(function(v){return bv[v];}),backgroundColor:'rgba(100,180,255,.55)',borderRadius:5}]},options:{responsive:false,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return bl[items[0].dataIndex]; }}}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,font:{size:mobile?11:13,weight:'600'}},grid:{display:false}},x:{grid:{display:false},ticks:{maxRotation:mobile?45:0,font:{size:mobile?11:13,weight:'600'}}}}}});
 }
 
@@ -6786,7 +6817,7 @@ function openVehicleDrilldown(vehicle){
       '</tr></thead><tbody>'+
       vBookings.map(function(b){
         var gross=totalRevenue(b);
-        var bf=(Number(b.brokerFee)||0)*(Number(b.days)||1);
+        var bf=brokerFeeTotal(b);
         var net=netRevenue(b);
         var dk=Number(b.depositKept)||0;
         var ext=extensionCharge(b);
@@ -6901,7 +6932,7 @@ function renderVehicleTable(filtered){
       var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate2 ? new Date(_pDate2+'T12:00:00').getTime() : 0) : 0);
       if(!paidTs||dateStr(new Date(paidTs))!==_kpiDR3.from) return;
       _seedV(b.vehicle);
-      var _bf2=(Number(b.brokerFee)||0)*(Number(b.days)||1);
+      var _bf2=brokerFeeTotal(b);
       map[b.vehicle].revenue+=Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)-_bf2);
     });
     allActive.forEach(function(b){
@@ -6944,7 +6975,7 @@ function renderVehicleTable(filtered){
       map[b.vehicle].deposits   +=(Number(b.deposit)||0);
       map[b.vehicle].addons     +=getAddons(b);
       map[b.vehicle].cost       +=getEstCost(b);
-      map[b.vehicle].brokerFees +=(Number(b.brokerFee)||0)*(Number(b.days)||1);
+      map[b.vehicle].brokerFees +=brokerFeeTotal(b);
       map[b.vehicle].extraIncome+=(b.addlIncome&&b.addlIncome.amount?Number(b.addlIncome.amount):0);
     });
     // Seed expense-only vehicles for period (e.g. Corvette car payment in a week with no rental)
@@ -8636,7 +8667,7 @@ function openBookingDetail(id){
     // Revenue
     '<div class="fsec">Revenue</div>'+
     '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(getAddons(b)?'<span style="font-size:10px;opacity:.7"> (base '+$$(Math.max(0,(Number(b.revenue)||0)-getAddons(b)))+' + add-ons '+$$(getAddons(b))+')</span>':'')+'</span></div>'+
-    (b.brokerFee?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+_durUnit(b)+' × '+(b.days||1)+')</span></span></div>':'')+
+    (b.brokerFee||extensionBrokerTotal(b)?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">−'+$$(brokerFeeTotal(b))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+_durUnit(b)+' × '+brokerRateDays(b)+(extensionBrokerTotal(b)?' + '+$$(extensionBrokerTotal(b))+' ext':'')+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">−'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
     (b.broker?'<div class="detail-row"><span class="detail-label">Broker / Partner</span><span class="detail-val">'+esc(b.broker)+'</span></div>':'')+
@@ -8812,7 +8843,7 @@ function openBookingDetail(id){
     (function(){
       var _cl=_bookingCommLog(b);
       if(!_cl.length) return '';
-      var _typeIcons={contractsigned:'✍️',verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
+      var _typeIcons={contractsigned:'✍️',verification:'🪪',verify_nudge:'🪪',signing:'✍️',signedcopy:'📄',confirmation:'✅',datelock:'✅',reminder:'📅',receipt:'🧾',closeout:'🧾',portal:'🔗',review:'⭐',owner:'👤',owner_id_verified:'🪪',customer_verified:'✅',extsigned:'✍️',toggle:'🔁',waitlist_autobook:'📅',waitlist_added:'📅',waitlist_notify:'📅'};
       return '<div class="fsec" style="margin-top:12px">📨 Communication Log</div>'+
         '<div style="font-size:11px;color:var(--muted)">'+
         _cl.slice().reverse().map(function(c){
@@ -9227,7 +9258,7 @@ function updateLiveTotal(){
   $d('liveTotalVal').textContent   = $$(base);
 }
 
-function updateRemainingBalance(force){force=true; // always recalc when revenue changes
+function updateRemainingBalance(force){ // auto-calc UNLESS the balance was hand-edited (_manual); the ↺ Recalc button passes force=true to reset
   var rev    = parseFloat($d('fRevenue').value)||0;
   var lock   = parseFloat($d('fDateLock').value)||0;
   var dep    = parseFloat($d('fDeposit').value)||0;
@@ -9577,6 +9608,12 @@ function saveBooking(){
       } else {
         if(ex._history) entry._history=ex._history;
       }
+      // Catch-all: carry over EVERY field the booking form doesn't manage so editing a
+      // booking never silently drops data — extensions (+ their signatures), additional
+      // authorized drivers, the review opt-out (noClientReview), the communication log,
+      // assigned driver, etc. Form-managed fields are already on `entry`, so this only
+      // fills in what's missing; it never overwrites an edited value.
+      Object.keys(ex).forEach(function(k){ if(!(k in entry)) entry[k]=ex[k]; });
       bookings[idx]=entry;
       // Status changed to confirmed via form → send confirmation email + verification
       var _toConfirmed = ex.status !== 'confirmed' && entry.status === 'confirmed';
@@ -9991,7 +10028,7 @@ function openCloseOut(id){
     '<strong>'+esc(b.vehicle)+'</strong> &nbsp;·&nbsp; '+esc(b.name)+'<br>'+
     'Pickup: <strong>'+fmtDate(b.pickupDate||b.date)+'</strong> &nbsp;·&nbsp; Revenue: <strong>'+$$(totalRevenue(b))+'</strong>'+
     (b.broker?' &nbsp;·&nbsp; Broker: <strong>'+esc(b.broker)+'</strong>':'')+
-    (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$((Number(b.brokerFee)||0)*(Number(b.days)||1))+'</strong>':'')+
+    (b.brokerFee?' &nbsp;·&nbsp; Broker fee: <strong style="color:var(--red)">'+$$(brokerFeeTotal(b))+'</strong>':'')+
     (!(b.type==='chauffeur'||(b.vehicle==='Polaris Slingshot'&&b.type==='hourly'))
       ? '<br>Deposit collected: <strong>'+$$(collected)+'</strong>' : '');
   updatePhotoSyncHints();
@@ -10107,7 +10144,7 @@ function coUpdateProfitSummary(){
   if(!b) return;
   var baseRev=totalRevenue(b);
   var cost=parseFloat($d('coCost')?$d('coCost').value:0)||0;
-  var brokerFee=(Number(b.brokerFee)||0)*(Number(b.days)||1);
+  var brokerFee=brokerFeeTotal(b);
   // Mileage overage and fuel short charge are additional customer-owed amounts — they ADD to revenue
   var fuelCharge=parseFloat($d('coFuelCharge')?$d('coFuelCharge').value:0)||0;
   var mileCharge=parseFloat($d('coMileageCharge')?$d('coMileageCharge').value:0)||0;
@@ -10723,7 +10760,8 @@ function sendExtDriverSigningLink(bookingId, extId, driverIdx){
   var base = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
   var url = base + '?sign=' + encodeURIComponent(bookingId) + '&extId=' + encodeURIComponent(extId) + '&driver=' + driverIdx;
   if(!d.email){
-    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(function(){ showToast('Driver has no email — extension signing link copied 📋'); }); }
+    logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — copied (no email)',(d.name||'driver'),bookingId);
+    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(function(){ showToast((d.name||'Driver')+' has no email on file — link copied 📋'); }); }
     else { prompt('Copy this extension signing link for '+(d.name||'driver')+':', url); }
     return;
   }
@@ -10748,8 +10786,8 @@ function sendExtDriverSigningLink(bookingId, extId, driverIdx){
   fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:d.email,subject:'Please Sign Extension #'+extNum+' \u{2014} Prestige Black Rentals',html:html})})
   .then(function(r){
     if(r.ok){ showToast('Extension signing link sent to '+d.email+' \u{2705}'); logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+')', d.email, bookingId); }
-    else { navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); }
-  }).catch(function(){ navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); });
+    else { logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — send failed, copied',(d.email||d.name||'driver'),bookingId); navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); }
+  }).catch(function(){ logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — network error, copied',(d.email||d.name||'driver'),bookingId); navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); });
 }
 
 // Open an "Add / Edit Driver" overlay using a dynamic modal.
@@ -11113,7 +11151,7 @@ function renderNotifLog(){
     el.innerHTML='<div style="padding:14px 16px;color:var(--muted);text-align:center;font-size:12px">No notifications sent yet</div>';
     return;
   }
-  var typeIcons={ review:'⭐', verification:'🪪', verify_nudge:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', owner_id_verified:'🪪', customer_verified:'✅', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗', waitlist_autobook:'📅', waitlist_added:'📅', waitlist_notify:'📅' };
+  var typeIcons={ review:'⭐', verification:'🪪', verify_nudge:'🪪', confirmation:'🎉', reminder:'🔔', receipt:'🧾', closeout:'📋', owner:'📣', owner_id_verified:'🪪', customer_verified:'✅', datelock:'🔒', signing:'✍️', signedcopy:'📧', portal:'🔗', extsigned:'✍️', toggle:'🔁', waitlist_autobook:'📅', waitlist_added:'📅', waitlist_notify:'📅' };
   el.innerHTML = _notifLog.map(function(n, i){
     var dt=new Date(n.at);
     var dateStr=dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});
@@ -12464,14 +12502,20 @@ function sendReviewRequest(b){
 function toggleClientReview(id, checked){
   var idx=bookings.findIndex(function(b){ return b.id===id; });
   if(idx===-1) return;
-  bookings[idx].noClientReview = !checked;
-  bookings[idx]._t=Date.now();
+  var _b=bookings[idx];
+  var _was=!_b.noClientReview;
+  if(_was===checked) return; // no actual change — nothing to log
+  _b.noClientReview = !checked;
+  _b._t=Date.now();
+  // Log every toggle as a change — booking audit history AND the comm/main log.
+  _b._history=(_b._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['clientReview|'+(_was?'on':'off')+'|'+(checked?'on':'off')]}]);
+  logNotif('toggle','Review request turned '+(checked?'ON':'OFF')+' for '+(_b.name||'client'),(_b.name||''),id);
   save();
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
   if(activeTab==='cancelled') renderCancelled();
-  showToast(checked?('Review request ON for '+(bookings[idx].name||'client')):('Review OFF — '+(bookings[idx].name||'client')+' won\'t be asked'));
+  showToast(checked?('Review request ON for '+(_b.name||'client')):('Review OFF — '+(_b.name||'client')+' won\'t be asked'));
 }
 // Review email HTML — shared by the customer + authorized-driver sends.
 function _reviewEmailHtml(firstName){
@@ -14723,7 +14767,7 @@ function renderBrokerTab(){
   var active=bookings.filter(function(b){return !b._deleted&&b.status!=='cancelled';});
 
   // KPIs
-  var totalBF=active.reduce(function(s,b){return s+((Number(b.brokerFee)||0)*(Number(b.days)||1));},0);
+  var totalBF=active.reduce(function(s,b){return s+(brokerFeeTotal(b));},0);
   var brokered=active.filter(function(b){return b.broker;});
   var kpiEl=$d('brokerKpiGrid'); if(!kpiEl) return;
   kpiEl.innerHTML=[
@@ -14740,7 +14784,7 @@ function renderBrokerTab(){
     if(!brokerMap[n]) brokerMap[n]={name:n,count:0,gross:0,fees:0,lastDate:''};
     brokerMap[n].count++;
     brokerMap[n].gross+=totalRevenue(b);
-    brokerMap[n].fees+=((Number(b.brokerFee)||0)*(Number(b.days)||1));
+    brokerMap[n].fees+=(brokerFeeTotal(b));
     if((b.date||'')>brokerMap[n].lastDate) brokerMap[n].lastDate=b.date;
   });
   var rows=Object.values(brokerMap).sort(function(a,b){return b.gross-a.gross;});
@@ -16276,18 +16320,29 @@ function _renderExtensionView(b, extIdx){
   var _statusBadge=_esc2.signed>=_esc2.total
     ? '<span style="color:#22c55e;font-weight:800;font-size:12px">✅ Fully Signed</span>'
     : '<span style="color:#f97316;font-weight:700;font-size:12px">⏳ '+_esc2.signed+' of '+_esc2.total+' signed</span>';
+  // Roster of EVERYONE who must sign this extension — the primary renter first, then
+  // each additional authorized driver — each with their signed/pending status and an
+  // individual "Send Signing" (or "Copy Link" when no email) button while pending.
   var _drvPanel='';
   if(b.extraDrivers&&b.extraDrivers.length){
-    _drvPanel='<div style="background:rgba(201,169,98,.05);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:12px">'+
-      '<div style="font-weight:700;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Additional Authorized Drivers — must sign this extension</div>'+
+    var _primDone=!!(ext.signed&&ext.sig&&String(ext.sig).indexOf('data:image/')===0);
+    var _rows=
+      '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border)">'+
+        '<span style="flex:1">'+esc(b.name||'Primary renter')+' <span style="color:var(--muted);font-size:10px">· primary renter</span>'+
+          (_primDone?' <span style="color:#22c55e;font-weight:700">✓ Signed '+esc(ext.sigDate||'')+'</span>':' <span style="color:#f97316">⏳ Pending</span>')+'</span>'+
+        (_primDone?'':'<button class="btn btn-sm" onclick="sendExtensionSigningLink()" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">'+(b.email?'📲 Send Signing':'📋 Copy Link')+'</button>')+
+      '</div>'+
       b.extraDrivers.map(function(d,i){
         var s=ext.driverSigs&&ext.driverSigs[i];
         var done=!!(s&&s.sig&&String(s.sig).indexOf('data:image/')===0);
-        return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0">'+
-          '<span style="flex:1">'+esc(d.name||('Driver '+(i+1)))+(done?' <span style="color:#22c55e;font-weight:700">✓ Signed '+esc(s.sigDate||'')+'</span>':' <span style="color:#f97316">⏳ Pending</span>')+'</span>'+
+        return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">'+
+          '<span style="flex:1">'+esc(d.name||('Driver '+(i+1)))+' <span style="color:var(--muted);font-size:10px">· authorized driver</span>'+(done?' <span style="color:#22c55e;font-weight:700">✓ Signed '+esc(s.sigDate||'')+'</span>':' <span style="color:#f97316">⏳ Pending</span>')+'</span>'+
           (done?'':'<button class="btn btn-sm" onclick="sendExtDriverSigningLink(\''+b.id+'\',\''+ext.id+'\','+i+')" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">'+(d.email?'📲 Send Signing':'📋 Copy Link')+'</button>')+
         '</div>';
-      }).join('')+
+      }).join('');
+    _drvPanel='<div style="background:rgba(201,169,98,.05);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:12px">'+
+      '<div style="font-weight:700;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">All parties must sign this extension — '+_esc2.signed+' of '+_esc2.total+' signed</div>'+
+      _rows+
     '</div>';
   }
   $d('contractHeader').innerHTML =
@@ -16454,6 +16509,41 @@ function _extSignedCount(b, ext){
   return { signed:n, total:1+ds.length };
 }
 function _extFullySigned(b, ext){ var c=_extSignedCount(b,ext); return c.signed>=c.total; }
+// Derived communication-log rows for extension signatures — the primary renter and
+// each additional authorized driver — plus a "fully signed" milestone when all parties
+// have signed. Surfaced in BOTH the per-booking communication log and the main
+// notification log, for old and new extensions alike. Timestamps are stable (signed
+// date @ noon) so re-deriving on every load/merge never creates duplicates.
+function _extSignCommEntries(b){
+  var out=[];
+  if(!b || !b.extensions || !b.extensions.length) return out;
+  var _isImg=function(s){ return s && String(s).indexOf('data:image/')===0; };
+  var _ts=function(dateStr,fallback){
+    if(dateStr){ var d=new Date(String(dateStr)+' 12:00:00'); if(!isNaN(d.getTime())) return d.getTime(); }
+    return Number(fallback)||0;
+  };
+  var drivers=(b.extraDrivers||[]);
+  b.extensions.forEach(function(ext,i){
+    if(!ext) return;
+    var n=i+1, times=[];
+    if(ext.signed && _isImg(ext.sig)){
+      var pt=_ts(ext.sigDate, ext.sentAt); times.push(pt);
+      out.push({at:pt, type:'extsigned', label:'Extension #'+n+' signed by '+(b.name||'client'), to:(b.name||'')});
+    }
+    drivers.forEach(function(d,j){
+      var s=ext.driverSigs && ext.driverSigs[j];
+      if(s && _isImg(s.sig)){
+        var dt=_ts(s.sigDate, ext.sentAt); times.push(dt);
+        out.push({at:dt, type:'extsigned', label:'Extension #'+n+' signed by '+((d&&d.name)||('Driver '+(j+1)))+' (authorized driver)', to:((d&&d.name)||'')});
+      }
+    });
+    if(_extFullySigned(b,ext)){
+      var last=times.length?Math.max.apply(null,times):0;
+      out.push({at:last, type:'extsigned', label:'Extension #'+n+' fully signed by all parties', to:(b.name||'')});
+    }
+  });
+  return out;
+}
 
 // Create a new extension — shows inline form in the contract area
 function addExtensionContract(){
@@ -16484,6 +16574,16 @@ function addExtensionContract(){
   var chargeStr = prompt('Additional charge for this extension (leave blank for $0):', '');
   var addlCharge = chargeStr ? Math.max(0, parseFloat(chargeStr.replace(/[^0-9.]/g,''))||0) : 0;
 
+  // Broker logic for the extended days — only prompts when this booking has a broker.
+  // Defaults to the per-day rate × added days (matching a normal broker booking) but is
+  // fully editable, so the broker can take more, less, or nothing on the extension.
+  var extBrokerFee = 0;
+  if(b.broker || Number(b.brokerFee) > 0){
+    var _bfSuggest = Number(b.brokerFee) > 0 ? (Number(b.brokerFee)*extDays).toFixed(2) : '';
+    var bfStr = prompt('Broker fee for this extension'+(b.broker?(' — '+b.broker):'')+' (+'+extDays+' day'+(extDays!==1?'s':'')+').\nEnter $ amount, leave blank for $0:', _bfSuggest);
+    extBrokerFee = bfStr ? Math.max(0, parseFloat(String(bfStr).replace(/[^0-9.]/g,''))||0) : 0;
+  }
+
   var notes = prompt('Notes for extension (optional — leave blank to skip):', '') || '';
 
   // Confirm
@@ -16492,6 +16592,7 @@ function addExtensionContract(){
     'From: '+fmtDateFull(currentEnd)+'\n'+
     'To: '+fmtDateFull(newEndDate)+' (+'+extDays+' day'+(extDays!==1?'s':'')+')\n'+
     (addlCharge?'Additional Charge: $'+addlCharge.toFixed(2)+'\n':'')+
+    (extBrokerFee?'Broker Fee (this extension): $'+extBrokerFee.toFixed(2)+'\n':'')+
     (notes?'Notes: '+notes+'\n':'')
   )) return;
 
@@ -16502,6 +16603,7 @@ function addExtensionContract(){
     toDate: newEndDate,
     extensionDays: extDays,
     additionalCharge: addlCharge,
+    brokerFee: extBrokerFee,
     notes: notes,
     sentAt: null,
     signed: false,
@@ -16519,6 +16621,15 @@ function addExtensionContract(){
   var _newEndMs = new Date(newEndDate+'T12:00:00').getTime();
   if(_pickupMs && _newEndMs > _pickupMs){
     bookings[idx].days = Math.round((_newEndMs - _pickupMs) / 86400000);
+  }
+  // The extension's additional charge is now owed by the customer — roll it into the
+  // balance due (unless the balance is already marked paid in full). Base off the
+  // stored balance, or Revenue+Deposit−DateLock when none was set yet.
+  if(addlCharge>0 && !bookings[idx].balancePaidAt){
+    var _curBal = (bookings[idx].remainingBalance!=null)
+      ? (Number(bookings[idx].remainingBalance)||0)
+      : Math.max(0,(Number(bookings[idx].revenue)||0)+(Number(bookings[idx].deposit)||0)-(Number(bookings[idx].dateLock)||0));
+    bookings[idx].remainingBalance = _curBal + addlCharge;
   }
   bookings[idx]._t = Date.now();
   save();
@@ -16663,16 +16774,17 @@ function sendExtensionSigningLink(){
     save();
   }
   var sl = $d('extSigLinkStatus');
+  var extNum = extIdx + 1;
   if(!b.email || !MESSAGING_URL){
-    // Fallback: copy to clipboard
+    // No customer email on file → copy to clipboard so it can be sent manually. Logged either way.
+    logNotif('signing','Extension #'+extNum+' Signing Link — copied (no email on file)',(b.email||'no email'),b.id);
     if(navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(url).then(function(){ showToast('Extension signing link copied 📋'); if(sl) sl.textContent='Link copied!'; });
+      navigator.clipboard.writeText(url).then(function(){ showToast(b.email?'Link copied 📋':'No email on file for this booking — link copied 📋'); if(sl) sl.textContent='Link copied'; });
     } else {
       prompt('Copy this extension signing link:', url);
     }
     return;
   }
-  var extNum = extIdx + 1;
   var firstName = (b.name||'there').split(' ')[0];
   if(sl) sl.textContent = 'Sending…';
   var html =
@@ -16701,10 +16813,12 @@ function sendExtensionSigningLink(){
       if(sl) sl.textContent = 'Sent to '+b.email;
     } else {
       if(sl) sl.textContent = 'Send failed — link copied';
+      logNotif('signing','Extension #'+extNum+' Signing Link — send failed, copied',b.email,b.id);
       if(navigator.clipboard) navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); });
     }
   }).catch(function(){
     if(sl) sl.textContent = 'Network error';
+    logNotif('signing','Extension #'+extNum+' Signing Link — network error, copied',b.email,b.id);
     if(navigator.clipboard) navigator.clipboard.writeText(url).then(function(){ showToast('Email error — link copied 📋'); });
   });
 }
@@ -17405,7 +17519,7 @@ function _initSigningMode(bookingId, driverIdx){
       .replace(/\{\{odometer_in\}\}/gi,_sr(bk.odomIn?Number(bk.odomIn).toLocaleString()+' mi':''))
       .replace(/\{\{mileage_policy\}\}/gi,_sr(_sMilagePol))
       .replace(/\{\{fuel_policy\}\}/gi,'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
-      .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-(Number(bk.brokerFee)||0)*_sbd.days).toFixed(2)))
+      .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-brokerFeeTotal(bk)).toFixed(2)))
       .replace(/\{\{additional_drivers\}\}/gi,_sr(_buildAdditionalDriversHtml(bk, true, /#0d0d0d/.test(_origSigningTmpl))))
       .replace(/\{\{owner_signature\}\}/gi,(data.owner_signature&&data.owner_signature.startsWith('data:image/'))?'<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">':'<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
       // customer_signature: primary signs → canvas placeholder; driver signs → primary's actual sig (or blank)
