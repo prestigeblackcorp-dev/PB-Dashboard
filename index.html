@@ -3706,7 +3706,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v56';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v57';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 // Old iOS Safari's JSON.stringify can emit RAW unpaired (lone) surrogates — pre-ES2019 it is NOT
 // "well-formed" — producing invalid UTF-8 that the Worker rejects with HTTP 400 "Invalid JSON",
@@ -16690,6 +16690,51 @@ function _contractShowTab(extIdx){
   }
 }
 
+// Completely delete a selected extension AND wipe all its children: reverse the rental-window move
+// (dropoff + day/hour count), un-fold its revenue (paid) or un-bill the balance (owed), delete any
+// linked portal charges (card request / fold source), and drop the entry itself (which carries its
+// signatures). The exact inverse of recordExtension + its money handling, so totals stay correct.
+function deleteExtension(bookingId, extId){
+  var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
+  if(idx===-1) return;
+  var b=bookings[idx];
+  var ei=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; });
+  if(ei===-1) return;
+  var ext=b.extensions[ei], extNum=ei+1;
+  var amt=Number(ext.additionalCharge)||0, n=Math.max(0,Number(ext.extensionDays)||0), unit=(ext.extensionUnit==='hours')?'hr':'d';
+  if(!confirm('Delete Extension #'+extNum+' and ALL its data?\n\nThis reverses its date change (−'+n+' '+unit+'), removes its '+(amt?('$'+amt.toFixed(2)+' charge, '):'')+'signatures and any linked card requests, and recalculates revenue/broker. This cannot be undone.')) return;
+  // 1) Reverse the rental-window move.
+  if(ext.extensionUnit==='hours'){ _shiftDropoffHours(b, -n); }
+  else { var _sd=b.dropoffDate?parseLocalDate(b.dropoffDate):null; if(_sd&&!isNaN(_sd.getTime())) b.dropoffDate=dateStr(addDays(_sd,-n)); }
+  b.days=Math.max(1,(Number(b.days)||1)-n);
+  // 2) Reverse the money exactly where it landed.
+  if(amt>0){
+    if(ext._revenueFolded){ b.revenue=Math.max(0,(Number(b.revenue)||0)-amt); }
+    else if(b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
+  }
+  // 3) Wipe children: every portal charge linked to this extension (card request + fold source).
+  var _kids=0;
+  if(b.portalCharges&&b.portalCharges.length){
+    var _before=b.portalCharges.length;
+    b.portalCharges=b.portalCharges.filter(function(c){ return !(c && c._extId===extId); });
+    _kids=_before-b.portalCharges.length;
+  }
+  // 4) Drop the extension entry (its signatures live on it).
+  b.extensions.splice(ei,1);
+  b._t=Date.now();
+  save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  logNotif('extension','Extension #'+extNum+' DELETED — reversed −'+n+' '+unit+(amt?(', −$'+amt.toFixed(2)):'')+(_kids?(', removed '+_kids+' linked charge'+(_kids!==1?'s':'')):''),(b.name||''),bookingId);
+  if(typeof syncToGCal==='function') syncToGCal(b);
+  render();
+  // Refresh the contract view: jump to a remaining extension, else the base contract.
+  if(_contractBookingId===bookingId){
+    var rem=(b.extensions||[]).length;
+    if(rem>0) _contractShowTab(Math.min(ei, rem-1));
+    else _contractShowTab(-1);
+  }
+  toast('🗑 Extension #'+extNum+' deleted — all data reversed');
+}
+
 function _renderExtensionView(b, extIdx){
   if(!b || !b.extensions || !b.extensions[extIdx]) return;
   var ext = b.extensions[extIdx];
@@ -16702,7 +16747,23 @@ function _renderExtensionView(b, extIdx){
   if(origFrame) origFrame.style.display = 'none';
   $d('contractFilled').style.display = 'none';
   if(rawToggle){ rawToggle.style.display = ''; rawToggle.textContent = '👁 View Raw HTML'; rawToggle._showingRaw = false; }
-  if(extFrame){ extFrame.style.display = ''; extFrame.srcdoc = html; }
+  if(extFrame){
+    extFrame.style.display = '';
+    // Only reload the iframe when the contract content actually changed — prevents the scroll-to-top
+    // jump on every data refresh / watchdog tick while the owner is reading the extension contract
+    // (same fix the main contract/waiver already has).
+    if(extFrame.srcdoc !== html){
+      var _extScroll = 0;
+      try{ if(extFrame.contentWindow) _extScroll = extFrame.contentWindow.scrollY || extFrame.contentWindow.pageYOffset || 0; }catch(e){}
+      extFrame.srcdoc = html;
+      if(_extScroll > 10){
+        extFrame.addEventListener('load', function _restoreExtScroll(){
+          extFrame.removeEventListener('load', _restoreExtScroll);
+          try{ extFrame.contentWindow.scrollTo(0, _extScroll); }catch(e){}
+        });
+      }
+    }
+  }
   // Update the booking info header
   var extNum = extIdx + 1;
   var fromFmt = fmtDateFull(ext.fromDate);
@@ -16760,7 +16821,11 @@ function _renderExtensionView(b, extIdx){
     '<span style="color:var(--muted)">'+fromFmt+' &rarr; '+toFmt+'</span>'+
     (ext.additionalCharge?'<span style="color:var(--gold)">+$'+Number(ext.additionalCharge).toFixed(2)+'</span>':'')+
     '<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+(_payBadge?_payBadge:'')+_statusBadge+'</span>'+
-    '</div>'+_payPanel+_drvPanel;
+    '</div>'+
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:10px">'+
+      '<button class="btn btn-sm" onclick="deleteExtension(\''+b.id+'\',\''+ext.id+'\')" style="border-color:rgba(239,68,68,.5);color:#ef4444;font-weight:700" title="Permanently delete this extension and ALL its data — signatures, linked card charges, and the date/revenue/broker changes it applied">🗑 Delete Extension #'+extNum+' &amp; all its data</button>'+
+    '</div>'+
+    _payPanel+_drvPanel;
   // Update extension signature view
   var lockView = $d('extSigLockView');
   var editView = $d('extSigEditView');
