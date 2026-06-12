@@ -3706,7 +3706,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v59';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v60';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -3781,7 +3781,7 @@ function _pushBookingsIndividually(){
       if(ok>0||skipped>0){ _lastSavedAt=Date.now(); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} _pendingCloudSave=false; }
       setSyncStatus(fail?'error':'ok');
       var _sk = skipped?(' · '+skipped+' duplicate'+(skipped!==1?'s':'')+' skipped'):'';
-      toast(fail ? ('⚠ Pushed '+ok+' of '+dirty.length+_sk+' — tap Sync to retry the rest') : ('✅ '+ok+' booking'+(ok!==1?'s':'')+' pushed'+_sk));
+      toast(fail ? ('⚠ '+fail+' booking'+(fail!==1?'s':'')+' failed: '+(_lastSyncErr||'error')+' [build '+PB_BUILD+']'+(ok?(' · '+ok+' ok'):'')+_sk+' — screenshot this') : ('✅ '+ok+' booking'+(ok!==1?'s':'')+' pushed'+_sk));
       return;
     }
     var b=dirty[i++];
@@ -3862,9 +3862,10 @@ function _cloudSaveNow() {
           var _se = (res && res.error) ? String(res.error) : ('HTTP ' + ((res && res.status) || '?'));
           _lastSyncErr = 'save ' + _se + ' (' + Math.round(JSON.stringify(data).length / 1024) + 'KB)';
           setSyncStatus('error');
-          if (/Invalid JSON|too large|Payload/i.test(_se)) {
-            // The full dataset is too big for THIS device to POST in one piece (old phones truncate it
-            // → the worker sees partial JSON → 400). Switch to per-booking pushes and send the changes.
+          if (/Invalid JSON|too large|Payload|Firebase 4|HTTP 4/i.test(_se) || (res && res.status === 400)) {
+            // Full save rejected — either too big to POST in one piece on this device, OR Firebase
+            // refused some booking's data. Switch to per-booking pushes: that syncs every GOOD booking
+            // on its own AND isolates the bad one, surfacing its exact Firebase reason in the toast.
             _fullSyncTooBig = true; _cloudSaveRetries = 0; _pushBookingsIndividually();
           } else if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
           else { _cloudSaveRetries = 0; setSyncStatus('error'); }
