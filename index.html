@@ -3537,6 +3537,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <input id="vehModalActive" type="checkbox" checked style="width:16px;height:16px;accent-color:var(--gold)"> Show to riders
         </label>
       </div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.5;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 11px">Saving updates the fleet everywhere: riders see it in the booking picker, the rate applies to new bookings (in‑progress trips keep their locked price), and it appears in every chauffeur's “Drives” list. Renaming repoints assigned chauffeurs automatically.</div>
       <button class="btn btn-gold" style="width:100%;margin-top:2px;font-weight:800;padding:12px" onclick="saveVehicle()">Save Vehicle</button>
       <div id="vehModalStatus" style="font-size:13px;text-align:center;display:none"></div>
     </div>
@@ -7772,7 +7773,9 @@ async function renderDriversTab(){
   var reqPanel=$d('tabDriverRequestsPanel');
   if(reqPanel) renderDriverRequestsPanel.__tabTarget=reqPanel;
   loadDriverRequests(reqPanel);
-  try{ renderFleetVehicles(); }catch(e){}
+  // Await the fleet catalog first so each chauffeur's "Drives" dropdown is built from the
+  // current vehicle list (a just-added vehicle is immediately assignable).
+  try{ await renderFleetVehicles(); }catch(e){}
 
   // Load roster into tab
   var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
@@ -7918,9 +7921,11 @@ async function renderFleetVehicles(){
   }catch(e){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">Network error.</div>'; }
 }
 var _fleetVehicles=[];
+var _vehEditOrig='';   // the vehicle's name before an edit, so a rename can cascade server-side
 function _jsAttr2(s){ return "'"+String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"'"; }
 function openVehicleModal(name){
   var v=(name?(_fleetVehicles||[]).find(function(x){return x.name===name;}):null)||{name:'',hourlyRate:200,icon:'🚘',order:99,active:true,builtin:false};
+  _vehEditOrig=name||'';
   $d('vehModalTitle').textContent=name?'Edit Vehicle':'Add Vehicle';
   $d('vehModalName').value=v.name||'';
   $d('vehModalName').disabled=!!v.builtin;   // built-in names are fixed (the rate/active are editable)
@@ -7939,13 +7944,15 @@ async function saveVehicle(){
   var st=$d('vehModalStatus');
   if(!name){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Name is required.'; return; }
   if(!(rate>=0)){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Enter a valid hourly rate.'; return; }
-  var body={ secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''), name:name, hourlyRate:rate, icon:($d('vehModalIcon').value||'🚘').trim(), order:Number($d('vehModalOrder').value)||99, active:$d('vehModalActive').checked };
+  var body={ secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''), name:name, origName:_vehEditOrig, hourlyRate:rate, icon:($d('vehModalIcon').value||'🚘').trim(), order:Number($d('vehModalOrder').value)||99, active:$d('vehModalActive').checked };
   st.style.display='block'; st.style.color='var(--muted)'; st.textContent='Saving…';
   try{
     var r=await fetch(WORKER+'/dashboard/save-vehicle',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify(body)});
     var d=await r.json().catch(function(){return {};});
     if(!r.ok){ st.style.color='var(--red)'; st.textContent=(d&&d.error)||('Error '+r.status); return; }
-    closeVehicleModal(); renderFleetVehicles();
+    // Refresh the whole Drivers tab so the new/edited vehicle shows in the fleet cards AND in
+    // every chauffeur's "Drives" dropdown (catalog change → assignable everywhere).
+    closeVehicleModal(); if(typeof renderDriversTab==='function') renderDriversTab(); else renderFleetVehicles();
   }catch(e){ st.style.color='var(--red)'; st.textContent='Network error.'; }
 }
 async function deleteVehicle(name){
@@ -7955,7 +7962,7 @@ async function deleteVehicle(name){
     var r=await fetch(WORKER+'/dashboard/delete-vehicle',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify({secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''),name:name})});
     var d=await r.json().catch(function(){return {};});
     if(!r.ok){ alert((d&&d.error)||('Error '+r.status)); return; }
-    renderFleetVehicles();
+    if(typeof renderDriversTab==='function') renderDriversTab(); else renderFleetVehicles();   // refresh fleet cards + chauffeur dropdowns
   }catch(e){ alert('Network error'); }
 }
 
