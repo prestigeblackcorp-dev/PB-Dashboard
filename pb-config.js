@@ -38,7 +38,8 @@
     webPush:     true,   // G — live: VAPID keys set in Cloudflare + webpush worker deployed
     cardOnFile:  true,   // H — card-on-file (DEMO simulation until real Stripe keys added)
     tipping:     true,   // H — tipping (DEMO simulation)
-    demoPay:     true    // payments are a no-charge simulation; flip OFF when real Stripe keys exist
+    demoPay:     true,   // payments are a no-charge simulation; flip OFF when real Stripe keys exist
+    googlePlaces:true    // Google Places (New) search via worker proxy; LIVE (GOOGLE_PLACES_KEY set in Cloudflare)
   };
 
   // Web Push VAPID public key (non-secret). Generated 2026-06; the matching private

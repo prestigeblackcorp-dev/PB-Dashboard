@@ -751,6 +751,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
             <div class="done-icon">⭐</div>
             <div class="done-title">Ride Complete!</div>
             <div class="done-price" id="doneFare"></div>
+            <div id="doneAdjust" style="display:none;font-size:12px;color:var(--gold);margin-top:4px"></div>
             <div class="done-sub">Thank you for riding with Prestige Black</div>
             <!-- Demo payment receipt + tip (quick-win H, simulation until real Stripe) -->
             <div id="donePayBlock" style="display:none;margin-top:16px;text-align:left"></div>
@@ -1307,6 +1308,7 @@ function onAddrFocus(field){
   _activeSugg=field;
   if(field==='pickup'||field==='dropoff') expandSheet();
   closeSuggestions('pickup'); closeSuggestions('dropoff'); closeSuggestions('stop'); closeSuggestions('nextstop');
+  var _se=$d(field+'Sugg'); if(_se) _se._gsession=null;   // start a fresh Google billing session on focus
 }
 // Reference point for ordering suggestions closest-first: for a dropoff we measure
 // from the chosen pickup; otherwise from the rider's live location, then the current
@@ -1349,10 +1351,27 @@ function _categoryTags(q){
   for(const k in _CAT_TAGS){ if(s.indexOf(' '+k+' ')!==-1 || s.indexOf(' '+k+'s ')!==-1) return _CAT_TAGS[k]; }
   return [];
 }
+function _googlePlacesOn(){ return !!(window.PB_FLAGS||{}).googlePlaces; }
+function _newSession(){ try{ if(window.crypto&&crypto.randomUUID) return crypto.randomUUID(); }catch(e){} return 'pb-'+Date.now()+'-'+Math.round(Math.random()*1e9).toString(36); }
+// Render Google Places (New) predictions into the same suggestion list. They carry a
+// placeId (no coords) — selectSuggestion resolves the coords via /places/details on tap.
+function _renderGoogleSuggestions(field, el, sugs, qt){
+  let rows=sugs.map((s,i)=>'<div class="suggestion" onclick="selectSuggestion(\''+field+'\','+i+')"><div class="sug-main">'+esc(s.main||'')+'</div>'+(s.sub?'<div class="sug-sub">'+esc(s.sub)+'</div>':'')+'</div>').join('');
+  rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">📍 Use “'+esc(qt)+'”</div><div class="sug-sub">'+(sugs.length?'Pin the closest match':'Search & drop a pin')+'</div></div>';
+  el.innerHTML=rows; el._gsugs=sugs; el._features=null; el._typed=qt; el.style.display='block';
+}
 async function fetchSuggestions(field){
   const q=(($d(field+'Inp')||{}).value)||''; const qt=q.trim();
   if(!qt||qt.length<2){ closeSuggestions(field); return; }
   const ref=_suggRef(field);
+  const gEl=$d(field+'Sugg');
+  // Google Places (New) via the worker proxy — top-notch search; silently falls back to the
+  // Photon path below if the flag is off, the key is unset, or the call fails/returns nothing.
+  if(gEl && _googlePlacesOn()){
+    if(!gEl._gsession) gEl._gsession=_newSession();
+    const g=await fetch(WORKER+'/places/suggest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:qt,lat:ref.lat,lng:ref.lng,session:gEl._gsession})}).then(r=>r.json()).catch(()=>null);
+    if(g && g.ok && Array.isArray(g.suggestions) && g.suggestions.length){ _renderGoogleSuggestions(field, gEl, g.suggestions, qt); return; }
+  }
   // Bias results to the rider's area, pull a wide pool, and apply category filters so
   // typing a kind of place returns those places. Always keep an "use what I typed" row.
   const tags=_categoryTags(qt);
@@ -1391,11 +1410,19 @@ async function fetchSuggestions(field){
   // so a rider can never get stuck unable to enter a place that didn't auto-appear.
   rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">📍 Use “'+esc(qt)+'”</div><div class="sug-sub">'+(feats.length?'Pin the closest match':'Search & drop a pin')+'</div></div>';
   el.innerHTML=rows;
-  el._features=feats; el._typed=qt;
+  el._features=feats; el._gsugs=null; el._typed=qt;
   el.style.display='block';
 }
-function selectSuggestion(field,idx){
+async function selectSuggestion(field,idx){
   const el=$d(field+'Sugg');
+  // Google mode: resolve the chosen prediction to coordinates via Place Details.
+  if(el && el._gsugs && el._gsugs[idx]){
+    const gs=el._gsugs[idx];
+    const gd=await fetch(WORKER+'/places/details',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:gs.id,session:el._gsession})}).then(r=>r.json()).catch(()=>null);
+    el._gsession=null;   // a selection ends the billing session
+    if(gd && gd.ok && gd.lat!=null && gd.lng!=null){ _applySel(field, Number(gd.lat), Number(gd.lng), gd.label||gs.main||''); return; }
+    _useTyped(field); return;   // details failed → geocode the typed text
+  }
   const f=el&&el._features&&el._features[idx];
   if(!f||!f.geometry) return;
   const [lng,lat]=f.geometry.coordinates;
@@ -2048,6 +2075,16 @@ function updateStatusUI(ride, driverLoc){
     $d('extendModal').style.display='none';
     $d('doneCard').style.display='block';
     $d('doneFare').textContent='$'+(ride.finalPrice||ride.lockedPrice||ride.estimatedPrice||0).toFixed(2);
+    // Early-end transparency: show the booked block was reduced to the real time used.
+    var _adj=$d('doneAdjust'), _pl=ride.pricingLog;
+    if(_adj){
+      if(_pl && typeof _pl.basis==='string' && _pl.basis.indexOf('early')===0 && Number(ride.originalPrice)>Number(ride.finalPrice||0)){
+        _adj.innerHTML=(_pl.basis==='early_grace_free')
+          ? 'Ended within 10 min — no charge · <span style="color:var(--muted);text-decoration:line-through">$'+Number(ride.originalPrice).toFixed(2)+'</span>'
+          : 'Billed for your actual '+_pl.elapsedMin+' min · <span style="color:var(--muted);text-decoration:line-through">$'+Number(ride.originalPrice).toFixed(2)+' booked</span>';
+        _adj.style.display='block';
+      } else { _adj.style.display='none'; }
+    }
     $d('cancelRideBtn').style.display='none';
     $d('newRideBtn').style.display='block';
     _doneTip=0; renderDoneCardPay(ride);   // demo payment receipt + tip
