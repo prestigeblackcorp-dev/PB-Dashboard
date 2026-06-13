@@ -1349,9 +1349,22 @@ function renderEarnings(){
     var desc=Number(t.fare||0)>0
       ? 'Earnings'
       : (t.payType==='hourly' ? (t.hoursLogged||0)+'h × '+fmt$(t.payAmount||0)+'/hr' : 'Flat rate');
+    // Per-stop breakdown: when a P2P trip had accepted stops, show the driver's take split into
+    // base + each stop (+ tip) so the combined figure is itemized. Driver share only (35%).
+    var _stops=(Array.isArray(t.stopSurcharges)?t.stopSurcharges:[]).filter(function(s){return Number(s.amount)>0;});
+    var _bd='';
+    if(_stops.length && Number(t.fare||0)>0 && !(Number(t.payAmount)>0)){   // fare-based pay (ride-hail) only — owner-set flat/hourly amounts aren't itemized by stop
+      var _sGross=_stops.reduce(function(a,s){return a+(Number(s.amount)||0);},0);
+      var _baseTake=Math.max(0,(Number(t.fare)-_sGross))*DRIVER_SHARE;
+      var _tip=Number(t.tipAmount)||0;
+      _bd='<div style="font-size:10.5px;color:var(--gold);margin-top:3px;line-height:1.55;">Base '+fmt$(_baseTake)
+        +_stops.map(function(s,i){ return ' · <span title="'+esc(String(s.address||''))+'">Stop '+(i+1)+'</span> +'+fmt$((Number(s.amount)||0)*DRIVER_SHARE); }).join('')
+        +(_tip>0?' · Tip +'+fmt$(_tip):'')+'</div>';
+    }
     return '<div class="earn-row">'
       +'<div><div style="font-weight:600;font-size:13px;">'+esc(t.vehicle||'Trip')+'</div>'
-      +'<div style="font-size:11px;color:var(--muted);">'+fmtDate(t.pickupDate||t.date)+' · '+desc+'</div></div>'
+      +'<div style="font-size:11px;color:var(--muted);">'+fmtDate(t.pickupDate||t.date)+' · '+desc+(_stops.length?' · '+_stops.length+' stop'+(_stops.length!==1?'s':''):'')+'</div>'
+      +_bd+'</div>'
       +'<div style="font-weight:800;color:var(--green);font-size:15px;">'+fmt$(pay)+'</div>'
       +'</div>';
   }).join(''):'<div class="empty-state"><div>No trips yet</div></div>';
