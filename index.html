@@ -8177,11 +8177,14 @@ function renderLiveRides(rides){
       +'<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2,#b0bcd8);margin-top:1px"><span style="width:8px;height:8px;border-radius:50%;background:'+sc+';flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.pickupAddress||'Pickup')+'</span></div>'
       +(r.dropoffAddress?'<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);margin-top:3px"><span style="width:8px;height:8px;border-radius:2px;background:var(--gold);flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.dropoffAddress)+'</span></div>':'');
     var drv=r.assignedDriver||r.driverName;
+    var _ls=(Array.isArray(r.stopSurcharges)?r.stopSurcharges:[]).filter(function(s){return Number(s.amount)>0;});
+    var lStops=_ls.length?('<div style="font-size:10.5px;color:var(--gold);font-weight:700;margin-top:4px">🛑 '+_ls.length+' stop'+(_ls.length!==1?'s':'')+' · '+_ls.map(function(s){return '+$'+(Number(s.amount)||0).toFixed(0);}).join(' ')+'</div>'):'';
     return '<div style="position:relative;background:linear-gradient(135deg,'+sc+'14,rgba(255,255,255,.02));border:1px solid var(--border);border-left:3px solid '+sc+';border-radius:14px;padding:13px 16px;margin-bottom:9px;display:flex;align-items:center;gap:13px;flex-wrap:wrap">'
       +'<div style="width:42px;height:42px;border-radius:12px;background:'+sc+'22;border:1px solid '+sc+'44;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:'+sc+';flex-shrink:0">'+initial+'</div>'
       +'<div style="flex:1;min-width:140px">'
       +'<div style="font-size:14px;font-weight:800;color:#fff;letter-spacing:-.2px">'+rider+'</div>'
       +route
+      +lStops
       +(drv?'<div style="font-size:11px;color:var(--muted);margin-top:4px">👤 '+esc(drv)+'</div>':'')
       +'</div>'
       +'<div style="text-align:right;flex-shrink:0">'
@@ -8357,10 +8360,15 @@ function renderRideHistory(){
     var timeline=steps.map(function(s){ return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);white-space:nowrap"><b style="color:var(--text2,#b0bcd8);font-weight:700">'+s[0]+'</b> '+_rhClock(s[1])+'</span>'; }).join('<span style="color:var(--border);font-size:11px">›</span>');
     var route='<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2,#b0bcd8);margin-top:2px"><span style="width:7px;height:7px;border-radius:50%;background:'+m.c+';flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.pickupAddress||'Pickup')+'</span></div>'
       +(r.dropoffAddress?'<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);margin-top:3px"><span style="width:7px;height:7px;border-radius:2px;background:var(--gold);flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.dropoffAddress)+'</span></div>':'');
+    // P2P added stops — itemized (owner sees the GROSS customer charge per stop).
+    var _stopsArr=(Array.isArray(r.stopSurcharges)?r.stopSurcharges:[]).filter(function(s){return Number(s.amount)>0;});
+    var _stopsTotal=_stopsArr.reduce(function(a,s){return a+(Number(s.amount)||0);},0);
+    var stopsBlock=_stopsArr.length?('<div style="margin-top:7px;padding-top:7px;border-top:1px dashed var(--border)"><div style="font-size:9px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">🛑 Added stops &middot; '+_stopsArr.length+'</div>'+_stopsArr.map(function(s,i){return '<div style="display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--text2,#b0bcd8);margin-top:2px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(i+1)+'. '+esc(s.address||'Stop')+'</span><span style="color:var(--gold);font-weight:800;flex-shrink:0">+$'+(Number(s.amount)||0).toFixed(2)+'</span></div>';}).join('')+'</div>'):'';
     var _earlyAdj=(r.pricingLog&&typeof r.pricingLog.basis==='string'&&r.pricingLog.basis.indexOf('early')===0&&Number(r.originalPrice)>Number(r.finalPrice||0));
     var priceBlock=r.status==='cancelled'
       ? '<div style="font-size:11px;color:var(--muted)">No charge</div>'
       : '<div style="font-size:16px;color:var(--gold);font-weight:900;letter-spacing:-.3px">$'+fare.toFixed(0)+(r.finalPrice?'':' <span style="font-size:9px;color:var(--muted);font-weight:600">est</span>')+'</div>'
+        +(_stopsTotal>0?'<div style="font-size:9px;color:var(--muted);font-weight:600;margin-top:1px" title="Base $'+Math.max(0,fare-_stopsTotal).toFixed(2)+' + $'+_stopsTotal.toFixed(2)+' in stops">Base $'+Math.max(0,fare-_stopsTotal).toFixed(0)+' · +$'+_stopsTotal.toFixed(0)+' stops</div>':'')
         +(_earlyAdj?'<div style="font-size:9px;color:var(--muted);font-weight:600;margin-top:1px" title="Hourly ended early — billed for actual time used"><span style="text-decoration:line-through">$'+Number(r.originalPrice).toFixed(0)+'</span> · '+(r.pricingLog.basis==='early_grace_free'?'≤10 min · free':'early · '+r.pricingLog.elapsedMin+'m')+'</div>':'');
     return '<div style="background:rgba(255,255,255,.02);border:1px solid var(--border);border-left:3px solid '+m.c+';border-radius:13px;padding:12px 15px;margin-bottom:8px">'
       +'<div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">'
@@ -8368,6 +8376,7 @@ function renderRideHistory(){
       +'<div style="flex:1;min-width:150px">'
       +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:14px;font-weight:800;color:#fff;letter-spacing:-.2px">'+rider+'</span>'+dist+hrs+veh+when+'</div>'
       +route
+      +stopsBlock
       +(drv?'<div style="font-size:11px;color:var(--muted);margin-top:4px">👤 '+esc(drv)+'</div>':'')
       +'</div>'
       +'<div style="text-align:right;flex-shrink:0">'
