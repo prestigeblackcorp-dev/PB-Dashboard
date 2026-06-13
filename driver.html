@@ -486,6 +486,7 @@ body.map-fs #map-expand-btn{z-index:1460;}
           <div class="arc-status"><span style="width:8px;height:8px;border-radius:50%;background:currentColor;animation:pulse 1.5s ease-in-out infinite;display:inline-block;"></span>&nbsp;ACTIVE RIDE</div>
           <div class="arc-rider" id="arc-rider-name">—</div>
           <div class="arc-sub" id="arc-rider-sub">Rider</div>
+          <div id="arc-earn" style="display:none;margin-top:6px;font-size:13px;font-weight:800;color:var(--gold);">You earn <span id="arc-earn-val">—</span></div>
           <div style="background:#0f0d08;border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:12px;">
             <div style="display:flex;gap:8px;align-items:flex-start;padding:3px 0;">
               <span style="font-size:13px;">🟡</span>
@@ -646,6 +647,7 @@ var _dutyInterval = null;   // location broadcast
 var _ridesPollTimer = null; // polls for incoming notifications & active ride
 var _pendingRide = null;    // incoming ride notification object
 var _activeRide = null;     // current accepted ride
+var _hourlyDriverTimer = null; // hourly: live remaining-time ticker on the active-ride panel
 var _rrTimerInterval = null;// countdown timer on accept overlay
 var _ridesMap = null;
 var _driverSelfMarker = null;
@@ -1480,7 +1482,9 @@ function onRidesTabOpen(){
 var _mqLand = window.matchMedia ? window.matchMedia('(orientation: landscape)') : null;
 function _applyOrientation(){
   if(!_mqLand) return;
-  if(_mqLand.matches && _activeTab==='rides' && !_navFs){ setMapFullscreen(true); }
+  // Don't let the waiting-mode live map take over during an active trip — that view
+  // reveals the header+tabs on zoom. A trip stays in turn-by-turn nav-fs (maybeAutoFullscreen).
+  if(_mqLand.matches && _activeTab==='rides' && !_navFs && !(_activeRide && navTarget(_activeRide))){ setMapFullscreen(true); }
   else if(!_mqLand.matches && _mapFs){ setMapFullscreen(false); }
 }
 if(_mqLand){
@@ -1610,7 +1614,12 @@ function navRecenter(){
 // Separate from nav-fs (turn-by-turn): this is the Uber-style "online, watching
 // the map" mode. Nav full-screen always wins — engaging it exits map-fs.
 var _mapFs=false;
-function mapFsToggle(){ setMapFullscreen(!_mapFs); }
+function mapFsToggle(){
+  // During an active trip the ⛶ box re-opens turn-by-turn DIRECTIONS (nav-fs), not the
+  // waiting-mode live map — otherwise zooming out revealed the header+tabs instead of the route.
+  if(_activeRide && navTarget(_activeRide)){ if(_navFs) navFsMinimize(); else navFsEnter(); return; }
+  setMapFullscreen(!_mapFs);
+}
 function setMapFullscreen(on){
   on=!!on;
   if(on===_mapFs) return;
@@ -1859,6 +1868,7 @@ async function pollDriverRides(){
       if(d.activeRide.dropoffAddress && d.activeRide.dropoffAddress!==_prevRide.dropoffAddress){ drvToast('📍 New stop: '+d.activeRide.dropoffAddress,'success'); }
       else if((d.activeRide.nextStopAddress||'')!==(_prevRide.nextStopAddress||'')){ drvToast(d.activeRide.nextStopAddress?'⏭️ Next stop updated':'Next stop cleared','info'); }
       if(Number(d.activeRide.hours||0)>Number(_prevRide.hours||0)){ drvToast('⏱ Trip extended to '+d.activeRide.hours+' hours','success'); }
+      if(Number(d.activeRide.estimatedPrice||0)>Number(_prevRide.estimatedPrice||0)+0.005){ drvToast('💰 Stop added · +'+fmt$((Number(d.activeRide.estimatedPrice)-Number(_prevRide.estimatedPrice||0))*DRIVER_SHARE)+' to your earnings','success'); }
     }
     if(!_ridesPollTimer) startRidesPoll(); // keep polling during active ride
     renderActiveRidePanel();
@@ -1942,6 +1952,14 @@ function renderActiveRidePanel(){
   $d('arc-rider-name').textContent=r.riderName||r.riderEmail||'Rider';
   $d('arc-rider-sub').textContent=r.riderPhone?r.riderPhone:'';
   $d('arc-pickup').textContent=r.pickupAddress||'—';
+  // Live earnings — reflects any paid stops folded into the fare server-side (P2P surcharge).
+  var _earnEl=$d('arc-earn'), _fareNow=Number(r.finalPrice||r.estimatedPrice||0);
+  if(_earnEl){
+    if(_fareNow>0 && ['accepted','driver_arrived','in_progress'].includes(r.status)){
+      $d('arc-earn-val').textContent=fmt$(_fareNow*DRIVER_SHARE)+(Number(r.stopSurcharge)>0?' · incl. stops':'');
+      _earnEl.style.display='block';
+    } else { _earnEl.style.display='none'; }
+  }
   if(r.rideType==='hourly'){
     $d('arc-hours-row').style.display='flex';
     $d('arc-hours').textContent=(r.hours||'—')+' hour'+(r.hours!==1?'s':'');
@@ -1976,16 +1994,27 @@ function renderActiveRidePanel(){
   if(r.status==='in_progress'){
     var _ip='';
     if(r.rideType==='hourly'){
-      // Hourly: ONLY the rider ends the trip. The driver advances stops and, on
-      // the final leg, marks the route complete (stops the overtime meter +
-      // starts the rider's 2-min auto-end). No "Complete" button for the driver.
+      // Hourly runs on the CLOCK — the booked time, not the destinations. While time
+      // remains the chauffeur stays "on the clock": they advance whatever stops the guest
+      // sends and otherwise wait. Only once the booked time is exhausted does the route
+      // wrap up (the guest ends the trip) — so "Mark Route Complete" is gated on time's-up,
+      // NOT on running out of stops. A 12-hr booking with 11 hrs left keeps the clock, not
+      // a "guest is ending the trip" prompt. ONLY the rider can actually end an hourly trip.
+      // The hourly meter starts ONLY when the chauffeur taps Start (the worker stamps
+      // startedAt then) — entering stops/addresses never starts it. Until startedAt is set
+      // the clock can't run and "time's up" can't fire.
+      var _started=Number(r.startedAt||0);
+      var _endsAt=_started+Number(r.hours||0)*3600000;
+      var _timeUp=_started>0 && Date.now()>=_endsAt;
       if(r.nextStopAddress){
         _ip+='<button class="arc-btn" style="background:rgba(201,169,98,.16);border:1px solid rgba(201,169,98,.4);color:var(--gold);" onclick="advanceStop()">⏭️ Next Stop</button>';
       }
       if(r.routeCompleteAt){
-        _ip+='<div class="arc-btn" style="flex:1;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:#4ade80;cursor:default;font-size:12px;">✓ Route complete — guest is ending the trip</div>';
-      } else if(!r.nextStopAddress){
-        _ip+='<button class="arc-btn arc-btn-complete" onclick="markRouteComplete()">🏁 Mark Route Complete</button>';
+        _ip+='<div class="arc-btn" style="flex:1;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.35);color:var(--gold);cursor:default;font-size:12px;">✓ Route complete — guest is ending the trip</div>';
+      } else if(_timeUp){
+        _ip+='<button class="arc-btn arc-btn-complete" onclick="markRouteComplete()">🏁 Time\'s Up — Mark Route Complete</button>';
+      } else {
+        _ip+='<div class="arc-btn" style="flex:1;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.3);color:var(--gold);cursor:default;font-size:12px;font-weight:800;letter-spacing:.02em;">⏱ <span id="arc-hourly-clock">—</span> remaining · on the clock</div>';
       }
     } else {
       _ip+='<button class="arc-btn arc-btn-complete" onclick="completeRide()">🏁 Complete</button>';
@@ -1997,6 +2026,14 @@ function renderActiveRidePanel(){
   }
   // Driver bail-out — the ride re-dispatches to the next nearest driver
   actions.innerHTML+='<button class="arc-btn" style="flex:0 0 auto;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#f87171;padding:12px 14px;" onclick="driverCancelRide()">✕</button>';
+  // Hourly live clock: tick the remaining booked time while it runs. The ticker self-stops
+  // at time's-up (then re-renders to surface "Mark Route Complete"), on route-complete, or
+  // when the trip ends — so it never loops.
+  var _hrEnds=Number(r.startedAt||0)+Number(r.hours||0)*3600000;
+  if(r.rideType==='hourly' && r.status==='in_progress' && !r.routeCompleteAt && _hrEnds>0 && Date.now()<_hrEnds){
+    if(!_hourlyDriverTimer) _hourlyDriverTimer=setInterval(_tickDriverHourly,1000);
+    _tickDriverHourly();
+  } else { _stopDriverHourly(); }
   updateNav();
   if(r.status==='completed'){
     var crPay=(r.finalPrice||r.estimatedPrice||0)*DRIVER_SHARE;
@@ -2005,6 +2042,19 @@ function renderActiveRidePanel(){
   }
 }
 
+// ── Hourly live clock (driver) ──────────────────────────────────────────────
+// An hourly trip runs on the booked TIME, not the destinations. The chauffeur watches
+// the remaining time tick down (same countdown the rider sees, both from trip start =
+// startedAt); only when it's exhausted does "Mark Route Complete" appear.
+function _fmtRemain(ms){ if(!(ms>0))ms=0; var s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60; return (h>0?h+':'+String(m).padStart(2,'0'):String(m))+':'+String(ss).padStart(2,'0'); }
+function _stopDriverHourly(){ if(_hourlyDriverTimer){ clearInterval(_hourlyDriverTimer); _hourlyDriverTimer=null; } }
+function _tickDriverHourly(){
+  var r=_activeRide;
+  if(!r||r.rideType!=='hourly'||r.status!=='in_progress'||r.routeCompleteAt){ _stopDriverHourly(); return; }
+  var endsAt=Number(r.startedAt||0)+Number(r.hours||0)*3600000;
+  if(endsAt>0 && Date.now()>=endsAt){ _stopDriverHourly(); renderActiveRidePanel(); return; }  // booked time up → surface Mark Route Complete
+  var clk=$d('arc-hourly-clock'); if(clk) clk.textContent=_fmtRemain(endsAt-Date.now());
+}
 async function markArrived(){
   if(!_activeRide||!drvState.token) return;
   await fetch(WORKER+'/chauffeur/arrived',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){});
