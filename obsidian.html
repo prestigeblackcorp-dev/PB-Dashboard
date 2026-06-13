@@ -1356,7 +1356,13 @@ function _newSession(){ try{ if(window.crypto&&crypto.randomUUID) return crypto.
 // Render Google Places (New) predictions into the same suggestion list. They carry a
 // placeId (no coords) — selectSuggestion resolves the coords via /places/details on tap.
 function _renderGoogleSuggestions(field, el, sugs, qt){
-  let rows=sugs.map((s,i)=>'<div class="suggestion" onclick="selectSuggestion(\''+field+'\','+i+')"><div class="sug-main">'+esc(s.main||'')+'</div>'+(s.sub?'<div class="sug-sub">'+esc(s.sub)+'</div>':'')+'</div>').join('');
+  // Closest first (Google returns distanceMeters once we send origin); show the distance like the prior search.
+  sugs=sugs.slice().sort(function(a,b){ var da=(a.distM==null?Infinity:a.distM), db=(b.distM==null?Infinity:b.distM); return da-db; });
+  let rows=sugs.map(function(s,i){
+    var parts=[]; if(s.distM!=null) parts.push(_fmtMi(s.distM/1000)); if(s.sub) parts.push(s.sub);
+    var sub=parts.join(' · ');
+    return '<div class="suggestion" onclick="selectSuggestion(\''+field+'\','+i+')"><div class="sug-main">'+esc(s.main||'')+'</div>'+(sub?'<div class="sug-sub">'+esc(sub)+'</div>':'')+'</div>';
+  }).join('');
   rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">📍 Use “'+esc(qt)+'”</div><div class="sug-sub">'+(sugs.length?'Pin the closest match':'Search & drop a pin')+'</div></div>';
   el.innerHTML=rows; el._gsugs=sugs; el._features=null; el._typed=qt; el.style.display='block';
 }
