@@ -3517,6 +3517,18 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Vehicle name *</label>
         <input id="vehModalName" class="inp" placeholder="e.g. Mercedes S-Class" style="width:100%">
       </div>
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Vehicle photo <span style="opacity:.6">— shown to riders in the booking picker</span></label>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div id="vehModalPhotoPrev" style="width:92px;height:60px;border-radius:10px;background:#0d0d0f;border:1px solid var(--border);flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--muted)">🚘</div>
+          <div style="display:flex;flex-direction:column;gap:7px;align-items:flex-start">
+            <button type="button" class="btn" style="font-size:12px;padding:7px 13px" onclick="document.getElementById('vehModalPhotoInput').click()">⬆︎ Upload photo</button>
+            <button type="button" id="vehModalPhotoClear" style="font-size:11px;padding:0;background:none;border:none;color:#f87171;cursor:pointer;display:none" onclick="_vehClearPhoto()">Remove photo</button>
+          </div>
+          <input id="vehModalPhotoInput" type="file" accept="image/*" style="display:none" onchange="_vehPickPhoto(this)">
+        </div>
+        <div id="vehModalPhotoMsg" style="font-size:11px;color:var(--muted);margin-top:6px;display:none"></div>
+      </div>
       <div style="display:flex;gap:12px">
         <div style="flex:1">
           <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Hourly rate ($) *</label>
@@ -7898,7 +7910,7 @@ async function renderFleetVehicles(){
     _fleetVehicles=list;
     if(!list.length){ wrap.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No vehicles configured.</div>'; return; }
     wrap.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:11px">'+list.map(function(v){
-      var ph=_fleetVehPhoto(v.name);
+      var ph=v.photo||_fleetVehPhoto(v.name);   // owner-uploaded photo wins, then the built-in car photo
       // Photo cars show the real picture (emoji sits underneath as the onerror fallback); others keep the icon.
       var iconBox=ph
         ? '<div style="position:relative;width:60px;height:44px;border-radius:10px;overflow:hidden;flex-shrink:0;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:21px">'+esc(v.icon||'🚘')+'<img src="'+ph+'" alt="'+esc(v.name)+'" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()"></div>'
@@ -7922,6 +7934,37 @@ async function renderFleetVehicles(){
 }
 var _fleetVehicles=[];
 var _vehEditOrig='';   // the vehicle's name before an edit, so a rename can cascade server-side
+var _vehModalPhoto=''; // owner-uploaded photo (small data URL) for the modal; '' = none
+function _vehSetPhotoPreview(){
+  var pv=$d('vehModalPhotoPrev'), cl=$d('vehModalPhotoClear'); if(!pv) return;
+  if(_vehModalPhoto){ pv.innerHTML='<img src="'+_vehModalPhoto+'" style="width:100%;height:100%;object-fit:cover">'; if(cl) cl.style.display='inline'; }
+  else { pv.innerHTML='🚘'; if(cl) cl.style.display='none'; }
+}
+function _vehClearPhoto(){ _vehModalPhoto=''; _vehSetPhotoPreview(); var inp=$d('vehModalPhotoInput'); if(inp) inp.value=''; var m=$d('vehModalPhotoMsg'); if(m) m.style.display='none'; }
+function _vehPickPhoto(input){
+  var f=input&&input.files&&input.files[0]; if(!f) return;
+  var msg=$d('vehModalPhotoMsg'); if(msg){ msg.style.display='block'; msg.style.color='var(--muted)'; msg.textContent='Processing…'; }
+  _vehCompressPhoto(f, function(dataUrl){
+    if(!dataUrl){ if(msg){ msg.style.color='var(--red)'; msg.textContent='Could not read that image.'; } return; }
+    if(dataUrl.length>480000){ if(msg){ msg.style.color='var(--red)'; msg.textContent='Still too large after resizing — try another image.'; } return; }
+    _vehModalPhoto=dataUrl; _vehSetPhotoPreview();
+    if(msg){ msg.style.color='#4ade80'; msg.textContent='Photo ready — Save to apply.'; }
+  });
+}
+// Downscale to a small JPEG data URL so it stores inline in the catalog + ships in /vehicles cheaply.
+function _vehCompressPhoto(file, cb){
+  try{
+    var reader=new FileReader();
+    reader.onload=function(e){
+      var img=new Image();
+      img.onload=function(){ var MAX=620,w=img.width,h=img.height; if(w>MAX){ h=Math.round(h*MAX/w); w=MAX; } var c=document.createElement('canvas'); c.width=w; c.height=h; c.getContext('2d').drawImage(img,0,0,w,h); cb(c.toDataURL('image/jpeg',0.72)); };
+      img.onerror=function(){ cb(null); };
+      img.src=e.target.result;
+    };
+    reader.onerror=function(){ cb(null); };
+    reader.readAsDataURL(file);
+  }catch(e){ cb(null); }
+}
 function _jsAttr2(s){ return "'"+String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"'"; }
 function openVehicleModal(name){
   var v=(name?(_fleetVehicles||[]).find(function(x){return x.name===name;}):null)||{name:'',hourlyRate:200,icon:'🚘',order:99,active:true,builtin:false};
@@ -7933,6 +7976,9 @@ function openVehicleModal(name){
   $d('vehModalIcon').value=v.icon||'🚘';
   $d('vehModalOrder').value=Number(v.order)||99;
   $d('vehModalActive').checked=v.active!==false;
+  _vehModalPhoto=v.photo||''; _vehSetPhotoPreview();
+  var _pm=$d('vehModalPhotoMsg'); if(_pm) _pm.style.display='none';
+  var _pi=$d('vehModalPhotoInput'); if(_pi) _pi.value='';
   $d('vehModalStatus').style.display='none';
   $d('vehicleModal').style.display='flex';
 }
@@ -7944,7 +7990,7 @@ async function saveVehicle(){
   var st=$d('vehModalStatus');
   if(!name){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Name is required.'; return; }
   if(!(rate>=0)){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Enter a valid hourly rate.'; return; }
-  var body={ secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''), name:name, origName:_vehEditOrig, hourlyRate:rate, icon:($d('vehModalIcon').value||'🚘').trim(), order:Number($d('vehModalOrder').value)||99, active:$d('vehModalActive').checked };
+  var body={ secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''), name:name, origName:_vehEditOrig, hourlyRate:rate, icon:($d('vehModalIcon').value||'🚘').trim(), order:Number($d('vehModalOrder').value)||99, active:$d('vehModalActive').checked, photo:_vehModalPhoto||'' };
   st.style.display='block'; st.style.color='var(--muted)'; st.textContent='Saving…';
   try{
     var r=await fetch(WORKER+'/dashboard/save-vehicle',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify(body)});

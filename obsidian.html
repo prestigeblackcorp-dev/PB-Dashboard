@@ -1646,10 +1646,17 @@ function _isEither(name){ return String(name||'').toLowerCase().indexOf('either'
 // Every vehicle button is full-bleed (uniform height): photo cars show the photo, "Either"
 // shows the split, and any owner-added vehicle shows a centered car icon on the dark tile.
 function _isFullBleed(name){ return true; }
-function _vehIcon(name){
-  if(_isEither(name))
-    return '<span class="veh-split"><img src="veh-escalade.jpg" alt="" onerror="this.style.display=\'none\'"><img src="veh-sprinter.jpg" alt="" onerror="this.style.display=\'none\'"></span>';
-  var p=_vehPhoto(name);
+// Both-cars split for "Either" — defaults to the bundled photos, but takes the first two
+// vehicles' actual images (owner-uploaded photo wins) when _loadVehicles passes them.
+function _vehSplitHtml(a,b){
+  a=a||'veh-escalade.jpg'; b=b||'veh-sprinter.jpg';
+  return '<span class="veh-split"><img src="'+a+'" alt="" onerror="this.style.display=\'none\'"><img src="'+b+'" alt="" onerror="this.style.display=\'none\'"></span>';
+}
+// `photo` = the owner-uploaded image (data URL) from the catalog; it wins over the bundled
+// by-name photo, which wins over the SVG car icon.
+function _vehIcon(name, photo){
+  if(_isEither(name)) return _vehSplitHtml();
+  var p=photo||_vehPhoto(name);
   if(p) return '<img src="'+p+'" alt="'+esc(name)+'" onerror="_vehImgFail(this,\''+String(name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')">';
   return _vehSvg(name);
 }
@@ -1682,16 +1689,18 @@ function _loadVehicles(){
         var b=document.createElement('button');
         b.className='ride-type-btn'+(_isFullBleed(v.name)?' veh-photo':'')+(v.name===_vehicle?' active':'');
         b.setAttribute('data-veh', v.name);
-        b.innerHTML='<span class="rtb-icon">'+_vehIcon(v.name)+'</span><span class="rtb-label">'+esc(v.name)+'</span>';
+        b.innerHTML='<span class="rtb-icon">'+_vehIcon(v.name, v.photo)+'</span><span class="rtb-label">'+esc(v.name)+'</span>';
         b.onclick=function(){ setVehicle(v.name); };
         row.appendChild(b);
       });
       // "Either" — no preference; matches the closest available chauffeur of any vehicle.
+      // Its split shows the first two vehicles' actual images (owner-uploaded photo wins).
       if(list.length>1){
+        var eA=list[0]?(list[0].photo||_vehPhoto(list[0].name)):''; var eB=list[1]?(list[1].photo||_vehPhoto(list[1].name)):'';
         var be=document.createElement('button');
         be.className='ride-type-btn veh-photo'+(_vehicle==='Either'?' active':'');   // veh-photo = full-bleed split (was missing → images blew up on first paint)
         be.setAttribute('data-veh','Either');
-        be.innerHTML='<span class="rtb-icon">'+_vehIcon('Either')+'</span><span class="rtb-label">Either · First available</span>';
+        be.innerHTML='<span class="rtb-icon">'+_vehSplitHtml(eA,eB)+'</span><span class="rtb-label">Either · First available</span>';
         be.onclick=function(){ setVehicle('Either'); };
         row.appendChild(be);
       }
