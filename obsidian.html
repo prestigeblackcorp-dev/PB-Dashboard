@@ -1187,6 +1187,46 @@ function launchApp(){
     var rev=new URLSearchParams(location.search).get('review');
     if(rev&&_session){ setTimeout(function(){ openReview(rev,'',''); },900); }
   }catch(e){}
+  setTimeout(function(){ try{ _pbA2HS(); }catch(e){} }, 1400);   // one-time Add-to-Home-Screen nudge
+}
+// ── Add to Home Screen — ONE-TIME, right after login. Android/Chrome: a single tap fires
+//    the native install. iOS Safari (no native prompt): clear Share → "Add to Home Screen"
+//    directions with a bouncing arrow pointing at the Share button. Shown once per device. ──
+var _pbDeferredPrompt=null;
+window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); _pbDeferredPrompt=e; });
+function _pbA2HS(){
+  try{
+    if(localStorage.getItem('pb_a2hs_done')) return;
+    var standalone=(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone;
+    if(standalone){ try{localStorage.setItem('pb_a2hs_done','1');}catch(e){} return; }
+    var ua=navigator.userAgent||'', isIOS=/iphone|ipad|ipod/i.test(ua), isAndroid=/android/i.test(ua);
+    if(!isIOS && !isAndroid && !_pbDeferredPrompt) return;
+    try{ localStorage.setItem('pb_a2hs_done','1'); }catch(e){}
+    var GOLD='#C9A962', cta, arrow='';
+    if(_pbDeferredPrompt){
+      cta='<button id="a2hsAdd" style="width:100%;background:linear-gradient(135deg,#C9A962,#a8893e);color:#0a0a0a;border:none;border-radius:14px;padding:15px;font-size:15px;font-weight:900;cursor:pointer;font-family:inherit">＋ Add to Home Screen</button>';
+    } else if(isIOS){
+      cta='<div style="display:flex;align-items:center;gap:10px;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.3);border-radius:14px;padding:14px 16px;font-size:14px;color:#f0f4ff;line-height:1.5;text-align:left">Tap <span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border:1.5px solid '+GOLD+';border-radius:7px;color:'+GOLD+';font-size:14px;flex-shrink:0">&#x2191;</span> below, then <b style="color:'+GOLD+'">&ldquo;Add to Home Screen&rdquo;</b></div>';
+      arrow='<div style="position:absolute;bottom:4px;left:50%;color:'+GOLD+';font-size:28px;animation:a2hsBounce 1.2s ease-in-out infinite">&#9662;</div>';
+    } else {
+      cta='<div style="background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.3);border-radius:14px;padding:14px 16px;font-size:14px;color:#f0f4ff">Open your browser menu &#8942; and choose &ldquo;Add to Home screen&rdquo;.</div>';
+    }
+    var ov=document.createElement('div'); ov.id='a2hsOverlay';
+    ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.82);display:flex;align-items:flex-end;justify-content:center;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)';
+    ov.innerHTML='<style>@keyframes a2hsUp{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}@keyframes a2hsBounce{0%,100%{transform:translateX(-50%) translateY(0)}50%{transform:translateX(-50%) translateY(7px)}}#a2hsOverlay [style*="bottom:4px"]{transform:translateX(-50%)}</style>'
+      +'<div style="position:relative;background:#0f1420;border:1px solid rgba(201,169,98,.25);border-bottom:none;border-radius:22px 22px 0 0;width:100%;max-width:480px;padding:26px 22px calc(30px + env(safe-area-inset-bottom,0px));text-align:center;animation:a2hsUp .35s cubic-bezier(.2,.7,.2,1)">'
+      +'<img src="obsidian-icon.png" alt="" style="width:66px;height:66px;border-radius:16px;box-shadow:0 8px 28px rgba(0,0,0,.5);margin-bottom:12px" onerror="this.style.display=\'none\'">'
+      +'<div style="font-size:19px;font-weight:900;color:#fff;margin-bottom:5px">Add Obsidian to your Home Screen</div>'
+      +'<div style="font-size:13px;color:#9aa6c0;margin-bottom:18px;line-height:1.5">One tap to book &middot; instant ride alerts &middot; full-screen luxury &mdash; no app store needed.</div>'
+      +cta
+      +'<button id="a2hsLater" style="width:100%;margin-top:10px;background:transparent;border:none;color:#6b7a9a;font-size:13px;font-weight:600;padding:8px;cursor:pointer;font-family:inherit">Maybe later</button>'
+      +arrow+'</div>';
+    document.body.appendChild(ov);
+    var add=ov.querySelector('#a2hsAdd');
+    if(add) add.onclick=function(){ if(_pbDeferredPrompt){ var dp=_pbDeferredPrompt; _pbDeferredPrompt=null; dp.prompt(); if(dp.userChoice&&dp.userChoice.then){ dp.userChoice.then(function(){ ov.remove(); }); } else { ov.remove(); } } else { ov.remove(); } };
+    ov.querySelector('#a2hsLater').onclick=function(){ ov.remove(); };
+    ov.addEventListener('click', function(ev){ if(ev.target===ov) ov.remove(); });
+  }catch(e){}
 }
 
 function initMap(){
@@ -1798,14 +1838,18 @@ function showRideStatusView(){
   setTimeout(function(){ if(_map) _map.invalidateSize(); fitTripView(_lastDriverLoc); },180);
 }
 
+// Tell the service worker which ride is active so a backgrounded RIDER push can fetch the
+// live status and show a specific message (on the way / arrived / etc.).
+function _pbPushRide(id){ try{ if(navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({type:'pb-push-ride', rideId:id||null}); }catch(e){} }
 function startPolling(){
   clearInterval(_pollTimer);
   _pollTimer=setInterval(pollRideStatus,4000);
   pollRideStatus();
   startRiderWatch();
   _rideAcquireWake();
+  _pbPushRide(_rideId);
 }
-function stopPolling(){ clearInterval(_pollTimer); _pollTimer=null; stopRiderWatch(); _rideReleaseWake(); }
+function stopPolling(){ clearInterval(_pollTimer); _pollTimer=null; stopRiderWatch(); _rideReleaseWake(); _pbPushRide(null); }
 
 // ── Resilience (quick-win F): wake-lock + reconnect on visibility/online ──
 // Additive only — 4s poll cadence unchanged; just re-acquires the wake lock and
