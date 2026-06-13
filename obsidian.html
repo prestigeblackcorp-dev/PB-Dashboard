@@ -118,6 +118,12 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 
 /* Bottom sheet */
 #bottom-sheet{position:fixed;bottom:0;left:0;right:0;z-index:1001;background:var(--surface);border-radius:24px 24px 0 0;border:1px solid var(--border);border-bottom:none;transition:transform .3s cubic-bezier(.32,.72,0,1);will-change:transform;max-height:72vh;overflow-y:auto;padding-bottom:calc(20px + var(--safe-bot));}
+/* "Where to?" sheet — true-black surface + white text. Scoped variable overrides recolor
+   the background, all text (incl. inline color:var(--muted)), borders and inner cards in one
+   place; the gold brand accents (--gold) and everything outside the sheet are untouched. */
+#bottom-sheet{--surface:#000;--card:#0b0b0d;--border:#2a2a2a;--text:#ffffff;--text2:#ffffff;--muted:#eef0f4;color:#fff;}
+#bottom-sheet .addr-inp,#bottom-sheet .ride-type-btn{background:#0d0d0f;}
+#bottom-sheet .addr-inp::placeholder{color:#7f8696;}  /* keep placeholders distinct from white input text */
 .sheet-handle{width:40px;height:4px;border-radius:2px;background:var(--border);flex-shrink:0;transition:width .2s,background .2s,opacity .2s;}
 .sheet-section{padding:0 20px 16px;}
 .sheet-title{font-size:20px;font-weight:800;letter-spacing:-.3px;margin-bottom:4px;}
@@ -618,6 +624,16 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
             </button>
           </div>
 
+          <!-- Vehicle: which vehicle picks you up (hourly rate varies; P2P identical).
+               These two are the guaranteed baseline; _loadVehicles() rebuilds this row from
+               the owner-managed catalog (/vehicles) when it's reachable. -->
+          <div style="font-size:10px;font-weight:800;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin:10px 2px 6px;">Your vehicle</div>
+          <div class="ride-type-row" id="vehPicker">
+            <button class="ride-type-btn active" id="vehEsc" data-veh="Cadillac Escalade" onclick="setVehicle('Cadillac Escalade')"><span class="rtb-icon">🚙</span><span class="rtb-label">Cadillac Escalade</span></button>
+            <button class="ride-type-btn" id="vehSpr" data-veh="Maybach Styled Sprinter" onclick="setVehicle('Maybach Styled Sprinter')"><span class="rtb-icon">🚐</span><span class="rtb-label">Maybach Sprinter</span></button>
+            <button class="ride-type-btn" id="vehEither" data-veh="Either" onclick="setVehicle('Either')"><span class="rtb-icon">✨</span><span class="rtb-label">Either · First available</span></button>
+          </div>
+
           <!-- When: Now or Schedule in advance (reserve-ahead) -->
           <div class="ride-type-row" id="whenRow" style="margin-top:8px">
             <button class="ride-type-btn active" id="wtbNow" onclick="setScheduleMode('now')"><span class="rtb-icon">⚡</span><span class="rtb-label">Now</span></button>
@@ -682,6 +698,11 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
             <div class="status-title" id="statusTitle">Finding your chauffeur</div>
             <div class="status-sub" id="statusSub">Please wait while we connect you with the nearest available chauffeur</div>
             <div class="eta-chip" id="etaChip" style="display:none">🕐 <span id="etaText"></span></div>
+            <!-- Shown after ~5 min with no matching vehicle nearby — offer to search both categories. -->
+            <div id="broadenPrompt" style="display:none;margin-top:14px;background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:14px;padding:14px">
+              <div id="broadenMsg" style="font-size:13px;color:#fff;font-weight:600;margin-bottom:10px"></div>
+              <button id="broadenBtn" onclick="broadenSearch()" style="width:100%;background:linear-gradient(135deg,#C9A962,#a8893e);color:#0a0a0a;border:none;border-radius:12px;padding:13px;font-size:14px;font-weight:900;cursor:pointer;font-family:inherit">✨ Search both vehicles · first available</button>
+            </div>
           </div>
           <br>
           <div id="driverInfoCard" style="display:none">
@@ -731,17 +752,18 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
                has ARRIVED and throughout the trip, for EVERY ride type. Point-to-point stops
                are priced + charged (demo) before they're sent to the chauffeur — see sendStops(). -->
           <div id="routePanel" style="display:none">
-            <div style="font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin:2px 2px 8px;">Where to? Update your chauffeur live</div>
+            <div id="routePanelHead" style="font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin:2px 2px 8px;">Add a stop</div>
             <div class="addr-field" style="position:relative;margin-bottom:8px;">
-              <input id="stopInp" class="addr-inp" placeholder="📍 Current stop — where to now?" autocomplete="off" oninput="onAddrInput('stop')" onfocus="onAddrFocus('stop')">
+              <input id="stopInp" class="addr-inp" placeholder="📍 Add a stop" autocomplete="off" oninput="onAddrInput('stop')" onfocus="onAddrFocus('stop')">
               <div class="suggestions" id="stopSugg" style="display:none"></div>
             </div>
-            <div class="addr-field" style="position:relative;margin-bottom:10px;">
+            <div class="addr-field" id="nextstopField" style="position:relative;margin-bottom:10px;">
               <input id="nextstopInp" class="addr-inp" placeholder="⏭ Next stop after that (optional)" autocomplete="off" oninput="onAddrInput('nextstop')" onfocus="onAddrFocus('nextstop')">
               <div class="suggestions" id="nextstopSugg" style="display:none"></div>
             </div>
-            <button class="btn-gold" id="sendStopsBtn" onclick="sendStops()" style="width:100%;">Update Chauffeur's Route</button>
+            <button class="btn-gold" id="sendStopsBtn" onclick="sendStops()" style="width:100%;">Add Stop</button>
             <div id="stopsStatus" style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px;min-height:15px;"></div>
+            <div id="stopPending" style="display:none;margin-top:10px;background:rgba(201,169,98,.08);border:1px solid rgba(201,169,98,.3);border-radius:12px;padding:12px 14px;text-align:center;font-size:13px;color:var(--gold);font-weight:700;"><span class="spinner"></span> Waiting for your chauffeur to accept this stop…</div>
           </div>
           <!-- End trip early — hourly only; only the rider can end an hourly trip, guarded by a confirm -->
           <div id="endEarlyWrap" style="display:none">
@@ -794,6 +816,7 @@ let _reviewedRides = {};      // rideId -> true once submitted, to hide "Rate dr
 let _autoPrompted = {};       // rideId -> true once auto-prompted on completion
 let _pastTrips = [];          // last-loaded rider-rides, for index-based rate buttons
 let _rideType = 'point_to_point';
+let _vehicle = 'Cadillac Escalade';
 // Hourly in-trip state: live stop routing + time's-up extend flow
 let _curRide = null;          // latest ride object from the status poll
 let _stopSel = null;          // {lat,lng,address} chosen current stop
@@ -1182,6 +1205,8 @@ function launchApp(){
   if(_session){ var _nm=(_session.name||'').trim(); $d('rider-greeting').textContent=_nm?('Hello, '+_nm.split(' ')[0]):'Welcome back'; }
   renderRiderAvatar();
   try{ loadUpcomingRides(); }catch(e){}
+  try{ _loadVehicles(); }catch(e){}   // build the vehicle picker from the owner-managed fleet catalog
+  setTimeout(function(){ try{ _restoreObsState(); }catch(e){} }, 500);   // restore booking after a portal round-trip
   // F3 (b): deep link from receipt email — ?review=<rideId> opens the review UI.
   try{
     var rev=new URLSearchParams(location.search).get('review');
@@ -1194,14 +1219,20 @@ function launchApp(){
 //    directions with a bouncing arrow pointing at the Share button. Shown once per device. ──
 var _pbDeferredPrompt=null;
 window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); _pbDeferredPrompt=e; });
+// Once the app is actually installed, stop prompting forever (covers the Android/Chrome flow).
+window.addEventListener('appinstalled', function(){ try{ localStorage.setItem('pb_a2hs_installed_rider','1'); }catch(e){} var ov=document.getElementById('a2hsOverlay'); if(ov) ov.remove(); });
 function _pbA2HS(){
   try{
-    if(localStorage.getItem('pb_a2hs_done')) return;
+    // Show up to 5 times (once per app open) until added to the home screen. Once added —
+    // running standalone, or the install event fired — never show again.
+    if(localStorage.getItem('pb_a2hs_installed_rider')) return;
     var standalone=(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone;
-    if(standalone){ try{localStorage.setItem('pb_a2hs_done','1');}catch(e){} return; }
+    if(standalone){ try{localStorage.setItem('pb_a2hs_installed_rider','1');}catch(e){} return; }
+    var _a2hsShown=parseInt(localStorage.getItem('pb_a2hs_count_rider')||'0',10)||0;
+    if(_a2hsShown>=5) return;
     var ua=navigator.userAgent||'', isIOS=/iphone|ipad|ipod/i.test(ua), isAndroid=/android/i.test(ua);
     if(!isIOS && !isAndroid && !_pbDeferredPrompt) return;
-    try{ localStorage.setItem('pb_a2hs_done','1'); }catch(e){}
+    try{ localStorage.setItem('pb_a2hs_count_rider', String(_a2hsShown+1)); }catch(e){}
     var GOLD='#C9A962', cta, arrow='';
     if(_pbDeferredPrompt){
       cta='<button id="a2hsAdd" style="width:100%;background:linear-gradient(135deg,#C9A962,#a8893e);color:#0a0a0a;border:none;border-radius:14px;padding:15px;font-size:15px;font-weight:900;cursor:pointer;font-family:inherit">＋ Add to Home Screen</button>';
@@ -1223,7 +1254,7 @@ function _pbA2HS(){
       +arrow+'</div>';
     document.body.appendChild(ov);
     var add=ov.querySelector('#a2hsAdd');
-    if(add) add.onclick=function(){ if(_pbDeferredPrompt){ var dp=_pbDeferredPrompt; _pbDeferredPrompt=null; dp.prompt(); if(dp.userChoice&&dp.userChoice.then){ dp.userChoice.then(function(){ ov.remove(); }); } else { ov.remove(); } } else { ov.remove(); } };
+    if(add) add.onclick=function(){ if(_pbDeferredPrompt){ var dp=_pbDeferredPrompt; _pbDeferredPrompt=null; dp.prompt(); if(dp.userChoice&&dp.userChoice.then){ dp.userChoice.then(function(c){ if(c&&c.outcome==='accepted'){ try{localStorage.setItem('pb_a2hs_installed_rider','1');}catch(e){} } ov.remove(); }); } else { ov.remove(); } } else { ov.remove(); } };
     ov.querySelector('#a2hsLater').onclick=function(){ ov.remove(); };
     ov.addEventListener('click', function(ev){ if(ev.target===ov) ov.remove(); });
   }catch(e){}
@@ -1569,6 +1600,49 @@ async function reverseGeocode(lat,lng){
 }
 
 // ── Ride Type & Hours ─────────────────────────────────────────────────────
+function setVehicle(v){
+  _vehicle=v;
+  var row=$d('vehPicker');
+  if(row){
+    var btns=row.querySelectorAll('.ride-type-btn');
+    for(var i=0;i<btns.length;i++){
+      var bn=btns[i].getAttribute('data-veh')||(btns[i].id==='vehEsc'?'Cadillac Escalade':btns[i].id==='vehSpr'?'Maybach Styled Sprinter':'');
+      btns[i].className='ride-type-btn'+(bn===v?' active':'');
+    }
+  }
+  updateEstimate();
+}
+// Rebuild the vehicle picker from the owner-managed catalog (/vehicles). The two hardcoded
+// buttons in the markup are the guaranteed baseline; this only replaces them when the catalog
+// loads, and silently keeps the baseline on any failure → the picker is never empty.
+function _loadVehicles(){
+  try{
+    fetch(WORKER+'/vehicles',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+      var list=(d&&d.vehicles)||[];
+      if(!list.length) return;
+      var row=$d('vehPicker'); if(!row) return;
+      row.innerHTML='';
+      list.forEach(function(v){
+        var b=document.createElement('button');
+        b.className='ride-type-btn'+(v.name===_vehicle?' active':'');
+        b.setAttribute('data-veh', v.name);
+        b.innerHTML='<span class="rtb-icon">'+esc(v.icon||'🚘')+'</span><span class="rtb-label">'+esc(v.name)+'</span>';
+        b.onclick=function(){ setVehicle(v.name); };
+        row.appendChild(b);
+      });
+      // "Either" — no preference; matches the closest available chauffeur of any vehicle.
+      if(list.length>1){
+        var be=document.createElement('button');
+        be.className='ride-type-btn'+(_vehicle==='Either'?' active':'');
+        be.setAttribute('data-veh','Either');
+        be.innerHTML='<span class="rtb-icon">✨</span><span class="rtb-label">Either · First available</span>';
+        be.onclick=function(){ setVehicle('Either'); };
+        row.appendChild(be);
+      }
+      if(_vehicle!=='Either' && !list.some(function(v){return v.name===_vehicle;})) setVehicle(list[0].name);
+    }).catch(function(){});
+  }catch(e){}
+}
 function setRideType(type){
   _rideType=type;
   $d('rtbPtp').className='ride-type-btn'+(type==='point_to_point'?' active':'');
@@ -1619,20 +1693,27 @@ async function updateEstimate(){
   if(!_pickup&&_rideType==='point_to_point'){ hidePriceCard(); return; }
   if(_rideType==='point_to_point'&&(!_pickup||!_dropoff)){ hidePriceCard(); return; }
   if(_rideType==='hourly'&&!_pickup){ hidePriceCard(); return; }
-  const body=_rideType==='hourly'?{rideType:'hourly',hours:_hours}:{rideType:'point_to_point',distanceMiles:_distanceMiles};
+  const body=_rideType==='hourly'?{rideType:'hourly',hours:_hours,vehicle:_vehicle}:{rideType:'point_to_point',distanceMiles:_distanceMiles,vehicle:_vehicle};
   const d=await fetch(WORKER+'/chauffeur/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
   if(!d) return;
   _estPrice=d.price;
   _estQuote=d;
-  $d('priceAmount').textContent='$'+d.price.toFixed(2);
+  // "Either": hourly price isn't fixed until a chauffeur accepts (rider pays that car's rate),
+  // so show a RANGE; point-to-point is identical so it shows one figure with an "either" note.
+  var _either=!!d.either;
+  var _eitherRange=(_either && _rideType==='hourly' && Number(d.priceHigh)>Number(d.price));
+  $d('priceAmount').textContent=_eitherRange?('$'+Number(d.price).toFixed(0)+'–$'+Number(d.priceHigh).toFixed(0)):('$'+d.price.toFixed(2));
   // Price-lock label (quick-win E): the quote is server-frozen on request, so say so.
   var _pl=$d('priceLabel');
-  if(_pl){ _pl.textContent=(window.PB_FLAGS||{}).priceLock?(_rideType==='hourly'?'🔒 Rate locked':'🔒 Your fare · price locked'):'Estimated Fare'; }
+  if(_pl){
+    if(_either && _rideType==='hourly'){ _pl.textContent='Estimated · rate set on match'; }
+    else { _pl.textContent=(window.PB_FLAGS||{}).priceLock?(_rideType==='hourly'?'🔒 Rate locked':'🔒 Your fare · price locked'):'Estimated Fare'; }
+  }
   if(_rideType==='hourly'){
-    $d('priceDetail').textContent=_hours+' hr × $'+d.hourlyRate+'/hr';
+    $d('priceDetail').textContent=_eitherRange?(_hours+' hr × $'+d.hourlyRateLow+'–$'+d.hourlyRateHigh+'/hr · whichever car comes'):(_hours+' hr × $'+d.hourlyRate+'/hr');
   } else {
     var _rt=_distanceMiles>(d.rtThreshold||20);
-    $d('priceDetail').textContent='~'+_distanceMiles.toFixed(1)+' mi · ~'+fmtDuration(_estDuration)+(_rt?' · incl. return':'');
+    $d('priceDetail').textContent='~'+_distanceMiles.toFixed(1)+' mi · ~'+fmtDuration(_estDuration)+(_rt?' · incl. return':'')+(_either?' · either vehicle':'');
   }
   $d('priceCard').style.display='flex';
   $d('requestRideBtn').style.display='block';
@@ -1719,7 +1800,7 @@ async function reserveRide(){
   var when=_scheduledFor || ($d('scheduledAt')&&$d('scheduledAt').value ? new Date($d('scheduledAt').value).getTime() : 0);
   if(!when || when < Date.now()+55*60000){ alert('Scheduled rides must be at least 1 hour from now — for a ride sooner, switch to "Now".'); return; }
   var btn=$d('requestRideBtn'); btn.disabled=true; var _t=btn.textContent; btn.textContent='Reserving…';
-  var body={ token:_session.token, rideType:_rideType, pickupAddress:_pickup.address, pickupLat:_pickup.lat, pickupLng:_pickup.lng, scheduledFor:when };
+  var body={ token:_session.token, rideType:_rideType, vehicle:_vehicle, pickupAddress:_pickup.address, pickupLat:_pickup.lat, pickupLng:_pickup.lng, scheduledFor:when };
   if(_rideType==='point_to_point' && _dropoff){ body.dropoffAddress=_dropoff.address; body.dropoffLat=_dropoff.lat; body.dropoffLng=_dropoff.lng; body.distanceMiles=_distanceMiles; body.estimatedDuration=_estDuration; }
   if(_rideType==='hourly'){ body.hours=_hours; }
   var d=await fetch(WORKER+'/chauffeur/reserve-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
@@ -1795,6 +1876,7 @@ async function _dispatchRide(){
   const body={
     token:_session.token,
     rideType:_rideType,
+    vehicle:_vehicle,
     pickupAddress:_pickup.address,
     pickupLat:_pickup.lat,
     pickupLng:_pickup.lng,
@@ -2024,6 +2106,29 @@ function _updateRiderRoute(ride, driverLoc){
     .catch(()=>{ _rrFetching=false; });
 }
 
+// After ~5 min searching for a SPECIFIC vehicle with none nearby, offer to broaden to both
+// categories. Hidden once broadened (vehicleMatch flips to 'any') or for "Either" requests.
+function _maybeShowBroaden(ride){
+  var bp=$d('broadenPrompt'); if(!bp) return;
+  var specific = ride && ride.vehicleMatch && ride.vehicleMatch!=='any' && ride.vehicle && ride.vehicle!=='Either';
+  var waited = ride && ride.requestedAt && (Date.now()-Number(ride.requestedAt))>=5*60000;
+  if(specific && waited){
+    var msg=$d('broadenMsg');
+    if(msg) msg.textContent='No '+(ride.vehicle||'matching vehicle')+'s available near you right now. Want the closest available chauffeur of any vehicle instead?';
+    bp.style.display='block';
+  } else { bp.style.display='none'; }
+}
+async function broadenSearch(){
+  if(!_rideId||!_session) return;
+  var btn=$d('broadenBtn'); if(btn){ btn.disabled=true; btn.textContent='Searching both…'; }
+  try{
+    var r=await fetch(WORKER+'/chauffeur/broaden-search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId})});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok){ if(btn){ btn.disabled=false; btn.textContent='✨ Search both vehicles · first available'; } alert((d&&d.error)||'Could not broaden the search'); return; }
+    var bp=$d('broadenPrompt'); if(bp) bp.style.display='none';
+    pollRideStatus();
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent='✨ Search both vehicles · first available'; } }
+}
 function updateStatusUI(ride, driverLoc){
   const st=ride.status||'searching';
   _curRide=ride;
@@ -2039,6 +2144,9 @@ function updateStatusUI(ride, driverLoc){
     if(_driverMarker){ try{ _map.removeLayer(_driverMarker); }catch(e){} _driverMarker=null; }
     _clearRiderRoute();
     $d('etaChip').style.display='none';
+    _maybeShowBroaden(ride);
+  } else {
+    var _bp0=$d('broadenPrompt'); if(_bp0) _bp0.style.display='none';
   }
   // Driver info
   if(ride.assignedDriver&&['accepted','driver_arrived','in_progress'].includes(st)){
@@ -2090,11 +2198,31 @@ function updateStatusUI(ride, driverLoc){
       $d('etaChip').style.display='none';
     }
   }
-  // Route input (set/redirect route + add a stop) is available once the chauffeur has
-  // ARRIVED and throughout the trip, for EVERY ride type.
+  // Route input is available once the chauffeur has ARRIVED and throughout the trip.
+  // P2P = ONE "Add a stop" box (chauffeur must accept; original destination stays locked).
+  // Hourly = current + next boxes that shift up as stops complete.
   var _showRoute=(st==='driver_arrived'||st==='in_progress');
   $d('routePanel').style.display=_showRoute?'block':'none';
-  // Hourly-only: live countdown chip, End-trip-early, and the ticking clock.
+  if(_showRoute){
+    var _isHourly=ride.rideType==='hourly';
+    var _nsf=$d('nextstopField'); if(_nsf) _nsf.style.display=_isHourly?'block':'none';
+    var _rph=$d('routePanelHead'); if(_rph) _rph.textContent=_isHourly?'Where to? Update your chauffeur live':'Add a stop to your route';
+    var _ps=ride.pendingStop, _pPending=!!(_ps&&_ps.status==='pending');
+    var _pendEl=$d('stopPending'); if(_pendEl) _pendEl.style.display=_pPending?'block':'none';
+    var _ssb=$d('sendStopsBtn'); if(_ssb){ _ssb.disabled=_pPending; _ssb.textContent=_isHourly?"Update Chauffeur's Route":(_pPending?'Awaiting chauffeur…':'Add Stop'); }
+    var _sIn0=$d('stopInp'); if(_sIn0) _sIn0.placeholder=_isHourly?'📍 Current stop — where to now?':'📍 Add a stop';
+    // P2P: surface the chauffeur's accept/deny decision once it lands.
+    var _stt=$d('stopsStatus');
+    if(!_isHourly && _stt){
+      if(_pPending){ _stt._await=_ps.requestedAt; }
+      else if(_stt._await){
+        if(Number(ride.stopDeniedAt)>=Number(_stt._await)){ _stt.textContent="Chauffeur couldn't add that stop — you were not charged."; _stt.style.color='var(--muted)'; }
+        else { _stt.textContent='✓ Chauffeur accepted your stop — routing now.'; _stt.style.color='var(--gold)'; if(ride.dropoffLat&&ride.dropoffLng){ _dropoff={lat:Number(ride.dropoffLat),lng:Number(ride.dropoffLng),address:ride.dropoffAddress}; placeDropoffMarker(_dropoff.lat,_dropoff.lng); } }
+        _stt._await=0;
+      }
+    }
+  }
+  // Hourly-only: live countdown chip, End-trip-early, the ticking clock + box shift-up.
   if(ride.rideType==='hourly' && st==='in_progress'){
     $d('hourlyPanel').style.display='block';
     $d('endEarlyWrap').style.display='block';
@@ -2104,15 +2232,14 @@ function updateStatusUI(ride, driverLoc){
       _tickHourly();
     }
     $d('routeHours').textContent=ride.hours+' hour'+(+ride.hours!==1?'s':'');
-    // Hydrate the current stop from the server (covers reloads + confirms the chauffeur has it)
     if(ride.dropoffLat&&ride.dropoffLng&&ride.dropoffAddress&&(!_dropoff||_dropoff.address!==ride.dropoffAddress)){
       _dropoff={lat:Number(ride.dropoffLat),lng:Number(ride.dropoffLng),address:ride.dropoffAddress};
       placeDropoffMarker(_dropoff.lat,_dropoff.lng);
     }
-    var _si=$d('stopInp');
-    if(_si&&!_si.value&&document.activeElement!==_si&&ride.dropoffAddress) _si.value=ride.dropoffAddress;
-    var _ni=$d('nextstopInp');
-    if(_ni&&!_ni.value&&document.activeElement!==_ni&&ride.nextStopAddress) _ni.value=ride.nextStopAddress;
+    // Boxes mirror the server so a completed stop SHIFTS UP (top=current dest, bottom=next),
+    // unless the rider is editing or has a not-yet-sent pick.
+    _mirrorStopBox('stopInp', ride.dropoffAddress, !!_stopSel);
+    _mirrorStopBox('nextstopInp', ride.nextStopAddress, !!_nextStopSel);
   } else {
     $d('hourlyPanel').style.display='none';
     $d('endEarlyWrap').style.display='none';
@@ -2283,21 +2410,30 @@ function _refreshEndModule(){
   if(e && !e.disabled){ e.textContent= ot.charge>0 ? ('Mark Complete & Accept · $'+total.toFixed(2)) : 'Mark Trip Complete & Accept Charges'; }
 }
 
+// Keep an hourly route box in sync with the server value (so a completed stop shifts up),
+// but never clobber what the rider is typing or has picked-but-not-sent.
+function _mirrorStopBox(id, srvVal, hasPendingSel){
+  var el=$d(id); if(!el) return; srvVal=srvVal||'';
+  if(document.activeElement===el) return;
+  if(hasPendingSel) return;
+  if(el.value!==srvVal) el.value=srvVal;
+}
 async function sendStops(){
   if(!_rideId||!_session) return;
   var stt=$d('stopsStatus');
-  if(!_stopSel){ if(stt){ stt.textContent='Pick your current stop from the suggestions'; stt.style.color='var(--red)'; } return; }
-  // Point-to-point: an added stop EXTENDS the route, so price it + charge before routing.
-  // Hourly is time-based (you're paying for the clock), so stops carry no extra charge.
+  if(!_stopSel){ if(stt){ stt.textContent='Pick a stop from the suggestions'; stt.style.color='var(--red)'; } return; }
+  // Point-to-point: an added stop EXTENDS the route + adds a charge — the chauffeur must accept
+  // it. We price the leg, authorize the rider, then send it as a REQUEST (charged only on accept).
+  // Hourly is time-based (you're paying for the clock), so stops apply immediately, no charge.
   if(_curRide && _curRide.rideType!=='hourly'){
     if(stt){ stt.textContent='Calculating added fare…'; stt.style.color='var(--muted)'; }
     var add=await _calcStopSurcharge();
     if(stt){ stt.textContent=''; }
     if(add>0){
       _collectFareThen(add, function(){ _commitStops(add); }, {
-        title:'Add Stop',
-        sub:'This stop extends your route — your chauffeur is updated once it\'s confirmed.',
-        label:'Added fare', cta:'Add Stop'
+        title:'Request Stop',
+        sub:'Your chauffeur confirms this added stop — you\'re only charged once they accept it.',
+        label:'Added fare', cta:'Request Stop'
       });
       return;
     }
@@ -2329,22 +2465,31 @@ async function _calcStopSurcharge(){
 async function _commitStops(extra){
   var stt=$d('stopsStatus');
   var btn=$d('sendStopsBtn');
-  if(btn){ btn.disabled=true; btn.textContent='Sending to chauffeur…'; }
+  var sel=_stopSel, nsel=_nextStopSel;
+  if(!sel) return;
+  if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
   if(stt){ stt.textContent=''; stt.style.color='var(--muted)'; }
   const body={
     token:_session.token, rideId:_rideId,
-    stopAddress:_stopSel.address, stopLat:_stopSel.lat, stopLng:_stopSel.lng,
-    nextStopAddress:_nextStopSel?_nextStopSel.address:'', nextStopLat:_nextStopSel?_nextStopSel.lat:0, nextStopLng:_nextStopSel?_nextStopSel.lng:0,
+    stopAddress:sel.address, stopLat:sel.lat, stopLng:sel.lng,
+    nextStopAddress:nsel?nsel.address:'', nextStopLat:nsel?nsel.lat:0, nextStopLng:nsel?nsel.lng:0,
     addedCharge:Number(extra)||0,
   };
   const d=await fetch(WORKER+'/chauffeur/update-stops',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
-  if(btn){ btn.disabled=false; btn.textContent="Update Chauffeur's Route"; }
+  if(btn){ btn.disabled=false; }
   if(d&&d.ok){
-    _dropoff={lat:_stopSel.lat,lng:_stopSel.lng,address:_stopSel.address};
-    placeDropoffMarker(_dropoff.lat,_dropoff.lng);
-    fitTripView(_lastDriverLoc);
-    if(stt){ stt.textContent=(extra>0)?('✓ Stop added · $'+Number(extra).toFixed(2)+' charged — chauffeur is being routed'):'✓ Chauffeur is being routed to your stop'; stt.style.color='var(--gold)'; }
-    _stopSel=null; _nextStopSel=null;   // clear so a stray tap can't re-send (and re-charge) the same stop
+    if(d.pending){
+      // P2P — awaiting the chauffeur's accept/deny (the status poll shows the waiting + result).
+      if(stt){ stt.textContent='Stop requested — waiting for your chauffeur to accept.'; stt.style.color='var(--gold)'; stt._await=Date.now(); }
+      var _sIn=$d('stopInp'); if(_sIn) _sIn.value='';
+    } else {
+      // Hourly — applied immediately.
+      _dropoff={lat:sel.lat,lng:sel.lng,address:sel.address};
+      placeDropoffMarker(_dropoff.lat,_dropoff.lng);
+      fitTripView(_lastDriverLoc);
+      if(stt){ stt.textContent='✓ Chauffeur is being routed to your stop'; stt.style.color='var(--gold)'; }
+    }
+    _stopSel=null; _nextStopSel=null;   // clear so a stray tap can't re-send the same stop
   } else {
     if(stt){ stt.textContent=(d&&d.error)||'Could not update — try again'; stt.style.color='var(--red)'; }
   }
@@ -2545,7 +2690,36 @@ function closeFleet(){ var m=document.getElementById('fleetModal'); if(m) m.styl
 // Booking happens in the member portal (same origin) — the ride app only browses.
 // The clicked vehicle + the dates/times entered here ride along via localStorage,
 // so the portal opens straight into a prefilled booking for that exact car.
+// Persist the in-progress booking (typed addresses + pins + ride type) so returning from the
+// member portal via "Instant Chauffeur" lands the rider right back where they were.
+function _saveObsState(){
+  try{
+    var pk=$d('pickupInp'), dp=$d('dropoffInp');
+    localStorage.setItem('pb_obsidian_state', JSON.stringify({
+      pickup:_pickup, dropoff:_dropoff, rideType:_rideType, hours:_hours, vehicle:_vehicle,
+      pickupVal:pk?pk.value:'', dropoffVal:dp?dp.value:'', at:Date.now()
+    }));
+  }catch(e){}
+}
+function _restoreObsState(){
+  try{
+    if(localStorage.getItem('pb_active_ride')) return;   // an active trip restores its own view
+    var s=JSON.parse(localStorage.getItem('pb_obsidian_state')||'null');
+    localStorage.removeItem('pb_obsidian_state');
+    if(!s || (Date.now()-(s.at||0))>30*60000) return;     // stale → ignore
+    if(s.rideType){ try{ setRideType(s.rideType); }catch(e){} }
+    if(s.vehicle){ try{ setVehicle(s.vehicle); }catch(e){} }
+    if(s.hours){ _hours=s.hours; var hv=$d('hoursVal'); if(hv) hv.textContent=_hours; }
+    var pk=$d('pickupInp'), dp=$d('dropoffInp');
+    if(s.pickup&&s.pickup.lat){ _pickup=s.pickup; _pickupAuto=false; if(pk) pk.value=s.pickupVal||s.pickup.address||''; try{ placePickupMarker(_pickup.lat,_pickup.lng); }catch(e){} }
+    else if(pk&&s.pickupVal){ pk.value=s.pickupVal; }
+    if(s.dropoff&&s.dropoff.lat){ _dropoff=s.dropoff; if(dp) dp.value=s.dropoffVal||s.dropoff.address||''; try{ placeDropoffMarker(_dropoff.lat,_dropoff.lng); }catch(e){} }
+    else if(dp&&s.dropoffVal){ dp.value=s.dropoffVal; }
+    if(_pickup&&(_dropoff||_rideType==='hourly')){ try{ fetchRoute(); }catch(e){} try{ updateEstimate(); }catch(e){} }
+  }catch(e){}
+}
 function _fleetBookPortal(vehicleName){
+  _saveObsState();
   var dest=location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
   // Pre-fill the portal email so even the fallback path is one tap from a login code.
   try{ if(_session && _session.email) localStorage.setItem('pb_portal_email', _session.email); }catch(e){}

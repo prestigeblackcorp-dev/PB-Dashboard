@@ -2007,6 +2007,21 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
       </div>
     </div>
 
+    <!-- Fleet Vehicles -->
+    <div class="tbl-card" style="margin-top:16px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 16px;padding:14px 16px;background:linear-gradient(135deg,rgba(201,169,98,.12),rgba(201,169,98,.02));border-bottom:1px solid var(--gold-dim)">
+        <div style="width:38px;height:38px;border-radius:11px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🚙</div>
+        <div style="flex:1;min-width:0">
+          <div class="tbl-title" style="margin-bottom:1px">Fleet Vehicles</div>
+          <div style="font-size:11.5px;color:var(--muted)">Cars riders can choose · sets the hourly rate (point-to-point is identical across vehicles)</div>
+        </div>
+        <button class="btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="openVehicleModal()">＋ Add Vehicle</button>
+      </div>
+      <div id="tabFleetVehiclesWrap">
+        <div style="color:var(--muted);font-size:13px;text-align:center;padding:24px">Loading vehicles…</div>
+      </div>
+    </div>
+
     <!-- Assign Driver -->
     <div class="tbl-card" style="margin-top:16px;overflow:hidden">
       <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 16px;padding:14px 16px;background:linear-gradient(135deg,rgba(201,169,98,.12),rgba(201,169,98,.02));border-bottom:1px solid var(--gold-dim)">
@@ -3489,6 +3504,45 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
   </div>
 </div>
 
+<!-- Fleet Vehicle add/edit -->
+<div class="modal" id="vehicleModal">
+  <div class="modal-bg" onclick="closeVehicleModal()"></div>
+  <div class="modal-card" style="max-width:420px;max-height:92vh;overflow-y:auto">
+    <div class="modal-title">
+      <span id="vehModalTitle">Add Vehicle</span>
+      <button class="modal-close" onclick="closeVehicleModal()">✕</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Vehicle name *</label>
+        <input id="vehModalName" class="inp" placeholder="e.g. Mercedes S-Class" style="width:100%">
+      </div>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Hourly rate ($) *</label>
+          <input id="vehModalRate" class="inp" type="number" min="0" step="5" inputmode="decimal" placeholder="200" style="width:100%">
+        </div>
+        <div style="width:88px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Icon</label>
+          <input id="vehModalIcon" class="inp" maxlength="4" placeholder="🚘" style="width:100%;text-align:center">
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:-6px">Point-to-point pricing is identical across vehicles — only the hourly rate differs.</div>
+      <div style="display:flex;gap:12px;align-items:flex-end">
+        <div style="width:96px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Sort order</label>
+          <input id="vehModalOrder" class="inp" type="number" min="1" step="1" placeholder="99" style="width:100%">
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);cursor:pointer;padding-bottom:9px">
+          <input id="vehModalActive" type="checkbox" checked style="width:16px;height:16px;accent-color:var(--gold)"> Show to riders
+        </label>
+      </div>
+      <button class="btn btn-gold" style="width:100%;margin-top:2px;font-weight:800;padding:12px" onclick="saveVehicle()">Save Vehicle</button>
+      <div id="vehModalStatus" style="font-size:13px;text-align:center;display:none"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ════════════════════════════════════════════════════════
 //  VEHICLE REGISTRY — daily rates from prestigeblackrentals.com
@@ -3765,7 +3819,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v81';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v82';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -7718,6 +7772,7 @@ async function renderDriversTab(){
   var reqPanel=$d('tabDriverRequestsPanel');
   if(reqPanel) renderDriverRequestsPanel.__tabTarget=reqPanel;
   loadDriverRequests(reqPanel);
+  try{ renderFleetVehicles(); }catch(e){}
 
   // Load roster into tab
   var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
@@ -7759,22 +7814,33 @@ async function renderDriversTab(){
     }
     wrap.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:11px">'+list.map(function(drv){
       var rate='35% of fares';
+      // Which car this chauffeur drives → riders requesting it are matched here. Options come
+      // from the live fleet catalog (falls back to the two built-ins if it hasn't loaded yet);
+      // the current assignment is always present even if it's a since-removed vehicle.
+      var vehNames=(_fleetVehicles&&_fleetVehicles.length?_fleetVehicles.map(function(v){return v.name;}):['Cadillac Escalade','Maybach Styled Sprinter']);
+      var curVeh=drv.vehicle||'Cadillac Escalade';
+      if(vehNames.indexOf(curVeh)<0) vehNames=[curVeh].concat(vehNames);
+      var vehSel='<select onchange="_drvSetVehicle(\''+_jsAttr(drv.email)+'\',this.value)" title="Which vehicle this chauffeur drives — riders requesting it match here" style="background:#0d0d0f;border:1px solid var(--border);border-radius:8px;color:#fff;font-size:11px;font-weight:700;padding:4px 7px;cursor:pointer;font-family:inherit;max-width:170px">'+vehNames.map(function(n){return '<option'+(n===curVeh?' selected':'')+'>'+esc(n)+'</option>';}).join('')+'</select>';
       return '<div style="background:linear-gradient(135deg,rgba(201,169,98,.06),rgba(255,255,255,.02));border:1px solid var(--border);border-radius:14px;padding:15px 16px;display:flex;align-items:center;gap:13px">'
         +'<div style="position:relative;flex-shrink:0">'
         +'<div style="width:46px;height:46px;border-radius:50%;background:var(--gold-dim);border:1.5px solid var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:800;color:var(--gold);text-transform:uppercase">'+(drv.name?drv.name.charAt(0):'D')+'</div>'
-        +'<div style="position:absolute;bottom:0;right:0;width:13px;height:13px;border-radius:50%;background:#4ade80;border:2.5px solid #14171f"></div>'
+        +'<div style="position:absolute;bottom:0;right:0;width:13px;height:13px;border-radius:50%;background:'+(drv.paused?'#C9A962':'#4ade80')+';border:2.5px solid #14171f"></div>'
         +'</div>'
         +'<div style="flex:1;min-width:0">'
         +'<div style="font-weight:800;font-size:14px;color:#fff;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(drv.name)+'</div>'
         +'<div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(drv.email)+'</div>'
         +(drv.phone?'<div style="font-size:11.5px;color:var(--muted)">'+esc(drv.phone)+'</div>':'')
         +'<div style="display:flex;align-items:center;gap:6px;margin-top:6px">'
-        +'<span style="font-size:10px;font-weight:800;color:#4ade80;background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.3);border-radius:20px;padding:2px 8px">ACTIVE</span>'
+        +(drv.paused?'<span style="font-size:10px;font-weight:800;color:#C9A962;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.35);border-radius:20px;padding:2px 8px">⏸ PAUSED</span>':'<span style="font-size:10px;font-weight:800;color:#4ade80;background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.3);border-radius:20px;padding:2px 8px">ACTIVE</span>')
         +(rate?'<span style="font-size:10px;font-weight:700;color:var(--gold);background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:20px;padding:2px 8px">'+rate+'</span>':'')
         +'</div>'
+        +'<div style="margin-top:8px;display:flex;align-items:center;gap:7px;flex-wrap:wrap"><span style="font-size:11px;color:var(--muted);font-weight:700">🚘 Drives</span>'+vehSel+'</div>'
         +'</div>'
         +'<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;align-self:flex-start">'
         +'<button onclick="openEditDriverModal(\''+_jsAttr(drv.email)+'\')" title="Edit driver (name, phone, rate)" style="background:var(--gold-faint);border:1px solid var(--gold-dim);color:var(--gold);border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">✏️</button>'
+        +(drv.paused
+          ? '<button onclick="_drvTogglePause(\''+_jsAttr(drv.email)+'\',false)" title="Reinstate — let them receive rides again" style="background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.4);color:#4ade80;border-radius:9px;width:30px;height:30px;font-size:14px;cursor:pointer">▶️</button>'
+          : '<button onclick="_drvTogglePause(\''+_jsAttr(drv.email)+'\',true)" title="Pause — stop offers + lock their app until reinstated" style="background:rgba(201,169,98,.1);border:1px solid var(--gold-dim);color:var(--gold);border-radius:9px;width:30px;height:30px;font-size:14px;cursor:pointer">⏸️</button>')
         +'<button onclick="sendDriverPortalInvite(\''+_jsAttr(drv.email)+'\')" title="Send / resend portal invite email" style="background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.3);color:#60a5fa;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">📨</button>'
         +(drv.phone?'<a href="tel:'+esc(String(drv.phone).replace(/[^0-9+]/g,''))+'" title="Call driver" style="background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.3);color:#4ade80;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none">📞</a>':'')
         +'<button onclick="deleteFleetDriver(\''+_jsAttr(drv.email)+'\')" title="Remove driver from fleet (restorable)" style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">🗑</button>'
@@ -7784,6 +7850,106 @@ async function renderDriversTab(){
   }catch(e){
     wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:20px">Network error.</div>';
   }
+}
+
+// Pause / reinstate a chauffeur: paused → no dispatch offers + their app is locked out.
+async function _drvTogglePause(email, paused){
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+  try{
+    var r=await fetch(WORKER+'/chauffeur/driver-pause',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify({email:email,paused:!!paused})});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok){ alert((d&&d.error)||('Error '+r.status)); return; }
+    renderDriversTab();
+  }catch(e){ alert('Network error'); }
+}
+
+// Assign which vehicle a chauffeur drives. Riders requesting that vehicle are matched only to
+// chauffeurs assigned to it; "Either"/broadened requests reach anyone.
+async function _drvSetVehicle(email, vehicle){
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+  try{
+    var r=await fetch(WORKER+'/chauffeur/driver-vehicle',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify({email:email,vehicle:vehicle})});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok){ alert((d&&d.error)||('Error '+r.status)); renderDriversTab(); return; }
+    // Keep the cached roster in sync so a re-render preserves the new assignment.
+    if(_rosterDrivers&&_rosterDrivers.length){ var m=_rosterDrivers.find(function(x){return x&&x.email===email;}); if(m) m.vehicle=vehicle; }
+  }catch(e){ alert('Network error'); renderDriversTab(); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FLEET VEHICLES  (owner add/manage the cars riders can choose)
+// Built-ins (Cadillac Escalade, Maybach Styled Sprinter) can't be deleted —
+// only their hourly rate / active state is editable. Point-to-point pricing is
+// identical across vehicles; only the hourly rate differs.
+// ══════════════════════════════════════════════════════════════════
+async function renderFleetVehicles(){
+  var wrap=$d('tabFleetVehiclesWrap'); if(!wrap) return;
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+  try{
+    var r=await fetch(WORKER+'/dashboard/vehicles?_t='+Date.now(),{cache:'no-store',headers:Object.assign({},(typeof _authHeader==='function'?_authHeader():{}))});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">'+((d&&d.error)||('Error '+r.status))+'</div>'; return; }
+    var list=(d&&d.vehicles)||[];
+    _fleetVehicles=list;
+    if(!list.length){ wrap.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">No vehicles configured.</div>'; return; }
+    wrap.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:11px">'+list.map(function(v){
+      return '<div style="background:linear-gradient(135deg,rgba(201,169,98,.06),rgba(255,255,255,.02));border:1px solid var(--border);border-radius:14px;padding:14px 15px;display:flex;align-items:center;gap:12px;'+(v.active?'':'opacity:.55')+'">'
+        +'<div style="width:44px;height:44px;border-radius:12px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0">'+esc(v.icon||'🚘')+'</div>'
+        +'<div style="flex:1;min-width:0">'
+        +'<div style="font-weight:800;font-size:14px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(v.name)+(v.builtin?' <span style="font-size:9px;font-weight:800;color:var(--gold);background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:20px;padding:1px 6px;vertical-align:middle">BUILT-IN</span>':'')+'</div>'
+        +'<div style="display:flex;align-items:center;gap:6px;margin-top:6px">'
+        +'<span style="font-size:11px;font-weight:800;color:var(--gold);background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:20px;padding:2px 9px">$'+(Number(v.hourlyRate)||0)+'/hr</span>'
+        +(v.active?'<span style="font-size:10px;font-weight:800;color:#4ade80;background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.3);border-radius:20px;padding:2px 8px">ACTIVE</span>':'<span style="font-size:10px;font-weight:800;color:var(--muted);background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:20px;padding:2px 8px">HIDDEN</span>')
+        +'</div>'
+        +'</div>'
+        +'<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">'
+        +'<button onclick="openVehicleModal('+_jsAttr2(v.name)+')" title="Edit vehicle" style="background:var(--gold-faint);border:1px solid var(--gold-dim);color:var(--gold);border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">✏️</button>'
+        +(v.builtin?'':'<button onclick="deleteVehicle(\''+_jsAttr(v.name)+'\')" title="Remove vehicle" style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:9px;width:30px;height:30px;font-size:13px;cursor:pointer">🗑</button>')
+        +'</div>'
+        +'</div>';
+    }).join('')+'</div>';
+  }catch(e){ wrap.innerHTML='<div style="color:var(--red);text-align:center;padding:16px">Network error.</div>'; }
+}
+var _fleetVehicles=[];
+function _jsAttr2(s){ return "'"+String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"'"; }
+function openVehicleModal(name){
+  var v=(name?(_fleetVehicles||[]).find(function(x){return x.name===name;}):null)||{name:'',hourlyRate:200,icon:'🚘',order:99,active:true,builtin:false};
+  $d('vehModalTitle').textContent=name?'Edit Vehicle':'Add Vehicle';
+  $d('vehModalName').value=v.name||'';
+  $d('vehModalName').disabled=!!v.builtin;   // built-in names are fixed (the rate/active are editable)
+  $d('vehModalRate').value=Number(v.hourlyRate)||0;
+  $d('vehModalIcon').value=v.icon||'🚘';
+  $d('vehModalOrder').value=Number(v.order)||99;
+  $d('vehModalActive').checked=v.active!==false;
+  $d('vehModalStatus').style.display='none';
+  $d('vehicleModal').style.display='flex';
+}
+function closeVehicleModal(){ $d('vehicleModal').style.display='none'; }
+async function saveVehicle(){
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+  var name=($d('vehModalName').value||'').trim();
+  var rate=Number($d('vehModalRate').value);
+  var st=$d('vehModalStatus');
+  if(!name){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Name is required.'; return; }
+  if(!(rate>=0)){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Enter a valid hourly rate.'; return; }
+  var body={ secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''), name:name, hourlyRate:rate, icon:($d('vehModalIcon').value||'🚘').trim(), order:Number($d('vehModalOrder').value)||99, active:$d('vehModalActive').checked };
+  st.style.display='block'; st.style.color='var(--muted)'; st.textContent='Saving…';
+  try{
+    var r=await fetch(WORKER+'/dashboard/save-vehicle',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify(body)});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok){ st.style.color='var(--red)'; st.textContent=(d&&d.error)||('Error '+r.status); return; }
+    closeVehicleModal(); renderFleetVehicles();
+  }catch(e){ st.style.color='var(--red)'; st.textContent='Network error.'; }
+}
+async function deleteVehicle(name){
+  if(!confirm('Remove "'+name+'" from the fleet? Riders will no longer be able to choose it.')) return;
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+  try{
+    var r=await fetch(WORKER+'/dashboard/delete-vehicle',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify({secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''),name:name})});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok){ alert((d&&d.error)||('Error '+r.status)); return; }
+    renderFleetVehicles();
+  }catch(e){ alert('Network error'); }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -8124,6 +8290,7 @@ function renderRideHistory(){
     var fare=Number(r.finalPrice||r.estimatedPrice||0);
     var dist=r.distanceMiles?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+Number(r.distanceMiles).toFixed(1)+' mi</span>'):'';
     var hrs=(r.rideType==='hourly'&&r.hours)?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+r.hours+' hr</span>'):'';
+    var veh=r.vehicle?('<span style="font-size:10px;color:var(--gold);font-weight:700;background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:20px;padding:1px 7px">🚘 '+esc(r.vehicle)+'</span>'):'';
     var when=r.requestedAt?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+_rhDay(r.requestedAt)+' · '+_rhClock(r.requestedAt)+'</span>'):'';
     // ── status-change log / timeline ──
     var steps=[['Requested',r.requestedAt],['Accepted',r.acceptedAt],['Arrived',r.arrivedAt],['Started',r.startedAt],[r.status==='cancelled'?'Cancelled':'Completed',r.status==='cancelled'?r.cancelledAt:r.completedAt]].filter(function(s){return s[1];});
@@ -8139,7 +8306,7 @@ function renderRideHistory(){
       +'<div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">'
       +'<div style="width:38px;height:38px;border-radius:11px;background:'+m.c+'1f;border:1px solid '+m.c+'40;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:'+m.c+';flex-shrink:0">'+initial+'</div>'
       +'<div style="flex:1;min-width:150px">'
-      +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:14px;font-weight:800;color:#fff;letter-spacing:-.2px">'+rider+'</span>'+dist+hrs+when+'</div>'
+      +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:14px;font-weight:800;color:#fff;letter-spacing:-.2px">'+rider+'</span>'+dist+hrs+veh+when+'</div>'
       +route
       +(drv?'<div style="font-size:11px;color:var(--muted);margin-top:4px">👤 '+esc(drv)+'</div>':'')
       +'</div>'

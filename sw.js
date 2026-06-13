@@ -1,4 +1,4 @@
-const CACHE = 'pb-v81';
+const CACHE = 'pb-v82';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
@@ -65,6 +65,11 @@ self.addEventListener('push', function(e){
             title='🚗 New ride request'+take;
             body=(n.pickupAddress||'Pickup nearby')+(n.rideType==='hourly'?' · Hourly':'');
             data.rideId=n.rideId;
+          } else if(d && d.activeRide && d.activeRide.pendingStop && d.activeRide.pendingStop.status==='pending'){
+            var pa=d.activeRide;
+            title='📍 Add-stop request';
+            body=(pa.pendingStop.riderName||pa.riderName||'Your guest')+' wants to add '+(pa.pendingStop.stopAddress||'a stop')+' — accept or deny';
+            data.rideId=pa.id;
           } else if(d && d.activeRide && d.activeRide.stopsUpdatedAt && (Date.now()-Number(d.activeRide.stopsUpdatedAt))<120000){
             var ar=d.activeRide;
             title='📍 Route updated';
@@ -87,19 +92,22 @@ self.addEventListener('push', function(e){
           data={app:'./obsidian.html', rideId:auth.rideId};
           var st=(d && d.ride && d.ride.status)||'';
           var dn=(d && d.driver && d.driver.name)||'';
-          if(st==='accepted'){ title='🚗 Chauffeur on the way'+(dn?' · '+dn:''); body='Your chauffeur is heading to your pickup'; }
+          var rd=(d && d.ride)||{};
+          if(rd.stopAcceptedAt && (Date.now()-Number(rd.stopAcceptedAt))<120000){ title='✓ Chauffeur accepted your stop'; body='Routing to your added stop now'; }
+          else if(rd.stopDeniedAt && (Date.now()-Number(rd.stopDeniedAt))<120000){ title='Chauffeur declined your stop'; body='That stop wasn\'t added — you were not charged'; }
+          else if(st==='accepted'){ title='🚗 Chauffeur on the way'+(dn?' · '+dn:''); body='Your chauffeur is heading to your pickup'; }
           else if(st==='driver_arrived'){ title='👋 Your chauffeur has arrived'; body='Head outside — '+(dn||'your chauffeur')+' is waiting'; }
           else if(st==='searching'){ title='Finding your chauffeur…'; body='Connecting you with the nearest available chauffeur'; }
           else if(st==='in_progress'){ title='Trip update'; body='Tap to view your live trip'; }
           else if(st==='completed'){ title='Trip complete'; body='Thank you for riding with Obsidian — tap for your receipt'; }
           else if(st==='cancelled'||st==='no_driver'){ title='Ride update'; body='Tap to open Obsidian'; }
-          else { title='Obsidian by Prestige Black'; body='Your chauffeur — tap for an update'; }
+          else { title='Trip update'; body='Tap to open'; }
           return show();
         })
-        .catch(function(){ title='Obsidian by Prestige Black'; body='Your chauffeur — tap for an update'; data={app:'./obsidian.html'}; return show(); });
+        .catch(function(){ title='Trip update'; body='Tap to open'; data={app:'./obsidian.html'}; return show(); });
     }
     // rider without a known active ride / unknown — generic
-    title='Obsidian by Prestige Black'; body='Your chauffeur — tap for an update'; data={app:'./obsidian.html'};
+    title='Trip update'; body='Tap to open'; data={app:'./obsidian.html'};
     return show();
   }));
 });

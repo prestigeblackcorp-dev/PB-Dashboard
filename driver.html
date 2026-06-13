@@ -711,14 +711,21 @@ function showScreen(id){
 //    with a bouncing arrow. Shown once per device. ──
 var _pbDeferredPrompt=null;
 window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); _pbDeferredPrompt=e; });
+// Once the chauffeur app is installed, stop prompting forever (covers the Android/Chrome flow).
+window.addEventListener('appinstalled', function(){ try{ localStorage.setItem('pb_a2hs_installed_driver','1'); }catch(e){} var ov=document.getElementById('a2hsOverlay'); if(ov) ov.remove(); });
 function _pbA2HS(){
   try{
-    if(localStorage.getItem('pb_a2hs_done')) return;
+    // Show up to 5 times (once per app open) until added to the home screen. Once added —
+    // running standalone, or the install event fired — never show again. Driver-specific keys
+    // (the rider app shares this origin, so it must NOT silence the chauffeur prompt or vice-versa).
+    if(localStorage.getItem('pb_a2hs_installed_driver')) return;
     var standalone=(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone;
-    if(standalone){ try{localStorage.setItem('pb_a2hs_done','1');}catch(e){} return; }
+    if(standalone){ try{localStorage.setItem('pb_a2hs_installed_driver','1');}catch(e){} return; }
+    var _a2hsShown=parseInt(localStorage.getItem('pb_a2hs_count_driver')||'0',10)||0;
+    if(_a2hsShown>=5) return;
     var ua=navigator.userAgent||'', isIOS=/iphone|ipad|ipod/i.test(ua), isAndroid=/android/i.test(ua);
     if(!isIOS && !isAndroid && !_pbDeferredPrompt) return;
-    try{ localStorage.setItem('pb_a2hs_done','1'); }catch(e){}
+    try{ localStorage.setItem('pb_a2hs_count_driver', String(_a2hsShown+1)); }catch(e){}
     var GOLD='#C9A962', cta, arrow='';
     if(_pbDeferredPrompt){
       cta='<button id="a2hsAdd" style="width:100%;background:linear-gradient(135deg,#C9A962,#a8893e);color:#0a0a0a;border:none;border-radius:14px;padding:15px;font-size:15px;font-weight:900;cursor:pointer;font-family:inherit">&#65291; Add to Home Screen</button>';
@@ -740,7 +747,7 @@ function _pbA2HS(){
       +arrow+'</div>';
     document.body.appendChild(ov);
     var add=ov.querySelector('#a2hsAdd');
-    if(add) add.onclick=function(){ if(_pbDeferredPrompt){ var dp=_pbDeferredPrompt; _pbDeferredPrompt=null; dp.prompt(); if(dp.userChoice&&dp.userChoice.then){ dp.userChoice.then(function(){ ov.remove(); }); } else { ov.remove(); } } else { ov.remove(); } };
+    if(add) add.onclick=function(){ if(_pbDeferredPrompt){ var dp=_pbDeferredPrompt; _pbDeferredPrompt=null; dp.prompt(); if(dp.userChoice&&dp.userChoice.then){ dp.userChoice.then(function(c){ if(c&&c.outcome==='accepted'){ try{localStorage.setItem('pb_a2hs_installed_driver','1');}catch(e){} } ov.remove(); }); } else { ov.remove(); } } else { ov.remove(); } };
     ov.querySelector('#a2hsLater').onclick=function(){ ov.remove(); };
     ov.addEventListener('click', function(ev){ if(ev.target===ov) ov.remove(); });
   }catch(e){}
@@ -1878,6 +1885,7 @@ async function pollDriverRides(){
   if(!r||!r.ok) return;
   var d=await r.json().catch(function(){return null;});
   if(!d) return;
+  _drvCheckPaused(!!d.paused);
   // Handle incoming notification
   if(d.notification&&d.notification.status==='pending'&&d.notification.rideId){
     if(!_pendingRide||_pendingRide.rideId!==d.notification.rideId){
@@ -1924,6 +1932,60 @@ async function pollDriverRides(){
     renderActiveRidePanel();
     drvToast('Ride cancelled — you\'re available again','error');
   }
+  _drvCheckStopReq();
+}
+
+// ── P2P added-stop request: the rider asks to add a stop → accept (route + earn more) or deny ──
+var _drvStopReqId=null;
+function _drvCheckStopReq(){
+  var ps = _activeRide && _activeRide.pendingStop;
+  var pending = !!(ps && ps.status==='pending');
+  var ov=document.getElementById('drvStopReq');
+  if(!pending){ if(ov) ov.remove(); _drvStopReqId=null; return; }
+  if(_drvStopReqId===ps.requestedAt && ov) return;   // already showing this request
+  _drvStopReqId=ps.requestedAt;
+  if(ov) ov.remove();
+  var earn=(Number(ps.addedCharge)||0)*DRIVER_SHARE;
+  ov=document.createElement('div'); ov.id='drvStopReq';
+  ov.style.cssText='position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:20px;-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)';
+  ov.innerHTML='<div style="background:#11100c;border:1px solid rgba(201,169,98,.32);border-radius:20px;max-width:380px;width:100%;padding:24px 22px;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,.6)">'
+    +'<div style="font-size:34px;margin-bottom:6px">📍</div>'
+    +'<div style="font-size:18px;font-weight:900;color:#fff;margin-bottom:4px">Add-Stop Request</div>'
+    +'<div style="font-size:13px;color:#b8a98a;margin-bottom:14px">'+esc(ps.riderName||_activeRide.riderName||'Your guest')+' wants to add a stop</div>'
+    +'<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:13px 15px;margin-bottom:14px;text-align:left"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px">New stop</div><div style="font-size:14px;color:var(--text2,#cfd3da)">'+esc(ps.stopAddress||'—')+'</div>'+(ps.nextStopAddress?'<div style="font-size:12px;color:var(--muted);margin-top:6px">⏭ then '+esc(ps.nextStopAddress)+'</div>':'')+'</div>'
+    +'<div style="font-size:13px;color:var(--gold);font-weight:800;margin-bottom:16px">+'+fmt$(earn)+' to your earnings</div>'
+    +'<div style="display:flex;gap:10px">'
+      +'<button onclick="_drvRespondStop(\'deny\')" style="flex:1;background:transparent;border:1px solid rgba(239,68,68,.4);color:#f87171;border-radius:13px;padding:14px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">Deny</button>'
+      +'<button onclick="_drvRespondStop(\'accept\')" style="flex:1.4;background:linear-gradient(135deg,#C9A962,#a8893e);border:none;color:#0a0a0a;border-radius:13px;padding:14px;font-size:14px;font-weight:900;cursor:pointer;font-family:inherit">✓ Accept</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+  try{ if(typeof _requestAlert==='function') _requestAlert(); }catch(e){}
+}
+async function _drvRespondStop(decision){
+  if(!_activeRide||!drvState.token) return;
+  var ov=document.getElementById('drvStopReq');
+  var rideId=_activeRide.id;
+  if(ov){ var bs=ov.querySelectorAll('button'); for(var i=0;i<bs.length;i++) bs[i].disabled=true; }
+  var r=await fetch(WORKER+'/chauffeur/respond-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:rideId,decision:decision})}).catch(function(){return null;});
+  var d=r?await r.json().catch(function(){return {};}):{};
+  if(ov) ov.remove(); _drvStopReqId=null;
+  if(!r||!r.ok){ drvToast((d&&d.error)||'Could not respond','error'); return; }
+  if(decision==='accept'){ drvToast('✓ Stop added — rerouting','success'); pollDriverRides(); }
+  else drvToast('Stop declined','info');
+}
+
+// ── Owner pause: full lockout (no map, no rides, no offers) until reinstated ──
+function _drvCheckPaused(paused){
+  var ov=document.getElementById('drvPaused');
+  if(!paused){ if(ov){ ov.remove(); if(typeof drvToast==='function') drvToast('✓ Reinstated — you\'re live again','success'); } return; }
+  if(ov) return;
+  ov=document.createElement('div'); ov.id='drvPaused';
+  ov.style.cssText='position:fixed;inset:0;z-index:9500;background:#0a0805;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;text-align:center';
+  ov.innerHTML='<div style="font-size:54px;margin-bottom:14px">⏸️</div>'
+    +'<div style="font-size:22px;font-weight:900;color:#fff;margin-bottom:8px">Paused by Dispatch</div>'
+    +'<div style="font-size:14px;color:#b8a98a;max-width:330px;line-height:1.6">You\'re temporarily paused — you won\'t receive ride requests or see the live map until the owner reinstates you.</div>'
+    +'<div style="margin-top:22px;display:inline-flex;align-items:center;gap:8px;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.3);border-radius:20px;padding:9px 16px;font-size:12px;font-weight:800;color:var(--gold)"><span class="spinner"></span> Waiting to be reinstated…</div>';
+  document.body.appendChild(ov);
 }
 
 // ── Incoming ride overlay ────────────────────────────────────────────────
@@ -1934,7 +1996,7 @@ function showRideRequestOverlay(notif){
   $d('rr-fare').textContent='$'+((notif.estimatedPrice||0)*DRIVER_SHARE).toFixed(2);
   $d('rr-dist').textContent=notif.distanceMiles?(notif.distanceMiles.toFixed(1)+' mi'):(notif.hours?notif.hours+' hrs':'—');
   $d('rr-rider').textContent=notif.riderName||'Rider';
-  $d('rr-type').textContent=notif.rideType==='hourly'?'Hourly':'Point-to-Point';
+  $d('rr-type').textContent=(notif.rideType==='hourly'?'Hourly':'Point-to-Point')+(notif.vehicle?(' · '+(notif.vehicle==='Either'?'Any vehicle':notif.vehicle)):'');
   $d('rr-pickup').textContent=notif.pickupAddress||'—';
   $d('rr-dropoff').textContent=notif.dropoffAddress||'(Hourly)';
   $d('rr-dropoff-row').style.display=notif.rideType==='hourly'?'none':'flex';
@@ -1990,7 +2052,7 @@ function renderActiveRidePanel(){
   panel.style.display='block';
   var r=_activeRide;
   $d('arc-rider-name').textContent=r.riderName||r.riderEmail||'Rider';
-  $d('arc-rider-sub').textContent=r.riderPhone?r.riderPhone:'';
+  $d('arc-rider-sub').textContent=(r.riderPhone||'')+(r.vehicle?((r.riderPhone?' · ':'')+'🚘 '+(r.vehicle==='Either'?'Any vehicle':r.vehicle)):'');
   $d('arc-pickup').textContent=r.pickupAddress||'—';
   // Live earnings — reflects any paid stops folded into the fare server-side (P2P surcharge).
   var _earnEl=$d('arc-earn'), _fareNow=Number(r.finalPrice||r.estimatedPrice||0);
