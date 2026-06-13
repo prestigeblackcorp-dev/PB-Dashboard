@@ -1472,7 +1472,13 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <span style="font-size:12px;font-weight:800;color:#22c55e;text-transform:uppercase;letter-spacing:.05em">Contract Signed</span>
           <span id="sigLockDate" style="font-size:11px;color:var(--muted)"></span>
         </div>
-        <img id="sigLockPreview" src="" style="max-height:90px;max-width:100%;object-fit:contain;display:block;border:1px solid var(--border);border-radius:6px;background:#fff;padding:4px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+          <div style="flex:1 1 200px;min-width:170px">
+            <div style="font-size:10px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Customer</div>
+            <img id="sigLockPreview" src="" style="max-height:90px;max-width:100%;object-fit:contain;display:block;border:1px solid var(--border);border-radius:6px;background:#fff;padding:4px">
+          </div>
+          <div id="sigLockDrivers" style="display:contents"></div>
+        </div>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
           <button class="btn btn-sm" id="contractSendSignedBtn" onclick="sendSignedCopyToClient()" style="background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.5);color:#22c55e;font-weight:800">📧 Send Signed Copy to Client</button>
           <button class="btn btn-sm" style="border-color:var(--red);color:var(--red);font-size:11px" onclick="overrideCustSig()">🔓 Override</button>
@@ -3753,7 +3759,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v73';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v74';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -16036,6 +16042,16 @@ function initCustSigCanvas(){
     if(editView) editView.style.display='none';
     var preview=$d('sigLockPreview');
     if(preview) preview.src=b.customerSig;
+    // Show each authorized driver's signature beside the customer's, labeled "Authorized Driver (N)".
+    var _dr=$d('sigLockDrivers');
+    if(_dr) _dr.innerHTML=(drivers||[]).map(function(d,i){
+      if(!(d&&d.sig&&String(d.sig).indexOf('data:image/')===0)) return '';
+      return '<div style="flex:1 1 200px;min-width:170px">'+
+        '<div style="font-size:10px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Authorized Driver ('+(i+1)+')</div>'+
+        '<img src="'+d.sig+'" style="max-height:90px;max-width:100%;object-fit:contain;display:block;border:1px solid var(--border);border-radius:6px;background:#fff;padding:4px">'+
+        (d.sigDate?'<div style="font-size:10px;color:var(--muted);margin-top:3px">· Signed '+esc(d.sigDate)+'</div>':'')+
+      '</div>';
+    }).join('');
     var dateEl=$d('sigLockDate');
     if(dateEl) dateEl.textContent=b.customerSigDate?'· Signed '+b.customerSigDate:'';
     if(b.customerSigColor && b.vehicle==='Polaris Slingshot' && b.customerSigColor!==_slingshotColor) switchSlingshotColor(b.customerSigColor);
@@ -16264,25 +16280,9 @@ function _buildAdditionalDriversHtml(bk, showSigs, dark){
     '</tr>';
   }).join('');
   var sigHeader=showSigs?'<th style="padding:4px 0;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:'+mut+'">Signature</th>':'';
-  // Dedicated signature boxes — one per authorized driver, matching the
-  // contract's Renter / Owner signature boxes (sits right beside/below them).
-  var sigBoxes='';
-  if(showSigs){
-    sigBoxes='<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:24px;page-break-inside:avoid">'+
-      bk.extraDrivers.map(function(d){
-        return '<div>'+
-          '<div style="border-bottom:1.5px solid '+line+';min-height:82px;margin-bottom:7px;display:flex;align-items:flex-end;padding-bottom:0">'+
-            (d.sig&&d.sig.startsWith('data:image/')
-              ? '<img src="'+d.sig+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+inv+'">'
-              : '')+
-          '</div>'+
-          '<div style="font-size:10.5px;color:'+mut+'">Date: '+esc(d.sigDate||'____________')+'</div>'+
-          '<div style="font-size:10.5px;color:'+mut+';margin-top:4px">Printed Name: '+esc(d.name||'')+'</div>'+
-          '<div style="font-size:10px;color:'+hd+';margin-top:3px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Authorized Additional Driver</div>'+
-        '</div>';
-      }).join('')+
-    '</div>';
-  }
+  // NOTE: the dedicated per-driver signature boxes that used to render below this table were removed —
+  // they duplicated the signature already shown inline in the table's Signature column. The owner-side
+  // signed view (sigLockView) now shows each authorized driver's signature beside the customer's.
   return '<div style="margin:24px 0 8px;page-break-inside:avoid">'+
     '<div style="font-size:13px;font-weight:800;border-bottom:2px solid '+hd+';padding-bottom:4px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em;color:'+tx+'">Additional Authorized Drivers</div>'+
     '<p style="font-size:11px;color:'+mut+';margin:0 0 10px">The following individuals are authorized to operate the vehicle under this agreement and are subject to the same terms and conditions as the primary renter.</p>'+
@@ -16295,7 +16295,6 @@ function _buildAdditionalDriversHtml(bk, showSigs, dark){
       '</tr></thead>'+
       '<tbody>'+rows+'</tbody>'+
     '</table>'+
-    sigBoxes+
   '</div>';
 }
 
