@@ -117,7 +117,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 .leaflet-popup-content{margin:13px 17px!important;font-size:13px;line-height:1.45;}
 
 /* Bottom sheet */
-#bottom-sheet{position:fixed;bottom:0;left:0;right:0;z-index:1001;background:var(--surface);border-radius:24px 24px 0 0;border:1px solid var(--border);border-bottom:none;transition:transform .3s cubic-bezier(.32,.72,0,1);will-change:transform;max-height:88vh;overflow-y:auto;padding-bottom:calc(20px + var(--safe-bot));}
+#bottom-sheet{position:fixed;bottom:0;left:0;right:0;z-index:1001;background:var(--surface);border-radius:24px 24px 0 0;border:1px solid var(--border);border-bottom:none;transition:transform .3s cubic-bezier(.32,.72,0,1);will-change:transform;max-height:72vh;overflow-y:auto;padding-bottom:calc(20px + var(--safe-bot));}
 .sheet-handle{width:40px;height:4px;border-radius:2px;background:var(--border);flex-shrink:0;transition:width .2s,background .2s,opacity .2s;}
 .sheet-section{padding:0 20px 16px;}
 .sheet-title{font-size:20px;font-weight:800;letter-spacing:-.3px;margin-bottom:4px;}
@@ -680,7 +680,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
           <div class="fare-breakdown collapsed" id="fareBreakdown"></div>
         </div>
         <div class="sheet-actions">
-          <button class="btn-gold" id="requestRideBtn" onclick="requestRide()" style="display:none">Request Ride</button>
+          <button class="btn-gold" id="requestRideBtn" onclick="requestRide()" style="display:none">Request Chauffeur</button>
         </div>
       </div>
 
@@ -1223,7 +1223,9 @@ function initMap(){
   if(_bs && !_bs._fitHooked){
     _bs._fitHooked=true;
     _bs.addEventListener('transitionend',function(e){
-      if(e.propertyName==='transform' && $d('ride-status-view').style.display==='block'){ fitTripView(_lastDriverLoc); }
+      if(e.propertyName!=='transform') return;
+      if($d('ride-status-view').style.display==='block'){ fitTripView(_lastDriverLoc); }
+      else if($d('booking-view').style.display!=='none'){ _fitBookingView(true); }   // re-park the location dot above the sheet
     });
   }
 }
@@ -1231,7 +1233,7 @@ function initMap(){
 function locateMe(){
   if(!navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(pos=>{
-    _map.setView([pos.coords.latitude,pos.coords.longitude],15);
+    _fitBookingView(true, pos.coords.latitude, pos.coords.longitude, 15);
     // Auto-reverse geocode for pickup field
     if(!$d('pickupInp').value){
       reverseGeocode(pos.coords.latitude,pos.coords.longitude).then(addr=>{
@@ -1269,6 +1271,7 @@ function startBookingWatch(){
         placePickupMarker(lat,lng);
         _refreshPickupLabel(lat,lng);
         updateEstimate();
+        _fitBookingView(true, lat, lng, 15);   // park the just-found location dot above the sheet
       }
       return;
     }
@@ -1418,7 +1421,7 @@ function _applySel(field, lat, lng, label){
     _pickup={lat,lng,address:full};
     _pickupAuto=false;   // rider chose an exact pickup — stop following their GPS
     placePickupMarker(lat,lng);
-    _map.setView([lat,lng],15);
+    _fitBookingView(true, lat, lng, 15);
   } else if(field==='stop'){
     $d('stopInp').value=full;
     _stopSel={lat,lng,address:full};
@@ -1520,7 +1523,17 @@ async function fetchRoute(){
   if(!_pickup||!_dropoff||_rideType!=='point_to_point') return;
   const url=`https://router.project-osrm.org/route/v1/driving/${_pickup.lng},${_pickup.lat};${_dropoff.lng},${_dropoff.lat}?overview=full&geometries=geojson`;
   const data=await fetch(url,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
-  if(!data||!data.routes||!data.routes[0]) return;
+  if(!data||!data.routes||!data.routes[0]){
+    // OSRM (free public router) is rate-limited or down — fall back to a straight-line
+    // estimate so the fare card + Request Chauffeur button still appear (×1.3 road factor,
+    // ~32 mph avg). No route line is drawn, but point-to-point booking stays usable.
+    if(_pickup&&_dropoff){
+      _distanceMiles=(haversineKm(_pickup.lat,_pickup.lng,_dropoff.lat,_dropoff.lng)/1.60934)*1.3;
+      _estDuration=_distanceMiles/32*60;
+      updateEstimate();
+    }
+    return;
+  }
   const route=data.routes[0];
   _distanceMiles=route.distance/1609.34;
   _estDuration=route.duration/60;
@@ -1528,7 +1541,11 @@ async function fetchRoute(){
   if(_routeLine) _map.removeLayer(_routeLine);
   const coords=route.geometry.coordinates.map(([lng,lat])=>[lat,lng]);
   _routeLine=L.polyline(coords,{color:'#C9A962',weight:4,opacity:.8,dashArray:'8,4'}).addTo(_map);
-  _map.fitBounds(_routeLine.getBounds(),{padding:[60,60]});
+  // Reserve the sheet's full on-screen height at the bottom so the pickup pin + route stay
+  // framed in the map ABOVE the booking sheet — the rider keeps sight of where they are even
+  // after a dropoff is chosen. (Defensive cap at 72vh — the sheet's own CSS max.)
+  var _rsv=Math.min(_sheetReserve(), Math.round(window.innerHeight*0.72));
+  _map.fitBounds(_routeLine.getBounds(),{paddingTopLeft:[50,70],paddingBottomRight:[50,_rsv+30]});
   updateEstimate();
 }
 
@@ -1658,7 +1675,7 @@ function setScheduleMode(m){
     s.min=_toLocalInput(new Date(Date.now()+60*60000));
     if(!s.value){ var dt=new Date(Date.now()+60*60000); dt.setMinutes(Math.ceil(dt.getMinutes()/15)*15,0,0); s.value=_toLocalInput(dt); _scheduledFor=dt.getTime(); }
   } }
-  var b=$d('requestRideBtn'); if(b) b.textContent=_scheduleMode==='later'?'Reserve Ride':'Request Ride';
+  var b=$d('requestRideBtn'); if(b) b.textContent=_scheduleMode==='later'?'Reserve Chauffeur':'Request Chauffeur';
 }
 function onScheduledChange(){ var s=$d('scheduledAt'); _scheduledFor = s&&s.value ? new Date(s.value).getTime() : 0; }
 async function reserveRide(){
@@ -1756,7 +1773,7 @@ async function _dispatchRide(){
   };
   const d=await fetch(WORKER+'/chauffeur/request-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
   btn.disabled=false;
-  btn.textContent='Request Ride';
+  btn.textContent=_scheduleMode==='later'?'Reserve Chauffeur':'Request Chauffeur';
   if(!d||d.error){ alert(d&&d.error?d.error:'Could not request ride. Try again.'); return; }
   _rideId=d.rideId;
   ensurePushSubscription('rider');
@@ -1862,6 +1879,28 @@ const STATUS_SUBS={
   no_driver:'No drivers are currently available. Please try again shortly.',
 };
 
+// While BOOKING, the expanded sheet covers the lower part of the map. These keep the
+// rider's current-location (pickup) dot in the slice of map still visible ABOVE the
+// sheet, so they can always see + confirm where they are. _sheetReserve() = the sheet's
+// real on-screen height (CSS-capped) when expanded, else 0 (collapsed → map is clear).
+function _sheetReserve(){
+  var sheet=$d('bottom-sheet');
+  return (sheet && !sheet.classList.contains('collapsed')) ? sheet.offsetHeight : 0;
+}
+function _fitBookingView(animate, lat, lng, zoom){
+  if(!_map) return;
+  var sv=$d('ride-status-view'); if(sv && sv.style.display==='block') return;   // an active trip owns the map
+  var la=(lat!=null)?lat:(_pickup&&_pickup.lat), lo=(lng!=null)?lng:(_pickup&&_pickup.lng);
+  if(la==null||lo==null) return;
+  var z=(zoom!=null)?zoom:(_map.getZoom()||15);
+  try{
+    _progMove=true;
+    var pt=_map.project([la,lo], z);
+    pt.y += _sheetReserve()/2;            // drop the map center below the dot → dot rises into the visible strip
+    _map.setView(_map.unproject(pt, z), z, {animate:animate!==false});
+  }catch(e){ try{ _map.setView([la,lo], z); }catch(_){} }
+  setTimeout(function(){ _progMove=false; },60);
+}
 // Keep pickup, dropoff and the live driver position framed inside the map area
 // that's visible above the bottom sheet, so the rider can watch the whole trip.
 function fitTripView(driverLoc){
