@@ -161,6 +161,12 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 #vehPicker .veh-photo .rtb-icon{position:absolute;inset:0;min-height:0;margin:0;display:block;}
 #vehPicker .veh-photo .rtb-icon img{width:100%;height:100%;object-fit:cover;border-radius:0;display:block;}
 #vehPicker .veh-photo .rtb-label{position:absolute;left:0;right:0;bottom:0;margin:0;padding:8px 8px 9px;background:linear-gradient(to top,rgba(0,0,0,.9),rgba(0,0,0,.32) 72%,transparent);z-index:2;text-shadow:0 1px 3px rgba(0,0,0,.6);}
+/* "Either" — both cars, split down the middle with a gold divider. */
+#vehPicker .veh-split{position:absolute;inset:0;}
+#vehPicker .veh-photo .rtb-icon .veh-split img{position:absolute;top:0;bottom:0;width:50%;height:100%;object-fit:cover;border-radius:0;}
+#vehPicker .veh-photo .rtb-icon .veh-split img:first-child{left:0;right:auto;object-position:70% center;}
+#vehPicker .veh-photo .rtb-icon .veh-split img:last-child{right:0;left:auto;object-position:66% center;}
+#vehPicker .veh-split::after{content:'';position:absolute;left:50%;top:0;bottom:0;width:2px;margin-left:-1px;background:linear-gradient(to bottom,rgba(201,169,98,.95),rgba(201,169,98,.3));z-index:1;}
 .ride-type-btn .rtb-label{font-size:12px;font-weight:700;color:var(--muted);}
 .ride-type-btn.active .rtb-label{color:var(--gold);}
 
@@ -642,7 +648,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
           <div class="ride-type-row" id="vehPicker">
             <button class="ride-type-btn veh-photo active" id="vehEsc" data-veh="Cadillac Escalade" onclick="setVehicle('Cadillac Escalade')"><span class="rtb-icon"><img src="veh-escalade.jpg" alt="Cadillac Escalade" onerror="_vehImgFail(this,'Cadillac Escalade')"></span><span class="rtb-label">Cadillac Escalade</span></button>
             <button class="ride-type-btn veh-photo" id="vehSpr" data-veh="Maybach Styled Sprinter" onclick="setVehicle('Maybach Styled Sprinter')"><span class="rtb-icon"><img src="veh-sprinter.jpg" alt="Maybach Styled Sprinter" onerror="_vehImgFail(this,'Maybach Styled Sprinter')"></span><span class="rtb-label">Maybach Sprinter</span></button>
-            <button class="ride-type-btn" id="vehEither" data-veh="Either" onclick="setVehicle('Either')"><span class="rtb-icon"><svg viewBox="0 0 24 24" width="23" height="23" fill="currentColor"><path d="M12 2.8l1.7 5.2 5.2 1.7-5.2 1.7L12 16.6l-1.7-5.2L5.1 9.7l5.2-1.7z"/><path d="M18.6 14.4l.75 2.25 2.25.75-2.25.75-.75 2.25-.75-2.25-2.25-.75 2.25-.75z"/></svg></span><span class="rtb-label">Either · First available</span></button>
+            <button class="ride-type-btn veh-photo" id="vehEither" data-veh="Either" onclick="setVehicle('Either')"><span class="rtb-icon"><span class="veh-split"><img src="veh-escalade.jpg" alt="" onerror="this.style.display='none'"><img src="veh-sprinter.jpg" alt="" onerror="this.style.display='none'"></span></span><span class="rtb-label">Either · First available</span></button>
           </div>
 
           <!-- When: Now or Schedule in advance (reserve-ahead) -->
@@ -1628,7 +1634,16 @@ function _vehSvg(name){
 // the SVG line-icon otherwise (Either sparkle, generic fallback). A failed image load swaps in the
 // SVG so the button is never blank.
 function _vehPhoto(name){ var n=(name||'').toLowerCase(); if(n.indexOf('escalade')>=0) return 'veh-escalade.jpg'; if(n.indexOf('sprinter')>=0) return 'veh-sprinter.jpg'; return ''; }
-function _vehIcon(name){ var p=_vehPhoto(name); if(p) return '<img src="'+p+'" alt="'+esc(name)+'" onerror="_vehImgFail(this,\''+String(name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')">'; return _vehSvg(name); }
+function _isEither(name){ return String(name||'').toLowerCase().indexOf('either')>=0; }
+// Full-bleed buttons = the photo cars + "Either" (which shows both, split down the middle).
+function _isFullBleed(name){ return !!_vehPhoto(name) || _isEither(name); }
+function _vehIcon(name){
+  if(_isEither(name))
+    return '<span class="veh-split"><img src="veh-escalade.jpg" alt="" onerror="this.style.display=\'none\'"><img src="veh-sprinter.jpg" alt="" onerror="this.style.display=\'none\'"></span>';
+  var p=_vehPhoto(name);
+  if(p) return '<img src="'+p+'" alt="'+esc(name)+'" onerror="_vehImgFail(this,\''+String(name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')">';
+  return _vehSvg(name);
+}
 function _vehImgFail(img, name){ try{ var s=img.parentNode; if(s) s.innerHTML=_vehSvg(name); }catch(e){} }
 function setVehicle(v){
   _vehicle=v;
@@ -1637,7 +1652,7 @@ function setVehicle(v){
     var btns=row.querySelectorAll('.ride-type-btn');
     for(var i=0;i<btns.length;i++){
       var bn=btns[i].getAttribute('data-veh')||(btns[i].id==='vehEsc'?'Cadillac Escalade':btns[i].id==='vehSpr'?'Maybach Styled Sprinter':'');
-      btns[i].className='ride-type-btn'+(_vehPhoto(bn)?' veh-photo':'')+(bn===v?' active':'');
+      btns[i].className='ride-type-btn'+(_isFullBleed(bn)?' veh-photo':'')+(bn===v?' active':'');
     }
   }
   updateEstimate();
@@ -1656,7 +1671,7 @@ function _loadVehicles(){
       row.innerHTML='';
       list.forEach(function(v){
         var b=document.createElement('button');
-        b.className='ride-type-btn'+(_vehPhoto(v.name)?' veh-photo':'')+(v.name===_vehicle?' active':'');
+        b.className='ride-type-btn'+(_isFullBleed(v.name)?' veh-photo':'')+(v.name===_vehicle?' active':'');
         b.setAttribute('data-veh', v.name);
         b.innerHTML='<span class="rtb-icon">'+_vehIcon(v.name)+'</span><span class="rtb-label">'+esc(v.name)+'</span>';
         b.onclick=function(){ setVehicle(v.name); };
