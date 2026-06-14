@@ -1457,6 +1457,15 @@ function _categoryTags(q){
 }
 function _googlePlacesOn(){ return !!(window.PB_FLAGS||{}).googlePlaces; }
 function _newSession(){ try{ if(window.crypto&&crypto.randomUUID) return crypto.randomUUID(); }catch(e){} return 'pb-'+Date.now()+'-'+Math.round(Math.random()*1e9).toString(36); }
+// Detect raw decimal coordinates the rider typed ("32.7767, -96.7970" / "32.7767 -96.797").
+// Both parts must carry a decimal point so plain street numbers ("123 45") never match.
+function _parseCoords(s){
+  var m=String(s||'').trim().match(/^(-?\d{1,2}\.\d+)\s*[,;\s]\s*(-?\d{1,3}\.\d+)$/);
+  if(!m) return null;
+  var lat=parseFloat(m[1]), lng=parseFloat(m[2]);
+  if(!isFinite(lat)||!isFinite(lng)||lat<-90||lat>90||lng<-180||lng>180) return null;
+  return {lat:lat,lng:lng};
+}
 // Render Google Places (New) predictions into the same suggestion list. They carry a
 // placeId (no coords) \u2014 selectSuggestion resolves the coords via /places/details on tap.
 function _renderGoogleSuggestions(field, el, sugs, qt){
@@ -1467,12 +1476,20 @@ function _renderGoogleSuggestions(field, el, sugs, qt){
     var sub=parts.join(' \u00B7 ');
     return '<div class="suggestion" onclick="selectSuggestion(\''+field+'\','+i+')"><div class="sug-main">'+esc(s.main||'')+'</div>'+(sub?'<div class="sug-sub">'+esc(sub)+'</div>':'')+'</div>';
   }).join('');
-  rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">\uD83D\uDCCD Use \u201C'+esc(qt)+'\u201D</div><div class="sug-sub">'+(sugs.length?'Pin the closest match':'Search & drop a pin')+'</div></div>';
+  rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">\uD83D\uDCCD Use \u201C'+esc(qt)+'\u201D</div><div class="sug-sub">'+(sugs.length?'Enter this exactly and continue':'Search for this and continue')+'</div></div>';
   el.innerHTML=rows; el._gsugs=sugs; el._features=null; el._typed=qt; el.style.display='block';
 }
 async function fetchSuggestions(field){
   const q=(($d(field+'Inp')||{}).value)||''; const qt=q.trim();
   if(!qt||qt.length<2){ closeSuggestions(field); return; }
+  // Raw coordinates -> offer them directly, no geocode needed.
+  const _co=_parseCoords(qt);
+  if(_co){
+    const cel=$d(field+'Sugg'); if(!cel) return;
+    cel.innerHTML='<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">\uD83D\uDCCD Use coordinates</div><div class="sug-sub">'+esc(_co.lat.toFixed(5)+', '+_co.lng.toFixed(5))+'</div></div>';
+    cel._gsugs=null; cel._features=null; cel._typed=qt; cel.style.display='block';
+    return;
+  }
   const ref=_suggRef(field);
   const gEl=$d(field+'Sugg');
   // Google Places (New) via the worker proxy \u2014 top-notch search; silently falls back to the
@@ -1518,7 +1535,7 @@ async function fetchSuggestions(field){
   }).join('');
   // Always-enterable fallback (Apple-Maps "use what you typed") \u2014 geocodes the exact text
   // so a rider can never get stuck unable to enter a place that didn't auto-appear.
-  rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">\uD83D\uDCCD Use \u201C'+esc(qt)+'\u201D</div><div class="sug-sub">'+(feats.length?'Pin the closest match':'Search & drop a pin')+'</div></div>';
+  rows += '<div class="suggestion" onclick="_useTyped(\''+field+'\')"><div class="sug-main">\uD83D\uDCCD Use \u201C'+esc(qt)+'\u201D</div><div class="sug-sub">'+(feats.length?'Enter this exactly and continue':'Search for this and continue')+'</div></div>';
   el.innerHTML=rows;
   el._features=feats; el._gsugs=null; el._typed=qt;
   el.style.display='block';
@@ -1576,13 +1593,25 @@ async function _useTyped(field){
   const el=$d(field+'Sugg');
   const q=((el&&el._typed)||((($d(field+'Inp')||{}).value)||'')).trim();
   if(!q) return;
+  // 1) raw coordinates -> use exactly, no lookup
+  const co=_parseCoords(q);
+  if(co){ _applySel(field, co.lat, co.lng, co.lat.toFixed(5)+', '+co.lng.toFixed(5)); return; }
+  // 2) a live suggestion already matched -> the closest one
   let f=(el&&el._features&&el._features[0])||null;
+  // 3) Google Maps Text Search via the worker -> finds ANY place/address Google Maps knows,
+  //    even if it wasn't in the live suggestions, so you never have to pick from the list.
+  if(!f && _googlePlacesOn()){
+    const ref=_suggRef(field);
+    const gd=await fetch(WORKER+'/places/geocode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:q,lat:ref.lat,lng:ref.lng})}).then(r=>r.json()).catch(()=>null);
+    if(gd && gd.ok && gd.lat!=null && gd.lng!=null){ _applySel(field, Number(gd.lat), Number(gd.lng), gd.label||q); return; }
+  }
+  // 4) free Photon geocoder fallback
   if(!f){
     const ref=_suggRef(field);
     const d=await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1&lat=${ref.lat}&lon=${ref.lng}`,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
     f=d&&d.features&&d.features[0];
   }
-  if(!f||!f.geometry){ alert("Couldn't find that location \u2014 try a nearby address or place name."); return; }
+  if(!f||!f.geometry){ alert("Couldn't find that location \u2014 try a place name, full address, or coordinates like 32.7767, -96.7970."); return; }
   const c=f.geometry.coordinates;
   _applySel(field, c[1], c[0], q);
 }
