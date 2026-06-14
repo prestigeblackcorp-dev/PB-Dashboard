@@ -1804,11 +1804,15 @@ function stopDutyBroadcast(){
 function broadcastLocation(){
   if(!drvState.token||!navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(function(pos){
-    var payload={token:drvState.token,lat:pos.coords.latitude,lng:pos.coords.longitude,
-      heading:pos.coords.heading||0,speed:pos.coords.speed||0,
+    // Clean first (road-snap + stationary deadband), then send the cleaned position so the rider's
+    // view of the car rides the street and stays put when parked. Falls back to the raw fix.
+    updateMapSelfMarker(pos.coords.latitude, pos.coords.longitude, pos.coords.heading);
+    var payload={token:drvState.token,
+      lat:(_driverLat!=null?_driverLat:pos.coords.latitude),
+      lng:(_driverLng!=null?_driverLng:pos.coords.longitude),
+      heading:_navHeading||pos.coords.heading||0,speed:pos.coords.speed||0,
       status:_activeRide?'busy':'available'};
     fetch(WORKER+'/chauffeur/update-location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(function(){});
-    updateMapSelfMarker(pos.coords.latitude, pos.coords.longitude, pos.coords.heading);
   }, null, {enableHighAccuracy:true,timeout:8000,maximumAge:5000});
 }
 
@@ -1832,10 +1836,17 @@ function _moveMarkerSmooth(lng,lat){
   _mkAnimRAF=requestAnimationFrame(_step);
 }
 function updateMapSelfMarker(lat,lng,heading){
+  // Road-snap to the active route so the puck rides the street, not through buildings (only when
+  // close to it; a large deviation is a real off-route and the nav reroutes on its own).
+  if(_activeRide && _navRouteCoords){ var _s=_snapToRoute(lat,lng); if(_s && _s.d<28){ lat=_s.lat; lng=_s.lng; } }
+  // Stationary deadband: ignore sub-~6m GPS jitter so the puck doesn't creep or spin while parked.
+  // The anchor (and the position we broadcast) only advances on a real move.
+  if(_driverLat!=null && navDistM(_driverLat,_driverLng,lat,lng) < 6) return;
+  // Heading updates ONLY on a real move + a real GPS heading, so the arrow never spins while still.
+  if(heading!=null && isFinite(heading)) _navHeading=heading;
   _driverLat=lat; _driverLng=lng;
   if(_activeRide) updateNav();
   if(!_ridesMap) return;
-  if(heading!=null && isFinite(heading)) _navHeading=heading;
   // Directional first-person chevron (gold arrowhead on a dark disc), heading-up.
   if(!_driverSelfMarker){
     try{
@@ -1892,6 +1903,7 @@ function _drvResume(){
   if(_onDuty || _activeRide){
     if(!_ridesPollTimer) startRidesPoll(); else pollDriverRides();
     if(_onDuty && !_dutyInterval) startDutyBroadcast();
+    else if(_onDuty) broadcastLocation();   // immediate fresh fix on return so the location is accurate again
   }
 }
 if(typeof document!=='undefined'){
@@ -2460,6 +2472,18 @@ function _projectOnRoute(lat,lng){
       var segLen=navDistM(a[0],a[1],b[0],b[1]);
       best={distM:pr.d, prog:_navRouteCum[i]+pr.t*segLen};
     }
+  }
+  return best;
+}
+// Like _projectOnRoute but returns the SNAPPED point {lat,lng,d} so the live puck can ride the
+// road instead of cutting through buildings on GPS drift.
+function _snapToRoute(lat,lng){
+  var coords=_navRouteCoords; if(lat==null||!coords||coords.length<2) return null;
+  var best=null;
+  for(var i=0;i<coords.length-1;i++){
+    var a=coords[i], b=coords[i+1];
+    var pr=_projPointSeg(lat,lng,a[0],a[1],b[0],b[1]);
+    if(!best||pr.d<best.d){ best={d:pr.d, lat:a[0]+(b[0]-a[0])*pr.t, lng:a[1]+(b[1]-a[1])*pr.t}; }
   }
   return best;
 }

@@ -146,7 +146,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 .addr-inp{background:#0a0e18;border:1px solid var(--border);border-radius:14px;color:var(--text);font-size:14px;padding:13px 14px 13px 34px;width:100%;outline:none;font-family:inherit;transition:border-color .15s;}
 .addr-inp:focus{border-color:var(--gold);}
 .addr-inp::placeholder{color:var(--muted);}
-.suggestions{position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;z-index:50;box-shadow:0 8px 32px rgba(0,0,0,.5);}
+.suggestions{position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--card);border:1px solid var(--border);border-radius:14px;overflow-y:auto;overflow-x:hidden;max-height:300px;-webkit-overflow-scrolling:touch;z-index:50;box-shadow:0 8px 32px rgba(0,0,0,.5);}
 .suggestion{padding:12px 16px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);transition:background .1s;}
 .suggestion:last-child{border-bottom:none;}
 .suggestion:active,.suggestion:hover{background:rgba(201,169,98,.08);}
@@ -231,6 +231,8 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 .route-icon{font-size:16px;width:24px;text-align:center;margin-top:1px;flex-shrink:0;}
 .route-text{font-size:13px;color:var(--text2);flex:1;}
 .route-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:1px;}
+#routeStops{max-height:150px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;}
+.route-stop-dot{display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--gold);box-shadow:0 0 0 3px var(--gold-dim);}
 
 /* Payment done */
 .done-card{background:linear-gradient(135deg,rgba(201,169,98,.14),rgba(201,169,98,.04));border:1px solid rgba(201,169,98,.3);border-radius:18px;padding:24px;text-align:center;margin-bottom:14px;}
@@ -762,6 +764,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
                 <div id="routePickup">&#8212;</div>
               </div>
             </div>
+            <div id="routeStops" style="display:none"></div>
             <div class="route-row" id="routeDropoffRow">
               <div class="route-icon">&#9898;</div>
               <div class="route-text">
@@ -1479,8 +1482,13 @@ function _parseCoords(s){
 // Render Google Places (New) predictions into the same suggestion list. They carry a
 // placeId (no coords) \u2014 selectSuggestion resolves the coords via /places/details on tap.
 function _renderGoogleSuggestions(field, el, sugs, qt){
-  // Closest first (Google returns distanceMeters once we send origin); show the distance like the prior search.
-  sugs=sugs.slice().sort(function(a,b){ var da=(a.distM==null?Infinity:a.distM), db=(b.distM==null?Infinity:b.distM); return da-db; });
+  var ref=_suggRef(field);
+  // Text Search returns coords inline (no distanceMeters) -> measure distance from the rider here.
+  sugs=sugs.slice().map(function(s){ s.distM=(s.lat!=null&&s.lng!=null)?haversineKm(ref.lat,ref.lng,Number(s.lat),Number(s.lng))*1000:null; return s; });
+  // SHORT / vague query -> sort closest-first so we "think local". LONGER / more specific query
+  // -> keep Google's relevance order so the exact place stays on top even if it's farther away.
+  if(qt.length<=6) sugs.sort(function(a,b){ var da=(a.distM==null?Infinity:a.distM), db=(b.distM==null?Infinity:b.distM); return da-db; });
+  sugs=sugs.slice(0,20);   // up to 20 results; the list scrolls ~5 at a time
   let rows=sugs.map(function(s,i){
     var parts=[]; if(s.distM!=null) parts.push(_fmtMi(s.distM/1000)); if(s.sub) parts.push(s.sub);
     var sub=parts.join(' \u00B7 ');
@@ -1552,13 +1560,15 @@ async function fetchSuggestions(field){
 }
 async function selectSuggestion(field,idx){
   const el=$d(field+'Sugg');
-  // Google mode: resolve the chosen prediction to coordinates via Place Details.
+  // Google mode (Text Search): coordinates are already inline - apply directly, no extra lookup.
   if(el && el._gsugs && el._gsugs[idx]){
     const gs=el._gsugs[idx];
-    const gd=await fetch(WORKER+'/places/details',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:gs.id,session:el._gsession})}).then(r=>r.json()).catch(()=>null);
-    el._gsession=null;   // a selection ends the billing session
-    if(gd && gd.ok && gd.lat!=null && gd.lng!=null){ _applySel(field, Number(gd.lat), Number(gd.lng), gd.label||gs.main||''); return; }
-    _useTyped(field); return;   // details failed \u2192 geocode the typed text
+    el._gsession=null;
+    if(gs.lat!=null && gs.lng!=null){
+      var glabel=(gs.main && gs.sub && gs.sub.indexOf(gs.main)!==0)?(gs.main+', '+gs.sub):(gs.sub||gs.main||'');
+      _applySel(field, Number(gs.lat), Number(gs.lng), glabel); return;
+    }
+    _useTyped(field); return;   // no coords -> geocode the typed text
   }
   const f=el&&el._features&&el._features[idx];
   if(!f||!f.geometry) return;
@@ -2074,7 +2084,10 @@ if(typeof document!=='undefined'){
 function startRiderWatch(){
   if(_riderWatchId!=null || !navigator.geolocation) return;
   _riderWatchId=navigator.geolocation.watchPosition(function(pos){
-    _lastRiderLoc={lat:pos.coords.latitude,lng:pos.coords.longitude};
+    var nlat=pos.coords.latitude, nlng=pos.coords.longitude;
+    // Stationary deadband: ignore sub-~6m GPS jitter so the rider's own dot doesn't wander while still.
+    if(_lastRiderLoc && _lastRiderLoc.lat!=null && haversineKm(_lastRiderLoc.lat,_lastRiderLoc.lng,nlat,nlng)*1000 < 6) return;
+    _lastRiderLoc={lat:nlat,lng:nlng};
     placeRiderMarker(_lastRiderLoc.lat,_lastRiderLoc.lng);
     // Keep both framed if the rider drifts well outside the current view, but
     // don't fight gentle manual panning.
@@ -2241,9 +2254,28 @@ async function broadenSearch(){
     pollRideStatus();
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent='\u2728 Search both vehicles \u00B7 first available'; } }
 }
+// List the rider's added stops (accepted P2P stops + any pending one) as "Added Stop 1, 2, 3..."
+// between Pickup and Dropoff in the route card; the list scrolls if there are many.
+function _renderRouteStops(ride){
+  var el=$d('routeStops'); if(!el) return;
+  var list=[];
+  // Unified stops array (hourly + P2P); fall back to stopSurcharges for rides that predate it.
+  var _src=(ride && Array.isArray(ride.stops) && ride.stops.length) ? ride.stops : ((ride && Array.isArray(ride.stopSurcharges)) ? ride.stopSurcharges : []);
+  _src.forEach(function(s){ if(s&&s.address) list.push({address:s.address,pending:false}); });
+  if(ride && ride.pendingStop && ride.pendingStop.status==='pending' && ride.pendingStop.stopAddress) list.push({address:ride.pendingStop.stopAddress,pending:true});
+  // Don't repeat the stop that's already the current dropoff.
+  var dz=String((ride&&ride.dropoffAddress)||'').trim().toLowerCase();
+  list=list.filter(function(s){ return String(s.address||'').trim().toLowerCase()!==dz; });
+  if(!list.length){ el.style.display='none'; el.innerHTML=''; return; }
+  el.innerHTML=list.map(function(s,i){
+    return '<div class="route-row"><div class="route-icon"><span class="route-stop-dot"></span></div><div class="route-text"><div class="route-label">Added Stop '+(i+1)+(s.pending?' \u00B7 pending':'')+'</div><div>'+esc(s.address)+'</div></div></div>';
+  }).join('');
+  el.style.display='block';
+}
 function updateStatusUI(ride, driverLoc){
   const st=ride.status||'searching';
   _curRide=ride;
+  _renderRouteStops(ride);
   const badge=$d('statusBadge');
   badge.className='status-badge '+(st);
   badge.innerHTML=(['searching','accepted','driver_arrived','in_progress'].includes(st)?'<div class="pulse-dot"></div>':'')+`<span id="statusBadgeText">${STATUS_LABELS[st]||st}</span>`;
