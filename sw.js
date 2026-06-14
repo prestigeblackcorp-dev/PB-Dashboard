@@ -1,4 +1,4 @@
-const CACHE = 'pb-v82';
+const CACHE = 'pb-v83';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
@@ -16,9 +16,14 @@ self.addEventListener('activate', function(e) {
 
 self.addEventListener('fetch', function(e) {
   if(e.request.method !== 'GET') return;
-  // Always try network first, fall back to cache
+  // Network-first. Code (navigations / .html / .js) is fetched with cache:'no-store' so a new
+  // deploy ALWAYS shows on the next load — never a stale build from the browser/CDN HTTP cache
+  // (this was the bug: max-age=600 on GitHub Pages kept serving old HTML). Other assets use the
+  // normal cache. Offline → fall back to whatever we cached.
+  var fresh = e.request.mode === 'navigate' || /\.(html|js)(\?|#|$)/i.test(e.request.url);
+  var req = fresh ? new Request(e.request.url, { cache: 'no-store' }) : e.request;
   e.respondWith(
-    fetch(e.request).then(function(res){
+    fetch(req).then(function(res){
       var clone = res.clone();
       caches.open(CACHE).then(function(c){ c.put(e.request, clone); });
       return res;
