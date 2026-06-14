@@ -3833,7 +3833,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v92';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v93';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -6952,7 +6952,7 @@ function renderKPIs(filtered, containerId){
   // -- Revenue components ----------------------------------------------------
   var addons          = active.reduce(function(s,b){ return s+getAddons(b); },0);
   var deposits        = sumK(active,'deposit');
-  var depositKept     = sumK(active,'depositKept');
+  var depositKept     = active.reduce(function(s,b){ return s + (b.refundSent ? 0 : (Number(b.depositKept)||0)); },0); // a RETURNED deposit (Refund Sent) never counts as kept
   var bookingCost     = active.reduce(function(s,b){ return s+getEstCost(b); },0);
   var totalBrokerFees = active.reduce(function(s,b){ return s+(brokerFeeTotal(b)); },0);
   var fuelTotal       = sumK(active,'fuelCharge');
@@ -7009,6 +7009,14 @@ function renderKPIs(filtered, containerId){
     _bfToday   = _baseBfToday + _extBfToday;   // total broker netted out of net today = base + extension
     pureBase   = pickupBalance - addons;
     // Net: base cash collected + add-ons + extension full value \u2212 extension broker (base broker already netted in pickupBalance).
+    // Deposit kept is CASH-BASIS for Today: count a kept amount only on the day the close-out recorded it
+    // (depositKeptAt), and never when the deposit was returned (refundSent). Defaults to returned, so it no
+    // longer shows every day for a booking that simply has a kept amount on file.
+    depositKept = allActive.reduce(function(s,b){
+      var dk=Number(b.depositKept)||0;
+      if(dk<=0 || b.refundSent || !b.depositKeptAt) return s;
+      return dateStr(new Date(b.depositKeptAt))===tod ? s+dk : s;
+    },0);
     bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev - _extBfToday;
 
   } else if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
@@ -10886,6 +10894,8 @@ function openCloseOut(id){
 
 function coCalc(){
   var collected = parseFloat($d('coCollected').value)||0;
+  // Keep OR return: if "Refund Sent" is checked, the deposit was returned in full -> nothing kept.
+  if($d('coRefundSent') && $d('coRefundSent').checked && $d('coKept')) $d('coKept').value = 0;
   var kept = parseFloat($d('coKept').value)||0;
   $d('coReturned').value = Math.max(0, collected - kept);
 }
@@ -10929,11 +10939,26 @@ function _mileageOverage(b, odomOutArg){
     driven = (oIn>0 && oOut>oIn) ? (oOut-oIn) : 0;
     mode = 'standard';
   } else {
-    // MIXED -> only the standard period counts, from its recorded start odometer to drop-off.
-    var bseg=null;
-    for(var k=0;k<segs.length;k++){ if(!segs[k].unlimited && segs[k].startOdom>0){ bseg=segs[k]; break; } }
-    if(bseg){ fromOdom=bseg.startOdom; driven=(oOut>bseg.startOdom)?(oOut-bseg.startOdom):0; mode='mixed'; }
-    else { driven=(oIn>0 && oOut>oIn)?(oOut-oIn):0; mode='mixed'; needOdom=true; }
+    // MIXED -> standard miles = whole-trip miles MINUS the miles driven during unlimited runs. Each unlimited
+    // run is bounded by the odometer recorded where the mileage mode flips (segment.startOdom; the original
+    // segment starts at the pickup odometer). Works both directions (unlimited->standard AND standard->
+    // unlimited) and across multiple segments. A missing flip odometer -> can't isolate -> needOdom (charge 0).
+    mode='mixed';
+    var totalDriven = (oIn>0 && oOut>oIn) ? (oOut-oIn) : 0;
+    var unlimMiles=0, runStart=oIn, curUnlim=!!segs[0].unlimited, firstStdStart=(segs[0].unlimited?null:oIn);
+    for(var k=1;k<segs.length;k++){
+      if(!!segs[k].unlimited !== curUnlim){
+        var flip=Number(segs[k].startOdom)||0;
+        if((curUnlim||segs[k].unlimited) && !(flip>0)) needOdom=true;          // an unlimited-run boundary is missing
+        if(curUnlim && flip>0 && flip>=runStart) unlimMiles += (flip-runStart);
+        if(!segs[k].unlimited && firstStdStart===null && flip>0) firstStdStart=flip;
+        runStart = flip>0 ? flip : runStart;
+        curUnlim = !!segs[k].unlimited;
+      }
+    }
+    if(curUnlim && oOut>=runStart) unlimMiles += (oOut-runStart);              // a trailing unlimited run reaches drop-off
+    driven = needOdom ? totalDriven : Math.max(0, totalDriven - unlimMiles);
+    fromOdom = (firstStdStart!=null) ? firstStdStart : oIn;
   }
   // needOdom (mixed rental, boundary odometer not recorded yet) -> never charge from the full-trip fallback.
   var over = needOdom ? 0 : Math.max(0, driven - allowance);
@@ -10967,7 +10992,7 @@ function coCalcMiles(){
       overRow.style.background='rgba(249,115,22,.07)';
       overRow.style.borderColor='rgba(249,115,22,.3)';
       overRow.innerHTML='<span style="color:#f97316">\u26A0 Mixed unlimited + standard miles</span>'+
-        '<span style="color:var(--muted)">Record the odometer at the START of the standard extension (in Create Extension) so only that period\'s miles are charged. Standard allowance so far: <b>'+_mo.allowance.toLocaleString()+' mi</b>.</span>';
+        '<span style="color:var(--muted)">Record the odometer where the rental switches between unlimited and standard miles (in Create Extension) so only the standard period\'s miles are charged. Standard allowance so far: <b>'+_mo.allowance.toLocaleString()+' mi</b>.</span>';
       if(mileChargeInput) mileChargeInput.value='0';
     } else if(_mo.over>0 && _mo.rate>0){
       overRow.style.display='flex'; overRow.style.flexDirection='column';
@@ -11090,7 +11115,11 @@ function saveCloseOut(){
   // Delete photos removed during this session
   coOriginalPhotos.filter(function(id){return coWorkingPhotos.indexOf(id)===-1;})
     .forEach(function(id){dbDeletePhoto(id);});
-  bookings[idx].depositKept      = kept;
+  // Keep OR return: marking the deposit returned (Refund Sent) forces kept to $0 so a returned deposit can
+  // never count as kept. depositKeptAt stamps the day a kept amount was recorded (cash-basis for Today).
+  var _coRefunded = !!($d('coRefundSent') && $d('coRefundSent').checked);
+  bookings[idx].depositKept      = _coRefunded ? 0 : kept;
+  bookings[idx].depositKeptAt    = (Number(bookings[idx].depositKept)>0) ? Date.now() : null;
   bookings[idx].lateReturnFee    = parseFloat($d('coLateReturnFee').value)||0;
   bookings[idx].actualReturnTime = $d('coActualReturn') ? $d('coActualReturn').value : '';
   bookings[idx].cost             = parseFloat($d('coCost').value)||0;
@@ -17767,7 +17796,9 @@ function _extMileToggle(){
   var u = $d('extUnlimited') && $d('extUnlimited').checked;
   var mpd = $d('extMilesPerDayRow'); if(mpd) mpd.style.display = u ? 'none' : '';
   var odoRow = $d('extStartOdomRow');
-  if(odoRow) odoRow.style.display = (!u && odoRow.getAttribute('data-priormix')==='1') ? '' : 'none';
+  // Show the start-odometer field whenever this extension FLIPS the mileage mode vs the prior segment
+  // (unlimited <-> standard) -- that boundary is where checkout needs the odometer to isolate standard miles.
+  if(odoRow){ var lastUnlim = odoRow.getAttribute('data-lastmode')==='1'; odoRow.style.display = ((!!u)!==lastUnlim) ? '' : 'none'; }
   var hint = $d('extMileHint');
   if(hint){
     if(u){ hint.textContent=''; return; }
@@ -17788,12 +17819,12 @@ function addExtensionContract(){
   var _minDate = (_afterEnd > _td) ? _afterEnd : _td;
   var _hasBroker = !!(b.broker || Number(b.brokerFee) > 0);
   // Per-extension mileage defaults: the per-day cap inherits the booking's (includedMiles / original days)
-  // or the vehicle default; _priorMix = an earlier segment is unlimited, so a STANDARD extension needs a
-  // start-odometer reading to charge overage on only its own period.
+  // or the vehicle default; _lastMode = the prior segment's mileage mode (true=unlimited). When THIS extension
+  // flips that mode, a start-odometer reading is captured so checkout can isolate the standard period's miles.
   var _vmE = VEHICLE_MILEAGE[b.vehicle] || {};
   var _origDaysE = (typeof brokerRateDays==='function') ? Math.max(1, brokerRateDays(b)) : Math.max(1,(Number(b.days)||1));
   var _defPerDay = (Number(b.includedMiles)>0 && _origDaysE>0) ? Math.round(Number(b.includedMiles)/_origDaysE) : (Number(_vmE.miles)||150);
-  var _priorMix = (Number(b.unlimited)>0) || (exts||[]).some(function(e){ return e && e.unlimited; });
+  var _lastMode = exts.length ? !!exts[exts.length-1].unlimited : (Number(b.unlimited)>0);
   window._extCurEnd = currentEnd;
 
   var _old=$d('extCreateOverlay'); if(_old) _old.remove();
@@ -17818,10 +17849,10 @@ function addExtensionContract(){
           '<input id="extMilesPerDay" type="number" min="0" step="1" class="finput" style="width:100%" value="'+_defPerDay+'" oninput="_extMileToggle()">'+
           '<div id="extMileHint" style="font-size:10.5px;color:var(--muted);margin-top:4px"></div>'+
         '</div>'+
-        '<div id="extStartOdomRow" data-priormix="'+(_priorMix?'1':'0')+'" style="display:none;margin-top:10px">'+
-          '<div class="flabel">Odometer now (start of this standard period)</div>'+
+        '<div id="extStartOdomRow" data-lastmode="'+(_lastMode?'1':'0')+'" style="display:none;margin-top:10px">'+
+          '<div class="flabel">Odometer now (mileage mode changes here)</div>'+
           '<input id="extStartOdom" type="number" min="0" step="1" class="finput" style="width:100%" placeholder="current odometer reading">'+
-          '<div style="font-size:10.5px;color:#f97316;margin-top:4px">This rental has unlimited days before this extension &#8212; record the odometer now so checkout charges overage on ONLY this standard period\'s miles.</div>'+
+          '<div style="font-size:10.5px;color:#f97316;margin-top:4px">This extension switches between unlimited and standard miles &#8212; record the odometer now so checkout charges overage on ONLY the standard period\'s miles.</div>'+
         '</div>'+
       '</div>'+
       (_hasBroker?('<div style="margin-bottom:12px"><div class="flabel">Broker fee for this extension</div>'+
