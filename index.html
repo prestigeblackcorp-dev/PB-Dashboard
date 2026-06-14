@@ -261,6 +261,9 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .modal-close { background: rgba(255,255,255,.06); border: none; border-radius: 10px;
   color: var(--muted); cursor: pointer; font-size: 16px; width: 34px; height: 34px; transition: background .15s, color .15s; }
 .modal-close:hover { background: rgba(255,255,255,.1); color: var(--text); }
+/* Contract/waiver can be many pages -- keep the close (X) pinned to the top of the scroll so there's
+   ALWAYS a way back to the dashboard, no matter how far down you scroll. Scoped to #contractModal. */
+#contractModal .modal-title { position: sticky; top: 0; z-index: 6; background: var(--card2); padding: 4px 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
 .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ffull { grid-column: 1 / -1; }
 .fgroup { display: flex; flex-direction: column; gap: 5px; }
@@ -3833,7 +3836,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v97';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v101';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -6506,6 +6509,17 @@ function recordExtension(b, opts){
 // EXCLUDES every extension-linked charge (_extPayment collection, _extId/_extRecorded contract entry,
 // legacy _foldedIntoRevenue) \u2014 those are revenue ONLY via extensionCharge(), never counted twice here.
 function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId) ? s+(Number(c.amount)||0) : s; },0); }
+// A SECURITY-DEPOSIT portal charge is a REFUNDABLE HOLD, not revenue -- collecting it must never
+// inflate the rental's revenue (a deposit "given back" nets to $0). The KEPT amount, if any, is
+// recorded separately via the close-out depositKept (which DEFAULTS to returned). So every REVENUE
+// sum uses portalChargesRevenue (deposit charges excluded); the remaining-BALANCE math keeps the raw
+// portalChargesTotal since a paid deposit still offsets the deposit owed in getRemainingBalance.
+function _isDepositCharge(c){
+  if(!c) return false;
+  if(chargeCategory(c)==='deposit') return true;
+  return /deposit/.test((String(c.category||'')+' '+String(c.description||'')).toLowerCase());
+}
+function portalChargesRevenue(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c)) ? s+(Number(c.amount)||0) : s; },0); }
 // Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
 // raw b.revenue AND also bucket portal charges by paidAt would otherwise count a folded
 // fee twice \u2014 subtract this from the base term so it's counted once (via the paidAt loop).
@@ -6666,7 +6680,7 @@ function splitPaidCharges(list,onlyDate){
   var out={late:0,mileage:0,fuel:0,cleaning:0,damage:0,tolls:0,deposit:0,extension:0,other:0,total:0};
   (list||[]).forEach(function(b){
     (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return;
+      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue||_isDepositCharge(c)) return;  // deposit holds aren't revenue
       if(onlyDate && dateStr(new Date(c.paidAt))!==onlyDate) return;
       var amt=Number(c.amount)||0;
       out[chargeCategory(c)]+=amt;
@@ -6675,7 +6689,7 @@ function splitPaidCharges(list,onlyDate){
   });
   return out;
 }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesTotal(b); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b); }
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
 function brokerRateDays(b){ var x=(b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
@@ -6974,7 +6988,7 @@ function renderKPIs(filtered, containerId){
   var mileTotal       = sumK(active,'mileageCharge');
   var lateReturnTotal = sumK(active,'lateReturnFee');
   var dateLockTotal   = sumK(allActive,'dateLock');
-  var portalChargeRev = active.reduce(function(s,b){ return s+portalChargesTotal(b); },0);
+  var portalChargeRev = active.reduce(function(s,b){ return s+portalChargesRevenue(b); },0); // deposit holds excluded -- not revenue
 
   if(containerId==='kpiGrid' && _kpiPeriod === 'today'){
     // TODAY \u2014 strict cash-basis: only count money with a logged payment timestamp today
@@ -7016,7 +7030,7 @@ function renderKPIs(filtered, containerId){
     // Portal charges paid today (cash-basis, non-extension \u2014 extension-linked charges excluded)
     var portalChargeTodayRev = allActive.reduce(function(s,b){
       return s+(b.portalCharges||[]).reduce(function(cs,c){
-        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return cs;
+        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue||_isDepositCharge(c)) return cs;  // deposit holds aren't revenue
         return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
       },0);
     },0);
@@ -7154,7 +7168,7 @@ function renderKPIs(filtered, containerId){
     var _stripeBasePeriod = active.reduce(function(s,b){
       var _sb = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe'
         ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
-      return s + _sb + portalChargesTotal(b);
+      return s + _sb + portalChargesRevenue(b);
     },0);
     grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+dateLockPeriodRev+otherIncome+rideRev + (_stripeBasePeriod * 0.1325);
   } else {
@@ -18303,7 +18317,9 @@ function _contractLightCss(scope){
     s+'.logo-p,'+s+'.logo-sub{color:#a8893e!important}'+
     s+'th{background:#eee!important;color:#111!important}'+
     s+'img{filter:none!important}'+
-    s+'.pb-sig{filter:brightness(0)!important}';   // signatures ALWAYS render black on the white printed page (any saved ink color)
+    s+'.pb-sig{filter:brightness(0)!important}'+
+    s+'.sig-grid,'+s+'.sig-block,'+s+'.sig-row{break-inside:avoid!important;page-break-inside:avoid!important}'+   // never split a signature block across pages
+    s+'h2{break-after:avoid;page-break-after:avoid}';   // keep a section heading on the same page as the content that follows it
 }
 // _contractEmailLight: email clients honor INLINE styles, not <style> blocks, so lighten
 // the contract's dark inline colors directly (else dark text is invisible on white).
@@ -18317,91 +18333,123 @@ function _contractEmailLight(html){
 }
 
 function printContract(){
-  // Phones/tablets force the page URL into the print header/footer no matter the CSS, so on mobile hand off
-  // to the in-app PDF (html2pdf) -- a clean copy with no URL. Desktop print uses @page{margin:0} (no chrome).
-  if(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) && typeof html2pdf!=='undefined'){ downloadContractPdf(); return; }
+  // iOS/Android Safari ALWAYS stamps the page URL + date + page numbers into a natively-printed PDF
+  // (no CSS or @page rule removes it on mobile), so on phones/tablets generate the PDF IN-APP via
+  // html2pdf (no browser print system -> no github.io URL). Desktop keeps the crisp native print
+  // (the about:blank iframe + @page{margin:0} already drops the header there).
+  if(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)){ _genContractPdf(); return; }
+  _printContractDoc();
+}
+
+// Build a standalone, printer-friendly HTML document for the contract/waiver and print it from a
+// popup whose address is about:blank -- so the browser's per-page print header/footer can NEVER
+// stamp the app's github.io URL onto the document (that header shows the PAGE url; about:blank has
+// none). @page{margin:0} drops the header entirely on compliant browsers; the in-document footer
+// already reads prestigeblackrentals.com. Native print also reflows to the page width (NOT an
+// html2canvas fixed-width capture), which fixes BOTH the blank page and the right-edge cut-off.
+// Save-as-PDF uses document.title for the filename. Popup blocked -> fall back to in-page print.
+function _printContractDoc(){
   var text=$d('contractFilled').value;
+  if(!text||!text.trim()){ toast('No document to print'); return; }
   var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
-  // Auto-name the saved PDF: the browser's Save-as-PDF uses document.title, so set it
-  // to the contract filename for the print dialog, then restore it afterward.
-  var _oldDocTitle=document.title; document.title=_contractFileBase();
-  window.onafterprint=function(){ document.title=_oldDocTitle; window.onafterprint=null; };
-
-  // Helper: inject HTML into the current page and print (mobile-safe; no popup needed)
-  function _printInPage(html){
-    var el=$d('contractPrintArea');
-    // Extract <style> and <body> content so signatures + contract styles render correctly
-    var styleMatch=html.match(/<style[^>]*>([\s\S]*?)<\/style>/gi)||[];
-    var bodyMatch=html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-    var inner=(styleMatch.join('')+(bodyMatch?bodyMatch[1]:html));
-    // The contract's own @page (0.5in margins) re-enables the browser's printed
-    // URL/date footer, and its body{} rules darken the page behind the card \u2014
-    // strip both; the trailing style below wins the @page cascade (last rule).
-    inner=inner.replace(/@page[^{]*\{[^}]*\}/gi,'');
-    inner+='<style>@page{margin:0;size:letter}'+_contractLightCss('.pb-printable')+'</style>';
-    el.innerHTML=inner;
-    el.classList.add('pb-printable');
-    window.print();
-    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; document.title=_oldDocTitle; },1800);
-  }
-
+  var inner=_contractPrintInner(text,isHtml);
+  var safeTitle=String(_contractFileBase()).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  var doc='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+safeTitle+'</title>'
+    +'<style>@page{margin:0;size:letter}html,body{margin:0;padding:0;background:#fff}'+_contractLightCss('body')+'</style>'
+    +'</head><body class="pb-printable">'+inner+'</body></html>';
+  // Print from a hidden IFRAME (NOT a popup, NOT this page). The iframe is its own about:blank document
+  // containing ONLY the contract + @page{margin:0}, so the browser drops the header/footer entirely:
+  // NO github.io URL and NO "Page 1 of N". No popup => nothing to block and the owner is never bounced
+  // to a separate tab they can't get back from. Many browsers use the TOP document.title for the
+  // Save-as-PDF filename, so set it too (restored after). Falls back to in-page print only if the
+  // iframe itself throws.
+  var _oldTitle=document.title; document.title=_contractFileBase();
+  var _restore=function(){ try{ document.title=_oldTitle; }catch(e){} };
+  try{
+    var old=document.getElementById('pbPrintFrame'); if(old&&old.parentNode) old.parentNode.removeChild(old);
+    var ifr=document.createElement('iframe'); ifr.id='pbPrintFrame'; ifr.setAttribute('aria-hidden','true');
+    ifr.style.cssText='position:fixed;left:-10000px;top:0;width:820px;height:1160px;border:0;background:#fff;';
+    document.body.appendChild(ifr);
+    var idoc=ifr.contentWindow.document;
+    idoc.open(); idoc.write(doc); idoc.close();
+    var done=false;
+    var fire=function(){
+      if(done) return; done=true;
+      try{ ifr.contentWindow.focus(); ifr.contentWindow.print(); }
+      catch(e){ try{ ifr.parentNode.removeChild(ifr); }catch(_e){} _restore(); _printContractInPage(text,isHtml); return; }
+      setTimeout(function(){ try{ ifr.parentNode.removeChild(ifr); }catch(e){} _restore(); }, 1500);
+    };
+    var imgs=idoc.images, pend=imgs?imgs.length:0;
+    if(!pend){ setTimeout(fire,180); }
+    else { for(var i=0;i<imgs.length;i++){ if(imgs[i].complete){ if(--pend<=0) fire(); } else { imgs[i].onload=imgs[i].onerror=function(){ if(--pend<=0) fire(); }; } } setTimeout(fire,2200); }
+  }catch(e){ _restore(); _printContractInPage(text,isHtml); }
+}
+// Extract <style>+<body> from an HTML doc (or wrap plain text), stripping the template's own @page
+// (its 0.5in margins re-enable the browser URL/date header). Shared by popup + in-page print.
+function _contractPrintInner(text,isHtml){
   if(isHtml){
-    // Always use in-page injection \u2014 reliable on all devices including iPads in
-    // desktop mode, Android tablets, and any browser that blocks popups.
-    _printInPage(text);
-  } else {
-    // Plain-text template: `text` still contains HTML <img> tags for signatures,
-    // so insert as innerHTML (not escaped) so the signature images actually render.
-    var el=$d('contractPrintArea');
-    el.innerHTML='<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap;max-width:700px;margin:0 auto">'+text+'</div>';
-    el.classList.add('pb-printable');
-    window.print();
-    setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; document.title=_oldDocTitle; },1500);
+    var styleM=(text.match(/<style[^>]*>([\s\S]*?)<\/style>/gi)||[]).join('').replace(/@page[^{]*\{[^}]*\}/gi,'');
+    var bodyM=text.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    return styleM+(bodyM?bodyM[1]:text);
   }
+  return '<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.8;color:#111;white-space:pre-wrap;max-width:720px;margin:0 auto">'+text+'</div>';
+}
+// Fallback when the popup is blocked: print THIS page with only the contract visible. document.title
+// carries the filename to Save-as-PDF; @page{margin:0} suppresses the browser URL header.
+function _printContractInPage(text,isHtml){
+  var _oldTitle=document.title; document.title=_contractFileBase();
+  window.onafterprint=function(){ document.title=_oldTitle; window.onafterprint=null; };
+  var el=$d('contractPrintArea');
+  el.innerHTML=_contractPrintInner(text,isHtml)+'<style>@page{margin:0;size:letter}'+_contractLightCss('.pb-printable')+'</style>';
+  el.classList.add('pb-printable');
+  window.print();
+  setTimeout(function(){ el.classList.remove('pb-printable'); el.innerHTML=''; document.title=_oldTitle; },1800);
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  PDF DOWNLOAD
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
-function downloadContractPdf(){
-  var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
-  var fname = _contractFileBase() + '.pdf';
-  var text = $d('contractFilled').value;
-  if(!text.trim()){ toast('No contract to download'); return; }
-  // Generate the PDF IN-APP on EVERY device (html2pdf) so the browser's print chrome -- which stamps the
-  // page URL into the header/footer on phones/tablets -- is never used. Never fall back to the browser print.
-  if(typeof html2pdf === 'undefined'){
-    toast('PDF tool still loading \u2014 try again in a moment.'); return;
-  }
-  var isHtml = text.trim().toLowerCase().startsWith('<!doctype') || text.trim().startsWith('<html');
-  // Render the document DIRECTLY (no iframe) -- the off-screen iframe + cloned <html> produced a BLANK PDF on
-  // some devices. Off-screen but fully laid out + opaque so html2canvas captures real pixels.
-  var tmp = document.createElement('div');
-  tmp.className = 'pb-pdf-doc';
-  tmp.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;color:#000;';
-  if(isHtml){
-    var styleM = (text.match(/<style[^>]*>([\s\S]*?)<\/style>/gi)||[]).join('');
-    var bodyM  = text.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-    tmp.innerHTML = styleM + (bodyM ? bodyM[1] : text) + '<style>@page{margin:0}'+_contractLightCss('.pb-pdf-doc')+'</style>';
-  } else {
-    tmp.style.cssText += 'white-space:pre-wrap;font-family:Arial,sans-serif;font-size:13px;line-height:1.7;padding:18px';
-    tmp.textContent = text;
-  }
-  document.body.appendChild(tmp);
-  var _opts = {margin:[10,10,10,10],filename:fname,image:{type:'jpeg',quality:.96},html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff'},jsPDF:{unit:'mm',format:'letter',orientation:'portrait'},pagebreak:{mode:['css','legacy']}};
-  var _go = function(){
-    html2pdf().set(_opts).from(tmp).save()
-      .then(function(){ try{document.body.removeChild(tmp);}catch(e){} })
-      .catch(function(){ try{document.body.removeChild(tmp);}catch(e){} toast('PDF export failed \u2014 please retry.'); });
+function downloadContractPdf(){ _genContractPdf(); }   // "Download" always produces a clean IN-APP PDF (no browser print chrome -> the github.io URL can never appear)
+
+// Generate the contract/waiver PDF entirely IN-APP (html2pdf), bypassing the OS print system so it can
+// NEVER stamp the github.io URL / date / page numbers onto the file (iOS does this to every native
+// print, ignoring @page{margin:0}). Rendered ON-SCREEN under an opaque cover -- the prior off-screen
+// (-9999px) render came out BLANK in html2canvas on iOS. The capture scale is derived from the doc
+// height so the single canvas stays under iOS's ~8192px dimension cap (above it, the canvas blanks).
+// Signatures stay whole via the pagebreak 'avoid' list + the .sig-grid break-inside rule in the light CSS.
+function _genContractPdf(){
+  var text=$d('contractFilled').value;
+  if(!text||!text.trim()){ toast('No document to download'); return; }
+  if(typeof html2pdf==='undefined'){ toast('PDF tool still loading \u2014 try again in a moment.'); return; }
+  var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
+  var cover=document.createElement('div'); cover.id='pbPdfCover';
+  cover.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#0a0a0a;color:#C9A962;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font:800 16px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px';
+  cover.innerHTML='<div style="font-size:32px">\uD83D\uDCC4</div><div>Preparing your PDF\u2026</div><div style="font-size:12px;color:#8a8a8a;font-weight:600">This takes a moment</div>';
+  var host=document.createElement('div'); host.id='pbPdfHost'; host.className='pb-pdf-doc';
+  // width/max-width forced inline with !important: the dashboard's mobile CSS has max-width:100%!important
+  // rules that would otherwise clamp this to the (tiny) phone viewport -> a near-0-width, blank/cramped
+  // capture. Inline !important wins over stylesheet !important, pinning the doc to a true letter width.
+  host.style.cssText='position:fixed!important;left:0;top:0;width:794px!important;max-width:none!important;min-width:794px!important;background:#fff!important;color:#000;';
+  host.innerHTML=_contractPrintInner(text,isHtml)+'<style>'+_contractLightCss('.pb-pdf-doc')+'</style>';
+  document.body.appendChild(host); document.body.appendChild(cover);
+  var cleanup=function(){ try{host.parentNode.removeChild(host);}catch(e){} try{cover.parentNode.removeChild(cover);}catch(e){} };
+  var run=function(){
+    var h=host.scrollHeight||host.offsetHeight||4000;
+    var scale=Math.max(1, Math.min(2, 7600/h));   // cap the capture-canvas height so iOS doesn't blank it
+    html2pdf().set({
+      margin:[6,6,8,6], filename:_contractFileBase()+'.pdf',
+      image:{type:'jpeg',quality:.95},
+      html2canvas:{scale:scale,useCORS:true,backgroundColor:'#ffffff',windowWidth:794,scrollX:0,scrollY:0},
+      jsPDF:{unit:'mm',format:'letter',orientation:'portrait'},
+      pagebreak:{mode:['css','legacy'],avoid:['.sig-grid','.sig-block','.sig-row','tr']}
+    }).from(host).save()
+      .then(function(){ cleanup(); })
+      .catch(function(){ cleanup(); toast('PDF export failed \u2014 please retry.'); });
   };
-  // Wait for any signature/logo images to finish loading first, else the capture can come out blank/partial.
-  var _imgs = tmp.querySelectorAll('img'), _pend = _imgs.length, _done = false;
-  var _fire = function(){ if(_done) return; _done = true; _go(); };
-  if(!_pend){ setTimeout(_fire, 50); }
-  else {
-    _imgs.forEach(function(im){ if(im.complete){ if(--_pend<=0) _fire(); } else { im.onload = im.onerror = function(){ if(--_pend<=0) _fire(); }; } });
-    setTimeout(_fire, 2000);
-  }
+  // Let the signature/logo images load + layout settle, THEN capture (else it can come out blank/partial).
+  var imgs=host.querySelectorAll('img'), pend=imgs.length, done=false, fire=function(){ if(done)return; done=true; setTimeout(run,120); };
+  if(!pend){ fire(); }
+  else { for(var i=0;i<imgs.length;i++){ if(imgs[i].complete){ if(--pend<=0) fire(); } else { imgs[i].onload=imgs[i].onerror=function(){ if(--pend<=0) fire(); }; } } setTimeout(fire,2500); }
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -18657,19 +18705,22 @@ function shareBookingPortal(id){
       '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth \u00B7 (214) 207-2481</div>'+
       '</div>';
     fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Your Booking Portal \u2014 Prestige Black Rentals',html:html})})
-    .then(function(r){ if(r.ok){ toast('Portal link emailed to '+b.email+' \u2705'); logNotif('portal','Booking Portal Link',b.email,b.id); } else _fallbackCopyPortalLink(url); })
-    .catch(function(){ _fallbackCopyPortalLink(url); });
+    .then(function(r){ if(r.ok){ toast('Portal link emailed to '+b.email+' \u2705'); logNotif('portal','Booking Portal Link',b.email,b.id); } else _fallbackCopyPortalLink(url, b); })
+    .catch(function(){ _fallbackCopyPortalLink(url, b); });
   } else {
-    _fallbackCopyPortalLink(url);
+    _fallbackCopyPortalLink(url, b);
   }
 }
 
-function _fallbackCopyPortalLink(url){
+function _fallbackCopyPortalLink(url, b){
   if(navigator.clipboard&&navigator.clipboard.writeText){
     _copyText(url).then(function(){ toast('Portal link copied to clipboard \uD83D\uDCCB'); });
   } else {
     prompt('Copy this portal link and send it to your customer:', url);
   }
+  // Log the share even when copied/prompted (not just on a successful email) so the communication
+  // log always reflects that a portal link went out for this booking.
+  try{ logNotif('portal','Booking Portal Link \u2014 copied',(b&&b.email)||'',(b&&b.id)||''); }catch(e){}
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
