@@ -3833,7 +3833,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v98';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v99';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -6506,6 +6506,17 @@ function recordExtension(b, opts){
 // EXCLUDES every extension-linked charge (_extPayment collection, _extId/_extRecorded contract entry,
 // legacy _foldedIntoRevenue) \u2014 those are revenue ONLY via extensionCharge(), never counted twice here.
 function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId) ? s+(Number(c.amount)||0) : s; },0); }
+// A SECURITY-DEPOSIT portal charge is a REFUNDABLE HOLD, not revenue -- collecting it must never
+// inflate the rental's revenue (a deposit "given back" nets to $0). The KEPT amount, if any, is
+// recorded separately via the close-out depositKept (which DEFAULTS to returned). So every REVENUE
+// sum uses portalChargesRevenue (deposit charges excluded); the remaining-BALANCE math keeps the raw
+// portalChargesTotal since a paid deposit still offsets the deposit owed in getRemainingBalance.
+function _isDepositCharge(c){
+  if(!c) return false;
+  if(chargeCategory(c)==='deposit') return true;
+  return /deposit/.test((String(c.category||'')+' '+String(c.description||'')).toLowerCase());
+}
+function portalChargesRevenue(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c)) ? s+(Number(c.amount)||0) : s; },0); }
 // Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
 // raw b.revenue AND also bucket portal charges by paidAt would otherwise count a folded
 // fee twice \u2014 subtract this from the base term so it's counted once (via the paidAt loop).
@@ -6666,7 +6677,7 @@ function splitPaidCharges(list,onlyDate){
   var out={late:0,mileage:0,fuel:0,cleaning:0,damage:0,tolls:0,deposit:0,extension:0,other:0,total:0};
   (list||[]).forEach(function(b){
     (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return;
+      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue||_isDepositCharge(c)) return;  // deposit holds aren't revenue
       if(onlyDate && dateStr(new Date(c.paidAt))!==onlyDate) return;
       var amt=Number(c.amount)||0;
       out[chargeCategory(c)]+=amt;
@@ -6675,7 +6686,7 @@ function splitPaidCharges(list,onlyDate){
   });
   return out;
 }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesTotal(b); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b); }
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
 function brokerRateDays(b){ var x=(b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
@@ -6974,7 +6985,7 @@ function renderKPIs(filtered, containerId){
   var mileTotal       = sumK(active,'mileageCharge');
   var lateReturnTotal = sumK(active,'lateReturnFee');
   var dateLockTotal   = sumK(allActive,'dateLock');
-  var portalChargeRev = active.reduce(function(s,b){ return s+portalChargesTotal(b); },0);
+  var portalChargeRev = active.reduce(function(s,b){ return s+portalChargesRevenue(b); },0); // deposit holds excluded -- not revenue
 
   if(containerId==='kpiGrid' && _kpiPeriod === 'today'){
     // TODAY \u2014 strict cash-basis: only count money with a logged payment timestamp today
@@ -7016,7 +7027,7 @@ function renderKPIs(filtered, containerId){
     // Portal charges paid today (cash-basis, non-extension \u2014 extension-linked charges excluded)
     var portalChargeTodayRev = allActive.reduce(function(s,b){
       return s+(b.portalCharges||[]).reduce(function(cs,c){
-        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return cs;
+        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue||_isDepositCharge(c)) return cs;  // deposit holds aren't revenue
         return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
       },0);
     },0);
@@ -7154,7 +7165,7 @@ function renderKPIs(filtered, containerId){
     var _stripeBasePeriod = active.reduce(function(s,b){
       var _sb = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe'
         ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
-      return s + _sb + portalChargesTotal(b);
+      return s + _sb + portalChargesRevenue(b);
     },0);
     grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+dateLockPeriodRev+otherIncome+rideRev + (_stripeBasePeriod * 0.1325);
   } else {
