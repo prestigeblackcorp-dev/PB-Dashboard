@@ -784,6 +784,16 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
           <div id="hourlyPanel" style="display:none">
             <div id="hourlyTimeChip" style="display:flex;align-items:center;justify-content:center;gap:7px;background:rgba(201,169,98,.08);border:1px solid rgba(201,169,98,.3);border-radius:12px;padding:10px 14px;margin:10px 0;font-size:13px;font-weight:800;color:var(--gold);" onclick="if(_extPrompted)openExtendModal()">&#9201; <span id="hourlyTimeLeft">&#8212;</span>&nbsp;remaining</div>
           </div>
+          <!-- P2P stop wait: the chauffeur has reached an intermediate stop and is WAITING for the
+               rider to release them. 5-min grace from arrival, then $1/min. The rider taps "Stop
+               Complete" to send the chauffeur on to the next stop / final dropoff. (complete-stop) -->
+          <div id="stopWaitPanel" style="display:none;margin-bottom:12px;background:linear-gradient(160deg,rgba(201,169,98,.13),rgba(201,169,98,.04));border:1px solid rgba(201,169,98,.4);border-radius:16px;padding:16px;">
+            <div style="font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--gold);text-transform:uppercase;margin-bottom:6px;">&#128205; Chauffeur waiting at your stop</div>
+            <div id="stopWaitAddr" style="font-size:14px;color:#fff;font-weight:700;margin-bottom:10px;"></div>
+            <div id="stopWaitClock" style="font-size:14px;color:#cfd3da;font-weight:700;margin-bottom:12px;">&#9201; &mdash;</div>
+            <button class="btn-gold" id="stopWaitBtn" onclick="completeStopP2P()" style="width:100%;">Stop Complete &mdash; Continue Trip</button>
+            <div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px;">First 5 min included, then $1/min &middot; you're only charged once you release the chauffeur</div>
+          </div>
           <!-- Route input: set or redirect your route + add a stop. Shown once the chauffeur
                has ARRIVED and throughout the trip, for EVERY ride type. Point-to-point stops
                are priced + charged (demo) before they're sent to the chauffeur &#8212; see sendStops(). -->
@@ -859,6 +869,8 @@ let _stopSel = null;          // {lat,lng,address} chosen current stop
 let _nextStopSel = null;      // {lat,lng,address} chosen next stop
 let _hourlyTimerId = null;    // 1s countdown ticker
 let _hourlyEndsAt = 0;        // startedAt + hours (ms epoch)
+let _stopWaitTimer = null;    // P2P: 1s ticker for the "chauffeur waiting at your stop" grace/overage clock
+let _stopWaitArrivedAt = 0;   // stopArrivedAt of the stop currently being waited on
 let _extPrompted = false;     // time's-up module already shown for this expiry
 let _extHours = 1;            // hours selected in the extend stepper
 let _autoEnding = false;      // auto-end (2 min after route complete) already firing
@@ -2099,6 +2111,34 @@ function stopRiderWatch(){
   _riderWatchId=null;
 }
 
+// -- P2P stop wait (rider): live grace/overage clock + release the chauffeur ------------------
+// Mirrors the worker exactly: 5-min grace from arrivedAt, then $1 per minute past it
+// (ceil(elapsedMin - 5)). The rider taps "Stop Complete" -> /chauffeur/complete-stop, which folds
+// the overage into the locked fare and lets the chauffeur drive on.
+function _tickStopWaitRider(){
+  var el=$d('stopWaitClock'); if(!el||!_stopWaitArrivedAt) return;
+  var elapsed=Date.now()-_stopWaitArrivedAt, grace=5*60000;
+  if(elapsed<grace){
+    var rem=grace-elapsed, m=Math.floor(rem/60000), s=Math.floor((rem%60000)/1000);
+    el.innerHTML='\u23F1 <b style="color:#fff">'+m+':'+('0'+s).slice(-2)+'</b> included grace remaining';
+  } else {
+    var ov=Math.max(0,Math.ceil(elapsed/60000-5));
+    el.innerHTML='\u23F1 <b style="color:#C9A962">+$'+ov+'.00</b> \u00B7 '+ov+' min over grace';
+  }
+}
+async function completeStopP2P(){
+  if(!_rideId||!_session||!_session.token) return;
+  var btn=$d('stopWaitBtn'); if(btn){ btn.disabled=true; btn.textContent='Releasing\u2026'; }
+  try{
+    var r=await fetch(WORKER+'/chauffeur/complete-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId})});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok||!d||!d.ok){ if(btn){ btn.disabled=false; btn.textContent='Stop Complete \u2014 Continue Trip'; } return; }
+    if(_stopWaitTimer){ clearInterval(_stopWaitTimer); _stopWaitTimer=null; }
+    var _swp=$d('stopWaitPanel'); if(_swp) _swp.style.display='none';
+    _stopWaitArrivedAt=0;
+    pollRideStatus();   // refresh: the chauffeur proceeds to the next stop / final dropoff
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent='Stop Complete \u2014 Continue Trip'; } }
+}
 async function pollRideStatus(){
   if(!_rideId||!_session) return;
   const d=await fetch(`${WORKER}/chauffeur/ride-status?rideId=${_rideId}&token=${encodeURIComponent(_session.token)}`,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
@@ -2342,10 +2382,33 @@ function updateStatusUI(ride, driverLoc){
       $d('etaChip').style.display='none';
     }
   }
-  // Route input is available once the chauffeur has ARRIVED and throughout the trip.
-  // P2P = ONE "Add a stop" box (chauffeur must accept; original destination stays locked).
-  // Hourly = current + next boxes that shift up as stops complete.
-  var _showRoute=(st==='driver_arrived'||st==='in_progress');
+  // P2P stop wait: the chauffeur reached an intermediate stop (worker set stopArrivedAt + stamped
+  // stops[stopArrivedIdx].arrivedAt) and is WAITING for the rider to release them. Show the release
+  // panel + live grace/overage clock; hide the add-a-stop box while waiting.
+  var _arrIdx=(ride.stopArrivedIdx!=null)?Number(ride.stopArrivedIdx):-1;
+  var _arrStop=(Array.isArray(ride.stops)&&_arrIdx>=0)?ride.stops[_arrIdx]:null;
+  var _stopActive=!!(st==='in_progress' && ride.rideType!=='hourly' && Number(ride.stopArrivedAt)>0 && _arrStop && !_arrStop.completedAt);
+  var _swp=$d('stopWaitPanel');
+  if(_swp){
+    if(_stopActive){
+      _swp.style.display='block';
+      $d('stopWaitAddr').textContent=_arrStop.address||'Your stop';
+      if(_stopWaitArrivedAt!==Number(ride.stopArrivedAt)){   // new arrival -> reset the button (don't re-enable mid-release)
+        _stopWaitArrivedAt=Number(ride.stopArrivedAt);
+        var _swb=$d('stopWaitBtn'); if(_swb){ _swb.disabled=false; _swb.textContent='Stop Complete \u2014 Continue Trip'; }
+      }
+      if(!_stopWaitTimer) _stopWaitTimer=setInterval(_tickStopWaitRider,1000);
+      _tickStopWaitRider();
+    } else {
+      _swp.style.display='none';
+      if(_stopWaitTimer){ clearInterval(_stopWaitTimer); _stopWaitTimer=null; }
+      _stopWaitArrivedAt=0;
+    }
+  }
+  // Route input is available once the chauffeur has ARRIVED and throughout the trip (but not while
+  // they're parked waiting at a stop). P2P = ONE "Add a stop" box (chauffeur must accept; original
+  // destination stays locked). Hourly = current + next boxes that shift up as stops complete.
+  var _showRoute=(st==='driver_arrived'||st==='in_progress') && !_stopActive;
   $d('routePanel').style.display=_showRoute?'block':'none';
   if(_showRoute){
     var _isHourly=ride.rideType==='hourly';
@@ -2408,18 +2471,15 @@ function updateStatusUI(ride, driverLoc){
     }
     $d('cancelRideBtn').style.display='none';
     $d('newRideBtn').style.display='block';
-    _doneTip=0; renderDoneCardPay(ride);   // demo payment receipt + tip
+    // Wrap-up flow (owner spec): TIP -> REVIEW -> RECEIPT -> "Where to". Start on the tip step;
+    // _doneToReview() reveals the receipt behind the rating modal; "Book Another Ride" returns to
+    // the Where-to screen. The _doneFlowRideId guard resets the steps only ONCE per completed ride
+    // (so a later status re-render never bounces the rider back to the tip step).
+    _curRide=ride;
+    if(_doneFlowRideId!==_rideId){ _doneFlowRideId=_rideId; _doneStep='tip'; _doneTip=0; }
+    _renderDoneFlow(ride);
     // Remove driver marker
     if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
-    // F3: auto-prompt a review once \u2014 but when the pay block is on, the done card
-    // drives rating via its own "Rate your chauffeur" button, so don't pop the modal.
-    if(!(window.PB_FLAGS||{}).cardOnFile && _rideId && !_reviewedRides[_rideId] && !_autoPrompted[_rideId]){
-      const drvEmail=(_activeDriver&&_activeDriver.email)||ride.assignedDriver||'';
-      const drvName=(_activeDriver&&_activeDriver.name)||ride.assignedDriverName||'';
-      const rid=_rideId;
-      _autoPrompted[rid]=true;   // guard so we only auto-open once
-      setTimeout(function(){ if($d('reviewModal').style.display!=='flex'){ openReview(rid,drvEmail,drvName); } },700);
-    }
   }
   if(['cancelled','no_driver'].includes(st)){
     stopPolling();
@@ -2436,12 +2496,49 @@ function updateStatusUI(ride, driverLoc){
 // add real Stripe keys closer to launch; these same surfaces then drive real
 // card-on-file + tipping. Nothing here ever contacts Stripe or moves money.
 var _doneTip=0;
+var _doneStep='tip', _doneFlowRideId=null;   // wrap-up steps: 'tip' -> (review modal) -> 'receipt'
+// Wrap-up flow (owner spec): TIP -> REVIEW -> RECEIPT -> "Where to". Drives the doneCard pay block.
+function _renderDoneFlow(ride){
+  var box=$d('donePayBlock'); if(!box) return;
+  box.style.display='block';
+  var fare=_fareOf(ride), tip=_doneTip, total=fare+tip;
+  var demoNote=((window.PB_FLAGS||{}).demoPay)?'<div style="font-size:10px;color:var(--muted);opacity:.7;text-align:center;margin-top:10px">Demo mode \u2014 no real card or charge</div>':'';
+  if(_doneStep==='tip'){
+    var presets=[0,Math.round(fare*0.15*100)/100,Math.round(fare*0.20*100)/100,Math.round(fare*0.25*100)/100];
+    var labels=['No tip','15%','20%','25%'];
+    var chips=presets.map(function(p,i){
+      var on=Math.abs(p-tip)<0.005;
+      return '<button onclick="setDoneTip('+p+')" style="flex:1;padding:9px 4px;border-radius:10px;border:1px solid '+(on?'#C9A962':'var(--border)')+';background:'+(on?'rgba(201,169,98,.14)':'transparent')+';color:'+(on?'#C9A962':'#cfd3da')+';font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;line-height:1.3">'+labels[i]+(p>0?'<br><span style="font-size:10px;opacity:.8">$'+p.toFixed(0)+'</span>':'')+'</button>';
+    }).join('');
+    box.innerHTML='<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;padding:16px">'
+      +'<div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:3px">Add a tip for your chauffeur</div>'
+      +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px">They keep 100% of every tip</div>'
+      +'<div style="display:flex;gap:6px;margin-bottom:14px">'+chips+'</div>'
+      +'<button class="btn-gold" style="width:100%" onclick="_doneToReview()">'+(tip>0?'Continue \u00B7 $'+tip.toFixed(2)+' tip \u203A':'Continue to rating \u203A')+'</button>'
+      +demoNote+'</div>';
+  } else {  // receipt (revealed after the rating modal)
+    var row=function(l,v,bold){ return '<div style="display:flex;justify-content:space-between;'+(bold?'font-size:15px;font-weight:800;color:#fff;padding:8px 0 0;border-top:1px solid var(--border);margin-top:6px':'font-size:13px;color:#cfd3da;padding:4px 0')+'"><span>'+l+'</span><span>'+v+'</span></div>'; };
+    box.innerHTML='<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;padding:16px">'
+      +'<div style="font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--gold);text-transform:uppercase;margin-bottom:8px">Receipt</div>'
+      +row('Fare','$'+fare.toFixed(2),false)
+      +(tip>0?row('Tip','$'+tip.toFixed(2),false):'')
+      +row('Total charged','$'+total.toFixed(2),true)
+      +'<div style="font-size:11px;color:#C9A962;text-align:center;margin-top:12px">\u2713 Thank you for riding with Prestige Black</div>'
+      +demoNote+'</div>';
+  }
+}
+function _doneToReview(){
+  _doneStep='receipt'; _renderDoneFlow(_curRide);   // lock in the tip + reveal the receipt behind the rating modal
+  var de=(_activeDriver&&_activeDriver.email)||(_curRide&&_curRide.assignedDriver)||'';
+  var dn=(_activeDriver&&_activeDriver.name)||(_curRide&&_curRide.assignedDriverName)||'';
+  if(_rideId) openReview(_rideId, de, dn);
+}
 function _payMethod(){ try{ return JSON.parse(localStorage.getItem('pb_pay_method')||'null'); }catch(e){ return null; } }
 function _savePayMethod(m){ try{ localStorage.setItem('pb_pay_method', JSON.stringify(m)); }catch(e){} }
 function addDemoCard(){ _savePayMethod({brand:'Visa',last4:'4242',exp:'12/34',demo:true,addedAt:Date.now()}); renderDoneCardPay(_curRide); }
 function removePayMethod(){ try{ localStorage.removeItem('pb_pay_method'); }catch(e){} renderDoneCardPay(_curRide); }
 function _fareOf(ride){ return Number((ride&&(ride.finalPrice||ride.lockedPrice||ride.estimatedPrice))||0); }
-function setDoneTip(v){ _doneTip=Number(v)||0; renderDoneCardPay(_curRide); }
+function setDoneTip(v){ _doneTip=Number(v)||0; _renderDoneFlow(_curRide); }
 function payRateDriver(){
   var rid=_rideId; if(!rid) return;
   var de=(_activeDriver&&_activeDriver.email)||(_curRide&&_curRide.assignedDriver)||'';
