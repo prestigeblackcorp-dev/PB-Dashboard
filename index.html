@@ -3832,7 +3832,72 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v85';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v86';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+
+/* ═══ BIG-DATA STORAGE → IndexedDB (removes the ~5MB localStorage cap) ═══════════
+   Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
+   fixed set of LARGE keys (bookings, expenses, incomes, …); we shadow those methods
+   for THOSE KEYS ONLY, backed by a synchronous in-memory cache that is durably
+   persisted to IndexedDB (gigabytes — no quota toast). Every other key + all other
+   code keeps using real localStorage, untouched. So nothing changes but the ceiling.
+   SAFETY (imperative — no data is ever lost):
+     • If IndexedDB is unavailable for ANY reason we never flip _bigReady → the shim
+       passes straight through to real localStorage → byte-for-byte today's behavior.
+     • Migration copies localStorage→IDB and only removes the localStorage copy AFTER
+       reading it back and confirming it matches (copy → verify → delete).
+     • The cloud sync (/sync/load on every boot) remains a second, independent backup.
+   ───────────────────────────────────────────────────────────────────────────── */
+var _BIG_KEYS = {pb_dash_v2:1, pb_expenses:1, pb_incomes:1, pb_maintenance:1, pb_waitlist:1, pb_pricing_rules:1, pb_blacklist:1, pb_groupon_payouts:1, pb_custom_vehicles:1, pb_budgets:1};
+var _bigCache = {};            // key -> string (synchronous mirror of what's in IDB)
+var _bigReady = false;         // true only once IDB is open + hydrated; until/unless then → passthrough
+var _bigStorePending = true;   // boot + cloudLoad wait on _storeReady before touching data
+var _idbDB = null;
+var _ls = window.localStorage;
+var _lsProto = Object.getPrototypeOf(_ls);          // Storage.prototype — the reliable place to intercept. The localStorage INSTANCE is an exotic object: defining an own 'getItem' on it becomes a storage ENTRY, not a method override, so it silently fails to intercept.
+var _natGet = _lsProto.getItem, _natSet = _lsProto.setItem, _natRemove = _lsProto.removeItem;  // captured BEFORE we override
+var _realGet = function(k){ return _natGet.call(_ls, k); };     // bypass the shim → real localStorage (used by the migration)
+var _realSet = function(k,v){ return _natSet.call(_ls, k, v); };
+var _realRemove = function(k){ return _natRemove.call(_ls, k); };
+function _idbPut(k,v){ return new Promise(function(res,rej){ try{ var tx=_idbDB.transaction('kv','readwrite'); tx.objectStore('kv').put({k:k,v:v}); tx.oncomplete=function(){res();}; tx.onerror=function(){rej(tx.error);}; tx.onabort=function(){rej(tx.error);}; }catch(e){ rej(e); } }); }
+function _idbGet(k){ return new Promise(function(res,rej){ try{ var r=_idbDB.transaction('kv','readonly').objectStore('kv').get(k); r.onsuccess=function(){ res(r.result?r.result.v:null); }; r.onerror=function(){ rej(r.error); }; }catch(e){ rej(e); } }); }
+function _idbDel(k){ return new Promise(function(res){ try{ var tx=_idbDB.transaction('kv','readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete=function(){res();}; tx.onerror=function(){res();}; }catch(e){ res(); } }); }
+var _storeReady = new Promise(function(resolve){
+  try{
+    if(!window.indexedDB){ resolve(); return; }
+    var op = indexedDB.open('pb_dashboard_store', 1);
+    op.onupgradeneeded = function(e){ var db=e.target.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv',{keyPath:'k'}); };
+    op.onerror   = function(){ resolve(); };        // IDB blocked/unavailable → passthrough (today's behavior)
+    op.onblocked = function(){ resolve(); };
+    op.onsuccess = function(e){
+      _idbDB = e.target.result;
+      var keys = Object.keys(_BIG_KEYS);
+      (function step(i){
+        if(i >= keys.length){ _bigReady = true; resolve(); return; }   // hydrated → shim goes live
+        var key = keys[i], next = function(){ step(i+1); };
+        _idbGet(key).then(function(idbVal){
+          if(idbVal != null){ _bigCache[key] = idbVal; try{ if(_realGet(key)!=null) _realRemove(key); }catch(e){} next(); return; } // already in IDB (clean up any stale localStorage copy)
+          var lsVal = null; try{ lsVal = _realGet(key); }catch(e){}
+          if(lsVal == null){ next(); return; }                             // nothing stored yet
+          _bigCache[key] = lsVal;                                          // serve it immediately
+          _idbPut(key, lsVal).then(function(){ return _idbGet(key); }).then(function(back){
+            if(back === lsVal){ try{ _realRemove(key); }catch(e){} }       // verified in IDB → free localStorage
+            next();
+          }).catch(next);                                                  // IDB write failed → keep localStorage copy; cache still serves it
+        }).catch(function(){ try{ var v=_realGet(key); if(v!=null) _bigCache[key]=v; }catch(e){} next(); });
+      })(0);
+    };
+  }catch(e){ resolve(); }
+});
+_storeReady.then(function(){ _bigStorePending = false; });
+(function _installBigShim(){
+  try{
+    // Override on Storage.prototype (configurable + writable), guarded with `this===_ls` so sessionStorage is untouched,
+    // and call the native methods with `.call(this,…)` so passthrough keeps correct `this`. This is the path that actually intercepts.
+    _lsProto.getItem = function(k){ if(this===_ls && _bigReady && _BIG_KEYS[k]) return (k in _bigCache)?_bigCache[k]:null; return _natGet.call(this,k); };
+    _lsProto.setItem = function(k,v){ if(this===_ls && _bigReady && _BIG_KEYS[k]){ v=String(v); _bigCache[k]=v; _idbPut(k,v).catch(function(){ try{ _natSet.call(_ls,k,v); }catch(e){} }); return; } return _natSet.call(this,k,v); };
+    _lsProto.removeItem = function(k){ if(this===_ls && _bigReady && _BIG_KEYS[k]){ delete _bigCache[k]; _idbDel(k); return; } return _natRemove.call(this,k); };
+  }catch(e){ /* can't override Storage.prototype → app uses native localStorage, exactly as before */ }
+})();
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -4030,6 +4095,7 @@ function _cloudSaveNow() {
 }
 
 function cloudLoad(callback) {
+  if (_bigStorePending) { _storeReady.then(function(){ cloudLoad(callback); }); return; } // wait for IndexedDB hydration so we merge cloud INTO the local copy, never over an empty one
   if (!WORKER_URL) { if (callback) callback(false); return; }
   setSyncStatus('syncing');
   fetch(WORKER_URL + '/sync/load?_=' + Date.now(), { cache: 'no-store', headers: _authHeader() })
@@ -7921,6 +7987,20 @@ async function _drvSetVehicle(email, vehicle){
 // ══════════════════════════════════════════════════════════════════
 // Real photo for the cars we have images for (matches the rider app); '' → fall back to the icon.
 function _fleetVehPhoto(name){ var n=(name||'').toLowerCase(); if(n.indexOf('escalade')>=0) return 'veh-escalade.jpg'; if(n.indexOf('sprinter')>=0) return 'veh-sprinter.jpg'; return ''; }
+// Heal a vehicle icon. An icon is an emoji (or plain ASCII). A mis-encoded emoji shows up as
+// Latin-1 / Mac-Roman mojibake (ü ö ô …), the Apple-logo glyph, or the replacement char — none of
+// which belong in an icon. If the value contains any of those it's corrupt → use the clean default.
+// Clean emoji (high surrogate pairs) and ASCII pass through untouched, so legitimate icons — and any
+// real text — are never altered. Applied on BOTH display and save, so corruption can neither show nor
+// be re-stored (self-heals on the next save of that vehicle). This is the durable fix for the recurring
+// "weird apple symbols" on a vehicle's Icon.
+function _safeIcon(s, def){
+  def = (def==null ? '🚘' : def);
+  s = (s==null ? '' : String(s)).trim();
+  if(!s) return def;
+  if(/[\u0080-\u024F\u02B0-\u036F\uF8FF\uFFFD]/.test(s)) return def;   // mojibake-range chars → corrupt
+  return s;
+}
 async function renderFleetVehicles(){
   var wrap=$d('tabFleetVehiclesWrap'); if(!wrap) return;
   var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
@@ -7935,8 +8015,8 @@ async function renderFleetVehicles(){
       var ph=v.photo||_fleetVehPhoto(v.name);   // owner-uploaded photo wins, then the built-in car photo
       // Photo cars show the real picture (emoji sits underneath as the onerror fallback); others keep the icon.
       var iconBox=ph
-        ? '<div style="position:relative;width:60px;height:44px;border-radius:10px;overflow:hidden;flex-shrink:0;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:21px">'+esc(v.icon||'🚘')+'<img src="'+ph+'" alt="'+esc(v.name)+'" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()"></div>'
-        : '<div style="width:44px;height:44px;border-radius:12px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0">'+esc(v.icon||'🚘')+'</div>';
+        ? '<div style="position:relative;width:60px;height:44px;border-radius:10px;overflow:hidden;flex-shrink:0;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:21px">'+esc(_safeIcon(v.icon))+'<img src="'+ph+'" alt="'+esc(v.name)+'" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()"></div>'
+        : '<div style="width:44px;height:44px;border-radius:12px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0">'+esc(_safeIcon(v.icon))+'</div>';
       return '<div style="background:linear-gradient(135deg,rgba(201,169,98,.06),rgba(255,255,255,.02));border:1px solid var(--border);border-radius:14px;padding:14px 15px;display:flex;align-items:center;gap:12px;'+(v.active?'':'opacity:.55')+'">'
         +iconBox
         +'<div style="flex:1;min-width:0">'
@@ -7995,7 +8075,7 @@ function openFleetVehicleModal(name){
   $d('vehModalName').value=v.name||'';
   $d('vehModalName').disabled=!!v.builtin;   // built-in names are fixed (the rate/active are editable)
   $d('vehModalRate').value=Number(v.hourlyRate)||0;
-  $d('vehModalIcon').value=v.icon||'🚘';
+  $d('vehModalIcon').value=_safeIcon(v.icon);
   $d('vehModalOrder').value=Number(v.order)||99;
   $d('vehModalActive').checked=v.active!==false;
   _vehModalPhoto=v.photo||''; _vehSetPhotoPreview();
@@ -8012,7 +8092,7 @@ async function saveFleetVehicle(){
   var st=$d('vehModalStatus');
   if(!name){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Name is required.'; return; }
   if(!(rate>=0)){ st.style.display='block'; st.style.color='var(--red)'; st.textContent='Enter a valid hourly rate.'; return; }
-  var body={ secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''), name:name, origName:_vehEditOrig, hourlyRate:rate, icon:($d('vehModalIcon').value||'🚘').trim(), order:Number($d('vehModalOrder').value)||99, active:$d('vehModalActive').checked, photo:_vehModalPhoto||'' };
+  var body={ secret:(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''), name:name, origName:_vehEditOrig, hourlyRate:rate, icon:_safeIcon($d('vehModalIcon').value), order:Number($d('vehModalOrder').value)||99, active:$d('vehModalActive').checked, photo:_vehModalPhoto||'' };
   st.style.display='block'; st.style.color='var(--muted)'; st.textContent='Saving…';
   try{
     var r=await fetch(WORKER+'/dashboard/save-vehicle',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),body:JSON.stringify(body)});
@@ -20544,7 +20624,9 @@ setTimeout(stickyTabFix, 200);
     }
     return; // Skip dashboard init
   }
-  // Normal dashboard init
+  // Normal dashboard init — wait for IndexedDB hydration so the loaders read the migrated data, not an empty store.
+  // (If IDB is unavailable, _storeReady resolves immediately and these run exactly as before, against real localStorage.)
+  _storeReady.then(function(){
   loadNotifLog();
   loadCustomVehicles(); loadBookings(); loadExpenses(); loadIncomes(); loadBudgets(); loadMaintenance(); loadContractTemplate(); loadWaitlist(); loadPricingRules(); loadBlacklist(); loadStaffPins(); loadGrouponPayouts();
   _autoCarryVerifyForAll(); // backfill verify for any repeat-customer booking that predates this feature
@@ -20552,6 +20634,7 @@ setTimeout(stickyTabFix, 200);
   initCalStart(); initSelects(); render(); renderIncomeList(); renderExpenseLog(); checkBackupReminder();
   updateSyncUI(); updateOnlineStatus(); initLock();
   setTimeout(hideSplash, 1300);
+  });
 })();
 function afterCloudLoad(ok){
   if(!ok) return;
