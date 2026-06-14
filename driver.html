@@ -2178,11 +2178,39 @@ function _tickDriverHourly(){
   if(endsAt>0 && Date.now()>=endsAt){ _stopDriverHourly(); renderActiveRidePanel(); return; }  // booked time up \u2192 surface Mark Route Complete
   var clk=$d('arc-hourly-clock'); if(clk) clk.textContent=_fmtRemain(endsAt-Date.now());
 }
+// Prestige service reminder shown to the chauffeur on arrival, on each completed stop, and on
+// trip completion (every ride type). Reinforces the Prestige Black standard - open the door, be
+// prestigious, and reply "My honor" rather than "you're welcome".
+function _closePrestigeReminder(){ var e=document.getElementById('pbPrestigeReminder'); if(e) e.remove(); }
+function _showPrestigeReminder(ctx){
+  try{
+    var head = ctx==='arrival' ? "You've arrived \u2014 greet your guest"
+             : ctx==='stop'    ? "Stop complete"
+             :                   "Trip complete";
+    _closePrestigeReminder();
+    var ov=document.createElement('div');
+    ov.id='pbPrestigeReminder';
+    ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:24px';
+    ov.innerHTML='<div style="max-width:380px;width:100%;background:linear-gradient(160deg,#161616,#0a0a0a);border:1px solid rgba(201,169,98,.45);border-radius:20px;padding:26px 24px;box-shadow:0 20px 60px rgba(0,0,0,.6);text-align:center">'
+      +'<div style="font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:#C9A962;font-weight:800;margin-bottom:6px">\u2726 Prestige Black Standard</div>'
+      +'<div style="font-size:19px;font-weight:900;color:#fff;margin-bottom:18px">'+head+'</div>'
+      +'<div style="text-align:left;display:flex;flex-direction:column;gap:13px;margin-bottom:22px">'
+        +'<div style="display:flex;gap:11px;align-items:flex-start"><span style="font-size:17px;flex-shrink:0">\uD83D\uDEAA</span><span style="color:#e8e8ea;font-size:14px;line-height:1.45">Step out and <b style="color:#fff">open the door</b> for your guest.</span></div>'
+        +'<div style="display:flex;gap:11px;align-items:flex-start"><span style="font-size:17px;flex-shrink:0">\uD83C\uDFA9</span><span style="color:#e8e8ea;font-size:14px;line-height:1.45">Carry yourself with <b style="color:#fff">prestige and poise</b>.</span></div>'
+        +'<div style="display:flex;gap:11px;align-items:flex-start"><span style="font-size:17px;flex-shrink:0">\uD83E\uDD1D</span><span style="color:#e8e8ea;font-size:14px;line-height:1.45">When thanked, always say <b style="color:#C9A962">"My honor"</b> \u2014 never "you\'re welcome".</span></div>'
+      +'</div>'
+      +'<button onclick="_closePrestigeReminder()" style="width:100%;background:linear-gradient(135deg,#C9A962,#a8893e);color:#0a0a0a;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:900;cursor:pointer;font-family:inherit;letter-spacing:.02em">It\'s My Honor</button>'
+      +'</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click',function(e){ if(e.target===ov) _closePrestigeReminder(); });
+  }catch(e){}
+}
 async function markArrived(){
   if(!_activeRide||!drvState.token) return;
   await fetch(WORKER+'/chauffeur/arrived',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){});
   _activeRide.status='driver_arrived';
   renderActiveRidePanel();
+  _showPrestigeReminder('arrival');
 }
 async function startRide(){
   if(!_activeRide||!drvState.token) return;
@@ -2216,6 +2244,7 @@ async function advanceStop(){
   _activeRide.nextStopAddress=''; _activeRide.nextStopLat=0; _activeRide.nextStopLng=0;
   renderActiveRidePanel(); drawActiveRideOnMap(_activeRide); updateNav();
   drvToast('\uD83D\uDCCD Routing to next stop','success');
+  _showPrestigeReminder('stop');
   pollDriverRides();
 }
 
@@ -2230,6 +2259,7 @@ async function markRouteComplete(){
   _activeRide.routeCompleteAt=d.routeCompleteAt||Date.now();
   renderActiveRidePanel();
   drvToast('\u2713 Route complete \u2014 the guest will end the trip','success');
+  _showPrestigeReminder('complete');
   pollDriverRides();
 }
 
@@ -2240,6 +2270,7 @@ async function completeRide(){
   var d=r?await r.json().catch(function(){return {};}):{};
   _activeRide.status='completed'; _activeRide.finalPrice=d.finalPrice||_activeRide.estimatedPrice;
   renderActiveRidePanel();
+  _showPrestigeReminder('complete');
   // Go available
   if(_onDuty) broadcastLocation();
 }

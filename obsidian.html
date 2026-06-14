@@ -221,7 +221,7 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
 .driver-details{flex:1;min-width:0;}
 .driver-name{font-size:16px;font-weight:800;}
 .driver-sub{font-size:12px;color:var(--muted);margin-top:2px;}
-.driver-actions{display:flex;gap:8px;}
+.driver-actions{display:flex;gap:8px;position:relative;top:9px;}
 .icon-btn{width:44px;height:44px;border-radius:12px;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;text-decoration:none;transition:border-color .15s;}
 .icon-btn:hover{border-color:var(--gold);}
 
@@ -1097,6 +1097,16 @@ function renderReviewList(list, reviews){
   list.innerHTML=html;
 }
 // Render the assigned-driver card photo + name (called only when the driver changes).
+// Format the chauffeur's name for display: "Edwin Watson" -> "Edwin W." (first name + last
+// initial, for privacy). Never expose a raw email; if the name is missing or looks like an
+// email, fall back to a generic label.
+function _driverDisplayName(name){
+  var n=String(name||'').trim();
+  if(!n || n.indexOf('@')>=0) return 'Your chauffeur';
+  var parts=n.split(/\s+/);
+  if(parts.length<2) return parts[0];
+  return parts[0]+' '+parts[parts.length-1].charAt(0).toUpperCase()+'.';
+}
 function renderActiveDriverCard(){
   if(!_activeDriver) return;
   var av=$d('driverAvatar');
@@ -1104,7 +1114,7 @@ function renderActiveDriverCard(){
     if(_activeDriver.photo){ av.classList.add('has-photo'); av.style.backgroundImage='url("'+_activeDriver.photo+'")'; av.textContent=''; }
     else { av.classList.remove('has-photo'); av.style.backgroundImage='none'; av.textContent=(_activeDriver.name?_activeDriver.name[0].toUpperCase():'\uD83E\uDDD1\u200D\u2708\uFE0F'); }
   }
-  $d('driverName').textContent=_activeDriver.name||'Your chauffeur';
+  $d('driverName').textContent=_driverDisplayName(_activeDriver.name);
   // Vehicle + "PB Verified Chauffeur" badge (quick-win B). Renders only when present.
   var veh=$d('driverVehicle');
   if(veh){
@@ -2208,12 +2218,12 @@ function _updateRiderRoute(ride, driverLoc){
     .catch(()=>{ _rrFetching=false; });
 }
 
-// After ~5 min searching for a SPECIFIC vehicle with none nearby, offer to broaden to both
+// After ~3 min searching for a SPECIFIC vehicle with none nearby, offer to broaden to both
 // categories. Hidden once broadened (vehicleMatch flips to 'any') or for "Either" requests.
 function _maybeShowBroaden(ride){
   var bp=$d('broadenPrompt'); if(!bp) return;
   var specific = ride && ride.vehicleMatch && ride.vehicleMatch!=='any' && ride.vehicle && ride.vehicle!=='Either';
-  var waited = ride && ride.requestedAt && (Date.now()-Number(ride.requestedAt))>=5*60000;
+  var waited = ride && ride.requestedAt && (Date.now()-Number(ride.requestedAt))>=3*60000;
   if(specific && waited){
     var msg=$d('broadenMsg');
     if(msg) msg.textContent='No '+(ride.vehicle||'matching vehicle')+'s available near you right now. Want the closest available chauffeur of any vehicle instead?';
@@ -2267,7 +2277,7 @@ function updateStatusUI(ride, driverLoc){
       renderActiveDriverRating();
     }
     $d('driverInfoCard').style.display='block';
-    $d('driverSub').textContent='Your Prestige Black chauffeur';
+    $d('driverSub').textContent='Your Obsidian Chauffeur';
     // phone links - if we have phone from driver profile
     const ph=ride.assignedDriverPhone||'';
     $d('driverPhoneLink').href='tel:'+(ph||'');
