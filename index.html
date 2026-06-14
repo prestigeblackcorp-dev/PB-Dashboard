@@ -3832,7 +3832,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v84';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v85';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -11428,6 +11428,28 @@ function resetDriverVerify(bookingId, driverIdx){
 }
 
 // Send a Stripe verification link to an extra driver's email
+// Copy to clipboard that works on OLD iOS too — navigator.clipboard is undefined on iOS < 13.4
+// (and in any non-HTTPS context), which threw and broke every "copy link" button. Falls back to
+// the execCommand+textarea trick. Returns a Promise so existing .then()/.catch() chains keep working.
+function _copyText(text){
+  text = String(text == null ? '' : text);
+  var nav = navigator;   // aliased so the global replace below doesn't rewrite this into recursion
+  if (nav.clipboard && nav.clipboard.writeText) {
+    return nav.clipboard.writeText(text);
+  }
+  return new Promise(function(resolve, reject){
+    try{
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly','');
+      ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.left = '0'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select(); try{ ta.setSelectionRange(0, text.length); }catch(e){}
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error('copy unavailable'));
+    }catch(e){ reject(e); }
+  });
+}
 function sendDriverStripeVerify(bookingId, driverIdx){
   if(!VERIFY_URL){ openSettings(); return; }
   var b=bookings.find(function(x){ return x.id===bookingId; });
@@ -11482,7 +11504,7 @@ function sendDriverStripeVerify(bookingId, driverIdx){
         logNotif('verification','Driver ID Verification Link',d.email,bookingId);
       }).catch(function(){ showToast('Verify link created — email failed, copy manually.'); });
     } else {
-      navigator.clipboard.writeText(data.url).then(function(){ showToast('Link copied! Send to '+d.name+'.'); });
+      _copyText(data.url).then(function(){ showToast('Link copied! Send to '+d.name+'.'); });
     }
   })
   .catch(function(err){ showToast('Error: '+err.message); });
@@ -11500,12 +11522,12 @@ function sendDriverSigningLink(bookingId, driverIdx){
 
   if(!d.email){
     if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(url).then(function(){ showToast('Driver has no email — signing link copied 📋'); });
+      _copyText(url).then(function(){ showToast('Driver has no email — signing link copied 📋'); });
     } else { prompt('Copy this signing link for '+(d.name||'driver')+':', url); }
     return;
   }
   if(!MESSAGING_URL){
-    navigator.clipboard.writeText(url).then(function(){ showToast('Link copied! Send to '+(d.name||'driver')+'.'); });
+    _copyText(url).then(function(){ showToast('Link copied! Send to '+(d.name||'driver')+'.'); });
     return;
   }
 
@@ -11532,10 +11554,10 @@ function sendDriverSigningLink(bookingId, driverIdx){
       showToast('Signing link sent to '+d.email+' ✅');
       logNotif('signing','Driver Signing Link (Driver '+(driverIdx+1)+')', d.email, bookingId);
     } else {
-      navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); });
+      _copyText(url).then(function(){ showToast('Email failed — link copied 📋'); });
     }
   }).catch(function(){
-    navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); });
+    _copyText(url).then(function(){ showToast('Email failed — link copied 📋'); });
   });
 }
 
@@ -11552,11 +11574,11 @@ function sendExtDriverSigningLink(bookingId, extId, driverIdx){
   var url = base + '?sign=' + encodeURIComponent(bookingId) + '&extId=' + encodeURIComponent(extId) + '&driver=' + driverIdx;
   if(!d.email){
     logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — copied (no email)',(d.name||'driver'),bookingId);
-    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(function(){ showToast((d.name||'Driver')+' has no email on file — link copied 📋'); }); }
+    if(navigator.clipboard&&navigator.clipboard.writeText){ _copyText(url).then(function(){ showToast((d.name||'Driver')+' has no email on file — link copied 📋'); }); }
     else { prompt('Copy this extension signing link for '+(d.name||'driver')+':', url); }
     return;
   }
-  if(!MESSAGING_URL){ navigator.clipboard.writeText(url).then(function(){ showToast('Link copied! Send to '+(d.name||'driver')+'.'); }); return; }
+  if(!MESSAGING_URL){ _copyText(url).then(function(){ showToast('Link copied! Send to '+(d.name||'driver')+'.'); }); return; }
   var firstName=(d.name||'there').split(' ')[0];
   showToast('Sending extension signing link to '+(d.name||'driver')+'…');
   var html=
@@ -11577,8 +11599,8 @@ function sendExtDriverSigningLink(bookingId, extId, driverIdx){
   fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:d.email,subject:'Please Sign Extension #'+extNum+' \u{2014} Prestige Black Rentals',html:html})})
   .then(function(r){
     if(r.ok){ showToast('Extension signing link sent to '+d.email+' \u{2705}'); logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+')', d.email, bookingId); }
-    else { logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — send failed, copied',(d.email||d.name||'driver'),bookingId); navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); }
-  }).catch(function(){ logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — network error, copied',(d.email||d.name||'driver'),bookingId); navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); }); });
+    else { logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — send failed, copied',(d.email||d.name||'driver'),bookingId); _copyText(url).then(function(){ showToast('Email failed — link copied 📋'); }); }
+  }).catch(function(){ logNotif('signing','Extension #'+extNum+' Signing Link (Driver '+(driverIdx+1)+') — network error, copied',(d.email||d.name||'driver'),bookingId); _copyText(url).then(function(){ showToast('Email failed — link copied 📋'); }); });
 }
 
 // Open an "Add / Edit Driver" overlay using a dynamic modal.
@@ -12230,7 +12252,7 @@ function copySetupLink(){
   var base = location.href.split('?')[0].split('#')[0];
   var link = base + '?pb_setup=' + encodeURIComponent(btoa(JSON.stringify({s:secret,w:worker})));
   if(navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(link).then(function(){ toast('Setup link copied! Open it on any device to auto-configure.'); }).catch(function(){ prompt('Copy this setup link:', link); });
+    _copyText(link).then(function(){ toast('Setup link copied! Open it on any device to auto-configure.'); }).catch(function(){ prompt('Copy this setup link:', link); });
   } else {
     prompt('Copy this setup link:', link);
   }
@@ -12512,7 +12534,7 @@ function sendStripeVerification(){
     var _vUrlHtml=_vUrl.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
     var vStatusEl=$d('vStripeStatus');
     vStatusEl.innerHTML='<a href="'+_vUrlHtml+'" target="_blank" style="color:#635bff;font-weight:700">Open Stripe Link</a> — or copy &amp; send to '+esc(_targetName||'customer')+' &nbsp;<button class="btn btn-sm" id="vCopyBtn" style="padding:3px 8px;font-size:11px">Copy</button>';
-    $d('vCopyBtn').onclick=function(){ navigator.clipboard.writeText(_vUrl).then(function(){ showToast('Link copied!'); }); };
+    $d('vCopyBtn').onclick=function(){ _copyText(_vUrl).then(function(){ showToast('Link copied!'); }); };
     // Save session ID to localStorage so poll can survive modal close / page refresh
     try{ localStorage.setItem(_vPendKey(_bookingId, _capturedDriverIdx), data.id); }catch(e){}
     // Append to the full session history so Check Status can inspect every link sent
@@ -17891,7 +17913,7 @@ function sendExtensionSigningLink(){
     // No customer email on file → copy to clipboard so it can be sent manually. Logged either way.
     logNotif('signing','Extension #'+extNum+' Signing Link — copied (no email on file)',(b.email||'no email'),b.id);
     if(navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(url).then(function(){ showToast(b.email?'Link copied 📋':'No email on file for this booking — link copied 📋'); if(sl) sl.textContent='Link copied'; });
+      _copyText(url).then(function(){ showToast(b.email?'Link copied 📋':'No email on file for this booking — link copied 📋'); if(sl) sl.textContent='Link copied'; });
     } else {
       prompt('Copy this extension signing link:', url);
     }
@@ -17926,12 +17948,12 @@ function sendExtensionSigningLink(){
     } else {
       if(sl) sl.textContent = 'Send failed — link copied';
       logNotif('signing','Extension #'+extNum+' Signing Link — send failed, copied',b.email,b.id);
-      if(navigator.clipboard) navigator.clipboard.writeText(url).then(function(){ showToast('Email failed — link copied 📋'); });
+      if(navigator.clipboard) _copyText(url).then(function(){ showToast('Email failed — link copied 📋'); });
     }
   }).catch(function(){
     if(sl) sl.textContent = 'Network error';
     logNotif('signing','Extension #'+extNum+' Signing Link — network error, copied',b.email,b.id);
-    if(navigator.clipboard) navigator.clipboard.writeText(url).then(function(){ showToast('Email error — link copied 📋'); });
+    if(navigator.clipboard) _copyText(url).then(function(){ showToast('Email error — link copied 📋'); });
   });
 }
 
@@ -17955,7 +17977,7 @@ function copyContract(){
     text=tmp.innerText||tmp.textContent||'';
   }
   if(navigator.clipboard){
-    navigator.clipboard.writeText(text).then(function(){ toast('Contract copied to clipboard'); });
+    _copyText(text).then(function(){ toast('Contract copied to clipboard'); });
   } else {
     $d('contractFilled').style.display='';
     $d('contractFilled').select();
@@ -18300,7 +18322,7 @@ function sendContractSigningLink(){
 
 function _fallbackCopySigLink(url, statusEl){
   if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(url).then(function(){ toast('Signing link copied to clipboard 📋'); if(statusEl) statusEl.textContent='Link copied!'; });
+    _copyText(url).then(function(){ toast('Signing link copied to clipboard 📋'); if(statusEl) statusEl.textContent='Link copied!'; });
   } else {
     prompt('Copy this signing link and send it to your customer:', url);
   }
@@ -18352,7 +18374,7 @@ function shareBookingPortal(id){
 
 function _fallbackCopyPortalLink(url){
   if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(url).then(function(){ toast('Portal link copied to clipboard 📋'); });
+    _copyText(url).then(function(){ toast('Portal link copied to clipboard 📋'); });
   } else {
     prompt('Copy this portal link and send it to your customer:', url);
   }
