@@ -3836,7 +3836,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v100';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v101';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -18317,7 +18317,9 @@ function _contractLightCss(scope){
     s+'.logo-p,'+s+'.logo-sub{color:#a8893e!important}'+
     s+'th{background:#eee!important;color:#111!important}'+
     s+'img{filter:none!important}'+
-    s+'.pb-sig{filter:brightness(0)!important}';   // signatures ALWAYS render black on the white printed page (any saved ink color)
+    s+'.pb-sig{filter:brightness(0)!important}'+
+    s+'.sig-grid,'+s+'.sig-block,'+s+'.sig-row{break-inside:avoid!important;page-break-inside:avoid!important}'+   // never split a signature block across pages
+    s+'h2{break-after:avoid;page-break-after:avoid}';   // keep a section heading on the same page as the content that follows it
 }
 // _contractEmailLight: email clients honor INLINE styles, not <style> blocks, so lighten
 // the contract's dark inline colors directly (else dark text is invisible on white).
@@ -18330,7 +18332,14 @@ function _contractEmailLight(html){
     .replace(/(background(?:-color)?\s*:\s*)#(?:0d0d0d|111111|111|0a0a0a|1a1a1a)\b/gi,'$1#ffffff');
 }
 
-function printContract(){ _printContractDoc(); }
+function printContract(){
+  // iOS/Android Safari ALWAYS stamps the page URL + date + page numbers into a natively-printed PDF
+  // (no CSS or @page rule removes it on mobile), so on phones/tablets generate the PDF IN-APP via
+  // html2pdf (no browser print system -> no github.io URL). Desktop keeps the crisp native print
+  // (the about:blank iframe + @page{margin:0} already drops the header there).
+  if(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)){ _genContractPdf(); return; }
+  _printContractDoc();
+}
 
 // Build a standalone, printer-friendly HTML document for the contract/waiver and print it from a
 // popup whose address is about:blank -- so the browser's per-page print header/footer can NEVER
@@ -18400,7 +18409,48 @@ function _printContractInPage(text,isHtml){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  PDF DOWNLOAD
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
-function downloadContractPdf(){ _printContractDoc(); }   // "Download" and "Print" share the same render path (Save-as-PDF gives the file its name)
+function downloadContractPdf(){ _genContractPdf(); }   // "Download" always produces a clean IN-APP PDF (no browser print chrome -> the github.io URL can never appear)
+
+// Generate the contract/waiver PDF entirely IN-APP (html2pdf), bypassing the OS print system so it can
+// NEVER stamp the github.io URL / date / page numbers onto the file (iOS does this to every native
+// print, ignoring @page{margin:0}). Rendered ON-SCREEN under an opaque cover -- the prior off-screen
+// (-9999px) render came out BLANK in html2canvas on iOS. The capture scale is derived from the doc
+// height so the single canvas stays under iOS's ~8192px dimension cap (above it, the canvas blanks).
+// Signatures stay whole via the pagebreak 'avoid' list + the .sig-grid break-inside rule in the light CSS.
+function _genContractPdf(){
+  var text=$d('contractFilled').value;
+  if(!text||!text.trim()){ toast('No document to download'); return; }
+  if(typeof html2pdf==='undefined'){ toast('PDF tool still loading \u2014 try again in a moment.'); return; }
+  var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
+  var cover=document.createElement('div'); cover.id='pbPdfCover';
+  cover.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#0a0a0a;color:#C9A962;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font:800 16px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px';
+  cover.innerHTML='<div style="font-size:32px">\uD83D\uDCC4</div><div>Preparing your PDF\u2026</div><div style="font-size:12px;color:#8a8a8a;font-weight:600">This takes a moment</div>';
+  var host=document.createElement('div'); host.id='pbPdfHost'; host.className='pb-pdf-doc';
+  // width/max-width forced inline with !important: the dashboard's mobile CSS has max-width:100%!important
+  // rules that would otherwise clamp this to the (tiny) phone viewport -> a near-0-width, blank/cramped
+  // capture. Inline !important wins over stylesheet !important, pinning the doc to a true letter width.
+  host.style.cssText='position:fixed!important;left:0;top:0;width:794px!important;max-width:none!important;min-width:794px!important;background:#fff!important;color:#000;';
+  host.innerHTML=_contractPrintInner(text,isHtml)+'<style>'+_contractLightCss('.pb-pdf-doc')+'</style>';
+  document.body.appendChild(host); document.body.appendChild(cover);
+  var cleanup=function(){ try{host.parentNode.removeChild(host);}catch(e){} try{cover.parentNode.removeChild(cover);}catch(e){} };
+  var run=function(){
+    var h=host.scrollHeight||host.offsetHeight||4000;
+    var scale=Math.max(1, Math.min(2, 7600/h));   // cap the capture-canvas height so iOS doesn't blank it
+    html2pdf().set({
+      margin:[6,6,8,6], filename:_contractFileBase()+'.pdf',
+      image:{type:'jpeg',quality:.95},
+      html2canvas:{scale:scale,useCORS:true,backgroundColor:'#ffffff',windowWidth:794,scrollX:0,scrollY:0},
+      jsPDF:{unit:'mm',format:'letter',orientation:'portrait'},
+      pagebreak:{mode:['css','legacy'],avoid:['.sig-grid','.sig-block','.sig-row','tr']}
+    }).from(host).save()
+      .then(function(){ cleanup(); })
+      .catch(function(){ cleanup(); toast('PDF export failed \u2014 please retry.'); });
+  };
+  // Let the signature/logo images load + layout settle, THEN capture (else it can come out blank/partial).
+  var imgs=host.querySelectorAll('img'), pend=imgs.length, done=false, fire=function(){ if(done)return; done=true; setTimeout(run,120); };
+  if(!pend){ fire(); }
+  else { for(var i=0;i<imgs.length;i++){ if(imgs[i].complete){ if(--pend<=0) fire(); } else { imgs[i].onload=imgs[i].onerror=function(){ if(--pend<=0) fire(); }; } } setTimeout(fire,2500); }
+}
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  TIP / GRATUITY VISIBILITY
