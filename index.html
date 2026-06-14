@@ -261,6 +261,9 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .modal-close { background: rgba(255,255,255,.06); border: none; border-radius: 10px;
   color: var(--muted); cursor: pointer; font-size: 16px; width: 34px; height: 34px; transition: background .15s, color .15s; }
 .modal-close:hover { background: rgba(255,255,255,.1); color: var(--text); }
+/* Contract/waiver can be many pages -- keep the close (X) pinned to the top of the scroll so there's
+   ALWAYS a way back to the dashboard, no matter how far down you scroll. Scoped to #contractModal. */
+#contractModal .modal-title { position: sticky; top: 0; z-index: 6; background: var(--card2); padding: 4px 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
 .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ffull { grid-column: 1 / -1; }
 .fgroup { display: flex; flex-direction: column; gap: 5px; }
@@ -3833,7 +3836,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v99';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v100';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -18345,19 +18348,32 @@ function _printContractDoc(){
   var doc='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+safeTitle+'</title>'
     +'<style>@page{margin:0;size:letter}html,body{margin:0;padding:0;background:#fff}'+_contractLightCss('body')+'</style>'
     +'</head><body class="pb-printable">'+inner+'</body></html>';
-  var w=null; try{ w=window.open('','_blank'); }catch(e){}
-  if(w&&w.document){
-    try{
-      w.document.open(); w.document.write(doc); w.document.close();
-      var fire=function(){ try{ w.focus(); w.print(); }catch(e){} };
-      var imgs=w.document.images, pend=imgs?imgs.length:0, done=false;
-      var go=function(){ if(done) return; done=true; setTimeout(fire,150); };
-      if(!pend){ go(); }
-      else { for(var i=0;i<imgs.length;i++){ if(imgs[i].complete){ if(--pend<=0) go(); } else { imgs[i].onload=imgs[i].onerror=function(){ if(--pend<=0) go(); }; } } setTimeout(go,1800); }
-      return;
-    }catch(e){ try{ w.close(); }catch(_e){} }
-  }
-  _printContractInPage(text,isHtml);   // popup blocked
+  // Print from a hidden IFRAME (NOT a popup, NOT this page). The iframe is its own about:blank document
+  // containing ONLY the contract + @page{margin:0}, so the browser drops the header/footer entirely:
+  // NO github.io URL and NO "Page 1 of N". No popup => nothing to block and the owner is never bounced
+  // to a separate tab they can't get back from. Many browsers use the TOP document.title for the
+  // Save-as-PDF filename, so set it too (restored after). Falls back to in-page print only if the
+  // iframe itself throws.
+  var _oldTitle=document.title; document.title=_contractFileBase();
+  var _restore=function(){ try{ document.title=_oldTitle; }catch(e){} };
+  try{
+    var old=document.getElementById('pbPrintFrame'); if(old&&old.parentNode) old.parentNode.removeChild(old);
+    var ifr=document.createElement('iframe'); ifr.id='pbPrintFrame'; ifr.setAttribute('aria-hidden','true');
+    ifr.style.cssText='position:fixed;left:-10000px;top:0;width:820px;height:1160px;border:0;background:#fff;';
+    document.body.appendChild(ifr);
+    var idoc=ifr.contentWindow.document;
+    idoc.open(); idoc.write(doc); idoc.close();
+    var done=false;
+    var fire=function(){
+      if(done) return; done=true;
+      try{ ifr.contentWindow.focus(); ifr.contentWindow.print(); }
+      catch(e){ try{ ifr.parentNode.removeChild(ifr); }catch(_e){} _restore(); _printContractInPage(text,isHtml); return; }
+      setTimeout(function(){ try{ ifr.parentNode.removeChild(ifr); }catch(e){} _restore(); }, 1500);
+    };
+    var imgs=idoc.images, pend=imgs?imgs.length:0;
+    if(!pend){ setTimeout(fire,180); }
+    else { for(var i=0;i<imgs.length;i++){ if(imgs[i].complete){ if(--pend<=0) fire(); } else { imgs[i].onload=imgs[i].onerror=function(){ if(--pend<=0) fire(); }; } } setTimeout(fire,2200); }
+  }catch(e){ _restore(); _printContractInPage(text,isHtml); }
 }
 // Extract <style>+<body> from an HTML doc (or wrap plain text), stripping the template's own @page
 // (its 0.5in margins re-enable the browser URL/date header). Shared by popup + in-page print.
@@ -18639,19 +18655,22 @@ function shareBookingPortal(id){
       '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth \u00B7 (214) 207-2481</div>'+
       '</div>';
     fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Your Booking Portal \u2014 Prestige Black Rentals',html:html})})
-    .then(function(r){ if(r.ok){ toast('Portal link emailed to '+b.email+' \u2705'); logNotif('portal','Booking Portal Link',b.email,b.id); } else _fallbackCopyPortalLink(url); })
-    .catch(function(){ _fallbackCopyPortalLink(url); });
+    .then(function(r){ if(r.ok){ toast('Portal link emailed to '+b.email+' \u2705'); logNotif('portal','Booking Portal Link',b.email,b.id); } else _fallbackCopyPortalLink(url, b); })
+    .catch(function(){ _fallbackCopyPortalLink(url, b); });
   } else {
-    _fallbackCopyPortalLink(url);
+    _fallbackCopyPortalLink(url, b);
   }
 }
 
-function _fallbackCopyPortalLink(url){
+function _fallbackCopyPortalLink(url, b){
   if(navigator.clipboard&&navigator.clipboard.writeText){
     _copyText(url).then(function(){ toast('Portal link copied to clipboard \uD83D\uDCCB'); });
   } else {
     prompt('Copy this portal link and send it to your customer:', url);
   }
+  // Log the share even when copied/prompted (not just on a successful email) so the communication
+  // log always reflects that a portal link went out for this booking.
+  try{ logNotif('portal','Booking Portal Link \u2014 copied',(b&&b.email)||'',(b&&b.id)||''); }catch(e){}
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
