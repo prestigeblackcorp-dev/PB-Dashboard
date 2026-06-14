@@ -3833,7 +3833,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v91';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v92';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -6454,6 +6454,13 @@ function recordExtension(b, opts){
     createdAt: opts.createdAt || Date.now(),
     fromDate: fromDate, toDate: toDate, extensionDays: qty, extensionUnit: unit,
     additionalCharge: charge, brokerFee: Math.max(0, Number(opts.brokerFee)||0),
+    // Mileage for this extension: UNLIMITED, or STANDARD capped at milesPerDay (includedMiles = perDay x days,
+    // ADDED to the rental's allowance). startOdom = odometer at this segment's start, only used for a STANDARD
+    // extension that follows unlimited days so checkout charges overage on this period's miles alone.
+    unlimited: !!opts.unlimited,
+    milesPerDay: Math.max(0, Number(opts.milesPerDay)||0),
+    includedMiles: opts.unlimited ? 0 : Math.max(0, (Number(opts.milesPerDay)||0) * qty),
+    startOdom: Math.max(0, Number(opts.startOdom)||0),
     paymentMethod: opts.paymentMethod||'', paid: paid, paidAt: paid?(opts.paidAt||Date.now()):null,
     notes: opts.notes||'', source: opts.source||'modal',
     sentAt: opts.sentAt||null, signed: false, sig:'', sigDate:''
@@ -9554,6 +9561,7 @@ function openBookingDetail(id){
           '<span class="detail-val">'+fmtDateFull(ext.fromDate)+' &rarr; <strong>'+fmtDateFull(ext.toDate)+'</strong>'+
           ' <span style="color:var(--muted);font-size:10px">+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</span>'+
           (ext.additionalCharge?' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(ext.additionalCharge).toFixed(2)+'</span>'+(ext.paid?' <span style="color:#22c55e;font-size:10px;font-weight:700">\u2705 Paid'+(ext.paymentMethod?' via '+esc(ext.paymentMethod==='stripe'?'card':ext.paymentMethod):'')+(ext.paidAt?' <span style="color:var(--muted);font-weight:400">'+new Date(ext.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>':'')+'</span>':' <span style="color:#fb923c;font-size:10px;font-weight:700">\u23F3 Payment pending</span>'):'')+
+          ((ext.unlimited||Number(ext.milesPerDay)>0)?' <span style="color:#7cc4ff;font-size:10px;font-weight:700">'+(ext.unlimited?'\u221E Unltd mi':(Number(ext.milesPerDay).toLocaleString()+' mi/day'+(Number(ext.startOdom)>0?(' \u00B7 odo '+Number(ext.startOdom).toLocaleString()):'')))+'</span>':'')+
           (signed?' <span style="color:var(--muted);font-size:10px">Signed '+esc(ext.sigDate||'')+'</span>':' <span style="color:#fb923c;font-size:10px">Pending signature</span>')+
           ' <button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_contractShowTab('+i+');_updateExtensionTabs();},200)" style="padding:2px 8px;font-size:10px;margin-left:4px">View</button>'+
           '</span></div>';
@@ -10881,6 +10889,57 @@ function coCalc(){
   var kept = parseFloat($d('coKept').value)||0;
   $d('coReturned').value = Math.max(0, collected - kept);
 }
+// Per-segment mileage model. Every rental segment -- the original booking PLUS each extension -- is
+// either UNLIMITED or STANDARD (capped at perDay mi/day). Returns the overage for a given drop-off
+// odometer. Three cases (per the owner's spec): ALL unlimited -> $0; ALL standard -> the allowance
+// ACCUMULATES across segments and the WHOLE trip's miles count; MIXED -> only the standard period's
+// own miles count, measured from the odometer recorded when the first standard-after-unlimited segment
+// started (ext.startOdom); if that wasn't recorded, needOdom=true and it falls back to the full trip.
+function _mileageOverage(b, odomOutArg){
+  if(!b) return { mode:'none', allowance:0, driven:0, over:0, rate:0, charge:0, segs:[], fromOdom:0, needOdom:false };
+  var vm = VEHICLE_MILEAGE[b.vehicle] || {};
+  var oIn  = Number(b.odomIn)||0;
+  var oOut = (odomOutArg!=null && !isNaN(Number(odomOutArg))) ? Number(odomOutArg) : (Number(b.odomOut)||0);
+  var origDays = (typeof brokerRateDays==='function') ? Math.max(0, brokerRateDays(b)) : Math.max(0,(Number(b.days)||1));
+  var origUnlim = Number(b.unlimited) > 0;
+  var origPerDay = (Number(b.includedMiles)>0 && origDays>0) ? (Number(b.includedMiles)/origDays) : (Number(vm.miles)||0);
+  var origMiles = origUnlim ? 0 : (Number(b.includedMiles)>0 ? Number(b.includedMiles) : origPerDay*origDays);
+  var segs = [{ label:'Original', days:origDays, unlimited:origUnlim, perDay:origPerDay, miles:origMiles, startOdom:0 }];
+  (b.extensions||[]).forEach(function(e,i){
+    if(!e) return;
+    var eu = !!e.unlimited;
+    var ed = Number(e.extensionDays)||0;
+    var ep = (Number(e.milesPerDay)>0) ? Number(e.milesPerDay)
+           : (Number(e.includedMiles)>0 && ed>0) ? (Number(e.includedMiles)/ed)
+           : (Number(vm.miles)||0);
+    var em = eu ? 0 : (Number(e.includedMiles)>0 ? Number(e.includedMiles) : ep*ed);
+    segs.push({ label:'Ext '+(i+1), days:ed, unlimited:eu, perDay:ep, miles:em, startOdom:Number(e.startOdom)||0 });
+  });
+  var anyStd   = segs.some(function(s){ return !s.unlimited; });
+  var anyUnlim = segs.some(function(s){ return s.unlimited; });
+  var rateBase = Number(b.overageRate) || (Number(vm.overage)||0);
+  var prule = (typeof getActivePricingRule==='function') ? getActivePricingRule(b.pickupDate||b.date, b.dropoffDate||b.pickupDate||b.date) : null;
+  var rate = prule ? (rateBase*(prule.mileageMultiplier||1)) : rateBase;
+  // ALL unlimited -> no cap anywhere, never an overage.
+  if(!anyStd){ return { mode:'unlimited', allowance:0, driven:0, over:0, rate:rate, charge:0, segs:segs, fromOdom:oIn, needOdom:false }; }
+  var allowance = segs.reduce(function(a,s){ return a + (s.unlimited?0:(Number(s.miles)||0)); }, 0);
+  var driven=0, mode, fromOdom=oIn, needOdom=false;
+  if(!anyUnlim){
+    // ALL standard -> the accumulated allowance vs the whole trip's miles.
+    driven = (oIn>0 && oOut>oIn) ? (oOut-oIn) : 0;
+    mode = 'standard';
+  } else {
+    // MIXED -> only the standard period counts, from its recorded start odometer to drop-off.
+    var bseg=null;
+    for(var k=0;k<segs.length;k++){ if(!segs[k].unlimited && segs[k].startOdom>0){ bseg=segs[k]; break; } }
+    if(bseg){ fromOdom=bseg.startOdom; driven=(oOut>bseg.startOdom)?(oOut-bseg.startOdom):0; mode='mixed'; }
+    else { driven=(oIn>0 && oOut>oIn)?(oOut-oIn):0; mode='mixed'; needOdom=true; }
+  }
+  // needOdom (mixed rental, boundary odometer not recorded yet) -> never charge from the full-trip fallback.
+  var over = needOdom ? 0 : Math.max(0, driven - allowance);
+  var charge = (!needOdom && rate>0 && over>0) ? Math.round(over*rate) : 0;
+  return { mode:mode, allowance:allowance, driven:driven, over:over, rate:rate, charge:charge, segs:segs, fromOdom:fromOdom, needOdom:needOdom };
+}
 function coCalcMiles(){
   var b=bookings.find(function(x){return x.id===closeOutId;});
   if(!b) return;
@@ -10888,46 +10947,43 @@ function coCalcMiles(){
   var o=parseFloat($d('coOdomOut').value)||0;
   var driven=(i&&o&&o>i)?(o-i):0;
   $d('coMilesHint').textContent = driven ? 'Miles driven: '+driven.toLocaleString()+' (pickup: '+i.toLocaleString()+' mi)' : (i?'Pickup odometer: '+i.toLocaleString()+' mi':'');
-  // Overage \u2014 waived when unlimited miles add-on was purchased
-  var rentalDays=Number(b.days)||1;
-  var _vm=VEHICLE_MILEAGE[b.vehicle]||{};
-  // b.includedMiles is stored as total trip miles (miles/day \u00D7 days); fall back to vm.miles/day \u00D7 days
-  var allowed=Number(b.includedMiles)||( (_vm.miles||0)*rentalDays );
-  var perDay=rentalDays ? Math.round(allowed/rentalDays) : (_vm.miles||0);
-  var _baseRate=Number(b.overageRate)||(_vm.overage||0);
-  var _prule=getActivePricingRule(b.pickupDate||b.date, b.dropoffDate||b.pickupDate||b.date);
-  var rate=_prule?(_baseRate*_prule.mileageMultiplier):_baseRate;
-  var hasUnlimited=Number(b.unlimited)>0;
+  // Overage \u2014 computed per-segment: each extension's miles ADD to the allowance, each extension can be
+  // unlimited, and a MIXED rental charges only the standard period (via its start odometer). See _mileageOverage.
+  var _mo=_mileageOverage(b, o);
   var overRow=$d('coOverageRow');
   var mileChargeInput=$d('coMileageCharge');
   if(overRow){
-    if(hasUnlimited){
-      overRow.style.display='flex';
-      var unlimTotal=(Number(b.unlimited)||0)*rentalDays;
+    var _hasExt=!!(b.extensions&&b.extensions.length);
+    if(_mo.mode==='unlimited'){
+      overRow.style.display='flex'; overRow.style.flexDirection='column';
       overRow.style.background='rgba(124,252,152,.07)';
       overRow.style.borderColor='rgba(124,252,152,.3)';
-      overRow.innerHTML='<span style="color:var(--green)">\u2705 Unlimited Miles purchased</span>'+
-        '<span>No overage charge \u2014 $0</span>'+
-        '<span style="color:var(--muted)">Add-on: '+$$(Number(b.unlimited))+'/'+_durUnit(b)+' \u00D7 '+rentalDays+' '+_durUnit(b)+(rentalDays!==1?'s':'')+'  = '+$$(unlimTotal)+'</span>';
+      overRow.innerHTML='<span style="color:var(--green)">\u2705 Unlimited miles'+(_hasExt?' (original + every extension)':'')+'</span>'+
+        '<span>No overage charge \u2014 $0</span>';
       if(mileChargeInput) mileChargeInput.value='0';
-    } else if(driven && perDay && rate && driven>allowed){
-      var over=driven-allowed;
-      var charge=over*rate;
-      overRow.style.display='flex';
-      overRow.style.flexDirection='column';
+    } else if(_mo.needOdom){
+      // MIXED rental (unlimited + standard) but the standard segment's start odometer was not recorded.
+      overRow.style.display='flex'; overRow.style.flexDirection='column';
+      overRow.style.background='rgba(249,115,22,.07)';
+      overRow.style.borderColor='rgba(249,115,22,.3)';
+      overRow.innerHTML='<span style="color:#f97316">\u26A0 Mixed unlimited + standard miles</span>'+
+        '<span style="color:var(--muted)">Record the odometer at the START of the standard extension (in Create Extension) so only that period\'s miles are charged. Standard allowance so far: <b>'+_mo.allowance.toLocaleString()+' mi</b>.</span>';
+      if(mileChargeInput) mileChargeInput.value='0';
+    } else if(_mo.over>0 && _mo.rate>0){
+      overRow.style.display='flex'; overRow.style.flexDirection='column';
       overRow.style.background='rgba(255,92,92,.07)';
       overRow.style.borderColor='rgba(255,92,92,.3)';
-      overRow.innerHTML='<span>Miles driven: <b>'+driven.toLocaleString()+'</b></span>'+
-        '<span>Included: <b>'+perDay.toLocaleString()+' mi/day \u00D7 '+rentalDays+' days = '+allowed.toLocaleString()+' mi</b></span>'+
-        '<span>Over by: <b style="color:var(--red)">'+over.toLocaleString()+' mi</b></span>'+
-        '<span>Overage charge: <b style="color:var(--red)">'+$$(charge)+'</b> @ $'+rate.toFixed(2)+'/mi</span>';
-      if(mileChargeInput) mileChargeInput.value=String(Math.round(charge));
-    } else if(driven && perDay && driven<=allowed){
-      overRow.style.display='flex';
+      overRow.innerHTML='<span>'+(_mo.mode==='mixed'?'Standard-period miles':'Miles driven')+': <b>'+_mo.driven.toLocaleString()+'</b>'+(_mo.mode==='mixed'?' <span style="color:var(--muted);font-size:10px">(from odometer '+_mo.fromOdom.toLocaleString()+')</span>':'')+'</span>'+
+        '<span>Included allowance: <b>'+_mo.allowance.toLocaleString()+' mi</b>'+(_hasExt?' <span style="color:var(--muted);font-size:10px">(original + extensions)</span>':'')+'</span>'+
+        '<span>Over by: <b style="color:var(--red)">'+_mo.over.toLocaleString()+' mi</b></span>'+
+        '<span>Overage charge: <b style="color:var(--red)">'+$$(_mo.charge)+'</b> @ $'+_mo.rate.toFixed(2)+'/mi</span>';
+      if(mileChargeInput) mileChargeInput.value=String(Math.round(_mo.charge));
+    } else if(_mo.driven>0 && _mo.allowance>0){
+      overRow.style.display='flex'; overRow.style.flexDirection='column';
       overRow.style.background='rgba(124,252,152,.07)';
       overRow.style.borderColor='rgba(124,252,152,.3)';
       overRow.innerHTML='<span style="color:var(--green)">\u2705 Within mileage limit</span>'+
-        '<span>'+driven.toLocaleString()+' / '+allowed.toLocaleString()+' mi used ('+perDay.toLocaleString()+' mi/'+_durUnit(b)+' \u00D7 '+rentalDays+' '+_durUnit(b)+(rentalDays!==1?'s':'')+') \u2014 $0 overage</span>';
+        '<span>'+_mo.driven.toLocaleString()+' / '+_mo.allowance.toLocaleString()+' mi used'+(_hasExt?' (original + extensions)':'')+' \u2014 $0 overage</span>';
       if(mileChargeInput) mileChargeInput.value='0';
     } else {
       overRow.style.display='none';
@@ -11052,14 +11108,12 @@ function saveCloseOut(){
   // Calculate and persist fuel charge + mileage overage for reporting
   var _fIn=fuelToNum(bookings[idx].fuelIn||''), _fOut=fuelToNum($d('coFuelOut').value||'');
   bookings[idx].fuelCharge = (_fIn>=0&&_fOut>=0&&_fIn>_fOut) ? Math.ceil((_fIn-_fOut)/2)*30 : 0;
-  var _oIn=Number(bookings[idx].odomIn)||0, _oOut=parseFloat($d('coOdomOut').value)||0;
-  var _driven=(_oIn&&_oOut&&_oOut>_oIn)?(_oOut-_oIn):0;
-  var _days=Number(bookings[idx].days)||1, _vm2=VEHICLE_MILEAGE[bookings[idx].vehicle]||{}, _allowed=Number(bookings[idx].includedMiles)||( (_vm2.miles||0)*_days );
-  var _baseRate2=Number(bookings[idx].overageRate)||(_vm2.overage||0);
-  var _prule2=getActivePricingRule(bookings[idx].pickupDate||bookings[idx].date, bookings[idx].dropoffDate||bookings[idx].pickupDate||bookings[idx].date);
-  var _rate=_prule2?(_baseRate2*_prule2.mileageMultiplier):_baseRate2;
-  var _hasUnlim=Number(bookings[idx].unlimited)>0;
-  bookings[idx].mileageCharge = (!_hasUnlim&&_driven&&_allowed&&_rate&&_driven>_allowed) ? Math.round((_driven-_allowed)*_rate) : 0;
+  var _oOut=parseFloat($d('coOdomOut').value)||0;
+  // Mileage overage via the per-segment model: each extension's miles ADD to the allowance, each
+  // extension can be unlimited, and a MIXED rental charges only the standard period (via its start
+  // odometer). needOdom => the boundary odometer isn't recorded yet, so charge 0 rather than overcharge.
+  var _mo2=_mileageOverage(bookings[idx], _oOut);
+  bookings[idx].mileageCharge = _mo2.needOdom ? 0 : _mo2.charge;
   // Recalculate remaining balance to include any new fuel/mileage charges \u2014 only when not yet paid
   if(!bookings[idx].balancePaidAt){
     var _bRev=Number(bookings[idx].revenue)||0;
@@ -17707,6 +17761,22 @@ function _extSignCommEntries(b){
 }
 
 // Create a new extension \u2014 shows inline form in the contract area
+// Show/hide the per-day cap vs the start-odometer field as the Unlimited checkbox toggles, and keep the
+// "X mi/day x N days = M mi" hint live as the return date / per-day value change.
+function _extMileToggle(){
+  var u = $d('extUnlimited') && $d('extUnlimited').checked;
+  var mpd = $d('extMilesPerDayRow'); if(mpd) mpd.style.display = u ? 'none' : '';
+  var odoRow = $d('extStartOdomRow');
+  if(odoRow) odoRow.style.display = (!u && odoRow.getAttribute('data-priormix')==='1') ? '' : 'none';
+  var hint = $d('extMileHint');
+  if(hint){
+    if(u){ hint.textContent=''; return; }
+    var perDay = parseFloat(($d('extMilesPerDay')||{}).value)||0;
+    var days=0, nd=($d('extNewDate')&&$d('extNewDate').value)||'', ce=window._extCurEnd||'';
+    if(nd && ce){ var fm=new Date(ce+'T12:00:00').getTime(), tm=new Date(nd+'T12:00:00').getTime(); if(tm>fm) days=Math.round((tm-fm)/86400000); }
+    hint.textContent = perDay ? (perDay.toLocaleString()+' mi/day'+(days?(' \u00D7 '+days+' day'+(days!==1?'s':'')+' = '+(perDay*days).toLocaleString()+' mi'):'')+' added to the rental allowance; miles past the total are charged at the vehicle overage rate.') : '';
+  }
+}
 function addExtensionContract(){
   var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
   if(!b){ showToast('No booking selected'); return; }
@@ -17717,6 +17787,14 @@ function addExtensionContract(){
   var _afterEnd = currentEnd ? dateStr(addDays(parseLocalDate(currentEnd), 1)) : _td;
   var _minDate = (_afterEnd > _td) ? _afterEnd : _td;
   var _hasBroker = !!(b.broker || Number(b.brokerFee) > 0);
+  // Per-extension mileage defaults: the per-day cap inherits the booking's (includedMiles / original days)
+  // or the vehicle default; _priorMix = an earlier segment is unlimited, so a STANDARD extension needs a
+  // start-odometer reading to charge overage on only its own period.
+  var _vmE = VEHICLE_MILEAGE[b.vehicle] || {};
+  var _origDaysE = (typeof brokerRateDays==='function') ? Math.max(1, brokerRateDays(b)) : Math.max(1,(Number(b.days)||1));
+  var _defPerDay = (Number(b.includedMiles)>0 && _origDaysE>0) ? Math.round(Number(b.includedMiles)/_origDaysE) : (Number(_vmE.miles)||150);
+  var _priorMix = (Number(b.unlimited)>0) || (exts||[]).some(function(e){ return e && e.unlimited; });
+  window._extCurEnd = currentEnd;
 
   var _old=$d('extCreateOverlay'); if(_old) _old.remove();
   var ov=document.createElement('div');
@@ -17727,9 +17805,25 @@ function addExtensionContract(){
       '<div style="font-size:16px;font-weight:800;margin-bottom:4px">\uD83D\uDCC5 Create Extension #'+(exts.length+1)+'</div>'+
       '<div style="font-size:12px;color:var(--muted);margin-bottom:16px">'+esc(b.name||'')+' &middot; '+esc(b.vehicle||'')+' &middot; current return '+(currentEnd?fmtDateFull(currentEnd):'unknown')+'</div>'+
       '<div style="margin-bottom:12px"><div class="flabel">New return date</div>'+
-        '<input id="extNewDate" type="date" class="finput" style="width:100%" min="'+_minDate+'" value="'+_minDate+'"></div>'+
+        '<input id="extNewDate" type="date" class="finput" style="width:100%" min="'+_minDate+'" value="'+_minDate+'" onchange="_extMileToggle()"></div>'+
       '<div style="margin-bottom:12px"><div class="flabel">Additional charge ($)</div>'+
         '<input id="extCharge" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00"></div>'+
+      '<div style="margin-bottom:12px;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 12px">'+
+        '<div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">'+
+          '<input type="checkbox" id="extUnlimited" style="width:16px;height:16px;accent-color:var(--gold);cursor:pointer" onchange="_extMileToggle()">'+
+          '<label for="extUnlimited" style="font-size:13px;font-weight:700;cursor:pointer">&#8734; Unlimited miles for this extension</label>'+
+        '</div>'+
+        '<div id="extMilesPerDayRow">'+
+          '<div class="flabel">Miles/day included</div>'+
+          '<input id="extMilesPerDay" type="number" min="0" step="1" class="finput" style="width:100%" value="'+_defPerDay+'" oninput="_extMileToggle()">'+
+          '<div id="extMileHint" style="font-size:10.5px;color:var(--muted);margin-top:4px"></div>'+
+        '</div>'+
+        '<div id="extStartOdomRow" data-priormix="'+(_priorMix?'1':'0')+'" style="display:none;margin-top:10px">'+
+          '<div class="flabel">Odometer now (start of this standard period)</div>'+
+          '<input id="extStartOdom" type="number" min="0" step="1" class="finput" style="width:100%" placeholder="current odometer reading">'+
+          '<div style="font-size:10.5px;color:#f97316;margin-top:4px">This rental has unlimited days before this extension &#8212; record the odometer now so checkout charges overage on ONLY this standard period\'s miles.</div>'+
+        '</div>'+
+      '</div>'+
       (_hasBroker?('<div style="margin-bottom:12px"><div class="flabel">Broker fee for this extension</div>'+
         '<div style="display:flex;gap:8px;align-items:center">'+
           '<input id="extBroker" type="number" min="0" step="0.01" class="finput" style="flex:1" placeholder="0.00">'+
@@ -17758,7 +17852,7 @@ function addExtensionContract(){
       '</div>'+
     '</div>';
   document.body.appendChild(ov);
-  setTimeout(function(){ var el=$d('extNewDate'); if(el) el.focus(); },50);
+  setTimeout(function(){ var el=$d('extNewDate'); if(el) el.focus(); if(typeof _extMileToggle==='function') _extMileToggle(); },50);
 }
 
 function confirmAddExtension(){
@@ -17779,6 +17873,9 @@ function confirmAddExtension(){
   var extBrokerFee = (_extBrokerMode==='perday') ? Math.round(_extBrokerInput * extDays * 100)/100 : _extBrokerInput;
   var payMethod    = ($d('extPayMethod')&&$d('extPayMethod').value)||'';
   var notes        = (($d('extNotes')&&$d('extNotes').value)||'').trim();
+  var extUnlimited = !!($d('extUnlimited') && $d('extUnlimited').checked);
+  var extMilesPerDay = Math.max(0, parseFloat(($d('extMilesPerDay')&&$d('extMilesPerDay').value)||'0')||0);
+  var extStartOdom = Math.max(0, parseFloat(($d('extStartOdom')&&$d('extStartOdom').value)||'0')||0);
 
   var idx = bookings.findIndex(function(x){return x.id===_contractBookingId;});
   if(idx === -1) return;
@@ -17787,6 +17884,7 @@ function confirmAddExtension(){
   var newExt = recordExtension(bookings[idx], {
     fromDate: currentEnd, toDate: newEndDate, days: extDays,
     additionalCharge: addlCharge, brokerFee: extBrokerFee,
+    unlimited: extUnlimited, milesPerDay: extMilesPerDay, startOdom: extStartOdom,
     paymentMethod: payMethod, paid:false, notes: notes, source:'modal'
   });
   // Remember how the broker fee was entered, for the per-day breakdown on the contract.
