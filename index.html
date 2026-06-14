@@ -3833,7 +3833,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v95';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v96';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -16299,7 +16299,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
   </div>
 
   <div style="font-size:10px;color:#777;text-align:center;margin-top:28px;border-top:1px solid #ccc;padding-top:10px">
-    Prestige Black Corporation &middot; 5473 Blair Rd. Ste 100 Dallas, TX 75231 &middot; Waiver ID: {{invoice_number}} &middot; {{today}}
+    Prestige Black Corporation &middot; prestigeblackrentals.com &middot; 5473 Blair Rd. Ste 100 Dallas, TX 75231 &middot; Waiver ID: {{invoice_number}} &middot; {{today}}
   </div>
 
 </div>
@@ -16425,6 +16425,16 @@ function _migrateWaiverTemplate(){
       slingshotWaiverTemplate = slingshotWaiverTemplate.replace(
         'applied after a 15-minute grace period.</p>',
         'applied after a 15-minute grace period.</p>\n  <p><span class="bold">Personal Belongings:</span> Prestige Black Corporation is not responsible or liable for any personal items, valuables, or belongings left in, lost from, or forgotten in the Vehicle. It is the Renter\'s sole responsibility to remove and verify all personal belongings before completing the return. Any items left behind are surrendered at the Renter\'s own risk.</p>'
+      );
+      wChanged = true;
+    }
+    // Brand the footer with prestigeblackrentals.com (the downloaded/printed copy shows the public domain,
+    // never the dashboard's github.io URL -- which html2pdf already keeps off the page entirely).
+    if(slingshotWaiverTemplate.indexOf('5473 Blair Rd. Ste 100 Dallas, TX 75231') !== -1 &&
+       slingshotWaiverTemplate.indexOf('prestigeblackrentals.com') === -1){
+      slingshotWaiverTemplate = slingshotWaiverTemplate.replace(
+        'Prestige Black Corporation &middot; 5473 Blair Rd. Ste 100 Dallas, TX 75231',
+        'Prestige Black Corporation &middot; prestigeblackrentals.com &middot; 5473 Blair Rd. Ste 100 Dallas, TX 75231'
       );
       wChanged = true;
     }
@@ -18349,33 +18359,33 @@ function downloadContractPdf(){
     toast('PDF tool still loading \u2014 try again in a moment.'); return;
   }
   var isHtml = text.trim().toLowerCase().startsWith('<!doctype') || text.trim().startsWith('<html');
-  var container = document.createElement('div');
-  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;color:#000;font-family:serif;font-size:13px;line-height:1.7;';
+  // Render the document DIRECTLY (no iframe) -- the off-screen iframe + cloned <html> produced a BLANK PDF on
+  // some devices. Off-screen but fully laid out + opaque so html2canvas captures real pixels.
+  var tmp = document.createElement('div');
+  tmp.className = 'pb-pdf-doc';
+  tmp.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;color:#000;';
   if(isHtml){
-    var inner = document.createElement('iframe');
-    inner.style.cssText = 'width:780px;border:none;';
-    inner.srcdoc = text;
-    container.appendChild(inner);
-    document.body.appendChild(container);
-    inner.onload = function(){
-      try{
-        var innerDoc = inner.contentDocument || inner.contentWindow.document;
-        var cloned = innerDoc.documentElement.cloneNode(true);
-        var tmp = document.createElement('div');
-        tmp.className = 'pb-pdf-doc';
-        tmp.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;color:#000;font-family:serif';
-        tmp.innerHTML = cloned.outerHTML + '<style>'+_contractLightCss('.pb-pdf-doc')+'</style>';
-        document.body.appendChild(tmp);
-        html2pdf().set({margin:[8,8,8,8],filename:fname,image:{type:'jpeg',quality:.95},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'mm',format:'letter',orientation:'portrait'}})
-          .from(tmp).save().then(function(){ document.body.removeChild(tmp); document.body.removeChild(container); });
-      } catch(ex){ try{document.body.removeChild(container);}catch(e){} toast('PDF export failed \u2014 please retry.'); }
-    };
+    var styleM = (text.match(/<style[^>]*>([\s\S]*?)<\/style>/gi)||[]).join('');
+    var bodyM  = text.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    tmp.innerHTML = styleM + (bodyM ? bodyM[1] : text) + '<style>@page{margin:0}'+_contractLightCss('.pb-pdf-doc')+'</style>';
   } else {
-    container.style.whiteSpace = 'pre-wrap';
-    container.textContent = text;
-    document.body.appendChild(container);
-    html2pdf().set({margin:[12,12,12,12],filename:fname,image:{type:'jpeg',quality:.95},html2canvas:{scale:2},jsPDF:{unit:'mm',format:'letter',orientation:'portrait'}})
-      .from(container).save().then(function(){ document.body.removeChild(container); });
+    tmp.style.cssText += 'white-space:pre-wrap;font-family:Arial,sans-serif;font-size:13px;line-height:1.7;padding:18px';
+    tmp.textContent = text;
+  }
+  document.body.appendChild(tmp);
+  var _opts = {margin:[10,10,10,10],filename:fname,image:{type:'jpeg',quality:.96},html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff'},jsPDF:{unit:'mm',format:'letter',orientation:'portrait'},pagebreak:{mode:['css','legacy']}};
+  var _go = function(){
+    html2pdf().set(_opts).from(tmp).save()
+      .then(function(){ try{document.body.removeChild(tmp);}catch(e){} })
+      .catch(function(){ try{document.body.removeChild(tmp);}catch(e){} toast('PDF export failed \u2014 please retry.'); });
+  };
+  // Wait for any signature/logo images to finish loading first, else the capture can come out blank/partial.
+  var _imgs = tmp.querySelectorAll('img'), _pend = _imgs.length, _done = false;
+  var _fire = function(){ if(_done) return; _done = true; _go(); };
+  if(!_pend){ setTimeout(_fire, 50); }
+  else {
+    _imgs.forEach(function(im){ if(im.complete){ if(--_pend<=0) _fire(); } else { im.onload = im.onerror = function(){ if(--_pend<=0) _fire(); }; } });
+    setTimeout(_fire, 2000);
   }
 }
 
