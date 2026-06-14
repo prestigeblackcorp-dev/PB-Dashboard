@@ -3833,7 +3833,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v90';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v91';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7692,7 +7692,7 @@ function renderBookingsTable(filtered){
     var kept=Number(b.depositKept)||0, returned=Math.max(0,(Number(b.deposit)||0)-kept);
     // orange warning row for zero-deposit non-cancelled bookings
     var noDeposit=(Number(b.deposit)||0)===0 && b.status!=='cancelled';
-    var tblBalanceDue=!b.balancePaidAt?getRemainingBalance(b):0;
+    var tblBalanceDue=getRemainingBalance(b); // 0 when fully paid; the re-billed charge when an extension was added after payment
     var hasTblBalance=tblBalanceDue>0&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress');
     var rowCls=noDeposit?' class="deposit-warning"':'';
     return '<tr'+rowCls+'>'+
@@ -9195,7 +9195,9 @@ function tripCard(b, showCountdown){
     if(!_paidFull){
       unpaidChip='<div style="margin-top:4px"><span style="background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\u2705 Paid</span></div>';
     }
-  } else if(balanceDue>0&&!b.balancePaidAt&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress')){
+  } else if(balanceDue>0&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress')){
+    // balanceDue already accounts for balancePaidAt (it is the re-billed amount of any extension added AFTER
+    // the base balance was paid), so a paid booking with a fresh extension still shows what is newly owed.
     unpaidChip='<div style="margin-top:4px"><span style="background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\uD83D\uDCB5 Balance Due: '+$$(balanceDue)+'</span></div>';
   }
 
@@ -9551,7 +9553,7 @@ function openBookingDetail(id){
         return '<div class="detail-row"><span class="detail-label" style="color:'+(signed?'#22c55e':'#fb923c')+'">Ext #'+(i+1)+' '+(signed?'\u2705':'\u23F3')+'</span>'+
           '<span class="detail-val">'+fmtDateFull(ext.fromDate)+' &rarr; <strong>'+fmtDateFull(ext.toDate)+'</strong>'+
           ' <span style="color:var(--muted);font-size:10px">+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</span>'+
-          (ext.additionalCharge?' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(ext.additionalCharge).toFixed(2)+'</span>'+(ext.paid?' <span style="color:#22c55e;font-size:10px;font-weight:700">\u2705 Paid</span>':' <span style="color:#fb923c;font-size:10px;font-weight:700">\u23F3 Payment pending</span>'):'')+
+          (ext.additionalCharge?' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(ext.additionalCharge).toFixed(2)+'</span>'+(ext.paid?' <span style="color:#22c55e;font-size:10px;font-weight:700">\u2705 Paid'+(ext.paymentMethod?' via '+esc(ext.paymentMethod==='stripe'?'card':ext.paymentMethod):'')+(ext.paidAt?' <span style="color:var(--muted);font-weight:400">'+new Date(ext.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>':'')+'</span>':' <span style="color:#fb923c;font-size:10px;font-weight:700">\u23F3 Payment pending</span>'):'')+
           (signed?' <span style="color:var(--muted);font-size:10px">Signed '+esc(ext.sigDate||'')+'</span>':' <span style="color:#fb923c;font-size:10px">Pending signature</span>')+
           ' <button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_contractShowTab('+i+');_updateExtensionTabs();},200)" style="padding:2px 8px;font-size:10px;margin-left:4px">View</button>'+
           '</span></div>';
@@ -14593,8 +14595,7 @@ function renderOutstanding(){
   var active=bookings.filter(function(b){ return !b._deleted&&b.status!=='cancelled'; });
   // Balance due = remainingBalance field if set, else revenue - dateLock
   var balanceDue=active.filter(function(b){
-    if(b.balancePaidAt) return false;
-    var bal=getRemainingBalance(b);
+    var bal=getRemainingBalance(b);   // already 0 when fully paid; >0 for an extension re-billed after payment
     return bal>0 && (b.status==='confirmed'||b.status==='completed'||b.status==='pending');
   }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
   var balanceDueIds=balanceDue.reduce(function(m,b){m[b.id]=true;return m;},{});
@@ -14609,14 +14610,16 @@ function renderOutstanding(){
   function makeRow(b){
     var bal=getRemainingBalance(b);
     var lock=Number(b.dateLock)||0;
-    var balHtml=b.balancePaidAt?
+    var balHtml=(b.balancePaidAt&&bal<=0)?
       '\u2705 Paid '+$$(b.balancePaidAmount||0)+(b.balancePaidMethod?' via '+b.balancePaidMethod:''):
       bal===0?'\u2705 $0 Remaining':
-      $$(bal)+
-      ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px">\u270F</button>'+
-      ' <button class="btn btn-sm" onclick="markBalancePaid(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:2px;border-color:var(--green);color:var(--green)">\u2705 Paid</button>';
+      $$(bal)+(b.balancePaidAt
+        ? ' <span style="color:var(--muted);font-size:9px">new ext</span>'+
+          ' <button class="btn btn-sm" onclick="markRebilledExtensionsPaid(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px;border-color:var(--green);color:var(--green)">\u2705 Paid</button>'
+        : ' <button class="btn btn-sm" onclick="editRemainingBalance(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:4px">\u270F</button>'+
+          ' <button class="btn btn-sm" onclick="markBalancePaid(\''+b.id+'\')" style="padding:2px 7px;font-size:10px;margin-left:2px;border-color:var(--green);color:var(--green)">\u2705 Paid</button>');
     if(isMob){
-      var balColor=(b.balancePaidAt||bal===0)?'var(--green)':'var(--red)';
+      var balColor=bal>0?'var(--red)':'var(--green)';   // red whenever anything is owed (incl. a re-billed extension)
       return '<div style="background:var(--bg);border-radius:12px;padding:14px;border:1px solid var(--border2);margin-bottom:10px">'+
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'+
           '<div>'+
@@ -14640,7 +14643,7 @@ function renderOutstanding(){
       '<td>'+esc(b.vehicle)+'</td>'+
       '<td style="color:var(--gold);font-weight:700">'+$$(totalRevenue(b))+'</td>'+
       '<td style="color:var(--green)">'+$$(lock)+'</td>'+
-      '<td style="color:'+((b.balancePaidAt||bal===0)?'var(--green)':'var(--red)')+';font-weight:700">'+balHtml+'</td>'+
+      '<td style="color:'+(bal>0?'var(--red)':'var(--green)')+';font-weight:700">'+balHtml+'</td>'+
       '<td><span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></td>'+
       '<td><button class="btn btn-sm" onclick="openModal(\''+b.id+'\')">Edit</button></td>'+
     '</tr>';
@@ -14668,7 +14671,16 @@ function renderOutstanding(){
 }
 
 function getRemainingBalance(b){
-  if(b.balancePaidAt) return 0; // paid \u2014 always 0 regardless of stored field value
+  if(b.balancePaidAt){
+    // The base balance was settled at balancePaidAt. Any extension created AFTER that moment and not yet
+    // paid is a NEW amount owed \u2014 so each new extension re-bills the remaining balance to its own charge.
+    // Returns 0 when there is no such extension, so every booking without a post-payment extension behaves
+    // EXACTLY as before (the old "paid \u2192 always 0" invariant is preserved for that case).
+    var _bpa=Number(b.balancePaidAt)||0;
+    return Math.max(0,(b.extensions||[]).reduce(function(s,e){
+      return s + ((e && !e.paid && Number(e.createdAt||0)>_bpa) ? Math.max(0,Number(e.additionalCharge)||0) : 0);
+    },0));
+  }
   var base = b.remainingBalance!=null ? Number(b.remainingBalance)||0 : (function(){
     var lock=Number(b.dateLock)||0, dep=Number(b.deposit)||0;
     return Math.max(0,(Number(b.revenue)||0)+dep-lock);
@@ -14729,10 +14741,18 @@ function saveBalanceModal(id){
   var paid=$d('bmPaidChk')&&$d('bmPaidChk').checked;
   if(paid){
     var amt=parseFloat(($d('bmAmt')||{}).value);
-    // Stamp the collection time \u2192 counts in Today's KPI; preserve an existing date if already set (matches the form).
-    b.balancePaidAt     = b.balancePaidAt || Date.now();
-    b.balancePaidAmount = isNaN(amt) ? bal : amt;
-    b.balancePaidMethod = ($d('bmMethod')||{}).value||'';
+    var _bmMethod=($d('bmMethod')||{}).value||'';
+    // Settle any outstanding extensions on their own paidAt/method first (a re-billed balance, or extensions
+    // folded into an as-yet-unpaid base balance). _extPaid>0 means this collection went to extensions.
+    var _extPaid=_settleOutstandingExtensions(b, _bmMethod);
+    // Stamp the base payment only on the FIRST base settlement, or a pure base-amount edit (no extensions
+    // settled here). This still lets you correct a recorded base amount, but never overwrites / date-drifts
+    // the prior base record when the money actually went to a re-billed extension.
+    if(!b.balancePaidAt || _extPaid===0){
+      b.balancePaidAt     = b.balancePaidAt || Date.now();
+      b.balancePaidAmount = isNaN(amt) ? bal : amt;
+      b.balancePaidMethod = _bmMethod;
+    }
     b.remainingBalance  = 0;
   } else {
     b.remainingBalance  = bal;   // unchecking does not auto-clear a prior payment record
@@ -14753,6 +14773,7 @@ function markBalancePaid(id){
   if(amt===null) return;
   var num=parseFloat(amt);
   if(isNaN(num)||num<0){ alert('Invalid amount.'); return; }
+  _settleOutstandingExtensions(b, method.trim());   // any unpaid extensions folded into this balance are now paid too
   b.balancePaidAt=Date.now();
   b.balancePaidAmount=num;
   b.balancePaidMethod=method.trim();
@@ -17836,6 +17857,39 @@ function _markExtPaidInternal(b, ext, method){
   // (that double-counts it against extensionCharge + today's KPI). Broker reads off the entry regardless.
   var amt=Number(ext.additionalCharge)||0;
   if(amt>0 && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
+}
+// Settle every still-OUTSTANDING extension on a booking at once (same set getRemainingBalance re-bills),
+// reusing _markExtPaidInternal so each is recorded with its OWN paidAt + method. That keeps the prior base
+// payment record (balancePaidAt/Amount/Method) untouched (no Today's-revenue drift) while still counting
+// each extension's cash on the day it was collected. Returns the total just settled.
+function _settleOutstandingExtensions(b, method){
+  if(!b) return 0;
+  var bpa=Number(b.balancePaidAt)||0, sum=0;
+  (b.extensions||[]).forEach(function(e){
+    if(!e || e.paid || !(Number(e.additionalCharge)>0)) return;
+    // When a base payment already exists it covered everything up to its time, so only extensions created
+    // AFTER it are newly owed. With no base payment yet, every unpaid extension is part of the balance.
+    if(bpa && !(Number(e.createdAt||0)>bpa)) return;
+    _markExtPaidInternal(b, e, method);
+    sum += Number(e.additionalCharge)||0;
+  });
+  return sum;
+}
+// "Mark the re-billed balance paid" for the Balances table / detail when the only thing owed is one or more
+// extensions added AFTER the base balance was already settled. Preserves the last base payment record and
+// stamps this collection on the extensions themselves.
+function markRebilledExtensionsPaid(id){
+  var b=bookings.find(function(x){ return x.id===id; }); if(!b) return;
+  var due=getRemainingBalance(b);
+  if(!(due>0)){ toast('No outstanding balance.'); return; }
+  var method=prompt('Payment method received for the $'+due.toFixed(0)+' extension balance (Zelle, Cash App, Venmo, Cash, Card, Other):','Zelle');
+  if(method===null) return;
+  var paid=_settleOutstandingExtensions(b,(method||'manual').trim());
+  b._t=Date.now();
+  save();
+  if(typeof renderOutstanding==='function') renderOutstanding();
+  if(typeof render==='function') render();
+  toast((b.name||'Booking')+' \u2014 extension balance of $'+paid.toFixed(0)+' marked paid'+(method?(' via '+(method||'').trim()):'')+'.');
 }
 // Manual mark-paid for an extension (non-Stripe methods, or any pending extension).
 function markExtensionPaid(bookingId, extId, method){
