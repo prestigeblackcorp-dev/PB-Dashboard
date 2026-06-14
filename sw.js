@@ -1,4 +1,4 @@
-const CACHE = 'pb-v86';
+const CACHE = 'pb-v87';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
@@ -17,9 +17,9 @@ self.addEventListener('activate', function(e) {
 self.addEventListener('fetch', function(e) {
   if(e.request.method !== 'GET') return;
   // Network-first. Code (navigations / .html / .js) is fetched with cache:'no-store' so a new
-  // deploy ALWAYS shows on the next load — never a stale build from the browser/CDN HTTP cache
+  // deploy ALWAYS shows on the next load \u2014 never a stale build from the browser/CDN HTTP cache
   // (this was the bug: max-age=600 on GitHub Pages kept serving old HTML). Other assets use the
-  // normal cache. Offline → fall back to whatever we cached.
+  // normal cache. Offline \u2192 fall back to whatever we cached.
   var fresh = e.request.mode === 'navigate' || /\.(html|js)(\?|#|$)/i.test(e.request.url);
   var req = fresh ? new Request(e.request.url, { cache: 'no-store' }) : e.request;
   e.respondWith(
@@ -33,7 +33,7 @@ self.addEventListener('fetch', function(e) {
   );
 });
 
-// ── Web Push (tickle) ────────────────────────────────────────────────────────
+// \u2500\u2500 Web Push (tickle) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // The client stashes its {role, token, worker, vapid} here. On a (payload-less) push
 // we wake, fetch the latest offer/status from the worker, and show a notification.
 // userVisibleOnly is satisfied because every push path calls showNotification.
@@ -66,19 +66,19 @@ self.addEventListener('push', function(e){
           data={app:'./driver.html'};
           if(d && d.notification && d.notification.status==='pending'){
             var n=d.notification;
-            var take=n.estimatedPrice?(' · $'+Math.round(n.estimatedPrice*0.35)+' you'):'';
-            title='🚗 New ride request'+take;
-            body=(n.pickupAddress||'Pickup nearby')+(n.rideType==='hourly'?' · Hourly':'');
+            var take=n.estimatedPrice?(' \u00B7 $'+Math.round(n.estimatedPrice*0.35)+' you'):'';
+            title='\uD83D\uDE97 New ride request'+take;
+            body=(n.pickupAddress||'Pickup nearby')+(n.rideType==='hourly'?' \u00B7 Hourly':'');
             data.rideId=n.rideId;
           } else if(d && d.activeRide && d.activeRide.pendingStop && d.activeRide.pendingStop.status==='pending'){
             var pa=d.activeRide;
-            title='📍 Add-stop request';
-            body=(pa.pendingStop.riderName||pa.riderName||'Your guest')+' wants to add '+(pa.pendingStop.stopAddress||'a stop')+' — accept or deny';
+            title='\uD83D\uDCCD Add-stop request';
+            body=(pa.pendingStop.riderName||pa.riderName||'Your guest')+' wants to add '+(pa.pendingStop.stopAddress||'a stop')+' \u2014 accept or deny';
             data.rideId=pa.id;
           } else if(d && d.activeRide && d.activeRide.stopsUpdatedAt && (Date.now()-Number(d.activeRide.stopsUpdatedAt))<120000){
             var ar=d.activeRide;
-            title='📍 Route updated';
-            body=(ar.riderName?ar.riderName+': ':'')+'new stop — '+(ar.dropoffAddress||'tap for details');
+            title='\uD83D\uDCCD Route updated';
+            body=(ar.riderName?ar.riderName+': ':'')+'new stop \u2014 '+(ar.dropoffAddress||'tap for details');
             data.rideId=ar.id;
           } else if(d && d.activeRide){
             title='Trip update'; body='Tap to open your active trip'; data.rideId=d.activeRide.id;
@@ -87,9 +87,9 @@ self.addEventListener('push', function(e){
           }
           return show();
         })
-        .catch(function(){ title='🚗 New ride request'; body='Open the chauffeur app to accept'; data={app:'./driver.html'}; return show(); });
+        .catch(function(){ title='\uD83D\uDE97 New ride request'; body='Open the chauffeur app to accept'; data={app:'./driver.html'}; return show(); });
     }
-    // RIDER — fetch the live status (when we know the rideId) and show a SPECIFIC message.
+    // RIDER \u2014 fetch the live status (when we know the rideId) and show a SPECIFIC message.
     if(auth && auth.role==='rider' && auth.worker && auth.token && auth.rideId){
       return fetch(auth.worker+'/chauffeur/ride-status?rideId='+encodeURIComponent(auth.rideId)+'&token='+encodeURIComponent(auth.token)+'&_='+Date.now(), {cache:'no-store'})
         .then(function(r){ return r.json(); })
@@ -98,20 +98,20 @@ self.addEventListener('push', function(e){
           var st=(d && d.ride && d.ride.status)||'';
           var dn=(d && d.driver && d.driver.name)||'';
           var rd=(d && d.ride)||{};
-          if(rd.stopAcceptedAt && (Date.now()-Number(rd.stopAcceptedAt))<120000){ title='✓ Chauffeur accepted your stop'; body='Routing to your added stop now'; }
-          else if(rd.stopDeniedAt && (Date.now()-Number(rd.stopDeniedAt))<120000){ title='Chauffeur declined your stop'; body='That stop wasn\'t added — you were not charged'; }
-          else if(st==='accepted'){ title='🚗 Chauffeur on the way'+(dn?' · '+dn:''); body='Your chauffeur is heading to your pickup'; }
-          else if(st==='driver_arrived'){ title='👋 Your chauffeur has arrived'; body='Head outside — '+(dn||'your chauffeur')+' is waiting'; }
-          else if(st==='searching'){ title='Finding your chauffeur…'; body='Connecting you with the nearest available chauffeur'; }
+          if(rd.stopAcceptedAt && (Date.now()-Number(rd.stopAcceptedAt))<120000){ title='\u2713 Chauffeur accepted your stop'; body='Routing to your added stop now'; }
+          else if(rd.stopDeniedAt && (Date.now()-Number(rd.stopDeniedAt))<120000){ title='Chauffeur declined your stop'; body='That stop wasn\'t added \u2014 you were not charged'; }
+          else if(st==='accepted'){ title='\uD83D\uDE97 Chauffeur on the way'+(dn?' \u00B7 '+dn:''); body='Your chauffeur is heading to your pickup'; }
+          else if(st==='driver_arrived'){ title='\uD83D\uDC4B Your chauffeur has arrived'; body='Head outside \u2014 '+(dn||'your chauffeur')+' is waiting'; }
+          else if(st==='searching'){ title='Finding your chauffeur\u2026'; body='Connecting you with the nearest available chauffeur'; }
           else if(st==='in_progress'){ title='Trip update'; body='Tap to view your live trip'; }
-          else if(st==='completed'){ title='Trip complete'; body='Thank you for riding with Obsidian — tap for your receipt'; }
+          else if(st==='completed'){ title='Trip complete'; body='Thank you for riding with Obsidian \u2014 tap for your receipt'; }
           else if(st==='cancelled'||st==='no_driver'){ title='Ride update'; body='Tap to open Obsidian'; }
           else { title='Trip update'; body='Tap to open'; }
           return show();
         })
         .catch(function(){ title='Trip update'; body='Tap to open'; data={app:'./obsidian.html'}; return show(); });
     }
-    // rider without a known active ride / unknown — generic
+    // rider without a known active ride / unknown \u2014 generic
     title='Trip update'; body='Tap to open'; data={app:'./obsidian.html'};
     return show();
   }));
