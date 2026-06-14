@@ -3832,7 +3832,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer — batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed — lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v83';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v84';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated → switch this device to per-booking pushes
 var _individualPushActive = false;
 
@@ -3894,6 +3894,7 @@ function flushCloudSave() {
 function _pushBookingsIndividually(){
   if(!WORKER_URL || _individualPushActive) return;
   if(!navigator.onLine){ setSyncStatus('off'); return; }
+  _pushMetaSync();   // income / expenses / maintenance / settings always sync (small, no bookings), even with no booking changes
   var dirty=(bookings||[]).filter(function(b){ return b && !b._deleted && b.id && (Number(b._t)||0) > _lastSavedAt; });
   if(!dirty.length){ _pendingCloudSave=false; return; }
   _individualPushActive=true;
@@ -3921,6 +3922,48 @@ function _pushBookingsIndividually(){
   })();
 }
 
+// Build the cloud sync blob. The worker does a PATCH, so omitting a key leaves the cloud's copy
+// untouched — `noBookings:true` sends everything EXCEPT the (photo-heavy) bookings array, a tiny
+// payload a device in per-booking mode can always POST.
+function _syncPayload(noBookings){
+  var d = {
+    bookings: bookings, expenses: expenses, incomes: incomes,
+    maintenance: maintenance, waitlist: waitlist, pricingRules: pricingRules, blacklist: blacklist,
+    grouponPayouts: grouponPayouts,
+    custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
+    budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
+    contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
+    slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
+    // Only write owner_signature when non-empty OR when user explicitly cleared it
+    ...(OWNER_SIGNATURE || _sigCleared ? { owner_signature: OWNER_SIGNATURE } : {}),
+    messaging_url: MESSAGING_URL || '',
+    worker_url: WORKER_URL || '',
+    owner_email: OWNER_EMAIL || '',
+    review_url: REVIEW_URL || '',
+    dashboard_secret: DASHBOARD_SECRET || '',
+    // Monotonic timestamp: never send a savedAt behind the last cloud value we've seen.
+    // A device with a skewed (behind) clock would otherwise have every push rejected as
+    // "stale" by the worker's conflict guard → infinite reload/retry loop (the sync-dot
+    // flicker) AND its local bookings could never reach the cloud. max() keeps correct-clock
+    // devices byte-identical (Date.now() always wins) while letting a slow clock still push.
+    savedAt: Math.max(Date.now(), (Number(_lastSavedAt) || 0) + 1)
+  };
+  if (noBookings) delete d.bookings;
+  return d;
+}
+// Per-booking mode could only push BOOKINGS individually — income, expenses, maintenance and
+// settings were stranded locally and never reached other devices. Push those small keys (no
+// bookings) via the same PATCH endpoint so everything but the big array still syncs.
+function _pushMetaSync(){
+  if (!WORKER_URL || !navigator.onLine) return;
+  var meta = _syncPayload(true);
+  fetch(WORKER_URL + '/sync/save', {
+    method: 'POST', body: _encodeSyncBody(_safeSyncStringify(meta)),
+    headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeader())
+  }).then(function(r){ return r.ok ? r.json().catch(function(){return {};}) : null; })
+    .then(function(j){ if (j && j.ok) { _lastSavedAt = Math.max(_lastSavedAt, Number(meta.savedAt) || 0); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} } })
+    .catch(function(){});
+}
 function _cloudSaveNow() {
   if (!WORKER_URL || _cloudLoading || _cloudSaving) return;
   if (_fullSyncTooBig) { _pushBookingsIndividually(); return; } // this device can't POST the full blob → per-booking
@@ -3941,28 +3984,7 @@ function _cloudSaveNow() {
         });
         return;
       }
-      var data = {
-        bookings: bookings, expenses: expenses, incomes: incomes,
-        maintenance: maintenance, waitlist: waitlist, pricingRules: pricingRules, blacklist: blacklist,
-        grouponPayouts: grouponPayouts,
-        custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
-        budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
-        contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
-        slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
-        // Only write owner_signature when non-empty OR when user explicitly cleared it
-        ...(OWNER_SIGNATURE || _sigCleared ? { owner_signature: OWNER_SIGNATURE } : {}),
-        messaging_url: MESSAGING_URL || '',
-        worker_url: WORKER_URL || '',
-        owner_email: OWNER_EMAIL || '',
-        review_url: REVIEW_URL || '',
-        dashboard_secret: DASHBOARD_SECRET || '',
-        // Monotonic timestamp: never send a savedAt behind the last cloud value we've seen.
-        // A device with a skewed (behind) clock would otherwise have every push rejected as
-        // "stale" by the worker's conflict guard → infinite reload/retry loop (the sync-dot
-        // flicker) AND its local bookings could never reach the cloud. max() keeps correct-clock
-        // devices byte-identical (Date.now() always wins) while letting a slow clock still push.
-        savedAt: Math.max(Date.now(), (Number(_lastSavedAt) || 0) + 1)
-      };
+      var data = _syncPayload(false);
       fetch(WORKER_URL + '/sync/save', {
         method: 'POST', body: _encodeSyncBody(_safeSyncStringify(data)),
         headers: Object.assign({'Content-Type':'application/json'}, _authHeader())
