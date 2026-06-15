@@ -3837,7 +3837,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v104';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v105';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -18437,6 +18437,8 @@ function _pdfExtractBlocks(root){
       else if(node.nodeType===1){
         var tag=node.tagName;
         if(tag==='SCRIPT'||tag==='STYLE') continue;
+        var cl=node.className||'';
+        if(typeof cl==='string' && /\b(logo-block|logo-p|logo-sub|logo-mark)\b/.test(cl)) continue;   // skip the decorative "P / Prestige Black" logo (the brand is in the footer)
         if(tag==='IMG'){ var src=node.getAttribute('src')||''; if(/^data:image\//i.test(src)){ flush(); blocks.push({type:'img', src:src}); } }
         else if(tag==='BR'){ buf+=' '; }
         else if(tag==='HR'){ flush(); blocks.push({type:'hr'}); }
@@ -18502,9 +18504,19 @@ async function _genContractPdfLib(){
   for(var bi=0; bi<blocks.length; bi++){ if(blocks[bi].type==='img'){ try{ blocks[bi].src=await _pdfBlackenImage(blocks[bi].src); }catch(e){} } }
   try{
     var bytes=await _pdfLayoutContract(blocks);
+    var fname=_contractFileBase()+'.pdf';
+    // Prefer the Web Share API with the FILE ONLY -> iOS's sheet then shows just "1 Document", NOT the
+    // "1 Link" blob: URL (which carries the github.io origin). Falls back to a normal download if the
+    // share API is unsupported or the gesture is lost; AbortError = the user closed the sheet, so stop.
+    try{
+      if(navigator.canShare && typeof File!=='undefined'){
+        var shareFile=new File([bytes], fname, {type:'application/pdf'});
+        if(navigator.canShare({files:[shareFile]})){ await navigator.share({files:[shareFile], title:fname}); return; }
+      }
+    }catch(e){ if(e && e.name==='AbortError') return; }
     var blob=new Blob([bytes],{type:'application/pdf'});
     var url=URL.createObjectURL(blob);
-    var a=document.createElement('a'); a.href=url; a.download=_contractFileBase()+'.pdf';
+    var a=document.createElement('a'); a.href=url; a.download=fname;
     document.body.appendChild(a); a.click();
     setTimeout(function(){ try{ URL.revokeObjectURL(url); if(a.parentNode) a.parentNode.removeChild(a); }catch(e){} }, 5000);
   }catch(e){ try{ console.error('pdf-lib',e); }catch(_e){} toast('PDF build failed \u2014 please retry.'); }
