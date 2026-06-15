@@ -953,13 +953,18 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
       return;
     }
     var bk = data.booking;
-    var exts = bk.extensions||[];
-    var extIdx = exts.findIndex(e => e.id === extId);
-    if(extIdx === -1){ body.innerHTML = '<div style="color:#f87171;padding:20px">Extension not found. Please contact Prestige Black Rentals.</div>'; return; }
+    var exts = (bk.extensions||[]).filter(Boolean);   // drop any null/empty entries so findIndex + prevExt loop never throw
+    var extIdx = exts.findIndex(e => e && e.id === extId);
+    if(extIdx === -1){
+      var _haveIds = exts.map(function(e){ return (e&&e.id)||'(no-id)'; }).join(', ');
+      try{ console.error('[PB] extension not found in the server copy of this booking. looked for extId=', extId, '| booking has', exts.length, 'extension(s):', _haveIds); }catch(_e){}
+      body.innerHTML = '<div style="color:#f87171;padding:20px">Extension not found. Please contact Prestige Black Rentals at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.4">ref '+esc(String(extId))+' \u00B7 '+exts.length+' on file</small></div>';
+      return;
+    }
     var ext = exts[extIdx];
 
     var _exDrvSig = _exIsDrv ? ((ext.driverSigs&&ext.driverSigs[_exDIdx])||null) : null;
-    var _exAlready = _exIsDrv ? !!(_exDrvSig&&_exDrvSig.sig&&String(_exDrvSig.sig).startsWith('data:image/')) : !!(ext.signed&&ext.sig&&ext.sig.startsWith('data:image/'));
+    var _exAlready = _exIsDrv ? !!(_exDrvSig&&_exDrvSig.sig&&String(_exDrvSig.sig).startsWith('data:image/')) : !!(ext.signed&&ext.sig&&String(ext.sig).startsWith('data:image/'));
     var _exWhoName = _exIsDrv ? (((bk.extraDrivers&&bk.extraDrivers[_exDIdx]&&bk.extraDrivers[_exDIdx].name)||'there').split(' ')[0]) : ((bk.name||'').split(' ')[0]||'there');
     if(_exAlready){
       body.innerHTML = '<div style="text-align:center;padding:30px">'+
@@ -974,8 +979,9 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
 
     window._smData = data;
     // Owner signature ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
-    var ownerSig = (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
-      ? '<img src="'+data.owner_signature+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
+    var _ownSig = (typeof data.owner_signature==='string') ? data.owner_signature : '';   // tolerate a non-string owner sig (object/number) -> typed cursive fallback
+    var ownerSig = (_ownSig&&_ownSig.startsWith('data:image/'))
+      ? '<img src="'+_ownSig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
       : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
 
     var prevExtRows = '';
@@ -1053,7 +1059,8 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
     _sb.innerHTML = '<button style="padding:13px 40px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:16px;cursor:pointer;width:100%;max-width:340px" onclick="var s=document.getElementById(\'smSignSection\');if(s)s.scrollIntoView({behavior:\'smooth\',block:\'center\'});var b=document.getElementById(\'smStickyBar\');if(b){b.style.opacity=\'0\';setTimeout(function(){b.remove();},350);}">\u270D\uFE0F Sign Extension Agreement</button>';
     document.getElementById('signing-screen').appendChild(_sb);
   }).catch(function(err){
-    document.getElementById('signing-body').innerHTML = '<div style="color:#f87171;padding:20px">Network error loading extension. Please try again or contact <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.5">'+err+'</small></div>';
+    try{ console.error('[PB] extension signing load/render failed', err, err&&err.stack); }catch(_e){}   // surface the REAL error (this catch also fires on a render exception, not just network)
+    document.getElementById('signing-body').innerHTML = '<div style="color:#f87171;padding:20px">Unable to load this extension. Please try again or contact <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.5">'+esc(String(err))+'</small></div>';
   });
 }
 
