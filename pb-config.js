@@ -40,7 +40,7 @@
     tipping:     true,   // H — tipping (DEMO simulation)
     demoPay:     true,   // payments are a no-charge simulation; flip OFF when real Stripe keys exist
     googlePlaces:true,   // Google Places (New) search via worker proxy; LIVE (GOOGLE_PLACES_KEY set in Cloudflare)
-    sigsOffload: false,  // Phase 2: move signatures OUT of the every-sync booking blob into the /sigs store. DEFAULT OFF = ships dormant (today's behavior). Flip ON only AFTER every device is on the new build AND the migration has backfilled /sigs. Reversible: re-inline from /sigs.
+    sigsOffload: true,   // ON (2026-06-15): signatures live in the /sigs store, NOT in the every-sync booking blob -> each sync is a few KB instead of MBs (fixes the heavy/fragile full sync). Enabling auto-runs a one-time /sigs backfill + stripped re-push (_autoMigrateSigsIfEnabled); never loses a sig (save+confirm to /sigs FIRST, else send inline; re-hydrated on load + re-inlined by the worker for the portal). Reversible: set false -> sigs re-inline.
     cumulativeContracts: true   // ON (2026-06-15): each signed/downloaded extension = full original contract + every amendment up to it; portal Contracts tab lists original + each extension in order (strict sequence + owner unlock). Reversible: set false to restore the per-extension amendment + base-only download.
   };
 
