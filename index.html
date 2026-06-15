@@ -14,6 +14,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" defer></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -3836,7 +3837,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v103';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v104';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -18338,14 +18339,7 @@ function _contractEmailLight(html){
     .replace(/(background(?:-color)?\s*:\s*)#(?:0d0d0d|111111|111|0a0a0a|1a1a1a)\b/gi,'$1#ffffff');
 }
 
-function printContract(){
-  // iOS/Android Safari ALWAYS stamps the page URL + date + page numbers into a natively-printed PDF
-  // (no CSS or @page rule removes it on mobile), so on phones/tablets generate the PDF IN-APP via
-  // html2pdf (no browser print system -> no github.io URL). Desktop keeps the crisp native print
-  // (the about:blank iframe + @page{margin:0} already drops the header there).
-  if(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)){ _genContractPdf(); return; }
-  _printContractDoc();
-}
+function printContract(){ _genContractPdfLib(); }   // unified: clean vector PDF (pdf-lib) on EVERY device -- never a URL, never blank, crisp text
 
 // Build a standalone, printer-friendly HTML document for the contract/waiver and print it from a
 // popup whose address is about:blank -- so the browser's per-page print header/footer can NEVER
@@ -18415,7 +18409,156 @@ function _printContractInPage(text,isHtml){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  PDF DOWNLOAD
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
-function downloadContractPdf(){ _genContractPdf(); }   // "Download" always produces a clean IN-APP PDF (no browser print chrome -> the github.io URL can never appear)
+function downloadContractPdf(){ _genContractPdfLib(); }   // clean vector PDF via pdf-lib (no browser print, no canvas) -> never blank, never a URL
+
+// ===================================================================================================
+//  CONTRACT / WAIVER PDF -- built with pdf-lib (vector, in-app). NO browser print (so no github.io URL
+//  is ever stamped), NO html2canvas (so no blank page / no iOS 4096px canvas limit), crisp text on every
+//  device. prestigeblackrentals.com + the company address print on the BOTTOM OF EVERY PAGE; signatures
+//  are embedded (recolored black so any ink shows on white). EVERY text block + signature in the document
+//  is laid out -- nothing is dropped. This is what Print/Download use now; pdf-lib is pure JS so the output
+//  is verifiable (unlike the html2canvas attempt that blanked on the owner's iPhone).
+// ===================================================================================================
+var PB_PDF_FOOTER = 'Prestige Black Corporation   \u00B7   prestigeblackrentals.com   \u00B7   5473 Blair Rd. Ste 100, Dallas, TX 75231';
+
+// Walk the rendered contract DOM in document order -> ordered blocks. Captures ALL text (tagged by the
+// nearest block element) so no clause is lost; data: images (signatures/logo) become img blocks.
+function _pdfExtractBlocks(root){
+  var blocks=[];
+  var BLOCK=/^(H1|H2|H3|H4|H5|P|DIV|LI|TR|SECTION|HEADER|FOOTER|UL|OL|TABLE|TBODY|THEAD|BLOCKQUOTE|ARTICLE)$/;
+  function styleFor(tag){ return tag==='H1'?'h1':(tag==='H2'?'h2':((tag==='H3'||tag==='H4'||tag==='H5')?'h3':(tag==='LI'?'li':'p'))); }
+  function walk(el, curStyle){
+    var buf='';
+    function flush(){ var s=buf.replace(/[ \t\r\n]+/g,' ').trim(); if(s) blocks.push({type:curStyle, text:s}); buf=''; }
+    var kids=el.childNodes;
+    for(var i=0;i<kids.length;i++){
+      var node=kids[i];
+      if(node.nodeType===3){ buf+=node.nodeValue; }
+      else if(node.nodeType===1){
+        var tag=node.tagName;
+        if(tag==='SCRIPT'||tag==='STYLE') continue;
+        if(tag==='IMG'){ var src=node.getAttribute('src')||''; if(/^data:image\//i.test(src)){ flush(); blocks.push({type:'img', src:src}); } }
+        else if(tag==='BR'){ buf+=' '; }
+        else if(tag==='HR'){ flush(); blocks.push({type:'hr'}); }
+        else if(BLOCK.test(tag)){ flush(); walk(node, styleFor(tag)); }
+        else { buf+=(node.textContent||''); }   // inline (b/strong/span/a/em/u) -> keep text on the line
+      }
+    }
+    flush();
+  }
+  walk(root, 'p');
+  return blocks;
+}
+// Recolor a signature image to solid black (preserving alpha) so any ink color shows on the white PDF.
+// A tiny per-signature canvas (image processing, NOT page rendering) -- safe on iOS. Falls back on taint.
+function _pdfBlackenImage(dataUri){
+  return new Promise(function(resolve){
+    var done=false; function fin(v){ if(done) return; done=true; resolve(v); }
+    setTimeout(function(){ fin(dataUri); }, 2500);   // never hang the PDF on a slow/broken image
+    try{
+      var img=new Image();
+      img.onload=function(){
+        try{
+          var c=document.createElement('canvas'); c.width=img.naturalWidth||img.width; c.height=img.naturalHeight||img.height;
+          if(!c.width||!c.height){ fin(dataUri); return; }
+          var ctx=c.getContext('2d'); ctx.drawImage(img,0,0);
+          var d=ctx.getImageData(0,0,c.width,c.height), px=d.data;
+          for(var i=0;i<px.length;i+=4){ if(px[i+3]>12){ px[i]=0; px[i+1]=0; px[i+2]=0; } }
+          ctx.putImageData(d,0,0);
+          fin(c.toDataURL('image/png'));
+        }catch(e){ fin(dataUri); }
+      };
+      img.onerror=function(){ fin(dataUri); };
+      img.src=dataUri;
+    }catch(e){ fin(dataUri); }
+  });
+}
+function _dataUriToBytes(uri){ var b64=(uri.split(',')[1]||''); var bin=atob(b64); var u=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u; }
+// Map typographic unicode to WinAnsi-safe equivalents and strip anything pdf-lib's StandardFont can't
+// encode (emoji, non-Latin scripts) -- one unencodable glyph would otherwise throw and blank the whole PDF.
+function _pdfSafe(s){
+  return String(s)
+    .replace(/[\u2018\u2019\u201A\u2032]/g,"'")
+    .replace(/[\u201C\u201D\u201E\u2033]/g,'"')
+    .replace(/[\u2013\u2014\u2212]/g,'-')
+    .replace(/\u2026/g,'...')
+    .replace(/[\u2022\u2027]/g,'\u00B7')
+    .replace(/\u00A0/g,' ')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g,'');
+}
+
+// Build the contract/waiver as a real vector PDF and download it -- the path Print + Download use now.
+async function _genContractPdfLib(){
+  var text=$d('contractFilled').value;
+  if(!text || !text.trim()){ toast('No document to download'); return; }
+  if(typeof PDFLib==='undefined'){ toast('PDF tool still loading \u2014 try again in a moment.'); return; }
+  var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
+  var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:680px;visibility:hidden';
+  holder.innerHTML=_contractPrintInner(text,isHtml);
+  document.body.appendChild(holder);
+  var blocks; try{ blocks=_pdfExtractBlocks(holder); }catch(e){ blocks=[]; }
+  try{ document.body.removeChild(holder); }catch(e){}
+  if(!blocks.length){ toast('Could not read the document.'); return; }
+  for(var bi=0; bi<blocks.length; bi++){ if(blocks[bi].type==='img'){ try{ blocks[bi].src=await _pdfBlackenImage(blocks[bi].src); }catch(e){} } }
+  try{
+    var bytes=await _pdfLayoutContract(blocks);
+    var blob=new Blob([bytes],{type:'application/pdf'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a'); a.href=url; a.download=_contractFileBase()+'.pdf';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ try{ URL.revokeObjectURL(url); if(a.parentNode) a.parentNode.removeChild(a); }catch(e){} }, 5000);
+  }catch(e){ try{ console.error('pdf-lib',e); }catch(_e){} toast('PDF build failed \u2014 please retry.'); }
+}
+// Lay blocks onto letter pages: word-wrap, pagination, embedded signatures, and the brand+address footer
+// + "Page N of M" on EVERY page. Returns the PDF bytes (Uint8Array).
+async function _pdfLayoutContract(blocks){
+  var L=window.PDFLib, rgb=L.rgb;
+  var doc=await L.PDFDocument.create();
+  var fReg=await doc.embedFont(L.StandardFonts.TimesRoman);
+  var fBold=await doc.embedFont(L.StandardFonts.TimesRomanBold);
+  var PW=612, PH=792, M=54, BOTTOM=52;
+  var INK=rgb(0.08,0.08,0.08);
+  var pages=[], page=null, y=0;
+  function addPage(){ page=doc.addPage([PW,PH]); pages.push(page); y=PH-M; }
+  function space(h){ if(y-h < BOTTOM){ addPage(); } }
+  function wrap(str, font, size){
+    str=_pdfSafe(str);   // strip glyphs the StandardFont can't encode (else drawText throws -> blank PDF)
+    var max=PW-2*M, words=String(str).split(/\s+/), lines=[], cur='';
+    function hard(word){ var s=word; while(font.widthOfTextAtSize(s,size)>max && s.length>1){ var n=1; while(n<s.length && font.widthOfTextAtSize(s.slice(0,n+1),size)<=max) n++; lines.push(s.slice(0,n)); s=s.slice(n); } return s; }
+    for(var i=0;i<words.length;i++){ var w=words[i]; if(!w) continue; var test=cur?cur+' '+w:w;
+      if(font.widthOfTextAtSize(test,size)<=max){ cur=test; }
+      else { if(cur){ lines.push(cur); cur=''; } cur=(font.widthOfTextAtSize(w,size)>max)?hard(w):w; } }
+    if(cur) lines.push(cur);
+    return lines.length?lines:[''];
+  }
+  function para(str, font, size, opt){ opt=opt||{}; var lh=size*1.34, lines=wrap(str,font,size);
+    for(var i=0;i<lines.length;i++){ space(lh); var ln=lines[i], x=M; if(opt.center) x=(PW-font.widthOfTextAtSize(ln,size))/2; page.drawText(ln,{x:x,y:y-size,size:size,font:font,color:opt.color||INK}); y-=lh; } }
+  addPage();
+  for(var i=0;i<blocks.length;i++){
+    var b=blocks[i];
+    if(b.type==='h1'){ space(26); y-=4; para(b.text,fBold,17,{center:true}); y-=10; }
+    else if(b.type==='h2'){ space(30); y-=8; para(b.text,fBold,12.5); y-=3; }
+    else if(b.type==='h3'){ space(24); y-=5; para(b.text,fBold,11); y-=1; }
+    else if(b.type==='li'){ var lines=wrap(b.text,fReg,10); for(var j=0;j<lines.length;j++){ space(13.4); if(j===0) page.drawText('\u2022',{x:M,y:y-10,size:10,font:fReg,color:INK}); page.drawText(lines[j],{x:M+14,y:y-10,size:10,font:fReg,color:INK}); y-=13.4; } y-=2; }
+    else if(b.type==='hr'){ space(10); page.drawLine({start:{x:M,y:y-3},end:{x:PW-M,y:y-3},thickness:0.6,color:rgb(0.8,0.8,0.8)}); y-=10; }
+    else if(b.type==='img'){
+      try{ var bytes=_dataUriToBytes(b.src); var img=null;
+        try{ img=await doc.embedPng(bytes); }catch(e){ try{ img=await doc.embedJpg(bytes); }catch(e2){ img=null; } }
+        if(img){ var iw=Math.min(210, img.width||210), sc=iw/(img.width||iw), ih=(img.height||60)*sc;
+          if(ih>110){ ih=110; iw=(img.width||iw)*(ih/(img.height||ih)); }
+          space(ih+10); page.drawImage(img,{x:M,y:y-ih,width:iw,height:ih}); page.drawLine({start:{x:M,y:y-ih-2},end:{x:M+Math.max(iw,190),y:y-ih-2},thickness:0.6,color:rgb(0.5,0.5,0.5)}); y-=ih+10; }
+      }catch(e){}
+    }
+    else { para(b.text,fReg,10); y-=4; }
+  }
+  var fsz=7.5, fw=fReg.widthOfTextAtSize(PB_PDF_FOOTER,fsz);
+  for(var p=0;p<pages.length;p++){ var pg=pages[p];
+    pg.drawLine({start:{x:M,y:34},end:{x:PW-M,y:34},thickness:0.5,color:rgb(0.85,0.85,0.85)});
+    pg.drawText(PB_PDF_FOOTER,{x:(PW-fw)/2,y:22,size:fsz,font:fReg,color:rgb(0.42,0.42,0.42)});
+    var pn='Page '+(p+1)+' of '+pages.length; pg.drawText(pn,{x:PW-M-fReg.widthOfTextAtSize(pn,7),y:11,size:7,font:fReg,color:rgb(0.55,0.55,0.55)});
+  }
+  return await doc.save();
+}
 
 // Generate the contract/waiver PDF entirely IN-APP (html2pdf), bypassing the OS print system so it can
 // NEVER stamp the github.io URL / date / page numbers onto the file (iOS does this to every native
