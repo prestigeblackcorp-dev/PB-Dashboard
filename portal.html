@@ -732,6 +732,7 @@ function _pdfExtractBlocks(root){
         if(tag==='IMG'){ var src=node.getAttribute('src')||''; if(/^data:image\//i.test(src)){ flush(); blocks.push({type:'img', src:src}); } }
         else if(tag==='BR'){ buf+=' '; }
         else if(tag==='HR'){ flush(); blocks.push({type:'hr'}); }
+        else if(node.getAttribute && node.getAttribute('data-pb-pagebreak')!==null){ flush(); blocks.push({type:'pb'}); }   // explicit page break between cumulative-contract sections (inert until a sentinel exists)
         else if(tag==='TR'){ flush(); if(hasTopRule(node)) blocks.push({type:'hr'}); walkRow(node); if(hasBottomRule(node)) blocks.push({type:'hr'}); }
         else if(BLOCK.test(tag)){ flush(); var cs=styleFor(tag); if(cs==='p' && isBoldEl(node)) cs='h3'; walk(node, cs, upper||isUpperEl(node)); if(tag==='DIV' && hasBottomRule(node)) blocks.push({type:'hr'}); }
         else { buf+=(node.textContent||''); }
@@ -813,6 +814,7 @@ async function _pdfLayoutContract(blocks){
     else if(b.type==='h3'){ space(24); y-=5; para(b.text,fBold,11); y-=1; }
     else if(b.type==='li'){ var lines=wrap(b.text,fReg,10); for(var j=0;j<lines.length;j++){ space(13.4); if(j===0) page.drawText('\u2022',{x:M,y:y-10,size:10,font:fReg,color:INK}); page.drawText(lines[j],{x:M+14,y:y-10,size:10,font:fReg,color:INK}); y-=13.4; } y-=2; }
     else if(b.type==='hr'){ space(10); page.drawLine({start:{x:M,y:y-3},end:{x:PW-M,y:y-3},thickness:0.6,color:rgb(0.8,0.8,0.8)}); y-=10; }
+    else if(b.type==='pb'){ addPage(); }   // explicit page break: start the next cumulative-contract section on a fresh page
     else if(b.type==='img'){
       try{ var bytes=_dataUriToBytes(b.src); var img=null;
         try{ img=await doc.embedPng(bytes); }catch(e){ try{ img=await doc.embedJpg(bytes); }catch(e2){ img=null; } }
@@ -1002,7 +1004,11 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly){
 
 // Contracts tab: download the fully-signed contract as a clean PDF. Fetches /signing/load, fills the
 // template read-only (actual signatures embedded), renders it off-screen, and hands it to the generator.
-async function _portalDownloadSignedContract(bookingId, btnEl){
+// Download the signed contract as a PDF. extId null -> the original agreement (cumulative: original +
+// EVERY extension, when PB_FLAGS.cumulativeContracts is on). extId set -> the cumulative document from the
+// original through THAT extension. Falls back to the base-only contract whenever cumulative is off, there
+// are no extensions, or the cumulative build fails -- so the download never breaks.
+async function _portalDownloadSignedContract(bookingId, btnEl, extId){
   var _lbl=null;
   if(btnEl){ try{ _lbl=btnEl.textContent; btnEl.disabled=true; btnEl.textContent='Preparing...'; }catch(e){} }
   function _restore(){ if(btnEl){ try{ btnEl.disabled=false; if(_lbl!=null) btnEl.textContent=_lbl; }catch(e){} } }
@@ -1011,7 +1017,14 @@ async function _portalDownloadSignedContract(bookingId, btnEl){
     var data=r&&r.ok?await r.json():null;
     if(!data||!data.booking){ toast('Could not load your contract.'); _restore(); return; }
     var bk=data.booking;
-    var tmpl=_smFillContractTmpl(bk, data, null, true);   // readOnly -> actual signatures embedded
+    var exts=(bk.extensions||[]).filter(Boolean);
+    var tmpl='', _uptoLabel='';
+    if(_pbCumulativeOn() && exts.length){
+      var upto=exts.length-1;   // original + ALL extensions
+      if(extId){ var ix=exts.findIndex(function(e){ return e&&e.id===extId; }); if(ix>=0){ upto=ix; _uptoLabel=' thru Extension '+(ix+1); } }
+      tmpl=_buildCumulativeContractHtml(bk, data, upto, {});
+    }
+    if(!tmpl){ tmpl=_smFillContractTmpl(bk, data, null, true); _uptoLabel=''; }   // fallback: base-only (cumulative off / no exts / build failed)
     if(!tmpl){ toast('No contract on file for this booking.'); _restore(); return; }
     var isHtml=tmpl.trim().toLowerCase().startsWith('<!doctype')||tmpl.trim().startsWith('<html');
     var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:760px;visibility:hidden';
@@ -1025,13 +1038,15 @@ async function _portalDownloadSignedContract(bookingId, btnEl){
     } else {
       holder.innerHTML='<div>'+tmpl+'</div>'; rootEl=holder;
     }
-    var fname=(((bk.name||'Client')+'').trim().replace(/\s+/g,' ')+' Signed Contract').replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
+    var fname=(((bk.name||'Client')+'').trim().replace(/\s+/g,' ')+' Signed Contract'+_uptoLabel).replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
     if(rootEl){ await _downloadSignedContractPdf(rootEl, fname); }
     else { toast('Could not render the contract for download.'); }
     try{ document.body.removeChild(holder); }catch(e){}
   }catch(e){ try{ console.error('signed-contract download', e); }catch(_e){} toast('Could not prepare the contract.'); }
   _restore();
 }
+// Download the cumulative document from the original through a SPECIFIC extension.
+function _portalDownloadExtension(bookingId, extId, btnEl){ return _portalDownloadSignedContract(bookingId, btnEl, extId); }
 
 function _initSigningMode(bookingId, driverIdx, fromPortal){
   _smDriverIdx = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx))) ? Number(driverIdx) : null;
@@ -1289,6 +1304,137 @@ function _smOrigReturn(bk){
   if(!exts.length) return (bk&&bk.dropoffDate)||'';
   return _smExtFrom(exts[0]) || (bk.dropoffDate||'');
 }
+
+// ====================================================================================================
+//  CUMULATIVE EXTENSION CONTRACTS (flag: PB_FLAGS.cumulativeContracts) -- additive, dormant until wired.
+//  A signed/downloaded extension document = the FULL original agreement (with its embedded signatures)
+//  followed by EACH extension amendment up to the selected one. The amendment is a self-contained,
+//  fully-inline-styled HTML FRAGMENT so it can be stacked under the original (whatever theme it uses).
+// ====================================================================================================
+function _pbCumulativeOn(){ try{ return !!(window.PB_FLAGS&&window.PB_FLAGS.cumulativeContracts); }catch(e){ return false; } }
+function _isSigDataUri(s){ return !!(s && String(s).indexOf('data:image/')===0); }
+
+// Gate-only "fully signed" for the strict sequence: primary renter + every NON-DENIED authorized driver
+// signed THIS extension. Excludes denied drivers (they can never sign) so they can't deadlock the chain.
+function _extFullySignedForGate(b, ext){
+  if(!ext || !_isSigDataUri(ext.sig) || !ext.signed) return false;
+  var ds=(b&&b.extraDrivers)||[];
+  for(var i=0;i<ds.length;i++){ var d=ds[i]; if(!d||!d.name||d.status==='denied') continue;
+    var s=ext.driverSigs&&ext.driverSigs[i]; if(!_isSigDataUri(s&&s.sig)) return false; }
+  return true;
+}
+
+// One extension's amendment as a fully-inline-styled HTML FRAGMENT (no <html>/<head>). opts:
+//   mode:'readonly'  -> embed the real signatures, or a "pending signature" line for unsigned parties.
+//   mode:'sign'      -> the TARGET party (targetDriverIdx null=primary, else that driver) gets the live
+//                       pad placeholders (#sigPH/#sigDatePH); every other party is read-only.
+//   dark:true        -> theme to match a dark original template (light text, inverted sig ink).
+//   owner_signature  -> data URI of the owner signature (white image).
+function _buildExtAmendmentHtml(bk, extIdx, opts){
+  opts=opts||{};
+  var exts=(bk.extensions||[]).filter(Boolean), ext=exts[extIdx];
+  if(!ext) return '';
+  var dark=!!opts.dark, signMode=(opts.mode==='sign');
+  var tx=dark?'#e8e8e8':'#111', mut=dark?'#9a9a9a':'#555', faint=dark?'#8a8a8a':'#666';
+  var bandBg=dark?'rgba(184,152,46,.12)':'#f8f5ec', bandBd=dark?'rgba(184,152,46,.6)':'#b8982e';
+  var panBg=dark?'rgba(201,169,98,.10)':'#fffbe8', panBd=dark?'rgba(201,169,98,.5)':'#d4a017';
+  var ruleC=dark?'rgba(255,255,255,.22)':'#aaa', sigBd=dark?'rgba(255,255,255,.4)':'#666', h2bd=dark?'#C9A962':'#111';
+  var sigInk=dark?'filter:invert(1)':'', ownerInk=dark?'filter:brightness(0) invert(1)':'filter:brightness(0)';
+  var extNum=extIdx+1, total=exts.length;
+  var origPickup=fmtDateFull(bk.pickupDate||bk.date||'');
+  var fromRaw=_smExtFrom(ext)||_smOrigReturn(bk);
+  var unit=(ext.extensionUnit==='hours')?('hour'+(Number(ext.extensionDays)!==1?'s':'')):('day'+(Number(ext.extensionDays)!==1?'s':''));
+  var _own=(typeof opts.owner_signature==='string')?opts.owner_signature:'';
+  var ownerSig=(_isSigDataUri(_own))
+    ? '<img src="'+_own+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;'+ownerInk+'">'
+    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Jalen Nguyen</span>';
+  var sigBoxCss='border-bottom:1.5px solid '+sigBd+';min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px';
+  var padSpan='<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed '+(dark?'#888':'#aaa')+';height:60px"></span>';
+  var drvList=(bk.extraDrivers||[]);
+  var sc=_isSigDataUri(ext.sig)&&ext.signed?1:0, tot=1;
+  drvList.forEach(function(d,i){ tot++; var s=ext.driverSigs&&ext.driverSigs[i]; if(_isSigDataUri(s&&s.sig)) sc++; });
+  var execBadge=(sc>=tot)
+    ? '<span style="display:inline-block;background:'+(dark?'rgba(26,127,55,.18)':'#e6f4ea')+';color:'+(dark?'#5fcf7f':'#1a7f37')+';border:1px solid #1a7f37;border-radius:20px;padding:2px 12px;font-size:11px;font-weight:700">\u2713 Fully Executed</span>'
+    : '<span style="display:inline-block;background:'+(dark?'rgba(212,160,23,.15)':'#fff7e6')+';color:'+(dark?'#e0b34d':'#9a6a00')+';border:1px solid #d4a017;border-radius:20px;padding:2px 12px;font-size:11px;font-weight:700">Awaiting signatures \u2014 '+sc+' of '+tot+' signed</span>';
+  var primTarget=signMode&&(opts.targetDriverIdx===null||opts.targetDriverIdx===undefined);
+  var primInner=primTarget?padSpan
+    :(_isSigDataUri(ext.sig)&&ext.signed?'<img src="'+ext.sig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;'+sigInk+'">':'<span style="color:'+mut+';font-size:11px;font-style:italic">pending signature</span>');
+  var primDate=primTarget?'Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>'
+    :((ext.signed&&_isSigDataUri(ext.sig))?('Signed '+esc(ext.sigDate||'')):'<span style="color:'+mut+';font-style:italic">Pending signature</span>');
+  var drvBoxes=drvList.map(function(d,i){
+    var dTarget=signMode&&opts.targetDriverIdx!=null&&Number(opts.targetDriverIdx)===i;   // !=null so a primary-signer (null) doesn't match driver index 0
+    var ds=(ext.driverSigs&&ext.driverSigs[i])||null, dOk=_isSigDataUri(ds&&ds.sig);
+    var inner=dTarget?padSpan:(dOk?'<img src="'+ds.sig+'" style="max-height:72px;max-width:240px;display:block;object-fit:contain;'+sigInk+'">':'<span style="color:'+mut+';font-size:11px;font-style:italic">pending signature</span>');
+    var dt=dTarget?'Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>':(dOk?('Signed '+esc(ds.sigDate||'')):'<span style="color:'+mut+';font-style:italic">Pending signature</span>');
+    return '<div><div style="'+sigBoxCss+'">'+inner+'</div>'+
+      '<div style="font-size:11px;font-weight:700;color:'+tx+'">'+esc(d.name||'')+'</div>'+
+      '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Authorized Driver</div>'+
+      '<div style="font-size:10px;color:'+faint+'">'+dt+'</div></div>';
+  }).join('');
+  var h2='font-size:14px;margin:20px 0 8px;padding-bottom:4px;border-bottom:2px solid '+h2bd+';color:'+tx;
+  return '<div style="color:'+tx+';font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;margin-top:10px">'+
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">'+
+      '<div><div style="font-size:18px;font-weight:800;margin:0 0 4px;color:'+tx+'">RENTAL AGREEMENT EXTENSION #'+extNum+'</div>'+
+        '<div style="font-size:12px;color:'+mut+'">Amendment '+extNum+' of '+total+' \u00B7 Invoice #PBR-'+bk.id.slice(-6).toUpperCase()+'</div></div>'+
+      '<div style="text-align:right;font-size:12px;color:'+mut+'"><div style="font-weight:700;color:'+tx+'">Prestige Black Rentals</div><div>(214) 207-2481</div></div>'+
+    '</div>'+
+    '<div style="background:'+bandBg+';border:1.5px solid '+bandBd+';border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:12.5px;color:'+tx+'">'+
+      'This Extension #'+extNum+' amends the Rental Agreement between <strong>Prestige Black Corp.</strong> and <strong>'+esc(bk.name||'')+'</strong> for the <strong>'+esc(bk.vehicle||'')+'</strong> (original pickup '+origPickup+'). All original terms and conditions remain in full force and effect.</div>'+
+    '<h2 style="'+h2+'">Extension #'+extNum+' Terms</h2>'+
+    '<div style="background:'+panBg+';border:1.5px solid '+panBd+';border-radius:6px;padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;color:'+tx+'">'+
+      '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(fromRaw)+'</strong></div>'+
+      '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
+      '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Added</span><br><strong>+'+ext.extensionDays+' '+unit+'</strong></div>'+
+      (ext.additionalCharge?'<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#C9A962">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>':'')+
+      (ext.notes?'<div style="flex:1"><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Notes</span><br>'+esc(ext.notes)+'</div>':'')+
+    '</div>'+
+    '<h2 style="'+h2+'">Terms &amp; Conditions</h2>'+
+    '<p style="font-size:12px;color:'+tx+';line-height:1.7;margin:0 0 8px">All original terms and conditions of the Rental Agreement remain in full force and effect. This extension amends only the return date and associated charges specified above. Standard late fees of $75 per hour apply for returns after the agreed time. All deposits, mileage policies, insurance, and damage responsibilities remain unchanged from the original agreement.</p>'+
+    '<hr style="border:none;border-top:1.5px solid '+ruleC+';margin:22px 0 14px">'+
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px"><div style="font-size:14px;font-weight:800;color:'+tx+'">Signatures</div>'+execBadge+'</div>'+
+    '<div style="display:flex;gap:30px;flex-wrap:wrap;align-items:flex-start">'+
+      '<div style="flex:1 1 210px;min-width:190px">'+
+        '<div style="'+sigBoxCss+'">'+ownerSig+'</div>'+
+        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Jalen Nguyen</div>'+
+        '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Owner / Lessor</div>'+
+      '</div>'+
+      '<div style="flex:2 1 320px;min-width:200px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px 22px">'+
+        '<div><div style="'+sigBoxCss+'">'+primInner+'</div>'+
+          '<div style="font-size:11px;font-weight:700;color:'+tx+'">'+esc(bk.name||'')+'</div>'+
+          '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Primary Renter</div>'+
+          '<div style="font-size:10px;color:'+faint+'">'+primDate+'</div></div>'+
+        drvBoxes+
+      '</div>'+
+      (drvList.length?'<div style="font-size:10px;color:'+faint+';margin-top:10px">Each additional authorized driver must also sign this extension and remains subject to all terms and conditions herein.</div>':'')+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+
+// Assemble the cumulative document: the filled original agreement (real signatures) + each extension
+// amendment up to uptoExtIdx, separated by hard page breaks. opts.mode/targetExtIdx/targetDriverIdx
+// route the live pad to one party of one extension (signing). Returns '' on failure so callers fall back.
+function _buildCumulativeContractHtml(bk, data, uptoExtIdx, opts){
+  opts=opts||{};
+  try{
+    var originalHtml=_smFillContractTmpl(bk, data, null, true);
+    if(!originalHtml) return '';
+    var dark=/#0d0d0d/.test(originalHtml);
+    var ownerSig=(data&&typeof data.owner_signature==='string')?data.owner_signature:'';
+    var exts=(bk.extensions||[]).filter(Boolean);
+    var lim=Math.min(Number(uptoExtIdx), exts.length-1);
+    var amend='';
+    for(var i=0;i<=lim;i++){
+      var mode='readonly', tdi=null;
+      if(opts.mode==='sign' && Number(opts.targetExtIdx)===i){ mode='sign'; tdi=(opts.targetDriverIdx==null?null:Number(opts.targetDriverIdx)); }
+      amend+='<div data-pb-pagebreak></div>'+_buildExtAmendmentHtml(bk, i, {mode:mode, targetDriverIdx:tdi, dark:dark, owner_signature:ownerSig});
+    }
+    if(!amend) return originalHtml;
+    var ci=originalHtml.lastIndexOf('</body>');
+    return ci!==-1 ? (originalHtml.slice(0,ci)+amend+originalHtml.slice(ci)) : (originalHtml+amend);
+  }catch(e){ try{ console.error('[PB] cumulative contract build failed', e); }catch(_e){} return ''; }
+}
+
 function _initExtensionSigningMode(bookingId, extId, driverIdx){
   var _exIsDrv=(driverIdx!==null&&driverIdx!==undefined&&!isNaN(Number(driverIdx))); var _exDIdx=_exIsDrv?Number(driverIdx):null;
   _smFromPortal = false;
@@ -1330,6 +1476,27 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
         _signerPortalPrompt(bk)+
         '</div>';
       return;
+    }
+
+    // Strict-sequence guard (cumulative mode): this extension can't be signed until the Rental Agreement
+    // AND every earlier extension are fully signed -- unless the owner manually unlocked it. Catches stale
+    // signing links that bypass the portal's locked UI.
+    if(_pbCumulativeOn()){
+      var _isS=function(s){ return !!(s && String(s).startsWith('data:image/')); };
+      var _baseOk=_isS(bk.customerSig) && (bk.extraDrivers||[]).every(function(d){ return !d||!d.name||d.status==='denied'||_isS(d.sig); });
+      var _kBlock=-1; for(var _k=0;_k<extIdx;_k++){ if(!_extFullySignedForGate(bk, exts[_k])){ _kBlock=_k; break; } }
+      var _unlocked=(_baseOk && _kBlock===-1) || !!ext.unlockOverride;
+      if(!_unlocked){
+        var _blockTxt=!_baseOk ? 'the Rental Agreement is fully signed' : ('Extension #'+(_kBlock+1)+' is fully signed');
+        body.innerHTML='<div style="text-align:center;padding:30px">'+
+          '<div style="font-size:42px;margin-bottom:12px">\uD83D\uDD12</div>'+
+          '<div style="font-size:18px;font-weight:700;color:#fbbf24;margin-bottom:8px">Not ready to sign yet</div>'+
+          '<div style="color:rgba(255,255,255,.55);font-size:14px">Extension #'+(extIdx+1)+' unlocks once '+_blockTxt+'. Please complete the earlier agreement first.</div>'+
+          '<div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,.3)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+          _signerPortalPrompt(bk)+
+          '</div>';
+        return;
+      }
     }
 
     window._smData = data;
@@ -1403,9 +1570,16 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx){
         '<div id="smSigMsg" style="font-size:12px;color:rgba(255,255,255,.4);margin-top:8px">By signing, you agree to the extension terms above.</div>'+
       '</div>';
 
+    // Cumulative mode: show the FULL document (original agreement + every prior extension, read-only) with
+    // the live signature pad on THIS extension only. Falls back to the concise amendment if the build fails.
+    var _signDoc = extHtml;
+    if(_pbCumulativeOn()){
+      var _cum = _buildCumulativeContractHtml(bk, data, extIdx, {mode:'sign', targetExtIdx:extIdx, targetDriverIdx:(_exIsDrv?_exDIdx:null)});
+      if(_cum) _signDoc = _cum;
+    }
     var frame = document.getElementById('smContractFrame');
-    if(frame) frame.srcdoc = extHtml;
-    window._smExtHtml = extHtml;
+    if(frame) frame.srcdoc = _signDoc;
+    window._smExtHtml = _signDoc;
     _smInitCanvas();
 
     var _sb = document.createElement('div');
@@ -1877,14 +2051,16 @@ function renderContractTab(){
     el.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:60px 16px;"><div style="font-size:40px;margin-bottom:12px;">\uD83D\uDCC4</div><div style="font-size:15px;font-weight:600;margin-bottom:8px;">No Contract Yet</div><div style="font-size:13px;">Your rental agreement will appear here once a booking is confirmed.</div></div>';
     return;
   }
+  var _isSig=function(s){ return !!(s && String(s).startsWith('data:image/')); };
   var html = '';
   bks.forEach(function(b){
-    var alreadySigned = b.customerSig && b.customerSig.startsWith('data:image/');
+    var alreadySigned = _isSig(b.customerSig);
     var _drvs = (b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status !== 'denied'; });   // a denied driver is not a party -> doesn't block "fully signed"
-    var _pendingDrv = _drvs.filter(function(d){ return !(d.sig && d.sig.startsWith('data:image/')); }).length;
+    var _pendingDrv = _drvs.filter(function(d){ return !_isSig(d.sig); }).length;
     var fullySigned = alreadySigned && _pendingDrv===0;   // primary renter + EVERY listed authorized driver has signed
     var sigDate = b.sigDate || b.contractSignedAt || b.customerSigDate || '';
     var sigDateStr = sigDate ? (function(){ try{ return new Date(sigDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return String(sigDate); } })() : '';
+    var exts = _pbCumulativeOn() ? (b.extensions||[]).filter(Boolean) : [];
     html += '<div class="card" style="margin-bottom:14px;">'
       + '<div class="card-header"><div><div class="vehicle-name" style="font-size:15px;">' + (b.vehicle||b.car||'Rental Agreement') + '</div>'
       + '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (b.startDate||'') + (b.endDate?' \u2013 '+b.endDate:'') + '</div></div>'
@@ -1894,13 +2070,50 @@ function renderContractTab(){
           ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u23F3 Awaiting Drivers</span>'
           : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>'))
       + '</div>';
+    // --- Original rental agreement row ---
+    var _mt = exts.length ? '0' : '8px';
+    if(exts.length) html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Original Agreement</div>';
     if(sigDateStr && alreadySigned) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Signed ' + sigDateStr + '</div>';
     if(fullySigned){
-      html += '<button class="btn" style="margin-top:8px;" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download Signed Contract</button>';
+      html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download '+(exts.length?'Full Contract':'Signed Contract')+'</button>';
     } else if(alreadySigned){
       html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+_pendingDrv+' authorized driver signature'+(_pendingDrv===1?'':'s')+' before the signed copy is ready.</div>';
     } else {
-      html += '<button class="btn" style="margin-top:8px;" onclick="_initSigningMode(\''+b.id+'\',null,true)">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
+      html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_initSigningMode(\''+b.id+'\',null,true)">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
+    }
+    // --- Extension rows (strict sequence) ---
+    if(exts.length){
+      var priorAllSigned = true;   // every extension BEFORE this one fully signed by all required parties
+      exts.forEach(function(ext, i){
+        var extNum = i+1;
+        var primSigned = !!(ext.signed && _isSig(ext.sig));
+        var drvPending = 0;
+        (b.extraDrivers||[]).forEach(function(d,di){ if(!d||!d.name||d.status==='denied') return; var s=ext.driverSigs&&ext.driverSigs[di]; if(!_isSig(s&&s.sig)) drvPending++; });
+        var gateSigned = _extFullySignedForGate(b, ext);
+        var unlocked = (fullySigned && priorAllSigned) || !!ext.unlockOverride;
+        var badge, action;
+        if(gateSigned){
+          badge='<span style="background:rgba(34,197,94,.15);color:#4ade80;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u2705 Signed</span>';
+          action='<button class="btn" style="margin-top:0;" onclick="_portalDownloadExtension(\''+b.id+'\',\''+ext.id+'\', this)">\uD83D\uDCC4 Download (thru Ext '+extNum+')</button>';
+        } else if(!unlocked){
+          var blockMsg = !fullySigned ? 'Complete the Rental Agreement first' : 'Extension '+(i)+' must be fully signed first';
+          badge='<span style="background:rgba(148,163,184,.15);color:#94a3b8;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\uD83D\uDD12 Locked</span>';
+          action='<div style="font-size:11.5px;color:var(--text-muted);padding:9px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">'+blockMsg+'</div>';
+        } else if(!primSigned){
+          badge='<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u26A0\uFE0F Action Needed</span>';
+          action='<button class="btn" style="margin-top:0;" onclick="_initExtensionSigningMode(\''+b.id+'\',\''+ext.id+'\',null)">\u270D\uFE0F Sign Extension '+extNum+' \u2192</button>';
+        } else {
+          badge='<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u23F3 Awaiting Drivers</span>';
+          action='<div style="font-size:11.5px;color:var(--text-muted);padding:9px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+drvPending+' authorized driver signature'+(drvPending===1?'':'s')+'.</div>'+
+            '<button class="btn btn-ghost" style="margin-top:6px;" onclick="_portalDownloadExtension(\''+b.id+'\',\''+ext.id+'\', this)">\uD83D\uDCC4 Download draft (thru Ext '+extNum+')</button>';
+        }
+        var charge = Number(ext.additionalCharge)||0;
+        html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07);">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">'
+          + '<div style="font-size:13px;font-weight:700;">Extension '+extNum+'<span style="font-size:11px;color:var(--text-muted);font-weight:500;"> \u00B7 new return '+(ext.toDate?fmtDateFull(ext.toDate):'\u2014')+(charge?' \u00B7 $'+charge.toFixed(2):'')+'</span></div>'
+          + badge + '</div>' + action + '</div>';
+        priorAllSigned = priorAllSigned && gateSigned;
+      });
     }
     html += '</div>';
   });

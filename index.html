@@ -3953,7 +3953,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v115';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v116';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4495,6 +4495,7 @@ function cloudLoad(callback) {
         try { _reconcilePaidExtensionCharges(); } catch(e){ try{ console.warn('reconcile ext charges skipped:', e); }catch(_e){} } // fold paid extension charges (guarded)
         try { _migrateReviewKeys(); } catch(e){ try{ console.warn('migrate review keys skipped:', e); }catch(_e){} } // heal Firebase-illegal _driverReviewsSentAt email keys that 400 the booking's sync
         try { _healStrandedBookings(); } catch(e){ try{ console.warn('heal stranded bookings skipped:', e); }catch(_e){} } // one-time: re-push bookings the old dedup guard froze on the server
+        try { _reconcileAllPhotos(); } catch(e){ try{ console.warn('photo reconcile skipped:', e); }catch(_e){} } // ensure every booking-referenced photo present on THIS device is confirmed in the cloud, tied to its booking
       }
       setSyncStatus('ok');
       // Update _lastSavedAt so cloudSave's staleness guard sees fresh state and doesn't loop
@@ -10813,12 +10814,12 @@ function _photoBase(){
   return FIREBASE_URL ? FIREBASE_URL.replace(/\/$/,'') + '/photos/' : null;
 }
 
-function dbSavePhoto(id,dataUrl,cb){
+function dbSavePhoto(id,dataUrl,cb,bookingId){
   // Save to IndexedDB \u2014 fire cb only after the write transaction commits
   openPhotoDB(function(db){
     if(db){
       var tx=db.transaction('photos','readwrite');
-      tx.objectStore('photos').put({id:id,data:dataUrl});
+      tx.objectStore('photos').put({id:id,data:dataUrl,bookingId:bookingId||null});
       tx.oncomplete=function(){ if(cb) cb(); };
       tx.onerror=function(){ if(cb) cb(); };
     } else {
@@ -10839,10 +10840,42 @@ function dbSavePhoto(id,dataUrl,cb){
       });
   }
   if(WORKER_URL){
-    fetch(WORKER_URL+'/photos/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({id:id,data:dataUrl})})
-      .then(function(r){ if(!r.ok) _directSave(); })
+    fetch(WORKER_URL+'/photos/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({id:id,data:dataUrl,bookingId:bookingId||null})})
+      .then(function(r){ if(r.ok){ try{ var _p=JSON.parse(localStorage.getItem('pb_photo_pushed')||'{}'); _p[id]=1; localStorage.setItem('pb_photo_pushed',JSON.stringify(_p)); }catch(e){} } else { _directSave(); } })
       .catch(function(){ _directSave(); });
   } else { _directSave(); }
+}
+// Guarantee every photo a booking REFERENCES is actually in the cloud, tied to that booking. The capture-
+// time upload is fire-and-forget and can lose the race with the booking sync (or fail on a flaky network),
+// leaving a booking that points at a photo the cloud never received -> the photo shows on the capturing
+// device but is blank on another device / after reload. This re-pushes (confirmed) any referenced photo
+// still present in THIS device's IndexedDB, marking it done in pb_photo_pushed so it never re-uploads.
+// Idempotent + additive: only ever PUTs photo bytes we already hold; never deletes anything.
+function _reconcileAllPhotos(){
+  try{
+    if(!WORKER_URL) return;
+    var pushed; try{ pushed=JSON.parse(localStorage.getItem('pb_photo_pushed')||'{}'); }catch(e){ pushed={}; }
+    var owner={};   // photoId -> bookingId (first booking that references it)
+    (bookings||[]).forEach(function(b){ if(!b||!b.id) return;
+      [].concat(b.checkInPhotoIds||[], b.checkOutPhotoIds||[]).forEach(function(pid){ if(pid && !pushed[pid] && !owner[pid]) owner[pid]=b.id; }); });
+    var ids=Object.keys(owner); if(!ids.length) return;
+    openPhotoDB(function(db){
+      if(!db) return;
+      var pending=ids.length, changed=false;
+      function fin(){ if(--pending===0 && changed){ try{ localStorage.setItem('pb_photo_pushed',JSON.stringify(pushed)); }catch(e){} } }
+      ids.forEach(function(pid){
+        var tx=db.transaction('photos','readonly'); var req=tx.objectStore('photos').get(pid);
+        req.onsuccess=function(e){ var rec=e.target.result;
+          if(rec && rec.data){
+            fetch(WORKER_URL+'/photos/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({id:pid,data:rec.data,bookingId:owner[pid]})})
+              .then(function(r){ if(r.ok){ pushed[pid]=1; changed=true; } fin(); })
+              .catch(function(){ fin(); });
+          } else { fin(); }   // not on this device -> can't push; the device that captured it owns the upload
+        };
+        req.onerror=function(){ fin(); };
+      });
+    });
+  }catch(e){ try{ console.warn('photo reconcile skipped', e); }catch(_e){} }
 }
 
 function dbLoadPhotos(ids,cb){
@@ -11070,7 +11103,7 @@ function handleCiPhotos(input){
       _photoMemCache[id]=dataUrl;
       ciWorkingPhotos.push(id);
       _renderPhotoGridFromCache('ciPhotoGrid',ciWorkingPhotos,'deleteCiPhoto');
-      dbSavePhoto(id,dataUrl,function(){});
+      dbSavePhoto(id,dataUrl,function(){},checkInId);
     });
   });
 }
@@ -11088,7 +11121,7 @@ function handleCoPhotos(input){
       _photoMemCache[id]=dataUrl;
       coWorkingPhotos.push(id);
       _renderPhotoGridFromCache('coPhotoGrid',coWorkingPhotos,'deleteCoPhoto');
-      dbSavePhoto(id,dataUrl,function(){});
+      dbSavePhoto(id,dataUrl,function(){},closeOutId);
     });
   });
 }
@@ -11158,6 +11191,7 @@ function saveCheckIn(){
   if(bookings[idx].status==='confirmed'||bookings[idx].status==='pending') bookings[idx].status='in-progress';
   bookings[idx]._t              = Date.now();
   save();
+  try{ _reconcileAllPhotos(); }catch(e){}   // guarantee these photos are confirmed in the cloud, tied to this booking
   $d('checkInModal').classList.remove('open');
   checkInId=null;
   render();
@@ -11509,6 +11543,7 @@ function saveCloseOut(){
   }
   bookings[idx]._t               = Date.now();
   save();
+  try{ _reconcileAllPhotos(); }catch(e){}   // guarantee these photos are confirmed in the cloud, tied to this booking
   $d('closeOutModal').classList.remove('open');
   closeOutId = null;
   render();
@@ -17877,6 +17912,27 @@ function _renderExtensionView(b, extIdx){
       _rows+
     '</div>';
   }
+  // Strict-sequence banner + owner manual-unlock (cumulative mode): if this extension is locked because the
+  // base agreement or an earlier extension isn't fully signed, offer a one-click owner override.
+  var _seqBanner='';
+  if(_pbCumulativeOn()){
+    var _isS=function(s){ return !!(s&&String(s).indexOf('data:image/')===0); };
+    var _baseOk=_isS(b.customerSig) && (b.extraDrivers||[]).every(function(d){ return !d||!d.name||d.status==='denied'||_isS(d.sig); });
+    var _exAll=(b.extensions||[]).filter(Boolean);
+    var _kB=-1; for(var _k=0;_k<extIdx;_k++){ if(!_extFullySignedForGate(b,_exAll[_k])){ _kB=_k; break; } }
+    var _gateDone=_extFullySignedForGate(b,ext);
+    var _locked=!((_baseOk&&_kB===-1)||ext.unlockOverride);
+    if(_locked && !_gateDone){
+      var _bm=!_baseOk?'the Rental Agreement is fully signed':'Extension #'+(_kB+1)+' is fully signed';
+      _seqBanner='<div style="background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.4);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'+
+        '<span style="font-weight:700;color:#94a3b8">\uD83D\uDD12 Locked</span>'+
+        '<span style="color:var(--muted)">The client can\'t sign Extension #'+extNum+' until '+_bm+'.</span>'+
+        '<button class="btn btn-sm" onclick="_unlockExtension(\''+b.id+'\',\''+ext.id+'\')" style="margin-left:auto;border-color:rgba(201,169,98,.5);color:var(--gold);font-weight:700">\uD83D\uDD13 Unlock for signing</button>'+
+      '</div>';
+    } else if(ext.unlockOverride && !_gateDone){
+      _seqBanner='<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:7px 12px;margin-bottom:12px;font-size:11.5px;color:var(--muted)">\uD83D\uDD13 Manually unlocked for signing (out of sequence).</div>';
+    }
+  }
   $d('contractHeader').innerHTML =
     '<div style="background:rgba(201,169,98,.08);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:13px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'+
     '<strong>Extension #'+extNum+'</strong> <span>'+esc(b.vehicle)+'</span> <span>'+esc(b.name)+'</span>'+
@@ -17887,7 +17943,7 @@ function _renderExtensionView(b, extIdx){
     '<div style="display:flex;justify-content:flex-end;margin-bottom:10px">'+
       '<button class="btn btn-sm" onclick="deleteExtension(\''+b.id+'\',\''+ext.id+'\')" style="border-color:rgba(239,68,68,.5);color:#ef4444;font-weight:700" title="Permanently delete this extension and ALL its data \u2014 signatures, linked card charges, and the date/revenue/broker changes it applied">\uD83D\uDDD1 Delete Extension #'+extNum+' &amp; all its data</button>'+
     '</div>'+
-    _payPanel+_drvPanel;
+    _seqBanner+_payPanel+_drvPanel;
   // Update extension signature view
   var lockView = $d('extSigLockView');
   var editView = $d('extSigEditView');
@@ -18110,6 +18166,122 @@ function _extSignedCount(b, ext){
   return { signed:n, total:1+ds.length };
 }
 function _extFullySigned(b, ext){ var c=_extSignedCount(b,ext); return c.signed>=c.total; }
+// --- Cumulative extension contracts (flag PB_FLAGS.cumulativeContracts); mirror of the portal builders ---
+function _pbCumulativeOn(){ try{ return !!(window.PB_FLAGS&&window.PB_FLAGS.cumulativeContracts); }catch(e){ return false; } }
+// Gate-only "fully signed": primary + every NON-DENIED authorized driver signed THIS extension (denied
+// drivers excluded so they can't deadlock the strict sequence). Used ONLY for unlock gating.
+function _extFullySignedForGate(b, ext){
+  if(!ext || !_isSigStr(ext.sig) || !ext.signed) return false;
+  var ds=(b&&b.extraDrivers)||[];
+  for(var i=0;i<ds.length;i++){ var d=ds[i]; if(!d||!d.name||d.status==='denied') continue;
+    var s=ext.driverSigs&&ext.driverSigs[i]; if(!_isSigStr(s&&s.sig)) return false; }
+  return true;
+}
+// One extension's amendment as a fully-inline-styled HTML FRAGMENT (no <html>/<head>) for stacking under
+// the original contract. mode:'readonly' embeds real sigs / "pending signature"; mode:'sign' gives the
+// TARGET party (targetDriverIdx null=primary) the live pad (#sigPH/#sigDatePH), read-only for the rest.
+function _buildExtAmendmentHtml(bk, extIdx, opts){
+  opts=opts||{};
+  var exts=(bk.extensions||[]).filter(Boolean), ext=exts[extIdx];
+  if(!ext) return '';
+  var dark=!!opts.dark, signMode=(opts.mode==='sign');
+  var tx=dark?'#e8e8e8':'#111', mut=dark?'#9a9a9a':'#555', faint=dark?'#8a8a8a':'#666';
+  var bandBg=dark?'rgba(184,152,46,.12)':'#f8f5ec', bandBd=dark?'rgba(184,152,46,.6)':'#b8982e';
+  var panBg=dark?'rgba(201,169,98,.10)':'#fffbe8', panBd=dark?'rgba(201,169,98,.5)':'#d4a017';
+  var ruleC=dark?'rgba(255,255,255,.22)':'#aaa', sigBd=dark?'rgba(255,255,255,.4)':'#666', h2bd=dark?'#C9A962':'#111';
+  var sigInk=dark?'filter:invert(1)':'', ownerInk=dark?'filter:brightness(0) invert(1)':'filter:brightness(0)';
+  var extNum=extIdx+1, total=exts.length;
+  var origPickup=fmtDateFull(bk.pickupDate||bk.date||'');
+  var fromRaw=_extFromComputed(ext)||_originalReturnDate(bk);
+  var unit=(ext.extensionUnit==='hours')?('hour'+(Number(ext.extensionDays)!==1?'s':'')):('day'+(Number(ext.extensionDays)!==1?'s':''));
+  var _own=(typeof opts.owner_signature==='string')?opts.owner_signature:'';
+  var ownerSig=(_isSigStr(_own))
+    ? '<img src="'+_own+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;'+ownerInk+'">'
+    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Jalen Nguyen</span>';
+  var sigBoxCss='border-bottom:1.5px solid '+sigBd+';min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px';
+  var padSpan='<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed '+(dark?'#888':'#aaa')+';height:60px"></span>';
+  var drvList=(bk.extraDrivers||[]);
+  var sc=(_isSigStr(ext.sig)&&ext.signed)?1:0, tot=1;
+  drvList.forEach(function(d,i){ tot++; var s=ext.driverSigs&&ext.driverSigs[i]; if(_isSigStr(s&&s.sig)) sc++; });
+  var execBadge=(sc>=tot)
+    ? '<span style="display:inline-block;background:'+(dark?'rgba(26,127,55,.18)':'#e6f4ea')+';color:'+(dark?'#5fcf7f':'#1a7f37')+';border:1px solid #1a7f37;border-radius:20px;padding:2px 12px;font-size:11px;font-weight:700">\u2713 Fully Executed</span>'
+    : '<span style="display:inline-block;background:'+(dark?'rgba(212,160,23,.15)':'#fff7e6')+';color:'+(dark?'#e0b34d':'#9a6a00')+';border:1px solid #d4a017;border-radius:20px;padding:2px 12px;font-size:11px;font-weight:700">Awaiting signatures \u2014 '+sc+' of '+tot+' signed</span>';
+  var primTarget=signMode&&(opts.targetDriverIdx===null||opts.targetDriverIdx===undefined);
+  var primInner=primTarget?padSpan
+    :((_isSigStr(ext.sig)&&ext.signed)?'<img src="'+ext.sig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;'+sigInk+'">':'<span style="color:'+mut+';font-size:11px;font-style:italic">pending signature</span>');
+  var primDate=primTarget?'Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>'
+    :((ext.signed&&_isSigStr(ext.sig))?('Signed '+esc(ext.sigDate||'')):'<span style="color:'+mut+';font-style:italic">Pending signature</span>');
+  var drvBoxes=drvList.map(function(d,i){
+    var dTarget=signMode&&opts.targetDriverIdx!=null&&Number(opts.targetDriverIdx)===i;
+    var ds=(ext.driverSigs&&ext.driverSigs[i])||null, dOk=_isSigStr(ds&&ds.sig);
+    var inner=dTarget?padSpan:(dOk?'<img src="'+ds.sig+'" style="max-height:72px;max-width:240px;display:block;object-fit:contain;'+sigInk+'">':'<span style="color:'+mut+';font-size:11px;font-style:italic">pending signature</span>');
+    var dt=dTarget?'Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>':(dOk?('Signed '+esc(ds.sigDate||'')):'<span style="color:'+mut+';font-style:italic">Pending signature</span>');
+    return '<div><div style="'+sigBoxCss+'">'+inner+'</div>'+
+      '<div style="font-size:11px;font-weight:700;color:'+tx+'">'+esc(d.name||'')+'</div>'+
+      '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Authorized Driver</div>'+
+      '<div style="font-size:10px;color:'+faint+'">'+dt+'</div></div>';
+  }).join('');
+  var h2='font-size:14px;margin:20px 0 8px;padding-bottom:4px;border-bottom:2px solid '+h2bd+';color:'+tx;
+  return '<div style="color:'+tx+';font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;margin-top:10px">'+
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">'+
+      '<div><div style="font-size:18px;font-weight:800;margin:0 0 4px;color:'+tx+'">RENTAL AGREEMENT EXTENSION #'+extNum+'</div>'+
+        '<div style="font-size:12px;color:'+mut+'">Amendment '+extNum+' of '+total+' \u00B7 Invoice #PBR-'+bk.id.slice(-6).toUpperCase()+'</div></div>'+
+      '<div style="text-align:right;font-size:12px;color:'+mut+'"><div style="font-weight:700;color:'+tx+'">Prestige Black Rentals</div><div>(214) 207-2481</div></div>'+
+    '</div>'+
+    '<div style="background:'+bandBg+';border:1.5px solid '+bandBd+';border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:12.5px;color:'+tx+'">'+
+      'This Extension #'+extNum+' amends the Rental Agreement between <strong>Prestige Black Corp.</strong> and <strong>'+esc(bk.name||'')+'</strong> for the <strong>'+esc(bk.vehicle||'')+'</strong> (original pickup '+origPickup+'). All original terms and conditions remain in full force and effect.</div>'+
+    '<h2 style="'+h2+'">Extension #'+extNum+' Terms</h2>'+
+    '<div style="background:'+panBg+';border:1.5px solid '+panBd+';border-radius:6px;padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px;color:'+tx+'">'+
+      '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(fromRaw)+'</strong></div>'+
+      '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
+      '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Added</span><br><strong>+'+ext.extensionDays+' '+unit+'</strong></div>'+
+      (ext.additionalCharge?'<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#C9A962">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>':'')+
+      (ext.notes?'<div style="flex:1"><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Notes</span><br>'+esc(ext.notes)+'</div>':'')+
+    '</div>'+
+    '<h2 style="'+h2+'">Terms &amp; Conditions</h2>'+
+    '<p style="font-size:12px;color:'+tx+';line-height:1.7;margin:0 0 8px">All original terms and conditions of the Rental Agreement remain in full force and effect. This extension amends only the return date and associated charges specified above. Standard late fees of $75 per hour apply for returns after the agreed time. All deposits, mileage policies, insurance, and damage responsibilities remain unchanged from the original agreement.</p>'+
+    '<hr style="border:none;border-top:1.5px solid '+ruleC+';margin:22px 0 14px">'+
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px"><div style="font-size:14px;font-weight:800;color:'+tx+'">Signatures</div>'+execBadge+'</div>'+
+    '<div style="display:flex;gap:30px;flex-wrap:wrap;align-items:flex-start">'+
+      '<div style="flex:1 1 210px;min-width:190px">'+
+        '<div style="'+sigBoxCss+'">'+ownerSig+'</div>'+
+        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Jalen Nguyen</div>'+
+        '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Owner / Lessor</div>'+
+      '</div>'+
+      '<div style="flex:2 1 320px;min-width:200px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px 22px">'+
+        '<div><div style="'+sigBoxCss+'">'+primInner+'</div>'+
+          '<div style="font-size:11px;font-weight:700;color:'+tx+'">'+esc(bk.name||'')+'</div>'+
+          '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Primary Renter</div>'+
+          '<div style="font-size:10px;color:'+faint+'">'+primDate+'</div></div>'+
+        drvBoxes+
+      '</div>'+
+      (drvList.length?'<div style="font-size:10px;color:'+faint+';margin-top:10px">Each additional authorized driver must also sign this extension and remains subject to all terms and conditions herein.</div>':'')+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+// Build the amendment block (all extensions, page-broken) to append under the dashboard's original
+// contract for a cumulative download. Returns '' when off / no extensions.
+function _buildDashAmendments(b, dark){
+  if(!_pbCumulativeOn()) return '';
+  var exts=(b&&b.extensions||[]).filter(Boolean); if(!exts.length) return '';
+  var out='';
+  for(var i=0;i<exts.length;i++){ out+='<div data-pb-pagebreak></div>'+_buildExtAmendmentHtml(b, i, {mode:'readonly', dark:!!dark, owner_signature:(typeof OWNER_SIGNATURE==='string'?OWNER_SIGNATURE:'')}); }
+  return out;
+}
+// Owner override: unlock an extension for signing even if an earlier one isn't fully signed yet.
+function _unlockExtension(bookingId, extId){
+  var b=bookings.find(function(x){ return x&&x.id===bookingId; }); if(!b) return;
+  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; }); if(!ext) return;
+  var n=(b.extensions||[]).indexOf(ext)+1;
+  if(!confirm('Unlock Extension #'+n+' for signing now?\n\nThis lets the client sign it even though an earlier extension is not fully signed. Use this only when an earlier signer is delaying.')) return;
+  ext.unlockOverride=true; b._t=Date.now();
+  if(typeof save==='function') save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  if(typeof logNotif==='function') logNotif('extension','Extension #'+n+' manually UNLOCKED for signing',(b.name||''),bookingId);
+  if(typeof toast==='function') toast('Extension #'+n+' unlocked for signing');
+  if(typeof _updateExtensionTabs==='function') _updateExtensionTabs();
+  if(typeof render==='function') render();
+}
 // Derived communication-log rows for extension signatures \u2014 the primary renter and
 // each additional authorized driver \u2014 plus a "fully signed" milestone when all parties
 // have signed. Surfaced in BOTH the per-booking communication log and the main
@@ -18780,6 +18952,7 @@ function _pdfExtractBlocks(root){
         if(tag==='IMG'){ var src=node.getAttribute('src')||''; if(/^data:image\//i.test(src)){ flush(); blocks.push({type:'img', src:src}); } }
         else if(tag==='BR'){ buf+=' '; }
         else if(tag==='HR'){ flush(); blocks.push({type:'hr'}); }
+        else if(node.getAttribute && node.getAttribute('data-pb-pagebreak')!==null){ flush(); blocks.push({type:'pb'}); }   // explicit page break between cumulative-contract sections (inert until a sentinel exists)
         else if(tag==='TR'){ flush(); if(hasTopRule(node)) blocks.push({type:'hr'}); walkRow(node); if(hasBottomRule(node)) blocks.push({type:'hr'}); }   // table row: separated cells + signature image inside a cell
         else if(BLOCK.test(tag)){ flush(); var cs=styleFor(tag); if(cs==='p' && isBoldEl(node)) cs='h3'; walk(node, cs, upper||isUpperEl(node)); if(tag==='DIV' && hasBottomRule(node)) blocks.push({type:'hr'}); }   // bold/uppercase div -> heading; bottom-bordered div -> rule
         else { buf+=(node.textContent||''); }   // inline (b/strong/span/a/em/u) -> keep text on the line
@@ -18834,6 +19007,15 @@ function _pdfSafe(s){
 async function _buildContractPdfBytes(){
   var text=$d('contractFilled')?$d('contractFilled').value:'';
   if(!text || !text.trim() || typeof PDFLib==='undefined') return null;
+  // Cumulative mode: append every extension amendment under the original so the downloaded/emailed copy
+  // is the full record (original + all extensions). Flag-gated + wrapped so it can never break the base.
+  try{
+    if(_pbCumulativeOn() && _contractBookingId){
+      var _cb=bookings.find(function(x){ return x&&x.id===_contractBookingId; });
+      var _am=_cb?_buildDashAmendments(_cb, /#0d0d0d/.test(text)):'';
+      if(_am){ var _ci=text.lastIndexOf('</body>'); text=(_ci!==-1)?(text.slice(0,_ci)+_am+text.slice(_ci)):(text+_am); }
+    }
+  }catch(e){ try{ console.error('cumulative amend append failed', e); }catch(_e){} }
   var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
   var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:680px;visibility:hidden';
   holder.innerHTML=_contractPrintInner(text,isHtml);
@@ -18907,6 +19089,7 @@ async function _pdfLayoutContract(blocks){
     else if(b.type==='h3'){ space(24); y-=5; para(b.text,fBold,11); y-=1; }
     else if(b.type==='li'){ var lines=wrap(b.text,fReg,10); for(var j=0;j<lines.length;j++){ space(13.4); if(j===0) page.drawText('\u2022',{x:M,y:y-10,size:10,font:fReg,color:INK}); page.drawText(lines[j],{x:M+14,y:y-10,size:10,font:fReg,color:INK}); y-=13.4; } y-=2; }
     else if(b.type==='hr'){ space(10); page.drawLine({start:{x:M,y:y-3},end:{x:PW-M,y:y-3},thickness:0.6,color:rgb(0.8,0.8,0.8)}); y-=10; }
+    else if(b.type==='pb'){ addPage(); }   // explicit page break: start the next cumulative-contract section on a fresh page
     else if(b.type==='img'){
       try{ var bytes=_dataUriToBytes(b.src); var img=null;
         try{ img=await doc.embedPng(bytes); }catch(e){ try{ img=await doc.embedJpg(bytes); }catch(e2){ img=null; } }
