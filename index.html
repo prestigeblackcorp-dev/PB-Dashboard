@@ -3837,7 +3837,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v105';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v106';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -18486,7 +18486,8 @@ function _pdfSafe(s){
     .replace(/\u2026/g,'...')
     .replace(/[\u2022\u2027]/g,'\u00B7')
     .replace(/\u00A0/g,' ')
-    .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g,'');
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g,'')
+    .replace(/([^\d\s]):(?!\/\/)(?=\S)/g,'$1: ');   // a space after each LABEL colon (Owner:X, Year:2015, No.:123 -> "X: Y"); the [^\d\s] guard leaves 5:30 times and https:// URLs alone
 }
 
 // Build the contract/waiver as a real vector PDF and download it -- the path Print + Download use now.
@@ -18546,6 +18547,14 @@ async function _pdfLayoutContract(blocks){
   function para(str, font, size, opt){ opt=opt||{}; var lh=size*1.34, lines=wrap(str,font,size);
     for(var i=0;i<lines.length;i++){ space(lh); var ln=lines[i], x=M; if(opt.center) x=(PW-font.widthOfTextAtSize(ln,size))/2; page.drawText(ln,{x:x,y:y-size,size:size,font:font,color:opt.color||INK}); y-=lh; } }
   addPage();
+  // Masthead logo at the top of page 1: a centered gold "P" + "PRESTIGE BLACK" (recreates the letterhead
+  // mark as crisp vector type, since the HTML logo is CSS-styled text, not an image).
+  (function(){ var gold=rgb(0.788,0.663,0.384);
+    var pSize=30, pw=fBold.widthOfTextAtSize('P',pSize);
+    page.drawText('P',{x:(PW-pw)/2,y:y-pSize,size:pSize,font:fBold,color:gold}); y-=pSize+4;
+    var sub='P R E S T I G E   B L A C K', subSize=8.5, sw=fBold.widthOfTextAtSize(sub,subSize);
+    page.drawText(sub,{x:(PW-sw)/2,y:y-subSize,size:subSize,font:fBold,color:gold}); y-=subSize+16;
+  })();
   for(var i=0;i<blocks.length;i++){
     var b=blocks[i];
     if(b.type==='h1'){ space(26); y-=4; para(b.text,fBold,17,{center:true}); y-=10; }
