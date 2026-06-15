@@ -197,6 +197,7 @@
   .driver-action-btn.sign{border-color:rgba(201,169,98,.5);color:var(--gold);}
   .driver-action-btn.remove{border-color:rgba(239,68,68,.4);color:var(--red);}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" defer></script>
 </head>
 <body>
 
@@ -677,6 +678,332 @@ function _buildAdditionalDriversHtml(bk, showSigs){
 
 // --- Signing Mode ----------------------------------------------------------
 var _smDriverIdx = null;
+
+// ====================================================================================================
+//  Signed-contract PDF download (ported from the dashboard's pdf-lib generator). Builds the signed
+//  rental agreement as a real VECTOR PDF that opens cleanly on iOS -- no blank page, no github.io URL
+//  stamp that native print/Save-to-PDF adds. Takes the rendered contract DOM as input. Additive: only
+//  the contracts-tab "Download Signed Contract" button uses it.
+// ====================================================================================================
+var PB_PDF_FOOTER = 'Prestige Black Corporation   \u00B7   prestigeblackrentals.com   \u00B7   5473 Blair Rd. Ste 100, Dallas, TX 75231';
+function _pdfExtractBlocks(root){
+  var blocks=[];
+  var BLOCK=/^(H1|H2|H3|H4|H5|P|DIV|LI|TR|SECTION|HEADER|FOOTER|UL|OL|TABLE|TBODY|THEAD|BLOCKQUOTE|ARTICLE)$/;
+  function styleFor(tag){ return tag==='H1'?'h1':(tag==='H2'?'h2':((tag==='H3'||tag==='H4'||tag==='H5')?'h3':(tag==='LI'?'li':'p'))); }
+  function walk(el, curStyle){
+    var buf='';
+    function flush(){ var s=buf.replace(/[ \t\r\n]+/g,' ').trim(); if(s) blocks.push({type:curStyle, text:s}); buf=''; }
+    var kids=el.childNodes;
+    for(var i=0;i<kids.length;i++){
+      var node=kids[i];
+      if(node.nodeType===3){ buf+=node.nodeValue; }
+      else if(node.nodeType===1){
+        var tag=node.tagName;
+        if(tag==='SCRIPT'||tag==='STYLE') continue;
+        var cl=node.className||'';
+        if(typeof cl==='string' && /\b(logo-block|logo-p|logo-sub|logo-mark)\b/.test(cl)) continue;
+        if(tag==='IMG'){ var src=node.getAttribute('src')||''; if(/^data:image\//i.test(src)){ flush(); blocks.push({type:'img', src:src}); } }
+        else if(tag==='BR'){ buf+=' '; }
+        else if(tag==='HR'){ flush(); blocks.push({type:'hr'}); }
+        else if(BLOCK.test(tag)){ flush(); walk(node, styleFor(tag)); }
+        else { buf+=(node.textContent||''); }
+      }
+    }
+    flush();
+  }
+  walk(root, 'p');
+  return blocks;
+}
+function _pdfBlackenImage(dataUri){
+  return new Promise(function(resolve){
+    var done=false; function fin(v){ if(done) return; done=true; resolve(v); }
+    setTimeout(function(){ fin(dataUri); }, 2500);
+    try{
+      var img=new Image();
+      img.onload=function(){
+        try{
+          var c=document.createElement('canvas'); c.width=img.naturalWidth||img.width; c.height=img.naturalHeight||img.height;
+          if(!c.width||!c.height){ fin(dataUri); return; }
+          var ctx=c.getContext('2d'); ctx.drawImage(img,0,0);
+          var d=ctx.getImageData(0,0,c.width,c.height), px=d.data;
+          for(var i=0;i<px.length;i+=4){ if(px[i+3]>12){ px[i]=0; px[i+1]=0; px[i+2]=0; } }
+          ctx.putImageData(d,0,0);
+          fin(c.toDataURL('image/png'));
+        }catch(e){ fin(dataUri); }
+      };
+      img.onerror=function(){ fin(dataUri); };
+      img.src=dataUri;
+    }catch(e){ fin(dataUri); }
+  });
+}
+function _dataUriToBytes(uri){ var b64=(uri.split(',')[1]||''); var bin=atob(b64); var u=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u; }
+function _pdfSafe(s){
+  return String(s)
+    .replace(/[\u2018\u2019\u201A\u2032]/g,"'")
+    .replace(/[\u201C\u201D\u201E\u2033]/g,'"')
+    .replace(/[\u2013\u2014\u2212]/g,'-')
+    .replace(/\u2026/g,'...')
+    .replace(/[\u2022\u2027]/g,'\u00B7')
+    .replace(/\u00A0/g,' ')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g,'')
+    .replace(/([^\d\s]):(?!\/\/)(?=\S)/g,'$1: ');
+}
+function _bytesToBase64(bytes){ var bin='', CH=0x8000; for(var i=0;i<bytes.length;i+=CH){ bin+=String.fromCharCode.apply(null, bytes.subarray(i,i+CH)); } return btoa(bin); }
+async function _pdfLayoutContract(blocks){
+  var L=window.PDFLib, rgb=L.rgb;
+  var doc=await L.PDFDocument.create();
+  var fReg=await doc.embedFont(L.StandardFonts.TimesRoman);
+  var fBold=await doc.embedFont(L.StandardFonts.TimesRomanBold);
+  var PW=612, PH=792, M=54, BOTTOM=52;
+  var INK=rgb(0.08,0.08,0.08);
+  var pages=[], page=null, y=0;
+  function addPage(){ page=doc.addPage([PW,PH]); pages.push(page); y=PH-M; }
+  function space(h){ if(y-h < BOTTOM){ addPage(); } }
+  function wrap(str, font, size){
+    str=_pdfSafe(str);
+    var max=PW-2*M, words=String(str).split(/\s+/), lines=[], cur='';
+    function hard(word){ var s=word; while(font.widthOfTextAtSize(s,size)>max && s.length>1){ var n=1; while(n<s.length && font.widthOfTextAtSize(s.slice(0,n+1),size)<=max) n++; lines.push(s.slice(0,n)); s=s.slice(n); } return s; }
+    for(var i=0;i<words.length;i++){ var w=words[i]; if(!w) continue; var test=cur?cur+' '+w:w;
+      if(font.widthOfTextAtSize(test,size)<=max){ cur=test; }
+      else { if(cur){ lines.push(cur); cur=''; } cur=(font.widthOfTextAtSize(w,size)>max)?hard(w):w; } }
+    if(cur) lines.push(cur);
+    return lines.length?lines:[''];
+  }
+  function para(str, font, size, opt){ opt=opt||{}; var lh=size*1.34, lines=wrap(str,font,size);
+    for(var i=0;i<lines.length;i++){ space(lh); var ln=lines[i], x=M; if(opt.center) x=(PW-font.widthOfTextAtSize(ln,size))/2; page.drawText(ln,{x:x,y:y-size,size:size,font:font,color:opt.color||INK}); y-=lh; } }
+  addPage();
+  (function(){ var gold=rgb(0.788,0.663,0.384);
+    var pSize=30, pw=fBold.widthOfTextAtSize('P',pSize);
+    page.drawText('P',{x:(PW-pw)/2,y:y-pSize,size:pSize,font:fBold,color:gold}); y-=pSize+4;
+    var sub='P R E S T I G E   B L A C K', subSize=8.5, sw=fBold.widthOfTextAtSize(sub,subSize);
+    page.drawText(sub,{x:(PW-sw)/2,y:y-subSize,size:subSize,font:fBold,color:gold}); y-=subSize+16;
+  })();
+  for(var i=0;i<blocks.length;i++){
+    var b=blocks[i];
+    if(b.type==='h1'){ space(26); y-=4; para(b.text,fBold,17,{center:true}); y-=10; }
+    else if(b.type==='h2'){ space(30); y-=8; para(b.text,fBold,12.5); y-=3; }
+    else if(b.type==='h3'){ space(24); y-=5; para(b.text,fBold,11); y-=1; }
+    else if(b.type==='li'){ var lines=wrap(b.text,fReg,10); for(var j=0;j<lines.length;j++){ space(13.4); if(j===0) page.drawText('\u2022',{x:M,y:y-10,size:10,font:fReg,color:INK}); page.drawText(lines[j],{x:M+14,y:y-10,size:10,font:fReg,color:INK}); y-=13.4; } y-=2; }
+    else if(b.type==='hr'){ space(10); page.drawLine({start:{x:M,y:y-3},end:{x:PW-M,y:y-3},thickness:0.6,color:rgb(0.8,0.8,0.8)}); y-=10; }
+    else if(b.type==='img'){
+      try{ var bytes=_dataUriToBytes(b.src); var img=null;
+        try{ img=await doc.embedPng(bytes); }catch(e){ try{ img=await doc.embedJpg(bytes); }catch(e2){ img=null; } }
+        if(img){ var iw=Math.min(210, img.width||210), sc=iw/(img.width||iw), ih=(img.height||60)*sc;
+          if(ih>110){ ih=110; iw=(img.width||iw)*(ih/(img.height||ih)); }
+          space(ih+10); page.drawImage(img,{x:M,y:y-ih,width:iw,height:ih}); page.drawLine({start:{x:M,y:y-ih-2},end:{x:M+Math.max(iw,190),y:y-ih-2},thickness:0.6,color:rgb(0.5,0.5,0.5)}); y-=ih+10; }
+      }catch(e){}
+    }
+    else { para(b.text,fReg,10); y-=4; }
+  }
+  var fsz=7.5, fw=fReg.widthOfTextAtSize(PB_PDF_FOOTER,fsz);
+  for(var p=0;p<pages.length;p++){ var pg=pages[p];
+    pg.drawLine({start:{x:M,y:34},end:{x:PW-M,y:34},thickness:0.5,color:rgb(0.85,0.85,0.85)});
+    pg.drawText(PB_PDF_FOOTER,{x:(PW-fw)/2,y:22,size:fsz,font:fReg,color:rgb(0.42,0.42,0.42)});
+    var pn='Page '+(p+1)+' of '+pages.length; pg.drawText(pn,{x:PW-M-fReg.widthOfTextAtSize(pn,7),y:11,size:7,font:fReg,color:rgb(0.55,0.55,0.55)});
+  }
+  return await doc.save();
+}
+// Build the signed-contract PDF bytes from a rendered contract DOM element (the filled #smContractWrap).
+async function _buildSignedContractPdfBytes(rootEl){
+  if(!rootEl || typeof PDFLib==='undefined') return null;
+  var blocks; try{ blocks=_pdfExtractBlocks(rootEl); }catch(e){ blocks=[]; }
+  if(!blocks.length) return null;
+  for(var bi=0; bi<blocks.length; bi++){ if(blocks[bi].type==='img'){ try{ blocks[bi].src=await _pdfBlackenImage(blocks[bi].src); }catch(e){} } }
+  return await _pdfLayoutContract(blocks);
+}
+async function _downloadSignedContractPdf(rootEl, fname){
+  if(typeof PDFLib==='undefined'){ toast('PDF tool still loading - try again in a moment.'); return; }
+  var bytes; try{ bytes=await _buildSignedContractPdfBytes(rootEl); }catch(e){ bytes=null; }
+  if(!bytes){ toast('Could not build the document.'); return; }
+  fname=fname||'Signed Contract.pdf';
+  try{
+    try{
+      if(navigator.canShare && typeof File!=='undefined'){
+        var shareFile=new File([bytes], fname, {type:'application/pdf'});
+        if(navigator.canShare({files:[shareFile]})){ await navigator.share({files:[shareFile], title:fname}); return; }
+      }
+    }catch(e){ if(e && e.name==='AbortError') return; }
+    var blob=new Blob([bytes],{type:'application/pdf'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a'); a.href=url; a.download=fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ try{ URL.revokeObjectURL(url); if(a.parentNode) a.parentNode.removeChild(a); }catch(e){} }, 5000);
+  }catch(e){ try{ console.error('pdf-lib',e); }catch(_e){} toast('PDF build failed - please retry.'); }
+}
+
+// Fill the contract template with a booking's data, for the signed-copy PDF DOWNLOAD. A faithful MIRROR
+// of _initSigningMode's inline fill: readOnly=false reproduces the live signing render exactly (customer
+// signature = live placeholder pad), readOnly=true embeds the ACTUAL signature image for the downloaded
+// copy. The live signing flow keeps using its own inline fill (untouched), so this can NEVER affect
+// signing. KEEP IN SYNC: if you add a template placeholder to _initSigningMode's fill, add it here too.
+// Returns the filled template HTML, or '' if there is no template.
+function _smFillContractTmpl(bk, data, drvIdx, readOnly){
+  var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+  if(!tmpl) return '';
+  // Slingshot color normalization
+  if(bk.vehicle==='Polaris Slingshot'){
+    var _sentCol = bk.contractSentColor||'Green';
+    var _ssSpecs = {Green:{vin:'57XAAPHD4S8167698',model:'Slingshot SL'},White:{vin:'57XAASHD6M8146678',model:'Slingshot S'}};
+    var _ssSpec = _ssSpecs[_sentCol]||_ssSpecs.Green;
+    VEHICLE_INFO['Polaris Slingshot'] = Object.assign({}, VEHICLE_INFO['Polaris Slingshot']||{}, {color:_sentCol,vin:_ssSpec.vin,model:_ssSpec.model});
+    tmpl = tmpl
+      .replace(/57XAAPHD4S8167698/g,'{{vehicle_vin}}')
+      .replace(/57XAASHD6M8146678/g,'{{vehicle_vin}}')
+      .replace(/Slingshot SL \(Green\)/g,'{{vehicle_model}} ({{vehicle_color}})')
+      .replace(/Slingshot SL \(White\)/g,'{{vehicle_model}} ({{vehicle_color}})')
+      .replace(/Slingshot SL \(\{\{vehicle_color\}\}\)/g,'{{vehicle_model}} ({{vehicle_color}})')
+      .replace(/Slingshot SL(?! \(\{\{vehicle_color)/g,'{{vehicle_model}}');
+  }
+  var today = new Date();
+  var tStr = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
+  var _sbd = _buildContractBreakdown(bk);
+  var _svInfo = Object.assign({}, VEHICLE_INFO[bk.vehicle]||{});
+  var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
+  var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
+  var _sReturnFull = fmtDateFull(bk.dropoffDate||'');
+  var _sVm = VEHICLE_MILEAGE[bk.vehicle]||{};
+  var _sPerDay = Number(bk.includedMiles)||_sVm.miles||0;
+  var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
+  var _sIsUnlim = Number(bk.unlimited)>0||!_sPerDay;
+  var _sMilesDisp = _sIsUnlim?'Unlimited':_sPerDay.toLocaleString()+' mi/day';
+  var _sTripMiles = _sIsUnlim?'Unlimited':(_sPerDay*(_sbd.days||1)).toLocaleString()+' mi';
+  var _sOverageDisp = _sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi over limit':'N/A');
+  var _sBrokerLine = bk.broker?'<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(bk.broker)+'</span></div>':'';
+  var _sMilagePol = _sIsUnlim?'Mileage: This rental includes unlimited mileage at no additional per-mile charge.':'Mileage: This rental includes '+_sPerDay.toLocaleString()+' miles per day ('+_sTripMiles+' for this rental). Miles driven beyond the included amount will be charged at $'+_sOvRate+' per mile.';
+  var _sBdTable = _buildBreakdownTable(bk);
+  var _sr = v => () => v;
+  var _origTmpl = tmpl;
+  tmpl = tmpl
+    .replace(/\{\{today\}\}/gi, tStr)
+    .replace(/\{\{customer_name\}\}/gi, _sr(esc(bk.name||'')))
+    .replace(/\{\{customer_email\}\}/gi, _sr(esc(bk.email||'')))
+    .replace(/\{\{customer_phone\}\}/gi, _sr(esc(bk.phone||'')))
+    .replace(/\{\{vehicle\}\}/gi, _sr(esc(bk.vehicle||'')))
+    .replace(/\{\{vehicle_make\}\}/gi, _sr(esc(_svInfo.make||'')))
+    .replace(/\{\{vehicle_model\}\}/gi, _sr(esc(_svInfo.model||bk.vehicle||'')))
+    .replace(/\{\{vehicle_year\}\}/gi, _sr(esc(_svInfo.year||'')))
+    .replace(/\{\{vehicle_color\}\}/gi, _sr(esc(_svInfo.color||'')))
+    .replace(/\{\{vehicle_vin\}\}/gi, _sr(esc(_svInfo.vin||'')))
+    .replace(/\{\{rental_type\}\}/gi, _sr(_sRentalType))
+    .replace(/\{\{booking_date\}\}/gi, _sr(fmtDateFull(bk.date||bk.pickupDate||'')))
+    .replace(/\{\{pickup_date\}\}/gi, _sr(_sPickupFull))
+    .replace(/\{\{return_date\}\}/gi, _sr(_sReturnFull))
+    .replace(/\{\{dropoff_date\}\}/gi, _sr(_sReturnFull))
+    .replace(/\{\{pickup_time\}\}/gi, _sr(bk.pickupTime?fmtTime(bk.pickupTime):''))
+    .replace(/\{\{dropoff_time\}\}/gi, _sr(bk.dropoffTime?fmtTime(bk.dropoffTime):''))
+    .replace(/\{\{pickup_time_display\}\}/gi, _sr(bk.pickupTime?' at '+fmtTime(bk.pickupTime):''))
+    .replace(/\{\{dropoff_time_display\}\}/gi, _sr(bk.dropoffTime?' at '+fmtTime(bk.dropoffTime):''))
+    .replace(/\{\{days\}\}/gi, _sr(String(_sbd.days)))
+    .replace(/\{\{daily_rate\}\}/gi, _sr(_sbd.days>0?'$'+_sbd.dailyRateNum.toFixed(2):'N/A'))
+    .replace(/\{\{base_rental\}\}/gi, _sr('$'+_sbd.baseRev.toFixed(2)))
+    .replace(/\{\{addons_total\}\}/gi, _sr('$'+_sbd.addonsTotal.toFixed(2)))
+    .replace(/\{\{total_charges\}\}/gi, _sr('$'+_sbd.subtotal.toFixed(2)))
+    .replace(/\{\{total_revenue\}\}/gi, _sr('$'+_sbd.subtotal.toFixed(2)))
+    .replace(/\{\{deposit_amount\}\}/gi, _sr('$'+_sbd.depositAmt.toFixed(2)))
+    .replace(/\{\{balance_due\}\}/gi, _sr('$'+_sbd.balanceDue.toFixed(2)))
+    .replace(/\{\{remaining_balance\}\}/gi, _sr('$'+_sbd.balanceDue.toFixed(2)))
+    .replace(/\{\{date_lock\}\}/gi, _sr('$'+_sbd.dateLockAmt.toFixed(2)))
+    .replace(/\{\{breakdown_table\}\}/gi, _sr(_sBdTable))
+    .replace(/\{\{addons\}\}/gi, _sr(
+      [bk.delivery&&Number(bk.delivery)?'Delivery ($'+bk.delivery+')':null,
+       bk.unlimited&&Number(bk.unlimited)?'Unlimited Miles ($'+bk.unlimited+'/day)':null,
+       bk.pet&&Number(bk.pet)?'Pet Fee ($'+bk.pet+')':null,
+       bk.photo&&Number(bk.photo)?'Photoshoot ($'+bk.photo+')':null,
+       bk.champagne&&Number(bk.champagne)?'Champagne ($'+bk.champagne+')':null,
+       bk.decor&&Number(bk.decor)?'Decor ($'+bk.decor+')':null,
+       bk.bouquet&&Number(bk.bouquet)?'Flower Bouquet ($'+bk.bouquet+')':null
+      ].filter(Boolean).join(', ')||'None'))
+    .replace(/\{\{invoice_number\}\}/gi, _sr('#PBR-'+bk.id.slice(-6).toUpperCase()))
+    .replace(/\{\{address\}\}/gi, _sr(esc(bk.address||'')))
+    .replace(/\{\{pickup_address\}\}/gi, _sr(esc(bk.address||'')))
+    .replace(/\{\{license_number\}\}/gi, _sr(esc((bk.verify&&bk.verify.idNumber)||'')))
+    .replace(/\{\{license_state\}\}/gi, _sr(esc((bk.verify&&bk.verify.idState)||'')))
+    .replace(/\{\{license_address\}\}/gi, _sr(esc((bk.verify&&bk.verify.idAddress)||'')))
+    .replace(/\{\{customer_address\}\}/gi, _sr(esc((bk.verify&&bk.verify.idAddress)||'')))
+    .replace(/\{\{verified_name\}\}/gi, _sr(esc((bk.verify&&bk.verify.idName)||bk.name||'')))
+    .replace(/\{\{customer_dob\}\}/gi, _sr(esc((bk.verify&&bk.verify.idDob)?fmtDate(bk.verify.idDob):'')))
+    .replace(/\{\{license_type\}\}/gi, _sr(esc((bk.verify&&bk.verify.idType)||'Driver License')))
+    .replace(/\{\{license_expiry\}\}/gi, _sr(esc((bk.verify&&bk.verify.idExpiry)?fmtDate(bk.verify.idExpiry):'')))
+    .replace(/\{\{notes\}\}/gi, _sr(esc(bk.notes||'')))
+    .replace(/\{\{broker\}\}/gi, _sr(esc(bk.broker||'')))
+    .replace(/\{\{broker_line\}\}/gi, _sr(_sBrokerLine))
+    .replace(/\{\{broker_fee_rate\}\}/gi, _sr(bk.brokerFee?'$'+bk.brokerFee+'/day':'N/A'))
+    .replace(/\{\{source\}\}/gi, _sr(esc(bk.source||'')))
+    .replace(/\{\{included_miles\}\}/gi, _sr(_sIsUnlim?'Unlimited':String(_sPerDay)))
+    .replace(/\{\{overage_rate\}\}/gi, _sr(_sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi':'N/A')))
+    .replace(/\{\{mileage_limit_display\}\}/gi, _sr(_sMilesDisp))
+    .replace(/\{\{trip_total_miles\}\}/gi, _sr(_sTripMiles))
+    .replace(/\{\{overage_display\}\}/gi, _sr(_sOverageDisp))
+    .replace(/\{\{unlimited_fee\}\}/gi, _sr(bk.unlimited?'$'+bk.unlimited+'/day':'N/A'))
+    .replace(/\{\{unlimited_total\}\}/gi, _sr(bk.unlimited?'$'+(_sbd.unlimitedPD*_sbd.days).toFixed(2):'N/A'))
+    .replace(/\{\{delivery_fee\}\}/gi, _sr(Number(bk.delivery)?'$'+bk.delivery:'N/A'))
+    .replace(/\{\{pet_fee\}\}/gi, _sr(Number(bk.pet)?'$'+bk.pet:'N/A'))
+    .replace(/\{\{loyalty_discount\}\}/gi, _sr(''))
+    .replace(/\{\{odometer_in\}\}/gi, _sr(bk.odomIn?Number(bk.odomIn).toLocaleString()+' mi':''))
+    .replace(/\{\{mileage_policy\}\}/gi, _sr(_sMilagePol))
+    .replace(/\{\{fuel_policy\}\}/gi, 'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
+    .replace(/\{\{net_revenue\}\}/gi, _sr('$'+(_sbd.subtotal-(Number(bk.brokerFee)||0)*_sbd.days).toFixed(2)))
+    .replace(/\{\{additional_drivers\}\}/gi, _sr(_buildAdditionalDriversHtml(bk, true)))
+    .replace(/\{\{owner_signature\}\}/gi,
+      (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
+        ? '<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">'
+        : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
+    .replace(/\{\{customer_signature\}\}/gi,
+      readOnly
+        ? ((bk.customerSig&&bk.customerSig.startsWith('data:image/')) ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block">' : '_______________________________')
+        : ((drvIdx === null)
+            ? '<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>'
+            : (bk.customerSig&&bk.customerSig.startsWith('data:image/')
+                ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block">'
+                : '_______________________________')))
+    .replace(/\{\{customer_signed_date\}\}/gi,
+      readOnly
+        ? (bk.customerSigDate||'')
+        : ((drvIdx === null)
+            ? '<span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>'
+            : (bk.customerSigDate||'')));
+  // Auto-inject additional drivers block if template doesn't have the token
+  var _adrHtml = _buildAdditionalDriversHtml(bk, true);
+  if(_adrHtml && !/\{\{additional_drivers\}\}/i.test(_origTmpl)){
+    var _bClose = tmpl.indexOf('</body>');
+    if(_bClose !== -1) tmpl = tmpl.slice(0,_bClose)+_adrHtml+'\n'+tmpl.slice(_bClose);
+    else tmpl += _adrHtml;
+  }
+  return tmpl;
+}
+
+// Contracts tab: download the fully-signed contract as a clean PDF. Fetches /signing/load, fills the
+// template read-only (actual signatures embedded), renders it off-screen, and hands it to the generator.
+async function _portalDownloadSignedContract(bookingId, btnEl){
+  var _lbl=null;
+  if(btnEl){ try{ _lbl=btnEl.textContent; btnEl.disabled=true; btnEl.textContent='Preparing...'; }catch(e){} }
+  function _restore(){ if(btnEl){ try{ btnEl.disabled=false; if(_lbl!=null) btnEl.textContent=_lbl; }catch(e){} } }
+  try{
+    var r=await fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'});
+    var data=r&&r.ok?await r.json():null;
+    if(!data||!data.booking){ toast('Could not load your contract.'); _restore(); return; }
+    var bk=data.booking;
+    var tmpl=_smFillContractTmpl(bk, data, null, true);   // readOnly -> actual signatures embedded
+    if(!tmpl){ toast('No contract on file for this booking.'); _restore(); return; }
+    var isHtml=tmpl.trim().toLowerCase().startsWith('<!doctype')||tmpl.trim().startsWith('<html');
+    var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:760px;visibility:hidden';
+    document.body.appendChild(holder);
+    var rootEl=null;
+    if(isHtml){
+      var ifr=document.createElement('iframe'); ifr.setAttribute('sandbox','allow-same-origin'); ifr.style.cssText='width:760px;height:1100px;border:none';
+      holder.appendChild(ifr);
+      await new Promise(function(res){ ifr.onload=function(){ res(); }; ifr.srcdoc=tmpl; setTimeout(res,1500); });
+      try{ rootEl=ifr.contentDocument&&ifr.contentDocument.body; }catch(e){ rootEl=null; }
+    } else {
+      holder.innerHTML='<div>'+tmpl+'</div>'; rootEl=holder;
+    }
+    var fname=(((bk.name||'Client')+'').trim().replace(/\s+/g,' ')+' Signed Contract').replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
+    if(rootEl){ await _downloadSignedContractPdf(rootEl, fname); }
+    else { toast('Could not render the contract for download.'); }
+    try{ document.body.removeChild(holder); }catch(e){}
+  }catch(e){ try{ console.error('signed-contract download', e); }catch(_e){} toast('Could not prepare the contract.'); }
+  _restore();
+}
 
 function _initSigningMode(bookingId, driverIdx, fromPortal){
   _smDriverIdx = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx))) ? Number(driverIdx) : null;
@@ -1525,18 +1852,25 @@ function renderContractTab(){
   var html = '';
   bks.forEach(function(b){
     var alreadySigned = b.customerSig && b.customerSig.startsWith('data:image/');
-    var sigDate = b.sigDate || b.contractSignedAt || '';
-    var sigDateStr = sigDate ? new Date(sigDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+    var _drvs = (b.extraDrivers||[]).filter(function(d){ return d && d.name; });
+    var _pendingDrv = _drvs.filter(function(d){ return !(d.sig && d.sig.startsWith('data:image/')); }).length;
+    var fullySigned = alreadySigned && _pendingDrv===0;   // primary renter + EVERY listed authorized driver has signed
+    var sigDate = b.sigDate || b.contractSignedAt || b.customerSigDate || '';
+    var sigDateStr = sigDate ? (function(){ try{ return new Date(sigDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return String(sigDate); } })() : '';
     html += '<div class="card" style="margin-bottom:14px;">'
       + '<div class="card-header"><div><div class="vehicle-name" style="font-size:15px;">' + (b.vehicle||b.car||'Rental Agreement') + '</div>'
       + '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (b.startDate||'') + (b.endDate?' \u2013 '+b.endDate:'') + '</div></div>'
-      + (alreadySigned
+      + (fullySigned
         ? '<span style="background:rgba(34,197,94,.15);color:#4ade80;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u2705 Signed</span>'
-        : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>')
+        : (alreadySigned
+          ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u23F3 Awaiting Drivers</span>'
+          : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>'))
       + '</div>';
-    if(sigDateStr) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Signed ' + sigDateStr + '</div>';
-    if(alreadySigned){
-      html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">Contract signed and on file.</div>';
+    if(sigDateStr && alreadySigned) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Signed ' + sigDateStr + '</div>';
+    if(fullySigned){
+      html += '<button class="btn" style="margin-top:8px;" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download Signed Contract</button>';
+    } else if(alreadySigned){
+      html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+_pendingDrv+' authorized driver signature'+(_pendingDrv===1?'':'s')+' before the signed copy is ready.</div>';
     } else {
       html += '<button class="btn" style="margin-top:8px;" onclick="_initSigningMode(\''+b.id+'\',null,true)">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
     }
