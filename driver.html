@@ -659,6 +659,7 @@ var _ridesPollTimer = null; // polls for incoming notifications & active ride
 var _pendingRide = null;    // incoming ride notification object
 var _activeRide = null;     // current accepted ride
 var _hourlyDriverTimer = null; // hourly: live remaining-time ticker on the active-ride panel
+var _stopWaitTimer = null; // P2P: 5-min grace + $1/min overage ticker for an arrived intermediate stop
 var _rrTimerInterval = null;// countdown timer on accept overlay
 var _ridesMap = null;
 var _driverSelfMarker = null;
@@ -1962,12 +1963,24 @@ async function pollDriverRides(){
     // Hourly riders can redirect the trip / extend their time mid-ride \u2014 make
     // sure the driver notices the change (nav re-routes automatically).
     if(_prevRide && _prevRide.id===d.activeRide.id){
-      // Reroute notice whenever the rider changes EITHER stop (the current stop
-      // moves the nav target so it reroutes; the next stop updates the queue).
-      if(d.activeRide.dropoffAddress && d.activeRide.dropoffAddress!==_prevRide.dropoffAddress){ drvToast('\uD83D\uDCCD New stop: '+d.activeRide.dropoffAddress,'success'); }
-      else if((d.activeRide.nextStopAddress||'')!==(_prevRide.nextStopAddress||'')){ drvToast(d.activeRide.nextStopAddress?'\u23ED\uFE0F Next stop updated':'Next stop cleared','info'); }
+      var _pStops=Array.isArray(_prevRide.stops)?_prevRide.stops.length:0, _nStops=Array.isArray(d.activeRide.stops)?d.activeRide.stops.length:0;
+      // P2P: a newly ACCEPTED stop appends to stops[] (the original final dropoff is preserved,
+      // not overwritten) and bumps the stop surcharge -> show the chauffeur their added earnings.
+      if(_nStops>_pStops && Number(d.activeRide.stopSurcharge||0)>Number(_prevRide.stopSurcharge||0)+0.005){
+        drvToast('\uD83D\uDCCD Stop added \u00B7 +'+fmt$((Number(d.activeRide.stopSurcharge)-Number(_prevRide.stopSurcharge||0))*DRIVER_SHARE)+' to your earnings','success');
+      }
+      // P2P: the rider released you from a stop ("Stop Complete") -> nav advances to the next
+      // target automatically; surface any wait overage that folded into your 35%.
+      if(Number(d.activeRide.stopCompletedAt||0)>Number(_prevRide.stopCompletedAt||0)){
+        var _wd=Number(d.activeRide.waitChargeTotal||0)-Number(_prevRide.waitChargeTotal||0);
+        drvToast('\u2713 Guest released you \u2014 routing onward'+(_wd>0.005?' \u00B7 +'+fmt$(_wd*DRIVER_SHARE)+' wait':''),'success');
+      }
+      // Hourly steers via the dropoff itself (update-stops / advance-stop) -> reroute notice.
+      if(d.activeRide.rideType==='hourly'){
+        if(d.activeRide.dropoffAddress && d.activeRide.dropoffAddress!==_prevRide.dropoffAddress){ drvToast('\uD83D\uDCCD New stop: '+d.activeRide.dropoffAddress,'success'); }
+        else if((d.activeRide.nextStopAddress||'')!==(_prevRide.nextStopAddress||'')){ drvToast(d.activeRide.nextStopAddress?'\u23ED\uFE0F Next stop updated':'Next stop cleared','info'); }
+      }
       if(Number(d.activeRide.hours||0)>Number(_prevRide.hours||0)){ drvToast('\u23F1 Trip extended to '+d.activeRide.hours+' hours','success'); }
-      if(Number(d.activeRide.estimatedPrice||0)>Number(_prevRide.estimatedPrice||0)+0.005){ drvToast('\uD83D\uDCB0 Stop added \u00B7 +'+fmt$((Number(d.activeRide.estimatedPrice)-Number(_prevRide.estimatedPrice||0))*DRIVER_SHARE)+' to your earnings','success'); }
     }
     if(!_ridesPollTimer) startRidesPoll(); // keep polling during active ride
     renderActiveRidePanel();
@@ -2125,7 +2138,8 @@ function renderActiveRidePanel(){
   var _earnEl=$d('arc-earn'), _fareNow=Number(r.finalPrice||r.estimatedPrice||0);
   if(_earnEl){
     if(_fareNow>0 && ['accepted','driver_arrived','in_progress'].includes(r.status)){
-      $d('arc-earn-val').textContent=fmt$(_fareNow*DRIVER_SHARE)+(Number(r.stopSurcharge)>0?' \u00B7 incl. stops':'');
+      var _inc=[]; if(Number(r.stopSurcharge)>0)_inc.push('stops'); if(Number(r.waitChargeTotal)>0)_inc.push('wait');
+      $d('arc-earn-val').textContent=fmt$(_fareNow*DRIVER_SHARE)+(_inc.length?' \u00B7 incl. '+_inc.join(' + '):'');
       _earnEl.style.display='block';
     } else { _earnEl.style.display='none'; }
   }
@@ -2186,7 +2200,17 @@ function renderActiveRidePanel(){
         _ip+='<div class="arc-btn" style="flex:1;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.3);color:var(--gold);cursor:default;font-size:12px;font-weight:800;letter-spacing:.02em;">\u23F1 <span id="arc-hourly-clock">\u2014</span> remaining \u00B7 on the clock</div>';
       }
     } else {
-      _ip+='<button class="arc-btn arc-btn-complete" onclick="completeRide()">\uD83C\uDFC1 Complete</button>';
+      // P2P ordered stops: while an intermediate stop is still owed, the chauffeur marks arrival
+      // (starts the shared 5-min grace) then watches the grace/overage tick until the RIDER releases
+      // them ("Stop Complete"). Only once every stop is released does the final-dropoff Complete show.
+      var _aStop=_firstActiveStop(r);
+      if(_aStop && !_aStop.arrivedAt){
+        _ip+='<button class="arc-btn arc-btn-complete" onclick="markArrivedAtStop()">\uD83D\uDCCD Arrived at Stop</button>';
+      } else if(_aStop){
+        _ip+='<div class="arc-btn" style="flex:1;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.3);color:var(--gold);cursor:default;font-size:12px;font-weight:800;letter-spacing:.01em;"><span id="arc-stop-clock">\u23F1 \u2014</span></div>';
+      } else {
+        _ip+='<button class="arc-btn arc-btn-complete" onclick="completeRide()">\uD83C\uDFC1 Complete</button>';
+      }
     }
     actions.innerHTML=_ip;
   }
@@ -2203,6 +2227,12 @@ function renderActiveRidePanel(){
     if(!_hourlyDriverTimer) _hourlyDriverTimer=setInterval(_tickDriverHourly,1000);
     _tickDriverHourly();
   } else { _stopDriverHourly(); }
+  // P2P stop wait: an arrived-but-not-yet-released intermediate stop runs a 5-min grace then $1/min.
+  var _awStop=(r.status==='in_progress')?_firstActiveStop(r):null;
+  if(_awStop && _awStop.arrivedAt){
+    if(!_stopWaitTimer) _stopWaitTimer=setInterval(_tickStopWait,1000);
+    _tickStopWait();
+  } else { _stopStopWait(); }
   updateNav();
   if(r.status==='completed'){
     var crPay=(r.finalPrice||r.estimatedPrice||0)*DRIVER_SHARE;
@@ -2223,6 +2253,34 @@ function _tickDriverHourly(){
   var endsAt=Number(r.startedAt||0)+Number(r.hours||0)*3600000;
   if(endsAt>0 && Date.now()>=endsAt){ _stopDriverHourly(); renderActiveRidePanel(); return; }  // booked time up \u2192 surface Mark Route Complete
   var clk=$d('arc-hourly-clock'); if(clk) clk.textContent=_fmtRemain(endsAt-Date.now());
+}
+// -- P2P stop wait clock (driver) --------------------------------------------
+// Mirrors the worker's overage math exactly: a 5-min grace from arrivedAt, then $1 per minute
+// PAST it (overMin = ceil(elapsedMin - 5)). Both apps show the same number; the RIDER releases
+// the chauffeur via /chauffeur/complete-stop, which folds the overage into the locked fare.
+function _stopStopWait(){ if(_stopWaitTimer){ clearInterval(_stopWaitTimer); _stopWaitTimer=null; } }
+function _stopWaitText(arrivedAt){
+  var elapsed=Date.now()-Number(arrivedAt||0), grace=5*60000;
+  if(elapsed<grace){ return '\u23F1 Grace '+_fmtRemain(grace-elapsed)+' \u00B7 waiting for guest'; }
+  var ov=Math.max(0,Math.ceil(elapsed/60000-5));
+  return '\u23F1 +'+fmt$(ov)+' \u00B7 '+ov+' min over \u00B7 waiting for guest';
+}
+function _tickStopWait(){
+  var r=_activeRide, s=r&&_firstActiveStop(r);
+  if(!r||r.status!=='in_progress'||!s||!s.arrivedAt){ _stopStopWait(); return; }
+  var el=$d('arc-stop-clock'); if(el) el.textContent=_stopWaitText(s.arrivedAt);
+}
+// Chauffeur reached an intermediate stop -> stamp arrivedAt (starts the shared 5-min grace).
+async function markArrivedAtStop(){
+  if(!_activeRide||!drvState.token) return;
+  var r=await fetch(WORKER+'/chauffeur/arrive-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:_activeRide.id})}).catch(function(){return null;});
+  var d=r?await r.json().catch(function(){return {};}):{};
+  if(!r||!r.ok){ drvToast((d&&d.error)||'Could not mark arrival','error'); return; }
+  var s=_firstActiveStop(_activeRide); if(s) s.arrivedAt=d.arrivedAt||Date.now();   // optimistic: start the grace immediately
+  renderActiveRidePanel();
+  drvToast('\uD83D\uDCCD At the stop \u2014 5-min grace started','success');
+  _showPrestigeReminder('stop');
+  pollDriverRides();
 }
 // Prestige service reminder shown to the chauffeur on arrival, on each completed stop, and on
 // trip completion (every ride type). Reinforces the Prestige Black standard - open the door, be
@@ -2342,9 +2400,22 @@ function drawActiveRideOnMap(ride){
 }
 
 // -- In-app turn-by-turn navigation ----------------------------------------
+// P2P ordered multi-stop: the first intermediate stop the chauffeur still owes the guest
+// (accepted via respond-stop, not yet released by the rider's "Stop Complete"). The FINAL
+// dropoff is NEVER in stops[] -> it's always the last leg and never gets a wait timer. Hourly
+// steers via dropoffAddress (update-stops / advance-stop), so it ignores stops[] here.
+function _firstActiveStop(r){
+  if(!r||r.rideType==='hourly'||!Array.isArray(r.stops)) return null;
+  for(var i=0;i<r.stops.length;i++){ var s=r.stops[i]; if(s && !s.completedAt && (Number(s.lat)||Number(s.lng))) return s; }
+  return null;
+}
 function navTarget(r){
   if(!r) return null;
-  if(r.status==='in_progress'){ return (r.dropoffLat&&r.dropoffLng)?{lat:r.dropoffLat,lng:r.dropoffLng,phase:'drop'}:null; }
+  if(r.status==='in_progress'){
+    var st=_firstActiveStop(r);
+    if(st) return {lat:Number(st.lat),lng:Number(st.lng),phase:'stop'};   // ordered intermediate stop first
+    return (r.dropoffLat&&r.dropoffLng)?{lat:r.dropoffLat,lng:r.dropoffLng,phase:'drop'}:null;  // then the original final dropoff
+  }
   if(r.status==='accepted'||r.status==='driver_arrived'){ return (r.pickupLat&&r.pickupLng)?{lat:r.pickupLat,lng:r.pickupLng,phase:'pick'}:null; }
   return null;
 }
