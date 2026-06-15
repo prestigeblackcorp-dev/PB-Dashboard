@@ -3837,7 +3837,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v106';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v107';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -17209,7 +17209,7 @@ function switchSlingshotDoc(isWaiver){
   }
 }
 
-function sendSignedCopyToClient(){
+async function sendSignedCopyToClient(){
   if(!_contractBookingId) return;
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
   if(!b.customerSig){ showToast('No signature saved yet \u2014 have the client sign first'); return; }
@@ -17296,10 +17296,16 @@ function sendSignedCopyToClient(){
     '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth \u00B7 (214) 207-2481</div>'+
     '</div>';
   var ssb=$d('contractSendSignedBtn');
-  if(ssb){ ssb.disabled=true; ssb.textContent='Sending\u2026'; }
+  if(ssb){ ssb.disabled=true; ssb.textContent='Building PDF\u2026'; }
+  // Attach the polished pdf-lib PDF (the SAME clean document the owner downloads) so the client gets a
+  // real PDF attachment, not only the HTML embed. Best-effort: if the build fails the email still sends,
+  // and an OLD messaging worker simply ignores the attachments field (JSON.stringify drops undefined).
+  var _attachments;
+  try{ var _pdfBytes=await _buildContractPdfBytes(); if(_pdfBytes){ _attachments=[{filename:(subj||'Signed Contract').replace(/[\/\\:*?"<>|]/g,'-')+'.pdf', content:_bytesToBase64(_pdfBytes)}]; } }catch(e){}
+  if(ssb){ ssb.textContent='Sending\u2026'; }
   fetch(MESSAGING_URL+'/send-email',{
     method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
-    body:JSON.stringify({to:b.email,subject:subj,html:html})
+    body:JSON.stringify({to:b.email,subject:subj,html:html,attachments:_attachments})
   }).then(function(r){
     if(ssb){ ssb.disabled=false; ssb.textContent='\uD83D\uDCE7 Send Signed Copy to Client'; }
     if(r.ok){
@@ -18491,20 +18497,26 @@ function _pdfSafe(s){
 }
 
 // Build the contract/waiver as a real vector PDF and download it -- the path Print + Download use now.
-async function _genContractPdfLib(){
-  var text=$d('contractFilled').value;
-  if(!text || !text.trim()){ toast('No document to download'); return; }
-  if(typeof PDFLib==='undefined'){ toast('PDF tool still loading \u2014 try again in a moment.'); return; }
+// Build the contract/waiver PDF bytes with pdf-lib. Shared by Download/Print AND the emailed signed copy.
+async function _buildContractPdfBytes(){
+  var text=$d('contractFilled')?$d('contractFilled').value:'';
+  if(!text || !text.trim() || typeof PDFLib==='undefined') return null;
   var isHtml=text.trim().toLowerCase().startsWith('<!doctype')||text.trim().startsWith('<html');
   var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:680px;visibility:hidden';
   holder.innerHTML=_contractPrintInner(text,isHtml);
   document.body.appendChild(holder);
   var blocks; try{ blocks=_pdfExtractBlocks(holder); }catch(e){ blocks=[]; }
   try{ document.body.removeChild(holder); }catch(e){}
-  if(!blocks.length){ toast('Could not read the document.'); return; }
+  if(!blocks.length) return null;
   for(var bi=0; bi<blocks.length; bi++){ if(blocks[bi].type==='img'){ try{ blocks[bi].src=await _pdfBlackenImage(blocks[bi].src); }catch(e){} } }
+  return await _pdfLayoutContract(blocks);
+}
+function _bytesToBase64(bytes){ var bin='', CH=0x8000; for(var i=0;i<bytes.length;i+=CH){ bin+=String.fromCharCode.apply(null, bytes.subarray(i,i+CH)); } return btoa(bin); }
+async function _genContractPdfLib(){
+  if(typeof PDFLib==='undefined'){ toast('PDF tool still loading \u2014 try again in a moment.'); return; }
+  var bytes; try{ bytes=await _buildContractPdfBytes(); }catch(e){ bytes=null; }
+  if(!bytes){ toast('Could not build the document.'); return; }
   try{
-    var bytes=await _pdfLayoutContract(blocks);
     var fname=_contractFileBase()+'.pdf';
     // Prefer the Web Share API with the FILE ONLY -> iOS's sheet then shows just "1 Document", NOT the
     // "1 Link" blob: URL (which carries the github.io origin). Falls back to a normal download if the
