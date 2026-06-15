@@ -688,11 +688,38 @@ var _smDriverIdx = null;
 var PB_PDF_FOOTER = 'Prestige Black Corporation   \u00B7   prestigeblackrentals.com   \u00B7   5473 Blair Rd. Ste 100, Dallas, TX 75231';
 function _pdfExtractBlocks(root){
   var blocks=[];
-  var BLOCK=/^(H1|H2|H3|H4|H5|P|DIV|LI|TR|SECTION|HEADER|FOOTER|UL|OL|TABLE|TBODY|THEAD|BLOCKQUOTE|ARTICLE)$/;
+  var BLOCK=/^(H1|H2|H3|H4|H5|P|DIV|LI|SECTION|HEADER|FOOTER|UL|OL|TABLE|TBODY|THEAD|BLOCKQUOTE|ARTICLE)$/;
   function styleFor(tag){ return tag==='H1'?'h1':(tag==='H2'?'h2':((tag==='H3'||tag==='H4'||tag==='H5')?'h3':(tag==='LI'?'li':'p'))); }
-  function walk(el, curStyle){
+  function inlStyle(n){ return (n && n.getAttribute && n.getAttribute('style'))||''; }
+  function isBoldEl(n){ return n.tagName==='B'||n.tagName==='STRONG'||/font-weight\s*:\s*(bold|[6-9]00)/i.test(inlStyle(n)); }
+  function isUpperEl(n){ return /text-transform\s*:\s*uppercase/i.test(inlStyle(n)); }
+  function hasBottomRule(n){ return /border-bottom\s*:\s*[^;]*\b[1-9][\d.]*px/i.test(inlStyle(n)); }
+  function hasTopRule(n){ return /border-top\s*:\s*[^;]*\b[1-9][\d.]*px/i.test(inlStyle(n)); }
+  // Walk one table row: join its cells with a separator into a readable line (instead of jamming every
+  // cell's text together) AND pull any data-image inside a cell -- e.g. an authorized driver's signature,
+  // which textContent silently drops -- out as its own image block, preserving order within the row.
+  function walkRow(tr){
     var buf='';
-    function flush(){ var s=buf.replace(/[ \t\r\n]+/g,' ').trim(); if(s) blocks.push({type:curStyle, text:s}); buf=''; }
+    function flush(){ var s=buf.replace(/[ \t\r\n]+/g,' ').replace(/^(\s*\u00B7\s*)+/,'').replace(/(\s*\u00B7\s*)+$/,'').trim(); if(s) blocks.push({type:'p', text:s}); buf=''; }
+    function wc(el){
+      var ks=el.childNodes;
+      for(var j=0;j<ks.length;j++){ var n=ks[j];
+        if(n.nodeType===3){ buf+=n.nodeValue; }
+        else if(n.nodeType===1){
+          var tg=n.tagName; if(tg==='SCRIPT'||tg==='STYLE') continue;
+          if(tg==='IMG'){ var s=n.getAttribute('src')||''; if(/^data:image\//i.test(s)){ flush(); blocks.push({type:'img', src:s}); } }
+          else if(tg==='BR'){ buf+=' '; }
+          else wc(n);
+        }
+      }
+    }
+    var cells=tr.children;
+    for(var i=0;i<cells.length;i++){ var c=cells[i]; if(c.tagName!=='TD'&&c.tagName!=='TH') continue; if(i>0) buf+=' \u00B7 '; wc(c); }
+    flush();
+  }
+  function walk(el, curStyle, upper){
+    var buf='';
+    function flush(){ var s=buf.replace(/[ \t\r\n]+/g,' ').trim(); if(s){ if(upper) s=s.toUpperCase(); blocks.push({type:curStyle, text:s}); } buf=''; }
     var kids=el.childNodes;
     for(var i=0;i<kids.length;i++){
       var node=kids[i];
@@ -705,13 +732,14 @@ function _pdfExtractBlocks(root){
         if(tag==='IMG'){ var src=node.getAttribute('src')||''; if(/^data:image\//i.test(src)){ flush(); blocks.push({type:'img', src:src}); } }
         else if(tag==='BR'){ buf+=' '; }
         else if(tag==='HR'){ flush(); blocks.push({type:'hr'}); }
-        else if(BLOCK.test(tag)){ flush(); walk(node, styleFor(tag)); }
+        else if(tag==='TR'){ flush(); if(hasTopRule(node)) blocks.push({type:'hr'}); walkRow(node); if(hasBottomRule(node)) blocks.push({type:'hr'}); }
+        else if(BLOCK.test(tag)){ flush(); var cs=styleFor(tag); if(cs==='p' && isBoldEl(node)) cs='h3'; walk(node, cs, upper||isUpperEl(node)); if(tag==='DIV' && hasBottomRule(node)) blocks.push({type:'hr'}); }
         else { buf+=(node.textContent||''); }
       }
     }
     flush();
   }
-  walk(root, 'p');
+  walk(root, 'p', false);
   return blocks;
 }
 function _pdfBlackenImage(dataUri){
