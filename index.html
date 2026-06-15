@@ -3836,7 +3836,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v102';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v103';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -3975,9 +3975,20 @@ function _pushBookingsIndividually(){
   var _sig = dirty.map(function(b){ return b.id+':'+(Number(b._t)||0); }).sort().join(',');
   var _silent = (_sig === _lastPushSig);
   _lastPushSig = _sig;
+  // Same unreconciled set as last cycle -> nothing new to push. Skip entirely (no re-push, no sync-dot
+  // flicker, no toast). A genuinely new/edited booking bumps its _t -> a new signature -> it gets pushed.
+  if(_silent){ _pendingCloudSave=false; setSyncStatus('ok'); return; }
   _individualPushActive=true;
   setSyncStatus('syncing');
-  if(!_silent && !_fullSyncToldUser){ _fullSyncToldUser=true; toast('\u26A0 Full sync too large for this device \u2014 pushing changes one at a time. Your bookings still sync.'); }
+  // Inform ONCE EVER (persisted in localStorage), then NEVER again -- a long-lived dashboard tab plus
+  // the 15s poll were re-showing this banner, and a per-cycle-changing dirty signature (multi-device
+  // clock skew) defeated the per-session guard. The per-booking push is otherwise SILENT now: the sync
+  // dot is the only status, and a persistent failure stays red (tap it for the last error).
+  if(!_fullSyncToldUser){
+    _fullSyncToldUser=true;
+    var _seenTooBig=false; try{ _seenTooBig=!!localStorage.getItem('pb_toobig_seen'); }catch(e){}
+    if(!_seenTooBig){ try{ localStorage.setItem('pb_toobig_seen','1'); }catch(e){} toast('\u26A0 This device saves bookings one at a time \u2014 your changes still sync.'); }
+  }
   var i=0, ok=0, fail=0, skipped=0;
   (function next(){
     if(i>=dirty.length){
@@ -3985,14 +3996,9 @@ function _pushBookingsIndividually(){
       // Advance _lastSavedAt even for skipped duplicates so the worker-rejected copy isn't retried forever.
       if(ok>0||skipped>0){ _lastSavedAt=Date.now(); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} _pendingCloudSave=false; }
       setSyncStatus(fail?'error':'ok');
-      // Only announce on a NON-repeat cycle: a real failure, or genuinely new bookings pushed.
-      // A steady-state re-push of the same set stays silent (the sync dot still reflects state;
-      // tap it for the last error). This is what stops the "notifications every 10 seconds".
-      if(!_silent){
-        var _sk = skipped?(' \u00B7 '+skipped+' duplicate'+(skipped!==1?'s':'')+' skipped'):'';
-        if(fail) toast('\u26A0 '+fail+' booking'+(fail!==1?'s':'')+' failed: '+(_lastSyncErr||'error')+' [build '+PB_BUILD+']'+(ok?(' \u00B7 '+ok+' ok'):'')+_sk+' \u2014 screenshot this');
-        else if(ok) toast('\u2705 '+ok+' booking'+(ok!==1?'s':'')+' pushed'+_sk);
-      }
+      // SILENT: no per-cycle result toast (this was the spam). The sync dot reflects ok/error; a
+      // persistent failure keeps the dot red and `_lastSyncErr` is shown when it's tapped. Genuinely
+      // new/edited bookings still sync here -- they just no longer announce themselves every poll.
       return;
     }
     var b=dirty[i++];
