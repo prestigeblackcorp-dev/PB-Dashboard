@@ -3837,7 +3837,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v111';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v112';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -3939,15 +3939,37 @@ function _wellFormedStr(s){
   }
   return out;
 }
-function _safeSyncStringify(data){
-  return JSON.stringify(data, function(k,v){ return typeof v==='string' ? _wellFormedStr(v) : v; });
+// Firebase RTDB forbids . $ # [ ] / and ASCII control chars in object KEYS. A single illegal nested
+// key (the classic one: _driverReviewsSentAt keyed by an email, whose '.' TLD is illegal) makes the
+// ENTIRE PATCH/PUT return HTTP 400 -> that booking never syncs and the dot stays red forever. Sanitize
+// keys on the way out so one bad key can't poison the whole write.
+var _FB_BAD_KEY = /[\u0000-\u001f\u007f.$#\[\]\/]/;
+function _fbSafeKey(k){ return String(k).replace(/[\u0000-\u001f\u007f.$#\[\]\/]/g, '_'); }
+function _sanitizeKeysDeep(v){
+  if(!v || typeof v!=='object' || Array.isArray(v)) return v;
+  var bad=false, k;
+  for(k in v){ if(Object.prototype.hasOwnProperty.call(v,k) && _FB_BAD_KEY.test(k)){ bad=true; break; } }
+  if(!bad) return v;                                   // fast path: no illegal keys -> no allocation
+  var out={};
+  for(k in v){ if(Object.prototype.hasOwnProperty.call(v,k)){
+    var sk=_fbSafeKey(k);
+    if(out[sk]===undefined) out[sk]=v[k];              // first value wins on a sanitize collision
+  }}
+  return out;
 }
-// Encode the JSON to UTF-8 bytes ourselves so a buggy old-Safari string->body encoding can't emit
-// invalid UTF-8 \u2014 TextEncoder forces any stray surrogate to the valid U+FFFD bytes. Sending a
-// Uint8Array body is well-supported and identical on the wire for modern devices. Falls back to the
-// raw string if TextEncoder is unavailable (ancient browsers).
+function _safeSyncStringify(data){
+  // value pass: fix lone surrogates; object pass: sanitize Firebase-illegal keys (the replacer then
+  // recurses into the returned copy, so this applies at every nesting level).
+  return JSON.stringify(data, function(k,v){ return typeof v==='string' ? _wellFormedStr(v) : _sanitizeKeysDeep(v); });
+}
+// Send the sync JSON as a Blob, NOT a Uint8Array. A typed-array (TextEncoder) request body makes iOS
+// Safari's fetch reject with "Load failed" -- so EVERY POST/save fails (red sync dot, changes never
+// reach the cloud) while bodyless GETs/loads keep working. _safeSyncStringify already ran every string
+// through _wellFormedStr, so the JSON has no lone surrogates; a Blob encodes that well-formed string to
+// valid UTF-8, is universally supported as a fetch body, and sidesteps the typed-array bug. The worker
+// reads it identically via request.json(). Falls back to the raw string if Blob is unavailable.
 function _encodeSyncBody(s){
-  try { return (typeof TextEncoder!=='undefined') ? new TextEncoder().encode(s) : s; }
+  try { return new Blob([s], { type: 'application/json' }); }
   catch(e){ return s; }
 }
 
@@ -4018,8 +4040,8 @@ function _pushBookingsIndividually(){
       method:'POST', body:_encodeSyncBody(_safeSyncStringify({booking:b})),
       headers:Object.assign({'Content-Type':'application/json'},_authHeader())
     }).then(function(r){ var _ok=r.ok; return r.json().catch(function(){return {};}).then(function(j){ return {ok:_ok && j && j.ok, skipped:(j&&j.skipped), err:(j&&j.error)}; }); })
-      .then(function(res){ if(res.skipped){ skipped++; } else if(res.ok){ ok++; } else { fail++; if(res.err) _lastSyncErr='save-booking: '+res.err; } })
-      .catch(function(e){ fail++; _lastSyncErr='save-booking net: '+((e&&e.message)||'fail'); })
+      .then(function(res){ if(res.skipped){ skipped++; } else if(res.ok){ ok++; } else { fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+': '+(res.err||'rejected'); } })
+      .catch(function(e){ fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+' net: '+((e&&e.message)||'fail'); })
       .then(function(){ setTimeout(next, 250); });
   })();
 }
@@ -4045,6 +4067,27 @@ function _healStrandedBookings(){
       try{ cloudSave(); }catch(e){}
     }).catch(function(){});
   }catch(e){}
+}
+
+// Data heal: bookings written before the key fix carry _driverReviewsSentAt keyed by a raw email --
+// the '.' in the TLD is an illegal Firebase key, so that booking's cloud write 400s forever and it
+// never syncs (red dot; its extensions never reach the server). Rewrite those keys to the safe form
+// and re-push. Idempotent: a safe key sanitizes to itself, so this only touches bookings that still
+// hold an illegal key (the _safeSyncStringify net already protects the WRITE; this fixes LOCAL reads
+// + flags the booking dirty so the now-valid version actually goes up).
+function _migrateReviewKeys(){
+  var changed=0;
+  (bookings||[]).forEach(function(b){
+    if(!b || !b._driverReviewsSentAt || typeof b._driverReviewsSentAt!=='object') return;
+    var src=b._driverReviewsSentAt, out={}, dirty=false;
+    Object.keys(src).forEach(function(k){
+      var sk=_fbSafeKey(k);
+      if(sk!==k) dirty=true;
+      if(out[sk]===undefined) out[sk]=src[k];   // first value wins on a sanitize collision
+    });
+    if(dirty){ b._driverReviewsSentAt=out; b._t=Date.now(); changed++; }
+  });
+  if(changed){ try{ console.log('[PB] sanitized _driverReviewsSentAt keys on '+changed+' booking(s) -> re-syncing'); }catch(e){} try{ save(); }catch(e){} try{ cloudSave(); }catch(e){} }
 }
 
 // Build the cloud sync blob. The worker does a PATCH, so omitting a key leaves the cloud's copy
@@ -4298,6 +4341,7 @@ function cloudLoad(callback) {
         try { mergeCommLogsIntoNotifLog(); } catch(e){ try{ console.warn('mergeCommLogs skipped:', e); }catch(_e){} }
         try { _unfoldLegacyExtRevenue(); } catch(e){ try{ console.warn('unfold legacy ext revenue skipped:', e); }catch(_e){} } // one-time: undo the brief fold-on-paid (v63/v64) that inflated b.revenue
         try { _reconcilePaidExtensionCharges(); } catch(e){ try{ console.warn('reconcile ext charges skipped:', e); }catch(_e){} } // fold paid extension charges (guarded)
+        try { _migrateReviewKeys(); } catch(e){ try{ console.warn('migrate review keys skipped:', e); }catch(_e){} } // heal Firebase-illegal _driverReviewsSentAt email keys that 400 the booking's sync
         try { _healStrandedBookings(); } catch(e){ try{ console.warn('heal stranded bookings skipped:', e); }catch(_e){} } // one-time: re-push bookings the old dedup guard froze on the server
       }
       setSyncStatus('ok');
@@ -13620,15 +13664,16 @@ function _sendReviewTo(b, toEmail, toName, role){
   if(!MESSAGING_URL || !b || !toEmail) return;
   var isCust=role==='customer';
   var em=String(toEmail).toLowerCase().trim();
+  var emk=_fbSafeKey(em);   // Firebase-safe object key (an email's '.' is illegal as a key) for the _driverReviewsSentAt map
   if(isCust){ if(b.reviewEmailSentAt) return; }
-  else { if(b._driverReviewsSentAt && b._driverReviewsSentAt[em]) return; }
+  else { if(b._driverReviewsSentAt && b._driverReviewsSentAt[emk]) return; }
   var _lsKey='pb_review_sent_'+b.id+(isCust?'':'_'+em);
   if(localStorage.getItem(_lsKey)) return;
   localStorage.setItem(_lsKey,'1');
   var _ix=bookings.findIndex(function(x){ return x.id===b.id; });
   if(_ix!==-1){
     if(isCust){ bookings[_ix].reviewEmailSentAt=Date.now(); }
-    else { if(!bookings[_ix]._driverReviewsSentAt) bookings[_ix]._driverReviewsSentAt={}; bookings[_ix]._driverReviewsSentAt[em]=Date.now(); }
+    else { if(!bookings[_ix]._driverReviewsSentAt) bookings[_ix]._driverReviewsSentAt={}; bookings[_ix]._driverReviewsSentAt[emk]=Date.now(); }
   }
   var firstName=(toName||'').split(' ')[0]||'there';
   fetch(MESSAGING_URL+'/send-email',{
@@ -13642,19 +13687,19 @@ function _sendReviewTo(b, toEmail, toName, role){
       var i=bookings.findIndex(function(x){ return x.id===b.id; });
       if(i!==-1){
         if(isCust){ bookings[i].reviewEmailSentAt=bookings[i].reviewEmailSentAt||Date.now(); }
-        else { if(!bookings[i]._driverReviewsSentAt) bookings[i]._driverReviewsSentAt={}; bookings[i]._driverReviewsSentAt[em]=bookings[i]._driverReviewsSentAt[em]||Date.now(); }
+        else { if(!bookings[i]._driverReviewsSentAt) bookings[i]._driverReviewsSentAt={}; bookings[i]._driverReviewsSentAt[emk]=bookings[i]._driverReviewsSentAt[emk]||Date.now(); }
         bookings[i]._t=Date.now(); cloudSave();
       }
     } else {
       // Send failed \u2014 clear guards so it can retry next cycle
       localStorage.removeItem(_lsKey);
       var i2=bookings.findIndex(function(x){ return x.id===b.id; });
-      if(i2!==-1){ if(isCust){ delete bookings[i2].reviewEmailSentAt; } else if(bookings[i2]._driverReviewsSentAt){ delete bookings[i2]._driverReviewsSentAt[em]; } }
+      if(i2!==-1){ if(isCust){ delete bookings[i2].reviewEmailSentAt; } else if(bookings[i2]._driverReviewsSentAt){ delete bookings[i2]._driverReviewsSentAt[emk]; } }
     }
   }).catch(function(){
     localStorage.removeItem(_lsKey);
     var i3=bookings.findIndex(function(x){ return x.id===b.id; });
-    if(i3!==-1){ if(isCust){ delete bookings[i3].reviewEmailSentAt; } else if(bookings[i3]._driverReviewsSentAt){ delete bookings[i3]._driverReviewsSentAt[em]; } }
+    if(i3!==-1){ if(isCust){ delete bookings[i3].reviewEmailSentAt; } else if(bookings[i3]._driverReviewsSentAt){ delete bookings[i3]._driverReviewsSentAt[emk]; } }
   });
 }
 

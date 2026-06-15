@@ -1,4 +1,4 @@
-const CACHE = 'pb-v111';
+const CACHE = 'pb-v112';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
@@ -16,19 +16,28 @@ self.addEventListener('activate', function(e) {
 
 self.addEventListener('fetch', function(e) {
   if(e.request.method !== 'GET') return;
+  // ONLY handle same-origin GETs. Cross-origin API calls (the Cloudflare worker: sync load/savedAt,
+  // ride-status, etc.) MUST pass straight through to the network. Intercepting them gave no benefit and
+  // actively broke them: those GETs are cache-busted (?_=timestamp) so they are never in the cache, and
+  // on ANY network blip the offline fallback ran caches.match() -> undefined -> "FetchEvent.respondWith
+  // received an error: Returned response is null", failing the request (red sync dot). Passing them
+  // through gives a clean, retryable failure instead.
+  var _url; try { _url = new URL(e.request.url); } catch(_e){ return; }
+  if(_url.origin !== self.location.origin) return;
   // Network-first. Code (navigations / .html / .js) is fetched with cache:'no-store' so a new
   // deploy ALWAYS shows on the next load \u2014 never a stale build from the browser/CDN HTTP cache
   // (this was the bug: max-age=600 on GitHub Pages kept serving old HTML). Other assets use the
-  // normal cache. Offline \u2192 fall back to whatever we cached.
+  // normal cache. Offline \u2192 fall back to whatever we cached, else a clean error Response.
   var fresh = e.request.mode === 'navigate' || /\.(html|js)(\?|#|$)/i.test(e.request.url);
   var req = fresh ? new Request(e.request.url, { cache: 'no-store' }) : e.request;
   e.respondWith(
     fetch(req).then(function(res){
       var clone = res.clone();
-      caches.open(CACHE).then(function(c){ c.put(e.request, clone); });
+      caches.open(CACHE).then(function(c){ c.put(e.request, clone); }).catch(function(){});
       return res;
     }).catch(function(){
-      return caches.match(e.request);
+      // NEVER return undefined here -> that throws "Returned response is null". Cached copy, else error.
+      return caches.match(e.request).then(function(m){ return m || Response.error(); });
     })
   );
 });
