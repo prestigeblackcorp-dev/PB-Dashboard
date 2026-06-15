@@ -584,10 +584,10 @@ body.map-fs #map-expand-btn{z-index:1460;}
 
 <!-- &#9552;&#9552; DIGITAL PICKUP SIGN (Blacklane-style &#8212; tap to dismiss) &#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552;&#9552; -->
 <div id="pickup-sign" onclick="closePickupSign()" style="display:none;position:fixed;inset:0;z-index:20000;background:#000;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px;cursor:pointer;">
-  <img src="icon.png" alt="Prestige Black" style="width:74px;height:74px;border-radius:16px;margin-bottom:30px;">
+  <img src="obsidian-icon.png" alt="Obsidian" style="width:74px;height:74px;border-radius:16px;margin-bottom:30px;">
   <div style="font-size:12px;letter-spacing:.4em;color:var(--gold);font-weight:700;margin-bottom:20px;">WELCOMES</div>
   <div id="pickup-sign-name" style="font-family:Georgia,'Times New Roman',serif;font-size:min(13vw,76px);line-height:1.15;font-weight:700;color:#f5ead0;max-width:100%;word-break:break-word;">&#8212;</div>
-  <div style="margin-top:28px;font-size:11px;color:var(--muted);letter-spacing:.22em;font-weight:700;">PRESTIGE BLACK CHAUFFEUR</div>
+  <div style="margin-top:28px;display:flex;align-items:center;gap:9px;justify-content:center;"><img src="obsidian-icon.png" alt="" style="width:20px;height:20px;border-radius:6px;"><span style="font-size:11px;color:var(--muted);letter-spacing:.22em;font-weight:700;">OBSIDIAN CHAUFFEUR</span></div>
   <div style="position:absolute;bottom:calc(18px + env(safe-area-inset-bottom,0px));left:0;right:0;font-size:11px;color:#555;">Tap anywhere to close</div>
 </div>
 
@@ -1908,7 +1908,9 @@ async function _drvAcquireWake(){
     if(!(window.PB_FLAGS||{}).resilience || !('wakeLock' in navigator)) return;
     if(document.visibilityState!=='visible' || !_drvWantWake() || _wakeLock) return;
     _wakeLock=await navigator.wakeLock.request('screen');
-    if(_wakeLock&&_wakeLock.addEventListener) _wakeLock.addEventListener('release',function(){ _wakeLock=null; });
+    // The OS can release the lock at any time (a brief dim, a notification). If we still want it and the
+    // app is visible, re-acquire right away so the screen NEVER sleeps mid-route until the driver is off duty.
+    if(_wakeLock&&_wakeLock.addEventListener) _wakeLock.addEventListener('release',function(){ _wakeLock=null; if(_drvWantWake() && document.visibilityState==='visible') setTimeout(_drvAcquireWake, 500); });
   }catch(e){ _wakeLock=null; }
 }
 function _drvReleaseWake(){ try{ if(_wakeLock){ _wakeLock.release(); } }catch(e){} _wakeLock=null; }
@@ -1929,6 +1931,7 @@ if(typeof document!=='undefined'){
 
 async function pollDriverRides(){
   if(!drvState.token) return;
+  try{ _drvAcquireWake(); }catch(e){}   // heartbeat: re-grab the screen lock if the OS dropped it (no-op if held or off duty)
   var r=await fetch(WORKER+'/chauffeur/driver-rides?token='+encodeURIComponent(drvState.token),{cache:'no-store'}).catch(function(){return null;});
   if(!r||!r.ok) return;
   var d=await r.json().catch(function(){return null;});
