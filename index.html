@@ -3831,13 +3831,129 @@ function mergeArray(local, cloud) {
   return result;
 }
 
+// ============================================================================
+//  PHASE 2 - SIGNATURE OFF-LOAD (sigs travel in a separate /sigs store, not the
+//  every-sync booking blob). Gated by PB_FLAGS.sigsOffload (default OFF => behaves
+//  EXACTLY like today). The LOCAL booking objects always keep their full base64
+//  signatures (re-hydrated on load), so NONE of the ~60 status checks or 16 render
+//  sites change -- only the wire payload is slimmed. Sig ids + locations mirror
+//  _graftSignatures key-for-key (main + each extra driver + each extension + its
+//  per-driver sigs) so extract and re-hydrate are perfectly symmetric.
+// ============================================================================
+function _sigsOffloadOn(){ try{ return !!(window.PB_FLAGS && window.PB_FLAGS.sigsOffload); }catch(e){ return false; } }
+function _sigId(bid, type, a, b2){
+  if(type==='main')   return 'sig_'+bid+'_main';
+  if(type==='drv')    return 'sig_'+bid+'_drv'+a;
+  if(type==='ext')    return 'sig_'+bid+'_ext'+a;
+  if(type==='extdrv') return 'sig_'+bid+'_ext'+a+'_drv'+b2;
+  return 'sig_'+bid+'_x';
+}
+// Collect every REAL base64 signature on a booking with its id + structured location.
+function _collectSigs(b){
+  var out=[];
+  if(!b || !b.id) return out;
+  var bid=b.id;
+  if(_isSigStr(b.customerSig)) out.push({id:_sigId(bid,'main'), sig:b.customerSig, loc:{type:'main'}});
+  if(Array.isArray(b.extraDrivers)) b.extraDrivers.forEach(function(d,i){ if(d && _isSigStr(d.sig)) out.push({id:_sigId(bid,'drv',i), sig:d.sig, loc:{type:'drv', i:i}}); });
+  if(Array.isArray(b.extensions)) b.extensions.forEach(function(ext){
+    if(!ext || !ext.id) return;
+    if(_isSigStr(ext.sig)) out.push({id:_sigId(bid,'ext',ext.id), sig:ext.sig, loc:{type:'ext', extId:ext.id}});
+    if(ext.driverSigs && typeof ext.driverSigs==='object') Object.keys(ext.driverSigs).forEach(function(k){ var os=ext.driverSigs[k]; if(os && _isSigStr(os.sig)) out.push({id:_sigId(bid,'extdrv',ext.id,k), sig:os.sig, loc:{type:'extdrv', extId:ext.id, k:k}}); });
+  });
+  return out;
+}
+// Deep-clone-and-strip for the WIRE. NEVER mutates the live booking. Nulls only the heavy base64 sig
+// VALUES on the clone (keeps small sigDate/flags), records _sigFlags = ids+locations for re-hydration.
+// Returns {wire, sigs:[{id,sig}]}. A booking with no real sigs is returned untouched.
+function _stripSigsForWire(b){
+  var sigs=_collectSigs(b);
+  if(!sigs.length) return {wire:b, sigs:[]};
+  var w=JSON.parse(JSON.stringify(b));   // deep clone; the live object is never touched
+  sigs.forEach(function(s){ var L=s.loc;
+    if(L.type==='main'){ w.customerSig=null; }
+    else if(L.type==='drv'){ if(w.extraDrivers && w.extraDrivers[L.i]) w.extraDrivers[L.i].sig=null; }
+    else if(L.type==='ext'){ var e=(w.extensions||[]).find(function(x){return x&&x.id===L.extId;}); if(e) e.sig=null; }
+    else if(L.type==='extdrv'){ var e2=(w.extensions||[]).find(function(x){return x&&x.id===L.extId;}); if(e2 && e2.driverSigs && e2.driverSigs[L.k]) e2.driverSigs[L.k].sig=null; }
+  });
+  w._sigFlags = sigs.map(function(s){ return {id:s.id, loc:s.loc}; });
+  return {wire:w, sigs:sigs.map(function(s){ return {id:s.id, sig:s.sig}; })};
+}
+// Graft re-hydrated sigs (sigMap: {id -> dataUri}) back onto a LOCAL booking via its _sigFlags. Only
+// fills a sig that's currently MISSING locally (never overwrites a present one -> monotonic, like _graftSignatures).
+function _rehydrateBookingSigs(b, sigMap){
+  if(!b || !Array.isArray(b._sigFlags) || !sigMap) return 0;
+  var n=0;
+  b._sigFlags.forEach(function(f){
+    var sig=sigMap[f.id]; if(!_isSigStr(sig)) return;
+    var L=f.loc||{};
+    if(L.type==='main'){ if(!_isSigStr(b.customerSig)){ b.customerSig=sig; n++; } }
+    else if(L.type==='drv'){ if(Array.isArray(b.extraDrivers) && b.extraDrivers[L.i] && !_isSigStr(b.extraDrivers[L.i].sig)){ b.extraDrivers[L.i].sig=sig; n++; } }
+    else if(L.type==='ext'){ var e=(b.extensions||[]).find(function(x){return x&&x.id===L.extId;}); if(e && !_isSigStr(e.sig)){ e.sig=sig; n++; } }
+    else if(L.type==='extdrv'){ var e2=(b.extensions||[]).find(function(x){return x&&x.id===L.extId;}); if(e2 && e2.driverSigs && e2.driverSigs[L.k] && !_isSigStr(e2.driverSigs[L.k].sig)){ e2.driverSigs[L.k].sig=sig; n++; } }
+  });
+  return n;
+}
+// Is the slot a _sigFlag points to currently EMPTY locally? (If mergeArray's _graftSignatures already
+// restored it from a cached copy, it's filled -> we don't need to fetch it from /sigs.)
+function _sigSlotEmpty(b, loc){
+  if(!b || !loc) return false;
+  if(loc.type==='main') return !_isSigStr(b.customerSig);
+  if(loc.type==='drv')  return !(Array.isArray(b.extraDrivers) && b.extraDrivers[loc.i] && _isSigStr(b.extraDrivers[loc.i].sig));
+  if(loc.type==='ext'){ var e=(b.extensions||[]).find(function(x){return x&&x.id===loc.extId;}); return !(e && _isSigStr(e.sig)); }
+  if(loc.type==='extdrv'){ var e2=(b.extensions||[]).find(function(x){return x&&x.id===loc.extId;}); return !(e2 && e2.driverSigs && e2.driverSigs[loc.k] && _isSigStr(e2.driverSigs[loc.k].sig)); }
+  return false;
+}
+// Re-hydrate stripped bookings after a load: fetch ONLY the sigs whose slot is still empty (the rest were
+// auto-restored by _graftSignatures from local cache), graft them back, then done(count). When nothing is
+// stripped (flag OFF, or every sig already local) it calls done(0) SYNCHRONOUSLY -> a true no-op.
+function _rehydrateSigs(bookings, done){
+  try{
+    var need=[];
+    (bookings||[]).forEach(function(b){
+      if(!b || !Array.isArray(b._sigFlags)) return;
+      b._sigFlags.forEach(function(f){ if(f && f.id && _sigSlotEmpty(b, f.loc)) need.push(f.id); });
+    });
+    var uniq=need.filter(function(id,i){ return need.indexOf(id)===i; });
+    if(!uniq.length){ done(0); return; }   // nothing missing -> instant no-op
+    dbLoadSigs(uniq, function(map){
+      var n=0;
+      (bookings||[]).forEach(function(b){ if(b && Array.isArray(b._sigFlags)) n+=_rehydrateBookingSigs(b, map); });
+      done(n);
+    });
+  }catch(e){ try{ console.warn('rehydrate sigs skipped:', e); }catch(_e){} done(0); }
+}
+// Prepare ONE booking for the WIRE. Flag OFF -> cb(b) SYNCHRONOUSLY (today's behavior, untouched). Flag ON
+// -> save every signature to /sigs and CONFIRM persisted, THEN cb(the sig-stripped clone). If ANY sig save
+// is not confirmed, cb(the ORIGINAL inline booking) -> a signature is NEVER stripped from the wire unless
+// its copy is safely stored first. Never mutates the live booking (strip works on a deep clone).
+function _prepBookingForWire(b, cb){
+  if(!_sigsOffloadOn()){ cb(b); return; }
+  var r;
+  try{ r=_stripSigsForWire(b); }catch(e){ cb(b); return; }   // any error -> inline (safe)
+  if(!r.sigs.length){ cb(r.wire); return; }                  // no real sigs (wire===b)
+  var pending=r.sigs.length, allOk=true;
+  r.sigs.forEach(function(s){
+    dbSaveSig(s.id, s.sig, function(ok){ if(!ok) allOk=false; if(--pending===0){ cb(allOk ? r.wire : b); } });
+  });
+}
+// One-time, IDEMPOTENT backfill: COPY every existing booking signature into /sigs. Never removes the
+// inline copy from any booking -> purely additive, safe to run repeatedly (re-saving is the same bytes).
+// Run + confirm BEFORE flipping PB_FLAGS.sigsOffload ON so /sigs is fully populated. cb(savedCount,total).
+function _migrateSigsToStore(cb){
+  var all=[];
+  (bookings||[]).forEach(function(b){ try{ _collectSigs(b).forEach(function(s){ all.push(s); }); }catch(e){} });
+  if(!all.length){ if(cb) cb(0,0); return; }
+  var pending=all.length, saved=0;
+  all.forEach(function(s){ dbSaveSig(s.id, s.sig, function(ok){ if(ok) saved++; if(--pending===0){ try{ console.log('[PB] sig backfill: '+saved+'/'+all.length+' copied to /sigs'); }catch(e){} if(cb) cb(saved, all.length); } }); });
+}
+
 var _cloudSaveRetries = 0;
 var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
 var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from overlapping
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v113';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v114';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4046,13 +4162,15 @@ function _pushBookingsIndividually(){
       return;
     }
     var b=dirty[i++];
+    _prepBookingForWire(b, function(wireB){   // PHASE 2: store sigs in /sigs + strip from the wire (flag ON); cb(b) SYNCHRONOUSLY when OFF = unchanged
     fetch(WORKER_URL+'/sync/save-booking',{
-      method:'POST', body:_encodeSyncBody(_safeSyncStringify({booking:b})),
+      method:'POST', body:_encodeSyncBody(_safeSyncStringify({booking:wireB})),
       headers:Object.assign({'Content-Type':'application/json'},_authHeader())
     }).then(function(r){ var _ok=r.ok; return r.json().catch(function(){return {};}).then(function(j){ return {ok:_ok && j && j.ok, skipped:(j&&j.skipped), err:(j&&j.error)}; }); })
       .then(function(res){ if(res.skipped){ skipped++; } else if(res.ok){ ok++; } else { fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+': '+(res.err||'rejected'); } })
       .catch(function(e){ fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+' net: '+((e&&e.message)||'fail'); })
       .then(function(){ setTimeout(next, 250); });
+    });
   })();
 }
 
@@ -4144,7 +4262,7 @@ function _pushMetaSync(){
 }
 function _cloudSaveNow() {
   if (!WORKER_URL || _cloudLoading || _cloudSaving) return;
-  if (_fullSyncTooBig) { _pushBookingsIndividually(); return; } // this device can't POST the full blob \u2192 per-booking
+  if (_fullSyncTooBig || _sigsOffloadOn()) { _pushBookingsIndividually(); return; } // too big to POST in one piece, OR sigsOffload ON (route through per-booking so sigs are stripped+stored by the one verified path)  // this device can't POST the full blob \u2192 per-booking
   _cloudSaving = true;
   setSyncStatus('syncing');
   // Staleness check via Worker so Firebase rules can be locked
@@ -4272,6 +4390,7 @@ function cloudLoad(callback) {
           });
           // ------------------------------------------------------------------
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
+          _rehydrateSigs(bookings, function(_n){ if(_n>0){ try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){} try{ if(typeof render==='function') render(); }catch(e){} } });   // PHASE 2: fetch+graft any sig-stripped bookings from /sigs; no-op (no re-render) when flag OFF
         }
         if (Array.isArray(data.expenses)) {
           merged = mergeArray(expenses, data.expenses);
@@ -10808,6 +10927,78 @@ function dbDeletePhoto(id,cb){
       .then(function(r){ if(!r.ok) _directDelete(); })
       .catch(function(){ _directDelete(); });
   } else { _directDelete(); }
+}
+
+// -- PHASE 2: /sigs store (signatures off-loaded from the every-sync blob) ---------------------------
+// A 1:1 clone of the photo store above, in its OWN IndexedDB ('pb_sigs') + Firebase node ('/sigs') so it
+// never collides with photos and needs no version bump of an existing DB. Inert until the sync paths wire
+// it in (and only active when PB_FLAGS.sigsOffload is ON). Purely additive: it only ever COPIES signatures.
+var _sigDB = null;
+function openSigDB(cb){
+  if(_sigDB){ cb(_sigDB); return; }
+  try{
+    var req=indexedDB.open('pb_sigs',1);
+    req.onupgradeneeded=function(e){ try{ e.target.result.createObjectStore('sigs',{keyPath:'id'}); }catch(_e){} };
+    req.onsuccess=function(e){ _sigDB=e.target.result; cb(_sigDB); };
+    req.onerror=function(){ cb(null); };
+  }catch(e){ cb(null); }
+}
+function _sigCloudBase(){ return FIREBASE_URL ? FIREBASE_URL.replace(/\/$/,'') + '/sigs/' : null; }
+// Save ONE signature. cb(true) ONLY after it's confirmed persisted to the cloud (worker -> Firebase, or
+// direct-Firebase fallback) so the caller can "save-before-strip" safely. Also caches in IndexedDB.
+function dbSaveSig(id, dataUrl, cb){
+  openSigDB(function(db){ if(db){ try{ var tx=db.transaction('sigs','readwrite'); tx.objectStore('sigs').put({id:id,data:dataUrl}); }catch(_e){} } });
+  function _direct(){
+    var base=_sigCloudBase();
+    if(!base){ if(cb) cb(false); return; }
+    fetch(base+encodeURIComponent(id)+'.json',{method:'PUT',body:JSON.stringify(dataUrl),headers:{'Content-Type':'application/json'}})
+      .then(function(r){ if(cb) cb(!!(r&&r.ok)); })
+      .catch(function(){ if(cb) cb(false); });
+  }
+  if(WORKER_URL){
+    fetch(WORKER_URL+'/sigs/save',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({id:id,data:dataUrl})})
+      .then(function(r){ if(r&&r.ok){ if(cb) cb(true); } else { _direct(); } })
+      .catch(function(){ _direct(); });
+  } else { _direct(); }
+}
+// Load many signatures (IndexedDB-first, then worker/Firebase for any missing). cb(map) where map = {id -> dataUri}.
+function dbLoadSigs(ids, cb){
+  if(!ids||!ids.length){ cb({}); return; }
+  openSigDB(function(db){
+    var map={}, pending=ids.length;
+    function fin(){ if(--pending===0) _sigFetchMissing(map, ids, cb); }
+    if(!db){ ids.forEach(function(){ fin(); }); return; }
+    ids.forEach(function(id){
+      try{
+        var tx=db.transaction('sigs','readonly');
+        var req=tx.objectStore('sigs').get(id);
+        req.onsuccess=function(e){ if(e.target.result && e.target.result.data) map[id]=e.target.result.data; fin(); };
+        req.onerror=function(){ fin(); };
+      }catch(_e){ fin(); }
+    });
+  });
+}
+function _sigFetchMissing(map, ids, cb){
+  var base=_sigCloudBase();
+  var missing=ids.filter(function(id){ return !map[id]; });
+  if(!missing.length || (!base && !WORKER_URL)){ cb(map); return; }
+  var pending=missing.length;
+  function got(id,data){
+    if(data && typeof data==='string' && data.indexOf('data:image/')===0){
+      map[id]=data;
+      openSigDB(function(db){ if(db){ try{ var tx=db.transaction('sigs','readwrite'); tx.objectStore('sigs').put({id:id,data:data}); }catch(_e){} } });
+    }
+    if(--pending===0) cb(map);
+  }
+  missing.forEach(function(id){
+    function _direct(){ if(!base){ got(id,null); return; } fetch(base+encodeURIComponent(id)+'.json?_='+Date.now(),{cache:'no-store'}).then(function(r){ return r.json(); }).then(function(d){ got(id,d); }).catch(function(){ got(id,null); }); }
+    if(WORKER_URL){
+      fetch(WORKER_URL+'/sigs/get?id='+encodeURIComponent(id)+'&_='+Date.now(),{cache:'no-store',headers:_authHeader()})
+        .then(function(r){ return r.ok?r.json():null; })
+        .then(function(d){ if(d && typeof d.data==='string'){ got(id,d.data); } else { _direct(); } })
+        .catch(function(){ _direct(); });
+    } else { _direct(); }
+  });
 }
 function compressImage(file,cb){
   var reader=new FileReader();

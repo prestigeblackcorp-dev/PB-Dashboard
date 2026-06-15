@@ -39,7 +39,8 @@
     cardOnFile:  true,   // H — card-on-file (DEMO simulation until real Stripe keys added)
     tipping:     true,   // H — tipping (DEMO simulation)
     demoPay:     true,   // payments are a no-charge simulation; flip OFF when real Stripe keys exist
-    googlePlaces:true    // Google Places (New) search via worker proxy; LIVE (GOOGLE_PLACES_KEY set in Cloudflare)
+    googlePlaces:true,   // Google Places (New) search via worker proxy; LIVE (GOOGLE_PLACES_KEY set in Cloudflare)
+    sigsOffload: false   // Phase 2: move signatures OUT of the every-sync booking blob into the /sigs store. DEFAULT OFF = ships dormant (today's behavior). Flip ON only AFTER every device is on the new build AND the migration has backfilled /sigs. Reversible: re-inline from /sigs.
   };
 
   // Web Push VAPID public key (non-secret). Generated 2026-06; the matching private
