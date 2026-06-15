@@ -3953,7 +3953,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v116';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v117';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4228,6 +4228,7 @@ function _syncPayload(noBookings){
     grouponPayouts: grouponPayouts,
     custom_vehicles: JSON.parse(localStorage.getItem('pb_custom_vehicles') || '[]'),
     budgets: JSON.parse(localStorage.getItem('pb_budgets') || '{}'),
+    staffPins: staffPins,   // staff roster + roles + SHA-256 PIN hashes (access control) -- synced so a device wipe never loses staff; never plaintext (already hashed)
     contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
     slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
     // Only write owner_signature when non-empty OR when user explicitly cleared it
@@ -4411,6 +4412,11 @@ function cloudLoad(callback) {
         if (data.budgets && typeof data.budgets === 'object') {
           try { localStorage.setItem('pb_budgets', JSON.stringify(data.budgets)); } catch(e) {}
           loadBudgets();
+        }
+        if (Array.isArray(data.staffPins)) {   // restore staff roster + access PINs from the cloud (survives a device wipe)
+          staffPins = data.staffPins;
+          try { saveStaffPinsLocal(); } catch(e) {}
+          try { if(typeof renderStaffPinList==='function') renderStaffPinList(); } catch(e) {}
         }
         if (Array.isArray(data.maintenance)) {
           merged = mergeArray(maintenance, data.maintenance);
@@ -21507,7 +21513,8 @@ function updateOnlineStatus(){
     // M14: cloudSave() always reads from the current in-memory bookings/expenses/etc. arrays,
     // so calling it here on reconnect is safe \u2014 it will push the latest state, not a stale closure.
     // _offlinePending is cleared inside cloudSave() on a successful PUT response.
-    if(_offlinePending){ cloudSave(); } // cloudSave clears _offlinePending on success
+    if(_offlinePending){ cloudSave(); } // cloudSave clears _offlinePending on success (full sync includes the meta keys)
+    else { try{ if(typeof _pushMetaSync==='function') _pushMetaSync(); }catch(e){} } // reconnect with no pending booking edits: still nudge the small meta blob (ledgers, legal templates, staff pins) so a sync that failed earlier can never leave them stranded on one device
   } else {
     badge.style.display='';
   }

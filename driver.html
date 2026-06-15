@@ -867,6 +867,20 @@ async function loadDrvData(){
     drvState.clocks     = d.clocks     || [];
     drvState.incidents  = d.incidents  || [];
     drvState.reviews    = d.reviews    || [];
+    // Merge the cloud-backed missed-offer tally with any local-only entries (dedup by rideId, else timestamp).
+    // Cloud is the durable copy; backfill any local-only entries the server doesn't have yet so older misses
+    // recorded before this device synced are preserved going forward.
+    try{
+      var _srvP = Array.isArray(d.passed) ? d.passed : [];
+      var _locP = Array.isArray(drvState.passed) ? drvState.passed : [];
+      var _seenP = {}, _mergedP = [];
+      _srvP.concat(_locP).forEach(function(p){ if(!p) return; var k=p.rideId||('at'+(p.at||0)); if(_seenP[k]) return; _seenP[k]=1; _mergedP.push(p); });
+      _mergedP.sort(function(a,b){ return (a.at||0)-(b.at||0); });
+      if(_mergedP.length>1000) _mergedP=_mergedP.slice(-1000);
+      drvState.passed=_mergedP;
+      try{ localStorage.setItem('pb_drv_passed_'+(drvState.email||''), JSON.stringify(drvState.passed)); }catch(e){}
+      _locP.forEach(function(p){ if(!p) return; var k=p.rideId||('at'+(p.at||0)); if(!_srvP.some(function(s){ return s && (s.rideId||('at'+(s.at||0)))===k; })){ if(WORKER&&drvState.token){ fetch(WORKER+'/driver/passed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:drvState.email,token:drvState.token,entry:p})}).catch(function(){}); } } });
+    }catch(e){}
     // Determine clock state from most recent clock entry
     var lastClock=drvState.clocks.length?drvState.clocks[drvState.clocks.length-1]:null;
     drvState.clockedIn  = lastClock && lastClock.type==='in' && !lastClock.outAt;
@@ -2109,9 +2123,12 @@ function _recordPassedJob(ride, reason){
   if(!drvState.passed) drvState.passed=[];
   if(ride.rideId && drvState.passed.some(function(p){ return p && p.rideId===ride.rideId; })) return;
   var earn = Math.max(0, Number(ride.estimatedPrice||0) * DRIVER_SHARE);
-  drvState.passed.push({ rideId: ride.rideId||null, earn: earn, at: Date.now(), riderName: ride.riderName||'', rideType: ride.rideType||'', reason: (reason==='declined'?'declined':'timeout') });
+  var _passedEntry={ rideId: ride.rideId||null, earn: earn, at: Date.now(), riderName: ride.riderName||'', rideType: ride.rideType||'', reason: (reason==='declined'?'declined':'timeout') };
+  drvState.passed.push(_passedEntry);
   if(drvState.passed.length>1000) drvState.passed = drvState.passed.slice(-1000);
   try{ localStorage.setItem('pb_drv_passed_'+(drvState.email||''), JSON.stringify(drvState.passed)); }catch(e){}
+  // Cloud-back this miss so it survives a device wipe (read back inside /driver/data as `passed`).
+  try{ if(WORKER && drvState.token){ fetch(WORKER+'/driver/passed',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:drvState.email,token:drvState.token,entry:_passedEntry})}).catch(function(){}); } }catch(e){}
   try{ drvToast((reason==='declined'?'Declined \u2014 missed ':'\u23F1 Timed out \u2014 missed ')+fmt$(earn)+' take.','info'); }catch(e){}
   try{ renderEarnings(); }catch(e){}
 }
