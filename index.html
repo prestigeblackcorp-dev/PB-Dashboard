@@ -3837,7 +3837,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v110';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v111';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -3904,6 +3904,17 @@ _storeReady.then(function(){ _bigStorePending = false; });
   }catch(e){ /* can't override Storage.prototype \u2192 app uses native localStorage, exactly as before */ }
 })();
 var _fullSyncTooBig = false;     // set once a full /sync/save is rejected as too big/truncated \u2192 switch this device to per-booking pushes
+try{ if(localStorage.getItem('pb_full_sync_toobig')==='1') _fullSyncTooBig = true; }catch(e){}   // remember per-booking mode across reloads so a too-big device stops re-failing the full sync (the long red dot) on every load
+// Lock this device into per-booking sync (the full blob won't POST in one piece) and remember it
+// across reloads so we stop re-attempting the doomed full sync (which left the dot red ~25s/cycle).
+// Called both when the failure looks size-related AND when retries are exhausted -- a persistent
+// 5xx/timeout on a large body means "too big" too, and should fall back instead of staying red.
+function _markFullSyncTooBig(){
+  _fullSyncTooBig = true;
+  try{ localStorage.setItem('pb_full_sync_toobig','1'); }catch(e){}
+  _cloudSaveRetries = 0;
+  _pushBookingsIndividually();
+}
 var _individualPushActive = false;
 var _fullSyncToldUser = false;   // the "full sync too large" banner shows ONCE per session, not on every 15s poll
 var _lastPushSig = '';           // signature (ids+_t) of the last per-booking push \u2014 identical set next cycle => SILENT (kills the every-poll toast spam from worker-skipped duplicates that never reconcile)
@@ -4128,16 +4139,16 @@ function _cloudSaveNow() {
             // Full save rejected \u2014 either too big to POST in one piece on this device, OR Firebase
             // refused some booking's data. Switch to per-booking pushes: that syncs every GOOD booking
             // on its own AND isolates the bad one, surfacing its exact Firebase reason in the toast.
-            _fullSyncTooBig = true; _cloudSaveRetries = 0; _pushBookingsIndividually();
+            _markFullSyncTooBig();
           } else if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
-          else { _cloudSaveRetries = 0; setSyncStatus('error'); }
+          else { _markFullSyncTooBig(); }   // retries exhausted -> fall back to per-booking instead of sitting red
         }
       }).catch(function(e) {
         _cloudSaving = false;
         _lastSyncErr = 'save network: ' + ((e && e.message) ? e.message : 'fetch failed') + ' (' + Math.round(JSON.stringify(data).length / 1024) + 'KB)';
         setSyncStatus('error');
         if (++_cloudSaveRetries <= 5) setTimeout(_cloudSaveNow, 5000);
-        else { _cloudSaveRetries = 0; }
+        else { _markFullSyncTooBig(); }   // big-body timeout/5xx kept failing -> switch to per-booking, don't stay red
       });
     })
     .catch(function(e){ _cloudSaving = false; _lastSyncErr = 'savedAt: ' + ((e && e.message) ? e.message : 'fetch failed'); setSyncStatus('error'); });
