@@ -2948,7 +2948,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <button class="btn btn-sm" onclick="testOpenAiKey()" style="white-space:nowrap">&#128268; Test</button>
         </div>
         <div id="settOpenAiStatus" style="font-size:11px;margin-top:4px;display:none"></div>
-        <div style="font-size:11px;color:var(--muted);margin-top:5px">Used for AI insurance card scanning (~$0.01/scan with GPT-4o). Get one at platform.openai.com.</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">Used for AI insurance card scanning (~$0.01/scan with GPT-4o). Get one at platform.openai.com. <strong style="color:var(--gold)">Most secure:</strong> set <code>OPENAI_KEY</code> in your Cloudflare worker instead &mdash; then the key stays off every device and you can leave this field blank.</div>
       </div>
     </div>
 
@@ -3953,7 +3953,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v117';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v118';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -13598,10 +13598,34 @@ function sendCustomerVerifiedEmail(b){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  AI INSURANCE CARD SCANNING
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// Run an OpenAI chat/completions call. PREFERRED path: the worker proxy (the key lives in the Cloudflare
+// worker env OPENAI_KEY -> off this device). If the worker isn't configured yet, fall back to a locally
+// pasted key so the feature never breaks mid-migration. Resolves to the parsed OpenAI response JSON.
+function _openaiDirect(payload){
+  return fetch('https://api.openai.com/v1/chat/completions',{
+    method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+OPENAI_KEY},
+    body:JSON.stringify(payload)
+  }).then(function(r){ return r.json(); });
+}
+function _openaiChat(payload){
+  if(WORKER_URL){
+    return fetch(WORKER_URL+'/ai/chat',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify(payload)})
+      .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,j:j}; }); })
+      .then(function(res){
+        if(res.status===501 || (res.j&&res.j.notConfigured)){   // worker has no OPENAI_KEY yet
+          if(OPENAI_KEY) return _openaiDirect(payload);
+          throw new Error('AI not configured \u2014 set OPENAI_KEY in your Cloudflare worker (or paste a key in Settings)');
+        }
+        return res.j;
+      });
+  }
+  if(OPENAI_KEY) return _openaiDirect(payload);
+  return Promise.reject(new Error('AI not configured'));
+}
 function scanInsuranceCard(input){
   var file=input.files[0]; input.value='';
   if(!file) return;
-  if(!OPENAI_KEY){ openSettings(); return; }
+  if(!OPENAI_KEY && !WORKER_URL){ openSettings(); return; }   // need either the worker proxy OR a local key
   var b=bookings.find(function(x){ return x.id===verifyId; });
   var rentalEnd=b?(b.dropoffDate||b.pickupDate||b.date):'';
   var today=todayStr();
@@ -13612,19 +13636,14 @@ function scanInsuranceCard(input){
     var parts=e.target.result.split(',');
     var mime=parts[0].replace('data:','').replace(';base64','');
     var b64=parts[1];
-    fetch('https://api.openai.com/v1/chat/completions',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+OPENAI_KEY},
-      body:JSON.stringify({
-        model:'gpt-4o',
-        max_tokens:400,
-        messages:[{role:'user',content:[
-          {type:'text',text:'Extract insurance info from this insurance card image. Return ONLY a JSON object with these exact keys: carrier (string), policyNumber (string), coverageType (one of: "Full Coverage","Liability Only","Comprehensive","Rental Coverage", or closest match), expiryDate (YYYY-MM-DD string, empty if not visible), policyholderName (string, empty if same as renter or not visible). No markdown, no explanation \u2014 just the JSON object.'},
-          {type:'image_url',image_url:{url:'data:'+mime+';base64,'+b64}}
-        ]}]
-      })
+    _openaiChat({
+      model:'gpt-4o',
+      max_tokens:400,
+      messages:[{role:'user',content:[
+        {type:'text',text:'Extract insurance info from this insurance card image. Return ONLY a JSON object with these exact keys: carrier (string), policyNumber (string), coverageType (one of: "Full Coverage","Liability Only","Comprehensive","Rental Coverage", or closest match), expiryDate (YYYY-MM-DD string, empty if not visible), policyholderName (string, empty if same as renter or not visible). No markdown, no explanation \u2014 just the JSON object.'},
+        {type:'image_url',image_url:{url:'data:'+mime+';base64,'+b64}}
+      ]}]
     })
-    .then(function(r){ return r.json(); })
     .then(function(data){
       var text=data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content;
       if(!text) throw new Error('No response from OpenAI');
