@@ -3777,7 +3777,12 @@ function _isSigStr(s){ return !!(s && typeof s==='string' && s.indexOf('data:ima
 // cloud after the booking had been edited locally) on the next autosave.
 function _graftSignatures(base, other){
   if(!base || !other || typeof base!=='object' || typeof other!=='object') return base;
-  if(!_isSigStr(base.customerSig) && _isSigStr(other.customerSig)){
+  // OVERRIDE-AWARE: never RESURRECT a signature the owner deliberately cleared via "Override".
+  // overrideCustSig() stamps customerSigClearedAt; skip the graft when that clear is at/after the
+  // loser's sign time. (A genuine re-sign bumps _t -> it WINS the merge and carries its sig as the
+  // winner, so base already has it and this branch never runs -> a real re-sign is never dropped.)
+  if(!_isSigStr(base.customerSig) && _isSigStr(other.customerSig) &&
+     !((Number(base.customerSigClearedAt)||0) && (Number(base.customerSigClearedAt)||0) >= (Number(other.customerSigAt)||0))){
     base.customerSig=other.customerSig; base.customerSigDate=other.customerSigDate;
     base.customerSigAt=other.customerSigAt; base.customerSigVehicle=other.customerSigVehicle; base.customerSigColor=other.customerSigColor;
   }
@@ -3802,7 +3807,10 @@ function _graftSignatures(base, other){
       if(!ext) return;
       var oe=other.extensions.find(function(x){ return x && x.id===ext.id; });
       if(!oe) return;
-      if(!_isSigStr(ext.sig) && _isSigStr(oe.sig)){ ext.sig=oe.sig; ext.sigDate=oe.sigDate; ext.signed=true; }
+      // OVERRIDE-AWARE (same rule as the primary sig): _overrideExtSig() stamps ext.sigClearedAt; do
+      // NOT resurrect an extension signature the owner cleared (clear at/after the loser's sign time).
+      if(!_isSigStr(ext.sig) && _isSigStr(oe.sig) &&
+         !((Number(ext.sigClearedAt)||0) && (Number(ext.sigClearedAt)||0) >= (Number(oe.sigAt)||0))){ ext.sig=oe.sig; ext.sigDate=oe.sigDate; ext.signed=true; }
       if(oe.driverSigs){
         if(!ext.driverSigs) ext.driverSigs={};
         Object.keys(oe.driverSigs).forEach(function(k){ var os=oe.driverSigs[k]; if(os && _isSigStr(os.sig) && !(ext.driverSigs[k] && _isSigStr(ext.driverSigs[k].sig))){ ext.driverSigs[k]=os; } });
@@ -3989,7 +3997,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v123';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v124';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -17058,6 +17066,7 @@ function overrideCustSig(){
   delete bookings[idx].customerSigDate;
   delete bookings[idx].customerSigVehicle;
   delete bookings[idx].customerSigColor;
+  bookings[idx].customerSigClearedAt=Date.now(); // tombstone: a stale-device merge must NOT resurrect the cleared sig (else the portal stays "Already Signed")
   bookings[idx]._t=Date.now();
   save();
   _lockColorPicker(false); // re-enable color picker after override
@@ -18703,6 +18712,7 @@ function _overrideExtSig(){
   bookings[idx].extensions[_contractActiveExtIdx].sig     = '';
   bookings[idx].extensions[_contractActiveExtIdx].sigDate = '';
   bookings[idx].extensions[_contractActiveExtIdx].signed  = false;
+  bookings[idx].extensions[_contractActiveExtIdx].sigClearedAt = Date.now(); // tombstone: a stale-device merge must NOT resurrect the cleared ext sig
   bookings[idx]._t = Date.now();
   save();
   _contractShowTab(_contractActiveExtIdx);
