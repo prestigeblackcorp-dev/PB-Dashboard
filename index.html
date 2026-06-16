@@ -3997,7 +3997,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v126';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v127';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -12322,17 +12322,26 @@ function removeExtraDriver(bookingId, driverIdx){
 function _pushDriverVerifyToCloud(bookingId, driverIdx, d){
   try{
     var secret=(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'');
-    if(!secret || !bookingId || driverIdx===null || driverIdx===undefined) return;
+    if(!secret){ try{ alert('Could NOT save verification to the cloud: this device has no Worker Secret.\n\nThe authorized driver still cannot sign. Open Settings on the dashboard, paste your DASHBOARD_SECRET, then mark verified again.'); }catch(e){} return; }
+    if(!bookingId || driverIdx===null || driverIdx===undefined) return;
     d=d||{};
-    fetch(WORKER+'/driver/owner-verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    var nm=(d.name||('driver #'+(Number(driverIdx)+1)));
+    var payload=JSON.stringify({
       secret:secret, bookingId:bookingId, driverIdx:Number(driverIdx),
       idVerified:!!d.idVerified, signWithoutVerify:!!d.signWithoutVerify,
       idName:d.idName||'', idType:d.idType||'', idNumber:d.idNumber||'', idState:d.idState||'',
       idExpiry:d.idExpiry||'', idDob:d.idDob||'', idAddress:d.idAddress||'', verifiedAt:d.verifiedAt||''
-    })}).then(function(r){return r.json();}).then(function(res){
-      if(res&&res.ok){ try{ showToast('\u2713 Driver verification saved to cloud'); }catch(e){} }
-      else { try{ showToast('Cloud verify write failed: '+((res&&res.error)||'unknown')); }catch(e){} }
-    }).catch(function(){ try{ showToast('Cloud verify write failed \u2014 will retry on next sync'); }catch(e){} });
+    });
+    var _attempt=function(n){
+      fetch(WORKER+'/driver/owner-verify',{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
+        .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {ok:r.ok,status:r.status,j:j}; }); })
+        .then(function(res){
+          if(res.ok && res.j && res.j.ok){ try{ showToast('\u2713 ' + nm + ' verified in cloud \u2014 they can sign now'); }catch(e){} }
+          else { try{ alert('Cloud verification write FAILED \u2014 ' + nm + ' still cannot sign.\n\nReason: ' + ((res.j&&res.j.error) || ('HTTP '+res.status)) + '\n\nIf it says Unauthorized, re-paste your Worker Secret in Settings. Then mark verified again.'); }catch(e){} }
+        })
+        .catch(function(){ if(n<2){ setTimeout(function(){ _attempt(n+1); }, 1500); } else { try{ alert('Cloud verification write failed (network) \u2014 ' + nm + ' still cannot sign. Check your connection and mark verified again.'); }catch(e){} } });
+    };
+    _attempt(0);
   }catch(e){}
 }
 // Owner override: let ONE authorized driver sign the agreement WITHOUT completing ID
