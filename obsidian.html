@@ -803,6 +803,15 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
               <input id="stopInp" class="addr-inp" placeholder="&#128205; Add a stop" autocomplete="off" oninput="onAddrInput('stop')" onfocus="onAddrFocus('stop')">
               <div class="suggestions" id="stopSugg" style="display:none"></div>
             </div>
+            <!-- P2P only: where does this stop go? Before the original dropoff (a stop on the way), or
+                 make it the NEW final stop (the original dropoff becomes a stop you reach first). -->
+            <div id="stopPosChoice" style="display:none;margin-bottom:10px;">
+              <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:0 2px 6px;">Where should this stop go?</div>
+              <div style="display:flex;gap:8px;">
+                <button type="button" id="stopPosBefore" onclick="_setStopPos('before')" style="flex:1;background:rgba(201,169,98,.14);border:1px solid var(--gold);color:var(--gold);border-radius:11px;padding:9px 8px;font-size:12px;font-weight:700;cursor:pointer;line-height:1.25;">Before my dropoff<br><span style="font-size:10px;font-weight:600;opacity:.8;">a stop on the way</span></button>
+                <button type="button" id="stopPosFinal" onclick="_setStopPos('final')" style="flex:1;background:transparent;border:1px solid var(--border);color:#cfd3da;border-radius:11px;padding:9px 8px;font-size:12px;font-weight:700;cursor:pointer;line-height:1.25;">New final stop<br><span style="font-size:10px;font-weight:600;opacity:.8;">dropoff becomes a stop</span></button>
+              </div>
+            </div>
             <div class="addr-field" id="nextstopField" style="position:relative;margin-bottom:10px;">
               <input id="nextstopInp" class="addr-inp" placeholder="&#9197; Next stop after that (optional)" autocomplete="off" oninput="onAddrInput('nextstop')" onfocus="onAddrFocus('nextstop')">
               <div class="suggestions" id="nextstopSugg" style="display:none"></div>
@@ -888,6 +897,9 @@ let _routeLine = null;
 let _activeSugg = null; // 'pickup' | 'dropoff'
 let _lastFitStatus = '';   // last ride status we auto-framed the map for
 let _lastDriverLoc = null; // last known driver position, for refits on sheet collapse
+var _stopPos = 'before';   // P2P added-stop placement: 'before' the original dropoff, or 'final' (new last stop)
+var _pendingStopDetour = 0;// detour miles for the stop being added (computed client-side, priced by the worker)
+var _pendingStopBase = 10; // $ base the worker reports for an added stop (shown in the confirm sheet)
 let _riderMarker = null;   // rider's own live location dot ("you")
 let _riderWatchId = null;  // geolocation watch active during a ride
 let _riderUserMoved = false; // rider hand-moved the trip map \u2192 suspend auto-follow
@@ -2425,6 +2437,7 @@ function updateStatusUI(ride, driverLoc){
   if(_showRoute){
     var _isHourly=ride.rideType==='hourly';
     var _nsf=$d('nextstopField'); if(_nsf) _nsf.style.display=_isHourly?'block':'none';
+    var _spc=$d('stopPosChoice'); if(_spc) _spc.style.display=_isHourly?'none':'block';   // P2P: before-dropoff vs new-final choice
     var _rph=$d('routePanelHead'); if(_rph) _rph.textContent=_isHourly?'Where to? Update your chauffeur live':'Add a stop to your route';
     var _ps=ride.pendingStop, _pPending=!!(_ps&&_ps.status==='pending');
     var _pendEl=$d('stopPending'); if(_pendEl) _pendEl.style.display=_pPending?'block':'none';
@@ -2683,9 +2696,10 @@ async function sendStops(){
     var add=await _calcStopSurcharge();
     if(stt){ stt.textContent=''; }
     if(add>0){
+      var _posTxt=(_stopPos==='final')?'New final stop':'Stop before your dropoff';
       _collectFareThen(add, function(){ _commitStops(add); }, {
         title:'Request Stop',
-        sub:'Your chauffeur confirms this added stop \u2014 you\'re only charged once they accept it.',
+        sub:_posTxt+' \u00b7 $'+_pendingStopBase+' base + '+_pendingStopDetour.toFixed(1)+' mi detour. Your chauffeur confirms it \u2014 you\'re only charged once they accept.',
         label:'Added fare', cta:'Request Stop'
       });
       return;
@@ -2703,16 +2717,39 @@ async function _legMiles(a,b){
   }catch(e){}
   return haversineKm(a.lat,a.lng,b.lat,b.lng)/1.60934*1.3;
 }
-// Fare for the leg(s) an added stop introduces (current destination \u2192 stop \u2192 next stop),
-// priced by the same server estimate the booking uses. Demo-charged before the stop is sent.
+// Highlight the chosen placement button.
+function _setStopPos(p){
+  _stopPos=(p==='final')?'final':'before';
+  var b=$d('stopPosBefore'), f=$d('stopPosFinal');
+  function paint(el,on){ if(!el) return; el.style.background=on?'rgba(201,169,98,.14)':'transparent'; el.style.borderColor=on?'var(--gold)':'var(--border)'; el.style.color=on?'var(--gold)':'#cfd3da'; }
+  paint(b,_stopPos==='before'); paint(f,_stopPos==='final');
+}
+// ONLY the incremental detour miles an added stop introduces (priced $10 base + miles by the worker):
+//   'before' (intermediate): true detour = (cur->stop)+(stop->dropoff) - (cur->dropoff), where cur is
+//            the chauffeur's current position. So a stop on the way costs ~nothing extra in miles.
+//   'final'  (new last stop): the original dropoff becomes an intermediate stop -> extra = (dropoff->stop).
+async function _calcStopDetour(){
+  if(!_stopSel) return 0;
+  if(_stopPos==='final'){
+    var fromD=_dropoff||_pickup; if(!fromD) return 0;
+    return Math.max(0, await _legMiles(fromD,_stopSel));
+  }
+  var cur=(_lastDriverLoc&&_lastDriverLoc.lat!=null)?{lat:_lastDriverLoc.lat,lng:_lastDriverLoc.lng}:_pickup;
+  var drop=_dropoff;
+  if(!cur||!drop) return Math.max(0, await _legMiles(cur||_pickup,_stopSel));
+  var direct=await _legMiles(cur,drop);
+  var viaStop=(await _legMiles(cur,_stopSel))+(await _legMiles(_stopSel,drop));
+  return Math.max(0, viaStop-direct);
+}
+// Worker prices the added stop: $10 base + detour miles * per-mile (single source of truth). We stash the
+// detour + base so _commitStops can send the detour and the confirm sheet can show the breakdown.
 async function _calcStopSurcharge(){
-  var from=_dropoff||(_lastDriverLoc&&_lastDriverLoc.lat!=null?{lat:_lastDriverLoc.lat,lng:_lastDriverLoc.lng}:_pickup);
-  if(!from||!_stopSel) return 0;
-  var miles=await _legMiles(from,_stopSel);
-  if(_nextStopSel) miles+=await _legMiles(_stopSel,_nextStopSel);
-  if(!(miles>0)) return 0;
-  var est=await fetch(WORKER+'/chauffeur/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rideType:'point_to_point',distanceMiles:miles})}).then(function(r){return r.json();}).catch(function(){return null;});
-  return est&&est.price?Number(est.price):0;
+  if(!_stopSel) return 0;
+  var det=await _calcStopDetour();
+  _pendingStopDetour=Math.round(det*100)/100;
+  var est=await fetch(WORKER+'/chauffeur/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stop:true,detourMiles:det})}).then(function(r){return r.json();}).catch(function(){return null;});
+  if(est&&est.stopBase!=null) _pendingStopBase=Number(est.stopBase);
+  return est&&est.price!=null?Number(est.price):0;
 }
 // Send the stop(s) to the chauffeur. `extra` is the P2P surcharge already collected (0 for hourly).
 async function _commitStops(extra){
@@ -2727,6 +2764,8 @@ async function _commitStops(extra){
     stopAddress:sel.address, stopLat:sel.lat, stopLng:sel.lng,
     nextStopAddress:nsel?nsel.address:'', nextStopLat:nsel?nsel.lat:0, nextStopLng:nsel?nsel.lng:0,
     addedCharge:Number(extra)||0,
+    detourMiles:Number(_pendingStopDetour)||0,   // worker re-prices: $10 base + detourMiles * per-mile
+    position:_stopPos,                            // 'before' (intermediate) or 'final' (new last stop)
   };
   const d=await fetch(WORKER+'/chauffeur/update-stops',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
   if(btn){ btn.disabled=false; }

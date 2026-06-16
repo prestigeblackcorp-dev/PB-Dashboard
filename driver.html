@@ -2030,7 +2030,7 @@ function _drvCheckStopReq(){
     +'<div style="font-size:34px;margin-bottom:6px">\uD83D\uDCCD</div>'
     +'<div style="font-size:18px;font-weight:900;color:#fff;margin-bottom:4px">Add-Stop Request</div>'
     +'<div style="font-size:13px;color:#b8a98a;margin-bottom:14px">'+esc(ps.riderName||_activeRide.riderName||'Your guest')+' wants to add a stop</div>'
-    +'<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:13px 15px;margin-bottom:14px;text-align:left"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px">New stop</div><div style="font-size:14px;color:var(--text2,#cfd3da)">'+esc(ps.stopAddress||'\u2014')+'</div>'+(ps.nextStopAddress?'<div style="font-size:12px;color:var(--muted);margin-top:6px">\u23ED then '+esc(ps.nextStopAddress)+'</div>':'')+'</div>'
+    +'<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:13px 15px;margin-bottom:14px;text-align:left"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px">New stop</div><div style="font-size:14px;color:var(--text2,#cfd3da)">'+esc(ps.stopAddress||'\u2014')+'</div>'+(ps.position==='final'?'<div style="font-size:12px;color:var(--gold);margin-top:6px">New final stop \u00B7 your current dropoff becomes a stop first</div>':'<div style="font-size:12px;color:var(--muted);margin-top:6px">Stop before your final dropoff</div>')+'</div>'
     +'<div style="font-size:13px;color:var(--gold);font-weight:800;margin-bottom:16px">+'+fmt$(earn)+' to your earnings</div>'
     +'<div style="display:flex;gap:10px">'
       +'<button onclick="_drvRespondStop(\'deny\')" style="flex:1;background:transparent;border:1px solid rgba(239,68,68,.4);color:#f87171;border-radius:13px;padding:14px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">Deny</button>'
@@ -2039,16 +2039,38 @@ function _drvCheckStopReq(){
   document.body.appendChild(ov);
   try{ if(typeof _requestAlert==='function') _requestAlert(); }catch(e){}
 }
+// Apply an accepted stop to the local ride EXACTLY as the worker does, so the route reroutes
+// instantly (no wait for the next poll). pollDriverRides() then wholesale-replaces _activeRide
+// with the server copy (same content) -> no double-add. 'final' makes the new stop the dropoff
+// and demotes the original dropoff to an intermediate stop; 'before' appends it as a stop.
+function _applyAcceptedStopLocally(ps){
+  var r=_activeRide; if(!r||!ps) return;
+  if(!Array.isArray(r.stops)) r.stops=[];
+  if(ps.position==='final'){
+    r.stops.push({address:String(r.dropoffAddress||''),lat:Number(r.dropoffLat)||0,lng:Number(r.dropoffLng)||0,amount:0,arrivedAt:null,completedAt:null,_wasDropoff:true});
+    r.dropoffAddress=ps.stopAddress; r.dropoffLat=Number(ps.stopLat)||0; r.dropoffLng=Number(ps.stopLng)||0;
+  } else {
+    r.stops.push({address:ps.stopAddress,lat:Number(ps.stopLat)||0,lng:Number(ps.stopLng)||0,amount:Number(ps.addedCharge)||0,arrivedAt:null,completedAt:null});
+  }
+  r.pendingStop=null;
+}
 async function _drvRespondStop(decision){
   if(!_activeRide||!drvState.token) return;
   var ov=document.getElementById('drvStopReq');
   var rideId=_activeRide.id;
+  var ps=_activeRide.pendingStop;   // capture before the poll clears it
   if(ov){ var bs=ov.querySelectorAll('button'); for(var i=0;i<bs.length;i++) bs[i].disabled=true; }
   var r=await fetch(WORKER+'/chauffeur/respond-stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token,rideId:rideId,decision:decision})}).catch(function(){return null;});
   var d=r?await r.json().catch(function(){return {};}):{};
   if(ov) ov.remove(); _drvStopReqId=null;
   if(!r||!r.ok){ drvToast((d&&d.error)||'Could not respond','error'); return; }
-  if(decision==='accept'){ drvToast('\u2713 Stop added \u2014 rerouting','success'); pollDriverRides(); }
+  if(decision==='accept'){
+    drvToast('\u2713 Stop added \u2014 rerouting','success');
+    _applyAcceptedStopLocally(ps);                              // optimistic: update stops[]/dropoff now
+    try{ renderActiveRidePanel(); }catch(e){}
+    try{ if(typeof updateNav==='function') updateNav(); }catch(e){}  // immediate reroute to the new target
+    try{ await pollDriverRides(); }catch(e){}                   // reconcile with the server copy
+  }
   else drvToast('Stop declined','info');
 }
 
@@ -2280,7 +2302,8 @@ function _stopWaitText(arrivedAt){
   var elapsed=Date.now()-Number(arrivedAt||0), grace=5*60000;
   if(elapsed<grace){ return '\u23F1 Grace '+_fmtRemain(grace-elapsed)+' \u00B7 waiting for guest'; }
   var ov=Math.max(0,Math.ceil(elapsed/60000-5));
-  return '\u23F1 +'+fmt$(ov)+' \u00B7 '+ov+' min over \u00B7 waiting for guest';
+  // Driver sees only their 35% take of the wait charge ($0.35/min), never the guest's gross $1/min.
+  return '\u23F1 +'+fmt$(ov*DRIVER_SHARE)+' \u00B7 '+ov+' min over \u00B7 your share';
 }
 function _tickStopWait(){
   var r=_activeRide, s=r&&_firstActiveStop(r);
