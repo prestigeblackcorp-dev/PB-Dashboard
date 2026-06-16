@@ -3997,7 +3997,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v125';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v126';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -12313,6 +12313,28 @@ function removeExtraDriver(bookingId, driverIdx){
   openBookingDetail(bookingId);
 }
 
+// AUTHORITATIVE cloud write for an authorized driver's verification. The dashboard's per-booking
+// blob-sync can freeze for a booking (stuck _t), so a local save() never reaches Firebase and the
+// portal signing gate (which reads the cloud) stays on "ID Verification Required" forever. This
+// writes idVerified / signWithoutVerify (+ the ID fields) STRAIGHT to the driver node via the worker
+// (POST /driver/owner-verify) -- the same reliable Firebase path Stripe verification + approval use.
+// Fire-and-forget; the local save() remains the primary path, this guarantees the cloud reflects it.
+function _pushDriverVerifyToCloud(bookingId, driverIdx, d){
+  try{
+    var secret=(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'');
+    if(!secret || !bookingId || driverIdx===null || driverIdx===undefined) return;
+    d=d||{};
+    fetch(WORKER+'/driver/owner-verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      secret:secret, bookingId:bookingId, driverIdx:Number(driverIdx),
+      idVerified:!!d.idVerified, signWithoutVerify:!!d.signWithoutVerify,
+      idName:d.idName||'', idType:d.idType||'', idNumber:d.idNumber||'', idState:d.idState||'',
+      idExpiry:d.idExpiry||'', idDob:d.idDob||'', idAddress:d.idAddress||'', verifiedAt:d.verifiedAt||''
+    })}).then(function(r){return r.json();}).then(function(res){
+      if(res&&res.ok){ try{ showToast('\u2713 Driver verification saved to cloud'); }catch(e){} }
+      else { try{ showToast('Cloud verify write failed: '+((res&&res.error)||'unknown')); }catch(e){} }
+    }).catch(function(){ try{ showToast('Cloud verify write failed \u2014 will retry on next sync'); }catch(e){} });
+  }catch(e){}
+}
 // Owner override: let ONE authorized driver sign the agreement WITHOUT completing ID
 // verification (or revoke that waiver). The portal reads extraDrivers[i].signWithoutVerify
 // to bypass its ID gate for that driver only. Logged on the booking like every toggle.
@@ -12328,6 +12350,7 @@ function toggleDriverSignOverride(bookingId, driverIdx){
   bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['driverSignWaiver['+(d.name||('#'+(driverIdx+1)))+']|'+(_now?'off\u2192on':'on\u2192off')]}]);
   logNotif('toggle','ID-verification waiver '+(_now?'GRANTED':'revoked')+' \u2014 authorized driver '+(d.name||('#'+(driverIdx+1))),(d.name||''),bookingId);
   save();
+  _pushDriverVerifyToCloud(bookingId, driverIdx, d);   // authoritative cloud write (bypass a stuck booking blob-sync)
   openBookingDetail(bookingId);
   showToast(_now?('\u270D '+(d.name||'Driver')+' may now sign without ID verification'):('\uD83D\uDD12 '+(d.name||'Driver')+' must verify ID before signing'));
 }
@@ -12436,6 +12459,10 @@ function saveVerify(){
     bookings[idx].extraDrivers = _drivers;
     bookings[idx]._t = Date.now();   // mark dirty so the change SYNCS (per-booking mode only pushes _t>lastSaved) -> reaches the cloud booking the signing gate reads
     save();
+    // BELT + SUSPENDERS: also write the verification STRAIGHT to the cloud via the worker. If this
+    // booking's blob-sync is stuck (frozen _t), the local save() above never reaches Firebase and the
+    // portal gate stays on "ID Verification Required". The direct worker write can't be lost that way.
+    _pushDriverVerifyToCloud(verifyId, verifyDriverIdx, _drivers[verifyDriverIdx]);
     closeVerify();
     renderTodayBanner();
     if(activeTab==='upcoming') renderUpcoming();
