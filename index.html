@@ -3989,7 +3989,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v121';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v122';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8138,6 +8138,7 @@ function loadDriverRequests(altPanel){
 function renderDriverRequestsPanel(requests, panel){
   if(!panel) panel=$d('driverRequestsPanel');
   if(!panel) return;
+  _driverReqCache = requests;   // so resolveDriverReq can look up bookingId/driverIdx/email for the verify auto-send
   var active=requests.filter(function(r){return r.status==='pending'||r.status==='driver_verified';});
   if(!active.length){ panel.innerHTML=''; return; }
   var html='<div style="background:linear-gradient(135deg,rgba(234,179,8,.08),rgba(234,179,8,.03));border:1px solid rgba(234,179,8,.25);border-radius:14px;padding:16px;margin-bottom:4px">'
@@ -8185,6 +8186,18 @@ async function resolveDriverReq(reqId,action){
     var d=await r.json();
     if(!r.ok){ alert(d.error||'Error'); return; }
     pbToast((action==='approve'?'\u2705 Driver approved!':'\u2717 Driver denied.'),'',3000);
+    // On APPROVE: auto-send the driver their REAL Stripe ID-verification link so they can turn the green
+    // "Verified" box on (the email link only soft-confirms; the SIGNING gate needs idVerified). Uses the
+    // request's own email/driverIdx so it works even before the booking's merged copy reaches this device.
+    if(action==='approve'){
+      try{
+        var _req=(_driverReqCache||[]).find(function(x){ return x && x.reqId===reqId; });
+        if(_req && _req.bookingId && _req.driverEmail && (typeof VERIFY_URL!=='undefined' && VERIFY_URL)){
+          var _di=(_req.driverIdx!==undefined&&_req.driverIdx!==null)?Number(_req.driverIdx):null;
+          if(_di!==null) sendDriverStripeVerify(_req.bookingId, _di, _req.driverEmail, _req.driverName);
+        }
+      }catch(e){ try{ console.warn('auto verify-send skipped', e); }catch(_e){} }
+    }
     loadDriverRequests();
     // Refresh bookings so dashboard booking card reflects the change
     if(typeof loadData==='function') loadData();
@@ -12035,18 +12048,20 @@ function _copyText(text){
     }catch(e){ reject(e); }
   });
 }
-function sendDriverStripeVerify(bookingId, driverIdx){
+function sendDriverStripeVerify(bookingId, driverIdx, ovEmail, ovName){
   if(!VERIFY_URL){ openSettings(); return; }
   var b=bookings.find(function(x){ return x.id===bookingId; });
-  if(!b) return;
-  var d=(b.extraDrivers&&b.extraDrivers[driverIdx]);
-  if(!d||!d.email){ showToast('Driver has no email \u2014 open Verify ID to send manually.'); return; }
+  var d=(b&&b.extraDrivers&&b.extraDrivers[driverIdx])||{};
+  // Override email/name (e.g. from the driver REQUEST on approval) so this works even before the booking's
+  // merged copy has the driver locally -- the map registration only needs bookingId + driverIdx.
+  var _dEmail=ovEmail||d.email, _dName=ovName||d.name||'';
+  if(!_dEmail){ showToast('Driver has no email \u2014 open Verify ID to send manually.'); return; }
 
-  showToast('Creating Stripe session for '+d.name+'\u2026');
+  showToast('Creating Stripe session for '+_dName+'\u2026');
   fetch(VERIFY_URL+'/create-verification',{
     method:'POST',
     headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
-    body:JSON.stringify({bookingId:bookingId, returnUrl:'https://prestigeblackrentals.com', customerName:d.name||''})
+    body:JSON.stringify({bookingId:bookingId, returnUrl:'https://prestigeblackrentals.com', customerName:_dName||''})
   })
   .then(function(r){ return r.json(); })
   .then(function(data){
@@ -12066,11 +12081,11 @@ function sendDriverStripeVerify(bookingId, driverIdx){
 
     // Email the link to the driver
     if(MESSAGING_URL){
-      var _firstName=(d.name||'').split(' ')[0]||'there';
+      var _firstName=(_dName||'').split(' ')[0]||'there';
       fetch(MESSAGING_URL+'/send-email',{
         method:'POST', headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
         body:JSON.stringify({
-          to:d.email,
+          to:_dEmail,
           subject:'ID Verification Required \u2014 Prestige Black Rentals',
           html:'<div style="font-family:-apple-system,sans-serif;max-width:580px;margin:0 auto">'+
             '<div style="background:linear-gradient(135deg,#b8982e,#7a6320);padding:24px;text-align:center">'+
@@ -12085,11 +12100,11 @@ function sendDriverStripeVerify(bookingId, driverIdx){
           '</div>'
         })
       }).then(function(r){
-        if(r.ok) showToast('Verify link sent to '+d.email+' \u2705');
-        logNotif('verification','Driver ID Verification Link',d.email,bookingId);
+        if(r.ok) showToast('Verify link sent to '+_dEmail+' \u2705');
+        logNotif('verification','Driver ID Verification Link',_dEmail,bookingId);
       }).catch(function(){ showToast('Verify link created \u2014 email failed, copy manually.'); });
     } else {
-      _copyText(data.url).then(function(){ showToast('Link copied! Send to '+d.name+'.'); });
+      _copyText(data.url).then(function(){ showToast('Link copied! Send to '+_dName+'.'); });
     }
   })
   .catch(function(err){ showToast('Error: '+err.message); });
