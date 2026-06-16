@@ -3989,7 +3989,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v122';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v123';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -6443,7 +6443,7 @@ function syncToGCal(b, _isRetry){
   return gcalFetch('POST', '/events', event).then(function(data){
     if(data && data.id){
       var idx = bookings.findIndex(function(x){ return x.id===b.id; });
-      if(idx !== -1){ bookings[idx].gcalEventId = data.id; }
+      if(idx !== -1){ bookings[idx].gcalEventId = data.id; bookings[idx]._t = Date.now(); save(); }
       b.gcalEventId = data.id;
       save(); // persist the new event ID immediately so an interrupted bulk run can't create duplicates
     }
@@ -12426,6 +12426,7 @@ function saveVerify(){
       verifiedAt: _ed.verifiedAt || new Date().toISOString()
     });
     bookings[idx].extraDrivers = _drivers;
+    bookings[idx]._t = Date.now();   // mark dirty so the change SYNCS (per-booking mode only pushes _t>lastSaved) -> reaches the cloud booking the signing gate reads
     save();
     closeVerify();
     renderTodayBanner();
@@ -12464,6 +12465,7 @@ function saveVerify(){
     // Preserve original Stripe verifiedAt if already set; otherwise stamp now
     verifiedAt:  _existing.verifiedAt || new Date().toISOString()
   });
+  bookings[idx]._t = Date.now();   // mark dirty so the verify change SYNCS (per-booking mode only pushes _t>lastSaved)
   save();
   // Re-lock based on what was just saved \u2014 only lock if there is data to protect
   var _sv=bookings[idx].verify;
@@ -12927,6 +12929,7 @@ function _addVerifySession(bookingId, sessionId, driverIdx){
     if(_dids.indexOf(sessionId)===-1) _dids.push(sessionId);
     _drvs[driverIdx]=Object.assign({},_d,{ stripeSessionId:sessionId, stripeSessionIds:_dids });
     bookings[_idx].extraDrivers=_drvs;
+    bookings[_idx]._t=Date.now();   // sync the session-tracking change (per-booking mode only pushes _t>lastSaved)
     save();
     return;
   }
@@ -12941,6 +12944,7 @@ function _addVerifySession(bookingId, sessionId, driverIdx){
       stripeSessionIds:_ids,
       firstSentAt:_v.firstSentAt||_now
     });
+    bookings[_idx]._t=_now;   // sync the session-tracking change (per-booking mode only pushes _t>lastSaved)
     save();
   }
 }
@@ -13598,6 +13602,7 @@ function sendCustomerVerifiedEmail(b){
   var _vIdx = bookings.findIndex(function(x){ return x.id===b.id; });
   if(_vIdx !== -1){
     bookings[_vIdx].verify = Object.assign({}, bookings[_vIdx].verify||{}, { verifiedEmailSent: true });
+    bookings[_vIdx]._t = Date.now();   // sync the dedup flag so another device doesn't re-send the email
     b = bookings[_vIdx]; // use updated reference
     save();
   }
@@ -17729,7 +17734,7 @@ async function sendSignedCopyToClient(){
       showToast('Signed '+docType.toLowerCase()+' sent to '+b.email+' \u2705');
       logNotif('signedcopy','Signed Contract Copy',b.email,b.id);
       var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
-      if(idx!==-1){ bookings[idx].signedCopySentAt=Date.now(); save(); }
+      if(idx!==-1){ bookings[idx].signedCopySentAt=Date.now(); bookings[idx]._t=Date.now(); save(); }
     }
     else { showToast('Email send failed \u2014 check your messaging worker'); }
   }).catch(function(){
