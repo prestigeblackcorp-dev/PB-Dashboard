@@ -4001,11 +4001,16 @@ var _lastSavedAt = 0; // tracks the latest CLOUD savedAt we've OBSERVED (advance
 var _pushedBT = (function(){ try{ return JSON.parse(localStorage.getItem('pb_pushed_bt')||'{}')||{}; }catch(e){ return {}; } })();
 function _savePushedBT(){ try{ localStorage.setItem('pb_pushed_bt', JSON.stringify(_pushedBT)); }catch(e){} }
 function _clearPushedBT(){ _pushedBT={}; try{ localStorage.removeItem('pb_pushed_bt'); }catch(e){} }
+// Bookings the WORKER rejected (413 too-large / Firebase 4xx bad-data): id -> {err, _t}. A blind retry
+// can't fix size/data, so we stop re-pushing them every cycle (that endless retry was the rapid
+// save-booking churn = the in-sync sync-dot flicker). Surfaced to the owner; auto-retried on next edit.
+var _unsyncableBookings = (function(){ try{ return JSON.parse(localStorage.getItem('pb_unsyncable')||'{}')||{}; }catch(e){ return {}; } })();
+function _saveUnsyncable(){ try{ localStorage.setItem('pb_unsyncable', JSON.stringify(_unsyncableBookings)); }catch(e){} }
 var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from overlapping
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v140';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v141';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4211,27 +4216,35 @@ function _pushBookingsIndividually(){
   (function next(){
     if(i>=dirty.length){
       _individualPushActive=false;
-      // Advance _lastSavedAt even for skipped duplicates so the worker-rejected copy isn't retried forever.
-      if(ok>0||skipped>0){ _lastSavedAt=Date.now(); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} _savePushedBT(); _pendingCloudSave=false; }
-      setSyncStatus(fail?'error':'ok');
-      // SILENT: no per-cycle result toast (this was the spam). The sync dot reflects ok/error; a
-      // persistent failure keeps the dot red and `_lastSyncErr` is shown when it's tapped. Genuinely
-      // new/edited bookings still sync here -- they just no longer announce themselves every poll.
+      // Advance _lastSavedAt + persist the watermark when ANYTHING resolved (ok, skip, OR a recorded
+      // rejection) so a worker-rejected copy isn't retried forever.
+      if(ok>0||skipped>0||fail>0){ _lastSavedAt=Date.now(); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} _savePushedBT(); _pendingCloudSave=false; }
+      var _unsyncN=0; try{ _unsyncN=Object.keys(_unsyncableBookings||{}).length; }catch(e){}
+      if(_unsyncN>0){ _lastSyncErr=_unsyncN+" booking"+(_unsyncN>1?'s':'')+" can't sync (too large or invalid)"+(_lastSyncErr?' - last: '+_lastSyncErr:''); }
+      setSyncStatus(_unsyncN>0 ? 'error' : 'ok');
+      // SILENT per-cycle (no toast spam). Dot is green when everything synced; STEADY red (not flickering)
+      // when some bookings can't sync -- tap it for the reason. Worker-rejected bookings no longer re-push
+      // every cycle (that endless retry was the in-sync flicker); they retry on the next edit or Sync tap.
       return;
     }
     var b=dirty[i++];
     _prepBookingForWire(b, function(wireB){   // PHASE 2: store sigs in /sigs + strip from the wire (flag ON); cb(b) SYNCHRONOUSLY when OFF = unchanged
     var _wbody=_encodeSyncBody(_safeSyncStringify({booking:wireB}));
     // Retry TRANSIENT network failures ("Load failed" on a weak/spotty signal) up to 2x with backoff
-    // before giving up -> a flaky connection no longer strands a booking + sits red. Worker-level
-    // rejections (4xx/5xx with a JSON error) are NOT retried (a retry won't fix them): they fail fast
-    // and the booking stays dirty (not recorded in _pushedBT) so it reconciles on the next cycle.
+    // before giving up -> a flaky connection no longer strands a booking + sits red. A worker-level
+    // REJECTION (413 too-large / Firebase 4xx) is NOT retried AND is now recorded in _pushedBT + flagged
+    // unsyncable: a blind retry can't fix size/data, and leaving it dirty made it re-push EVERY cycle =
+    // the rapid in-sync save-booking flicker. It auto-retries on the next edit (new _t) or a Sync-pill tap.
     var _send=function(att){
       fetch(WORKER_URL+'/sync/save-booking',{
         method:'POST', body:_wbody,
         headers:Object.assign({'Content-Type':'application/json'},_authHeader())
       }).then(function(r){ var _ok=r.ok; return r.json().catch(function(){return {};}).then(function(j){ return {ok:_ok && j && j.ok, skipped:(j&&j.skipped), err:(j&&j.error)}; }); })
-        .then(function(res){ if(res.skipped){ skipped++; _pushedBT[b.id]=Number(b._t)||0; } else if(res.ok){ ok++; _pushedBT[b.id]=Number(b._t)||0; } else { fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+': '+(res.err||'rejected'); } setTimeout(next, 250); })
+        .then(function(res){
+          if(res.skipped || res.ok){ if(res.skipped) skipped++; else ok++; _pushedBT[b.id]=Number(b._t)||0; if(_unsyncableBookings[b.id]){ delete _unsyncableBookings[b.id]; _saveUnsyncable(); } }
+          else { fail++; _pushedBT[b.id]=Number(b._t)||0; _unsyncableBookings[b.id]={ err:(res.err||'rejected'), name:(b.name||''), _t:Number(b._t)||0 }; _saveUnsyncable(); _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+': '+(res.err||'rejected'); }
+          setTimeout(next, 250);
+        })
         .catch(function(e){ if(att<2){ setTimeout(function(){ _send(att+1); }, 700*(att+1)); return; } fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+' net: '+((e&&e.message)||'fail'); setTimeout(next, 250); });
     };
     _send(0);
@@ -4651,6 +4664,10 @@ function forceSyncNow(){
   if(!navigator.onLine){ setSyncStatus('off'); toast('\uD83D\uDCF4 Offline \u2014 connect to the internet, then tap Sync again.'); return; }
   _lastSyncErr = '';                 // clear so the toast reflects ONLY this attempt's failure (if any)
   _fullSyncTooBig = false;           // a manual tap RE-TESTS the full batch (the button means "full sync now"); if it still can't, _markFullSyncTooBig re-latches and per-booking carries it
+  // A manual Sync RE-TRIES bookings that previously couldn't sync (too large/invalid): drop their
+  // watermark so they're dirty again + clear the flag. If they still fail they just re-flag (no churn --
+  // the worker-rejection handler records them again); if a slim-down fixed them, they now reach the cloud.
+  try{ Object.keys(_unsyncableBookings||{}).forEach(function(id){ if(_pushedBT[id]!==undefined) delete _pushedBT[id]; }); _unsyncableBookings={}; _saveUnsyncable(); _savePushedBT(); }catch(e){}
   // NOTE: do NOT clear _pushedBT here. A manual Sync should flush only what CHANGED (fast, brief
   // "syncing", settles solid green). Re-pushing every booking on each tap made Sync slow + kept the
   // dot off-green on a large dataset. The one-time heal still runs automatically on a fresh build load,
