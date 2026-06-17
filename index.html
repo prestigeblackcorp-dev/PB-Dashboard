@@ -4005,7 +4005,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v136';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v137';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8771,12 +8771,14 @@ function _rideCountForPeriod(){
   }).length;
 }
 // Fetch every completed-ride fare (uncapped) so Overview revenue reflects all ride income
-function loadRideRevenue(force){
+function loadRideRevenue(force, hard){
   if(_rideRevLoading) return;
   // Throttle forced refreshes: the fleet map calls this every 15s, but /chauffeur/revenue
   // is an uncapped lifetime read and revenue barely moves second-to-second. Once we have
   // data, honor a force at most every 120s. Initial/manual (non-force) loads still run.
-  if(force && _rideRevLoaded && (Date.now()-_rideRevLastAt) < 120000) return;
+  // hard=true (a user delete/restore) bypasses the throttle so the KPI reconciles from the
+  // source IMMEDIATELY -- otherwise a just-deleted ride keeps counting for up to 120s.
+  if(force && !hard && _rideRevLoaded && (Date.now()-_rideRevLastAt) < 120000) return;
   if(_rideRevLoaded && !force) return;
   var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
@@ -8894,6 +8896,12 @@ async function deleteRideRecord(id){
     var r=await _fleetPost('/chauffeur/delete-ride',{id:id});
     if(!r||!r.ok){ var t=r?await r.text().catch(function(){return'';}):''; alert('Could not delete ride'+(r?' ('+r.status+')':'')+'. '+(t||'').slice(0,160)); return; }
     if(typeof showToast==='function') showToast('Ride moved to Recently Deleted.');
+    // Drop this ride from the KPI revenue cache RIGHT NOW so its fare stops counting immediately,
+    // then hard-reload from the worker (which excludes EVERY _deleted ride) to reconcile. The hard
+    // reload also clears any PAST-deleted rides a throttled/never-run refresh had left in the KPI.
+    try{ _rideTxns=(_rideTxns||[]).filter(function(t){ return t && t.id!==id; }); }catch(e){}
+    try{ if($d('kpiGrid') && typeof getFiltered==='function' && typeof renderKPIs==='function') renderKPIs(getFiltered(),'kpiGrid'); }catch(e){}
+    loadRideRevenue(true, true);
     refreshFleetMap();
   }catch(e){ alert('Network error deleting ride.'); }
 }
@@ -8903,6 +8911,7 @@ async function restoreRideRecord(id){
     var r=await _fleetPost('/chauffeur/restore-ride',{id:id});
     if(!r||!r.ok){ alert('Could not restore ride'+(r?' ('+r.status+')':'')+'.'); return; }
     if(typeof showToast==='function') showToast('Ride restored.');
+    loadRideRevenue(true, true);   // hard pull so the restored ride's fare returns to the KPI revenue
     refreshFleetMap();
   }catch(e){ alert('Network error restoring ride.'); }
 }
