@@ -3981,6 +3981,7 @@ function _autoMigrateSigsIfEnabled(){
       if(total===0 || saved>=total){
         try{ localStorage.setItem('pb_sigs_migrated','1'); }catch(e){}
         _lastSavedAt = 0; try{ localStorage.setItem('pb_last_cloud_save','0'); }catch(e){}   // mark every booking dirty
+        _clearPushedBT();   // re-push EVERY booking (per-booking watermark) so nothing stays stranded
         _lastPushSig = ''; _pendingCloudSave = true;
         try{ cloudSave(); }catch(e){}   // flag ON -> per-booking + strip path re-pushes every booking stripped
         try{ console.log('[PB] sig offload: /sigs backfill complete ('+saved+'/'+total+'), re-pushing stripped'); }catch(e){}
@@ -3992,12 +3993,19 @@ function _autoMigrateSigsIfEnabled(){
 }
 
 var _cloudSaveRetries = 0;
-var _lastSavedAt = 0; // tracks the timestamp of our last successful cloudSave
+var _lastSavedAt = 0; // tracks the latest CLOUD savedAt we've OBSERVED (advanced by other devices' writes via poll/load too) -> used only to detect "cloud changed"; must NOT gate this device's unpushed edits
+// Per-booking push watermark: bookingId -> the _t value THIS device last CONFIRMED it pushed. The
+// per-booking dirty filter compares against THIS map (not the shared cloud savedAt), so when another
+// device (or a worker write like a customer signature) advances the global savedAt past a local edit,
+// that edit is STILL seen as dirty here and syncs -> fixes the "changes don't show across devices" bug.
+var _pushedBT = (function(){ try{ return JSON.parse(localStorage.getItem('pb_pushed_bt')||'{}')||{}; }catch(e){ return {}; } })();
+function _savePushedBT(){ try{ localStorage.setItem('pb_pushed_bt', JSON.stringify(_pushedBT)); }catch(e){} }
+function _clearPushedBT(){ _pushedBT={}; try{ localStorage.removeItem('pb_pushed_bt'); }catch(e){} }
 var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from overlapping
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v127';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v128';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4170,7 +4178,10 @@ function _pushBookingsIndividually(){
   if(!WORKER_URL || _individualPushActive) return;
   if(!navigator.onLine){ setSyncStatus('off'); return; }
   _pushMetaSync();   // income / expenses / maintenance / settings always sync (small, no bookings), even with no booking changes
-  var dirty=(bookings||[]).filter(function(b){ return b && !b._deleted && b.id && (Number(b._t)||0) > _lastSavedAt; });
+  // Dirty = a booking THIS device hasn't pushed at its current _t yet (per-booking, NOT gated on the
+  // shared cloud savedAt). A never-pushed booking is always dirty -> first sync after this build re-pushes
+  // everything once, healing any booking the old global-watermark filter had stranded.
+  var dirty=(bookings||[]).filter(function(b){ return b && !b._deleted && b.id && ( !(b.id in _pushedBT) || (Number(b._t)||0) > (Number(_pushedBT[b.id])||0) ); });
   if(!dirty.length){ _pendingCloudSave=false; return; }
   // Same unreconciled set as last cycle? The worker keeps "skipping" these as duplicates so they
   // never stop looking dirty (local _t > cloud _t, but a skip never updates the cloud copy) \u2014 keep
@@ -4198,7 +4209,7 @@ function _pushBookingsIndividually(){
     if(i>=dirty.length){
       _individualPushActive=false;
       // Advance _lastSavedAt even for skipped duplicates so the worker-rejected copy isn't retried forever.
-      if(ok>0||skipped>0){ _lastSavedAt=Date.now(); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} _pendingCloudSave=false; }
+      if(ok>0||skipped>0){ _lastSavedAt=Date.now(); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} _savePushedBT(); _pendingCloudSave=false; }
       setSyncStatus(fail?'error':'ok');
       // SILENT: no per-cycle result toast (this was the spam). The sync dot reflects ok/error; a
       // persistent failure keeps the dot red and `_lastSyncErr` is shown when it's tapped. Genuinely
@@ -4211,7 +4222,7 @@ function _pushBookingsIndividually(){
       method:'POST', body:_encodeSyncBody(_safeSyncStringify({booking:wireB})),
       headers:Object.assign({'Content-Type':'application/json'},_authHeader())
     }).then(function(r){ var _ok=r.ok; return r.json().catch(function(){return {};}).then(function(j){ return {ok:_ok && j && j.ok, skipped:(j&&j.skipped), err:(j&&j.error)}; }); })
-      .then(function(res){ if(res.skipped){ skipped++; } else if(res.ok){ ok++; } else { fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+': '+(res.err||'rejected'); } })
+      .then(function(res){ if(res.skipped){ skipped++; _pushedBT[b.id]=Number(b._t)||0; } else if(res.ok){ ok++; _pushedBT[b.id]=Number(b._t)||0; } else { fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+': '+(res.err||'rejected'); } })
       .catch(function(e){ fail++; _lastSyncErr='save-booking '+b.id+(b.name?' ('+b.name+')':'')+' net: '+((e&&e.message)||'fail'); })
       .then(function(){ setTimeout(next, 250); });
     });
@@ -4234,6 +4245,7 @@ function _healStrandedBookings(){
       if(!v || !/extsync/.test(String(v.version||''))) return;   // only against the FIXED worker -> timing-safe
       try{ localStorage.setItem('pb_extsync_heal','1'); }catch(e){}
       _lastSavedAt = 0; try{ localStorage.setItem('pb_last_cloud_save','0'); }catch(e){}   // mark every booking dirty
+      _clearPushedBT();             // re-push EVERY booking so the stranded ones reconcile
       _lastPushSig = '';            // defeat the silent-skip so the re-push actually runs
       _pendingCloudSave = true;
       try{ cloudSave(); }catch(e){}
@@ -4339,6 +4351,7 @@ function _cloudSaveNow() {
           _cloudSaveRetries = 0;
           _lastSavedAt = data.savedAt;
           localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString());
+          try{ (bookings||[]).forEach(function(b){ if(b&&b.id) _pushedBT[b.id]=Number(b._t)||0; }); _savePushedBT(); }catch(e){}  // full blob landed -> every booking is now pushed
           // The full batch went through -> this device is NOT (or no longer) too big. Leave per-booking
           // mode and clear the latch so we keep using the fast full sync.
           _fullSyncTooBig = false;
@@ -4592,6 +4605,7 @@ function forceSyncNow(){
   if(!navigator.onLine){ setSyncStatus('off'); toast('\uD83D\uDCF4 Offline \u2014 connect to the internet, then tap Sync again.'); return; }
   _lastSyncErr = '';                 // clear so the toast reflects ONLY this attempt's failure (if any)
   _fullSyncTooBig = false;           // a manual tap RE-TESTS the full batch (the button means "full sync now"); if it still can't, _markFullSyncTooBig re-latches and per-booking carries it
+  _clearPushedBT();                  // manual Sync = FULL reconcile: re-push EVERY booking so anything stranded on this device reaches the cloud now
   setSyncStatus('syncing');
   toast('\uD83D\uDD04 Pushing this device\u2019s changes\u2026');
   _pendingCloudSave = true;          // ensure there is work to flush
