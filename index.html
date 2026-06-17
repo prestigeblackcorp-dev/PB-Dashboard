@@ -3258,6 +3258,29 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
         <div class="flabel">Oil Change Interval (miles)</div>
         <input type="number" class="finput" id="vServiceMiles" min="0" step="500" placeholder="e.g. 5000">
       </div>
+      <div class="fgroup ffull" style="margin-top:2px">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Registration Details &#8212; auto-fill the contract &amp; waiver</div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Year</div>
+        <input type="text" class="finput" id="vYear" inputmode="numeric" maxlength="4" placeholder="e.g. 2024">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Color</div>
+        <input type="text" class="finput" id="vColor" placeholder="e.g. Black">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Make</div>
+        <input type="text" class="finput" id="vMake" placeholder="e.g. Ferrari">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Model</div>
+        <input type="text" class="finput" id="vModel" placeholder="e.g. 488 GTB">
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">VIN</div>
+        <input type="text" class="finput" id="vVin" maxlength="17" placeholder="17-character VIN" style="text-transform:uppercase;letter-spacing:.04em">
+      </div>
       <div class="fgroup ffull">
         <div class="flabel">Vehicle Image</div>
         <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
@@ -4010,7 +4033,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v144';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v145';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4760,20 +4783,58 @@ function loadCustomVehicles(){
         if(v.blockedRanges     !== undefined) VEHICLE_COSTS[v.name].blockedRanges     = v.blockedRanges;
         if(v.serviceIntervalMiles !== undefined) VEHICLE_COSTS[v.name].serviceIntervalMiles = v.serviceIntervalMiles;
       }
+      // Restore registration details into VEHICLE_INFO (what the contract/waiver reads). Guard on
+      // !==undefined so a pre-feature saved record (which lacks these keys) never clobbers a curated
+      // built-in's info with blanks; a record that DOES carry them wins (it was written from VEHICLE_INFO).
+      if(v.year!==undefined||v.make!==undefined||v.model!==undefined||v.color!==undefined||v.vin!==undefined){
+        var _pi = VEHICLE_INFO[v.name] || {};
+        VEHICLE_INFO[v.name] = {
+          year:  v.year  !==undefined ? v.year  : (_pi.year ||''),
+          make:  v.make  !==undefined ? v.make  : (_pi.make ||''),
+          model: v.model !==undefined ? v.model : (_pi.model||''),
+          color: v.color !==undefined ? v.color : (_pi.color||''),
+          vin:   v.vin   !==undefined ? v.vin   : (_pi.vin  ||'')
+        };
+      }
     });
   } catch(e){}
 }
 function saveCustomVehicles(){
   var customs = ALL_VEHICLES.map(function(v){
     var vc = VEHICLE_COSTS[v]||{};
+    var vi = VEHICLE_INFO[v]||{};
     return { name:v, chauffeur: CHAUFFEUR_VEHICLES.indexOf(v)!==-1,
              rate:vc.rate||0, deposit:vc.deposit||0, weekly:vc.weekly||0, image:vc.image||'',
              serviceIntervalMiles:vc.serviceIntervalMiles||0,
-             blockedRanges:vc.blockedRanges||[] };
+             blockedRanges:vc.blockedRanges||[],
+             year:vi.year||'', make:vi.make||'', model:vi.model||'', color:vi.color||'', vin:vi.vin||'' };
   });
   try{ localStorage.setItem('pb_custom_vehicles', JSON.stringify(customs)); }catch(e){}
   cloudSave();
+  if((window.PB_FLAGS||{}).fleetCatalogSync!==false) _publishRentalFleet();   // mirror registry -> portal/rider "Luxury Rentals" browse (adds/edits/removes)
 }
+
+// Publish the owner's full rental registry to the worker (pb_data/config/rental_fleet) so the customer
+// "Luxury Rentals" browse in the portal + rider app shows every vehicle the owner manages -- with the
+// correct daily rate, deposit, mileage + photo. Fire-and-forget + guarded: a failure never blocks a save.
+function _publishRentalFleet(){
+  try{
+    if(typeof WORKER_URL==='undefined' || !WORKER_URL) return;
+    var list = ALL_VEHICLES.map(function(v){
+      var vc = VEHICLE_COSTS[v]||{}, vi = VEHICLE_INFO[v]||{};
+      return { name:v, type: CHAUFFEUR_VEHICLES.indexOf(v)!==-1?'chauffeur':'rental',
+               rate:Number(vc.rate)||0, deposit:Number(vc.deposit)||0, weekly:Number(vc.weekly)||0,
+               miles:Number(vc.miles)||0, overage:Number(vc.overage)||0, img:vc.image||'',
+               year:vi.year||'', make:vi.make||'', model:vi.model||'' };
+    });
+    fetch(WORKER_URL+'/dashboard/publish-rental-fleet',{
+      method:'POST',
+      headers:Object.assign({'Content-Type':'application/json'},(typeof _authHeader==='function'?_authHeader():{})),
+      body:JSON.stringify({vehicles:list})
+    }).catch(function(){});
+  }catch(e){}
+}
+var _rentalFleetSeeded = false;  // publish-on-open runs once per session (saveCustomVehicles handles every change)
 
 var BASE_VEHICLES = ["Corvette","Corvette Z51","BMW M3","BMW i4","Macan","Porsche Boxster S","C300",
                      "Accord","Lambo Huracan","Lambo Urus","Yukon Denali","G Wagon","Escalade Rental",
@@ -4785,6 +4846,9 @@ function openVehicleModal(){
   renderVehicleList();
   resetVehForm();
   $d('vehicleModal').classList.add('open');
+  // Seed the cloud catalog once per session so existing vehicles populate the customer browse even
+  // before the owner makes an edit (every add/edit/remove re-publishes via saveCustomVehicles).
+  if(!_rentalFleetSeeded && (window.PB_FLAGS||{}).fleetCatalogSync!==false){ _rentalFleetSeeded=true; _publishRentalFleet(); }
 }
 function closeVehicleModal(){
   $d('vehicleModal').classList.remove('open');
@@ -4827,6 +4891,7 @@ function resetVehForm(){
   $d('vType').value='rental';
   $d('vRate').value=''; $d('vDeposit').value=''; $d('vWeekly').value='';
   $d('vServiceMiles').value='';
+  $d('vYear').value=''; $d('vMake').value=''; $d('vModel').value=''; $d('vColor').value=''; $d('vVin').value='';
   $d('vImage').value='';
   _vImageData=null;
   _setVehicleImagePreview(null);
@@ -4909,6 +4974,12 @@ function editVehicle(name){
   $d('vDeposit').value      = vc.deposit          || '';
   $d('vWeekly').value       = vc.weekly           || '';
   $d('vServiceMiles').value = vc.serviceIntervalMiles || '';
+  var vi = VEHICLE_INFO[name]||{};
+  $d('vYear').value  = vi.year  || '';
+  $d('vMake').value  = vi.make  || '';
+  $d('vModel').value = vi.model || '';
+  $d('vColor').value = vi.color || '';
+  $d('vVin').value   = vi.vin   || '';
   var img = vc.image || '';
   if(img.startsWith('data:')){
     _vImageData = img;
@@ -4943,12 +5014,24 @@ function saveVehicle(){
   if(serviceIntervalMiles) pricing.serviceIntervalMiles = serviceIntervalMiles;
   pricing.blockedRanges = _editingBlockedRanges.slice();
 
+  // Registration details that auto-fill the rental contract + waiver. VEHICLE_INFO is what the
+  // {{vehicle_year}}/{{vehicle_make}}/{{vehicle_model}}/{{vehicle_color}}/{{vehicle_vin}} placeholders
+  // read, so custom vehicles now carry these too (built-ins already did). Purely additive.
+  var info = {
+    year:  (($d('vYear')  &&$d('vYear').value)  ||'').trim(),
+    make:  (($d('vMake')  &&$d('vMake').value)  ||'').trim(),
+    model: (($d('vModel') &&$d('vModel').value) ||'').trim(),
+    color: (($d('vColor') &&$d('vColor').value) ||'').trim(),
+    vin:   (($d('vVin')   &&$d('vVin').value)   ||'').trim().toUpperCase()
+  };
+
   if(editingVehicle){
     var oldName = editingVehicle;
     if(newName !== oldName){
       if(VEHICLE_COSTS[newName]){ alert('"'+newName+'" already exists.'); return; }
       delete VEHICLE_COSTS[oldName];
       VEHICLE_COSTS[newName] = pricing;
+      delete VEHICLE_INFO[oldName]; VEHICLE_INFO[newName] = info;
       var idx = ALL_VEHICLES.indexOf(oldName);
       if(idx!==-1) ALL_VEHICLES[idx] = newName;
       var ci = CHAUFFEUR_VEHICLES.indexOf(oldName);
@@ -4963,6 +5046,7 @@ function saveVehicle(){
       save(); saveExpenses();
     } else {
       VEHICLE_COSTS[oldName] = pricing;
+      VEHICLE_INFO[oldName] = info;
       var ci = CHAUFFEUR_VEHICLES.indexOf(oldName);
       if(isCh){ if(ci===-1) CHAUFFEUR_VEHICLES.push(oldName); }
       else     { if(ci!==-1) CHAUFFEUR_VEHICLES.splice(ci,1); }
@@ -4971,6 +5055,7 @@ function saveVehicle(){
   } else {
     if(VEHICLE_COSTS[newName]){ alert('"'+newName+'" already exists.'); return; }
     VEHICLE_COSTS[newName] = pricing;
+    VEHICLE_INFO[newName] = info;
     ALL_VEHICLES.push(newName);
     if(isCh) CHAUFFEUR_VEHICLES.push(newName);
     saveCustomVehicles(); initSelects(); renderVehicleList(); resetVehForm();
@@ -10863,6 +10948,18 @@ function saveBooking(){
     _t: Date.now(),
     _maintConflictAck: _maintAcknowledged || (editingId ? !!((bookings.find(function(b){return b.id===editingId;})||{})._maintConflictAck) : false),
   };
+
+  // Snapshot the vehicle's registration details onto the booking so the contract/waiver shows the
+  // right Year/Make/Model/Color/VIN everywhere it is generated -- including the customer PORTAL, whose
+  // own catalog doesn't know about owner-added custom vehicles. Only stamps when we actually have data;
+  // reflects the currently-selected vehicle (re-stamps if the vehicle is changed on an edit). The
+  // catch-all carry-over below won't clobber it because 'vehicleInfo' is already a key on entry.
+  (function(){
+    var _vi = VEHICLE_INFO[vehicle];
+    if(_vi && (_vi.year||_vi.make||_vi.model||_vi.color||_vi.vin)){
+      entry.vehicleInfo = { year:_vi.year||'', make:_vi.make||'', model:_vi.model||'', color:_vi.color||'', vin:_vi.vin||'' };
+    }
+  })();
 
   if(editingId){
     var idx=bookings.findIndex(function(b){return b.id===editingId;});
@@ -17592,7 +17689,7 @@ function _renderContractContent(){
   var licNum=(b.verify&&b.verify.idNumber)||'';
   var licState=(b.verify&&b.verify.idState)||'';
   var licAddress=(b.verify&&b.verify.idAddress)||'';
-  var vInfo=Object.assign({},VEHICLE_INFO[b.vehicle]||{});
+  var vInfo=Object.assign({},(b.vehicleInfo||{}),VEHICLE_INFO[b.vehicle]||{});  // booking snapshot = fallback; catalog wins when present (built-ins/Slingshot unchanged)
   if(b.vehicle==='Polaris Slingshot'){
     // Apply selected color to both contract and waiver \u2014 color picker is visible for all Slingshot docs
     var _ss = SLINGSHOT_SPECS[_slingshotColor] || {};
@@ -20025,7 +20122,7 @@ function _initSigningMode(bookingId, driverIdx){
     // Comprehensive token substitution \u2014 mirrors _renderContractContent in the owner modal
     var today=new Date(); var tStr=(today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
     var _sbd=_buildContractBreakdown(bk);
-    var _svInfo=Object.assign({},VEHICLE_INFO[bk.vehicle]||{});
+    var _svInfo=Object.assign({},(bk.vehicleInfo||{}),VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback; catalog wins when present
     // For Slingshot waivers: apply the color/VIN/model that was active when the signing
     // link was sent.  contractSentColor is written by sendContractSigningLink() before
     // the email goes out so the customer always sees the correct vehicle.

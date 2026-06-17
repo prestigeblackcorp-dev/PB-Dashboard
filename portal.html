@@ -890,7 +890,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly){
   var today = new Date();
   var tStr = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
   var _sbd = _buildContractBreakdown(bk);
-  var _svInfo = Object.assign({}, VEHICLE_INFO[bk.vehicle]||{});
+  var _svInfo = Object.assign({}, (bk.vehicleInfo||{}), VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback (covers owner-added custom vehicles the portal catalog lacks); catalog wins when present
   var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
   var _sReturnFull = fmtDateFull(bk.dropoffDate||'');
@@ -1141,7 +1141,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
     var today = new Date();
     var tStr = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
     var _sbd = _buildContractBreakdown(bk);
-    var _svInfo = Object.assign({}, VEHICLE_INFO[bk.vehicle]||{});
+    var _svInfo = Object.assign({}, (bk.vehicleInfo||{}), VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback (covers owner-added custom vehicles the portal catalog lacks); catalog wins when present
     var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
     var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
     var _sReturnFull = fmtDateFull(bk.dropoffDate||'');
@@ -2608,9 +2608,45 @@ async function _onFleetDateChange(){
   renderFleet();
 }
 
+// Pull the owner-managed fleet catalog (/fleet-catalog) and MERGE it over the built-in VEHICLE_RATES so
+// any vehicle the owner adds in the dashboard appears here automatically. Curated entries keep their
+// description/photo (only refreshed if the catalog actually carries new values); brand-new vehicles are
+// added. Safe + reversible: flag off, fetch failure, or an empty catalog -> the built-in list is untouched.
+var _fleetCatLoaded = false;
+function _loadFleetCatalog(force){
+  if((window.PB_FLAGS||{}).fleetCatalogSync===false) return;
+  if(_fleetCatLoaded && !force) return;
+  _fleetCatLoaded = true;
+  fetch(WORKER+'/fleet-catalog',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    var list = (d&&d.vehicles)||[];
+    if(!list.length) return;
+    list.forEach(function(v){
+      var name=v.name; if(!name) return;
+      var ex=VEHICLE_RATES[name];
+      if(!ex){
+        VEHICLE_RATES[name]={ type:(v.type==='chauffeur'?'chauffeur':'rental'),
+          rate:Number(v.rate)||0, deposit:Number(v.deposit)||0,
+          desc:[v.year,v.make,v.model].filter(Boolean).join(' ')||name,
+          img:(typeof v.img==='string'?v.img:'') };
+      } else {
+        if(Number(v.rate)) ex.rate=Number(v.rate);
+        if(Number(v.deposit)) ex.deposit=Number(v.deposit);
+        if(typeof v.img==='string' && v.img) ex.img=v.img;
+      }
+      if(Number(v.miles)||Number(v.overage)){
+        var m=VEHICLE_MILEAGE[name]||{};
+        VEHICLE_MILEAGE[name]={ miles:Number(v.miles)||m.miles||0, overage:Number(v.overage)||m.overage||0 };
+      }
+    });
+    var pk=document.getElementById('fleet-pickup'), dp=document.getElementById('fleet-dropoff');
+    if(pk&&dp&&pk.value&&dp.value&&pk.value<dp.value){ try{ _onFleetDateChange(); }catch(e){ try{renderFleet();}catch(_){} } }
+    else { try{ renderFleet(); }catch(e){} }
+  }).catch(function(){ _fleetCatLoaded=false; });   // let a later call retry after a failed fetch
+}
 function renderFleet(){
   const el = document.getElementById('fleet-list');
   if(!el) return;
+  _loadFleetCatalog();   // cached: fetches once, merges, then re-renders
   const pickup = document.getElementById('fleet-pickup')?.value;
   const dropoff = document.getElementById('fleet-dropoff')?.value;
   const datesEntered = !!(pickup && dropoff && pickup < dropoff);

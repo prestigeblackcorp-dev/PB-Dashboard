@@ -41,7 +41,8 @@
     demoPay:     true,   // payments are a no-charge simulation; flip OFF when real Stripe keys exist
     googlePlaces:true,   // Google Places (New) search via worker proxy; LIVE (GOOGLE_PLACES_KEY set in Cloudflare)
     sigsOffload: true,   // ON (2026-06-15): signatures live in the /sigs store, NOT in the every-sync booking blob -> each sync is a few KB instead of MBs (fixes the heavy/fragile full sync). Enabling auto-runs a one-time /sigs backfill + stripped re-push (_autoMigrateSigsIfEnabled); never loses a sig (save+confirm to /sigs FIRST, else send inline; re-hydrated on load + re-inlined by the worker for the portal). Reversible: set false -> sigs re-inline.
-    cumulativeContracts: true   // ON (2026-06-15): each signed/downloaded extension = full original contract + every amendment up to it; portal Contracts tab lists original + each extension in order (strict sequence + owner unlock). Reversible: set false to restore the per-extension amendment + base-only download.
+    cumulativeContracts: true,  // ON (2026-06-15): each signed/downloaded extension = full original contract + every amendment up to it; portal Contracts tab lists original + each extension in order (strict sequence + owner unlock). Reversible: set false to restore the per-extension amendment + base-only download.
+    fleetCatalogSync: true      // ON (2026-06-17): the portal + rider "Luxury Rentals" browse fetch /fleet-catalog (the owner's rental registry, published from the dashboard's Manage Vehicles modal) and merge it over their hardcoded lists, so any vehicle the owner adds appears automatically with correct availability. Curated descriptions/photos are preserved; only NEW vehicles are added (existing rates refresh if the catalog provides them). Reversible + safe: set false (or if the fetch fails/returns empty) -> each app shows only its built-in list.
   };
 
   // Web Push VAPID public key (non-secret). Generated 2026-06; the matching private
