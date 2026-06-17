@@ -4005,7 +4005,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v132';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v131';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4403,31 +4403,17 @@ function _cloudSaveNow() {
 // "load: Load failed" and wastes data. Instead GET the tiny /sync/savedAt timestamp and only do the
 // full cloudLoad when a DIFFERENT device actually bumped it. NOT softening the dot: if the savedAt
 // ping itself fails (real network loss) we still go red; we just stop re-downloading unchanged data.
-var _pollInFlight = false;   // guard so a fast poll never stacks on a slow load
-var _savedAtMisses = 0;      // consecutive savedAt poll failures (tolerant red so a fast poll doesn't flicker)
-// cb(ok, didLoad): didLoad === true ONLY when another device changed something and we actually pulled.
-// The fast interval re-renders (afterCloudLoad) ONLY on didLoad, so an unchanged tick is a cheap no-op.
 function _pollCloudIfChanged(cb){
-  if(!WORKER_URL){ if(cb) cb(false,false); return; }
-  if(_bigStorePending){ if(cb) cb(false,false); return; }   // don't poll before local hydration
-  if(_pollInFlight){ if(cb) cb(true,false); return; }        // a previous poll/load is still running -> skip this tick
-  _pollInFlight = true;
+  if(!WORKER_URL){ if(cb) cb(false); return; }
+  if(_bigStorePending){ if(cb) cb(false); return; }   // don't poll before local hydration
   fetch(WORKER_URL + '/sync/savedAt?_=' + Date.now(), { cache:'no-store', headers:_authHeader() })
     .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('savedAt HTTP '+r.status)); })
     .then(function(remote){
-      _savedAtMisses = 0;
       var remoteT = Number(remote) || 0;
-      if(remoteT > _lastSavedAt){ cloudLoad(function(ok){ _pollInFlight=false; if(cb) cb(ok, true); }); }   // another device changed -> pull + re-render
-      else { setSyncStatus('ok'); _pollInFlight=false; if(cb) cb(true, false); }                            // nothing changed -> NO re-render
+      if(remoteT > _lastSavedAt){ cloudLoad(cb); }                    // another device changed something -> pull
+      else { setSyncStatus('ok'); if(cb) cb(true); }                 // already current -> skip the big download
     })
-    .catch(function(e){
-      _pollInFlight=false;
-      _lastSyncErr = 'savedAt poll: ' + ((e && e.message) ? e.message : 'fetch failed');
-      // Tolerant: a single missed ping on a ~1.5s poll must NOT flash the dot red. Only go red after a few
-      // CONSECUTIVE misses (a real outage). One blip keeps the last (green) status.
-      if(++_savedAtMisses >= 3){ setSyncStatus('error'); }
-      if(cb) cb(false, false);
-    });
+    .catch(function(e){ _lastSyncErr = 'savedAt poll: ' + ((e && e.message) ? e.message : 'fetch failed'); setSyncStatus('error'); if(cb) cb(false); });
 }
 
 function cloudLoad(callback) {
@@ -21843,26 +21829,18 @@ if(!(new URLSearchParams(location.search).get('sign'))&&!(new URLSearchParams(lo
   document.addEventListener('visibilitychange', function() {
     if (document.visibilityState === 'hidden') { flushCloudSave(); return; } // push pending changes before the OS suspends a backgrounded tab (mobile)
     if (document.visibilityState === 'visible' && WORKER_URL) {
-      _lastActivityAt = Date.now();   // refocus counts as activity -> resume fast polling
-      _pollCloudIfChanged(function(ok, didLoad) { if(didLoad) afterCloudLoad(ok); });   // returning to the app: pull + re-render ONLY if another device changed something
+      _pollCloudIfChanged(function(ok) { afterCloudLoad(ok); setSyncStatus(ok ? 'ok' : 'error'); });   // returning to the app: pull only if changed, don't re-download everything
     }
   });
   window.addEventListener('pagehide', flushCloudSave); // last-ditch flush when the tab is being closed/unloaded
-  // NEAR-INSTANT cross-device updates via adaptive polling. While you're ACTIVELY using the dashboard
-  // (visible + interacted in the last 2 min) it checks the tiny /sync/savedAt every ~1.5s, so another
-  // device's change shows in ~1-2s. Open-but-idle backs off to 6s (light on requests); hidden does nothing.
-  // The full dataset is pulled + the UI re-rendered ONLY when savedAt actually changed (didLoad), so an
-  // unchanged tick is just one tiny request -- no re-render, no churn (the old 5s loop re-rendered every tick).
-  var _lastActivityAt = Date.now();
-  ['mousedown','keydown','touchstart','wheel','scroll'].forEach(function(ev){ try{ document.addEventListener(ev, function(){ _lastActivityAt = Date.now(); }, {passive:true, capture:true}); }catch(e){} });
-  var _syncPollTimer = null;
-  function _runSyncPoll(){
-    var vis = (document.visibilityState === 'visible');
-    if (WORKER_URL && vis){ _pollCloudIfChanged(function(ok, didLoad){ if(didLoad) afterCloudLoad(ok); }); }
-    var delay = !vis ? 8000 : (((Date.now() - _lastActivityAt) < 120000) ? 1500 : 6000);
-    _syncPollTimer = setTimeout(_runSyncPoll, delay);
-  }
-  _runSyncPoll();
+  // Auto-pull every 5 seconds so changes propagate to every active device quickly. Cheap: each tick is a
+  // tiny /sync/savedAt check (only re-downloads the full dataset when another device actually changed
+  // something), and it only runs while the tab is visible -- a hidden tab does nothing.
+  setInterval(function() {
+    if (WORKER_URL && document.visibilityState === 'visible') {
+      _pollCloudIfChanged(function(ok) { afterCloudLoad(ok); });   // savedAt check first -> only full-pull when another device changed something (no MB re-download per tick)
+    }
+  }, 5000);
   // Auto-scheduled email check: 24hr pickup reminders + incomplete verify nudges
   // Throttled internally to once per 29 min; interval fires every 30 min
   setInterval(runAutoScheduledEmails, 30*60*1000);
