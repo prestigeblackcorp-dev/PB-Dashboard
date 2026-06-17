@@ -4005,7 +4005,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v133';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v134';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8227,6 +8227,7 @@ async function resolveDriverReq(reqId,action){
     if(action==='approve'){
       try{
         var _req=(_driverReqCache||[]).find(function(x){ return x && x.reqId===reqId; });
+        if(_req){ logNotif('driver_approved','Authorized Driver Approved \u2014 '+(_req.driverName||''),_req.driverEmail||'',_req.bookingId||''); }
         if(_req && _req.bookingId && _req.driverEmail && (typeof VERIFY_URL!=='undefined' && VERIFY_URL)){
           var _di=(_req.driverIdx!==undefined&&_req.driverIdx!==null)?Number(_req.driverIdx):null;
           if(_di!==null) sendDriverStripeVerify(_req.bookingId, _di, _req.driverEmail, _req.driverName);
@@ -12499,6 +12500,7 @@ function saveVerify(){
     // booking's blob-sync is stuck (frozen _t), the local save() above never reaches Firebase and the
     // portal gate stays on "ID Verification Required". The direct worker write can't be lost that way.
     _pushDriverVerifyToCloud(verifyId, verifyDriverIdx, _drivers[verifyDriverIdx]);
+    if($d('vIdVerified').checked) sendDriverVerifiedEmail(bookings[idx], verifyDriverIdx);  // email the driver "you're verified, sign here" + log it
     closeVerify();
     renderTodayBanner();
     if(activeTab==='upcoming') renderUpcoming();
@@ -13721,6 +13723,77 @@ function sendCustomerVerifiedEmail(b){
         '</div>'
     })
   }).then(function(r){ if(r&&r.ok) logNotif('customer_verified','Customer Verified Confirmation',b.email,b.id); }).catch(function(){});
+}
+
+// Sent to an ADDITIONAL AUTHORIZED DRIVER the moment their ID is verified (owner-manual or Stripe).
+// Mirrors the customer's "you're verified" email; includes their direct signing link. Dedup PER DRIVER
+// via extraDrivers[i].verifiedEmailSent so it sends exactly once regardless of device/path.
+function sendDriverVerifiedEmail(b, driverIdx){
+  if(!MESSAGING_URL || !b) return;
+  var idx = bookings.findIndex(function(x){ return x.id===b.id; });
+  if(idx===-1) return;
+  var d = (bookings[idx].extraDrivers||[])[driverIdx];
+  if(!d || !d.email || !d.idVerified) return;
+  if(d.verifiedEmailSent) return;   // dedup
+  // Stamp the flag BEFORE the async send (blocks a rapid second call) and bump _t so it syncs.
+  bookings[idx].extraDrivers[driverIdx] = Object.assign({}, d, { verifiedEmailSent:true });
+  bookings[idx]._t = Date.now();
+  save();
+  d = bookings[idx].extraDrivers[driverIdx];
+  var firstName=(d.name||'there').split(' ')[0]||'there';
+  var signUrl='https://prestigeblackcorp-dev.github.io/PB-Dashboard/portal.html?sign='+encodeURIComponent(b.id)+'&driver='+Number(driverIdx);
+  fetch(MESSAGING_URL+'/send-email',{
+    method:'POST', headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
+    body:JSON.stringify({
+      to:d.email,
+      subject:'You\'re verified \u2014 sign the rental agreement for '+esc(b.vehicle),
+      html:'<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08)">'+
+        '<div style="background:linear-gradient(135deg,#b8982e 0%,#7a6320 100%);padding:28px;text-align:center">'+
+          '<div style="font-size:40px;margin-bottom:10px">\u2705</div>'+
+          '<h1 style="margin:0;color:#fff;font-size:22px;font-weight:800">You\'re Verified, '+esc(firstName)+'!</h1>'+
+          '<p style="margin:8px 0 0;color:rgba(255,255,255,.8);font-size:14px">You can now sign as an authorized driver</p>'+
+        '</div>'+
+        '<div style="padding:28px">'+
+          '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">Your ID has been verified for the <strong>'+esc(b.vehicle)+'</strong> rental. Please sign the additional-driver agreement below \u2014 no account needed.</p>'+
+          '<div style="text-align:center;margin:24px 0"><a href="'+signUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;font-weight:800;border-radius:10px;text-decoration:none;font-size:16px">\u270d\ufe0f Sign the Agreement \u2192</a></div>'+
+          '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
+        '</div>'+
+        '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00b7 (214) 207-2481</div>'+
+        '</div>'
+    })
+  }).then(function(r){ if(r&&r.ok) logNotif('driver_verified','Authorized Driver Verified \u2014 '+(d.name||''),d.email,b.id); }).catch(function(){});
+}
+
+// After every cloud load: email each verified authorized driver who hasn't been emailed yet (covers
+// owner-manual AND Stripe verification, on any device). Dedup'd inside sendDriverVerifiedEmail.
+function _autoEmailVerifiedDrivers(){
+  try{
+    (bookings||[]).forEach(function(b){
+      if(!b || b._deleted || !Array.isArray(b.extraDrivers)) return;
+      b.extraDrivers.forEach(function(d,i){
+        if(d && d.email && d.idVerified && !d.verifiedEmailSent && d.status!=='denied') sendDriverVerifiedEmail(b, i);
+      });
+    });
+  }catch(e){}
+}
+
+// Log portal PAYMENTS (date lock / balance / full) to the global activity log (Settings) + per-booking
+// comm log, ONCE each. The webhook stamps the payment on the booking (dateLockPaidAt / balancePaidAt);
+// we surface it here. Dedup via a localStorage set of event keys so it never double-logs across loads.
+function _detectAndLogPayments(){
+  try{
+    var seen={}; try{ seen=JSON.parse(localStorage.getItem('pb_logged_pay')||'{}')||{}; }catch(_e){ seen={}; }
+    var changed=false;
+    (bookings||[]).forEach(function(b){
+      if(!b || b._deleted || !b.id) return;
+      var who=b.name||b.email||'';
+      var dlAt=Number(b.dateLockPaidAt)||0;
+      if(dlAt){ var k='dl|'+b.id+'|'+dlAt; if(!seen[k]){ logNotif('payment','Date Lock paid \u2014 '+$$(Number(b.dateLock)||0),who,b.id); seen[k]=1; changed=true; } }
+      var balAt=Number(b.balancePaidAt)||0;
+      if(balAt){ var k2='bal|'+b.id+'|'+balAt; if(!seen[k2]){ var amt=Number(b.balancePaidAmount)||0; logNotif('payment',(b.paidInFull?'Paid in full':'Balance paid')+(amt?' \u2014 '+$$(amt):''),who,b.id); seen[k2]=1; changed=true; } }
+    });
+    if(changed){ try{ localStorage.setItem('pb_logged_pay', JSON.stringify(seen)); }catch(_e){} }
+  }catch(e){}
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -21761,6 +21834,8 @@ setTimeout(stickyTabFix, 200);
 function afterCloudLoad(ok){
   if(!ok) return;
   _autoCarryVerifyForAll(); // fill verify data for any unverified booking from a known customer
+  _autoEmailVerifiedDrivers();  // email any authorized driver verified on another device/path (dedup'd)
+  _detectAndLogPayments();      // log portal payments (date lock / balance / full) to the activity log
   autoGenerateRecurringExpenses();
   initSelects(); render(); renderIncomeList(); renderExpenseLog();
   if(activeTab==='upcoming')  renderUpcoming();
