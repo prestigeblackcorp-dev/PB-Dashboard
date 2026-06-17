@@ -4005,7 +4005,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v137';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v138';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4434,8 +4434,22 @@ function cloudLoad(callback) {
             ? data.bookings
             : Object.values(data.bookings).filter(Boolean);
           merged = mergeArray(bookings, cloudBookings);
-          if (merged.length !== cloudBookings.length) needsPush = true;
-          if (!needsPush && merged.some(function(m){ return !cloudBookings.find(function(c){ return c.id===m.id&&c._t===m._t; }); })) needsPush = true;
+          // needsPush ONLY when THIS device holds a booking the cloud is MISSING or has an OLDER copy of,
+          // AND we have not already pushed it at its current _t. The old `merged.length !== cloudBookings.length`
+          // compare fired FOREVER once the cloud held DUPLICATE bookings (legacy array + id-keyed copies --
+          // e.g. 338 cloud entries vs 171 deduped): per-booking push can't delete those, so every pull re-set
+          // needsPush -> cloudSave -> _pushMetaSync bumped savedAt -> the other device pulled -> ... = the
+          // green/yellow flicker loop. And a booking already pushed at its _t that the cloud still won't match
+          // is a worker dedup-skip (a natural-key duplicate) -- re-saving cannot reconcile it, so don't churn
+          // on it either. Genuinely new/edited local bookings (local _t > last-pushed _t, cloud missing/older)
+          // and delete tombstones STILL push.
+          if (!needsPush && merged.some(function(m){
+            if(!m || !m.id) return false;
+            var lt = Number(m._t)||0;
+            if((m.id in _pushedBT) && lt <= (Number(_pushedBT[m.id])||0)) return false;   // already pushed at this _t -> cloud's refusal isn't ours to re-fix
+            var c = cloudBookings.find(function(x){ return x && x.id===m.id; });
+            return !c || (Number(c._t)||0) < lt;                                           // cloud is missing it, or holds an older copy -> push
+          })) needsPush = true;
           bookings = merged;
           // -- Normalize date lock to $100 flat for web bookings --------------
           // Stripe processing fees / taxes should not change the recorded amount.
