@@ -4010,7 +4010,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v141';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v142';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4638,7 +4638,8 @@ function cloudLoad(callback) {
 }
 
 
-function setSyncStatus(status) {
+var _syncStatusTimer=null, _syncStatusShown='off';
+function _applySyncStatus(status) {
   var dot = $d('syncDot');
   if (!dot) return;
   var colors = { ok:'var(--green)', syncing:'#fbbf24', error:'var(--red)', off:'var(--muted)' };
@@ -4650,6 +4651,19 @@ function setSyncStatus(status) {
   var lbl = $d('syncLabel'); if(lbl) lbl.textContent = labels[status] || labels.off;
   updatePhotoSyncHints();
   stickyTabFix();
+  _syncStatusShown = status;
+}
+// Debounce the amber "syncing" state so the dot reflects SUSTAINED sync, not every sub-second cycle: a
+// sync that finishes in <1.2s never flashes amber (kills the rapid green<->yellow flicker), while a
+// genuinely sustained sync still goes amber and a failure still goes red IMMEDIATELY (never hidden).
+function setSyncStatus(status) {
+  if(_syncStatusTimer){ clearTimeout(_syncStatusTimer); _syncStatusTimer=null; }
+  if(status==='syncing'){
+    if(_syncStatusShown==='syncing') return;
+    _syncStatusTimer=setTimeout(function(){ _syncStatusTimer=null; _applySyncStatus('syncing'); }, 1200);
+    return;
+  }
+  _applySyncStatus(status);
 }
 // Tap-the-Sync-button handler: force a full sync when configured, else open first-time setup.
 function syncBtnTap(){
@@ -9635,12 +9649,12 @@ function tripCard(b, showCountdown){
   if(_isGroupon){
     // Groupon bookings \u2014 show Groupon badge regardless of balance
     unpaidChip='<div style="margin-top:4px"><span style="background:rgba(0,163,77,.15);color:#00a34d;border:1px solid rgba(0,163,77,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\uD83D\uDFE2 Groupon</span></div>';
-  } else if(balanceDue<=0&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress')){
+  } else if(b.status!=='cancelled'&&balanceDue<=0){
     // Only show Paid chip when date lock chip isn't already covering it with Paid in Full
     if(!_paidFull){
-      unpaidChip='<div style="margin-top:4px"><span style="background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\u2705 Paid</span></div>';
+      unpaidChip='<div style="margin-top:4px"><span style="background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\u2705 Paid in Full</span></div>';
     }
-  } else if(balanceDue>0&&(b.status==='confirmed'||b.status==='completed'||b.status==='in-progress')){
+  } else if(b.status!=='cancelled'&&balanceDue>0){
     // balanceDue already accounts for balancePaidAt (it is the re-billed amount of any extension added AFTER
     // the base balance was paid), so a paid booking with a fresh extension still shows what is newly owed.
     unpaidChip='<div style="margin-top:4px"><span style="background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\uD83D\uDCB5 Balance Due: '+$$(balanceDue)+'</span></div>';
@@ -14020,8 +14034,8 @@ function renderTodayBanner(){
     var balHtml=_isGrouponBanner
       ?'<span style="color:#00a34d;font-size:12px;font-weight:600">\uD83D\uDFE2 Groupon</span>'
       :(bal>0
-        ?'<span style="color:var(--red);font-size:12px;font-weight:600">Due: '+$$(bal)+'</span>'
-        :'<span style="color:var(--green);font-size:12px;font-weight:600">Paid \u2713</span>');
+        ?'<span style="color:var(--red);font-size:12px;font-weight:600">Balance Due: '+$$(bal)+'</span>'
+        :'<span style="color:var(--green);font-size:12px;font-weight:600">Paid in Full</span>');
 
     // Deposit
     var depHtml=Number(b.deposit)>0
@@ -14067,7 +14081,7 @@ function renderTodayBanner(){
           ?'<span style="color:#00a34d;font-size:11px;font-weight:600">\uD83D\uDFE2 Groupon</span>'
           :(bal>0
             ?'<span style="color:var(--red);font-size:11px;font-weight:600">Balance Due: '+$$(bal)+'</span>'
-            :'<span style="color:var(--green);font-size:11px;font-weight:600">Paid \u2713</span>');
+            :'<span style="color:var(--green);font-size:11px;font-weight:600">Paid in Full</span>');
         return '<button class="today-banner-card" onclick="openBookingDetail(\''+b.id+'\')" type="button" style="border-color:rgba(248,113,113,.25)">'+
           '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:5px">'+
             '<div style="font-size:12px;font-weight:700;color:#f87171">\uD83D\uDD01 Return @ '+timeStr+'</div>'+
