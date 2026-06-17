@@ -1111,16 +1111,20 @@ function renderTodayEval(clockedHrs){
 }
 
 function getTodayHours(){
-  // Use the LOCAL calendar day, not UTC \u2014 otherwise evening shifts get
-  // misattributed to the next day once UTC rolls past midnight.
-  var today=new Date().toLocaleDateString('en-CA');
+  // Count the portion of each clock SESSION that OVERLAPS today (local calendar day) -- not only
+  // sessions whose inAt is today. A shift that started before midnight, spans several days, or is
+  // still open (no outAt) must still accrue today's hours. The old "inAt===today" filter returned 0h
+  // for a driver clocked in across midnight, or one who left the clock running (open multi-day shift).
+  var now=Date.now();
+  var _d=new Date(); _d.setHours(0,0,0,0); var dayStart=_d.getTime();   // local midnight today
   var total=0;
-  drvState.clocks.forEach(function(c){
-    if(!c.inAt) return;
-    var d=new Date(c.inAt).toLocaleDateString('en-CA');
-    if(d!==today) return;
-    var out=c.outAt||Date.now();
-    total+=(out-c.inAt)/3600000;
+  (drvState.clocks||[]).forEach(function(c){
+    if(!c || !c.inAt) return;
+    var inMs=Number(c.inAt)||0; if(!inMs) return;
+    var outMs=Number(c.outAt)||now;            // an OPEN session counts up to now
+    var segStart=Math.max(inMs, dayStart);     // clamp the session to today's window
+    var segEnd=Math.min(outMs, now);
+    if(segEnd>segStart) total+=(segEnd-segStart)/3600000;
   });
   return total;
 }
