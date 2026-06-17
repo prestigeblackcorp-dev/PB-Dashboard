@@ -901,6 +901,7 @@ function renderAll(){
   startClockTick();
   initChauffeurAfterLogin();
   setDuty(!!drvState.clockedIn);   // sync On-Duty pill to clock state on load
+  _lastCapCheck=Date.now();        // delay the first 15h cap-check ~20s so the ride poll sets _activeRide before we'd auto-clock-out
 }
 
 function updateHeader(){
@@ -1012,17 +1013,23 @@ function updateClockDisplay(){
     if(card){ card.style.background='linear-gradient(135deg,rgba(201,169,98,.1),rgba(201,169,98,.04))'; card.style.borderColor='rgba(201,169,98,.25)'; }
     if(disp) disp.style.color='var(--blue)';
   }
+  // 15h auto-clock-out + nudge: throttled to once / 20s, runs while the app is open. The 20s gap also
+  // lets the ride poll establish _activeRide first, so a driver on a trip is never wrongly clocked out.
+  if(drvState.clockedIn && (Date.now()-_lastCapCheck)>20000){ _lastCapCheck=Date.now(); try{ _checkClockCap(); }catch(e){} }
 }
 
 var _clockBusy=false;
-async function drvToggleClock(){
+async function drvToggleClock(opts){
   if(_clockBusy) return;
+  opts=opts||{};
   _clockBusy=true;
   var btn=$d('today-clock-btn'); if(btn) btn.disabled=true;
   var pill=$d('duty-pill'); if(pill) pill.style.pointerEvents='none';
   try{
     var action=drvState.clockedIn?'out':'in';
-    var r=await fetch(WORKER+'/driver/clock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:drvState.email,token:drvState.token,action,clockId:drvState.activeClockId})});
+    var _clkBody={email:drvState.email,token:drvState.token,action:action,clockId:drvState.activeClockId};
+    if(action==='out' && opts.outAt) _clkBody.outAt=opts.outAt;   // auto-clock-out caps the recorded shift at this time
+    var r=await fetch(WORKER+'/driver/clock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_clkBody)});
     var d=await r.json();
     if(!r.ok){ drvToast(d.error||'Error','error'); return; }
     if(action==='in'){
@@ -1031,7 +1038,7 @@ async function drvToggleClock(){
       setDuty(true);   // clocking in puts you on duty
     } else {
       drvState.clockedIn=false; drvState.clockStartMs=0; drvState.activeClockId=null;
-      drvToast('Clocked out','success');
+      drvToast(opts.auto?'Auto clocked out \u2014 15h reached while idle':'Clocked out','success');
       setDuty(false);  // clocking out takes you off duty
     }
     updateHeader();
@@ -1040,6 +1047,33 @@ async function drvToggleClock(){
     if(ok){ renderEarnings(); renderToday(); }
   }catch(e){ drvToast('Network error','error'); }
   finally{ _clockBusy=false; if(btn) btn.disabled=false; if(pill) pill.style.pointerEvents=''; }
+}
+
+// -- 15-hour auto-clock-out + nudge --------------------------------------------
+// Drivers sometimes forget to clock out, so a shift runs for days and throws off the hours.
+// Cap a shift at 15h -- but NEVER cut off an active trip: only auto-clock-out when IDLE
+// (no _activeRide). On a trip past 15h, or as the cap approaches, nudge instead.
+var CLOCK_CAP_HRS=15, _lastCapCheck=0, _clockNudgeAt=0;
+function _checkClockCap(){
+  if(_clockBusy) return;
+  if(!drvState.clockedIn || !drvState.clockStartMs) return;
+  var hrs=(Date.now()-drvState.clockStartMs)/3600000;
+  if(hrs < CLOCK_CAP_HRS){
+    // gentle reminder from 13h on (at most once/hour) so a long shift is not a surprise
+    if(hrs>=13 && (Date.now()-_clockNudgeAt)>3600000){ _clockNudgeAt=Date.now(); drvToast('You have been on the clock '+Math.floor(hrs)+'h \u2014 clock out when done (auto at 15h while idle)'); }
+    return;
+  }
+  if(_activeRide){
+    // 15h+ but on a trip: do NOT cut them off -- nudge; the next IDLE check clocks them out
+    if((Date.now()-_clockNudgeAt)>3600000){ _clockNudgeAt=Date.now(); drvToast('15h on the clock \u2014 you will auto clock-out as soon as this trip ends'); }
+    return;
+  }
+  // idle + 15h+: auto-clock-out, capping the recorded shift at 15h -- but not before the last trip
+  // ended (so a trip that genuinely ran past 15h is not under-recorded), and never in the future.
+  var inMs=drvState.clockStartMs, cap=inMs + CLOCK_CAP_HRS*3600000, lastTripEnd=0;
+  (drvState.trips||[]).forEach(function(t){ var c=Number(t&&t.completedAt||0); if(c>=inMs && c>lastTripEnd) lastTripEnd=c; });
+  var outAt=Math.min(Date.now(), Math.max(cap, lastTripEnd));
+  drvToggleClock({auto:true, outAt:outAt});
 }
 
 // -- Today tab --------------------------------------------------------------
