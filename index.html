@@ -4005,7 +4005,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v139';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v140';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4303,6 +4303,8 @@ function _syncPayload(noBookings){
     worker_url: WORKER_URL || '',
     owner_email: OWNER_EMAIL || '',
     review_url: REVIEW_URL || '',
+    date_lock_url: DATE_LOCK_URL || '',
+    balance_url: BALANCE_URL || '',
     dashboard_secret: DASHBOARD_SECRET || '',
     // Monotonic timestamp: never send a savedAt behind the last cloud value we've seen.
     // A device with a skewed (behind) clock would otherwise have every push rejected as
@@ -4480,15 +4482,18 @@ function cloudLoad(callback) {
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
           _rehydrateSigs(bookings, function(_n){ if(_n>0){ try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){} try{ if(typeof render==='function') render(); }catch(e){} } });   // PHASE 2: fetch+graft any sig-stripped bookings from /sigs; no-op (no re-render) when flag OFF
         }
+        // needsPush only when LOCAL has MORE than the cloud (real additions). A `!==` here churned
+        // forever once these nodes held DUPLICATE entries (merged dedupes smaller than the raw cloud array)
+        // -> savedAt ping-pong = the flicker. Same fix as the bookings check above (v139/v140).
         if (Array.isArray(data.expenses)) {
           merged = mergeArray(expenses, data.expenses);
-          if (merged.length !== data.expenses.length) needsPush = true;
+          if (merged.length > data.expenses.length) needsPush = true;
           expenses = merged;
           try { localStorage.setItem('pb_expenses', JSON.stringify(expenses)); } catch(e) {}
         }
         if (Array.isArray(data.incomes)) {
           merged = mergeArray(incomes, data.incomes);
-          if (merged.length !== data.incomes.length) needsPush = true;
+          if (merged.length > data.incomes.length) needsPush = true;
           incomes = merged;
           try { localStorage.setItem('pb_incomes', JSON.stringify(incomes)); } catch(e) {}
         }
@@ -4507,7 +4512,7 @@ function cloudLoad(callback) {
         }
         if (Array.isArray(data.maintenance)) {
           merged = mergeArray(maintenance, data.maintenance);
-          if (merged.length !== data.maintenance.length) needsPush = true;
+          if (merged.length > data.maintenance.length) needsPush = true;
           maintenance = merged;
           try { localStorage.setItem('pb_maintenance', JSON.stringify(maintenance)); } catch(e) {}
         }
@@ -4517,13 +4522,13 @@ function cloudLoad(callback) {
             ? data.waitlist
             : Object.values(data.waitlist).filter(Boolean);
           merged = mergeArray(waitlist, cloudWaitlist);
-          if (merged.length !== cloudWaitlist.length) needsPush = true;
+          if (merged.length > cloudWaitlist.length) needsPush = true;
           waitlist = merged;
           try { localStorage.setItem('pb_waitlist', JSON.stringify(waitlist)); } catch(e) {}
         }
         if (Array.isArray(data.pricingRules)) {
           merged = mergeArray(pricingRules, data.pricingRules);
-          if (merged.length !== data.pricingRules.length) needsPush = true;
+          if (merged.length > data.pricingRules.length) needsPush = true;
           pricingRules = merged;
           try { localStorage.setItem('pb_pricing_rules', JSON.stringify(pricingRules)); } catch(e) {}
         }
@@ -4573,6 +4578,17 @@ function cloudLoad(callback) {
         if (data.review_url && typeof data.review_url === 'string' && data.review_url.length > 5) {
           REVIEW_URL = data.review_url;
           try { localStorage.setItem('pb_review_url', REVIEW_URL); } catch(e) {}
+        }
+        // Stripe Date-Lock + Balance payment links now sync like the other URLs, so a fresh device
+        // (or a reset one) fills them in automatically instead of coming up blank. Only adopt a real
+        // value -> never let an empty cloud field wipe a link this device already has.
+        if (typeof data.date_lock_url === 'string' && data.date_lock_url.length > 5) {
+          DATE_LOCK_URL = data.date_lock_url.trim();
+          try { localStorage.setItem('pb_date_lock_url', DATE_LOCK_URL); } catch(e) {}
+        }
+        if (typeof data.balance_url === 'string' && data.balance_url.length > 5) {
+          BALANCE_URL = data.balance_url.trim();
+          try { localStorage.setItem('pb_balance_url', BALANCE_URL); } catch(e) {}
         }
         if (data.dashboard_secret && typeof data.dashboard_secret === 'string' && data.dashboard_secret.trim()) {
           DASHBOARD_SECRET = data.dashboard_secret.trim();
