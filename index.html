@@ -4005,7 +4005,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v134';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v135';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8233,6 +8233,9 @@ async function resolveDriverReq(reqId,action){
           if(_di!==null) sendDriverStripeVerify(_req.bookingId, _di, _req.driverEmail, _req.driverName);
         }
       }catch(e){ try{ console.warn('auto verify-send skipped', e); }catch(_e){} }
+    }
+    else if(action==='deny'){
+      try{ var _rqD=(_driverReqCache||[]).find(function(x){ return x && x.reqId===reqId; }); if(_rqD) logNotif('driver_denied','Authorized Driver Denied \u2014 '+(_rqD.driverName||''),_rqD.driverEmail||'',_rqD.bookingId||''); }catch(e){}
     }
     loadDriverRequests();
     // Refresh bookings so dashboard booking card reflects the change
@@ -13782,17 +13785,43 @@ function _autoEmailVerifiedDrivers(){
 // we surface it here. Dedup via a localStorage set of event keys so it never double-logs across loads.
 function _detectAndLogPayments(){
   try{
-    var seen={}; try{ seen=JSON.parse(localStorage.getItem('pb_logged_pay')||'{}')||{}; }catch(_e){ seen={}; }
+    var raw=null; try{ raw=localStorage.getItem('pb_logged_pay'); }catch(_e){}
+    var firstRun=(raw===null);   // first ever run: SEED existing payments as seen WITHOUT logging (no historical flood)
+    var seen={}; try{ seen=JSON.parse(raw||'{}')||{}; }catch(_e){ seen={}; }
     var changed=false;
     (bookings||[]).forEach(function(b){
       if(!b || b._deleted || !b.id) return;
       var who=b.name||b.email||'';
       var dlAt=Number(b.dateLockPaidAt)||0;
-      if(dlAt){ var k='dl|'+b.id+'|'+dlAt; if(!seen[k]){ logNotif('payment','Date Lock paid \u2014 '+$$(Number(b.dateLock)||0),who,b.id); seen[k]=1; changed=true; } }
+      if(dlAt){ var k='dl|'+b.id+'|'+dlAt; if(!seen[k]){ seen[k]=1; changed=true; if(!firstRun) logNotif('payment','Date Lock paid \u2014 '+$$(Number(b.dateLock)||0),who,b.id); } }
       var balAt=Number(b.balancePaidAt)||0;
-      if(balAt){ var k2='bal|'+b.id+'|'+balAt; if(!seen[k2]){ var amt=Number(b.balancePaidAmount)||0; logNotif('payment',(b.paidInFull?'Paid in full':'Balance paid')+(amt?' \u2014 '+$$(amt):''),who,b.id); seen[k2]=1; changed=true; } }
+      if(balAt){ var k2='bal|'+b.id+'|'+balAt; if(!seen[k2]){ seen[k2]=1; changed=true; if(!firstRun){ var amt=Number(b.balancePaidAmount)||0; logNotif('payment',(b.paidInFull?'Paid in full':'Balance paid')+(amt?' \u2014 '+$$(amt):''),who,b.id); } } }
     });
-    if(changed){ try{ localStorage.setItem('pb_logged_pay', JSON.stringify(seen)); }catch(_e){} }
+    if(changed||firstRun){ try{ localStorage.setItem('pb_logged_pay', JSON.stringify(seen)); }catch(_e){} }
+  }catch(e){}
+}
+
+// Log when a SIGNATURE is RECEIVED (customer or authorized driver actually signs, incl. extensions),
+// ONCE each. Dedup via a localStorage set keyed on the slot. First run seeds existing sigs WITHOUT
+// logging so the log isn't flooded with every historical signature.
+function _detectAndLogSignatures(){
+  try{
+    var raw=null; try{ raw=localStorage.getItem('pb_logged_sig'); }catch(_e){}
+    var firstRun=(raw===null);
+    var seen={}; try{ seen=JSON.parse(raw||'{}')||{}; }catch(_e){ seen={}; }
+    var changed=false;
+    var _isS=function(s){ return typeof s==='string' && s.indexOf('data:image/')===0; };
+    function mark(k, type, label, to, bid){ if(seen[k]) return; seen[k]=1; changed=true; if(!firstRun) logNotif(type,label,to,bid); }
+    (bookings||[]).forEach(function(b){
+      if(!b || b._deleted || !b.id) return;
+      if(_isS(b.customerSig)) mark('c|'+b.id,'signed','Customer signed the agreement',(b.name||''),b.id);
+      (Array.isArray(b.extraDrivers)?b.extraDrivers:[]).forEach(function(d,i){ if(d && _isS(d.sig)) mark('d|'+b.id+'|'+i,'signed','Authorized driver signed \u2014 '+(d.name||('#'+(i+1))),(d.email||''),b.id); });
+      (Array.isArray(b.extensions)?b.extensions:[]).forEach(function(e){ if(!e||!e.id) return;
+        if(_isS(e.sig)) mark('e|'+b.id+'|'+e.id,'signed','Extension signed by renter',(b.name||''),b.id);
+        if(e.driverSigs) Object.keys(e.driverSigs).forEach(function(kk){ var os=e.driverSigs[kk]; if(os && _isS(os.sig)) mark('ed|'+b.id+'|'+e.id+'|'+kk,'signed','Extension signed by authorized driver','',b.id); });
+      });
+    });
+    if(changed||firstRun){ try{ localStorage.setItem('pb_logged_sig', JSON.stringify(seen)); }catch(_e){} }
   }catch(e){}
 }
 
@@ -19548,6 +19577,7 @@ function sendContractSigningLink(){
   }
 
   if(sl) sl.textContent = 'Sending\u2026';
+  logNotif('signing', docType+' Signing Link sent', _recipients.map(function(r){ return r.email; }).join(', '), b.id);
   var _sent=0, _failed=0;
 
   _recipients.forEach(function(rec){
@@ -21836,6 +21866,7 @@ function afterCloudLoad(ok){
   _autoCarryVerifyForAll(); // fill verify data for any unverified booking from a known customer
   _autoEmailVerifiedDrivers();  // email any authorized driver verified on another device/path (dedup'd)
   _detectAndLogPayments();      // log portal payments (date lock / balance / full) to the activity log
+  _detectAndLogSignatures();    // log when a customer/authorized driver actually signs (incl. extensions)
   autoGenerateRecurringExpenses();
   initSelects(); render(); renderIncomeList(); renderExpenseLog();
   if(activeTab==='upcoming')  renderUpcoming();
