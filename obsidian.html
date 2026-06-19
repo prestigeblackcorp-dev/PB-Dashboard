@@ -2543,9 +2543,15 @@ function _renderDoneFlow(ride){
       +demoNote+'</div>';
   } else {  // receipt (revealed after the rating modal)
     var row=function(l,v,bold){ return '<div style="display:flex;justify-content:space-between;'+(bold?'font-size:15px;font-weight:800;color:#fff;padding:8px 0 0;border-top:1px solid var(--border);margin-top:6px':'font-size:13px;color:#cfd3da;padding:4px 0')+'"><span>'+l+'</span><span>'+v+'</span></div>'; };
+    var _stopsR=(Array.isArray(ride.stopSurcharges)?ride.stopSurcharges:[]).filter(function(s){return Number(s.amount)>0;});
+    var _stopsRT=_stopsR.reduce(function(a,s){return a+(Number(s.amount)||0);},0);
+    var _waitR=Number(ride.waitChargeTotal)||0;   // wait-at-stop overage, already inside `fare` -> show as its own line; base = fare - stops - wait so the rows sum to Total
+    var _itemized=(_stopsRT>0||_waitR>0);
     box.innerHTML='<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;padding:16px">'
       +'<div style="font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--gold);text-transform:uppercase;margin-bottom:8px">Receipt</div>'
-      +row('Fare','$'+fare.toFixed(2),false)
+      +(_itemized?row('Base fare','$'+Math.max(0,fare-_stopsRT-_waitR).toFixed(2),false):row('Fare','$'+fare.toFixed(2),false))
+      +_stopsR.map(function(s,i){return row('Stop '+(i+1),'+$'+(Number(s.amount)||0).toFixed(2),false);}).join('')
+      +(_waitR>0?row('Stop wait (>5 min)','+$'+_waitR.toFixed(2),false):'')
       +(tip>0?row('Tip','$'+tip.toFixed(2),false):'')
       +row('Total charged','$'+total.toFixed(2),true)
       +'<div style="font-size:11px;color:#C9A962;text-align:center;margin-top:12px">\u2713 Thank you for riding with Prestige Black</div>'
@@ -2845,7 +2851,7 @@ async function endTripEarly(){
   var btn=$d('endEarlyBtn'); if(btn){ btn.disabled=true; btn.textContent='Ending\u2026'; }
   const d=await fetch(WORKER+'/chauffeur/complete-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:_rideId})}).then(r=>r.json()).catch(()=>null);
   if(d&&d.ok){ pollRideStatus(); }
-  else { if(btn){ btn.disabled=false; btn.textContent='\u23F9 End trip early'; } toast((d&&d.error)||'Could not end the trip \u2014 try again','error'); }
+  else { if(btn){ btn.disabled=false; btn.textContent='\u23F9 End trip early'; } alert((d&&d.error)||'Could not end the trip \u2014 try again'); }   // 'toast' is undefined in this app -> would throw a ReferenceError and show the rider nothing
 }
 
 async function cancelRide(){
@@ -3061,7 +3067,7 @@ async function _onFleetDateChange(){
     try{
       var r=await fetch(WORKER+'/available?vehicle='+encodeURIComponent(name)+'&pickupDate='+pickup+'&dropoffDate='+dropoff+'&pickupTime='+pickupTime+'&dropoffTime='+dropoffTime,{cache:'no-store'});
       _fleetAvail[name]=await r.json();
-    }catch(e){ _fleetAvail[name]=null; }
+    }catch(e){ _fleetAvail[name]={}; }   // {} not null -> neutral "Book" card instead of being stuck on "Checking..." forever after a failed availability fetch
   }));
   renderFleet();
 }

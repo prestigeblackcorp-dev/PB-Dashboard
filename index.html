@@ -4033,7 +4033,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v145';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v146';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4448,7 +4448,10 @@ function _pollCloudIfChanged(cb){
     .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error('savedAt HTTP '+r.status)); })
     .then(function(remote){
       var remoteT = Number(remote) || 0;
-      if(remoteT > _lastSavedAt){ cloudLoad(cb); }                    // another device changed something -> pull
+      // While a contract is open on screen, always pull (don't trust the savedAt short-circuit, which a
+      // local autosave can advance past a just-arrived signature) so a fresh signature shows without a reload.
+      var _contractOpen = (typeof _contractBookingId!=='undefined' && _contractBookingId && $d('contractModal') && $d('contractModal').classList.contains('open'));
+      if(remoteT > _lastSavedAt || _contractOpen){ cloudLoad(cb); }    // another device changed something -> pull
       else { setSyncStatus('ok'); if(cb) cb(true); }                 // already current -> skip the big download
     })
     .catch(function(e){ _lastSyncErr = 'savedAt poll: ' + ((e && e.message) ? e.message : 'fetch failed'); setSyncStatus('error'); if(cb) cb(false); });
@@ -7164,7 +7167,8 @@ function splitPaidCharges(list,onlyDate){
   });
   return out;
 }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b); }
+function _addlIncomeAmt(b){ return (b&&b.addlIncome&&Number(b.addlIncome.amount))?Number(b.addlIncome.amount):0; }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b); }
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
 function brokerRateDays(b){ var x=(b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
@@ -9008,12 +9012,13 @@ function renderRideHistory(){
     // P2P added stops \u2014 itemized (owner sees the GROSS customer charge per stop).
     var _stopsArr=(Array.isArray(r.stopSurcharges)?r.stopSurcharges:[]).filter(function(s){return Number(s.amount)>0;});
     var _stopsTotal=_stopsArr.reduce(function(a,s){return a+(Number(s.amount)||0);},0);
+    var _wait=Number(r.waitChargeTotal)||0;   // wait-at-stop overage; already inside `fare` -> itemize as a decomposition, never add on top
     var stopsBlock=_stopsArr.length?('<div style="margin-top:7px;padding-top:7px;border-top:1px dashed var(--border)"><div style="font-size:9px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">\uD83D\uDED1 Added stops &middot; '+_stopsArr.length+'</div>'+_stopsArr.map(function(s,i){return '<div style="display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--text2,#b0bcd8);margin-top:2px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(i+1)+'. '+esc(s.address||'Stop')+'</span><span style="color:var(--gold);font-weight:800;flex-shrink:0">+$'+(Number(s.amount)||0).toFixed(2)+'</span></div>';}).join('')+'</div>'):'';
     var _earlyAdj=(r.pricingLog&&typeof r.pricingLog.basis==='string'&&r.pricingLog.basis.indexOf('early')===0&&Number(r.originalPrice)>Number(r.finalPrice||0));
     var priceBlock=r.status==='cancelled'
       ? '<div style="font-size:11px;color:var(--muted)">No charge</div>'
       : '<div style="font-size:16px;color:var(--gold);font-weight:900;letter-spacing:-.3px">$'+fare.toFixed(0)+(r.finalPrice?'':' <span style="font-size:9px;color:var(--muted);font-weight:600">est</span>')+'</div>'
-        +(_stopsTotal>0?'<div style="font-size:9px;color:var(--muted);font-weight:600;margin-top:1px" title="Base $'+Math.max(0,fare-_stopsTotal).toFixed(2)+' + $'+_stopsTotal.toFixed(2)+' in stops">Base $'+Math.max(0,fare-_stopsTotal).toFixed(0)+' \u00B7 +$'+_stopsTotal.toFixed(0)+' stops</div>':'')
+        +((_stopsTotal>0||_wait>0)?'<div style="font-size:9px;color:var(--muted);font-weight:600;margin-top:1px" title="Base $'+Math.max(0,fare-_stopsTotal-_wait).toFixed(2)+(_stopsTotal>0?' + $'+_stopsTotal.toFixed(2)+' stops':'')+(_wait>0?' + $'+_wait.toFixed(2)+' stop wait (>5 min)':'')+'">Base $'+Math.max(0,fare-_stopsTotal-_wait).toFixed(0)+(_stopsTotal>0?' \u00B7 +$'+_stopsTotal.toFixed(0)+' stops':'')+(_wait>0?' \u00B7 +$'+_wait.toFixed(0)+' wait':'')+'</div>':'')
         +(_earlyAdj?'<div style="font-size:9px;color:var(--muted);font-weight:600;margin-top:1px" title="Hourly ended early \u2014 billed for actual time used"><span style="text-decoration:line-through">$'+Number(r.originalPrice).toFixed(0)+'</span> \u00B7 '+(r.pricingLog.basis==='early_grace_free'?'\u226410 min \u00B7 free':'early \u00B7 '+r.pricingLog.elapsedMin+'m')+'</div>':'');
     return '<div style="background:rgba(255,255,255,.02);border:1px solid var(--border);border-left:3px solid '+m.c+';border-radius:13px;padding:12px 15px;margin-bottom:8px">'
       +'<div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">'
@@ -11714,11 +11719,12 @@ function coUpdateProfitSummary(){
   var baseRev=totalRevenue(b);
   var cost=parseFloat($d('coCost')?$d('coCost').value:0)||0;
   var brokerFee=brokerFeeTotal(b);
+  var loyaltyDisc=Number(b.loyaltyDiscount)||0;   // was referenced below but never declared -> threw ReferenceError on every close-out
   // Mileage overage and fuel short charge are additional customer-owed amounts \u2014 they ADD to revenue
   var fuelCharge=parseFloat($d('coFuelCharge')?$d('coFuelCharge').value:0)||0;
   var mileCharge=parseFloat($d('coMileageCharge')?$d('coMileageCharge').value:0)||0;
   var totalRev=baseRev+fuelCharge+mileCharge;
-  var net=totalRev-cost-brokerFee;
+  var net=totalRev-cost-brokerFee-loyaltyDisc;   // include the loyalty line the summary already displays so the breakdown is self-consistent
   var amtOwed=fuelCharge+mileCharge;
   var ps=$d('coProfitSummary');
   if(!ps) return;
@@ -11801,7 +11807,10 @@ function saveCloseOut(){
     var _bLock=Number(bookings[idx].dateLock)||0;
     var _bFuel=bookings[idx].fuelCharge||0;
     var _bMile=bookings[idx].mileageCharge||0;
-    bookings[idx].remainingBalance=Math.max(0,_bRev+_bDep-_bLock+_bFuel+_bMile);
+    // Include still-unpaid extension charges. Rebuilding the balance from `revenue` alone (the old code)
+    // dropped them, erasing money the customer still owes on any booking with an unpaid extension.
+    var _bExt=(bookings[idx].extensions||[]).reduce(function(s,e){ return s+((e&&!e.paid)?Math.max(0,Number(e.additionalCharge)||0):0); },0);
+    bookings[idx].remainingBalance=Math.max(0,_bRev+_bDep-_bLock+_bFuel+_bMile+_bExt);
   }
   bookings[idx].damage = $d('coDamageFlagged').checked ? {
     flagged: true,
@@ -12282,7 +12291,7 @@ function sendDriverStripeVerify(bookingId, driverIdx, ovEmail, ovName){
   fetch(VERIFY_URL+'/create-verification',{
     method:'POST',
     headers:Object.assign({'Content-Type':'application/json'},_authHeader()),
-    body:JSON.stringify({bookingId:bookingId, returnUrl:'https://prestigeblackrentals.com', customerName:_dName||''})
+    body:JSON.stringify({bookingId:bookingId, driverIdx:driverIdx, returnUrl:'https://prestigeblackrentals.com', customerName:_dName||''})   // driverIdx -> Stripe metadata so the result routes to THIS driver without depending on the side-map
   })
   .then(function(r){ return r.json(); })
   .then(function(data){
@@ -15669,16 +15678,23 @@ function markBalancePaid(id){
   if(amt===null) return;
   var num=parseFloat(amt);
   if(isNaN(num)||num<0){ alert('Invalid amount.'); return; }
-  _settleOutstandingExtensions(b, method.trim());   // any unpaid extensions folded into this balance are now paid too
-  b.balancePaidAt=Date.now();
+  var _due=Number(cur)||0;
+  var _remainder=Math.max(0,_due-num);
   b.balancePaidAmount=num;
   b.balancePaidMethod=method.trim();
-  b.remainingBalance=0;
+  if(_remainder<=0){
+    _settleOutstandingExtensions(b, method.trim());   // fully paid -> any unpaid extensions folded into this balance are now paid too
+    b.balancePaidAt=Date.now();
+    b.remainingBalance=0;
+  } else {
+    // PARTIAL payment: keep the unpaid remainder owed; do NOT mark fully paid or settle extensions.
+    b.remainingBalance=_remainder;
+  }
   b._t=Date.now();
   save();
   renderOutstanding();
   render();
-  toast(b.name+' \u2014 balance of $'+num+' marked paid via '+method+'.');
+  toast(b.name+' \u2014 '+(_remainder>0?('partial payment of $'+num+' recorded \u00b7 $'+_remainder.toFixed(2)+' still due'):('balance of $'+num+' marked paid'))+' via '+method+'.');
 }
 function markDateLockPaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;

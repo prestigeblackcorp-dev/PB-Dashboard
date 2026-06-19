@@ -1429,12 +1429,14 @@ function renderEarnings(){
     // base + each stop (+ tip) so the combined figure is itemized. Driver share only (35%).
     var _stops=(Array.isArray(t.stopSurcharges)?t.stopSurcharges:[]).filter(function(s){return Number(s.amount)>0;});
     var _bd='';
-    if(_stops.length && Number(t.fare||0)>0 && !(Number(t.payAmount)>0)){   // fare-based pay (ride-hail) only \u2014 owner-set flat/hourly amounts aren't itemized by stop
+    var _waitT=Number(t.waitChargeTotal)||0;   // wait-at-stop overage; already inside `fare`, so itemize the driver's share, don't add on top
+    if((_stops.length||_waitT>0) && Number(t.fare||0)>0 && !(Number(t.payAmount)>0)){   // fare-based pay (ride-hail) only \u2014 owner-set flat/hourly amounts aren't itemized by stop
       var _sGross=_stops.reduce(function(a,s){return a+(Number(s.amount)||0);},0);
-      var _baseTake=Math.max(0,(Number(t.fare)-_sGross))*DRIVER_SHARE;
+      var _baseTake=Math.max(0,(Number(t.fare)-_sGross-_waitT))*DRIVER_SHARE;
       var _tip=Number(t.tipAmount)||0;
       _bd='<div style="font-size:10.5px;color:var(--gold);margin-top:3px;line-height:1.55;">Base '+fmt$(_baseTake)
         +_stops.map(function(s,i){ return ' \u00B7 <span title="'+esc(String(s.address||''))+'">Stop '+(i+1)+'</span> +'+fmt$((Number(s.amount)||0)*DRIVER_SHARE); }).join('')
+        +(_waitT>0?' \u00B7 Wait +'+fmt$(_waitT*DRIVER_SHARE):'')
         +(_tip>0?' \u00B7 Tip +'+fmt$(_tip):'')+'</div>';
     }
     return '<div class="earn-row">'
@@ -1832,7 +1834,7 @@ function setDuty(on){
     // Only stop polling if no active ride
     if(!_activeRide){ stopRidesPoll(); _drvReleaseWake(); }
     // Go offline
-    if(drvState.token) fetch(WORKER+'/chauffeur/go-offline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token})}).catch(function(){});
+    if(drvState.token) fetch(WORKER+'/chauffeur/go-offline',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token})}).catch(function(){});  // keepalive: the offline write survives even if the tab is closing, so an off-duty driver can't linger as dispatchable
   }
 }
 

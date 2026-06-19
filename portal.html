@@ -1883,6 +1883,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   var paidFlag   = sp.get('paid');
   var paidBkId   = sp.get('bookingId');
   var paidChgId  = sp.get('chargeId');
+  var paidSid    = sp.get('session_id');   // Stripe checkout session id -> the worker verifies the payment before marking paid
 
   if(signId){
     hideLoading();
@@ -1918,8 +1919,8 @@ document.addEventListener('DOMContentLoaded',()=>{
       // Call mark-paid (Firebase writes happen server-side before it returns)
       var _markUrl = paidChgId ? `${WORKER}/portal/mark-charge-paid` : `${WORKER}/portal/mark-balance-paid`;
       var _markBody = paidChgId
-        ? {email:state.email,token:state.token,bookingId:paidBkId,chargeId:paidChgId}
-        : {email:state.email,token:state.token,bookingId:paidBkId};
+        ? {email:state.email,token:state.token,bookingId:paidBkId,chargeId:paidChgId,sessionId:paidSid}
+        : {email:state.email,token:state.token,bookingId:paidBkId,sessionId:paidSid};
 
       var _markResult = null;
       fetch(_markUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_markBody)})
@@ -2603,7 +2604,7 @@ async function _onFleetDateChange(){
       const d = await r.json();
       // store full response so we can show freeDate/freeTime on unavailable cards
       _fleetAvail[name] = d;
-    } catch(e){ _fleetAvail[name] = null; }
+    } catch(e){ _fleetAvail[name] = {}; }   // {} not null -> the card shows a neutral "Book" instead of being stuck on "Checking..." forever after a failed availability fetch
   }));
   renderFleet();
 }
