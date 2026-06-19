@@ -2509,7 +2509,7 @@ function updateStatusUI(ride, driverLoc){
     // the Where-to screen. The _doneFlowRideId guard resets the steps only ONCE per completed ride
     // (so a later status re-render never bounces the rider back to the tip step).
     _curRide=ride;
-    if(_doneFlowRideId!==_rideId){ _doneFlowRideId=_rideId; _doneStep='tip'; _doneTip=0; }
+    if(_doneFlowRideId!==_rideId){ _doneFlowRideId=_rideId; _doneStep='tip'; _doneTip=0; _tipSentForRide=null; }
     _renderDoneFlow(ride);
     // Remove driver marker
     if(_driverMarker){ _map.removeLayer(_driverMarker); _driverMarker=null; }
@@ -2528,7 +2528,7 @@ function updateStatusUI(ride, driverLoc){
 // pay flow can be walked end-to-end with a fake card. Flip PB_FLAGS.demoPay off and
 // add real Stripe keys closer to launch; these same surfaces then drive real
 // card-on-file + tipping. Nothing here ever contacts Stripe or moves money.
-var _doneTip=0;
+var _doneTip=0, _tipSentForRide=null;   // _tipSentForRide guards the tip POST so it fires once per ride
 var _doneStep='tip', _doneFlowRideId=null;   // wrap-up steps: 'tip' -> (review modal) -> 'receipt'
 // Wrap-up flow (owner spec): TIP -> REVIEW -> RECEIPT -> "Where to". Drives the doneCard pay block.
 function _renderDoneFlow(ride){
@@ -2566,7 +2566,20 @@ function _renderDoneFlow(ride){
       +demoNote+'</div>';
   }
 }
+// Send the tip the moment the rider commits it (Continue OR Book Another) -- decoupled from leaving a
+// review, so the chauffeur (and their daily total) still receives the tip when the rating is skipped.
+// tipAmount is a field (not an accumulator), so the once-per-ride guard + idempotent worker write
+// mean a tip is never double-counted even if both this and submitReview post it.
+function _flushTip(){
+  var rid=_rideId||(_curRide&&_curRide.rideId)||'';
+  if(!rid||!_session||!_session.token) return;
+  if(_tipSentForRide===rid) return;          // already handled for this ride (guards both call sites)
+  _tipSentForRide=rid;
+  if(!(Number(_doneTip)>0)) return;          // no tip selected -> nothing to send
+  fetch(WORKER+'/chauffeur/submit-tip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:_session.token,rideId:rid,tip:Number(_doneTip)})}).catch(function(){});
+}
 function _doneToReview(){
+  _flushTip();                                      // commit the tip now, independent of the rating
   _doneStep='receipt'; _renderDoneFlow(_curRide);   // lock in the tip + reveal the receipt behind the rating modal
   var de=(_activeDriver&&_activeDriver.email)||(_curRide&&_curRide.assignedDriver)||'';
   var dn=(_activeDriver&&_activeDriver.name)||(_curRide&&_curRide.assignedDriverName)||'';
@@ -2871,6 +2884,7 @@ async function cancelRide(){
   newRide();
 }
 function newRide(){
+  _flushTip();   // catch a tip the rider picked but never "continued" past (book-another straight from the tip step)
   stopPolling();
   _rideId=null; _pickup=null; _dropoff=null; _distanceMiles=0; _estPrice=0;
   _activeDriver=null;
