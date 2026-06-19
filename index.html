@@ -4033,7 +4033,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v146';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v147';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8663,10 +8663,16 @@ async function deleteVehicle(name){
 // LIVE FLEET MAP  (dashboard Drivers tab)
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 var _fleetMap=null, _fleetMarkers={}, _fleetRefreshTimer=null, _revGeoCache={};
+var _fleetRouteLayer=null, _fleetRouteDriver=null; // live route overlay for the driver whose marker is open
 
 // Resolve a driver's display NAME (never the raw email). Prefer the authoritative
 // roster name matched by email, then the name stored on the location ping, then a
 // humanized email local-part as a last resort.
+// Derive a clean human label from an email local-part: "edwin.watson@x.com" -> "Edwin Watson". '' if no email.
+function _emailToName(email){
+  var lp=String(email||'').split('@')[0].replace(/[._-]+/g,' ').trim();
+  return lp ? lp.replace(/\b\w/g,function(c){ return c.toUpperCase(); }) : '';
+}
 function _drvDisplayName(loc){
   if(!loc) return 'Driver';
   var em=(loc.email||'').toLowerCase().trim();
@@ -8749,11 +8755,17 @@ function initFleetMap(){
   // When a driver marker is pressed, fill in their current street address (lazy reverse-geocode).
   _fleetMap.on('popupopen',function(e){
     var m=e.popup&&e.popup._source; if(!m||!m._pbLoc) return;
+    // Draw the trip this driver is on (driver -> pickup -> stops -> dropoff); kept fresh on each refresh.
+    _fleetRouteDriver=String(m._pbLoc.email||''); drawDriverRoute(m._pbLoc,true);
     var root=e.popup.getElement&&e.popup.getElement(); if(!root) return;
     var addrEl=root.querySelector('.pb-addr'); if(!addrEl||addrEl.dataset.done==='1') return;
     _reverseGeocode(Number(m._pbLoc.lat),Number(m._pbLoc.lng),function(addr){
       if(addrEl){ addrEl.textContent=addr; addrEl.dataset.done='1'; }
     });
+  });
+  _fleetMap.on('popupclose',function(e){
+    var m=e.popup&&e.popup._source;
+    if(m&&m._pbLoc&&String(m._pbLoc.email||'')===_fleetRouteDriver){ _fleetRouteDriver=null; clearDriverRoute(); }
   });
   setTimeout(function(){ _fleetMap.invalidateSize(); },300);
 }
@@ -8795,6 +8807,8 @@ async function refreshFleetMap(){
   $d('fleet-map-status').textContent=online+' driver'+(online!==1?'s':'')+' online \u00B7 '+new Date().toLocaleTimeString();
   // Render live rides list + full history / transactions / logs
   _rideHist=d.rides||[];
+  // Keep the open driver's route overlay fresh as they move (clear it if they dropped offline).
+  if(_fleetRouteDriver){ if(_fleetMarkers[_fleetRouteDriver]){ drawDriverRoute(_fleetMarkers[_fleetRouteDriver]._pbLoc,false); } else { clearDriverRoute(); } }
   _deletedRides=d.deletedRides||[];
   // Only re-render the ride lists when the payload actually changed \u2014 driver markers
   // above still refresh every tick, but rebuilding these lists every 15s is wasted work.
@@ -8808,6 +8822,47 @@ async function refreshFleetMap(){
   loadRideRevenue(true); // keep Overview ride revenue in sync (throttled to ~120s)
 }
 
+// --- Live route overlay: open a driver's marker to see the trip they're on
+//     (driver position -> pickup -> remaining stops -> dropoff). Redrawn each refresh so it
+//     tracks the driver as they move. v1 = straight legs + labeled waypoints (no router call). ---
+function clearDriverRoute(){ if(_fleetRouteLayer&&_fleetMap){ try{ _fleetMap.removeLayer(_fleetRouteLayer); }catch(e){} } _fleetRouteLayer=null; }
+function drawDriverRoute(loc,fit){
+  clearDriverRoute();
+  if(!loc||!_fleetMap||!window.L||loc.lat==null) return;
+  var em=String(loc.email||'').toLowerCase().trim(); if(!em) return;
+  // The active ride this driver is currently running.
+  var ride=(_rideHist||[]).find(function(r){
+    return r && String(r.assignedDriver||'').toLowerCase().trim()===em && ['accepted','driver_arrived','in_progress'].indexOf(r.status)>=0;
+  });
+  if(!ride) return;
+  var pts=[[Number(loc.lat),Number(loc.lng)]];
+  var marks=[];
+  // Heading to pickup until the passenger is onboard.
+  if(ride.status!=='in_progress' && ride.pickupLat && ride.pickupLng){
+    pts.push([Number(ride.pickupLat),Number(ride.pickupLng)]);
+    marks.push({lat:Number(ride.pickupLat),lng:Number(ride.pickupLng),label:'Pickup',color:'#22c55e',addr:ride.pickupAddress});
+  }
+  (Array.isArray(ride.stops)?ride.stops:[]).forEach(function(s,i){
+    if(s&&s.lat&&s.lng){
+      pts.push([Number(s.lat),Number(s.lng)]);
+      marks.push({lat:Number(s.lat),lng:Number(s.lng),label:'Stop '+(i+1),color:'#C9A962',addr:s.address});
+    }
+  });
+  if(ride.dropoffLat && ride.dropoffLng){
+    pts.push([Number(ride.dropoffLat),Number(ride.dropoffLng)]);
+    marks.push({lat:Number(ride.dropoffLat),lng:Number(ride.dropoffLng),label:'Dropoff',color:'#ef4444',addr:ride.dropoffAddress});
+  }
+  if(pts.length<2) return;
+  var grp=L.layerGroup();
+  L.polyline(pts,{color:'#C9A962',weight:3,opacity:.85,dashArray:'8,7'}).addTo(grp);
+  marks.forEach(function(mk){
+    L.circleMarker([mk.lat,mk.lng],{radius:6,color:'#fff',weight:2,fillColor:mk.color,fillOpacity:1})
+      .addTo(grp).bindTooltip(mk.label+(mk.addr?' \u2014 '+esc(mk.addr):''),{direction:'top',opacity:.95});
+  });
+  grp.addTo(_fleetMap);
+  _fleetRouteLayer=grp;
+  if(fit){ try{ _fleetMap.fitBounds(L.latLngBounds(pts),{padding:[45,45],maxZoom:14}); }catch(e){} }
+}
 function renderLiveRides(rides){
   var el=$d('live-rides-list'); if(!el) return;
   var active=rides.filter(function(r){return r&&['searching','accepted','driver_arrived','in_progress'].includes(r.status);});
@@ -8818,12 +8873,13 @@ function renderLiveRides(rides){
   el.innerHTML=active.map(function(r){
     var sc=statusColor[r.status]||'#6b7a9a'; var sl=statusLabel[r.status]||r.status; var si=statusIcon[r.status]||'\u2022';
     var pulsing=r.status==='searching';
-    var rider=esc(r.riderName||r.riderEmail||'Rider');
-    var initial=(r.riderName||r.riderEmail||'R').charAt(0).toUpperCase();
+    var riderNm=r.riderName|| _emailToName(r.riderEmail) ||'Rider';
+    var rider=esc(riderNm);
+    var initial=riderNm.charAt(0).toUpperCase();
     var route=''
       +'<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2,#b0bcd8);margin-top:1px"><span style="width:8px;height:8px;border-radius:50%;background:'+sc+';flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.pickupAddress||'Pickup')+'</span></div>'
       +(r.dropoffAddress?'<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);margin-top:3px"><span style="width:8px;height:8px;border-radius:2px;background:var(--gold);flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.dropoffAddress)+'</span></div>':'');
-    var drv=r.assignedDriver||r.driverName;
+    var drv=(r.assignedDriver||r.assignedDriverName||r.driverName)?_drvDisplayName({email:r.assignedDriver||'',name:r.assignedDriverName||r.driverName||''}):'';
     var _ls=(Array.isArray(r.stopSurcharges)?r.stopSurcharges:[]).filter(function(s){return Number(s.amount)>0;});
     var lStops=_ls.length?('<div style="font-size:10.5px;color:var(--gold);font-weight:700;margin-top:4px">\uD83D\uDED1 '+_ls.length+' stop'+(_ls.length!==1?'s':'')+' \u00B7 '+_ls.map(function(s){return '+$'+(Number(s.amount)||0).toFixed(0);}).join(' ')+'</div>'):'';
     return '<div style="position:relative;background:linear-gradient(135deg,'+sc+'14,rgba(255,255,255,.02));border:1px solid var(--border);border-left:3px solid '+sc+';border-radius:14px;padding:13px 16px;margin-bottom:9px;display:flex;align-items:center;gap:13px;flex-wrap:wrap">'
@@ -8996,9 +9052,10 @@ function renderRideHistory(){
   };
   listEl.innerHTML=view.map(function(r){
     var m=meta[r.status]||{l:r.status||'\u2014',c:'#6b7a9a',i:'\u2022'};
-    var rider=esc(r.riderName||r.riderEmail||'Rider');
-    var initial=(r.riderName||r.riderEmail||'R').charAt(0).toUpperCase();
-    var drv=r.assignedDriverName||r.assignedDriver||r.driverName;
+    var riderNm=r.riderName|| _emailToName(r.riderEmail) ||'Rider';
+    var rider=esc(riderNm);
+    var initial=riderNm.charAt(0).toUpperCase();
+    var drv=(r.assignedDriverName||r.assignedDriver||r.driverName)?_drvDisplayName({email:r.assignedDriver||'',name:r.assignedDriverName||r.driverName||''}):'';
     var fare=Number(r.finalPrice||r.estimatedPrice||0);
     var dist=r.distanceMiles?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+Number(r.distanceMiles).toFixed(1)+' mi</span>'):'';
     var hrs=(r.rideType==='hourly'&&r.hours)?('<span style="font-size:10px;color:var(--muted);font-weight:600">'+r.hours+' hr</span>'):'';
@@ -9217,7 +9274,7 @@ function renderFleetDeleted(){
   var html='';
   (_deletedRides||[]).forEach(function(r){
     if(!r) return;
-    var rider=esc(r.riderName||r.riderEmail||'Rider');
+    var rider=esc(r.riderName|| _emailToName(r.riderEmail) ||'Rider');
     var route=esc(r.pickupAddress||'Pickup')+(r.dropoffAddress?' \u2192 '+esc(r.dropoffAddress):'');
     html+=row('\uD83D\uDE98','rgba(96,165,250,.14)','rgba(96,165,250,.3)',rider,'RIDE','#60a5fa',route,fmtWhen(r._deletedAt),'restoreRideRecord(\''+_jsAttr(r.id)+'\')');
   });
@@ -11046,6 +11103,16 @@ function saveBooking(){
     }
   }
 
+  // If this booking is for someone on the waitlist (same email + vehicle), clear their waitlist entry so
+  // they drop off the list and never get waitlist spam again. (The cron also independently skips booked customers.)
+  try{
+    var _wlE=(entry.email||'').toLowerCase().trim();
+    if(_wlE && entry.vehicle && entry.status!=='cancelled'){
+      var _wlChg=false;
+      waitlist.forEach(function(w){ if(w && !w._deleted && (w.email||'').toLowerCase().trim()===_wlE && w.vehicle===entry.vehicle){ w._deleted=true; w._t=Date.now(); _wlChg=true; } });
+      if(_wlChg && typeof saveWaitlist==='function'){ saveWaitlist(); }
+    }
+  }catch(e){}
   save(); flushCloudSave(); closeModal(); initSelects();
   _saving = false;
   _autoCarryVerifyForAll(); // immediate pass \u2014 catches the just-saved booking + any others for same customer
