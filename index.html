@@ -3255,6 +3255,14 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
         <input type="number" class="finput" id="vWeekly" min="0" step="1" placeholder="0">
       </div>
       <div class="fgroup">
+        <div class="flabel">Miles per Day (included)</div>
+        <input type="number" class="finput" id="vMiles" min="0" step="5" placeholder="e.g. 150">
+      </div>
+      <div class="fgroup">
+        <div class="flabel">Overage ($ per mile over)</div>
+        <input type="number" class="finput" id="vOverage" min="0" step="0.25" placeholder="e.g. 2.00">
+      </div>
+      <div class="fgroup">
         <div class="flabel">Oil Change Interval (miles)</div>
         <input type="number" class="finput" id="vServiceMiles" min="0" step="500" placeholder="e.g. 5000">
       </div>
@@ -4033,7 +4041,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v149';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v150';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4799,6 +4807,15 @@ function loadCustomVehicles(){
           vin:   v.vin   !==undefined ? v.vin   : (_pi.vin  ||'')
         };
       }
+      // Restore per-vehicle mileage terms into VEHICLE_MILEAGE (what the booking form + contract read).
+      // Guarded so a pre-feature saved record (no miles/overage keys) never zeroes a curated built-in.
+      if(v.miles!==undefined||v.overage!==undefined){
+        var _pm = VEHICLE_MILEAGE[v.name] || {};
+        VEHICLE_MILEAGE[v.name] = {
+          miles:   v.miles  !==undefined ? v.miles   : (_pm.miles  ||0),
+          overage: v.overage!==undefined ? v.overage : (_pm.overage||0)
+        };
+      }
     });
   } catch(e){}
 }
@@ -4806,11 +4823,13 @@ function saveCustomVehicles(){
   var customs = ALL_VEHICLES.map(function(v){
     var vc = VEHICLE_COSTS[v]||{};
     var vi = VEHICLE_INFO[v]||{};
+    var vm = VEHICLE_MILEAGE[v]||{};
     return { name:v, chauffeur: CHAUFFEUR_VEHICLES.indexOf(v)!==-1,
              rate:vc.rate||0, deposit:vc.deposit||0, weekly:vc.weekly||0, image:vc.image||'',
              serviceIntervalMiles:vc.serviceIntervalMiles||0,
              blockedRanges:vc.blockedRanges||[],
-             year:vi.year||'', make:vi.make||'', model:vi.model||'', color:vi.color||'', vin:vi.vin||'' };
+             year:vi.year||'', make:vi.make||'', model:vi.model||'', color:vi.color||'', vin:vi.vin||'',
+             miles:vm.miles||0, overage:vm.overage||0 };
   });
   try{ localStorage.setItem('pb_custom_vehicles', JSON.stringify(customs)); }catch(e){}
   cloudSave();
@@ -4894,6 +4913,7 @@ function resetVehForm(){
   $d('vType').value='rental';
   $d('vRate').value=''; $d('vDeposit').value=''; $d('vWeekly').value='';
   $d('vServiceMiles').value='';
+  $d('vMiles').value=''; $d('vOverage').value='';
   $d('vYear').value=''; $d('vMake').value=''; $d('vModel').value=''; $d('vColor').value=''; $d('vVin').value='';
   $d('vImage').value='';
   _vImageData=null;
@@ -4977,6 +4997,9 @@ function editVehicle(name){
   $d('vDeposit').value      = vc.deposit          || '';
   $d('vWeekly').value       = vc.weekly           || '';
   $d('vServiceMiles').value = vc.serviceIntervalMiles || '';
+  var vmEdit = VEHICLE_MILEAGE[name]||{};
+  $d('vMiles').value   = (vmEdit.miles  !=null) ? vmEdit.miles   : '';
+  $d('vOverage').value = (vmEdit.overage!=null) ? vmEdit.overage : '';
   var vi = VEHICLE_INFO[name]||{};
   $d('vYear').value  = vi.year  || '';
   $d('vMake').value  = vi.make  || '';
@@ -5028,6 +5051,14 @@ function saveVehicle(){
     vin:   (($d('vVin')   &&$d('vVin').value)   ||'').trim().toUpperCase()
   };
 
+  // Per-vehicle mileage terms: included miles/day + $ per mile over. These drive the booking-form
+  // auto-fill (fOverageRate), the overage checkout, and the contract {{included_miles}}/{{overage_rate}}.
+  // Mirrors VEHICLE_INFO; blank -> 0. Stored in VEHICLE_MILEAGE, the source every reader already uses.
+  var mileage = {
+    miles:   Math.max(0, parseFloat(($d('vMiles')  &&$d('vMiles').value)  ||'')||0),
+    overage: Math.max(0, parseFloat(($d('vOverage')&&$d('vOverage').value)||'')||0)
+  };
+
   if(editingVehicle){
     var oldName = editingVehicle;
     if(newName !== oldName){
@@ -5035,6 +5066,7 @@ function saveVehicle(){
       delete VEHICLE_COSTS[oldName];
       VEHICLE_COSTS[newName] = pricing;
       delete VEHICLE_INFO[oldName]; VEHICLE_INFO[newName] = info;
+      delete VEHICLE_MILEAGE[oldName]; VEHICLE_MILEAGE[newName] = mileage;
       var idx = ALL_VEHICLES.indexOf(oldName);
       if(idx!==-1) ALL_VEHICLES[idx] = newName;
       var ci = CHAUFFEUR_VEHICLES.indexOf(oldName);
@@ -5050,6 +5082,7 @@ function saveVehicle(){
     } else {
       VEHICLE_COSTS[oldName] = pricing;
       VEHICLE_INFO[oldName] = info;
+      VEHICLE_MILEAGE[oldName] = mileage;
       var ci = CHAUFFEUR_VEHICLES.indexOf(oldName);
       if(isCh){ if(ci===-1) CHAUFFEUR_VEHICLES.push(oldName); }
       else     { if(ci!==-1) CHAUFFEUR_VEHICLES.splice(ci,1); }
@@ -5059,6 +5092,7 @@ function saveVehicle(){
     if(VEHICLE_COSTS[newName]){ alert('"'+newName+'" already exists.'); return; }
     VEHICLE_COSTS[newName] = pricing;
     VEHICLE_INFO[newName] = info;
+    VEHICLE_MILEAGE[newName] = mileage;
     ALL_VEHICLES.push(newName);
     if(isCh) CHAUFFEUR_VEHICLES.push(newName);
     saveCustomVehicles(); initSelects(); renderVehicleList(); resetVehForm();
