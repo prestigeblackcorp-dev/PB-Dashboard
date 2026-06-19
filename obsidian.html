@@ -2160,6 +2160,7 @@ async function pollRideStatus(){
   if(!_rideId||!_session) return;
   const d=await fetch(`${WORKER}/chauffeur/ride-status?rideId=${_rideId}&token=${encodeURIComponent(_session.token)}`,{cache:'no-store'}).then(r=>r.json()).catch(()=>null);
   if(!d||!d.ride) return;
+  if(d.driver) d.ride.driver=d.driver;   // carry the worker's driver enrichment (phone/photo/rating/vehicle/badge) onto the ride
   updateStatusUI(d.ride, d.driverLocation);
 }
 
@@ -2379,10 +2380,12 @@ function updateStatusUI(ride, driverLoc){
     }
     $d('driverInfoCard').style.display='block';
     $d('driverSub').textContent='Your Obsidian Chauffeur';
-    // phone links - if we have phone from driver profile
-    const ph=ride.assignedDriverPhone||'';
-    $d('driverPhoneLink').href='tel:'+(ph||'');
-    $d('driverSmsLink').href='sms:'+(ph||'');
+    // Call / text the chauffeur: phone comes from the enriched driver object (worker rsDriver.phone),
+    // sanitized to digits/+ for the dialer. No number on file -> hide both icons rather than dead links.
+    const ph=String((dInfo&&dInfo.phone)||ride.assignedDriverPhone||'').replace(/[^0-9+]/g,'');
+    const _pl=$d('driverPhoneLink'), _sl=$d('driverSmsLink');
+    if(ph){ _pl.href='tel:'+ph; _sl.href='sms:'+ph; _pl.style.display=''; _sl.style.display=''; }
+    else { _pl.href='#'; _sl.href='#'; _pl.style.display='none'; _sl.style.display='none'; }
   } else {
     $d('driverInfoCard').style.display='none';
   }
