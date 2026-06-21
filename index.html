@@ -3801,6 +3801,16 @@ var _offlinePending = false; // queues a cloudSave for when we come back online
 // Merge two arrays by ID \u2014 newer _t wins for conflicts, items from both sides kept
 // Items marked _deleted:true are kept (tombstones) so deletions propagate across devices
 function _isSigStr(s){ return !!(s && typeof s==='string' && s.indexOf('data:image/')===0); }
+// Green/white dot before "Polaris Slingshot" once the waiver/contract is SIGNED (customerSig) AND a color
+// is chosen (contractSentColor Green/White) -> shows at a glance which Slingshot is out, on trip cards +
+// today's banners. Empty string until both are true, so nothing changes for any other vehicle/state.
+function _slingDot(b){
+  if(!b || b.vehicle!=='Polaris Slingshot' || !_isSigStr(b.customerSig)) return '';
+  var col=b.contractSentColor||'';
+  if(col!=='Green' && col!=='White') return '';
+  var c=(col==='White')?'#f1f1f1':'#22c55e';
+  return '<span title="Slingshot '+col+' \u00B7 signed" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:'+c+';border:1px solid rgba(0,0,0,.4);box-shadow:0 0 0 1px rgba(255,255,255,.25);margin-right:6px;vertical-align:middle"></span>';
+}
 // Signatures are monotonic "signed" events \u2014 a stale local edit (newer _t) must NEVER un-sign a
 // booking. After picking the newer-_t winner, graft in any signature the OTHER copy has that the
 // winner is missing: primary contract, each authorized driver, AND every extension (primary + its
@@ -4041,7 +4051,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v150';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v151';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -6204,7 +6214,7 @@ function sendWaitlistAutoBookEmail(b){
         '<div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:10px;padding:20px;margin:20px 0">'+
           '<p style="font-weight:700;font-size:14px;margin:0 0 8px;color:#92400e">\u26A1 Secure Your Spot \u2014 $100 Date Lock Required</p>'+
           '<p style="font-size:13px;line-height:1.6;color:#78350f;margin:0 0 16px">Your booking is <strong>pending</strong> until the $100 date lock is paid. This fee is credited toward your total balance. Spots are first-come first-served \u2014 pay now to confirm.</p>'+
-          (lockUrl?'<div style="text-align:center;margin:4px 0"><a href="'+lockUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">Pay $100 Date Lock \u2192</a></div>':'<p style="font-size:13px;color:#78350f;font-weight:700;margin:0">Contact us to pay your date lock: (214) 207-2481</p>')+
+          (lockUrl?'<div style="text-align:center;margin:4px 0"><a href="'+lockUrl+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">Pay $100 Date Lock \u2192</a></div>':'<p style="font-size:13px;color:#78350f;font-weight:700;margin:0">Contact us to pay your date lock: (214) 207-2481</p>')+
         '</div>'+
         '<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:20px;margin:20px 0">'+
           '<div style="font-size:11px;font-weight:700;color:#0c4a6e;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">\uD83D\uDCCB How the Waitlist Works</div>'+
@@ -6280,7 +6290,7 @@ function sendWaitlistNotification(entry, cancelledBooking){
         '</div>'+
         '<div style="padding:28px">'+
         '<p style="font-size:15px;line-height:1.7;margin:0 0 16px">Hi '+esc(firstName)+', the <strong>'+esc(veh)+'</strong> just became available for <strong>'+esc(dates)+'</strong>. Spots go to waitlist members in order \u2014 pay the date lock to claim it.</p>'+
-        (lockUrl?'<div style="text-align:center;margin:24px 0"><a href="'+lockUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">Pay $100 Date Lock \u2192</a></div>':'<p style="font-weight:700;color:#555;margin:20px 0">Call us now to claim: <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>')+
+        (lockUrl?'<div style="text-align:center;margin:24px 0"><a href="'+lockUrl+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">Pay $100 Date Lock \u2192</a></div>':'<p style="font-weight:700;color:#555;margin:20px 0">Call us now to claim: <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>')+
         '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
         '</div>'+
         '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth \u00B7 (214) 207-2481</div>'+
@@ -7202,7 +7212,12 @@ function splitPaidCharges(list,onlyDate){
   return out;
 }
 function _addlIncomeAmt(b){ return (b&&b.addlIncome&&Number(b.addlIncome.amount))?Number(b.addlIncome.amount):0; }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b); }
+// Sum of additional-authorized-driver payments marked paid (Slingshot-hourly dual-pay: each extra driver
+// owes the full booking price). Recorded on extraDrivers[i].payAmount via the Mark Paid module. Folded into
+// totalRevenue so it counts in EVERY accrual KPI/chart/per-vehicle/table/filter; the Today cash-basis KPI
+// adds it separately by paidAt. It is a distinct field (not in b.revenue/charges) -> counted exactly once.
+function _authDriverPaidTotal(b){ return ((b&&Array.isArray(b.extraDrivers))?b.extraDrivers:[]).reduce(function(s,d){ return (d&&d.paid&&Number(d.payAmount)>0)?s+Number(d.payAmount):s; },0); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b); }
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
 function brokerRateDays(b){ var x=(b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
@@ -7548,6 +7563,17 @@ function renderKPIs(filtered, containerId){
       },0);
     },0);
     _stripeBaseToday += portalChargeTodayRev; // portal charges are Stripe-collected \u2192 part of the card-fee base
+    // Authorized-driver payments COLLECTED today (Slingshot-hourly dual-pay) \u2014 cash-basis, like portal charges.
+    var authDriverTodayRev = allActive.reduce(function(s,b){
+      return s+((Array.isArray(b.extraDrivers)?b.extraDrivers:[]).reduce(function(ds,d){
+        return (d&&d.paid&&Number(d.payAmount)>0&&d.paidAt&&dateStr(new Date(d.paidAt))===tod) ? ds+Number(d.payAmount) : ds; },0));
+    },0);
+    // Card-paid driver payments add to the Stripe card-fee base (mirrors portal charges).
+    _stripeBaseToday += allActive.reduce(function(s,b){
+      return s+((Array.isArray(b.extraDrivers)?b.extraDrivers:[]).reduce(function(ds,d){
+        var _m=String((d&&d.paidMethod)||'').toLowerCase();
+        return (d&&d.paid&&Number(d.payAmount)>0&&d.paidAt&&dateStr(new Date(d.paidAt))===tod&&(_m==='card'||_m==='stripe')) ? ds+Number(d.payAmount) : ds; },0));
+    },0);
     _bfToday   = _baseBfToday + _extBfToday;   // total broker netted out of net today = base + extension
     pureBase   = pickupBalance - addons;
     // Net: base cash collected + add-ons + extension full value \u2212 extension broker (base broker already netted in pickupBalance).
@@ -7559,7 +7585,7 @@ function renderKPIs(filtered, containerId){
       if(dk<=0 || b.refundSent || !b.depositKeptAt) return s;
       return dateStr(new Date(b.depositKeptAt))===tod ? s+dk : s;
     },0);
-    bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev - _extBfToday;
+    bookingRev = pickupBalance + fuelTotal + mileTotal + depositKept + lateReturnTotal + dateLockPeriodRev + extChargeTotal + portalChargeTodayRev + authDriverTodayRev - _extBfToday;
 
   } else if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     // 7 / 30 / 90 DAYS \u2014 accrual by pickup date; net to PBR (broker fees deducted)
@@ -9268,7 +9294,7 @@ async function sendDriverPortalInvite(email){
       '</div>'+
       '<div style="padding:28px;color:#cfc4a8">'+
         '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">Hi '+firstName+', here\'s your access to the PB Chauffeur Portal \u2014 view assignments, go on duty for rides, log hours, submit inspections, and track your earnings.</p>'+
-        '<div style="text-align:center;margin:24px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Open Chauffeur Portal \u2192</a></div>'+
+        '<div style="text-align:center;margin:24px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background-color:#C9A962;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Open Chauffeur Portal \u2192</a></div>'+
         '<p style="font-size:13px;color:#998d72;margin:0;text-align:center">Sign in with this email: <strong style="color:#C9A962">'+esc(drv.email)+'</strong><br>You\'ll receive a 6-digit code \u2014 no password needed.</p>'+
       '</div>'+
       '<div style="background:#0a0907;padding:14px 28px;text-align:center;font-size:12px;color:#665c44;border-top:1px solid rgba(201,169,98,.15)">Prestige Black \u00B7 Dallas\u2013Fort Worth \u00B7 (214) 207-2481</div>'+
@@ -9880,7 +9906,7 @@ function tripCard(b, showCountdown){
   return '<div class="trip-card" style="cursor:pointer" onclick="openBookingDetail(\''+b.id+'\')">'+
     '<div>'+dateColHtml+'</div>'+
     '<div>'+
-      '<div class="trip-vehicle">'+vImgHtml+esc(b.vehicle)+'</div>'+
+      '<div class="trip-vehicle">'+vImgHtml+_slingDot(b)+esc(b.vehicle)+'</div>'+
       pdLine+
       addrBlock+
       '<div class="trip-customer">'+esc(b.name)+repeatBadge+webBadge+portalBadge+(b.phone?' \u00B7 '+esc(b.phone):'')+' '+verBadges+'</div>'+
@@ -10272,6 +10298,16 @@ function openBookingDetail(id){
             (d.email?'<button class="btn btn-sm" onclick="sendDriverSigningLink(\''+b.id+'\','+i+')" style="border-color:rgba(201,169,98,.4);color:var(--gold);font-size:10px">\uD83D\uDCF2 Send Signing</button>':'')+
             '<button class="btn btn-sm" onclick="removeExtraDriver(\''+b.id+'\','+i+')" style="border-color:rgba(239,68,68,.4);color:var(--red);font-size:10px">\uD83D\uDDD1 Remove</button>'+
           '</div>'+
+          // Slingshot hourly: each authorized driver owes the full booking price -> per-driver payment status + Mark Paid.
+          ((b.vehicle==='Polaris Slingshot'&&b.type==='hourly')?(
+            '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+              (d.paid
+                ? '<span style="color:#4ade80;font-size:11px;font-weight:700">\u2705 Paid'+(Number(d.payAmount)?' '+$$(Number(d.payAmount)):'')+(d.paidMethod?' via '+esc(String(d.paidMethod).toLowerCase()==='stripe'?'card':d.paidMethod):'')+(d.paidAt?' <span style="color:var(--muted);font-weight:400">'+new Date(d.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>':'')+'</span>'+
+                  '<button class="btn btn-sm" onclick="markDriverPaid(\''+b.id+'\','+i+')" style="border-color:var(--border);color:var(--muted);font-size:10px">Edit</button>'
+                : '<span style="color:#fb923c;font-size:11px;font-weight:700">\u23F3 Payment pending</span>'+
+                  '<button class="btn btn-sm" onclick="markDriverPaid(\''+b.id+'\','+i+')" style="border-color:rgba(34,197,94,.4);color:#22c55e;font-size:10px">\u2705 Mark Paid</button>')+
+            '</div>'
+          ):'')+
         '</div>';
       }).join('')
     :'<div style="font-size:12px;color:var(--muted);padding:4px 0 6px">No additional drivers added</div>')+
@@ -12473,7 +12509,7 @@ function sendDriverSigningLink(bookingId, driverIdx){
     '</div>'+
     '<div style="padding:28px">'+
       '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">You have been listed as an <strong>Additional Authorized Driver</strong> on this rental. Please review and sign the '+esc(docType.toLowerCase())+' for the <strong>'+esc(b.vehicle)+'</strong> rental.</p>'+
-      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign My '+esc(docType)+'</a></div>'+
+      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign My '+esc(docType)+'</a></div>'+
       '<p style="font-size:13px;color:#666;margin:0 0 20px">This link is for you personally. Please do not share it \u2014 each driver must sign individually.</p>'+
       '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
     '</div>'+
@@ -12521,7 +12557,7 @@ function sendExtDriverSigningLink(bookingId, extId, driverIdx){
     '</div>'+
     '<div style="padding:28px">'+
       '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">The rental for the <strong>'+esc(b.vehicle)+'</strong> has been extended. As an <strong>Additional Authorized Driver</strong>, please review and sign <strong>Extension #'+extNum+'</strong>'+((ext&&ext.toDate)?(' (new return '+fmtDate(ext.toDate)+')'):'')+'.</p>'+
-      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u{270D}\u{FE0F} Sign Extension #'+extNum+'</a></div>'+
+      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u{270D}\u{FE0F} Sign Extension #'+extNum+'</a></div>'+
       '<p style="font-size:13px;color:#666;margin:0 0 20px">This link is for you personally. Please do not share it \u{2014} each driver must sign individually.</p>'+
       '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
     '</div>'+
@@ -12541,6 +12577,7 @@ function openAddDriverModal(bookingId, editIdx){
   var _old=$d('addDriverOverlay'); if(_old) _old.remove();
   var _isEdit=(editIdx!==undefined && editIdx!==null);
   var _eb=bookings.find(function(x){ return x.id===bookingId; });
+  var _isSlingHourly=!!(_eb && _eb.vehicle==='Polaris Slingshot' && _eb.type==='hourly');
   var _ed=(_isEdit && _eb && _eb.extraDrivers) ? (_eb.extraDrivers[editIdx]||{}) : {};
   var _title=_isEdit ? '\u270F\uFE0F Edit Authorized Driver' : '+ Add Authorized Driver';
   var _cta=_isEdit ? 'Save Changes' : 'Add Driver';
@@ -12559,6 +12596,7 @@ function openAddDriverModal(bookingId, editIdx){
       '<div style="margin-bottom:20px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Email</div>'+
         '<input id="addDrvEmail" type="email" placeholder="driver@email.com" class="finput" style="width:100%" value="'+esc(_ed.email||'')+'"></div>'+
       (_isEdit?'<div style="font-size:11px;color:var(--muted);margin:-10px 0 16px;line-height:1.5">Editing contact details only. Use \uD83D\uDCCB Verify ID to manage this driver\u2019s verification.</div>':'')+
+      (_isSlingHourly?'<div style="background:rgba(201,169,98,.1);border:1px solid var(--gold-dim);border-radius:10px;padding:11px 13px;margin:-4px 0 16px;font-size:11.5px;color:var(--gold);line-height:1.55"><strong>Slingshot hourly \u2014 note:</strong> adding an additional authorized driver means <strong>both people</strong> must pay the full booking price and each complete the waiver &amp; ID verification.</div>':'')+
       '<div style="display:flex;gap:10px;justify-content:flex-end">'+
         '<button class="btn" onclick="$d(\'addDriverOverlay\').remove()" style="border-color:var(--border)">Cancel</button>'+
         '<button class="btn" onclick="'+_onSave+'" style="background:var(--gold);color:#000;border-color:var(--gold);font-weight:700">'+_cta+'</button>'+
@@ -14050,7 +14088,7 @@ function sendDriverVerifiedEmail(b, driverIdx){
         '</div>'+
         '<div style="padding:28px">'+
           '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">Your ID has been verified for the <strong>'+esc(b.vehicle)+'</strong> rental. Please sign the additional-driver agreement below \u2014 no account needed.</p>'+
-          '<div style="text-align:center;margin:24px 0"><a href="'+signUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;font-weight:800;border-radius:10px;text-decoration:none;font-size:16px">\u270d\ufe0f Sign the Agreement \u2192</a></div>'+
+          '<div style="text-align:center;margin:24px 0"><a href="'+signUrl+'" style="display:inline-block;padding:14px 32px;background-color:#C9A962;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;font-weight:800;border-radius:10px;text-decoration:none;font-size:16px">\u270d\ufe0f Sign the Agreement \u2192</a></div>'+
           '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
         '</div>'+
         '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00b7 (214) 207-2481</div>'+
@@ -14265,7 +14303,7 @@ function renderTodayBanner(){
       '</div>'+
       // Row 2: vehicle + duration
       '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">'+
-        '<div class="today-banner-vehicle">'+esc(b.vehicle)+'</div>'+
+        '<div class="today-banner-vehicle">'+_slingDot(b)+esc(b.vehicle)+'</div>'+
         '<div style="font-size:11px;color:var(--muted)">'+dur+'</div>'+
       '</div>'+
       // Row 3: customer + phone
@@ -14299,7 +14337,7 @@ function renderTodayBanner(){
             '<div style="font-size:12px;font-weight:700;color:#f87171">\uD83D\uDD01 Return @ '+timeStr+'</div>'+
             '<span class="badge '+b.status+'">'+b.status+'</span>'+
           '</div>'+
-          '<div style="font-weight:800;font-size:13px;margin-bottom:2px">'+esc(b.vehicle)+'</div>'+
+          '<div style="font-weight:800;font-size:13px;margin-bottom:2px">'+_slingDot(b)+esc(b.vehicle)+'</div>'+
           '<div style="color:var(--muted);font-size:12px;margin-bottom:5px">'+esc(b.name)+(b.phone?' \u00B7 '+esc(b.phone):'')+'</div>'+
           '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">'+
             '<span style="color:var(--gold);font-weight:700;font-size:12px">'+$$(totalRevenue(b))+'</span>'+
@@ -14650,7 +14688,7 @@ function sendConfirmationEmail(b, showFeedback){
                 '<td style="padding:10px 12px;background:#fff8e1;border:1px solid #fde68a;border-radius:10px 0 0 10px;vertical-align:top;width:50%">'+
                   '<div style="font-weight:700;color:#92400e;margin-bottom:4px">\uD83D\uDCB3 Pay by Card</div>'+
                   '<div style="color:#78350f;font-size:13px;margin-bottom:8px">$105 <span style="font-weight:400">(includes 5% processing fee &amp; taxes)</span></div>'+
-                  '<div style="text-align:left"><a href="'+DATE_LOCK_URL+'" style="display:inline-block;padding:10px 20px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:13px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">Pay Online \u2192</a></div>'+
+                  '<div style="text-align:left"><a href="'+DATE_LOCK_URL+'" style="display:inline-block;padding:10px 20px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:13px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">Pay Online \u2192</a></div>'+
                 '</td>'+
                 '<td style="width:12px"></td>'+
                 '<td style="padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:0 10px 10px 0;vertical-align:top;width:50%">'+
@@ -19052,7 +19090,7 @@ function _sendExtensionStripePayment(bookingId, extId){
       '<p style="margin:6px 0 0;color:rgba(255,255,255,.85);font-size:14px">Extension #'+extNum+' &middot; '+esc(b.vehicle)+'</p></div>'+
       '<div style="padding:26px"><p style="font-size:15px;line-height:1.6;margin:0 0 18px">Hi '+esc(firstName)+', your rental has been extended to <strong>'+esc(fmtDateFull(ext.toDate))+'</strong>. Please complete the payment below.</p>'+
       '<div style="background:#f7f7f7;border-radius:10px;padding:18px;margin:0 0 18px"><div style="font-size:13px;color:#555">Extension #'+extNum+'</div><div style="font-size:26px;font-weight:800;color:#b8982e">$'+total.toFixed(2)+'</div><div style="font-size:12px;color:#999;margin-top:2px">Includes processing fee &amp; TX sales tax</div></div>'+
-      '<div style="text-align:center;margin:22px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Pay Now \u2192</a></div>'+
+      '<div style="text-align:center;margin:22px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Pay Now \u2192</a></div>'+
       '<p style="font-size:13px;color:#888;margin:18px 0 0">Questions? Call or text <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p></div></div>';
     fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Extension Payment \u2014 Prestige Black Rentals',html:html})})
       .then(function(r){ if(r.ok) logNotif('charge','Extension #'+extNum+' payment email sent',b.email,bookingId); });
@@ -19281,7 +19319,7 @@ function sendExtensionSigningLink(){
     '<div style="padding:28px">'+
     '<p style="font-size:15px;line-height:1.6;margin:0 0 16px">Hi '+esc(firstName)+', your rental has been extended through <strong>'+fmtDateFull(ext.toDate)+'</strong>. Please review and sign your extension agreement to confirm the updated return date.</p>'+
     (ext.additionalCharge ? '<p style="font-size:14px;color:#b8982e;font-weight:700;margin:0 0 16px">Additional Charge: $'+Number(ext.additionalCharge).toFixed(2)+'</p>' : '')+
-    '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign Extension Agreement</a></div>'+
+    '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign Extension Agreement</a></div>'+
     '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
     '</div>'+
     '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals &middot; Dallas&ndash;Fort Worth &middot; (214) 207-2481</div>'+
@@ -19893,7 +19931,7 @@ function sendContractSigningLink(){
       (rec.driverIdx!==null?
         '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">You have been listed as an <strong>Additional Authorized Driver</strong> on this rental. Please review and sign the '+esc(docType.toLowerCase())+' for the <strong>'+esc(b.vehicle)+'</strong> rental.</p>':
         '<p style="font-size:15px;line-height:1.6;margin:0 0 20px">Please review and sign your '+esc(docType.toLowerCase())+' for your upcoming <strong>'+esc(b.vehicle)+'</strong> rental.</p>')+
-      '<div style="text-align:center;margin:24px 0"><a href="'+rec.url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign My '+esc(docType)+'</a></div>'+
+      '<div style="text-align:center;margin:24px 0"><a href="'+rec.url+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign My '+esc(docType)+'</a></div>'+
       '<p style="font-size:13px;color:#666;margin:0 0 20px">This link is for you personally. Please do not share it \u2014 each driver must sign individually.</p>'+
       '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
       '</div>'+
@@ -19959,7 +19997,7 @@ function shareBookingPortal(id){
           '<tr '+(bal?'style="background:#f0f0f0"':'')+'><td style="padding:8px 14px 8px 0;color:#555;white-space:nowrap;vertical-align:top">Contract</td><td style="padding:8px 0;font-weight:600;color:#111">'+contractStatus+'</td></tr>'+
         '</table>'+
       '</div>'+
-      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\uD83D\uDD17 View My Booking</a></div>'+
+      '<div style="text-align:center;margin:24px 0"><a href="'+url+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\uD83D\uDD17 View My Booking</a></div>'+
       '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
       '</div>'+
       '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth \u00B7 (214) 207-2481</div>'+
@@ -20080,7 +20118,7 @@ async function submitPortalCharge(){
           '<div style="font-size:28px;font-weight:800;color:#b8982e">'+$$(total)+'</div>'+
           '<div style="font-size:12px;color:#999;margin-top:4px">Includes processing fee & TX sales tax</div>'+
         '</div>'+
-        '<div style="text-align:center;margin:24px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Pay Now \u2192</a></div>'+
+        '<div style="text-align:center;margin:24px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px">Pay Now \u2192</a></div>'+
         '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Call or text <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
         '</div>'+
         '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth</div>'+
@@ -20098,6 +20136,53 @@ async function submitPortalCharge(){
 // Owner received a sent charge outside Stripe (Zelle, cash, \u2026) \u2014 log the payment
 // so the charge gets a paidAt timestamp and flows into revenue, KPIs and charts
 // exactly like a card payment (Stripe payments are marked paid automatically).
+// Slingshot-hourly additional drivers each owe the full booking price. Record that payment per driver
+// (any method: Card / Apple Pay / Zelle / CashApp / ...) the same way the balance flow does. Amount
+// pre-fills from the booking total but is EDITABLE so the owner controls the exact charge. Additive +
+// Slingshot-hourly-scoped. NOTE: this records/logs the payment on the driver but does NOT add it to KPI
+// revenue (avoids disturbing the curated financial model) -- can be folded into revenue later if wanted.
+function markDriverPaid(bookingId, driverIdx){
+  var b=bookings.find(function(x){ return x.id===bookingId; }); if(!b) return;
+  var d=(b.extraDrivers||[])[driverIdx]; if(!d){ if(typeof showToast==='function') showToast('Driver not found'); return; }
+  var _old=$d('drvPayOverlay'); if(_old) _old.remove();
+  var _amt=(Number(d.payAmount)||Number(totalRevenue(b))||0).toFixed(2);
+  var _methods=['Card','Apple Pay','Zelle','CashApp','Venmo','Cash','Other'];
+  var _ov=document.createElement('div');
+  _ov.id='drvPayOverlay';
+  _ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:10002;display:flex;align-items:center;justify-content:center;padding:16px';
+  _ov.innerHTML='<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:22px;width:100%;max-width:360px">'+
+    '<div style="font-size:15px;font-weight:800;margin-bottom:2px">Authorized Driver Payment</div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:16px">'+esc(d.name||'Driver '+(driverIdx+1))+'</div>'+
+    '<div style="margin-bottom:12px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Amount ($)</div>'+
+      '<input id="drvPayAmt" type="number" min="0" step="0.01" class="finput" style="width:100%" value="'+_amt+'"></div>'+
+    '<div style="margin-bottom:18px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">Method</div>'+
+      '<select id="drvPayMethod" class="finput" style="width:100%">'+_methods.map(function(m){ var _sel=(d.paidMethod===m||(String(d.paidMethod||'').toLowerCase()==='stripe'&&m==='Card')); return '<option'+(_sel?' selected':'')+'>'+m+'</option>'; }).join('')+'</select></div>'+
+    '<div style="display:flex;gap:10px;justify-content:space-between;align-items:center">'+
+      (d.paid?'<button class="btn btn-sm" onclick="_setDriverPaid(\''+_jsAttr(bookingId)+'\','+driverIdx+',false)" style="border-color:rgba(239,68,68,.4);color:var(--red)">Mark Unpaid</button>':'<span></span>')+
+      '<div style="display:flex;gap:10px">'+
+        '<button class="btn" onclick="$d(\'drvPayOverlay\').remove()" style="border-color:var(--border)">Cancel</button>'+
+        '<button class="btn" onclick="_setDriverPaid(\''+_jsAttr(bookingId)+'\','+driverIdx+',true)" style="background:var(--green);color:#000;border-color:var(--green);font-weight:700">\u2705 Mark Paid</button>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+  document.body.appendChild(_ov);
+  setTimeout(function(){ var el=$d('drvPayAmt'); if(el){ el.focus(); if(el.select) el.select(); } },50);
+}
+function _setDriverPaid(bookingId, driverIdx, paid){
+  var idx=bookings.findIndex(function(x){ return x.id===bookingId; }); if(idx===-1) return;
+  var d=(bookings[idx].extraDrivers||[])[driverIdx]; if(!d) return;
+  if(paid){
+    d.payAmount=Math.max(0, Number(($d('drvPayAmt')&&$d('drvPayAmt').value)||0)||0);
+    d.paidMethod=(($d('drvPayMethod')&&$d('drvPayMethod').value)||'').trim();
+    d.paid=true; d.paidAt=Date.now();
+    try{ logNotif('charge','Authorized driver payment \u2014 '+(d.name||'Driver')+' '+$$(d.payAmount)+' ('+(d.paidMethod||'manual')+')',(bookings[idx].name||''),bookingId); }catch(e){}
+  } else { d.paid=false; d.paidAt=null; }
+  bookings[idx]._t=Date.now();
+  save(); flushCloudSave();
+  var _ov=$d('drvPayOverlay'); if(_ov) _ov.remove();
+  if(typeof showToast==='function') showToast(paid?'\ud83d\udcb8 Driver payment recorded \u2705':'Marked unpaid');
+  try{ if(typeof openBookingDetail==='function') openBookingDetail(bookingId); }catch(e){}
+}
 function markChargePaid(bookingId, chargeId){
   var idx=bookings.findIndex(function(b){ return b.id===bookingId; });
   if(idx===-1){ toast('Booking not found'); return; }
@@ -21457,7 +21542,7 @@ function sendExtensionConfirmEmail(bookingId){
       (_newReturn?'<div><span style="color:#7a6320;font-weight:700">New Return:</span> <strong style="color:#b8982e">'+esc(_newReturn)+'</strong></div>':'')+
       '<div><span style="color:#7a6320;font-weight:700">Extension:</span> +'+_addedDays+' '+_plural+'</div>'+
     '</div>'+
-    '<div style="text-align:center;margin:24px 0"><a href="'+sigUrl+'" style="display:inline-block;padding:14px 32px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign Updated Agreement</a></div>'+
+    '<div style="text-align:center;margin:24px 0"><a href="'+sigUrl+'" style="display:inline-block;padding:14px 32px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:15px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">\u270D\uFE0F Sign Updated Agreement</a></div>'+
     '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
     '</div>'+
     '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth \u00B7 (214) 207-2481</div>'+

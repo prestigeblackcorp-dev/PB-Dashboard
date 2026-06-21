@@ -378,6 +378,7 @@
   <div class="driver-sheet">
     <div class="driver-sheet-title">Add Authorized Driver</div>
     <div class="driver-sheet-sub" id="driver-modal-sub">This driver will be added to your reservation and must sign the rental agreement.</div>
+    <div id="drv-sling-note" style="display:none;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#C9A962;line-height:1.55"><strong>Please note:</strong> adding an additional authorized driver to a Slingshot hourly rental means <strong>both people</strong> must pay the full booking price and each complete the waiver &amp; ID verification.</div>
     <div class="form-group">
       <label class="field-label">Full Name *</label>
       <input type="text" id="drv-name" placeholder="First Last" autocomplete="name">
@@ -1089,26 +1090,11 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
       return;
     }
 
-    // -- ID verification gate \u2014 applies to the primary renter AND every authorized
-    // driver (parity). An owner can waive it per-driver from the dashboard by setting
-    // extraDrivers[i].signWithoutVerify, which lets that one driver sign unverified. --
-    var _verified = _isDriver
-      ? !!(_signer && (_signer.idVerified || _signer.signWithoutVerify))
-      : !!(bk.verify && bk.verify.idVerified);
-    if(!_verified){
-      body.innerHTML = '<div style="text-align:center;padding:32px 20px">'+
-        '<div style="font-size:48px;margin-bottom:14px">\uD83E\uDEAA</div>'+
-        '<div style="font-size:18px;font-weight:700;color:#C9A962;margin-bottom:10px">ID Verification Required</div>'+
-        '<div style="color:rgba(255,255,255,.6);font-size:14px;line-height:1.6;max-width:300px;margin:0 auto 20px">'+
-        (_isDriver?'As an authorized driver, your identity must be verified before you can sign. Check your email for your secure ID-verification link (sent once you were approved), complete it, then reopen this link to sign. ':'Your contract will be available to sign once your identity has been verified. ')+
-        (_isDriver?'Didn\'t get the link or need help? Call us below.':'Please complete your ID verification or contact us for assistance.')+'</div>'+
-        '<div style="font-size:13px;color:rgba(255,255,255,.35)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
-        _signerPortalPrompt(bk)+
-        '</div>';
-      return;
-    }
-    // Authorized drivers: confirm they are approved before allowing signing
-    if(_isDriver && _signer && _signer.status && _signer.status !== 'approved'){
+    // ID-verification is NOT required to sign (owner choice): a valid signing link is the access control.
+    // The pending/denied APPROVAL gate applies ONLY to drivers a GUEST added from the portal
+    // (addedByPortal) -- they must be owner-approved before signing. A driver the OWNER added from the
+    // dashboard is implicitly approved and signs via their link directly (no approval gate at all).
+    if(_isDriver && _signer && _signer.addedByPortal && _signer.status && _signer.status !== 'approved'){
       const _dStatus = _signer.status;
       body.innerHTML = '<div style="text-align:center;padding:32px 20px">'+
         (_dStatus==='denied'
@@ -2243,6 +2229,9 @@ function openDriverModal(bookingId){
   document.getElementById('drv-error').style.display = 'none';
   document.getElementById('drv-save-btn').disabled = false;
   document.getElementById('drv-save-btn').textContent = 'Add Driver';
+  var _sb=(state.bookings||[]).find(function(x){ return x.id===bookingId; });
+  var _slNote=document.getElementById('drv-sling-note');
+  if(_slNote) _slNote.style.display=(_sb && _sb.vehicle==='Polaris Slingshot' && _sb.type==='hourly')?'block':'none';
   document.getElementById('driver-modal').classList.add('open');
   setTimeout(()=>document.getElementById('drv-name').focus(), 100);
 }
