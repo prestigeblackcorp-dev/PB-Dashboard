@@ -900,6 +900,7 @@ let _lastDriverLoc = null; // last known driver position, for refits on sheet co
 var _stopPos = 'before';   // P2P added-stop placement: 'before' the original dropoff, or 'final' (new last stop)
 var _pendingStopDetour = 0;// detour miles for the stop being added (computed client-side, priced by the worker)
 var _pendingStopBase = 10; // $ base the worker reports for an added stop (shown in the confirm sheet)
+var _pendingStopLongDetour = false; // worker flag: detour >25 mi -> per-mile rate inflated 40%
 let _riderMarker = null;   // rider's own live location dot ("you")
 let _riderWatchId = null;  // geolocation watch active during a ride
 let _riderUserMoved = false; // rider hand-moved the trip map \u2192 suspend auto-follow
@@ -2351,6 +2352,13 @@ function updateStatusUI(ride, driverLoc){
   badge.innerHTML=(['searching','accepted','driver_arrived','in_progress'].includes(st)?'<div class="pulse-dot"></div>':'')+`<span id="statusBadgeText">${STATUS_LABELS[st]||st}</span>`;
   $d('statusTitle').textContent=STATUS_LABELS[st]||st;
   $d('statusSub').textContent=STATUS_SUBS[st]||'';
+  // High-demand QUEUED accept: the chauffeur accepted but is finishing another trip first -> soften the
+  // "on the way" wording so the rider isn't expecting them to arrive immediately.
+  if(ride.queued && st==='accepted'){
+    var _qbt=$d('statusBadgeText'); if(_qbt) _qbt.textContent='Chauffeur assigned';
+    $d('statusTitle').textContent='Chauffeur assigned';
+    $d('statusSub').textContent='They\u2019ll head your way once they finish their current trip';
+  }
   // Back to searching (driver cancelled & we're re-dispatching): clear every
   // trace of the previous driver so the map matches "Finding your chauffeur\u2026"
   if(st==='searching'){
@@ -2726,7 +2734,7 @@ async function sendStops(){
       var _posTxt=(_stopPos==='final')?'New final stop':'Stop before your dropoff';
       _collectFareThen(add, function(){ _commitStops(add); }, {
         title:'Request Stop',
-        sub:_posTxt+' \u00b7 $'+_pendingStopBase+' base + '+_pendingStopDetour.toFixed(1)+' mi detour. Your chauffeur confirms it \u2014 you\'re only charged once they accept.',
+        sub:_posTxt+' \u00b7 $'+_pendingStopBase+' base + '+_pendingStopDetour.toFixed(1)+' mi detour'+(_pendingStopLongDetour?' (long-detour rate, +40%/mi)':'')+'. Your chauffeur confirms it \u2014 you\'re only charged once they accept.',
         label:'Added fare', cta:'Request Stop'
       });
       return;
@@ -2776,6 +2784,7 @@ async function _calcStopSurcharge(){
   _pendingStopDetour=Math.round(det*100)/100;
   var est=await fetch(WORKER+'/chauffeur/estimate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stop:true,detourMiles:det})}).then(function(r){return r.json();}).catch(function(){return null;});
   if(est&&est.stopBase!=null) _pendingStopBase=Number(est.stopBase);
+  _pendingStopLongDetour=!!(est&&est.longDetour);
   return est&&est.price!=null?Number(est.price):0;
 }
 // Send the stop(s) to the chauffeur. `extra` is the P2P surcharge already collected (0 for hourly).

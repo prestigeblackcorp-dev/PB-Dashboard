@@ -1984,6 +1984,30 @@ if(typeof document!=='undefined'){
   window.addEventListener('offline', function(){ if((window.PB_FLAGS||{}).resilience && _drvWantWake() && typeof drvToast==='function') drvToast('Connection lost \u2014 reconnecting\u2026'); });
 }
 
+// High-demand queued next-ride banner: the ride the chauffeur accepted while still on a trip. It has NO
+// controls here (can't be started) -- the worker promotes it to the active ride the moment the current
+// trip completes, at which point this banner clears and the normal trip panel takes over.
+function _renderQueuedBanner(qr){
+  var el=$d('queued-ride-banner');
+  if(!qr){ if(el) el.style.display='none'; return; }
+  if(!el){
+    el=document.createElement('div');
+    el.id='queued-ride-banner';
+    el.style.cssText='position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);z-index:9000;background:linear-gradient(135deg,rgba(201,169,98,.2),rgba(0,0,0,.88));border:1px solid rgba(201,169,98,.45);border-radius:14px;padding:12px 14px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);box-shadow:0 6px 24px rgba(0,0,0,.55)';
+    document.body.appendChild(el);
+  }
+  el.style.display='block';
+  var _take=qr.estimatedPrice?('$'+(Number(qr.estimatedPrice)*DRIVER_SHARE).toFixed(0)):'';
+  el.innerHTML='<div style="display:flex;align-items:center;gap:10px">'+
+    '<div style="font-size:22px">\ud83d\udccb</div>'+
+    '<div style="flex:1;min-width:0">'+
+      '<div style="font-size:11px;font-weight:800;color:#C9A962;text-transform:uppercase;letter-spacing:.05em">Next ride queued</div>'+
+      '<div style="font-size:12.5px;color:#cfd3da;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(qr.pickupAddress||'Pickup')+(qr.riderName?(' \u00b7 '+esc(qr.riderName)):'')+'</div>'+
+      '<div style="font-size:11px;color:#8a93a6;margin-top:2px">Starts when you complete your current trip</div>'+
+    '</div>'+
+    (_take?'<div style="font-size:14px;font-weight:900;color:#C9A962">'+_take+'</div>':'')+
+  '</div>';
+}
 async function pollDriverRides(){
   if(!drvState.token) return;
   try{ _drvAcquireWake(); }catch(e){}   // heartbeat: re-grab the screen lock if the OS dropped it (no-op if held or off duty)
@@ -2007,6 +2031,9 @@ async function pollDriverRides(){
       hideRideRequestOverlay();
     }
   }
+  // High-demand: render the QUEUED next-ride banner (the worker promotes it to active automatically once
+  // the current trip completes, so it just disappears into the normal flow then).
+  _renderQueuedBanner(d.queuedRide||null);
   // Update active ride
   if(d.activeRide){
     var _prevRide=_activeRide;
@@ -2132,6 +2159,11 @@ function _drvCheckPaused(paused){
 function showRideRequestOverlay(notif){
   var o=$d('ride-request-overlay'); o.style.display='flex';
   _requestAlert();
+  // High-demand QUEUED offer (driver is mid-trip): label it as a next-ride so they know it won't start now.
+  var _q=!!notif.queued;
+  var _qt=document.querySelector('#ride-request-overlay .rr-title'); if(_qt) _qt.textContent=_q?'Next Ride \u2014 Queued':'New Ride Request';
+  var _qs=$d('rr-sub'); if(_qs) _qs.textContent=_q?'High demand \u00b7 starts after your current trip':'Prestige Black Chauffeur';
+  var _qa=document.querySelector('#ride-request-overlay .btn-accept'); if(_qa) _qa.innerHTML=_q?'\u2713 Accept & Queue':'\u2713 Accept';
   // Drivers only ever see their own take (35%) \u2014 never the gross customer fare.
   $d('rr-fare').textContent='$'+((notif.estimatedPrice||0)*DRIVER_SHARE).toFixed(2);
   $d('rr-dist').textContent=notif.distanceMiles?(notif.distanceMiles.toFixed(1)+' mi'):(notif.hours?notif.hours+' hrs':'\u2014');
