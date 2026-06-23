@@ -3885,7 +3885,17 @@ function mergeArray(local, cloud) {
       var ct = Number(item._t)         || Number(item.createdAt)         || 0;
       var winner = (ct > lt) ? item : map[item.id];
       var loser  = (ct > lt) ? map[item.id] : item;
-      map[item.id] = _graftSignatures(winner, loser); // never drop a signature on merge
+      var _merged = _graftSignatures(winner, loser); // never drop a signature on merge
+      // gcalEventId / _gcalSig are LOCAL calendar bookkeeping (which Google event mirrors this booking).
+      // Cal Sync no longer bumps _t to propagate them, so the _t-based merge could otherwise drop them
+      // when a newer real edit from a device that never Cal-Synced wins -> a duplicate calendar event on
+      // the next sync. Carry a non-null id across the merge (prefer the winner's; a cleared id is always
+      // immediately re-POSTed so this never resurrects a truly-dead event for long).
+      if(_merged){
+        if(!_merged.gcalEventId && loser && loser.gcalEventId){ _merged.gcalEventId = loser.gcalEventId; }
+        if(!_merged._gcalSig && loser && loser._gcalSig){ _merged._gcalSig = loser._gcalSig; }
+      }
+      map[item.id] = _merged;
     }
   });
   var result = [];
@@ -4047,11 +4057,12 @@ function _clearPushedBT(){ _pushedBT={}; try{ localStorage.removeItem('pb_pushed
 // save-booking churn = the in-sync sync-dot flicker). Surfaced to the owner; auto-retried on next edit.
 var _unsyncableBookings = (function(){ try{ return JSON.parse(localStorage.getItem('pb_unsyncable')||'{}')||{}; }catch(e){ return {}; } })();
 function _saveUnsyncable(){ try{ localStorage.setItem('pb_unsyncable', JSON.stringify(_unsyncableBookings)); }catch(e){} }
+var _strandRetry = {}; // id -> last cloud-missing re-push time (session-only). Throttles the auto re-push of a booking the cloud is genuinely MISSING so a truly-unpushable one can't loop every poll.
 var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from overlapping
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v154';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v155';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4540,6 +4551,29 @@ function cloudLoad(callback) {
             return !seen || ct < lt;                                                       // cloud missing it, or its NEWEST copy is older -> push
           })) needsPush = true;
           bookings = merged;
+          // KEEP-PUSHING-UNTIL-IT-LANDS: if the cloud is genuinely MISSING a local (non-deleted) booking,
+          // our _pushedBT / unsyncable record for it is WRONG -- a recorded-but-failed push stranded it
+          // (a transient reject, or the old Cal-Sync _t-bump churn): sync dot green, but the booking never
+          // reached the cloud + is absent on every other device (the cross-device total drift). The
+          // needsPush scan above deliberately TRUSTS _pushedBT (to avoid the worker-dedup re-push flicker),
+          // so it never re-sends these. Catch them here: clear their flags so the per-booking push RE-UPLOADS
+          // them. Per-id 3-min backoff so a booking the worker truly rejects (still too large) retries only
+          // occasionally, never every poll. This is what makes a stranded booking reach the cloud on its own.
+          (function(){
+            var _nowM = Date.now();
+            for(var _q=0; _q<merged.length; _q++){
+              var mb = merged[_q];
+              if(!mb || !mb.id || mb._deleted) continue;
+              var _has=false;
+              for(var _r=0; _r<cloudBookings.length; _r++){ if(cloudBookings[_r] && cloudBookings[_r].id===mb.id){ _has=true; break; } }
+              if(_has) continue;                                                      // cloud already has it -> nothing to heal
+              if(_strandRetry[mb.id] && (_nowM-_strandRetry[mb.id])<180000) continue; // re-pushed it within the last 3 min -> wait
+              _strandRetry[mb.id]=_nowM;
+              try{ if(mb.id in _pushedBT){ delete _pushedBT[mb.id]; } }catch(e){}       // -> booking is "dirty" again
+              try{ if(_unsyncableBookings && (mb.id in _unsyncableBookings)){ delete _unsyncableBookings[mb.id]; } }catch(e){}
+              needsPush=true;
+            }
+          })();
           // -- Normalize date lock to $100 flat for web bookings --------------
           // Stripe processing fees / taxes should not change the recorded amount.
           // If dateLock \u2265 revenue the customer paid in full; otherwise always $100.
@@ -6694,7 +6728,7 @@ function syncToGCal(b, _isRetry){
         var msg = String(err && err.message || err);
         if(msg.indexOf('404') !== -1 || msg.indexOf('410') !== -1 || msg.toLowerCase().indexOf('not found') !== -1 || msg.toLowerCase().indexOf('deleted') !== -1){
           var idx = bookings.findIndex(function(x){ return x.id===b.id; });
-          if(idx !== -1){ bookings[idx].gcalEventId = null; bookings[idx]._t = Date.now(); if(!_gcalBulkMode) save(); b = bookings[idx]; }
+          if(idx !== -1){ bookings[idx].gcalEventId = null; if(!_gcalBulkMode) save(); b = bookings[idx]; }   // clearing a stale calendar id is bookkeeping too -> never bump _t (the retry POST below re-sets a fresh id)
           else { b.gcalEventId = null; }
           return syncToGCal(b, true); // retry as new POST
         }
@@ -6706,7 +6740,7 @@ function syncToGCal(b, _isRetry){
   return gcalFetch('POST', '/events', event).then(function(data){
     if(data && data.id){
       var idx = bookings.findIndex(function(x){ return x.id===b.id; });
-      if(idx !== -1){ bookings[idx].gcalEventId = data.id; bookings[idx]._t = Date.now(); save(); }
+      if(idx !== -1){ bookings[idx].gcalEventId = data.id; save(); }   // gcalEventId is LOCAL calendar bookkeeping -- do NOT bump _t. Bumping it made a stale local copy outrank a newer edit from another device in the _t-based merge and clobber it (-> drifting cross-device totals). It still persists locally + rides along on the next real edit; mergeArray now grafts it so a merge can't drop it.
       b.gcalEventId = data.id;
       save(); // persist the new event ID immediately so an interrupted bulk run can't create duplicates
     }
