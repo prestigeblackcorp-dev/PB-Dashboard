@@ -4051,7 +4051,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v153';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v154';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4220,6 +4220,30 @@ function flushCloudSave() {
 // desktop folds it back into the full array on its next sync. Lets a device that can't POST the full
 // ~1MB+ blob still get its new/edited bookings to the cloud. Only bookings changed since the last
 // successful sync (_t > _lastSavedAt) are sent, so it's just the stranded/edited ones.
+// One-time stranded-booking heal. A booking can get recorded in _pushedBT (or flagged _unsyncableBookings)
+// while it NEVER actually reached the cloud -- a transient /sync/save-booking reject, or an old too-large
+// flag from before signatures were offloaded. The dirty filter then SKIPS it forever (sync dot green, but
+// the booking is missing on every other device). On the first load each session, clear those flags for any
+// FLAGGED booking (any age) plus recently-edited ones, so the per-booking push RE-UPLOADS them -- and since
+// sigs offload now, a once-too-big signed booking fits and finally lands. Idempotent + bounded (~1 week).
+var _strandHealDone=false;
+function _healStrandedBookings(){
+  if(_strandHealDone) return; _strandHealDone=true;
+  try{
+    var cutoff=Date.now()-7*24*3600*1000, changed=false;
+    (bookings||[]).forEach(function(b){
+      if(!b||!b.id||b._deleted) return;
+      var flagged=(typeof _unsyncableBookings!=='undefined' && _unsyncableBookings && (b.id in _unsyncableBookings));
+      var recent=(Number(b._t)||0) > cutoff;
+      if(flagged || recent){
+        try{ if(_unsyncableBookings) delete _unsyncableBookings[b.id]; }catch(e){}
+        try{ if(_pushedBT) delete _pushedBT[b.id]; }catch(e){}   // -> booking is "dirty" again -> re-pushed
+        changed=true;
+      }
+    });
+    if(changed){ try{_saveUnsyncable();}catch(e){} try{_savePushedBT();}catch(e){} if(typeof flushCloudSave==='function') flushCloudSave(); else if(typeof cloudSave==='function') cloudSave(); }
+  }catch(e){}
+}
 function _pushBookingsIndividually(){
   if(!WORKER_URL || _individualPushActive) return;
   if(!navigator.onLine){ setSyncStatus('off'); return; }
@@ -22279,6 +22303,7 @@ setTimeout(stickyTabFix, 200);
 })();
 function afterCloudLoad(ok){
   if(!ok) return;
+  _healStrandedBookings();  // once/session: re-push any booking stranded by a stale pushed/unsyncable flag
   _autoCarryVerifyForAll(); // fill verify data for any unverified booking from a known customer
   _autoEmailVerifiedDrivers();  // email any authorized driver verified on another device/path (dedup'd)
   _detectAndLogPayments();      // log portal payments (date lock / balance / full) to the activity log
