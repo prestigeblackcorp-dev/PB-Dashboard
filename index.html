@@ -4062,7 +4062,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v156';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v157';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4289,6 +4289,11 @@ function pbSyncRepair(){
     var locActive=localAll.filter(function(b){return b&&b.id&&!b._deleted;});
     var pushUp=locActive.filter(function(b){ var c=cloudIds[b.id]; return !c || (Number(b._t)||0)>(Number(c._t)||0); });
     var pullDown=cloud.filter(function(b){ return !(b.id in laIds); });
+    // STALE shared bookings: the cloud holds a newer-or-equal copy that DIFFERS from this device's
+    // copy (a cancel/edit made elsewhere that the merge kept stale here, including _t ties where local
+    // wrongly wins). Cloud is authoritative for these -> refresh local from cloud. (A genuinely newer
+    // local copy goes UP via pushUp instead, so this never clobbers a real local edit.)
+    var refresh=cloud.filter(function(cb){ var lb=laIds[cb.id]; if(!lb) return false; var ct=Number(cb._t)||0, lt=Number(lb._t)||0; if(ct<lt) return false; return Math.round(rev(cb))!==Math.round(rev(lb)) || (!!cb._deleted)!==(!!lb._deleted) || (cb.status||'')!==(lb.status||''); });
     var h='<div style="color:#a9a293;font-size:11px;letter-spacing:.1em;margin-bottom:10px">BUILD '+build+'</div>'
       +'<div style="display:flex;justify-content:space-between;padding:4px 0"><span>This device shows</span><b style="color:#e7c876">'+locActive.length+' \u00b7 '+money(locActive.reduce(function(s,b){return s+rev(b);},0))+'</b></div>'
       +'<div style="display:flex;justify-content:space-between;padding:4px 0"><span>Cloud holds</span><b style="color:#e7c876">'+cloud.length+' \u00b7 '+money(cloud.reduce(function(s,b){return s+rev(b);},0))+'</b></div>'
@@ -4297,30 +4302,36 @@ function pbSyncRepair(){
       +(pushUp.length?'<div style="font-size:12px;color:#a9a293;margin:4px 0 10px">'+pushUp.slice(0,10).map(function(b){return (b.name||'?')+' \u00b7 '+money(rev(b));}).join('<br>')+(pushUp.length>10?'<br>+'+(pushUp.length-10)+' more':'')+'</div>':'')
       +'<div><b style="color:#e7c876">'+pullDown.length+'</b> in the cloud missing here \u2014 will download</div>'
       +(pullDown.length?'<div style="font-size:12px;color:#a9a293;margin:4px 0">'+pullDown.slice(0,10).map(function(b){return (b.name||'?')+' \u00b7 '+money(rev(b));}).join('<br>')+(pullDown.length>10?'<br>+'+(pullDown.length-10)+' more':'')+'</div>':'')
-      +((!pushUp.length&&!pullDown.length)?'<div style="color:#5fb87a;margin-top:8px">\u2713 This device already matches the cloud. If totals still differ, run this on the OTHER device too.</div>':'');
+      +'<div style="margin-top:6px"><b style="color:#e7c876">'+refresh.length+'</b> out of date here \u2014 will refresh from cloud</div>'
+      +(refresh.length?'<div style="font-size:12px;color:#a9a293;margin:4px 0">'+refresh.slice(0,12).map(function(cb){var lb=laIds[cb.id];return (cb.name||'?')+': here '+money(rev(lb))+' \u2192 cloud '+money(rev(cb))+(((!!cb._deleted)!==(!!lb._deleted))||((cb.status||'')!==(lb.status||''))?' ['+(lb.status||(lb._deleted?'deleted':'active'))+'\u2192'+(cb.status||(cb._deleted?'deleted':'active'))+']':'');}).join('<br>')+(refresh.length>12?'<br>+'+(refresh.length-12)+' more':'')+'</div>':'')
+      +((!pushUp.length&&!pullDown.length&&!refresh.length)?'<div style="color:#5fb87a;margin-top:8px">\u2713 This device already matches the cloud. If totals still differ, run this on the OTHER device too.</div>':'');
     log(h);
     acts.innerHTML='';
-    if(pushUp.length||pullDown.length){
-      var btn=document.createElement('button'); btn.textContent='Repair now ('+(pushUp.length+pullDown.length)+')';
+    if(pushUp.length||pullDown.length||refresh.length){
+      var btn=document.createElement('button'); btn.textContent='Repair now ('+(pushUp.length+pullDown.length+refresh.length)+')';
       btn.style.cssText='background:linear-gradient(135deg,#e7c876,#c9a44c);color:#101013;border:none;border-radius:6px;padding:12px 18px;font-weight:700;font-size:14px;flex:1';
-      btn.onclick=function(){ btn.disabled=true; btn.textContent='Repairing\u2026'; runRepair(pushUp,pullDown); };
+      btn.onclick=function(){ btn.disabled=true; btn.textContent='Repairing\u2026'; runRepair(pushUp,pullDown,refresh); };
       acts.appendChild(btn);
     }
-    function runRepair(up,down){
+    function runRepair(up,down,refr){
       var added=0; down.forEach(function(b){ if(!(b.id in laIds)){ bookings.push(b); laIds[b.id]=b; added++; } });
+      // Refresh stale shared bookings: replace local with the cloud's authoritative copy, but graft the
+      // local signatures back on (cloud copies are signature-stripped under sigsOffload) so no sig is lost.
+      var updated=0; (refr||[]).forEach(function(cb){ var ix=bookings.findIndex(function(x){return x&&x.id===cb.id;}); if(ix>=0){ var lb=bookings[ix]; bookings[ix]=(typeof _graftSignatures==='function')?_graftSignatures(cb,lb):cb; updated++; try{ _pushedBT[cb.id]=Number(cb._t)||Date.now(); }catch(e){} try{ if(_unsyncableBookings) delete _unsyncableBookings[cb.id]; }catch(e){} } });
+      try{ if(typeof _savePushedBT==='function') _savePushedBT(); }catch(e){}
       var i=0, ok=0, fail=0, rep=[];
       (function next(){
         if(i>=up.length){
           try{ if(typeof save==='function') save(); }catch(e){}
           try{ if(typeof render==='function') render(); }catch(e){}
           var s='<div style="color:#5fb87a;font-weight:600;margin-bottom:8px">Repair complete.</div>'
-            +'<div>Downloaded '+added+' \u00b7 Uploaded '+ok+(fail?(' \u00b7 <span style="color:#d98b6a">Failed '+fail+'</span>'):'')+'</div>'
+            +'<div>Refreshed '+updated+' \u00b7 Downloaded '+added+' \u00b7 Uploaded '+ok+(fail?(' \u00b7 <span style="color:#d98b6a">Failed '+fail+'</span>'):'')+'</div>'
             +(rep.length?'<div style="font-size:12px;color:#a9a293;margin-top:10px;max-height:210px;overflow:auto">'+rep.join('<br>')+'</div>':'')
             +'<div style="margin-top:12px;color:#a9a293;font-size:12px">Open the app on your OTHER device and let it sync (or run Repair there too) \u2014 totals should match.'+(fail?' Failed items are too large/invalid to upload; tap Copy report and send it to me.':'')+'</div>';
           log(s); acts.innerHTML='';
           var cp=document.createElement('button'); cp.textContent='Copy report';
           cp.style.cssText='background:#1c1c20;color:#e7c876;border:1px solid #c9a44c;border-radius:6px;padding:11px 16px;font-size:13px;flex:1';
-          cp.onclick=function(){ var txt='PB Repair build '+build+': down '+added+', up '+ok+', fail '+fail+'\n'+rep.join('\n'); try{ navigator.clipboard.writeText(txt); cp.textContent='Copied \u2713'; }catch(e){ cp.textContent='(copy failed)'; } };
+          cp.onclick=function(){ var txt='PB Repair build '+build+': refreshed '+updated+', down '+added+', up '+ok+', fail '+fail+'\n'+rep.join('\n'); try{ navigator.clipboard.writeText(txt); cp.textContent='Copied \u2713'; }catch(e){ cp.textContent='(copy failed)'; } };
           acts.appendChild(cp);
           return;
         }
