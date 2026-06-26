@@ -4062,7 +4062,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v159';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v160';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -10994,6 +10994,15 @@ function updateBrokerCalc(){
     '<span>Net to PBR: <b style="color:var(--green)">'+$$(net)+'</b></span>';
 }
 
+// Polaris Slingshot HOURLY tiered pricing (matches the rest of the business): 2 hr = $75, 4 hr = $150,
+// 8 hr = $225; beyond 8 hrs uses the full-day rate ($300). Round UP to the tier covering the booked hours.
+function _slingshotHourlyPrice(hrs){
+  hrs=Number(hrs)||0;
+  if(hrs<=2) return 75;
+  if(hrs<=4) return 150;
+  if(hrs<=8) return 225;
+  return 300;
+}
 function onVehicleChange(){
   var v=$d('fVehicle').value;
   var vc=VEHICLE_COSTS[v];
@@ -11008,10 +11017,16 @@ function onVehicleChange(){
   }
   // Auto-populate revenue from rate \u00D7 days (unless user has manually typed a value)
   var type=$d('fType')?$d('fType').value:'daily';
-  if(vc && vc.rate && !$d('fRevenue')._manual && type!=='chauffeur'){
-    $d('fRevenue').value = vc.rate * days;
-    updateLiveTotal();
-    updateRemainingBalance(true);
+  if(!$d('fRevenue')._manual && type!=='chauffeur'){
+    if(v==='Polaris Slingshot' && type==='hourly'){
+      $d('fRevenue').value = _slingshotHourlyPrice(days);   // tiered: 2/4/8 hr = $75/$150/$225
+      updateLiveTotal();
+      updateRemainingBalance(true);
+    } else if(vc && vc.rate){
+      $d('fRevenue').value = vc.rate * days;
+      updateLiveTotal();
+      updateRemainingBalance(true);
+    }
   }
   updateMileageHint();
   updateBrokerCalc();
@@ -11023,6 +11038,13 @@ function onDaysChange(){
   if(ddEl) ddEl._manual=false;
   if(dtEl) dtEl._manual=false;
   autoFillDropoff();
+  // Slingshot hourly is tier-priced by the hour count -> re-price when hours change (unless overridden)
+  try{
+    if($d('fVehicle').value==='Polaris Slingshot' && $d('fType') && $d('fType').value==='hourly' && !$d('fRevenue')._manual){
+      $d('fRevenue').value=_slingshotHourlyPrice(parseFloat($d('fDays').value)||0);
+      updateLiveTotal(); updateRemainingBalance(true);
+    }
+  }catch(e){}
 }
 function onPickupDateChange(){
   var pDate=$d('fPickupDate').value;
