@@ -4062,7 +4062,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v157';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v158';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -4683,23 +4683,35 @@ function cloudLoad(callback) {
               needsPush=true;
             }
           })();
-          // -- Normalize date lock to $100 flat for web bookings --------------
-          // Stripe processing fees / taxes should not change the recorded amount.
-          // If dateLock \u2265 revenue the customer paid in full; otherwise always $100.
+          // -- Normalize date lock for web bookings ---------------------------
+          // A web date lock can be a fixed $100 OR a larger deliberate deposit (e.g. a 50% down payment
+          // taken on booking.live). The worker records the REAL pre-tax amount in dateLock. Only flatten a
+          // LEGACY ~$100 lock that arrived tax/fee-inflated; NEVER flatten a genuine larger deposit -- the
+          // old `dl!==100` rule clamped a $750 deposit down to $100. Also RECOVER any deposit a prior clamp
+          // already flattened: the clamp only ever touched dateLock, so revenue - remainingBalance still
+          // reveals what was actually paid.
           bookings.forEach(function(b, idx){
             if(!b._fromWeb) return;
-            var dl=Number(b.dateLock); if(!dl) return;
             var rev=Number(b.revenue)||0;
+            var dl=Number(b.dateLock);
+            if(dl===100 && rev>0 && b.remainingBalance!=null){
+              var impliedDep=rev-(Number(b.remainingBalance)||0);
+              if(impliedDep>115 && impliedDep<rev){ bookings[idx]=b=Object.assign({},b,{dateLock:impliedDep}); dl=impliedDep; needsPush=true; }
+            }
+            if(!dl) return;
             if(rev>0 && dl>=rev){
               // Paid in full
               if(b.remainingBalance!==0){
                 bookings[idx]=Object.assign({},b,{dateLock:dl,remainingBalance:0});
                 needsPush=true;
               }
-            } else if(dl!==100){
-              // Always $100 flat \u2014 processing fees/taxes don't apply
-              bookings[idx]=Object.assign({},b,{dateLock:100});
-              needsPush=true;
+            } else if(dl>100 && dl<=115){
+              // Legacy ~$100 date lock that arrived tax/fee-inflated -> normalize back to the $100 base.
+              // A deliberate larger deposit is the real amount paid -> left untouched above.
+              if(b.dateLock!==100){
+                bookings[idx]=Object.assign({},b,{dateLock:100});
+                needsPush=true;
+              }
             }
           });
           // ------------------------------------------------------------------
