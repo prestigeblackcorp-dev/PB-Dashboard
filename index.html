@@ -4062,7 +4062,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v158';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v159';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -18020,11 +18020,15 @@ function _renderContractContent(){
   var pickupTimeTxt=b.pickupTime?' at '+fmtTime(b.pickupTime):'';
   var dropoffTimeTxt=b.dropoffTime?' at '+fmtTime(b.dropoffTime):'';
   var _cVm=VEHICLE_MILEAGE[b.vehicle]||{};
-  var _cPerDay=Number(b.includedMiles)||_cVm.miles||0;
+  // b.includedMiles is the TOTAL for the trip (per-day x days). Derive the per-day cap FROM the total --
+  // never treat the total as per-day and multiply by days again (that showed a 450-mi total as 1,350 mi).
+  var _cDaysM=days||1;
+  var _cTripTotal=(Number(b.includedMiles)>0)?Number(b.includedMiles):((Number(_cVm.miles)||0)*_cDaysM);
+  var _cPerDay=(Number(b.includedMiles)>0&&_cDaysM>0)?Math.round(Number(b.includedMiles)/_cDaysM):(Number(_cVm.miles)||0);
   var _cOverage=Number(b.overageRate)||_cVm.overage||0;
   var _cIsUnlim=Number(b.unlimited)>0||!_cPerDay;
   var milesDisplay=_cIsUnlim?'Unlimited':_cPerDay.toLocaleString()+' mi/day';
-  var tripTotalMiles=_cIsUnlim?'Unlimited':(_cPerDay*(days||1)).toLocaleString()+' mi';
+  var tripTotalMiles=_cIsUnlim?'Unlimited':_cTripTotal.toLocaleString()+' mi';
   var overageDisplay=_cIsUnlim?'N/A':(_cOverage?'$'+_cOverage+'/mi over limit':'N/A');
   var unlimitedFee=b.unlimited?'$'+b.unlimited+'/day':'N/A';
   var deliveryFee=Number(b.delivery)?'$'+b.delivery:'N/A';
@@ -20567,11 +20571,14 @@ function _initSigningMode(bookingId, driverIdx){
     var _sPickupFull=fmtDateFull(bk.pickupDate||bk.date||'');
     var _sReturnFull=fmtDateFull(bk.dropoffDate||'');
     var _sVm=VEHICLE_MILEAGE[bk.vehicle]||{};
-    var _sPerDay=Number(bk.includedMiles)||_sVm.miles||0;
+    // includedMiles is the TOTAL for the trip -> derive per-day from it (don't multiply the total by days).
+    var _sDaysM=_sbd.days||1;
+    var _sTripTot=(Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
+    var _sPerDay=(Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
     var _sOvRate=Number(bk.overageRate)||_sVm.overage||0;
     var _sIsUnlim=Number(bk.unlimited)>0||!_sPerDay;
     var _sMilesDisp=_sIsUnlim?'Unlimited':_sPerDay.toLocaleString()+' mi/day';
-    var _sTripMiles=_sIsUnlim?'Unlimited':(_sPerDay*(_sbd.days||1)).toLocaleString()+' mi';
+    var _sTripMiles=_sIsUnlim?'Unlimited':_sTripTot.toLocaleString()+' mi';
     var _sOverageDisp=_sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi over limit':'N/A');
     var _sBrokerLine=bk.broker?'<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(bk.broker)+'</span></div>':'';
     var _sMilagePol=_sIsUnlim?'Mileage: This rental includes unlimited mileage at no additional per-mile charge.':'Mileage: This rental includes '+_sPerDay.toLocaleString()+' miles per day ('+_sTripMiles+' for this rental). Miles driven beyond the included amount will be charged at $'+_sOvRate+' per mile.';
