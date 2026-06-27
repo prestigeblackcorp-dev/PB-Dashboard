@@ -3803,6 +3803,23 @@ var _offlinePending = false; // queues a cloudSave for when we come back online
 // Merge two arrays by ID \u2014 newer _t wins for conflicts, items from both sides kept
 // Items marked _deleted:true are kept (tombstones) so deletions propagate across devices
 function _isSigStr(s){ return !!(s && typeof s==='string' && s.indexOf('data:image/')===0); }
+// A customer signature only applies to the vehicle + Slingshot color it was signed for. If the owner changes
+// either, the signed contract no longer matches -> void that signature so the client can re-sign the correct
+// contract. The old sig is ARCHIVED (never lost), the clear-tombstone is set (so a stale-device merge can't
+// resurrect it / keep the portal stuck on "Already Signed"), _t is bumped, and it is logged to the booking's
+// communication log. No-op (returns false) when the sig still matches the current config, or no sig exists.
+function _voidStaleCustomerSig(b, reason){
+  if(!b || !_isSigStr(b.customerSig)) return false;
+  var sigVeh=b.customerSigVehicle||b.vehicle||'', sigColor=b.customerSigColor||'';
+  var curVeh=b.vehicle||'';
+  var curColor=(b.vehicle==='Polaris Slingshot')?(b.contractSentColor||sigColor):sigColor;
+  if(curVeh===sigVeh && curColor===sigColor) return false;
+  (b._sigHistory=b._sigHistory||[]).push({sig:b.customerSig,date:b.customerSigDate||'',at:Number(b.customerSigAt)||0,vehicle:sigVeh,color:sigColor,voidedAt:Date.now(),reason:reason||'vehicle/color changed'});
+  delete b.customerSig; delete b.customerSigDate; delete b.customerSigAt; delete b.customerSigVehicle; delete b.customerSigColor;
+  b.customerSigClearedAt=Date.now(); b._t=Date.now();
+  try{ logNotif('contract','Signature voided - '+(reason||'vehicle/color changed')+'; client must re-sign', b.name||'', b.id); }catch(e){}
+  return true;
+}
 // Green/white dot before "Polaris Slingshot" once the waiver/contract is SIGNED (customerSig) AND a color
 // is chosen (contractSentColor Green/White) -> shows at a glance which Slingshot is out, on trip cards +
 // today's banners. Empty string until both are true, so nothing changes for any other vehicle/state.
@@ -4064,7 +4081,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v167';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v168';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -11354,6 +11371,9 @@ function saveBooking(){
       // assigned driver, etc. Form-managed fields are already on `entry`, so this only
       // fills in what's missing; it never overwrites an edited value.
       Object.keys(ex).forEach(function(k){ if(!(k in entry)) entry[k]=ex[k]; });
+      // If the vehicle (or Slingshot color) changed, void a signature that was for the OLD config so the
+      // client can re-sign the correct contract (archived + tombstoned + logged). No-op if it still matches.
+      _voidStaleCustomerSig(entry, 'vehicle changed to '+(entry.vehicle||''));
       bookings[idx]=entry;
       // Status changed to confirmed via form \u2192 send confirmation email + verification
       var _toConfirmed = ex.status !== 'confirmed' && entry.status === 'confirmed';
@@ -18326,6 +18346,7 @@ function switchSlingshotColor(color){
     if(_cidx!==-1 && bookings[_cidx].vehicle==='Polaris Slingshot'){
       var _hadSentColor = !!bookings[_cidx].contractSentColor;
       bookings[_cidx].contractSentColor=color;
+      _voidStaleCustomerSig(bookings[_cidx], 'Slingshot color changed to '+color);
       bookings[_cidx]._t=Date.now();
       save();
       if(_hadSentColor) _lockColorPicker(true);
@@ -25360,6 +25381,7 @@ function switchSlingshotColor(color){
     if(_cidx!==-1 && bookings[_cidx].vehicle==='Polaris Slingshot'){
       var _hadSentColor = !!bookings[_cidx].contractSentColor;
       bookings[_cidx].contractSentColor=color;
+      _voidStaleCustomerSig(bookings[_cidx], 'Slingshot color changed to '+color);
       bookings[_cidx]._t=Date.now();
       save();
       if(_hadSentColor) _lockColorPicker(true);
