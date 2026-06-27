@@ -163,6 +163,7 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .daily      { background: rgba(201,169,98,.12); color: var(--gold); }
 .hourly     { background: rgba(96,165,250,.12); color: var(--blue); }
 .chauffeur  { background: rgba(74,222,128,.12); color: var(--green); }
+.event      { background: rgba(201,169,98,.2); color: var(--gold); box-shadow: inset 0 0 0 1px rgba(201,169,98,.45); }
 .completed   { background: rgba(74,222,128,.12); color: var(--green); }
 .confirmed   { background: rgba(96,165,250,.12);  color: var(--blue); }
 .in-progress { background: rgba(192,132,252,.12);  color: var(--purple); }
@@ -237,6 +238,7 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .cal-block.daily     { background: rgba(201,169,98,.22); border-left: 3px solid var(--gold); }
 .cal-block.hourly    { background: rgba(100,180,255,.18); border-left: 3px solid var(--blue); }
 .cal-block.chauffeur { background: rgba(124,252,152,.15); border-left: 3px solid var(--green); }
+.cal-block.event { background: rgba(201,169,98,.16); border-left: 3px solid var(--gold); }
 .cal-block-name { font-size: 11px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cal-block-info { font-size: 10px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cal-block-chips { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
@@ -4062,7 +4064,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v164';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v165';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -10116,7 +10118,7 @@ function tripCard(b, showCountdown){
       '<button class="btn btn-sm" style="border-color:#3b82f6;color:#3b82f6;min-width:60px" onclick="openVerify(\''+b.id+'\')">\uD83D\uDCCB Verify</button>'+
       '<button class="btn btn-sm" style="border-color:var(--gold-dim);color:var(--gold)" onclick="generateInvoice(\''+b.id+'\')">\uD83D\uDCC4 Invoice</button>'+
       assignBtn+
-      (b.type!=='chauffeur'?'<button class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold)" onclick="openContract(\''+b.id+'\')">\uD83D\uDCDD Contract</button>':'')+
+      (b.type!=='chauffeur'&&b.type!=='event'?'<button class="btn btn-sm" style="border-color:rgba(201,169,98,.4);color:var(--gold)" onclick="openContract(\''+b.id+'\')">\uD83D\uDCDD Contract</button>':'')+
       completeBtn+
       statusBtn+
       dupBtn+
@@ -10525,7 +10527,7 @@ function openBookingDetail(id){
         (VERIFY_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">\u21BA Resend Verify Link</button>':'')+
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">\uD83D\uDCE8 Send Reminder</button>'+
         (WORKER_URL&&(b.status==='confirmed'||b.status==='active')?'<button class="btn btn-sm" onclick="sendExtensionLink(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">\uD83D\uDD17 Send Extension Link</button>':'')+
-        (b.type!=='chauffeur'?'<button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_updateExtensionTabs();var _el=(bookings.find(function(x){return x.id===\''+b.id+'\'})||{}).extensions;if(_el&&_el.length){_contractShowTab(_el.length-1);}else{addExtensionContract();}},200)" style="border-color:rgba(167,139,250,.5);color:#a78bfa;font-weight:800">\uD83D\uDCC5 Extension Contract</button>':'')+
+        (b.type!=='chauffeur'&&b.type!=='event'?'<button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_updateExtensionTabs();var _el=(bookings.find(function(x){return x.id===\''+b.id+'\'})||{}).extensions;if(_el&&_el.length){_contractShowTab(_el.length-1);}else{addExtensionContract();}},200)" style="border-color:rgba(167,139,250,.5);color:#a78bfa;font-weight:800">\uD83D\uDCC5 Extension Contract</button>':'')+
         (!b.dateLock?'<button class="btn btn-sm" onclick="markDateLockPaid(\''+b.id+'\')" style="border-color:rgba(34,197,94,.5);color:var(--green);font-weight:700">\u2705 Mark $100 Date Lock Paid</button>':'')+
       '</div>'
     : '')+
@@ -14755,9 +14757,11 @@ function _sendReviewTo(b, toEmail, toName, role){
 // Auto-trigger verification \u2014 skips if already verified, no email, or Worker not configured
 function autoSendVerification(b){
   if(!b||!b.email||!VERIFY_URL||!MESSAGING_URL) return;
-  // Chauffeur bookings: the customer is DRIVEN, not driving -> no ID verification needed. Never auto-send
-  // the verify link (the confirmation/date-lock emails still go out). The owner can still send one manually.
-  if(b.type==='chauffeur') return;
+  // Chauffeur + non-driving Luxury Event bookings: the customer is DRIVEN or the car is an on-set prop
+  // (photoshoot/music video) -> no ID verification needed. Never auto-send the verify link (the
+  // confirmation emails still go out). The owner can still send one manually. (Self-drive events are
+  // type hourly/daily, so they verify normally.)
+  if(b.type==='chauffeur'||b.type==='event') return;
   if(b.verify&&b.verify.idVerified) return; // already verified
   // Dedup: skip if a link was already emailed within 23h. Check BOTH timestamps -- verifyLinkSentAt (a
   // dashboard send) AND firstSentAt (the website worker's confirmation email, which it stamps at signup).
