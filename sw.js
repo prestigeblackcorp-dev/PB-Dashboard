@@ -1,4 +1,4 @@
-const CACHE = 'pb-v170';
+const CACHE = 'pb-v171';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
