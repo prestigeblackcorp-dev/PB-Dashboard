@@ -2374,6 +2374,50 @@ function showSignContract(b){
   </div>`;
 }
 
+function showAddUnlimited(b){
+  // Self-serve upsell: only BEFORE the agreement is signed, only if the vehicle offers
+  // unlimited (unlimitedRate>0), and only if not already on. Auto-adds the fee to the balance.
+  var rate = Number(b.unlimitedRate)||0;
+  var signed = b.customerSig && String(b.customerSig).startsWith('data:image/');
+  if(rate<=0 || signed || Number(b.unlimited)>0 || ['cancelled','completed'].includes((b.status||'').toLowerCase())) return '';
+  var days = Math.max(1, Number(b.days)||1);
+  var fee = Math.round(rate*days*100)/100;
+  return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+    <div style="background:rgba(124,196,255,.07);border:1px solid rgba(124,196,255,.25);border-radius:12px;padding:12px 14px;">
+      <div style="font-size:13px;font-weight:800;color:#7cc4ff;margin-bottom:3px;">\u221e Add Unlimited Miles</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Drive as far as you want \u2014 no per-mile overage. Available until you sign your agreement. <strong style="color:#7cc4ff">+$${fee.toFixed(2)}</strong> is added to your balance.</div>
+      <button onclick="addUnlimited('${b.id}')" id="unlBtn_${b.id}"
+        style="width:100%;padding:10px;background:rgba(124,196,255,.12);color:#7cc4ff;border:1px solid rgba(124,196,255,.4);border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;">
+        Add Unlimited Miles \u2014 +$${fee.toFixed(2)} \u2192
+      </button>
+    </div>
+  </div>`;
+}
+
+async function addUnlimited(bookingId){
+  if(!confirm('Add Unlimited Miles? The fee is added to your balance and this booking switches to unlimited mileage.')) return;
+  var btn = document.getElementById('unlBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Adding\u2026'; }
+  try{
+    var r = await fetch(`${WORKER}/portal/add-unlimited`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId })
+    });
+    var d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.ok){
+      toast(d.error||'Could not add unlimited miles. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
+      return;
+    }
+    toast('Unlimited miles added \u2014 $'+(Number(d.fee)||0).toFixed(2)+' added to your balance.','success');
+    if(typeof loadPortalData==='function') loadPortalData();
+  }catch(e){
+    toast('Network error. Call (214) 207-2481.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
+  }
+}
+
 function showPayBalance(b){
   const bal = Number(b.remainingBalance) || 0;
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed'].includes((b.status||'').toLowerCase())) return '';
@@ -2526,6 +2570,1868 @@ function renderBookings(){
       <div class="booking-meta">${priceStr?`<span>${priceStr}</span> &nbsp;\u00B7&nbsp; `:''}${bookingRef(b.id)}</div>
       ${progressBar(b.status)}
       ${showSignContract(b)}
+      ${showAddUnlimited(b)}
+      ${showPayBalance(b)}
+      ${showPendingCharges(b)}
+      ${showCondition(b)}
+      ${paymentHistory}
+      ${showDrivers(b)}
+      ${rebookBtn}
+    </div>`;
+  }).join('');
+}
+
+function _buildPaymentHistory(b){
+  const rows = [];
+  if(b.dateLock && Number(b.dateLock) > 0){
+    const d = b.dateLockPaidAt ? fmtDate(b.dateLockPaidAt) : '';
+    rows.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);"><span style="color:var(--text-muted)">Date Lock${d?' \u00B7 '+d:''}</span><span style="color:var(--green);font-weight:700">$${Number(b.dateLock).toFixed(2)} \u2705</span></div>`);
+  }
+  if(b.stripePaid || b.balancePaidAt){
+    const amt = b.balancePaidAmount ? Number(b.balancePaidAmount).toFixed(2) : (b.revenue ? Number(b.revenue).toFixed(2) : '');
+    const d = b.balancePaidAt ? fmtDate(b.balancePaidAt) : '';
+    rows.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);"><span style="color:var(--text-muted)">Full Payment${d?' \u00B7 '+d:''}</span><span style="color:var(--green);font-weight:700">${amt?'$'+amt:''} \u2705</span></div>`);
+  }
+  if(b.zelleRequested){
+    const d = b.zelleRequestedAt ? fmtDate(b.zelleRequestedAt) : '';
+    rows.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;"><span style="color:var(--text-muted)">Zelle Requested${d?' \u00B7 '+d:''}</span><span style="color:#a78bfa;font-weight:700">Pending</span></div>`);
+  }
+  if(!rows.length) return '';
+  return `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;"><div class="section-title" style="margin-top:0">Payment History</div>${rows.join('')}</div>`;
+}
+
+// --- Saved -----------------------------------------------------------------
+// --- Fleet -----------------------------------------------------------------
+var VEHICLE_RATES = {
+  "Corvette":           { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_4934.jpg?v=1780329454&width=600',       desc:'2023 Chevrolet Corvette C8 \u00B7 White' },
+  "Corvette Z51":       { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/67E01466-6370-4766-9664-B3177F7A0BF3.png?v=1774231506&width=600', desc:'2023 Chevrolet Corvette C8 Z51 \u00B7 Black' },
+  "BMW M3":             { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_BMW_M3_at_twilight.png?v=1772687164&width=600',            desc:'2026 BMW M3 Competition xDrive \u00B7 Black' },
+  "BMW i4":             { rate:150,  deposit:300,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_16_2026_10_29_04_PM.png?v=1773719350&width=600', desc:'2022 BMW i4 \u00B7 White' },
+  "Macan":              { rate:325,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Porsche_Macan_at_twilight.png?v=1772687164&width=600',      desc:'2025 Porsche Macan \u00B7 Black' },
+  "Porsche Boxster S":  { rate:300,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_7810.jpg?v=1778039085&width=600',        desc:'2013 Porsche Boxster S \u00B7 White' },
+  "C300":               { rate:200,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Mercedes-Benz_AMG_C300_at_twilight.png?v=1772687163&width=600',  desc:'2022 Mercedes-Benz C300 AMG \u00B7 Gray' },
+  "Accord":             { rate:85,   deposit:200,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_4_2026_11_04_00_PM.png?v=1772687151&width=600', desc:'2016 Honda Accord Coupe \u00B7 Black' },
+  "Lambo Huracan":      { rate:1350, deposit:1000, type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/6E5F23BF-88AE-446E-BF29-516AECBB0BAD.png?v=1774231128&width=600', desc:'2015 Lamborghini Hurac\u00E1n \u00B7 Gray' },
+  "Lambo Urus":         { rate:1350, deposit:1000, type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_May_18_2026_02_28_46_PM.png?v=1779132587&width=600', desc:'2020 Lamborghini Urus \u00B7 Blue' },
+  "Escalade Rental":    { rate:500,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Apr_30_2026_09_26_46_AM.png?v=1777559241&width=600', desc:'2022 Cadillac Escalade Sport Platinum' },
+  "G Wagon":            { rate:650,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/A7402504.jpg?v=1777522784&width=600',        desc:'2020 Mercedes-Benz G-Wagon \u00B7 Black' },
+  "Polaris Slingshot":  { rate:300,  deposit:250,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_8536.heic?v=1780329704&width=600',       desc:'2025 Polaris Slingshot SL' },
+  "Escalade Chauffeur": { rate:200,  deposit:0,    type:'chauffeur', img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_5982.png?v=1779149140&width=600', desc:'Cadillac Escalade ESV \u00B7 Black \u2014 Per hour' },
+};
+
+/* availability map keyed by vehicle name: true=available, false=booked, null=unknown */
+var _fleetAvail = {};
+
+function _fmtFreeTime(freeDate, freeTime, requestedPickup){
+  if(!freeDate || !freeTime) return '';
+  const [h,m] = freeTime.split(':').map(Number);
+  const ap = h>=12?'PM':'AM', h12 = h%12||12;
+  const t = `${h12}:${String(m).padStart(2,'0')} ${ap}`;
+  if(freeDate === requestedPickup) return `Available from ${t}`;
+  const d = new Date(freeDate+'T12:00:00Z');
+  const mo = d.toLocaleDateString('en-US',{month:'short',timeZone:'UTC'});
+  return `Available from ${mo} ${d.getUTCDate()} at ${t}`;
+}
+
+async function _onFleetDateChange(){
+  const pickup     = document.getElementById('fleet-pickup')?.value;
+  const dropoff    = document.getElementById('fleet-dropoff')?.value;
+  const pickupTime = document.getElementById('fleet-pickup-time')?.value || '10:00';
+  const dropoffTime= document.getElementById('fleet-dropoff-time')?.value || '10:00';
+  if(!pickup || !dropoff || pickup > dropoff) return;
+  _fleetAvail = {};
+  renderFleet();
+  const names = Object.keys(VEHICLE_RATES);
+  await Promise.all(names.map(async name => {
+    try{
+      const r = await fetch(`${WORKER}/available?vehicle=${encodeURIComponent(name)}&pickupDate=${pickup}&dropoffDate=${dropoff}&pickupTime=${pickupTime}&dropoffTime=${dropoffTime}`);
+      const d = await r.json();
+      // store full response so we can show freeDate/freeTime on unavailable cards
+      _fleetAvail[name] = d;
+    } catch(e){ _fleetAvail[name] = {}; }   // {} not null -> the card shows a neutral "Book" instead of being stuck on "Checking..." forever after a failed availability fetch
+  }));
+  renderFleet();
+}
+
+// Pull the owner-managed fleet catalog (/fleet-catalog) and MERGE it over the built-in VEHICLE_RATES so
+// any vehicle the owner adds in the dashboard appears here automatically. Curated entries keep their
+// description/photo (only refreshed if the catalog actually carries new values); brand-new vehicles are
+// added. Safe + reversible: flag off, fetch failure, or an empty catalog -> the built-in list is untouched.
+var _fleetCatLoaded = false;
+function _loadFleetCatalog(force){
+  if((window.PB_FLAGS||{}).fleetCatalogSync===false) return;
+  if(_fleetCatLoaded && !force) return;
+  _fleetCatLoaded = true;
+  fetch(WORKER+'/fleet-catalog',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    var list = (d&&d.vehicles)||[];
+    if(!list.length) return;
+    list.forEach(function(v){
+      var name=v.name; if(!name) return;
+      var ex=VEHICLE_RATES[name];
+      if(!ex){
+        VEHICLE_RATES[name]={ type:(v.type==='chauffeur'?'chauffeur':'rental'),
+          rate:Number(v.rate)||0, deposit:Number(v.deposit)||0,
+          desc:[v.year,v.make,v.model].filter(Boolean).join(' ')||name,
+          img:(typeof v.img==='string'?v.img:'') };
+      } else {
+        if(Number(v.rate)) ex.rate=Number(v.rate);
+        if(Number(v.deposit)) ex.deposit=Number(v.deposit);
+        if(typeof v.img==='string' && v.img) ex.img=v.img;
+      }
+      if(Number(v.miles)||Number(v.overage)){
+        var m=VEHICLE_MILEAGE[name]||{};
+        VEHICLE_MILEAGE[name]={ miles:Number(v.miles)||m.miles||0, overage:Number(v.overage)||m.overage||0 };
+      }
+    });
+    var pk=document.getElementById('fleet-pickup'), dp=document.getElementById('fleet-dropoff');
+    if(pk&&dp&&pk.value&&dp.value&&pk.value<dp.value){ try{ _onFleetDateChange(); }catch(e){ try{renderFleet();}catch(_){} } }
+    else { try{ renderFleet(); }catch(e){} }
+  }).catch(function(){ _fleetCatLoaded=false; });   // let a later call retry after a failed fetch
+}
+function renderFleet(){
+  const el = document.getElementById('fleet-list');
+  if(!el) return;
+  _loadFleetCatalog();   // cached: fetches once, merges, then re-renders
+  const pickup = document.getElementById('fleet-pickup')?.value;
+  const dropoff = document.getElementById('fleet-dropoff')?.value;
+  const datesEntered = !!(pickup && dropoff && pickup < dropoff);
+  const rental = Object.entries(VEHICLE_RATES).filter(([,v])=>v.type==='rental');
+  const chauffeur = Object.entries(VEHICLE_RATES).filter(([,v])=>v.type==='chauffeur');
+  const saved = (state.savedVehicles||[]).map(v=>(v.name||v));
+  const card = ([name, v]) => {
+    const isSaved = saved.includes(name);
+    const miles = VEHICLE_MILEAGE[name];
+    const milesLine = miles ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${miles.miles} mi/day \u00B7 $${miles.overage}/mi overage</div>` : '';
+    const rate = v.type==='chauffeur' ? `$${v.rate}/hr` : `$${v.rate}/day`;
+    const imgHtml = v.img
+      ? `<div style="width:100%;aspect-ratio:16/10;border-radius:10px;overflow:hidden;margin-bottom:10px;background:#111;"><img src="${v.img}" alt="${esc(name)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block;"></div>`
+      : `<div style="width:100%;aspect-ratio:16/10;border-radius:10px;margin-bottom:10px;background:linear-gradient(135deg,rgba(201,169,98,.18),rgba(0,0,0,.6));"></div>`;
+    const avail = _fleetAvail[name]; // null=checking, object={available,freeDate?,freeTime?}
+    const pickup     = document.getElementById('fleet-pickup')?.value || '';
+    const dropoff    = document.getElementById('fleet-dropoff')?.value || '';
+    const isChecking = datesEntered && avail === null && Object.keys(_fleetAvail).length > 0;
+    const isBooked   = datesEntered && avail !== null && avail !== undefined && avail.available === false;
+    const isAvail    = datesEntered && avail !== null && avail !== undefined && avail.available === true;
+    const freeLabel  = isBooked ? _fmtFreeTime(avail.freeDate, avail.freeTime, pickup) : '';
+    // Book button \u2014 greyed out and disabled when booked for selected dates
+    const bookBtn = isBooked
+      ? `<button disabled style="flex:1;padding:8px;background:rgba(255,255,255,.07);color:rgba(255,255,255,.3);border:1px solid rgba(255,255,255,.1);border-radius:8px;font-weight:800;font-size:12px;cursor:not-allowed;">Booked</button>`
+      : isChecking
+      ? `<button disabled style="flex:1;padding:8px;background:rgba(201,169,98,.15);color:rgba(201,169,98,.5);border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:wait;">Checking\u2026</button>`
+      : `<button onclick="_fleetBook('${name}')" style="flex:1;padding:8px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:8px;font-weight:800;font-size:12px;cursor:pointer;">${isAvail ? '\u2713 Book' : 'Book'}</button>`;
+    const waitlistBtn = isBooked
+      ? `<button onclick="_showWaitlistForm('${name}')" style="width:100%;margin-top:8px;padding:8px;background:transparent;border:1px dashed rgba(201,169,98,.35);border-radius:8px;font-size:11px;color:var(--gold-dim);cursor:pointer;font-weight:700;letter-spacing:.03em;">\uD83D\uDD14 Join Waitlist for These Dates</button>`
+      : '';
+    return `<div style="background:var(--card);border:1px solid ${isBooked ? 'rgba(239,68,68,.2)' : isAvail ? 'rgba(34,197,94,.2)' : 'var(--border)'};border-radius:14px;padding:14px;position:relative;">
+      ${imgHtml}
+      ${isBooked ? `<div style="position:absolute;top:10px;right:10px;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:9px;font-weight:800;color:#f87171;padding:3px 7px;letter-spacing:.06em;text-transform:uppercase;">Booked</div>` : isAvail ? `<div style="position:absolute;top:10px;right:10px;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);border-radius:6px;font-size:9px;font-weight:800;color:#4ade80;padding:3px 7px;letter-spacing:.06em;text-transform:uppercase;">Available</div>` : ''}
+      ${freeLabel ? `<div style="font-size:10px;font-weight:700;color:#4ade80;margin-top:6px;display:flex;align-items:center;gap:4px;"><span style="font-size:10px;">\uD83D\uDD50</span>${freeLabel}</div>` : ''}
+      <div style="font-weight:800;font-size:14px;color:var(--text)">${name}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px;line-height:1.4">${v.desc}</div>
+      ${milesLine}
+      <div style="font-size:16px;font-weight:900;color:var(--gold);margin-top:8px">${rate}</div>
+      ${v.deposit?`<div style="font-size:11px;color:var(--text-muted)">$${v.deposit} deposit</div>`:''}
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        ${bookBtn}
+        <button onclick="_fleetSave('${name}','${v.emoji}')" style="padding:8px 10px;background:transparent;border:1px solid var(--border);border-radius:8px;font-size:14px;cursor:pointer;color:${isSaved?'#ef4444':'var(--text-muted)'}" title="${isSaved?'Remove from saved':'Save vehicle'}">${isSaved?'\u2764\uFE0F':'\uD83E\uDD0D'}</button>
+      </div>
+      ${waitlistBtn}
+      <div id="wl-form-${name.replace(/\s+/g,'_')}" style="display:none;margin-top:8px;padding:10px;background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.2);border-radius:10px;">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Waitlist \u2014 ${esc(name)}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
+          <div><label class="field-label">Pickup Date</label><input type="date" id="wl-pickup-${name.replace(/\s+/g,'_')}" value="${pickup||''}" style="font-size:13px;padding:8px 10px;"></div>
+          <div><label class="field-label">Return Date</label><input type="date" id="wl-dropoff-${name.replace(/\s+/g,'_')}" value="${dropoff||''}" style="font-size:13px;padding:8px 10px;"></div>
+        </div>
+        <div style="margin-bottom:8px;"><label class="field-label">Notes (optional)</label><input type="text" id="wl-notes-${name.replace(/\s+/g,'_')}" placeholder="Any details..." style="font-size:13px;padding:8px 10px;"></div>
+        <div style="display:flex;gap:6px;">
+          <button onclick="_submitWaitlist('${name}')" style="flex:1;padding:8px;background:rgba(201,169,98,.15);border:1px solid var(--gold);color:var(--gold);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">Submit</button>
+          <button onclick="_hideWaitlistForm('${name}')" style="padding:8px 12px;background:transparent;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text-muted);cursor:pointer;">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  };
+  el.innerHTML = `
+    <div style="margin-bottom:16px">
+      <div style="font-weight:800;font-size:15px;color:var(--gold);margin-bottom:10px">\uD83C\uDFCE Rental Fleet</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${rental.map(card).join('')}</div>
+    </div>
+    <div>
+      <div style="font-weight:800;font-size:15px;color:var(--gold);margin-bottom:10px">\uD83D\uDE90 Chauffeur Service</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${chauffeur.map(card).join('')}</div>
+    </div>`;
+}
+
+var _nbVehicle = '';
+var _nbBookingId = '';
+
+// Reverse SSO: open the ride app with this portal client already signed in.
+// Mint a rider session server-side, drop it into the shared same-origin
+// localStorage key the ride app bootstraps from, then redirect a pre-opened
+// tab (opened synchronously so the popup blocker stays out of the way).
+function _instantChauffeur(){
+  const dest = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'obsidian.html';
+  let win=null; try{ win=window.open('','_blank'); }catch(e){}
+  function go(){
+    if(win && !win.closed){ try{ win.location.replace(dest); return; }catch(e){} }
+    try{ window.open(dest,'_blank','noopener'); }catch(e){ location.href=dest; }
+  }
+  if(state && state.token){
+    fetch(WORKER+'/chauffeur/session-from-portal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({portalToken:state.token})})
+      .then(function(r){ return r.json().catch(function(){return null;}); })
+      .then(function(d){
+        if(d && d.token){
+          try{ localStorage.setItem('pb_ride_session', JSON.stringify({email:d.email||(state&&state.email)||'', token:d.token, name:d.name||'', phone:d.phone||'', photo:d.photo||''})); }catch(e){}
+        }
+      })
+      .catch(function(){})
+      .finally(go);
+  } else { go(); }
+}
+
+// Ride-app \u2192 portal booking handoff: the ride app's fleet "Book" button stores
+// the clicked car + entered dates/times in pb_portal_prefill (same origin).
+// Once the member is in the portal, open the normal new-booking flow for that
+// exact car with everything prefilled \u2014 then it proceeds through the standard
+// 3-button payment step (date lock / pay in full / Zelle).
+function _consumeRidePrefill(){
+  let pf=null;
+  try{ pf=JSON.parse(localStorage.getItem('pb_portal_prefill')||'null'); }catch(e){}
+  // Private-mode fallback: localStorage can be unavailable \u2014 the ride app also
+  // puts the payload in the URL hash (client-side only, never sent to a server).
+  if(!pf && location.hash.indexOf('#pbf=')===0){
+    try{ pf=JSON.parse(decodeURIComponent(location.hash.slice(5))); }catch(e){}
+  }
+  if(location.hash.indexOf('#pbf=')===0){ try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){} }
+  if(!pf || !pf.vehicle) return;
+  try{ localStorage.removeItem('pb_portal_prefill'); }catch(e){}   // one-shot
+  // Generous window: timestamps come from the ride-app device's clock, which can
+  // drift from this one's \u2014 60 min still expires genuinely abandoned handoffs.
+  if(Date.now()-(pf.at||0) > 60*60000) return;
+  if(!VEHICLE_RATES[pf.vehicle]) return;                           // unknown car
+  _navTo('fleet');
+  // Mirror the dates into the fleet availability bar so it matches the ride app
+  const fmap={'fleet-pickup':pf.pickupDate,'fleet-pickup-time':pf.pickupTime,'fleet-dropoff':pf.dropoffDate,'fleet-dropoff-time':pf.dropoffTime};
+  Object.keys(fmap).forEach(id=>{ const el=document.getElementById(id); if(el&&fmap[id]) el.value=fmap[id]; });
+  if(pf.pickupDate&&pf.dropoffDate) _onFleetDateChange();
+  // Open the normal booking modal for the clicked car, dates/times carried over
+  _fleetBook(pf.vehicle);
+  const dmap={'nb-pickup-date':pf.pickupDate,'nb-pickup-time':pf.pickupTime,'nb-dropoff-date':pf.dropoffDate,'nb-dropoff-time':pf.dropoffTime};
+  Object.keys(dmap).forEach(id=>{ const el=document.getElementById(id); if(el&&dmap[id]) el.value=dmap[id]; });
+  toast('\uD83D\uDE98 '+pf.vehicle+' \u2014 your dates carried over. Finish your booking below.','success');
+}
+
+function _fleetBook(vehicleName){
+  _nbVehicle = vehicleName;
+  _nbBookingId = '';
+  const rates = VEHICLE_RATES[vehicleName]||{};
+  document.getElementById('nb-vehicle-display').textContent = vehicleName + (rates.desc ? ' \u2014 ' + rates.desc : '');
+  // Pre-fill name and address from profile
+  const nameEl = document.getElementById('nb-name');
+  if(nameEl) nameEl.value = (state.profile && state.profile.name) ? state.profile.name : '';
+  const addrEl = document.getElementById('nb-address');
+  if(addrEl && !addrEl.value && state.profile && state.profile.address) addrEl.value = state.profile.address;
+  // Set type default
+  const typeEl = document.getElementById('nb-type');
+  if(typeEl) typeEl.value = rates.type==='chauffeur' ? 'chauffeur' : 'daily';
+  // Set min date to today (Central Time \u2014 the business timezone)
+  const today = new Date().toLocaleDateString('en-CA',{timeZone:'America/Chicago'});
+  document.getElementById('nb-pickup-date').min = today;
+  document.getElementById('nb-dropoff-date').min = today;
+  // Fresh dates on every open \u2014 otherwise a previous booking's dates linger on
+  // Rebook. Default from the fleet availability bar when set (the dates you just
+  // checked availability for are the dates you book); cleared otherwise.
+  const _fbPk=document.getElementById('fleet-pickup'), _fbDp=document.getElementById('fleet-dropoff');
+  const _fbPkt=document.getElementById('fleet-pickup-time'), _fbDpt=document.getElementById('fleet-dropoff-time');
+  document.getElementById('nb-pickup-date').value=(_fbPk&&_fbPk.value)||'';
+  document.getElementById('nb-dropoff-date').value=(_fbDp&&_fbDp.value)||'';
+  document.getElementById('nb-pickup-time').value=(_fbPkt&&_fbPkt.value)||'10:00';
+  document.getElementById('nb-dropoff-time').value=(_fbDpt&&_fbDpt.value)||'10:00';
+  // Reset steps
+  document.getElementById('nb-step1').style.display = 'block';
+  document.getElementById('nb-step2').style.display = 'none';
+  document.getElementById('nb-step3').style.display = 'none';
+  document.getElementById('nb-price-box').style.display = 'none';
+  document.getElementById('nb-error').style.display = 'none';
+  // Wire up date change to update price
+  ['nb-pickup-date','nb-dropoff-date','nb-type'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.oninput = nbUpdatePrice;
+  });
+  document.getElementById('new-booking-modal').style.display = 'block';
+}
+
+function closeNewBookingModal(){
+  document.getElementById('new-booking-modal').style.display = 'none';
+}
+
+function nbUpdatePrice(){
+  const vehicle = _nbVehicle;
+  const rates = VEHICLE_RATES[vehicle]||{};
+  const type = document.getElementById('nb-type').value;
+  const pickup = document.getElementById('nb-pickup-date').value;
+  const dropoff = document.getElementById('nb-dropoff-date').value;
+  if(!pickup){ document.getElementById('nb-price-box').style.display='none'; return; }
+  let days = 1;
+  if(dropoff && dropoff > pickup){
+    const ms = new Date(dropoff) - new Date(pickup);
+    days = Math.max(1, Math.round(ms / 86400000));
+  }
+  const ratePerDay = rates.rate || 0;
+  const base = ratePerDay * days;
+  const miles = VEHICLE_MILEAGE[vehicle];
+  const totalMiles = miles ? miles.miles * days : null;
+  const dlTax = Math.round(100 * 0.0825 * 100)/100;
+  const dlTotal = (100 + dlTax).toFixed(2);
+  const fee = Math.round(base * 0.05 * 100)/100;
+  const tax = Math.round((base + fee) * 0.0825 * 100)/100;
+  const fullTotal = (base + fee + tax).toFixed(2);
+  const f = n => '$'+Number(n).toFixed(2);
+  const unit = (type==='hourly'||type==='chauffeur') ? 'hr' : 'day';
+  const rows = `
+    <div style="display:flex;justify-content:space-between;margin-bottom:6px;color:var(--text-muted)">${vehicle} @ ${f(ratePerDay)}/${unit} \u00D7 ${days} ${unit}${days!==1?'s':''}<span style="color:var(--text)">${f(base)}</span></div>
+    ${miles?`<div style="display:flex;justify-content:space-between;margin-bottom:10px;font-size:11px;color:var(--text-muted)">Miles included<span>${miles.miles}/day \u00B7 ${totalMiles} mi total \u00B7 $${miles.overage}/mi overage</span></div>`:''}
+    <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Date Lock Option</div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:2px">Date Lock<span>$100.00</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:4px">TX Sales Tax (8.25%)<span>${f(dlTax)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:800;color:var(--gold);font-size:13px">Total Due Now<span>$${dlTotal}</span></div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:10px;">
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Pay in Full Option</div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:2px">Rental Total<span>${f(base)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:2px">Processing Fee (5%)<span>${f(fee)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:4px">TX Sales Tax (8.25%)<span>${f(tax)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:800;color:var(--gold);font-size:13px">Total Due Now<span>$${fullTotal}</span></div>
+    </div>`;
+  document.getElementById('nb-price-rows').innerHTML = rows;
+  document.getElementById('nb-price-box').style.display = 'block';
+  document.getElementById('nb-full-total').textContent = '\u2014 $'+fullTotal+' total';
+  return { base, days };
+}
+
+async function nbNext(){
+  const errEl = document.getElementById('nb-error');
+  errEl.style.display = 'none';
+  const name = document.getElementById('nb-name').value.trim();
+  const pickup = document.getElementById('nb-pickup-date').value;
+  if(!name){ errEl.textContent='Name is required.'; errEl.style.display='block'; return; }
+  if(!pickup){ errEl.textContent='Pickup date is required.'; errEl.style.display='block'; return; }
+  const dropoff = document.getElementById('nb-dropoff-date').value;
+  let days = 1;
+  if(dropoff && dropoff > pickup){
+    days = Math.max(1, Math.round((new Date(dropoff)-new Date(pickup))/86400000));
+  }
+  const btn = document.querySelector('#nb-step1 .btn');
+  if(btn){ btn.disabled=true; btn.textContent='Submitting\u2026'; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/submit-booking`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        token: state.token,
+        name, phone: document.getElementById('nb-phone').value.trim(),
+        vehicle: _nbVehicle, type: document.getElementById('nb-type').value,
+        pickupDate: pickup, pickupTime: document.getElementById('nb-pickup-time').value,
+        dropoffDate: dropoff, dropoffTime: document.getElementById('nb-dropoff-time').value,
+        days, address: document.getElementById('nb-address').value.trim(),
+        notes: document.getElementById('nb-notes').value.trim(),
+      })
+    });
+    const d = await r.json();
+    if(!r.ok){ errEl.textContent=d.error||'Could not submit booking'; errEl.style.display='block'; return; }
+    _nbBookingId = d.bookingId;
+    nbUpdatePrice();
+    document.getElementById('nb-step1').style.display = 'none';
+    document.getElementById('nb-step2').style.display = 'block';
+  }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; }
+  finally{ hideLoading(); if(btn){ btn.disabled=false; btn.textContent='Continue to Payment'; } }
+}
+
+function nbBack(){
+  document.getElementById('nb-step2').style.display='none';
+  document.getElementById('nb-step1').style.display='block';
+}
+
+async function nbZelle(){
+  const errEl = document.getElementById('nb-error');
+  errEl.style.display='none';
+  const btn = document.getElementById('nb-btn-zelle');
+  if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/zelle-notify`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token: state.token, bookingId: _nbBookingId })
+    });
+    const d = await r.json();
+    if(!r.ok){ errEl.textContent=d.error||'Could not send notification'; errEl.style.display='block'; return; }
+    // Show zelle confirmation screen
+    document.getElementById('nb-step2').style.display='none';
+    document.getElementById('nb-step3').style.display='block';
+    const info = d.zelleInfo || {};
+    const totalAmt = d.revenue ? '$'+Number(d.revenue).toFixed(2) : '';
+    // Build pre-filled SMS body for owner notification \u2014 every booking detail,
+    // read from the actual form fields (the old ids nb-vehicle/nb-pickup/nb-dropoff
+    // never existed, so the texted message used to arrive with blanks).
+    const bkData = _nbBookingId ? `Booking ID: ${_nbBookingId}` : '';
+    const _zNm = document.getElementById('nb-name')?.value || (state.profile&&state.profile.name) || '';
+    const _zPh = document.getElementById('nb-phone')?.value || '';
+    const _zPd = document.getElementById('nb-pickup-date')?.value || '';
+    const _zPt = document.getElementById('nb-pickup-time')?.value || '';
+    const _zDd = document.getElementById('nb-dropoff-date')?.value || '';
+    const _zDt = document.getElementById('nb-dropoff-time')?.value || '';
+    const _zTy = document.getElementById('nb-type')?.value || '';
+    const _zNo = document.getElementById('nb-notes')?.value || '';
+    // All times are Central Time (business timezone) \u2014 label them explicitly
+    const _zFD = s=>{ const p=String(s||'').split('-'); return p.length===3 ? Number(p[1])+'/'+Number(p[2])+'/'+p[0] : (s||''); };
+    const _zFT = t=>{ if(!t) return ''; const p=String(t).split(':'); let h=Number(p[0]); const ap=h>=12?'PM':'AM'; h=h%12||12; return h+':'+(p[1]||'00')+' '+ap+' CT'; };
+    const smsText = `Zelle Payment Request - Prestige Black`+
+      `\nCustomer: ${_zNm}`+
+      `\nEmail: ${state.email||''}`+
+      (_zPh?`\nPhone: ${_zPh}`:'')+
+      `\nVehicle: ${_nbVehicle||''}`+
+      (_zTy?`\nType: ${_zTy}`:'')+
+      `\nPickup: ${_zFD(_zPd)}${_zPt?' @ '+_zFT(_zPt):''}`+
+      `\nReturn: ${_zFD(_zDd)}${_zDt?' @ '+_zFT(_zDt):''}`+
+      `\nAmount: ${totalAmt}`+
+      (_zNo?`\nNotes: ${_zNo}`:'')+
+      (bkData?`\n${bkData}`:'');
+    const ownerRaw = info.ownerPhone || info.phone || '';
+    const ownerDigits = ownerRaw.replace(/\D/g,'');
+    const smsHref = ownerDigits ? `sms:${ownerDigits}?body=${encodeURIComponent(smsText)}` : '';
+    document.getElementById('nb-zelle-info').innerHTML =
+      `<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px">Zelle Payment Details</div>`+
+      (info.phone?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Send to (phone)</span><span style="font-weight:800;color:#a78bfa">${info.phone}</span></div>`:'') +
+      (info.name?`<div style="display:flex;justify-content:space-between;margin-bottom:8px;"><span style="color:rgba(255,255,255,.5)">Name</span><span style="font-weight:700">${info.name}</span></div>`:'') +
+      (totalAmt?`<div style="display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,.08);padding-top:8px;margin-top:4px;"><span style="color:rgba(255,255,255,.5)">Amount</span><span style="font-weight:900;color:#C9A962;font-size:16px">${totalAmt}</span></div>`:'') +
+      (d.bookingId?`<div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,.25)">Booking ref: ${d.bookingId}</div>`:'') +
+      (smsHref?`<a href="${smsHref}" style="display:block;margin-top:14px;padding:12px;background:rgba(37,211,102,.12);border:1px solid rgba(37,211,102,.35);border-radius:10px;color:#25d366;font-weight:800;font-size:14px;text-align:center;text-decoration:none;">\uD83D\uDCF2 Text Owner to Notify</a>`:'');
+  }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; }
+  finally{ hideLoading(); if(btn){ btn.disabled=false; btn.textContent='Pay via Zelle'; } }
+}
+
+async function nbCheckout(type){
+  const errEl = document.getElementById('nb-error');
+  errEl.style.display='none';
+  const btnId = type==='full' ? 'nb-btn-full' : 'nb-btn-datelock';
+  const btn = document.getElementById(btnId);
+  if(btn){ btn.disabled=true; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/checkout-new`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token: state.token, bookingId: _nbBookingId, paymentType: type })
+    });
+    const d = await r.json();
+    if(!r.ok || !d.url){ errEl.textContent=d.error||'Could not start checkout'; errEl.style.display='block'; return; }
+    window.location.href = d.url;
+  }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; }
+  finally{ hideLoading(); if(btn){ btn.disabled=false; } }
+}
+
+function _persistSaved(){
+  // Write dedicated localStorage key immediately so saves survive any server/auth hiccup
+  try{
+    const sk = state.email ? 'pb_saved_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
+    if(sk) localStorage.setItem(sk, JSON.stringify(state.savedVehicles));
+  }catch(e){}
+}
+
+async function _fleetSave(name, emoji){
+  const saved = state.savedVehicles||[];
+  const idx = saved.findIndex(v=>(v.name||v)===name);
+  if(idx>=0){ saved.splice(idx,1); }
+  else { saved.push({name, emoji}); }
+  state.savedVehicles = saved;
+  _persistSaved(); // write immediately before server call
+  renderFleet();
+  renderSaved();
+  try{
+    await fetch(`${WORKER}/portal/save-vehicles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,savedVehicles:state.savedVehicles})});
+  }catch(e){}
+}
+
+function renderSaved(){
+  const el = document.getElementById('saved-list');
+  if(!state.savedVehicles.length){ el.innerHTML=`<div class="empty-state"><div class="empty-icon">\u2764\uFE0F</div><div>No saved vehicles yet.</div></div>`; return; }
+  el.innerHTML = `<div class="vehicles-grid">${state.savedVehicles.map((v,i)=>`
+    <div class="vehicle-card">
+      <div class="vehicle-emoji">${v.emoji||'\uD83D\uDE97'}</div>
+      <div class="vehicle-card-name">${v.name||v}</div>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <button onclick="_fleetBook('${v.name||v}')" style="flex:1;padding:6px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:7px;font-weight:800;font-size:11px;cursor:pointer;">Book</button>
+        <button class="heart-btn" onclick="removeSaved(${i})">\u2764\uFE0F</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+
+async function removeSaved(idx){
+  state.savedVehicles.splice(idx,1);
+  _persistSaved(); // write immediately before server call
+  renderSaved();
+  renderFleet();
+  try{
+    await fetch(`${WORKER}/portal/save-vehicles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,savedVehicles:state.savedVehicles})});
+    toast('Vehicle removed','success');
+  }catch(e){ toast('Error saving','error'); }
+}
+
+// --- Insurance -------------------------------------------------------------
+function renderInsurance(){
+  const el = document.getElementById('insurance-display');
+  const ins = state.insurance;
+  if(!ins){ el.innerHTML=`<div class="ins-card"><div style="color:var(--text-muted);font-size:13px;">No insurance on file.</div></div>`; return; }
+  const expiry = ins.expiry ? new Date(ins.expiry) : null;
+  const isActive = expiry && expiry > new Date();
+  el.innerHTML = `<div class="ins-card">
+    <div class="card-header" style="margin-bottom:8px;">
+      <div style="font-weight:700;font-size:15px;">Insurance on File</div>
+      <span class="badge ${isActive?'badge-confirmed':'badge-cancelled'}">${isActive?'ACTIVE':'EXPIRED'}</span>
+    </div>
+    ${ins.provider?`<div class="ins-row"><span class="ins-key">Provider</span><span class="ins-val">${ins.provider}</span></div>`:''}
+    ${ins.policy?`<div class="ins-row"><span class="ins-key">Policy #</span><span class="ins-val">${ins.policy}</span></div>`:''}
+    ${ins.expiry?`<div class="ins-row"><span class="ins-key">Expiry</span><span class="ins-val">${fmtDate(ins.expiry)}</span></div>`:''}
+    ${ins.coverage?`<div class="ins-row"><span class="ins-key">Coverage</span><span class="ins-val">${ins.coverage}</span></div>`:''}
+    ${ins.agent?`<div class="ins-row"><span class="ins-key">Agent</span><span class="ins-val">${ins.agent}</span></div>`:''}
+  </div>`;
+  if(ins.provider) document.getElementById('ins-provider').value = ins.provider;
+  if(ins.policy)   document.getElementById('ins-policy').value   = ins.policy;
+  if(ins.expiry)   document.getElementById('ins-expiry').value   = ins.expiry;
+  if(ins.coverage) document.getElementById('ins-coverage').value = ins.coverage;
+  if(ins.agent)    document.getElementById('ins-agent').value    = ins.agent;
+}
+
+async function saveInsurance(){
+  const ins = {
+    provider: document.getElementById('ins-provider').value.trim(),
+    policy:   document.getElementById('ins-policy').value.trim(),
+    expiry:   document.getElementById('ins-expiry').value,
+    coverage: document.getElementById('ins-coverage').value,
+    agent:    document.getElementById('ins-agent').value.trim(),
+  };
+  if(!ins.provider||!ins.policy){ toast('Provider and policy number required','error'); return; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/save-insurance`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,insurance:ins})});
+    const d = await r.json();
+    if(!r.ok){ toast(d.error||'Error saving','error'); return; }
+    state.insurance = ins;
+    renderInsurance();
+    toast('Insurance saved!','success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+
+// --- Account ---------------------------------------------------------------
+function renderAccount(){
+  const el = document.getElementById('account-content');
+  const email = state.email;
+  const bookings = state.bookings;
+  const firstBooking = [...bookings].sort((a,b)=>new Date(a.createdAt||0)-new Date(b.createdAt||0))[0];
+  const memberSince = firstBooking ? fmtDate(firstBooking.createdAt) : 'N/A';
+  const name = ((state.profile&&state.profile.name) || firstBooking?.customerName || firstBooking?.name || email.split('@')[0]);
+  const phone = firstBooking?.phone || firstBooking?.customerPhone || '';
+  const initial = (name||'?')[0].toUpperCase();
+  el.innerHTML = `
+    <div class="card">
+      <div class="account-header">
+        <div class="account-avatar">${state.profile&&state.profile.photo?`<img src="${esc(state.profile.photo)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;">`:initial}</div>
+        <div class="account-info">
+          <div class="name">${name}</div>
+          <div class="email">${email}</div>
+          ${phone?`<div class="email" style="margin-top:2px;">${phone}</div>`:''}
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);">Member since <span style="color:var(--gold);">${memberSince}</span></div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-card"><div class="stat-num">${bookings.length}</div><div class="stat-label">Total Bookings</div></div>
+      <div class="stat-card"><div class="stat-num">${bookings.filter(b=>(b.status||'').toLowerCase()==='completed').length}</div><div class="stat-label">Completed</div></div>
+    </div>
+    <div class="card" style="margin-top:4px;">
+      <div class="section-title" style="margin-top:0;">Profile</div>
+      <div class="form-group"><label class="field-label">Display Name</label><input type="text" id="prof-name" placeholder="Your name" value="${esc(state.profile&&state.profile.name?state.profile.name:name)}"></div>
+      <div class="form-group"><label class="field-label">Preferred Vehicle</label>
+        <select id="prof-vehicle">
+          <option value="">No preference</option>
+          ${Object.keys(VEHICLE_RATES).map(k=>`<option value="${esc(k)}"${state.profile&&state.profile.preferredVehicle===k?' selected':''}>${esc(k)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label class="field-label">Default Pickup Address</label><input type="text" id="prof-address" placeholder="Delivery address or airport" value="${esc(state.profile&&state.profile.address?state.profile.address:'')}"></div>
+      <button class="btn" onclick="saveProfile()">Save Profile</button>
+    </div>
+    <button class="sign-out-btn" onclick="signOut()">Sign Out</button>`;
+}
+
+function signOut(){
+  const _ck = state.email ? 'pb_cache_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
+  const _sk = state.email ? 'pb_saved_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
+  _safeClear('pb_portal_token');
+  _safeClear('pb_portal_email');
+  try{ if(_ck) localStorage.removeItem(_ck); }catch(e){}
+  try{ if(_sk) localStorage.removeItem(_sk); }catch(e){}
+  state.token=''; state.email=''; state.bookings=[]; state.insurance=null; state.savedVehicles=[]; state.profile={}; state.notifications=[];
+  document.getElementById('app-screen').style.display='none';
+  document.getElementById('auth-screen').style.display='flex';
+  document.getElementById('step-otp').style.display='none';
+  document.getElementById('step-email').style.display='block';
+  document.getElementById('login-email').value='';
+  toast('Signed out');
+}
+
+// --- Photos ----------------------------------------------------------------
+function triggerPhotoUpload(bookingId, type){
+  state.pendingPhotoUpload = { bookingId, type };
+  document.getElementById('photo-upload-input').click();
+}
+
+// -- Trip photo module (pre/post) \u2014 add & remove only here, then lock -------
+var _tripModule=null;   // {bookingId,type} while the module is open
+function openTripPhotoModule(bookingId,type){
+  _tripModule={bookingId,type};
+  _renderTripModule();
+  const m=document.getElementById('tripPhotoModal');
+  m.style.display='flex';
+}
+function closeTripPhotoModule(){
+  _tripModule=null;
+  document.getElementById('tripPhotoModal').style.display='none';
+}
+function _renderTripModule(){
+  if(!_tripModule) return;
+  const bk=state.bookings.find(b=>b.id===_tripModule.bookingId); if(!bk) return;
+  const type=_tripModule.type;
+  const arr=((type==='pre'?bk.customerPreTripPhotos:bk.customerPostTripPhotos)||[]).filter(Boolean);
+  document.getElementById('tpm-title').textContent=(type==='pre'?'Pre-Trip':'Post-Trip')+' Photos \u2014 '+(bk.vehicle||'');
+  let g='';
+  arr.forEach((src,i)=>{
+    g+=`<div style="position:relative"><img class="photo-thumb" src="${src}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${src}')"><button onclick="deleteTripPhoto(${i})" title="Remove photo" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#ef4444;color:#fff;border:2px solid var(--surface);font-size:11px;font-weight:800;cursor:pointer;line-height:1">\u2715</button></div>`;
+  });
+  if(arr.length<12){
+    g+=`<button onclick="triggerPhotoUpload('${esc(bk.id)}','${type}')" title="Add photo" style="height:84px;border:1.5px dashed rgba(201,169,98,.4);border-radius:10px;background:transparent;color:var(--gold);font-size:22px;cursor:pointer">+</button>`;
+  }
+  document.getElementById('tpm-grid').innerHTML=g;
+  document.getElementById('tpm-count').textContent=arr.length+' / 12 photos';
+}
+async function deleteTripPhoto(index){
+  if(!_tripModule) return;
+  const {bookingId,type}=_tripModule;
+  showLoading();
+  try{
+    const r=await fetch(`${WORKER}/portal/delete-photo`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,bookingId,type,index})});
+    const d=await r.json();
+    if(!r.ok){ toast(d.error||'Could not remove photo','error'); return; }
+    const bk=state.bookings.find(b=>b.id===bookingId);
+    if(bk){ const f=type==='pre'?'customerPreTripPhotos':'customerPostTripPhotos'; const a=(bk[f]||[]).filter(Boolean); a.splice(index,1); bk[f]=a; }
+    _renderTripModule(); renderBookings();
+    toast('Photo removed','success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+async function finishTripPhotoModule(){
+  if(!_tripModule) return;
+  const {bookingId,type}=_tripModule;
+  if(!confirm('Save & lock these photos?\n\nOnce saved you can VIEW them anytime, but you can NO LONGER add or remove photos for this phase. Make sure everything is added first.')) return;
+  showLoading();
+  try{
+    const r=await fetch(`${WORKER}/portal/lock-photos`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,bookingId,type})});
+    const d=await r.json();
+    if(!r.ok){ toast(d.error||'Could not save','error'); return; }
+    const bk=state.bookings.find(b=>b.id===bookingId);
+    if(bk){ if(type==='pre') bk.customerPreTripLockedAt=Date.now(); else bk.customerPostTripLockedAt=Date.now(); }
+    closeTripPhotoModule(); renderBookings();
+    toast('\uD83D\uDD12 Photos saved & locked','success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+
+function handlePhotoUpload(e){
+  const file = e.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const raw = ev.target.result;
+    // Upload helper \u2014 unchanged logic, just parameterized by the final photo data.
+    const upload = async (photo) => {
+      const { bookingId, type } = state.pendingPhotoUpload || {};
+      if(!bookingId) return;
+      showLoading();
+      try{
+        const r = await fetch(`${WORKER}/portal/save-photo`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId,type,photo})});
+        const d = await r.json();
+        if(!r.ok){ toast(d.error||'Error uploading','error'); return; }
+        const bk = state.bookings.find(b=>b.id===bookingId);
+        if(bk){
+          if(type==='pre') bk.customerPreTripPhotos = [...(bk.customerPreTripPhotos||[]), photo];
+          else             bk.customerPostTripPhotos = [...(bk.customerPostTripPhotos||[]), photo];
+        }
+        renderBookings();
+        if(_tripModule) _renderTripModule();   // refresh the open module grid
+        toast('Photo uploaded!','success');
+      }catch(e){ toast('Upload failed','error'); }
+      finally{ hideLoading(); e.target.value=''; state.pendingPhotoUpload=null; }
+    };
+    // Downscale large camera photos before upload so customer trip photos don't bloat
+    // the database (a raw phone photo is several MB). Cap the longest side at 1600px
+    // and step JPEG quality down under ~3.5M chars. Any failure falls back to the
+    // original image so uploads never silently break.
+    try{
+      const img = new Image();
+      img.onload = () => {
+        try{
+          const MAXD = 1600;
+          const scale = Math.min(1, MAXD/Math.max(img.width,img.height));
+          const w = Math.round(img.width*scale), h = Math.round(img.height*scale);
+          const c = document.createElement('canvas'); c.width=w; c.height=h;
+          c.getContext('2d').drawImage(img,0,0,w,h);
+          let q = 0.82, out = c.toDataURL('image/jpeg',q);
+          while(out.length>3500000 && q>0.4){ q-=0.1; out = c.toDataURL('image/jpeg',q); }
+          upload(out && out.length < raw.length ? out : raw);
+        }catch(_){ upload(raw); }
+      };
+      img.onerror = () => upload(raw);
+      img.src = raw;
+    }catch(_){ upload(raw); }
+  };
+  reader.readAsDataURL(file);
+}
+
+function openPhotoModal(src){
+  document.getElementById('photo-modal-img').src = src;
+  document.getElementById('photo-modal').style.display = 'flex';
+}
+function closePhotoModal(){ document.getElementById('photo-modal').style.display='none'; }
+
+// --- Profile --------------------------------------------------------------
+async function saveProfile(){
+  const profile = {
+    name: document.getElementById('prof-name').value.trim(),
+    preferredVehicle: document.getElementById('prof-vehicle').value,
+    address: document.getElementById('prof-address').value.trim(),
+  };
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/save-profile`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,email:state.email,profile})});
+    const d = await r.json();
+    if(!r.ok){ toast(d.error||'Error saving profile','error'); return; }
+    state.profile = profile;
+    toast('Profile saved!','success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+
+// --- Waitlist -------------------------------------------------------------
+function _showWaitlistForm(name){
+  const id = name.replace(/\s+/g,'_');
+  const el = document.getElementById('wl-form-'+id);
+  if(el) el.style.display = 'block';
+}
+function _hideWaitlistForm(name){
+  const id = name.replace(/\s+/g,'_');
+  const el = document.getElementById('wl-form-'+id);
+  if(el) el.style.display = 'none';
+}
+async function _submitWaitlist(name){
+  const id = name.replace(/\s+/g,'_');
+  const pickupDate = document.getElementById('wl-pickup-'+id).value;
+  const dropoffDate = document.getElementById('wl-dropoff-'+id).value;
+  const notes = document.getElementById('wl-notes-'+id).value.trim();
+  if(!pickupDate){ toast('Pickup date required','error'); return; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/waitlist`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,email:state.email,vehicle:name,pickupDate,dropoffDate,notes})});
+    const d = await r.json();
+    if(!r.ok){ toast(d.error||'Error joining waitlist','error'); return; }
+    _hideWaitlistForm(name);
+    toast(`Added to waitlist for ${name}!`,'success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+
+// --- Notifications --------------------------------------------------------
+function updateBellBadge(){
+  const badge = document.getElementById('bell-badge');
+  if(!badge) return;
+  const hasUnread = state.notifications && state.notifications.some(n => !n.read);
+  badge.style.display = hasUnread ? 'block' : 'none';
+}
+
+function openNotifications(){
+  const notifs = state.notifications || [];
+  const el = document.getElementById('notif-list');
+  if(!notifs.length){
+    el.innerHTML = '<div class="empty-state" style="padding:20px"><div class="empty-icon">\uD83D\uDD14</div><div>No new notifications</div></div>';
+  } else {
+    el.innerHTML = notifs.map(n => `<div style="padding:12px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start;">
+      <div style="flex:1;">
+        <div style="font-size:13px;${n.read?'color:var(--text-muted)':''}">${esc(n.message||'')}</div>
+        ${n.createdAt?`<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${fmtDate(n.createdAt)}</div>`:''}
+      </div>
+      ${!n.read?'<span style="width:8px;height:8px;background:#ef4444;border-radius:50%;flex-shrink:0;margin-top:5px;display:inline-block;"></span>':''}
+    </div>`).join('');
+  }
+  document.getElementById('notif-modal').style.display = 'block';
+  // Mark as read
+  if(notifs.some(n => !n.read)){
+    fetch(`${WORKER}/portal/mark-notifications-read`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,email:state.email})}).catch(()=>{});
+    state.notifications = state.notifications.map(n => ({...n, read:true}));
+    updateBellBadge();
+  }
+}
+
+function closeNotifications(){
+  document.getElementById('notif-modal').style.display = 'none';
+}
+</script><style>*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#111;margin:0;padding:24px 28px;line-height:1.6}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:20px 0 8px;padding-bottom:4px;border-bottom:2px solid #111}table{width:100%;border-collapse:collapse}th{background:#222;color:#fff;text-align:left;padding:7px 10px;font-size:12px}td{vertical-align:top}.sig-box{border-bottom:1.5px solid #666;min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px}</style>'+
+      '</head><body>'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">'+
+        '<div><h1>RENTAL AGREEMENT EXTENSION</h1><div style="font-size:13px;color:#555">Extension #'+(extIdx+1)+' &nbsp;|&nbsp; Invoice #PBR-'+bk.id.slice(-6).toUpperCase()+'</div></div>'+
+        '<div style="text-align:right;font-size:12px;color:#555"><div style="font-weight:700;font-size:14px;color:#111">Prestige Black Rentals</div><div>Dallas \u2013 Fort Worth</div><div>(214) 207-2481</div><div>Date: '+todayFmt+'</div></div>'+
+      '</div>'+
+      '<div style="background:#f8f5ec;border:2px solid #b8982e;border-radius:8px;padding:14px 18px;margin-bottom:20px;font-size:13px">'+
+        'This document is an extension to the Rental Agreement between <strong>Prestige Black Corp.</strong> and <strong>'+esc(bk.name)+'</strong> for the <strong>'+esc(bk.vehicle)+'</strong> rental beginning <strong>'+origPickup+'</strong>.'+
+      '</div>'+
+      '<h2>Original Agreement Summary</h2>'+
+      '<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px">'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Customer</span><br><strong>'+esc(bk.name)+'</strong></div>'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Vehicle</span><br><strong>'+esc(bk.vehicle)+'</strong></div>'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Original Pickup</span><br>'+origPickup+'</div>'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Original Return</span><br>'+origReturn+'</div>'+
+      '</div>'+
+      (prevExtRows?'<h2>Previous Extensions</h2><table><thead><tr><th>Ext #</th><th>Period</th><th>Days Added</th><th>Charge</th><th>Status</th></tr></thead><tbody>'+prevExtRows+'</tbody></table>':'')+
+      '<h2>This Extension (#'+(extIdx+1)+')</h2>'+
+      '<div style="background:#fffbe8;border:1.5px solid #d4a017;border-radius:6px;padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px">'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(_extFromRaw)+'</strong></div>'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
+        '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Days Added</span><br><strong>+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</strong></div>'+
+        (ext.additionalCharge?'<div><span style="color:#555;font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#b8982e">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>':'')+
+        (ext.notes?'<div><span style="color:#555;font-size:11px;text-transform:uppercase">Notes</span><br>'+esc(ext.notes)+'</div>':'')+
+      '</div>'+
+      '<h2>Terms & Conditions</h2>'+
+      '<p style="font-size:12px;color:#333;line-height:1.7;margin:0 0 8px">All original terms of the Rental Agreement remain in effect. This extension amends only the return date and charges noted above. Standard late fees of $75/hr apply for returns past the agreed time.</p>'+
+      '<hr style="border:none;border-top:1.5px solid #aaa;margin:24px 0 18px">'+
+      '<div style="display:flex;gap:28px;flex-wrap:wrap">'+
+        '<div style="flex:1;min-width:200px"><div class="sig-box">'+ownerSig+'</div><div style="font-size:11px">Date: '+todayFmt+'</div><div style="font-size:11px">Prestige Black Corp. \u2014 Jalen Nguyen</div></div>'+
+        '<div style="flex:1;min-width:200px"><div class="sig-box"><span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span></div><div style="font-size:11px">Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></div><div style="font-size:11px">Customer: '+esc(bk.name)+'</div></div>'+
+      '</div></body></html>';
+
+    body.innerHTML =
+      '<div id="smContractWrap" style="border:1px solid rgba(255,255,255,.1);border-radius:12px;overflow:hidden;margin-bottom:20px;background:#fff">'+
+        '<iframe id="smContractFrame" sandbox="allow-same-origin allow-scripts" style="width:100%;height:600px;border:none" scrolling="yes"></iframe>'+
+      '</div>'+
+      '<div id="smSignSection" style="background:rgba(201,169,98,.08);border:2px solid rgba(201,169,98,.4);border-radius:14px;padding:20px;margin-bottom:24px">'+
+        '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">\u270D\uFE0F Sign Extension Below</div>'+
+        (_exIsDrv?'<div style="font-size:12px;color:#C9A962;margin-bottom:6px;font-weight:700">Signing as: '+esc((bk.extraDrivers&&bk.extraDrivers[_exDIdx]&&bk.extraDrivers[_exDIdx].name)||'Additional Driver')+' \u00B7 Additional Authorized Driver</div>':'')+
+        '<div style="font-size:12px;color:rgba(255,255,255,.45);margin-bottom:14px">Draw your signature in the box below, then tap <strong style="color:#fff">Sign & Submit</strong>.</div>'+
+        '<canvas id="smSigCanvas" width="480" height="160" style="width:100%;max-width:480px;height:clamp(120px,22vw,160px);border:2px dashed rgba(201,169,98,.5);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>'+
+        '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'+
+          '<button onclick="_smClearSig()" style="padding:8px 16px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:transparent;color:rgba(255,255,255,.7);cursor:pointer;font-size:13px">\u2715 Clear</button>'+
+          '<button onclick="_smSubmitExtSig(\''+bookingId+'\',\''+extId+'\','+(_exIsDrv?_exDIdx:'null')+')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">\u270D\uFE0F Sign & Submit</button>'+
+        '</div>'+
+        '<div id="smSigMsg" style="font-size:12px;color:rgba(255,255,255,.4);margin-top:8px">By signing, you agree to the extension terms above.</div>'+
+      '</div>';
+
+    // Cumulative mode: show the FULL document (original agreement + every prior extension, read-only) with
+    // the live signature pad on THIS extension only. Falls back to the concise amendment if the build fails.
+    var _signDoc = extHtml;
+    if(_pbCumulativeOn()){
+      var _cum = _buildCumulativeContractHtml(bk, data, extIdx, {mode:'sign', targetExtIdx:extIdx, targetDriverIdx:(_exIsDrv?_exDIdx:null)});
+      if(_cum) _signDoc = _cum;
+    }
+    var frame = document.getElementById('smContractFrame');
+    if(frame) frame.srcdoc = _signDoc;
+    window._smExtHtml = _signDoc;
+    _smInitCanvas();
+
+    var _sb = document.createElement('div');
+    _sb.id = 'smStickyBar';
+    _sb.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:100;padding:12px 16px 20px;background:rgba(10,10,10,.97);border-top:2px solid rgba(201,169,98,.4);text-align:center;transition:opacity .3s';
+    _sb.innerHTML = '<button style="padding:13px 40px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:16px;cursor:pointer;width:100%;max-width:340px" onclick="var s=document.getElementById(\'smSignSection\');if(s)s.scrollIntoView({behavior:\'smooth\',block:\'center\'});var b=document.getElementById(\'smStickyBar\');if(b){b.style.opacity=\'0\';setTimeout(function(){b.remove();},350);}">\u270D\uFE0F Sign Extension Agreement</button>';
+    document.getElementById('signing-screen').appendChild(_sb);
+  }).catch(function(err){
+    try{ console.error('[PB] extension signing load/render failed', err, err&&err.stack); }catch(_e){}   // surface the REAL error (this catch also fires on a render exception, not just network)
+    document.getElementById('signing-body').innerHTML = '<div style="color:#f87171;padding:20px">Unable to load this extension. Please try again or contact <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.5">'+esc(String(err))+'</small></div>';
+  });
+}
+
+function _smInitCanvas(){
+  var c = document.getElementById('smSigCanvas'); if(!c) return;
+  var ctx = c.getContext('2d'); var drawing = false; var lastX=0, lastY=0;
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = '#000';
+  function getPos(e){ var r=c.getBoundingClientRect(); var t=e.touches?e.touches[0]:e; return{x:(t.clientX-r.left)*(c.width/r.width),y:(t.clientY-r.top)*(c.height/r.height)}; }
+  c.addEventListener('mousedown', e=>{ drawing=true; var p=getPos(e); lastX=p.x; lastY=p.y; });
+  c.addEventListener('mousemove', e=>{ if(!drawing)return; var p=getPos(e); ctx.beginPath(); ctx.moveTo(lastX,lastY); ctx.lineTo(p.x,p.y); ctx.stroke(); lastX=p.x; lastY=p.y; });
+  c.addEventListener('mouseup', ()=>{ drawing=false; });
+  c.addEventListener('touchstart', e=>{ e.preventDefault(); drawing=true; var p=getPos(e); lastX=p.x; lastY=p.y; },{passive:false});
+  c.addEventListener('touchmove', e=>{ e.preventDefault(); if(!drawing)return; var p=getPos(e); ctx.beginPath(); ctx.moveTo(lastX,lastY); ctx.lineTo(p.x,p.y); ctx.stroke(); lastX=p.x; lastY=p.y; },{passive:false});
+  c.addEventListener('touchend', ()=>{ drawing=false; });
+}
+
+function _smClearSig(){
+  var c = document.getElementById('smSigCanvas'); if(!c) return;
+  c.getContext('2d').clearRect(0,0,c.width,c.height);
+}
+
+function _signerPortalPrompt(bk){
+  if(!bk||!bk.email) return '';
+  return '<div style="margin-top:28px;padding:16px 20px;background:rgba(201,169,98,.08);border:1px solid rgba(201,169,98,.3);border-radius:12px;text-align:center">'+
+    '<div style="font-size:14px;font-weight:700;color:#C9A962;margin-bottom:6px">\uD83D\uDCF1 View Your Booking Portal</div>'+
+    '<div style="font-size:12px;color:rgba(255,255,255,.5);margin-bottom:12px">Access your booking details, photos, insurance, and more.</div>'+
+    '<button onclick="showAuthForSigner()" style="padding:10px 24px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:700;cursor:pointer;font-size:14px">Go to Member Portal</button>'+
+    '</div>';
+}
+
+var _smFromPortal = false;
+
+function _smGoBack(){
+  document.getElementById('signing-screen').style.display = 'none';
+  document.getElementById('signing-body').innerHTML = '<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)"><span class="spinner"></span> Loading your contract\u2026</div>';
+  if(_smFromPortal && state && state.token){
+    document.getElementById('app-screen').style.display = 'flex';
+    if(typeof renderBookings === 'function') renderBookings();
+  } else {
+    document.getElementById('auth-screen').style.display = 'flex';
+  }
+}
+
+function showAuthForSigner(){
+  document.getElementById('signing-screen').style.display = 'none';
+  document.getElementById('signing-body').innerHTML = '<div style="text-align:center;padding:40px;color:rgba(255,255,255,.4)"><span class="spinner"></span> Loading your contract\u2026</div>';
+  document.getElementById('auth-screen').style.display = 'flex';
+  var _bk = window._smData && window._smData.booking;
+  if(_bk && _bk.email){
+    document.getElementById('login-email').value = _bk.email;
+  }
+}
+
+function _smSubmitSig(bookingId, driverIdx){
+  var _isDriver = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx)));
+  var _dIdx = _isDriver ? Number(driverIdx) : null;
+  var c = document.getElementById('smSigCanvas'); if(!c) return;
+  var ctx = c.getContext('2d');
+  var px = ctx.getImageData(0,0,c.width,c.height).data;
+  var hasInk = false; for(var i=3;i<px.length;i+=4){if(px[i]>10){hasInk=true;break;}}
+  if(!hasInk){ document.getElementById('smSigMsg').textContent='Please sign above before submitting.'; return; }
+  var btn = document.getElementById('smSubmitBtn'); if(btn){btn.disabled=true;btn.textContent='Saving\u2026';}
+  var sig = c.toDataURL('image/png');
+  var t = new Date(); var sigDate = (t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+
+  function _showSaveErr(msg){
+    if(btn){btn.disabled=false;btn.textContent='\u270D\uFE0F Sign & Submit';}
+    document.getElementById('smSigMsg').style.color='#f87171';
+    document.getElementById('smSigMsg').textContent = msg||'Network error \u2014 please try again.';
+  }
+
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  .then(r => r.ok?r.json():null)
+  .then(function(freshData){
+    var _freshBk = freshData&&freshData.booking ? freshData.booking : null;
+    if(!_freshBk){ _showSaveErr('Error loading data \u2014 please refresh.'); return; }
+    var _signerName = _isDriver ? ((_freshBk.extraDrivers&&_freshBk.extraDrivers[_dIdx]&&_freshBk.extraDrivers[_dIdx].name)||'Driver').split(' ')[0] : (_freshBk.name||'').split(' ')[0]||'there';
+    var _savePayload = {bookingId, sig, sigDate};
+    if(_isDriver) _savePayload.driverIdx = _dIdx;
+    return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_savePayload)})
+      .then(r => r.json())
+      .then(function(res){
+        if(res&&res.ok){
+          // Update local state so button reflects signed status
+          if(_smFromPortal && state && state.bookings){
+            var _lb = state.bookings.find(function(x){ return x.id===bookingId; });
+            if(_lb){ _lb.customerSig = sig; _lb.customerSigDate = sigDate; }
+          }
+          var _portalBtn = _smFromPortal
+            ? '<button onclick="_smGoBack()" style="margin-top:20px;padding:12px 32px;background:#C9A962;color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;">\u2190 Back to My Bookings</button>'
+            : (_freshBk ? _signerPortalPrompt(_freshBk) : '');
+          document.getElementById('signing-body').innerHTML =
+            '<div style="text-align:center;padding:40px">'+
+            '<div style="font-size:60px;margin-bottom:16px">\u2705</div>'+
+            '<div style="font-size:22px;font-weight:800;color:#22c55e;margin-bottom:10px">Signed Successfully!</div>'+
+            '<div style="color:rgba(255,255,255,.6);font-size:15px;margin-bottom:20px">Thank you, '+esc(_signerName)+'! Your contract has been signed and recorded.</div>'+
+            '<div style="background:rgba(255,255,255,.05);border-radius:10px;padding:16px;display:inline-block;text-align:left;min-width:220px">'+
+            '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Your Signature</div>'+
+            '<img src="'+sig+'" style="max-height:60px;max-width:240px;display:block;background:#fff;padding:6px;border-radius:6px">'+
+            '<div style="font-size:11px;color:rgba(255,255,255,.3);margin-top:6px">Signed '+sigDate+'</div></div>'+
+            '<div style="margin-top:24px;font-size:13px;color:rgba(255,255,255,.4)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+            _portalBtn+
+            '</div>';
+          var sb = document.getElementById('smStickyBar');
+          if(sb) sb.remove();
+        } else {
+          _showSaveErr(res&&res.error ? res.error : 'Save failed \u2014 please try again.');
+        }
+      });
+  }).catch(err => _showSaveErr('Network error \u2014 '+err));
+}
+
+function _smSubmitExtSig(bookingId, extId, driverIdx){
+  var _exIsDrv=(driverIdx!==null&&driverIdx!==undefined&&!isNaN(Number(driverIdx))); var _exDIdx=_exIsDrv?Number(driverIdx):null;
+  var c = document.getElementById('smSigCanvas'); if(!c) return;
+  var ctx = c.getContext('2d');
+  var px = ctx.getImageData(0,0,c.width,c.height).data;
+  var hasInk = false; for(var i=3;i<px.length;i+=4){if(px[i]>10){hasInk=true;break;}}
+  if(!hasInk){ document.getElementById('smSigMsg').textContent='Please sign above before submitting.'; return; }
+  var btn = document.getElementById('smSubmitBtn'); if(btn){btn.disabled=true;btn.textContent='Saving\u2026';}
+  var sig = c.toDataURL('image/png');
+  var t = new Date(); var sigDate = (t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+
+  function _showSaveErr(msg){
+    if(btn){btn.disabled=false;btn.textContent='\u270D\uFE0F Sign & Submit';}
+    document.getElementById('smSigMsg').style.color='#f87171';
+    document.getElementById('smSigMsg').textContent = msg||'Network error \u2014 please try again.';
+  }
+
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  .then(r => r.ok?r.json():null)
+  .then(function(freshData){
+    var bkFresh = freshData&&freshData.booking ? freshData.booking : null;
+    if(!bkFresh){ _showSaveErr('Error loading data \u2014 please refresh.'); return; }
+    var _exPayload={bookingId,sig,sigDate,extId}; if(_exIsDrv) _exPayload.driverIdx=_exDIdx;
+    return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_exPayload)})
+      .then(r => r.json())
+      .then(function(res){
+        if(res&&res.ok){
+          var name = _exIsDrv ? (((bkFresh.extraDrivers&&bkFresh.extraDrivers[_exDIdx]&&bkFresh.extraDrivers[_exDIdx].name)||'Driver').split(' ')[0]) : ((bkFresh.name||'').split(' ')[0]||'there');
+          var exts = bkFresh.extensions||[];
+          var extIdx = exts.findIndex(e => e.id === extId);
+          var extNum = extIdx+1;
+          document.getElementById('signing-body').innerHTML =
+            '<div style="text-align:center;padding:40px">'+
+            '<div style="font-size:60px;margin-bottom:16px">\u2705</div>'+
+            '<div style="font-size:22px;font-weight:800;color:#22c55e;margin-bottom:10px">Extension Signed!</div>'+
+            '<div style="color:rgba(255,255,255,.6);font-size:15px;margin-bottom:20px">Thank you, '+esc(name)+'! Extension #'+extNum+' has been signed and recorded.</div>'+
+            '<div style="background:rgba(255,255,255,.05);border-radius:10px;padding:16px;display:inline-block;text-align:left;min-width:220px">'+
+            '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Your Signature</div>'+
+            '<img src="'+sig+'" style="max-height:60px;max-width:240px;display:block;background:#fff;padding:6px;border-radius:6px">'+
+            '<div style="font-size:11px;color:rgba(255,255,255,.3);margin-top:6px">Signed '+sigDate+'</div></div>'+
+            '<div style="margin-top:24px;font-size:13px;color:rgba(255,255,255,.4)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+            _signerPortalPrompt(bkFresh)+
+            '</div>';
+          var sb = document.getElementById('smStickyBar');
+          if(sb) sb.remove();
+        } else {
+          _showSaveErr(res&&res.error ? res.error : 'Save failed \u2014 please try again.');
+        }
+      });
+  }).catch(err => _showSaveErr('Network error \u2014 '+err));
+}
+
+// --- Auth ------------------------------------------------------------------
+async function requestOTP(){
+  const email = document.getElementById('login-email').value.trim();
+  if(!email){ toast('Enter your email address','error'); return; }
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/request-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    const d = await r.json();
+    if(!r.ok){ toast(d.error||'Error sending code','error'); return; }
+    state.email = email;
+    state.otpToken = d.otpToken || null;
+    if(d.otpToken){ try{sessionStorage.setItem('pb_otp_token',d.otpToken);}catch(e){} }
+    else{ try{sessionStorage.removeItem('pb_otp_token');}catch(e){} }
+    _otpAutoSubmitDone = false;
+    document.getElementById('step-email').style.display='none';
+    document.getElementById('step-otp').style.display='block';
+    document.getElementById('otp-desc').textContent = `We sent a 6-digit code to ${email}. It expires in 10 minutes.`;
+    setTimeout(()=>{ var h=document.getElementById('otp-hidden'); if(h){h.value='';h.focus();} },150);
+    toast('Code sent! Check your email.','success');
+  }catch(e){ toast('Network error. Try again.','error'); }
+  finally{ hideLoading(); }
+}
+
+async function pasteOTP(){
+  try{
+    const text = await navigator.clipboard.readText();
+    const digits = text.replace(/[^0-9]/g,'').slice(0,6);
+    if(!digits){ toast('No code found in clipboard','error'); return; }
+    const h = document.getElementById('otp-hidden');
+    if(h){ h.value = digits; h.dispatchEvent(new Event('input')); h.focus(); }
+  }catch(e){
+    // Clipboard permission denied \u2014 focus the input so user can paste manually
+    const h = document.getElementById('otp-hidden');
+    if(h) h.focus();
+    toast('Tap and hold the code boxes to paste','info');
+  }
+}
+
+function backToEmail(){
+  document.getElementById('step-otp').style.display='none';
+  document.getElementById('step-email').style.display='block';
+  var h=document.getElementById('otp-hidden'); if(h) h.value='';
+  for(var j=0;j<6;j++){var b=document.getElementById('otp-b'+j);if(b){b.textContent='';b.className='otp-box';}}
+  _otpAutoSubmitDone = false;
+  _verifyingOTP = false;
+  state.otpToken = null;
+  try{sessionStorage.removeItem('pb_otp_token');}catch(e){}
+}
+
+function _safeStore(key, val){
+  try{ localStorage.setItem(key, val); }catch(e){}
+  try{ sessionStorage.setItem(key, val); }catch(e){}
+}
+function _safeGet(key){
+  try{ const v=localStorage.getItem(key); if(v) return v; }catch(e){}
+  try{ const v=sessionStorage.getItem(key); if(v) return v; }catch(e){}
+  return null;
+}
+function _safeClear(key){
+  try{ localStorage.removeItem(key); }catch(e){}
+  try{ sessionStorage.removeItem(key); }catch(e){}
+}
+
+// Called when a payment API returns 401 \u2014 prompts re-login without forcing a page redirect
+function _portalSessionExpired(){
+  toast('Session expired \u2014 please sign out and sign back in to pay.','error');
+}
+
+var _verifyingOTP = false;
+async function verifyOTP(){
+  if(_verifyingOTP) return;
+  _verifyingOTP = true;
+  const hiddenInp = document.getElementById('otp-hidden');
+  const digits = hiddenInp ? hiddenInp.value.replace(/[^0-9]/g,'').slice(0,6) : '';
+  if(digits.length<6){ _verifyingOTP=false; toast('Enter the full 6-digit code','error'); return; }
+  showLoading();
+  try{
+    const _tok = state.otpToken || _safeGet('pb_otp_token') || undefined;
+    const r = await fetch(`${WORKER}/portal/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email, otp:digits, otpToken:_tok})});
+    const d = await r.json();
+    if(!r.ok){ toast(d.error||'Invalid code','error'); return; }
+    state.token = d.token;
+    state.otpToken = null;
+    _safeClear('pb_otp_token');
+    _safeStore('pb_portal_token', d.token);
+    _safeStore('pb_portal_email', state.email);
+    await loadPortalData();
+    showApp();
+    _consumeRidePrefill();   // ride-app fleet Book \u2192 prefilled booking after fresh sign-in
+  }catch(e){ toast('Error: '+e.message,'error'); }
+  finally{ hideLoading(); _verifyingOTP=false; }
+}
+
+// OTP hidden-input approach \u2014 works reliably on all mobile devices
+var _otpAutoSubmitDone = false;
+document.addEventListener('DOMContentLoaded',()=>{
+  const hiddenInp = document.getElementById('otp-hidden');
+  function _otpUpdate(){
+    const v = (hiddenInp.value||'').replace(/[^0-9]/g,'').slice(0,6);
+    hiddenInp.value = v;
+    for(var j=0;j<6;j++){
+      var box=document.getElementById('otp-b'+j);
+      if(!box) continue;
+      box.textContent = v[j]||'';
+      box.classList.toggle('filled', j < v.length);
+      box.classList.toggle('active', j === v.length);
+    }
+    // Auto-submit only once when all 6 digits are present
+    if(v.length===6 && !_otpAutoSubmitDone){
+      _otpAutoSubmitDone = true;
+      verifyOTP();
+    }
+  }
+  if(hiddenInp){
+    hiddenInp.addEventListener('input', _otpUpdate);
+  }
+
+  // Check for signing mode first
+  var sp = new URLSearchParams(location.search);
+  var signId = sp.get('sign');
+  var extId  = sp.get('extId');
+  var driverParam = sp.get('driver');
+  var driverIdx = (driverParam !== null && driverParam !== '') ? parseInt(driverParam) : null;
+  var paidFlag   = sp.get('paid');
+  var paidBkId   = sp.get('bookingId');
+  var paidChgId  = sp.get('chargeId');
+  var paidSid    = sp.get('session_id');   // Stripe checkout session id -> the worker verifies the payment before marking paid
+
+  if(signId){
+    hideLoading();
+    if(extId){
+      _initExtensionSigningMode(signId, extId, driverIdx);
+    } else {
+      _initSigningMode(signId, driverIdx);
+    }
+    return;
+  }
+
+  // Stripe payment success return
+  if(paidFlag === '1'){
+    // Clean URL so refresh doesn't re-trigger
+    history.replaceState(null,'',location.pathname);
+    hideLoading();
+
+    // Optimistically mark payment in local state so the UI reflects paid immediately
+    if(paidBkId){
+      var _paidNow = new Date().toISOString();
+      var _pBk = state.bookings.find(function(x){ return x.id===paidBkId; });
+      if(_pBk){
+        if(paidChgId){
+          (_pBk.portalCharges||[]).forEach(function(c){ if(c&&c.id===paidChgId) c.paidAt=_paidNow; });
+        } else {
+          _pBk.balancePaidAt = _paidNow;
+        }
+      }
+    }
+
+    if(state.token && state.email){
+      showLoading();
+      // Call mark-paid (Firebase writes happen server-side before it returns)
+      var _markUrl = paidChgId ? `${WORKER}/portal/mark-charge-paid` : `${WORKER}/portal/mark-balance-paid`;
+      var _markBody = paidChgId
+        ? {email:state.email,token:state.token,bookingId:paidBkId,chargeId:paidChgId,sessionId:paidSid}
+        : {email:state.email,token:state.token,bookingId:paidBkId,sessionId:paidSid};
+
+      var _markResult = null;
+      fetch(_markUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_markBody)})
+        .then(function(r){ return r.ok ? r.json().catch(()=>({})) : {}; })
+        .catch(()=>({}))
+        .then(function(d){ _markResult = d; })
+        .catch(()=>{})
+        .finally(function(){
+          loadPortalData()
+            .catch(()=>'error')
+            .then(function(){
+              // Re-apply optimistic paid state as fallback in case Firebase hasn't propagated yet
+              if(paidBkId){
+                var _paidNow = (_markResult && _markResult.paidAt) || new Date().toISOString();
+                var _pBk = state.bookings.find(function(x){ return x.id===paidBkId; });
+                if(_pBk){
+                  if(paidChgId){
+                    (_pBk.portalCharges||[]).forEach(function(c){
+                      if(c && c.id===paidChgId && !c.paidAt) c.paidAt = _paidNow;
+                    });
+                  } else {
+                    if(!_pBk.balancePaidAt) _pBk.balancePaidAt = _paidNow;
+                    if(!_pBk.balancePaidMethod) _pBk.balancePaidMethod = 'Stripe (portal)';
+                    if(!_pBk.balancePaidAmount && _markResult && _markResult.amount != null) _pBk.balancePaidAmount = _markResult.amount;
+                  }
+                }
+              }
+              showApp();
+              switchTab('bookings');
+              var ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
+              var msg = paidChgId ? '\u2705 Payment received! Receipt is on its way to your email.' : '\u2705 Balance paid for '+ref+'! Receipt sent to your email.';
+              setTimeout(function(){ toast(msg,'success'); }, 300);
+            });
+        });
+    } else {
+      // No session in storage \u2014 show auth with a payment-success message so they can sign in
+      hideLoading();
+      document.getElementById('auth-screen').style.display='flex';
+      var _authSub = document.getElementById('auth-screen').querySelector('.auth-sub');
+      if(_authSub) _authSub.textContent = '\u2705 Payment received! Sign in to view your updated booking.';
+    }
+    return;
+  }
+
+  // Normal portal: show app immediately if token exists \u2014 never auto-logout on page load.
+  hideLoading();
+  if(state.token && state.email){
+    showApp();
+    loadPortalData().then(result=>{
+      if(result === true) renderAll();
+      // on 'error' or 'unauthorized' \u2014 stay on app with cached data, session refreshes on next login
+      _consumeRidePrefill();   // ride-app fleet Book \u2192 prefilled booking
+    });
+  }
+});
+
+// --- App -------------------------------------------------------------------
+function showApp(){
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('signing-screen').style.display='none';
+  document.getElementById('app-screen').style.display='flex';
+  renderAll();
+  hideLoading();
+}
+
+async function loadPortalData(){
+  try{
+    const r = await fetch(`${WORKER}/portal/data?email=${encodeURIComponent(state.email)}&token=${encodeURIComponent(state.token)}`);
+    if(r.status === 401){ return 'unauthorized'; }   // only real auth failure clears session
+    if(!r.ok){ return 'error'; }                     // network/server error \u2014 keep session
+    const d = await r.json();
+    const freshBookings = d.bookings || [];
+    // Never overwrite non-empty cached bookings with an empty server response
+    // (guards against transient Firebase misses returning [] for a valid session)
+    if(freshBookings.length > 0 || state.bookings.length === 0){
+      state.bookings = freshBookings;
+    }
+    state.insurance     = d.insurance     || state.insurance     || null;
+    // Never overwrite saved vehicles with a shorter list from server (server may return [] on transient errors)
+    const freshSaved = d.savedVehicles || [];
+    if(freshSaved.length >= state.savedVehicles.length){ state.savedVehicles = freshSaved; }
+    _persistSaved(); // always re-write dedicated key on successful server load (covers sign-back-in)
+    state.profile       = d.profile       || state.profile       || {};
+    state.notifications = d.notifications || state.notifications || [];
+    // Persist to localStorage keyed by email
+    const ck = state.email ? 'pb_cache_' + state.email.replace(/[^a-z0-9]/gi,'_') : null;
+    if(ck && state.bookings.length > 0){
+      try{ localStorage.setItem(ck, JSON.stringify({
+        bookings: state.bookings, insurance: state.insurance,
+        savedVehicles: state.savedVehicles, profile: state.profile,
+        notifications: state.notifications,
+      })); }catch(e){}
+    }
+    return true;
+  }catch(e){ return 'error'; }   // fetch failed (offline, etc.) \u2014 keep session
+}
+
+var _navLabels = {bookings:'\uD83D\uDCC5 Bookings',fleet:'\uD83D\uDE97 Fleet',saved:'\u2764\uFE0F Saved',contract:'\uD83D\uDCC4 Contract',insurance:'\uD83D\uDEE1\uFE0F Insurance',account:'\uD83D\uDC64 Account'};
+function switchTab(tab){
+  document.querySelectorAll('.tab-pane').forEach(el=>{ el.classList.toggle('active', el.id==='tab-'+tab); });
+  document.querySelectorAll('.nav-dd-item').forEach(el=>{ el.classList.toggle('active', el.dataset.tab===tab); });
+  var lbl = document.getElementById('nav-active-label');
+  if(lbl) lbl.textContent = _navLabels[tab] || tab;
+  if(tab==='contract') renderContractTab();
+}
+function _toggleNav(){
+  document.getElementById('nav-dropdown').classList.toggle('open');
+}
+function _navTo(tab){
+  document.getElementById('nav-dropdown').classList.remove('open');
+  switchTab(tab);
+}
+// Close dropdown when tapping outside
+document.addEventListener('click', function(e){
+  var dd = document.getElementById('nav-dropdown');
+  if(!dd) return;
+  if(dd.classList.contains('open') && !dd.contains(e.target) && !e.target.closest('.hamburger-btn')){
+    dd.classList.remove('open');
+  }
+});
+function renderContractTab(){
+  var el = document.getElementById('contract-content');
+  if(!el) return;
+  // Bookings that have contract sent or are signed
+  var bks = (state.bookings||[]).filter(function(b){
+    if(!b) return false;
+    var s = (b.status||'').toLowerCase();
+    if(s==='cancelled') return false;
+    return b.contractSent || (b.customerSig && b.customerSig.startsWith('data:image/'));
+  });
+  if(!bks.length){
+    el.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:60px 16px;"><div style="font-size:40px;margin-bottom:12px;">\uD83D\uDCC4</div><div style="font-size:15px;font-weight:600;margin-bottom:8px;">No Contract Yet</div><div style="font-size:13px;">Your rental agreement will appear here once a booking is confirmed.</div></div>';
+    return;
+  }
+  var _isSig=function(s){ return !!(s && String(s).startsWith('data:image/')); };
+  var html = '';
+  bks.forEach(function(b){
+    var alreadySigned = _isSig(b.customerSig);
+    var _drvs = (b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status !== 'denied'; });   // a denied driver is not a party -> doesn't block "fully signed"
+    var _pendingDrv = _drvs.filter(function(d){ return !_isSig(d.sig); }).length;
+    var fullySigned = alreadySigned && _pendingDrv===0;   // primary renter + EVERY listed authorized driver has signed
+    var sigDate = b.sigDate || b.contractSignedAt || b.customerSigDate || '';
+    var sigDateStr = sigDate ? (function(){ try{ return new Date(sigDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return String(sigDate); } })() : '';
+    var exts = _pbCumulativeOn() ? (b.extensions||[]).filter(Boolean) : [];
+    html += '<div class="card" style="margin-bottom:14px;">'
+      + '<div class="card-header"><div><div class="vehicle-name" style="font-size:15px;">' + (b.vehicle||b.car||'Rental Agreement') + '</div>'
+      + '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (b.startDate||'') + (b.endDate?' \u2013 '+b.endDate:'') + '</div></div>'
+      + (fullySigned
+        ? '<span style="background:rgba(34,197,94,.15);color:#4ade80;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u2705 Signed</span>'
+        : (alreadySigned
+          ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u23F3 Awaiting Drivers</span>'
+          : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>'))
+      + '</div>';
+    // --- Original rental agreement row ---
+    var _mt = exts.length ? '0' : '8px';
+    if(exts.length) html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Original Agreement</div>';
+    if(sigDateStr && alreadySigned) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Signed ' + sigDateStr + '</div>';
+    if(fullySigned){
+      html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download '+(exts.length?'Full Contract':'Signed Contract')+'</button>';
+    } else if(alreadySigned){
+      html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+_pendingDrv+' authorized driver signature'+(_pendingDrv===1?'':'s')+' before the signed copy is ready.</div>';
+    } else {
+      html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_initSigningMode(\''+b.id+'\',null,true)">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
+    }
+    // --- Extension rows (strict sequence) ---
+    if(exts.length){
+      var priorAllSigned = true;   // every extension BEFORE this one fully signed by all required parties
+      exts.forEach(function(ext, i){
+        var extNum = i+1;
+        var primSigned = !!(ext.signed && _isSig(ext.sig));
+        var drvPending = 0;
+        (b.extraDrivers||[]).forEach(function(d,di){ if(!d||!d.name||d.status==='denied') return; var s=ext.driverSigs&&ext.driverSigs[di]; if(!_isSig(s&&s.sig)) drvPending++; });
+        var gateSigned = _extFullySignedForGate(b, ext);
+        var unlocked = (fullySigned && priorAllSigned) || !!ext.unlockOverride;
+        var badge, action;
+        if(gateSigned){
+          badge='<span style="background:rgba(34,197,94,.15);color:#4ade80;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u2705 Signed</span>';
+          action='<button class="btn" style="margin-top:0;" onclick="_portalDownloadExtension(\''+b.id+'\',\''+ext.id+'\', this)">\uD83D\uDCC4 Download (thru Ext '+extNum+')</button>';
+        } else if(!unlocked){
+          var blockMsg = !fullySigned ? 'Complete the Rental Agreement first' : 'Extension '+(i)+' must be fully signed first';
+          badge='<span style="background:rgba(148,163,184,.15);color:#94a3b8;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\uD83D\uDD12 Locked</span>';
+          action='<div style="font-size:11.5px;color:var(--text-muted);padding:9px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">'+blockMsg+'</div>';
+        } else if(!primSigned){
+          badge='<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u26A0\uFE0F Action Needed</span>';
+          action='<button class="btn" style="margin-top:0;" onclick="_initExtensionSigningMode(\''+b.id+'\',\''+ext.id+'\',null)">\u270D\uFE0F Sign Extension '+extNum+' \u2192</button>';
+        } else {
+          badge='<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u23F3 Awaiting Drivers</span>';
+          action='<div style="font-size:11.5px;color:var(--text-muted);padding:9px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+drvPending+' authorized driver signature'+(drvPending===1?'':'s')+'.</div>'+
+            '<button class="btn btn-ghost" style="margin-top:6px;" onclick="_portalDownloadExtension(\''+b.id+'\',\''+ext.id+'\', this)">\uD83D\uDCC4 Download draft (thru Ext '+extNum+')</button>';
+        }
+        var charge = Number(ext.additionalCharge)||0;
+        html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07);">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">'
+          + '<div style="font-size:13px;font-weight:700;">Extension '+extNum+'<span style="font-size:11px;color:var(--text-muted);font-weight:500;"> \u00B7 new return '+(ext.toDate?fmtDateFull(ext.toDate):'\u2014')+(charge?' \u00B7 $'+charge.toFixed(2):'')+'</span></div>'
+          + badge + '</div>' + action + '</div>';
+        priorAllSigned = priorAllSigned && gateSigned;
+      });
+    }
+    html += '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function renderAll(){
+  renderBookings();
+  renderFleet();
+  renderSaved();
+  renderInsurance();
+  renderAccount();
+  updateBellBadge();
+}
+
+// --- Bookings --------------------------------------------------------------
+function statusBadge(status){
+  const map={'pending':'pending','confirmed':'confirmed','in-progress':'in-progress','in_progress':'in-progress','completed':'completed','cancelled':'cancelled','active':'in-progress'};
+  const cls = map[(status||'').toLowerCase()]||'pending';
+  const labels={'pending':'PENDING','confirmed':'CONFIRMED','in-progress':'IN PROGRESS','completed':'COMPLETED','cancelled':'CANCELLED'};
+  return `<span class="badge badge-${cls}">${labels[cls]||status.toUpperCase()}</span>`;
+}
+
+function progressBar(status){
+  const s = (status||'').toLowerCase();
+  const step = s==='cancelled'?-1: s==='pending'?0: s==='confirmed'?1: (s==='in-progress'||s==='in_progress'||s==='active')?2: s==='completed'?3: 0;
+  if(step<0) return '';
+  const labels=['Submitted','Confirmed','Active','Complete'];
+  let html = '<div class="progress-wrap"><div class="progress-row">';
+  for(let i=0;i<4;i++){
+    if(i>0) html += `<div class="progress-line${step>=i?' done':''}"></div>`;
+    const cls = step>i?'done':step===i?'current':'';
+    html += `<div class="progress-dot ${cls}"></div>`;
+  }
+  html += '</div><div class="progress-labels">';
+  for(let i=0;i<4;i++) html += `<span class="progress-label${step===i?' active':''}">${labels[i]}</span>`;
+  html += '</div></div>';
+  return html;
+}
+
+// Effective trip end day \u2014 dropoffDate pushed forward by any extensions, so after
+// an extension/date change the post-trip window moves to the NEW return date.
+function tripEffEndDay(b){
+  let end = String(b.dropoffDate||b.returnDate||b.pickupDate||b.date||'').split('T')[0];
+  const exts = Array.isArray(b.extensions)?b.extensions:Object.values(b.extensions||{});
+  exts.forEach(e=>{ const t=e&&String(e.toDate||e.newEndDate||'').split('T')[0]; if(t&&t>end) end=t; });
+  return end;
+}
+function _fmtDayShort(s){ return s?fmtDate(s):''; }
+
+// Owner check-in/check-out photos \u2014 fetched read-only per booking, cached.
+var _ownerPhotos = {};        // bookingId -> {checkIn:[],checkOut:[]}
+var _ownerPhotosLoading = {};
+function _loadOwnerPhotos(bid){
+  if(_ownerPhotos[bid]||_ownerPhotosLoading[bid]||!state.token) return;
+  const b = state.bookings.find(x=>x.id===bid);
+  if(!b || (!(b.checkInPhotoIds||[]).length && !(b.checkOutPhotoIds||[]).length)) return;
+  _ownerPhotosLoading[bid]=true;
+  fetch(`${WORKER}/portal/booking-photos?bookingId=${encodeURIComponent(bid)}&token=${encodeURIComponent(state.token)}`,{cache:'no-store'})
+    .then(r=>r.ok?r.json():null)
+    .then(d=>{
+      _ownerPhotosLoading[bid]=false;
+      if(d&&(d.checkIn||d.checkOut)){ _ownerPhotos[bid]={checkIn:d.checkIn||[],checkOut:d.checkOut||[]}; renderBookings(); }
+    })
+    .catch(()=>{ _ownerPhotosLoading[bid]=false; });
+}
+
+function showCondition(booking){
+  const s = (booking.status||'').toLowerCase();
+  if(!['confirmed','in-progress','in_progress','active','completed'].includes(s)) return '';
+  const owner = _ownerPhotos[booking.id]||{};
+  if(!_ownerPhotos[booking.id]) setTimeout(()=>_loadOwnerPhotos(booking.id),0);
+  const preOwner = owner.checkIn||[];
+  const postOwner = owner.checkOut||[];
+  const preCust = (booking.customerPreTripPhotos||[]).filter(Boolean);
+  const postCust = (booking.customerPostTripPhotos||[]).filter(Boolean);
+  const preLocked = !!booking.customerPreTripLockedAt;
+  const postLocked = !!booking.customerPostTripLockedAt;
+  const pickupDay = String(booking.pickupDate||booking.date||'').split('T')[0];
+  const endDay = tripEffEndDay(booking);
+  const todayStr = new Date().toLocaleDateString('en-CA',{timeZone:'America/Chicago'}); // CT
+  const preOpen  = pickupDay && todayStr >= pickupDay && !preLocked;
+  const postOpen = endDay && todayStr >= endDay && !postLocked;
+
+  const col = (label, ownerArr, custArr, type, open, locked, notYetMsg) => {
+    let html = `<div><div class="condition-col-label">${label}</div><div class="photo-grid">`;
+    ownerArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Uploaded by Prestige Black">`; });
+    custArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Your photo">`; });
+    html += '</div>';
+    if(open){
+      html += `<button onclick="openTripPhotoModule('${esc(booking.id)}','${type}')" style="margin-top:6px;width:100%;padding:8px;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.35);color:var(--gold);border-radius:9px;font-size:11px;font-weight:800;cursor:pointer">\uD83D\uDCF7 ${custArr.length?'Manage':'Add'} ${label} Photos</button>`;
+    } else if(locked){
+      html += `<div style="font-size:10.5px;color:var(--text-muted);padding:5px 0">\uD83D\uDD12 Locked \u2014 view only</div>`;
+    } else {
+      html += `<div style="font-size:10.5px;color:var(--text-muted);padding:5px 0">${notYetMsg}</div>`;
+    }
+    return html+'</div>';
+  };
+  return `<div class="section-title">Vehicle Condition</div>
+    <div class="condition-cols">
+      ${col('Pre-Trip', preOwner, preCust, 'pre', preOpen, preLocked, 'Opens on pickup day'+(pickupDay?' \u00B7 '+_fmtDayShort(pickupDay):''))}
+      ${col('Post-Trip', postOwner, postCust, 'post', postOpen, postLocked, 'Opens on return day'+(endDay?' \u00B7 '+_fmtDayShort(endDay):''))}
+    </div>`;
+}
+
+function sortBookings(bookings){
+  const order={'in-progress':0,'in_progress':0,'active':0,'confirmed':1,'pending':2,'completed':3,'cancelled':4};
+  return [...bookings].sort((a,b)=>{
+    const oa=order[(a.status||'').toLowerCase()]??5, ob=order[(b.status||'').toLowerCase()]??5;
+    if(oa!==ob) return oa-ob;
+    return new Date(a.pickupDate||0)-new Date(b.pickupDate||0);
+  });
+}
+
+// --- Driver Management -----------------------------------------------------
+var _driverModalBookingId = null;
+
+function openDriverModal(bookingId){
+  _driverModalBookingId = bookingId;
+  document.getElementById('drv-name').value = '';
+  document.getElementById('drv-phone').value = '';
+  document.getElementById('drv-email').value = '';
+  document.getElementById('drv-error').style.display = 'none';
+  document.getElementById('drv-save-btn').disabled = false;
+  document.getElementById('drv-save-btn').textContent = 'Add Driver';
+  var _sb=(state.bookings||[]).find(function(x){ return x.id===bookingId; });
+  var _slNote=document.getElementById('drv-sling-note');
+  if(_slNote) _slNote.style.display=(_sb && _sb.vehicle==='Polaris Slingshot' && _sb.type==='hourly')?'block':'none';
+  document.getElementById('driver-modal').classList.add('open');
+  setTimeout(()=>document.getElementById('drv-name').focus(), 100);
+}
+
+function closeDriverModal(){
+  document.getElementById('driver-modal').classList.remove('open');
+  _driverModalBookingId = null;
+}
+
+async function submitAddDriver(){
+  const name  = document.getElementById('drv-name').value.trim();
+  const phone = document.getElementById('drv-phone').value.trim();
+  const email = document.getElementById('drv-email').value.trim();
+  const errEl = document.getElementById('drv-error');
+  if(!name){ errEl.textContent='Name is required.'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+  const btn = document.getElementById('drv-save-btn');
+  btn.disabled = true; btn.textContent = 'Adding\u2026';
+  try{
+    const r = await fetch(`${WORKER}/portal/add-driver`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId:_driverModalBookingId, driver:{name,phone,email} })
+    });
+    const d = await r.json();
+    if(!r.ok){ errEl.textContent = d.error||'Error adding driver.'; errEl.style.display='block'; btn.disabled=false; btn.textContent='Add Driver'; return; }
+    // Update local state
+    const bk = state.bookings.find(b => b.id === _driverModalBookingId);
+    if(bk){
+      bk.extraDrivers = bk.extraDrivers || [];
+      bk.extraDrivers.push({ name, phone, email, addedByPortal:true, idVerified:false, status:'pending_approval' });
+    }
+    closeDriverModal();
+    renderBookings();
+    toast('Driver submitted! The owner will review and approve shortly.','success');
+  }catch(e){ errEl.textContent='Network error. Try again.'; errEl.style.display='block'; btn.disabled=false; btn.textContent='Add Driver'; }
+}
+
+async function removeDriver(bookingId, driverIdx){
+  if(!confirm('Remove this driver from your reservation?')) return;
+  showLoading();
+  try{
+    const r = await fetch(`${WORKER}/portal/remove-driver`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId, driverIdx })
+    });
+    const d = await r.json();
+    if(!r.ok){ toast(d.error||'Error removing driver.','error'); return; }
+    const bk = state.bookings.find(b => b.id === bookingId);
+    if(bk && bk.extraDrivers) bk.extraDrivers.splice(driverIdx, 1);
+    renderBookings();
+    toast('Driver removed.','success');
+  }catch(e){ toast('Network error.','error'); }
+  finally{ hideLoading(); }
+}
+
+function showDrivers(b){
+  const s = (b.status||'').toLowerCase();
+  // Only show for active/confirmed/in-progress bookings
+  if(['cancelled','completed'].includes(s)) return '';
+  const drivers = b.extraDrivers || [];
+  const sigBase = location.origin + location.pathname;
+  let html = '<div class="drivers-section">';
+  html += '<div class="section-title">Authorized Drivers</div>';
+  drivers.forEach((d, i) => {
+    const signed    = d.sig && d.sig.startsWith('data:image/');
+    const isPending = d.status === 'pending_approval';
+    const isDenied  = d.status === 'denied';
+    const isApproved = d.status === 'approved';
+    const initial   = (d.name||'?')[0].toUpperCase();
+    const sigUrl    = `${sigBase}?sign=${encodeURIComponent(b.id)}&driver=${i}`;
+    // Badge
+    let badgeHtml;
+    if(isPending){
+      badgeHtml = `<span class="driver-sig-badge" style="background:rgba(234,179,8,.15);color:#eab308;border:1px solid rgba(234,179,8,.3);">\u23F3 Awaiting Approval</span>`;
+    } else if(isDenied){
+      badgeHtml = `<span class="driver-sig-badge" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);">\u2717 Not Approved</span>`;
+    } else if(signed){
+      badgeHtml = `<span class="driver-sig-badge driver-sig-done">\u2705 Signed</span>`;
+    } else if(isApproved){
+      badgeHtml = `<span class="driver-sig-badge driver-sig-pending">\u2705 Approved \u2014 Signature Pending</span>`;
+    } else {
+      badgeHtml = `<span class="driver-sig-badge driver-sig-pending">\u23F3 Signature Pending</span>`;
+    }
+    html += `<div class="driver-row">
+      <div class="driver-avatar">${initial}</div>
+      <div class="driver-info">
+        <div class="driver-name">${esc(d.name||'\u2014')}</div>
+        <div class="driver-meta">${d.phone?esc(d.phone):''}${d.phone&&d.email?' \u00B7 ':''}${d.email?esc(d.email):''}</div>
+        ${isPending ? '<div style="font-size:11px;color:rgba(234,179,8,.7);margin-top:2px">Submitted \u2014 the owner will review and approve shortly.</div>' : ''}
+        ${isDenied  ? '<div style="font-size:11px;color:rgba(239,68,68,.7);margin-top:2px">This driver was not approved. Contact us if you have questions.</div>' : ''}
+        ${isApproved && !signed ? '<div style="font-size:11px;color:rgba(201,169,98,.8);margin-top:2px">A signing link was emailed to this driver. You can also copy it below to send manually.</div>' : ''}
+      </div>
+      <div class="driver-actions">
+        ${badgeHtml}
+        ${isApproved && !signed ? `<button class="driver-action-btn sign" onclick="copyDriverSignLink('${encodeURIComponent(sigUrl)}')">\uD83D\uDCCB Copy Sign Link</button>` : ''}
+        ${(isPending || isDenied) && d.addedByPortal ? `<button class="driver-action-btn remove" onclick="removeDriver('${b.id}',${i})">Remove</button>` : ''}
+        ${isApproved && !signed && d.addedByPortal ? `<button class="driver-action-btn remove" onclick="removeDriver('${b.id}',${i})">Remove</button>` : ''}
+      </div>
+    </div>`;
+  });
+  if(drivers.length < 4){
+    html += `<button class="add-driver-btn" onclick="openDriverModal('${b.id}')">
+      <span>+</span> Add Authorized Driver
+    </button>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+function copyDriverSignLink(encodedUrl){
+  const url = decodeURIComponent(encodedUrl);
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=>toast('Signing link copied!','success'));
+  } else {
+    prompt('Copy this link and send it to your driver:', url);
+  }
+}
+
+function showSignContract(b){
+  const s = (b.status||'').toLowerCase();
+  if(['cancelled'].includes(s)) return '';
+  // Only show if contract has been sent by admin
+  if(!b.contractSent) return '';
+  const alreadySigned = b.customerSig && b.customerSig.startsWith('data:image/');
+  if(alreadySigned) return `<div style="margin-top:10px;display:flex;align-items:center;gap:6px;font-size:12px;color:#22c55e;font-weight:600;">\u2705 Contract Signed</div>`;
+  return `<div style="margin-top:12px;">
+    <button onclick="_initSigningMode('${b.id}',null,true)" style="width:100%;padding:13px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;gap:8px;">
+      \u270D\uFE0F Sign Rental Agreement
+    </button>
+  </div>`;
+}
+
+function showAddUnlimited(b){
+  // Self-serve upsell: only BEFORE the agreement is signed, only if the vehicle offers
+  // unlimited (unlimitedRate>0), and only if not already on. Auto-adds the fee to the balance.
+  var rate = Number(b.unlimitedRate)||0;
+  var signed = b.customerSig && String(b.customerSig).startsWith('data:image/');
+  if(rate<=0 || signed || Number(b.unlimited)>0 || ['cancelled','completed'].includes((b.status||'').toLowerCase())) return '';
+  var days = Math.max(1, Number(b.days)||1);
+  var fee = Math.round(rate*days*100)/100;
+  return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+    <div style="background:rgba(124,196,255,.07);border:1px solid rgba(124,196,255,.25);border-radius:12px;padding:12px 14px;">
+      <div style="font-size:13px;font-weight:800;color:#7cc4ff;margin-bottom:3px;">&#8734; Add Unlimited Miles</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Drive as far as you want &#8212; no per-mile overage. Available until you sign your agreement. <strong style="color:#7cc4ff">+$${fee.toFixed(2)}</strong> is added to your balance.</div>
+      <button onclick="addUnlimited('${b.id}')" id="unlBtn_${b.id}"
+        style="width:100%;padding:10px;background:rgba(124,196,255,.12);color:#7cc4ff;border:1px solid rgba(124,196,255,.4);border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;">
+        Add Unlimited Miles &#8212; +$${fee.toFixed(2)} &#8594;
+      </button>
+    </div>
+  </div>`;
+}
+
+async function addUnlimited(bookingId){
+  if(!confirm('Add Unlimited Miles? The fee is added to your balance and this booking switches to unlimited mileage.')) return;
+  var btn = document.getElementById('unlBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Adding&#8230;'; }
+  try{
+    var r = await fetch(`${WORKER}/portal/add-unlimited`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId })
+    });
+    var d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.ok){
+      toast(d.error||'Could not add unlimited miles. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles &#8594;'; }
+      return;
+    }
+    toast('Unlimited miles added &#8212; $'+(Number(d.fee)||0).toFixed(2)+' added to your balance.','success');
+    if(typeof loadPortalData==='function') loadPortalData();
+  }catch(e){
+    toast('Network error. Call (214) 207-2481.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles &#8594;'; }
+  }
+}
+
+function showPayBalance(b){
+  const bal = Number(b.remainingBalance) || 0;
+  if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed'].includes((b.status||'').toLowerCase())) return '';
+  const fee   = Math.round(bal * 0.05 * 100) / 100;
+  const tax   = Math.round(bal * 0.0825 * 100) / 100;
+  const total = Math.round((bal + fee + tax) * 100) / 100;
+  return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+    <div style="background:rgba(249,115,22,.07);border:1px solid rgba(249,115,22,.25);border-radius:12px;padding:12px 14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-size:12px;font-weight:700;color:#fb923c;">\uD83D\uDCB3 Balance Due</div>
+        <div style="font-size:16px;font-weight:800;color:#fb923c;">$${bal.toFixed(2)}</div>
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,.4);margin-bottom:10px;">
+        Total charged: $${total.toFixed(2)} &nbsp;\u00B7&nbsp; includes 5% processing fee + 8.25% TX tax
+      </div>
+      <button onclick="payBalance('${b.id}')" id="payBtn_${b.id}"
+        style="width:100%;padding:11px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">
+        Pay $${total.toFixed(2)} by Card \u2192
+      </button>
+    </div>
+  </div>`;
+}
+
+async function payBalance(bookingId){
+  const btn = document.getElementById('payBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-balance`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId })
+    });
+    const d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.url){
+      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+  }
+}
+
+function showPendingCharges(b){
+  const allCharges = (b.portalCharges||[]).filter(c => c && Number(c.amount) >= 0.50);
+  if(!allCharges.length) return '';
+  return allCharges.map(c => {
+    const base  = Number(c.amount);
+    const fee   = Math.round(base * 0.05 * 100) / 100;
+    const tax   = Math.round(base * 0.0825 * 100) / 100;
+    const total = Math.round((base + fee + tax) * 100) / 100;
+    const isPaid = !!c.paidAt;
+    if(isPaid){
+      const paidDate = c.paidAt ? new Date(c.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'America/Chicago'}) : '';
+      return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+        <div style="background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.25);border-radius:12px;padding:12px 14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <div style="font-size:12px;font-weight:700;color:#4ade80;">\u2705 Paid</div>
+            <div style="font-size:15px;font-weight:800;color:#4ade80;">$${total.toFixed(2)}</div>
+          </div>
+          <div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:2px;">${c.description||''}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.35);">Paid on ${paidDate} &nbsp;\u00B7&nbsp; includes 5% fee + 8.25% TX tax</div>
+        </div>
+      </div>`;
+    }
+    return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+      <div style="background:rgba(99,91,255,.08);border:1px solid rgba(99,91,255,.3);border-radius:12px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div style="font-size:12px;font-weight:700;color:#a78bfa;">\uD83D\uDCB8 Payment Request</div>
+          <div style="font-size:15px;font-weight:800;color:#a78bfa;">$${base.toFixed(2)}</div>
+        </div>
+        <div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:2px;">${c.description||''}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,.35);margin-bottom:10px;">
+          Total charged: $${total.toFixed(2)} &nbsp;\u00B7&nbsp; includes 5% processing fee + 8.25% TX tax
+        </div>
+        <button onclick="payCharge('${b.id}','${c.id}')" id="chargeBtn_${c.id}"
+          style="width:100%;padding:11px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">
+          Pay $${total.toFixed(2)} by Card \u2192
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function payCharge(bookingId, chargeId){
+  const btn = document.getElementById('chargeBtn_'+chargeId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-charge`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId, chargeId })
+    });
+    const d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.url){
+      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+  }
+}
+
+function renderTripCountdown(){
+  const el = document.getElementById('trip-countdown');
+  if(!el) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const upcoming = state.bookings.filter(b => {
+    const s = (b.status||'').toLowerCase();
+    return (s==='confirmed'||s==='pending') && b.pickupDate;
+  });
+  if(!upcoming.length){ el.innerHTML=''; return; }
+  upcoming.sort((a,b)=>new Date(a.pickupDate)-new Date(b.pickupDate));
+  const next = upcoming[0];
+  const pickupD = parseLocalDate(next.pickupDate);
+  if(!pickupD || pickupD < today){ el.innerHTML=''; return; }
+  const diff = Math.round((pickupD - today) / 86400000);
+  const veh = next.vehicle || 'Your vehicle';
+  let msg;
+  if(diff === 0) msg = `Your trip starts today! \uD83D\uDE97`;
+  else msg = `Your ${esc(veh)} is ready in ${diff} day${diff!==1?'s':''}`;
+  el.innerHTML = `<div style="background:linear-gradient(135deg,rgba(201,169,98,.18),rgba(201,169,98,.08));border:1px solid rgba(201,169,98,.35);border-radius:14px;padding:14px 18px;margin-bottom:14px;text-align:center;font-weight:700;font-size:14px;color:var(--gold);">${msg}</div>`;
+}
+
+function renderBookings(){
+  renderTripCountdown();
+  const el = document.getElementById('bookings-list');
+  const sorted = sortBookings(state.bookings);
+  if(!sorted.length){ el.innerHTML=`<div class="empty-state"><div class="empty-icon">\uD83D\uDCC5</div><div>No bookings found.</div></div>`; return; }
+  el.innerHTML = sorted.map(b => {
+    const dateRange = `${fmtDate(b.pickupDate)} \u2192 ${fmtDate(b.dropoffDate||b.returnDate)}`;
+    const price = b.totalPrice||b.price||b.total||b.revenue||'';
+    const priceStr = price ? `$${Number(price).toLocaleString()}` : '';
+    const isCompleted = (b.status||'').toLowerCase()==='completed';
+    const rebookBtn = isCompleted ? `<button onclick="_fleetBook('${esc(b.vehicle||'')}')" style="font-size:12px;padding:6px 12px;border:1px solid var(--gold);color:var(--gold);border-radius:8px;background:transparent;cursor:pointer;margin-top:8px;">\u21A9 Rebook</button>` : '';
+    const paymentHistory = _buildPaymentHistory(b);
+    return `<div class="card">
+      <div class="card-header">
+        <div>
+          <div class="vehicle-name">${b.vehicleEmoji||'\uD83D\uDE97'} ${b.vehicle||b.vehicleName||'Vehicle'}</div>
+          <div class="booking-meta" style="margin-top:4px;">${dateRange}</div>
+        </div>
+        ${statusBadge(b.status||'pending')}
+      </div>
+      <div class="booking-meta">${priceStr?`<span>${priceStr}</span> &nbsp;\u00B7&nbsp; `:''}${bookingRef(b.id)}</div>
+      ${progressBar(b.status)}
+      ${showSignContract(b)}
+      ${showAddUnlimited(b)}
       ${showPayBalance(b)}
       ${showPendingCharges(b)}
       ${showCondition(b)}
