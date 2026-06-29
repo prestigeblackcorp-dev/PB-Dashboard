@@ -1,5 +1,5 @@
 /*
- * Prestige Black — shared front-end config (single source of truth).
+ * Prestige Black -- shared front-end config (single source of truth).
  *
  * Loaded synchronously (no defer/async) in the <head> of index.html,
  * obsidian.html, driver.html and portal.html, BEFORE the inline app scripts.
@@ -11,33 +11,33 @@
  * URL here updates all four apps at once.
  *
  * NOTE: there is intentionally NO Firebase config here. The front-end never
- * talks to Firebase directly — it only calls the Worker, which holds the
+ * talks to Firebase directly -- it only calls the Worker, which holds the
  * Firebase credentials server-side.
  */
 (function (g) {
-  // ── Cloudflare Worker base URLs ───────────────────────────────────────────
+  // -- Cloudflare Worker base URLs -------------------------------------------
   // Booking / chauffeur / messaging API (used by all four apps).
   g.PB_WORKER        = 'https://pb-booking.prestigeblackcorp.workers.dev';
   // ID-verification worker (owner dashboard only).
   g.PB_VERIFY_WORKER = 'https://idverify.prestigeblackcorp.workers.dev';
 
-  // ── Feature flags ─────────────────────────────────────────────────────────
+  // -- Feature flags ---------------------------------------------------------
   // Every roadmap feature is gated here so it can be killed instantly without a
-  // code redeploy — just flip a flag and re-push this one small file. Apps read
-  // via a guarded fallback: (window.PB_FLAGS||{}).x, so a failed load → all
-  // falsy → exactly today's behavior. Client-only wins that are verified safe
+  // code redeploy -- just flip a flag and re-push this one small file. Apps read
+  // via a guarded fallback: (window.PB_FLAGS||{}).x, so a failed load -> all
+  // falsy -> exactly today's behavior. Client-only wins that are verified safe
   // default ON; features needing owner-provisioned keys default OFF until the
   // keys exist (the worker also self-gates on env presence).
   g.PB_FLAGS = {
-    routedEta:   true,   // A — OSRM .duration live ETA (client-only)
-    vehicleBadge:true,   // B — vehicle + "PB Verified Chauffeur" on rider card
-    pwa:         true,   // C — register service worker + installable manifest
-    voiceNav:    true,   // D — spoken turn-by-turn for the driver
-    priceLock:   true,   // E — "Your fare · price locked"
-    resilience:  true,   // F — wake-lock + reconnect/visibility resume
-    webPush:     true,   // G — live: VAPID keys set in Cloudflare + webpush worker deployed
-    cardOnFile:  true,   // H — card-on-file (DEMO simulation until real Stripe keys added)
-    tipping:     true,   // H — tipping (DEMO simulation)
+    routedEta:   true,   // A -- OSRM .duration live ETA (client-only)
+    vehicleBadge:true,   // B -- vehicle + "PB Verified Chauffeur" on rider card
+    pwa:         true,   // C -- register service worker + installable manifest
+    voiceNav:    true,   // D -- spoken turn-by-turn for the driver
+    priceLock:   true,   // E -- "Your fare * price locked"
+    resilience:  true,   // F -- wake-lock + reconnect/visibility resume
+    webPush:     true,   // G -- live: VAPID keys set in Cloudflare + webpush worker deployed
+    cardOnFile:  true,   // H -- card-on-file (DEMO simulation until real Stripe keys added)
+    tipping:     true,   // H -- tipping (DEMO simulation)
     demoPay:     true,   // payments are a no-charge simulation; flip OFF when real Stripe keys exist
     googlePlaces:true,   // Google Places (New) search via worker proxy; LIVE (GOOGLE_PLACES_KEY set in Cloudflare)
     sigsOffload: true,   // ON (2026-06-15): signatures live in the /sigs store, NOT in the every-sync booking blob -> each sync is a few KB instead of MBs (fixes the heavy/fragile full sync). Enabling auto-runs a one-time /sigs backfill + stripped re-push (_autoMigrateSigsIfEnabled); never loses a sig (save+confirm to /sigs FIRST, else send inline; re-hydrated on load + re-inlined by the worker for the portal). Reversible: set false -> sigs re-inline.
@@ -48,10 +48,10 @@
   // Web Push VAPID public key (non-secret). Generated 2026-06; the matching private
   // key lives in the Cloudflare Worker env as VAPID_PRIVATE.
   g.PB_VAPID_PUBLIC = 'BPbEQQK8ZUQ1WWe2rsY9x0S-sueuHXrdD-71OE3HXLInCSMoy7-xOSrctEUsQoS8z7BQ8KsR95VlnFnIFNCzR2o';
-  // Stripe publishable key (non-secret, pk_live_…; paste here when ready).
+  // Stripe publishable key (non-secret, pk_live_...; paste here when ready).
   g.PB_STRIPE_PK = '';
 
-  // ── localStorage key registry ─────────────────────────────────────────────
+  // -- localStorage key registry ---------------------------------------------
   // The canonical list of keys the apps read/write, so they live in one place.
   // Adopt gradually (PB_KEYS.dashboardSecret instead of 'pb_dashboard_secret');
   // existing call sites that still use the literal string keep working.
