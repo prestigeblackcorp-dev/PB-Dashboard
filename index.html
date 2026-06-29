@@ -3810,14 +3810,38 @@ function _isSigStr(s){ return !!(s && typeof s==='string' && s.indexOf('data:ima
 // communication log. No-op (returns false) when the sig still matches the current config, or no sig exists.
 function _voidStaleCustomerSig(b, reason){
   if(!b || !_isSigStr(b.customerSig)) return false;
-  var sigVeh=b.customerSigVehicle||b.vehicle||'', sigColor=b.customerSigColor||'';
+  // Only void when the signature's RECORDED vehicle/color is KNOWN and actually differs. A portal-signed
+  // signature has no stamped customerSigVehicle/customerSigColor (the worker /signing/save never records
+  // them), so a blank stamp must NEVER be read as "stale" -- doing so spuriously voided every portal-signed
+  // Slingshot signature on the next contract open/save (blank color != 'Green'). v171 fix.
+  var sigVeh=b.customerSigVehicle||'', sigColor=b.customerSigColor||'';
   var curVeh=b.vehicle||'';
-  var curColor=(b.vehicle==='Polaris Slingshot')?(b.contractSentColor||sigColor):sigColor;
-  if(curVeh===sigVeh && curColor===sigColor) return false;
+  var curColor=(b.vehicle==='Polaris Slingshot')?(b.contractSentColor||''):'';
+  var vehStale  = !!sigVeh   && (curVeh   !== sigVeh);
+  var colorStale= !!sigColor && (curColor !== sigColor);
+  if(!vehStale && !colorStale) return false;
   (b._sigHistory=b._sigHistory||[]).push({sig:b.customerSig,date:b.customerSigDate||'',at:Number(b.customerSigAt)||0,vehicle:sigVeh,color:sigColor,voidedAt:Date.now(),reason:reason||'vehicle/color changed'});
   delete b.customerSig; delete b.customerSigDate; delete b.customerSigAt; delete b.customerSigVehicle; delete b.customerSigColor;
   b.customerSigClearedAt=Date.now(); b._t=Date.now();
   try{ logNotif('contract','Signature voided - '+(reason||'vehicle/color changed')+'; client must re-sign', b.name||'', b.id); }catch(e){}
+  return true;
+}
+// RECOVERY for the v168 bug above: a portal-signed Slingshot signature was wrongly voided (its color was
+// never recorded, so the void compared blank-vs-Green and fired). The real signature was archived to
+// _sigHistory before deletion, so restore it. Fingerprint of a SPURIOUS void = a Slingshot booking with a
+// _sigHistory entry whose recorded `color` is BLANK (an unstamped portal sig) holding a valid image; a
+// LEGITIMATE color-change void archives the actual signed color (non-blank) so it is never matched here.
+// Stamps the signed color on restore so it can't re-void, lifts the clear-tombstone, idempotent. v171.
+function _healSpuriouslyVoidedSig(b){
+  if(!b || b.vehicle!=='Polaris Slingshot' || _isSigStr(b.customerSig)) return false;
+  if(!Array.isArray(b._sigHistory) || !b._sigHistory.length) return false;
+  var ent=null;
+  for(var i=b._sigHistory.length-1;i>=0;i--){ var h=b._sigHistory[i]; if(h && !h.color && _isSigStr(h.sig)){ ent=h; break; } }
+  if(!ent) return false;
+  b.customerSig=ent.sig; b.customerSigDate=ent.date||''; b.customerSigAt=Number(ent.at)||Date.now();
+  b.customerSigVehicle='Polaris Slingshot'; b.customerSigColor=b.contractSentColor||'';
+  delete b.customerSigClearedAt; b._t=Date.now();
+  try{ logNotif('contract','Signature auto-restored from archive (was wrongly voided by the portal-color bug)', b.name||'', b.id); }catch(e){}
   return true;
 }
 // Green/white dot before "Polaris Slingshot" once the waiver/contract is SIGNED (customerSig) AND a color
@@ -4081,7 +4105,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v171';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v172';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -22524,6 +22548,9 @@ setTimeout(stickyTabFix, 200);
 function afterCloudLoad(ok){
   if(!ok) return;
   _healStrandedBookings();  // once/session: re-push any booking stranded by a stale pushed/unsyncable flag
+  // RECOVER any customer signature the v168 portal-color bug wrongly voided (restore from the _sigHistory
+  // archive + stamp the signed color so it can't re-void); pushes to cloud so every device gets it back. v171.
+  try{ var _hsvN=0; (bookings||[]).forEach(function(_hb){ if(_healSpuriouslyVoidedSig(_hb)) _hsvN++; }); if(_hsvN){ try{ cloudSave(); }catch(_e){} try{ toast(_hsvN+' signature'+(_hsvN>1?'s':'')+' auto-restored from archive'); }catch(_e){} } }catch(e){}
   // once/session: mirror the rental registry (rates/deposits) to the cloud fleet catalog so a price change
   // here propagates to the rider "Luxury Rentals" browse without the owner having to open the Vehicle Registry
   try{ if(!_rentalFleetSeeded && (window.PB_FLAGS||{}).fleetCatalogSync!==false){ _rentalFleetSeeded=true; _publishRentalFleet(); } }catch(e){}
