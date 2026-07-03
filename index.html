@@ -89,6 +89,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
   padding: 0 4px; line-height: 1; }
 .tab-badge-blue { background: rgba(96,165,250,.25); color: #60a5fa; }
 .tab-badge-green { background: rgba(52,211,153,.25); color: #34d399; }
+.tab-badge-gold { background: rgba(201,169,98,.28); color: #C9A962; }
 .tab-badge-green.pulse { animation: tabPulse 2s ease-in-out infinite; }
 @keyframes tabPulse { 0%,100%{opacity:1} 50%{opacity:.5} }
 
@@ -1402,6 +1403,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
   <button class="tab-btn" onclick="switchTab('upcoming')">&#128197; Upcoming <span id="tabBadgeUpcoming" class="tab-badge tab-badge-blue" style="display:none"></span></button>
   <button class="tab-btn" onclick="switchTab('current')">&#128663; Current <span id="tabBadgeCurrent" class="tab-badge tab-badge-green" style="display:none"></span> <span id="tabBadgeAwaiting" class="tab-badge pulse" style="display:none;background:#ef4444;color:#fff" title="Trips awaiting completion"></span></button>
   <button class="tab-btn" onclick="switchTab('previous')">&#128336; Previous</button>
+  <button class="tab-btn" onclick="switchTab('today')">&#128198; Today <span id="tabBadgeToday" class="tab-badge tab-badge-gold" style="display:none"></span></button>
   <button class="tab-btn" onclick="switchTab('cancelled')">&#128683; Cancelled</button>
   <button class="tab-btn" onclick="switchTab('calendar')">&#128467; Calendar</button>
   <div class="tab-sep"></div>
@@ -1873,6 +1875,11 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
 </div>
 
 <!-- &#9552;&#9552;&#9552; TAB: CANCELLED &#9552;&#9552;&#9552; -->
+<div id="tab-today" class="tab-panel">
+  <div class="main">
+    <div id="todayList"></div>
+  </div>
+</div>
 <div id="tab-cancelled" class="tab-panel">
   <div class="main">
     <div id="cancelledList"></div>
@@ -4293,7 +4300,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v176';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v177';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7310,6 +7317,7 @@ function clearAllData(){
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='today')     renderToday();
   if(activeTab==='cancelled')  renderCancelled();
   if(activeTab==='calendar')  renderCalendar();
 }
@@ -7798,12 +7806,13 @@ function switchTab(name){
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
   $d('tab-'+name).classList.add('active');
   var btns=document.querySelectorAll('.tab-btn');
-  var map={overview:0,upcoming:1,current:2,previous:3,cancelled:4,calendar:5,tax:6,fleet:7,customers:8,drivers:9,brokers:10,outreach:11};
+  var map={overview:0,upcoming:1,current:2,previous:3,today:4,cancelled:5,calendar:6,tax:7,fleet:8,customers:9,drivers:10,brokers:11,outreach:12};
   if(btns[map[name]]) btns[map[name]].classList.add('active');
   if(name==='calendar')   renderCalendar();
   else if(name==='upcoming')  renderUpcoming();
   else if(name==='current')   renderCurrent();
   else if(name==='previous')  renderPrevious();
+  else if(name==='today')     renderToday();
   else if(name==='cancelled') renderCancelled();
   else if(name==='tax')       renderTaxTab();
   else if(name==='fleet')     renderFleetTab();
@@ -10103,6 +10112,29 @@ function renderPrevious(){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  CANCELLED TRIPS
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// == TODAY: bookings created / submitted today (dashboard, portal, or booking site). Additive view -- these still show in Upcoming as normal; filtered by createdAt, not trip date. ==
+function renderToday(){
+  var t=todayStr();
+  var list=bookings.filter(function(b){
+    if(!b || b._deleted) return false;
+    var c=Number(b.createdAt)||0;
+    return c>0 && dateStr(new Date(c))===t;
+  }).sort(function(a,b){ return (Number(b.createdAt)||0)-(Number(a.createdAt)||0); });
+  _repeatSetCache=buildRepeatSet();
+  $d('todayList').innerHTML = list.length
+    ? '<div class="trip-group"><div class="trip-group-label">Booked today ('+list.length+')</div>'+list.map(function(b){ return tripCard(b,false); }).join('')+'</div>'
+    : '<div style="padding:40px;text-align:center;color:var(--muted)">No bookings created today yet.<br><span style="font-size:12px">New bookings from the dashboard, portal, or booking site show up here the moment they come in.</span></div>';
+  _repeatSetCache=null;
+  var tb=$d('tabBadgeToday'); if(tb){ tb.textContent=list.length; tb.style.display=list.length?'':'none'; }
+}
+// Lightweight count-only badge refresh, called from render() so the "booked today" count stays live on every tab.
+function _updateTodayBadge(){
+  var tb=$d('tabBadgeToday'); if(!tb) return;
+  var t=todayStr(), n=0;
+  for(var i=0;i<bookings.length;i++){ var b=bookings[i]; if(b && !b._deleted){ var c=Number(b.createdAt)||0; if(c>0 && dateStr(new Date(c))===t) n++; } }
+  tb.textContent=n; tb.style.display=n?'':'none';
+}
+
 function renderCancelled(){
   var cancelled=bookings.filter(function(b){
     return !b._deleted && b.status==='cancelled';
@@ -11773,6 +11805,7 @@ function saveBooking(){
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='today')     renderToday();
   if(activeTab==='cancelled')  renderCancelled();
   if(activeTab==='calendar')  renderCalendar();
 }
@@ -15743,6 +15776,7 @@ function quickStatus(id, newStatus){
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
   if(activeTab==='previous')  renderPrevious();
+  if(activeTab==='today')     renderToday();
   if(activeTab==='cancelled')  renderCancelled();
   if(activeTab==='calendar')  renderCalendar();
 }
@@ -22345,6 +22379,7 @@ function render(){
   renderIncomeList();
   renderExpenseLog();
   loadRideRevenue(); // lazily fold completed-ride fares into Overview revenue KPIs
+  try{ _updateTodayBadge(); }catch(e){}
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -23525,6 +23560,7 @@ var CMD_PAGES = [
   { icon:'\uD83D\uDCC5', label:'Upcoming',   action:function(){ switchTab('upcoming'); } },
   { icon:'\uD83D\uDE97', label:'Current',    action:function(){ switchTab('current'); } },
   { icon:'\uD83D\uDD50', label:'Previous',   action:function(){ switchTab('previous'); } },
+  { icon:'\uD83D\uDCC6', label:'Today',      action:function(){ switchTab('today'); } },
   { icon:'\uD83D\uDDD3', label:'Calendar',   action:function(){ switchTab('calendar'); } },
   { icon:'\uD83D\uDCB0', label:'Tax & Revenue', action:function(){ switchTab('tax'); } },
   { icon:'\uD83D\uDD27', label:'Fleet',      action:function(){ switchTab('fleet'); } },
