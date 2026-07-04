@@ -1913,7 +1913,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
       <div id="fleetPnL" style="margin-bottom:16px"></div>
       <div id="fleetAlerts" style="margin-bottom:12px"></div>
       <div class="chart-card" style="margin-bottom:16px">
-        <div class="chart-ttl">Vehicle Utilization &#8212; Last 90 Days</div>
+        <div class="chart-ttl">Vehicle Utilization <span id="fleetHeatmapDays" style="color:var(--muted);font-weight:400">&#8212; Last 90 Days</span></div>
         <div class="heatmap-wrap" id="utilizationHeatmap"></div>
       </div>
       <div id="fleetRecords"></div>
@@ -4300,7 +4300,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v177';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v178';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -16625,8 +16625,8 @@ function renderTaxTab(){
 function renderHeatmap(){
   var el=$d('utilizationHeatmap'); if(!el) return;
   var today=new Date(); today.setHours(0,0,0,0);
-  var days=90;
-  // Build date range (last 90 days)
+  var days=_fleetWindowDays();
+  // Build date range (last N days per the Fleet Overview period filter)
   var dates=[];
   for(var i=days-1;i>=0;i--) dates.push(dateStr(addDays(today,-i)));
   // Build booking lookup: dateStr -> set of vehicles
@@ -16639,7 +16639,7 @@ function renderHeatmap(){
   // Render one row per vehicle
   var html='<div style="font-size:10px;color:var(--muted);margin-bottom:8px;display:flex;gap:16px">'+
     '<span>Lighter = 1 booking &nbsp; Darker = multiple</span>'+
-    '<span style="margin-left:auto">\u2190 90 days ago &nbsp; Today \u2192</span>'+
+    '<span style="margin-left:auto">\u2190 '+days+' days ago &nbsp; Today \u2192</span>'+
     '</div>';
   ALL_VEHICLES.forEach(function(v){
     var hasBk=dates.some(function(d){ return dayVeh[d][v]; });
@@ -16652,7 +16652,8 @@ function renderHeatmap(){
       }).join('')+
       '</div>';
   });
-  el.innerHTML=html||'<div style="color:var(--muted);padding:12px">No bookings in last 90 days.</div>';
+  el.innerHTML=html||'<div style="color:var(--muted);padding:12px">No bookings in the last '+days+' days.</div>';
+  var _htD=$d('fleetHeatmapDays'); if(_htD) _htD.innerHTML='&mdash; Last '+days+' Days';
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -22712,31 +22713,47 @@ function applyRoleUI(){
 }
 
 // -- Vehicle P&L cards --------------------------------------------------------
+// -- Fleet Overview period filter (SEPARATE from the main Overview's _kpiPeriod, so it never touches the main Overview) --
+var _fleetPeriod = (function(){ try{ return localStorage.getItem('pb_fleet_period')||'all'; }catch(e){ return 'all'; } })();
+function _fleetWindowDays(){ return _fleetPeriod==='7'?7:_fleetPeriod==='30'?30:_fleetPeriod==='60'?60:90; } // utilization/heatmap window; '90' and 'all' -> 90
+function _fleetCutoff(){ if(_fleetPeriod==='all') return ''; return dateStr(addDays(new Date(todayStr()+'T00:00:00'), -(_fleetWindowDays()-1))); }
+function _fleetInPeriod(b){
+  if(_fleetPeriod==='all') return true;
+  var tod=todayStr(), cutoff=_fleetCutoff();
+  var pickup=b.pickupDate||b.date||'', ret=tripEndDate(b)||pickup;
+  return (pickup>=cutoff&&pickup<=tod)||(ret>=cutoff&&ret<=tod);
+}
+function _fleetDateIn(ds){ if(_fleetPeriod==='all') return true; if(!ds) return false; return ds>=_fleetCutoff()&&ds<=todayStr(); }
+function setFleetPeriod(p){ _fleetPeriod=p; try{ localStorage.setItem('pb_fleet_period',p); }catch(e){} renderVehiclePnL(); renderHeatmap(); }
+function _fkpi(label,val,color,sub){
+  return '<div class="kpi"><div class="kpi-label">'+esc(label)+'</div>'+
+    '<div class="kpi-val" style="color:'+(color||'var(--text)')+'">'+val+'</div>'+
+    (sub?'<div class="kpi-sub">'+esc(sub)+'</div>':'')+'</div>';
+}
 function renderVehiclePnL(){
   var el=$d('fleetPnL'); if(!el) return;
   var today=new Date(); today.setHours(0,0,0,0);
-  var d90=new Date(today); d90.setDate(d90.getDate()-90);
-  var d90str=dateStr(d90);
+  var winDays=_fleetWindowDays();
+  var winStart=addDays(today,-(winDays-1));
+  var isAll=_fleetPeriod==='all';
+  var fleet={rev:0,cost:0,bookings:0,bookedDays:0,capDays:0,activeV:0};
   var cards=ALL_VEHICLES.map(function(v){
-    var vBookings=bookings.filter(function(b){ return !b._deleted&&b.vehicle===v&&b.status!=='cancelled'; });
+    var vAll=bookings.filter(function(b){ return !b._deleted&&b.vehicle===v&&b.status!=='cancelled'; });
+    var vBookings=isAll?vAll:vAll.filter(_fleetInPeriod);
     var rev=vBookings.reduce(function(s,b){ return s+totalRevenue(b); },0);
-    var maintCost=maintenance.filter(function(m){ return !m._deleted&&m.vehicle===v; }).reduce(function(s,m){ return s+(Number(m.cost)||0); },0);
-    var expCost=expenses.filter(function(e){ return !e._deleted&&(e.vehicle===v||(e.description||'').toLowerCase().indexOf(v.toLowerCase())!==-1); }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
+    var maintCost=maintenance.filter(function(m){ return !m._deleted&&m.vehicle===v&&_fleetDateIn(m.date); }).reduce(function(s,m){ return s+(Number(m.cost)||0); },0);
+    var expCost=expenses.filter(function(e){ return !e._deleted&&(e.vehicle===v||(e.description||'').toLowerCase().indexOf(v.toLowerCase())!==-1)&&_fleetDateIn(e.date); }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
     var totalCost=maintCost+expCost;
     var net=rev-totalCost;
-    // Utilization last 90 days
-    var bookedDays=0;
-    var d=new Date(d90);
+    // Utilization over the selected window
+    var bookedDays=0, d=new Date(winStart);
     while(d<=today){
       var ds=dateStr(d);
-      var booked=vBookings.some(function(b){
-        var s=b.pickupDate||b.date, e=b.dropoffDate||s;
-        return ds>=s&&ds<=e;
-      });
-      if(booked) bookedDays++;
+      if(vBookings.some(function(b){ var s=b.pickupDate||b.date, e=b.dropoffDate||s; return ds>=s&&ds<=e; })) bookedDays++;
       d.setDate(d.getDate()+1);
     }
-    var util=Math.round(bookedDays/90*100);
+    var util=Math.round(bookedDays/winDays*100);
+    fleet.rev+=rev; fleet.cost+=totalCost; fleet.bookings+=vBookings.length; fleet.bookedDays+=bookedDays; fleet.capDays+=winDays; if(rev||totalCost) fleet.activeV++;
     if(!rev&&!maintCost&&!expCost) return null;
     var netColor=net>=0?'var(--green)':'var(--red)';
     return '<div class="kpi" style="min-width:160px">'+
@@ -22745,13 +22762,30 @@ function renderVehiclePnL(){
         '<div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Revenue</span><span style="font-weight:700;color:var(--gold)">'+$$(rev)+'</span></div>'+
         '<div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Expenses</span><span style="font-weight:700;color:var(--red)">'+$$(totalCost)+'</span></div>'+
         '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:4px;margin-top:2px"><span style="color:var(--muted)">Net</span><span style="font-weight:800;color:'+netColor+'">'+$$(net)+'</span></div>'+
-        '<div style="margin-top:4px;font-size:11px;color:var(--muted)">Utilization (90d): <strong style="color:var(--text)">'+util+'%</strong></div>'+
+        '<div style="margin-top:4px;font-size:11px;color:var(--muted)">Utilization ('+winDays+'d): <strong style="color:var(--text)">'+util+'%</strong></div>'+
       '</div>'+
     '</div>';
   }).filter(Boolean);
-  if(!cards.length){ el.innerHTML=''; return; }
-  el.innerHTML='<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Vehicle P&L</div>'+
-    '<div class="kpi-grid">'+cards.join('')+'</div>';
+  var pills=_pillBar([{val:'7',label:'7 Days'},{val:'30',label:'30 Days'},{val:'60',label:'60 Days'},{val:'90',label:'90 Days'},{val:'all',label:'All Time'}], _fleetPeriod, 'setFleetPeriod', 'Period');
+  var netFleet=fleet.rev-fleet.cost;
+  var margin=fleet.rev?Math.round(netFleet/fleet.rev*100):0;
+  var fleetUtil=fleet.capDays?Math.round(fleet.bookedDays/fleet.capDays*100):0;
+  var avgRev=fleet.activeV?fleet.rev/fleet.activeV:0;
+  var netColor2=netFleet>=0?'var(--green)':'var(--red)';
+  var periodLbl=isAll?'All Time':('Last '+winDays+' Days');
+  var overall='<div style="font-size:11px;font-weight:800;color:var(--gold);text-transform:uppercase;letter-spacing:.06em;margin:6px 0 8px">Fleet Overall &mdash; '+esc(periodLbl)+'</div>'+
+    '<div class="kpi-grid" style="margin-bottom:18px">'+
+      _fkpi('Total Revenue',$$(fleet.rev),'var(--gold)')+
+      _fkpi('Total Expenses',$$(fleet.cost),'var(--red)')+
+      _fkpi('Net Profit',$$(netFleet),netColor2,margin+'% margin')+
+      _fkpi('Bookings',String(fleet.bookings),'var(--text)')+
+      _fkpi('Fleet Utilization',fleetUtil+'%','var(--text)',winDays+'-day window')+
+      _fkpi('Avg Rev / Vehicle',$$(Math.round(avgRev)),'var(--text)',fleet.activeV+' earning')+
+    '</div>';
+  el.innerHTML = '<div style="margin-bottom:12px">'+pills+'</div>' + overall +
+    (cards.length
+      ? '<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Vehicle P&L</div><div class="kpi-grid">'+cards.join('')+'</div>'
+      : '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No vehicle activity in this period.</div>');
 }
 
 // -- Peak demand heatmap ------------------------------------------------------
