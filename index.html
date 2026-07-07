@@ -4300,7 +4300,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v182';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v183';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -10364,6 +10364,17 @@ function tripCard(b, showCountdown){
       (_paidFull?'\uD83D\uDCB3 Paid in Full':'\uD83D\uDD12 $'+_dl.toFixed(0)+' Date Lock Paid')+
     '</span></div>':'';
 
+  // Portal charges indicator -- surfaces the money added via portal charges (paid + unpaid) on the
+  // card, excluding refundable deposit HOLDS + extension-linked collection charges. Display-only
+  // (the amounts already flow through totalRevenue/Balance Due -- this never double-counts).
+  var _pcList=(b.portalCharges||[]).filter(function(c){ return c && Number(c.amount)>0 && !c._extPayment && !c._extId && !c._extRecorded && !c._foldedIntoRevenue && !_isDepositCharge(c); });
+  var portalChargeChip='';
+  if(_pcList.length){
+    var _pcSum=_pcList.reduce(function(s,c){ return s+(Number(c.amount)||0); },0);
+    var _pcPaidN=_pcList.filter(function(c){ return !!c.paidAt; }).length;
+    portalChargeChip='<div style="margin-top:4px"><span style="background:rgba(99,91,255,.12);color:#a78bfa;border:1px solid rgba(99,91,255,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">&#128184; +'+$$(_pcSum)+' &#183; '+_pcList.length+' portal charge'+(_pcList.length!==1?'s':'')+(_pcPaidN?' ('+_pcPaidN+' paid)':'')+'</span></div>';
+  }
+
   // Pickup/dropoff line
   var pdLine='';
   if(b.pickupDate||b.dropoffDate){
@@ -10403,6 +10414,7 @@ function tripCard(b, showCountdown){
       noDepositChip+
       unpaidChip+
       dateLockChip+
+      portalChargeChip+
       (b.switchedToUnlimitedAt?'<div style="margin-top:4px"><span style="background:rgba(124,196,255,.15);color:#7cc4ff;border:1px solid rgba(124,196,255,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\u221e Switched to Unlimited'+(b.switchedToUnlimitedFee?' (+'+$$(b.switchedToUnlimitedFee)+')':'')+'</span></div>':'')+
       (b.damage&&b.damage.flagged?'<div style="margin-top:4px"><span style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\uD83D\uDEA8 Damage Flagged</span></div>':'')+
       (isBlacklisted(b.phone,b.email,b.name)?'<div style="margin-top:4px"><span style="background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.35);border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700">\u26D4 Blacklisted</span></div>':'')+
