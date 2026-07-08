@@ -4300,7 +4300,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v186';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v187';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7504,6 +7504,35 @@ function _balanceWithCharges(b){
   var _base=b.remainingBalance!=null?Number(b.remainingBalance)||0:Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock)||0));
   return Math.max(0,_base+_pc);
 }
+// Consolidated cash-received LEDGER for a booking: every payment carrying a received timestamp --
+// date lock, base balance, each PAID non-deposit/non-extension-linked portal charge, each PAID
+// extension, and each PAID authorized-driver payment -- as {label,amount,method,ts}, sorted by the
+// date received. DISPLAY-only: the Today KPI already buckets each of these by the SAME date field
+// (dateLockPaidAt / balancePaidAt / charge.paidAt / ext.paidAt / driver.paidAt), so this just lists
+// the same money in one dated view. Extension-LINKED + deposit-HOLD charges are excluded exactly as
+// they are from revenue, so the ledger sum equals the booking's collected (cash-basis) revenue.
+function _paymentsReceived(b){
+  if(!b) return [];
+  function _ts(x){ var t=new Date(x).getTime(); return isNaN(t)?0:t; }
+  function _m(x){ x=String(x||'').trim(); if(!x) return ''; if(x.toLowerCase()==='stripe') return 'Card'; return x.charAt(0).toUpperCase()+x.slice(1); }
+  var out=[];
+  if(Number(b.dateLock)>0 && b.dateLockPaidAt) out.push({label:'Date Lock', amount:Number(b.dateLock)||0, method:'', ts:_ts(b.dateLockPaidAt)});
+  if(b.balancePaidAt && (Number(b.balancePaidAmount)||0)>0) out.push({label:'Balance', amount:Number(b.balancePaidAmount)||0, method:_m(b.balancePaidMethod), ts:_ts(b.balancePaidAt)});
+  (b.portalCharges||[]).forEach(function(c){
+    if(!c||!c.paidAt||c._foldedIntoRevenue||c._extPayment||c._extRecorded||c._extId||_isDepositCharge(c)) return;
+    out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt)});
+  });
+  (b.extensions||[]).forEach(function(e){
+    if(!e||!e.paidAt||!(Number(e.additionalCharge)>0)) return;
+    out.push({label:'Extension', amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt)});
+  });
+  (Array.isArray(b.extraDrivers)?b.extraDrivers:[]).forEach(function(d){
+    if(!d||!d.paid||!d.paidAt||!(Number(d.payAmount)>0)) return;
+    out.push({label:'Authorized Driver'+(d.name?' ('+String(d.name)+')':''), amount:Number(d.payAmount)||0, method:_m(d.paidMethod), ts:_ts(d.paidAt)});
+  });
+  out.sort(function(x,y){ return (x.ts||0)-(y.ts||0); });
+  return out;
+}
 // Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
 // raw b.revenue AND also bucket portal charges by paidAt would otherwise count a folded
 // fee twice \u2014 subtract this from the base term so it's counted once (via the paidAt loop).
@@ -10702,6 +10731,20 @@ function openBookingDetail(id){
     '<div class="detail-row"><span class="detail-label">Security Deposit</span><span class="detail-val">'+$$(b.deposit)+'</span></div>'+
     (Number(b.depositKept)?'<div class="detail-row"><span class="detail-label">Deposit Kept</span><span class="detail-val" style="color:var(--green)">'+$$(b.depositKept)+'</span></div>':'')+
     (Number(b.deposit)?'<div class="detail-row"><span class="detail-label">Deposit Returned</span><span class="detail-val">'+$$(Math.max(0,(Number(b.deposit)||0)-(Number(b.depositKept)||0)))+'</span></div>':'')+
+    // Payments Received -- every logged payment (date lock, balance, each portal charge, extension,
+    // authorized-driver payment) as a dated list, sorted by the date received, with a Total Collected
+    // footer. Each line's date is the SAME timestamp the Today cash-basis KPI counts that money on.
+    (function(){
+      var _pays=_paymentsReceived(b);
+      if(!_pays.length) return '';
+      var _rows=_pays.map(function(p){
+        var _d=new Date(p.ts), _ds=isNaN(_d.getTime())?'&#8212;':_d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+        return '<div class="detail-row"><span class="detail-label">'+_ds+' <span style="opacity:.6">'+esc(p.label)+(p.method?' &#183; '+esc(p.method):'')+'</span></span><span class="detail-val" style="color:var(--green)">'+$$(p.amount)+'</span></div>';
+      }).join('');
+      var _tot=_pays.reduce(function(s,p){ return s+(Number(p.amount)||0); },0);
+      return '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">Payments Received</div>'+_rows+
+        '<div class="detail-row" style="border-top:1px solid rgba(255,255,255,.08);margin-top:2px;padding-top:6px"><span class="detail-label" style="font-weight:700">Total Collected</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(_tot)+'</span></div>';
+    })()+
     '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">Add-ons</div>'+
     addonsHtml+
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' \u2014 '+esc(b.addlIncome.desc):'')+'</span></div>':'')+
