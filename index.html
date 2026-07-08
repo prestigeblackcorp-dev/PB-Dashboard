@@ -4300,7 +4300,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v188';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v189';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -16584,15 +16584,31 @@ function editRemainingBalance(id){
     '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:420px">'+
       '<div style="font-size:16px;font-weight:800;margin-bottom:4px">Update Balance</div>'+
       '<div style="font-size:12px;color:var(--muted);margin-bottom:18px">'+esc(b.name||'')+' \u00B7 '+esc(b.vehicle||'')+'</div>'+
-      '<div style="margin-bottom:14px"><div class="flabel">Remaining Balance ($)</div>'+
+      '<div style="margin-bottom:12px"><div class="flabel">Remaining Balance ($)</div>'+
         '<input id="bmBalance" type="number" min="0" step="0.01" class="finput" style="width:100%" value="'+cur+'" oninput="_bmSync()"></div>'+
+      // Partial payment -- checkbox above "Mark Balance as Paid"; checking it reveals an amount + method
+      // box right below the balance. A partial draws the remaining down and logs a dated entry (it does
+      // NOT mark the balance fully paid). Mutually exclusive with Mark-as-Paid via _bmToggle.
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'+
+        '<input type="checkbox" id="bmPartialChk" '+(paidAlready?'disabled':'')+' style="width:16px;height:16px;accent-color:var(--gold);cursor:pointer" onchange="_bmToggle(\'partial\')">'+
+        '<label for="bmPartialChk" style="font-size:13px;font-weight:700;cursor:pointer;color:var(--gold)">Partial payment received</label>'+
+      '</div>'+
+      '<div id="bmPartialFields" style="display:none;margin-bottom:14px;padding:12px;background:var(--card2);border:1px solid var(--border);border-radius:10px">'+
+        '<div style="margin-bottom:10px"><div class="flabel">Partial Amount ($)</div>'+
+          '<input id="bmPartialAmt" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00" oninput="_bmSync()"></div>'+
+        '<div><div class="flabel">Payment Method</div>'+
+          '<select id="bmPartialMethod" class="finput" style="width:100%">'+
+            methods.map(function(m){ return '<option value="'+m+'">'+(m||'-- method --')+'</option>'; }).join('')+
+          '</select></div>'+
+        '<div id="bmPartialHint" style="font-size:11px;color:var(--muted);margin-top:8px">Draws the remaining balance down and logs a dated partial. Repeat until settled.</div>'+
+      '</div>'+
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'+
-        '<input type="checkbox" id="bmPaidChk" '+(paidAlready?'checked':'')+' style="width:16px;height:16px;accent-color:var(--green);cursor:pointer" onchange="_bmSync()">'+
+        '<input type="checkbox" id="bmPaidChk" '+(paidAlready?'checked':'')+' style="width:16px;height:16px;accent-color:var(--green);cursor:pointer" onchange="_bmToggle(\'paid\')">'+
         '<label for="bmPaidChk" style="font-size:13px;font-weight:700;cursor:pointer;color:var(--green)">\u2705 Mark Balance as Paid</label>'+
       '</div>'+
       '<div id="bmPaidFields" style="display:'+(paidAlready?'block':'none')+'">'+
         '<div style="margin-bottom:12px"><div class="flabel">Amount Paid ($)</div>'+
-          '<input id="bmAmt" type="number" min="0" step="0.01" class="finput" style="width:100%" value="'+(b.balancePaidAmount||cur||'')+'"></div>'+
+          '<input id="bmAmt" type="number" min="0" step="0.01" class="finput" style="width:100%" value="'+((Array.isArray(b.balancePayments)&&b.balancePayments.length&&!b.balancePaidAt)?cur:(b.balancePaidAmount||cur||''))+'"></div>'+
         '<div style="margin-bottom:18px"><div class="flabel">Payment Method</div>'+
           '<select id="bmMethod" class="finput" style="width:100%">'+
             methods.map(function(m){ return '<option value="'+m+'"'+(m===(b.balancePaidMethod||'')?' selected':'')+'>'+(m||'\u2014 method \u2014')+'</option>'; }).join('')+
@@ -16609,15 +16625,56 @@ function editRemainingBalance(id){
 function _bmSync(){
   var bal=parseFloat(($d('bmBalance')||{}).value);
   var chk=$d('bmPaidChk');
-  if(bal===0 && chk && !chk.checked) chk.checked=true;   // zero balance \u21D2 paid in full
+  var pchk=$d('bmPartialChk');
+  if(bal===0 && chk && !chk.checked && !(pchk&&pchk.checked)) chk.checked=true;   // zero balance \u21D2 paid in full
+  var pf=$d('bmPartialFields'); if(pf) pf.style.display=(pchk&&pchk.checked)?'block':'none';
   var f=$d('bmPaidFields'); if(f) f.style.display=(chk&&chk.checked)?'block':'none';
+  // Live hint: show what the balance becomes after this partial
+  var ph=$d('bmPartialHint');
+  if(ph && pchk && pchk.checked){
+    var pa=parseFloat(($d('bmPartialAmt')||{}).value);
+    if(!isNaN(pa)&&pa>0){
+      var _left=Math.max(0,(Number(bal)||0)-pa);
+      ph.textContent=_left>0?('Remaining after this payment: $'+_left.toFixed(2)+'. Repeat until settled.'):'This clears the balance in full.';
+    } else {
+      ph.textContent='Draws the remaining balance down and logs a dated partial. Repeat until settled.';
+    }
+  }
+}
+// Partial vs Mark-as-Paid are mutually exclusive: checking one clears the other, then re-sync the reveal.
+function _bmToggle(which){
+  var p=$d('bmPartialChk'), k=$d('bmPaidChk');
+  if(which==='partial' && p&&p.checked && k) k.checked=false;
+  if(which==='paid' && k&&k.checked && p) p.checked=false;
+  _bmSync();
 }
 function saveBalanceModal(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   var bal=parseFloat(($d('bmBalance')||{}).value);
   if(isNaN(bal)||bal<0){ alert('Please enter a valid amount.'); return; }
   var paid=$d('bmPaidChk')&&$d('bmPaidChk').checked;
-  if(paid){
+  var partial=$d('bmPartialChk')&&$d('bmPartialChk').checked;
+  var _pAmt=0;
+  if(partial){
+    // Dated PARTIAL payment entered right in the modal (mirrors markBalancePaid): draw the balance down,
+    // log only the base portion as a dated entry, and mark fully paid ONLY if this partial happens to clear
+    // it. Anything less than the full balance stays a partial and just reduces the remaining.
+    _pAmt=parseFloat(($d('bmPartialAmt')||{}).value);
+    if(isNaN(_pAmt)||_pAmt<=0){ alert('Enter the partial payment amount.'); return; }
+    var _pMethod=($d('bmPartialMethod')||{}).value||'';
+    var _pDue=Number(bal)||0;                     // remaining owed before this partial (the Remaining field)
+    var _pRem=Math.max(0,_pDue-_pAmt);
+    var _pExt=0;
+    if(_pRem<=0){
+      _pExt=_settleOutstandingExtensions(b, _pMethod);   // this partial cleared it -> settle extensions + mark paid
+      b.balancePaidAt=b.balancePaidAt||Date.now();
+      b.remainingBalance=0;
+    } else {
+      b.remainingBalance=_pRem;
+    }
+    var _pBase=Math.max(0,_pAmt-_pExt);
+    if(_pBase>0) _recordBalancePayment(b, _pBase, _pMethod);
+  } else if(paid){
     var amt=parseFloat(($d('bmAmt')||{}).value);
     var _bmMethod=($d('bmMethod')||{}).value||'';
     var _hasPartials=Array.isArray(b.balancePayments)&&b.balancePayments.length;
@@ -16625,11 +16682,12 @@ function saveBalanceModal(id){
     // folded into an as-yet-unpaid base balance). _extPaid>0 means this collection went to extensions.
     var _extPaid=_settleOutstandingExtensions(b, _bmMethod);
     if(_hasPartials){
-      // Booking already tracks dated partials -> append the still-owed BASE as the FINAL dated payment so
-      // the ledger + Today KPI tie out. Only when not already settled (never a duplicate on a re-save, and
-      // the running cumulative balancePaidAmount is left intact).
+      // Booking already tracks dated partials -> append the still-owed BASE (the Remaining field `bal`, NOT
+      // the "Amount Paid" box which pre-fills to the cumulative already collected) as the FINAL dated payment
+      // so the ledger + Today KPI tie out to the full balance. Only when not already settled (never a
+      // duplicate on a re-save, and the running cumulative balancePaidAmount is left intact).
       if(!b.balancePaidAt){
-        var _finalBase=Math.max(0,(isNaN(amt)?bal:amt)-_extPaid);
+        var _finalBase=Math.max(0,(Number(bal)||0)-_extPaid);
         if(_finalBase>0) _recordBalancePayment(b, _finalBase, _bmMethod);
         b.balancePaidAt=Date.now();
       }
@@ -16649,7 +16707,7 @@ function saveBalanceModal(id){
   if(typeof renderOutstanding==='function') renderOutstanding();
   if(typeof render==='function') render();   // refresh KPIs so Today reflects the payment immediately
   var ov=$d('balanceModalOverlay'); if(ov) ov.remove();
-  toast(b.name+(paid?' \u2014 balance marked paid'+(b.balancePaidMethod?' via '+b.balancePaidMethod:'')+'.':' \u2014 remaining balance updated to $'+bal));
+  toast(b.name+(partial?(' \u2014 partial payment of $'+_pAmt.toFixed(2)+' recorded'+(Number(b.remainingBalance)>0?' \u00b7 $'+Number(b.remainingBalance).toFixed(2)+' still due':' \u2014 paid in full')):(paid?' \u2014 balance marked paid'+(b.balancePaidMethod?' via '+b.balancePaidMethod:'')+'.':' \u2014 remaining balance updated to $'+bal)));
 }
 function markBalancePaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
