@@ -4300,7 +4300,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v187';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v188';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7517,7 +7517,7 @@ function _paymentsReceived(b){
   function _m(x){ x=String(x||'').trim(); if(!x) return ''; if(x.toLowerCase()==='stripe') return 'Card'; return x.charAt(0).toUpperCase()+x.slice(1); }
   var out=[];
   if(Number(b.dateLock)>0 && b.dateLockPaidAt) out.push({label:'Date Lock', amount:Number(b.dateLock)||0, method:'', ts:_ts(b.dateLockPaidAt)});
-  if(b.balancePaidAt && (Number(b.balancePaidAmount)||0)>0) out.push({label:'Balance', amount:Number(b.balancePaidAmount)||0, method:_m(b.balancePaidMethod), ts:_ts(b.balancePaidAt)});
+  // (base-balance payments -- dated partials or the legacy single record -- are appended below)
   (b.portalCharges||[]).forEach(function(c){
     if(!c||!c.paidAt||c._foldedIntoRevenue||c._extPayment||c._extRecorded||c._extId||_isDepositCharge(c)) return;
     out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt)});
@@ -7530,8 +7530,61 @@ function _paymentsReceived(b){
     if(!d||!d.paid||!d.paidAt||!(Number(d.payAmount)>0)) return;
     out.push({label:'Authorized Driver'+(d.name?' ('+String(d.name)+')':''), amount:Number(d.payAmount)||0, method:_m(d.paidMethod), ts:_ts(d.paidAt)});
   });
+  if(Array.isArray(b.balancePayments) && b.balancePayments.length){
+    var _bn=b.balancePayments.length;
+    b.balancePayments.forEach(function(p,i){
+      if(!p||!(Number(p.amount)>0)) return;
+      out.push({label:'Balance payment'+(_bn>1?' '+(i+1)+'/'+_bn:''), amount:Number(p.amount)||0, method:_m(p.method), ts:_ts(p.ts)});
+    });
+  } else if(b.balancePaidAt && (Number(b.balancePaidAmount)||0)>0){
+    out.push({label:'Balance', amount:Number(b.balancePaidAmount)||0, method:_m(b.balancePaidMethod), ts:_ts(b.balancePaidAt)});
+  }
   out.sort(function(x,y){ return (x.ts||0)-(y.ts||0); });
   return out;
+}
+// Append a dated BASE-balance payment to b.balancePayments and refresh the summary fields:
+// balancePaidAmount = cumulative total collected toward the base (so a running total, not just the last
+// chunk); balancePaidMethod = the single method used, or 'Multiple' when they differ. Every entry is
+// {amount,method,ts}. This is the authoritative record the Payments Received ledger lists and the Today
+// cash-basis KPI buckets by each entry's own date -- so a $400 partial paid today counts today, and the
+// $900 final paid next week counts next week, and together they tie to the full balance.
+function _recordBalancePayment(b, amount, method){
+  amount=Math.max(0,Number(amount)||0);
+  if(!(amount>0)) return;
+  if(!Array.isArray(b.balancePayments)) b.balancePayments=[];
+  b.balancePayments.push({ amount:amount, method:String(method||'').trim(), ts:Date.now() });
+  b.balancePaidAmount=b.balancePayments.reduce(function(s,p){ return s+(Number(p.amount)||0); },0);
+  var _seen={}; b.balancePayments.forEach(function(p){ var m=String(p.method||'').trim(); if(m) _seen[m]=1; });
+  var _keys=Object.keys(_seen);
+  b.balancePaidMethod=_keys.length>1?'Multiple':(_keys[0]||String(method||'').trim());
+}
+// Base rental cash collected on a specific calendar day (dayStr='YYYY-MM-DD'), PARTIAL-AWARE. Returns
+// {base, stripe} where base = base cash collected that day (clamped to the base balance) and stripe = the
+// Stripe-collected portion (carries the 5%+8.25% card gross-up; Zelle/cash never does). When the booking
+// has the dated b.balancePayments ledger, each partial counts on its OWN day. Otherwise it falls back to
+// the LEGACY single balancePaidAmount stamped on balancePaidAt (or pickup-anchored when the balance was
+// manually zeroed) -- i.e. a booking WITHOUT balancePayments returns byte-identical values to the prior
+// inline logic, so existing data + the plain full-payment flow are unchanged.
+function _baseCashOn(b, dayStr){
+  var baseBalance=Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
+  if(Array.isArray(b.balancePayments) && b.balancePayments.length){
+    var sum=0, stripe=0;
+    b.balancePayments.forEach(function(p){
+      if(!p||!p.ts||dateStr(new Date(p.ts))!==dayStr) return;
+      var a=Math.max(0,Number(p.amount)||0); sum+=a;
+      if(String(p.method||'').trim().toLowerCase()==='stripe') stripe+=a;
+    });
+    var base=Math.max(0,Math.min(sum,baseBalance));
+    return { base:base, stripe: sum>0 ? stripe*(base/sum) : 0 };
+  }
+  var _pd=b.pickupDate||b.date||'';
+  var paidTs=b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd?new Date(_pd+'T12:00:00').getTime():0) : 0);
+  if(!paidTs || dateStr(new Date(paidTs))!==dayStr) return { base:0, stripe:0 };
+  var extPaidDay=(b.extensions||[]).reduce(function(es,e){ return (e&&e.paidAt&&dateStr(new Date(e.paidAt))===dayStr)?es+(Number(e.additionalCharge)||0):es; },0);
+  var collected=(b.balancePaidAmount!=null && !isNaN(Number(b.balancePaidAmount)))?Number(b.balancePaidAmount):baseBalance;
+  var base=Math.max(0,Math.min(collected-extPaidDay,baseBalance));
+  var stripe=(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe')?base:0;
+  return { base:base, stripe:stripe };
 }
 // Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
 // raw b.revenue AND also bucket portal charges by paidAt would otherwise count a folded
@@ -8019,25 +8072,22 @@ function renderKPIs(filtered, containerId){
     });
     // Per-booking BASE collected today (strict cash-basis). Count only the portion of TODAY's payment
     // that went to the BASE rental \u2014 NEVER the full revenue, and NEVER an extension paid today (those
-    // are counted on the Extensions line below). Uses balancePaidAmount (what was ACTUALLY collected)
-    // when present, clamped to the base balance \u2014 so a big extension payment that zeroed the booking's
-    // balance can't drag the whole base into today (the bug that read $580 instead of $230).
+    // are counted on the Extensions line below). _baseCashOn is PARTIAL-AWARE: with the dated
+    // b.balancePayments ledger each partial counts on its OWN day (a $400 partial today counts today, its
+    // $900 final counts the day it lands); without it, it falls back to the legacy single balancePaidAmount
+    // clamped to the base balance \u2014 so a big extension payment that zeroed the booking's balance still
+    // can't drag the whole base into today (the bug that read $580 instead of $230).
     pickupBalance = 0; _baseBfToday = 0;
     allActive.forEach(function(b){
-      // Count if explicitly marked paid today, OR if remaining balance is 0 (manually zeroed \u2192 anchor
-      // to pickup date, NOT _t, so editing an old booking doesn't pull it into today).
-      var _pd = b.pickupDate || b.date || '';
-      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd ? new Date(_pd+'T12:00:00').getTime() : 0) : 0);
-      if(!paidTs || dateStr(new Date(paidTs))!==tod) return;
       var baseBalance  = Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
-      var extPaidToday = (b.extensions||[]).reduce(function(es,e){ return (e&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.additionalCharge)||0):es; },0);
-      var collected    = (b.balancePaidAmount!=null && !isNaN(Number(b.balancePaidAmount))) ? Number(b.balancePaidAmount) : baseBalance;
-      var baseGross    = Math.max(0, Math.min(collected - extPaidToday, baseBalance)); // base cash collected today
+      var _bc          = _baseCashOn(b, tod);           // {base, stripe} collected today, partial-aware
+      var baseGross    = _bc.base;
+      if(!(baseGross>0)) return;
       var ratio        = baseBalance>0 ? (baseGross/baseBalance) : 0;
       var baseBroker   = (Number(b.brokerFee)||0)*brokerRateDays(b)*ratio;             // base broker, proportional to base collected
       pickupBalance += baseGross - baseBroker;
       _baseBfToday  += baseBroker;
-      if(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe') _stripeBaseToday += baseGross;
+      _stripeBaseToday += _bc.stripe;                   // only Stripe-collected base carries the 13.25% gross-up
     });
     // Extension value COLLECTED today (ext.paidAt today, ANY booking) \u2192 full value to gross on the
     // Extensions line; its broker subtracts into net. Cash-basis: an extension counts when its money is
@@ -8625,12 +8675,16 @@ function renderVehicleTable(filtered){
       map[b.vehicle].bookings++;
     });
     allActive.forEach(function(b){
-      var _pDate2 = b.pickupDate || b.date || '';
-      var paidTs = b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pDate2 ? new Date(_pDate2+'T12:00:00').getTime() : 0) : 0);
-      if(!paidTs||dateStr(new Date(paidTs))!==_kpiDR3.from) return;
+      // Base rental cash collected on this day, PARTIAL-AWARE (each dated balance payment on its own day;
+      // legacy single-record bookings fall back to the same value as before). Net of the proportional
+      // broker; at a single full payment this equals the prior (baseBalance - brokerFeeTotal).
+      var _bc=_baseCashOn(b, _kpiDR3.from);
+      if(!(_bc.base>0)) return;
       _seedV(b.vehicle);
+      var baseBalance=Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
       var _bf2=brokerFeeTotal(b);
-      map[b.vehicle].revenue+=Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0)-_bf2);
+      var _rat=baseBalance>0?(_bc.base/baseBalance):0;
+      map[b.vehicle].revenue+=Math.max(0, _bc.base - _bf2*_rat);
     });
     allActive.forEach(function(b){
       if(!(Number(b.dateLock)>0)||!b.dateLockPaidAt||dateStr(new Date(b.dateLockPaidAt))!==_kpiDR3.from) return;
@@ -16566,13 +16620,22 @@ function saveBalanceModal(id){
   if(paid){
     var amt=parseFloat(($d('bmAmt')||{}).value);
     var _bmMethod=($d('bmMethod')||{}).value||'';
+    var _hasPartials=Array.isArray(b.balancePayments)&&b.balancePayments.length;
     // Settle any outstanding extensions on their own paidAt/method first (a re-billed balance, or extensions
     // folded into an as-yet-unpaid base balance). _extPaid>0 means this collection went to extensions.
     var _extPaid=_settleOutstandingExtensions(b, _bmMethod);
-    // Stamp the base payment only on the FIRST base settlement, or a pure base-amount edit (no extensions
-    // settled here). This still lets you correct a recorded base amount, but never overwrites / date-drifts
-    // the prior base record when the money actually went to a re-billed extension.
-    if(!b.balancePaidAt || _extPaid===0){
+    if(_hasPartials){
+      // Booking already tracks dated partials -> append the still-owed BASE as the FINAL dated payment so
+      // the ledger + Today KPI tie out. Only when not already settled (never a duplicate on a re-save, and
+      // the running cumulative balancePaidAmount is left intact).
+      if(!b.balancePaidAt){
+        var _finalBase=Math.max(0,(isNaN(amt)?bal:amt)-_extPaid);
+        if(_finalBase>0) _recordBalancePayment(b, _finalBase, _bmMethod);
+        b.balancePaidAt=Date.now();
+      }
+    } else if(!b.balancePaidAt || _extPaid===0){
+      // Legacy single-record path: stamp the base payment on the FIRST base settlement, or a pure base-amount
+      // edit. Never overwrites / date-drifts the prior base record when the money went to a re-billed extension.
       b.balancePaidAt     = b.balancePaidAt || Date.now();
       b.balancePaidAmount = isNaN(amt) ? bal : amt;
       b.balancePaidMethod = _bmMethod;
@@ -16597,18 +16660,27 @@ function markBalancePaid(id){
   if(amt===null) return;
   var num=parseFloat(amt);
   if(isNaN(num)||num<0){ alert('Invalid amount.'); return; }
+  var _meth=method.trim();
   var _due=Number(cur)||0;
   var _remainder=Math.max(0,_due-num);
-  b.balancePaidAmount=num;
-  b.balancePaidMethod=method.trim();
+  var _extPaid=0;
   if(_remainder<=0){
-    _settleOutstandingExtensions(b, method.trim());   // fully paid -> any unpaid extensions folded into this balance are now paid too
+    // FULL settlement: any unpaid extensions folded into this balance are now paid too, each stamped on
+    // its OWN paidAt/method (returns the extension total so we log only the BASE portion below).
+    _extPaid=_settleOutstandingExtensions(b, _meth);
     b.balancePaidAt=Date.now();
     b.remainingBalance=0;
   } else {
     // PARTIAL payment: keep the unpaid remainder owed; do NOT mark fully paid or settle extensions.
+    // Anything less than the full balance is ALWAYS treated as a partial and just draws the balance down.
     b.remainingBalance=_remainder;
   }
+  // Log the BASE portion of this collection as a dated partial (extension money is dated on the extensions
+  // themselves, so it never doubles). _recordBalancePayment accumulates b.balancePaidAmount = the running
+  // total and appends {amount,method,ts} -- so N partials tie to the full balance and each counts in the
+  // Today gross on the day it landed.
+  var _basePortion=Math.max(0, num - _extPaid);
+  if(_basePortion>0) _recordBalancePayment(b, _basePortion, _meth);
   b._t=Date.now();
   save(); if(typeof flushCloudSave==='function') flushCloudSave();   // force the paid status to the client's portal now (Zelle/cash etc.)
   renderOutstanding();
