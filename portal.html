@@ -348,16 +348,31 @@
 
 <!-- Hidden file inputs -->
 <input type="file" id="photo-upload-input" accept="image/*" style="display:none;" onchange="handlePhotoUpload(event)">
+<input type="file" id="video-upload-input" accept="video/*" style="display:none;" onchange="handleVideoUpload(event)">
+
+<!-- Read-only video player (used for both the client's own videos and the owner's) -->
+<div id="videoPlayerModal" style="display:none;position:fixed;inset:0;z-index:9995;background:rgba(0,0,0,.9);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeVideoPlayer()">
+  <div style="width:100%;max-width:640px">
+    <video id="vpm-video" controls playsinline style="width:100%;max-height:78vh;border-radius:12px;background:#000" controlslist="nodownload"></video>
+    <button onclick="closeVideoPlayer()" style="width:100%;margin-top:12px;background:transparent;border:1px solid var(--border);color:var(--text-muted);border-radius:12px;padding:13px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Close</button>
+  </div>
+</div>
 
 <!-- Trip photo module: clients add/remove their own photos ONLY while this is
      open and unlocked; Save & Finish locks the phase to view-only forever. -->
 <div id="tripPhotoModal" style="display:none;position:fixed;inset:0;z-index:9990;background:rgba(0,0,0,.78);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeTripPhotoModule()">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:22px;width:100%;max-width:420px;max-height:86vh;overflow-y:auto">
-    <div id="tpm-title" style="font-size:17px;font-weight:800;margin-bottom:6px;color:var(--text)">Trip Photos</div>
-    <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5">Add or remove your photos now. When you tap <b style="color:var(--gold)">Save &amp; Finish</b>, they lock for your protection &#8212; you can view them anytime, but nothing can be added or removed.</div>
-    <div id="tpm-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0 6px"></div>
-    <div id="tpm-count" style="font-size:11px;color:var(--text-muted);text-align:center;margin-bottom:14px"></div>
-    <button onclick="finishTripPhotoModule()" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:12px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">&#128274; Save &amp; Finish</button>
+    <div id="tpm-title" style="font-size:17px;font-weight:800;margin-bottom:6px;color:var(--text)">Trip Photos &amp; Videos</div>
+    <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5">Add or remove your photos and videos now. When you tap <b style="color:var(--gold)">Save &amp; Finish</b>, everything locks for your protection &#8212; you can view it anytime, but nothing can be added, removed, or changed.</div>
+    <div id="tpm-locked" style="display:none;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);color:#4ade80;border-radius:10px;padding:12px;font-size:12.5px;text-align:center;margin:14px 0 4px">&#128274; Finalized &#8212; your photos &amp; videos are locked and view-only.</div>
+    <div id="tpm-photlabel" style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 8px">Photos</div>
+    <div id="tpm-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 6px"></div>
+    <div id="tpm-count" style="font-size:11px;color:var(--text-muted);text-align:center;margin-bottom:8px"></div>
+    <div id="tpm-vidlabel" style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:12px 0 8px">Videos</div>
+    <div id="tpm-vid-grid" style="display:flex;flex-direction:column;gap:8px;margin-bottom:6px"></div>
+    <div id="tpm-vid-count" style="font-size:11px;color:var(--text-muted);text-align:center;margin-bottom:6px"></div>
+    <div id="tpm-vid-prog" style="display:none;height:6px;background:var(--border);border-radius:4px;overflow:hidden;margin:0 0 12px"><div id="tpm-vid-progfill" style="height:100%;width:0;background:var(--gold);transition:width .2s"></div></div>
+    <button id="tpm-finish" onclick="finishTripPhotoModule()" style="width:100%;padding:14px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:12px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">&#128274; Save &amp; Finish</button>
     <button onclick="closeTripPhotoModule()" style="width:100%;margin-top:10px;background:transparent;border:1px solid var(--border);color:var(--text-muted);border-radius:12px;padding:13px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Close &#8212; keep editing later</button>
   </div>
 </div>
@@ -507,6 +522,7 @@ let state = {
   insurance:      (_cachedData && _cachedData.insurance)      || null,
   savedVehicles:  _initSaved.length ? _initSaved : ((_cachedData && _cachedData.savedVehicles) || []),
   pendingPhotoUpload: null,
+  pendingVideoUpload: null,
   profile:        (_cachedData && _cachedData.profile)        || {},
   notifications:  (_cachedData && _cachedData.notifications)  || [],
 };
@@ -2224,6 +2240,11 @@ function _calcMiles(id,start,inc,rate,unlimited){
   }
 }
 
+// One read-only video "play" row (client streams from R2 via the worker; never a download).
+function _vidRow(bookingId, vid, who){
+  const url=(`${WORKER}/video/get?bookingId=${encodeURIComponent(bookingId)}&key=${encodeURIComponent(vid.key)}&token=${encodeURIComponent(state.token)}`).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+  return `<div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:8px;padding:6px 9px"><button onclick="openVideoPlayer(&quot;${url}&quot;)" title="Play" style="width:28px;height:28px;flex-shrink:0;border-radius:6px;background:var(--gold);color:#000;border:none;font-size:12px;cursor:pointer">&#9654;</button><div style="flex:1;min-width:0;font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(vid.name||'Video')}</div><div style="font-size:9.5px;color:var(--text-muted);flex-shrink:0">${esc(who)}</div></div>`;
+}
 function showCondition(booking){
   const s = (booking.status||'').toLowerCase();
   if(!['confirmed','in-progress','in_progress','active','completed'].includes(s)) return '';
@@ -2242,12 +2263,20 @@ function showCondition(booking){
   const postOpen = endDay && todayStr >= endDay && !postLocked;
 
   const col = (label, ownerArr, custArr, type, open, locked, notYetMsg) => {
+    const ownerVids = ((type==='pre'?booking.checkInVideos:booking.checkOutVideos)||[]).filter(Boolean);
+    const custVids  = ((type==='pre'?booking.customerPreTripVideos:booking.customerPostTripVideos)||[]).filter(Boolean);
     let html = `<div><div class="condition-col-label">${label}</div><div class="photo-grid">`;
     ownerArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Uploaded by Prestige Black">`; });
     custArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Your photo">`; });
     html += '</div>';
+    if(ownerVids.length || custVids.length){
+      html += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
+      ownerVids.forEach(vid=>{ html += _vidRow(booking.id, vid, 'Prestige Black'); });
+      custVids.forEach(vid=>{ html += _vidRow(booking.id, vid, 'You'); });
+      html += '</div>';
+    }
     if(open){
-      html += `<button onclick="openTripPhotoModule('${esc(booking.id)}','${type}')" style="margin-top:6px;width:100%;padding:8px;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.35);color:var(--gold);border-radius:9px;font-size:11px;font-weight:800;cursor:pointer">\uD83D\uDCF7 ${custArr.length?'Manage':'Add'} ${label} Photos</button>`;
+      html += `<button onclick="openTripPhotoModule('${esc(booking.id)}','${type}')" style="margin-top:6px;width:100%;padding:8px;background:rgba(201,169,98,.12);border:1px solid rgba(201,169,98,.35);color:var(--gold);border-radius:9px;font-size:11px;font-weight:800;cursor:pointer">\uD83D\uDCF7 ${(custArr.length||custVids.length)?'Manage':'Add'} ${label} Photos &amp; Videos</button>`;
     } else if(locked){
       html += `<div style="font-size:10.5px;color:var(--text-muted);padding:5px 0">\uD83D\uDD12 Locked \u2014 view only</div>`;
     } else {
@@ -3250,17 +3279,38 @@ function _renderTripModule(){
   if(!_tripModule) return;
   const bk=state.bookings.find(b=>b.id===_tripModule.bookingId); if(!bk) return;
   const type=_tripModule.type;
+  const locked=!!(type==='pre'?bk.customerPreTripLockedAt:bk.customerPostTripLockedAt);
   const arr=((type==='pre'?bk.customerPreTripPhotos:bk.customerPostTripPhotos)||[]).filter(Boolean);
-  document.getElementById('tpm-title').textContent=(type==='pre'?'Pre-Trip':'Post-Trip')+' Photos \u2014 '+(bk.vehicle||'');
+  const vids=((type==='pre'?bk.customerPreTripVideos:bk.customerPostTripVideos)||[]).filter(Boolean);
+  document.getElementById('tpm-title').textContent=(type==='pre'?'Pre-Trip':'Post-Trip')+' Photos & Videos \u2014 '+(bk.vehicle||'');
+  document.getElementById('tpm-locked').style.display=locked?'block':'none';
+  document.getElementById('tpm-finish').style.display=locked?'none':'block';
+  // ---- Photos ----
   let g='';
   arr.forEach((src,i)=>{
-    g+=`<div style="position:relative"><img class="photo-thumb" src="${src}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${src}')"><button onclick="deleteTripPhoto(${i})" title="Remove photo" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#ef4444;color:#fff;border:2px solid var(--surface);font-size:11px;font-weight:800;cursor:pointer;line-height:1">\u2715</button></div>`;
+    g+=`<div style="position:relative"><img class="photo-thumb" src="${src}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${src}')">${locked?'':`<button onclick="deleteTripPhoto(${i})" title="Remove photo" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#ef4444;color:#fff;border:2px solid var(--surface);font-size:11px;font-weight:800;cursor:pointer;line-height:1">\u2715</button>`}</div>`;
   });
-  if(arr.length<12){
+  if(!locked && arr.length<12){
     g+=`<button onclick="triggerPhotoUpload('${esc(bk.id)}','${type}')" title="Add photo" style="height:84px;border:1.5px dashed rgba(201,169,98,.4);border-radius:10px;background:transparent;color:var(--gold);font-size:22px;cursor:pointer">+</button>`;
   }
-  document.getElementById('tpm-grid').innerHTML=g;
+  document.getElementById('tpm-grid').innerHTML=g||'<div style="grid-column:1/-1;color:var(--text-muted);font-size:12px;text-align:center;padding:8px">No photos yet</div>';
   document.getElementById('tpm-count').textContent=arr.length+' / 12 photos';
+  // ---- Videos ----
+  let v='';
+  vids.forEach((vid)=>{
+    const url=`${WORKER}/video/get?bookingId=${encodeURIComponent(bk.id)}&key=${encodeURIComponent(vid.key)}&token=${encodeURIComponent(state.token)}`;
+    const mb=vid.size?(' \u00b7 '+(vid.size/1048576).toFixed(1)+' MB'):'';
+    v+=`<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:9px 11px">`+
+       `<button onclick="openVideoPlayer(&quot;${url.replace(/&/g,'&amp;').replace(/"/g,'&quot;')}&quot;)" title="Play" style="width:34px;height:34px;flex-shrink:0;border-radius:8px;background:var(--gold);color:#000;border:none;font-size:13px;cursor:pointer">\u25b6</button>`+
+       `<div style="flex:1;min-width:0"><div style="font-size:12.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(vid.name||'Video')}</div><div style="font-size:10.5px;color:var(--text-muted)">Uploaded${mb}</div></div>`+
+       (locked?'':`<button onclick="deleteTripVideo('${esc(vid.key)}')" title="Remove video" style="width:26px;height:26px;flex-shrink:0;border-radius:6px;background:transparent;border:1px solid var(--border);color:#ef4444;font-size:12px;font-weight:800;cursor:pointer">\u2715</button>`)+
+       `</div>`;
+  });
+  if(!locked && vids.length<6){
+    v+=`<button onclick="triggerVideoUpload('${esc(bk.id)}','${type}')" style="display:flex;align-items:center;justify-content:center;gap:8px;height:44px;border:1.5px dashed rgba(201,169,98,.4);border-radius:10px;background:transparent;color:var(--gold);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">\ud83c\udfa5 Add video</button>`;
+  }
+  document.getElementById('tpm-vid-grid').innerHTML=v||'<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:6px">No videos yet</div>';
+  document.getElementById('tpm-vid-count').textContent=vids.length+' / 6 videos';
 }
 async function deleteTripPhoto(index){
   if(!_tripModule) return;
@@ -3280,7 +3330,7 @@ async function deleteTripPhoto(index){
 async function finishTripPhotoModule(){
   if(!_tripModule) return;
   const {bookingId,type}=_tripModule;
-  if(!confirm('Save & lock these photos?\n\nOnce saved you can VIEW them anytime, but you can NO LONGER add or remove photos for this phase. Make sure everything is added first.')) return;
+  if(!confirm('Save & lock this phase?\n\nOnce saved you can VIEW your photos and videos anytime, but you can NO LONGER add, remove, or change anything for this phase. Make sure everything is uploaded and reviewed first.')) return;
   showLoading();
   try{
     const r=await fetch(`${WORKER}/portal/lock-photos`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,bookingId,type})});
@@ -3342,6 +3392,67 @@ function handlePhotoUpload(e){
     }catch(_){ upload(raw); }
   };
   reader.readAsDataURL(file);
+}
+
+// ---- Client trip VIDEOS: streamed straight to R2 via the worker (not base64) ----
+function triggerVideoUpload(bookingId, type){
+  state.pendingVideoUpload = { bookingId, type };
+  document.getElementById('video-upload-input').click();
+}
+function handleVideoUpload(e){
+  const file = e.target.files[0];
+  const { bookingId, type } = state.pendingVideoUpload || {};
+  e.target.value=''; state.pendingVideoUpload=null;
+  if(!file || !bookingId) return;
+  if(!/^video\//i.test(file.type||'')){ toast('Please choose a video file','error'); return; }
+  if(file.size > 300*1024*1024){ toast('Video too large (max 300MB)','error'); return; }
+  const prog=document.getElementById('tpm-vid-prog'), fill=document.getElementById('tpm-vid-progfill');
+  if(prog){ prog.style.display='block'; } if(fill){ fill.style.width='0'; }
+  const url=`${WORKER}/video/upload?bookingId=${encodeURIComponent(bookingId)}&role=client&phase=${encodeURIComponent(type)}&name=${encodeURIComponent(file.name||'video.mp4')}&token=${encodeURIComponent(state.token)}`;
+  const xhr=new XMLHttpRequest();
+  xhr.open('POST', url);
+  xhr.setRequestHeader('Content-Type', file.type||'video/mp4');
+  xhr.upload.onprogress = ev => { if(ev.lengthComputable && fill){ fill.style.width = Math.round(ev.loaded/ev.total*100)+'%'; } };
+  xhr.onload = () => {
+    if(prog) prog.style.display='none';
+    let d={}; try{ d=JSON.parse(xhr.responseText); }catch(_){}
+    if(xhr.status>=200 && xhr.status<300 && d.ok){
+      const bk=state.bookings.find(b=>b.id===bookingId);
+      if(bk){ const f=type==='pre'?'customerPreTripVideos':'customerPostTripVideos'; bk[f]=[...(bk[f]||[]), d.meta]; }
+      _renderTripModule(); renderBookings();
+      toast('Video uploaded!','success');
+    } else { toast((d&&d.error)||'Upload failed','error'); }
+  };
+  xhr.onerror = () => { if(prog) prog.style.display='none'; toast('Upload failed','error'); };
+  xhr.send(file);
+}
+async function deleteTripVideo(key){
+  if(!_tripModule) return;
+  const { bookingId, type } = _tripModule;
+  if(!confirm('Remove this video?')) return;
+  showLoading();
+  try{
+    const r=await fetch(`${WORKER}/video/delete`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:state.token,bookingId,key})});
+    const d=await r.json();
+    if(!r.ok){ toast(d.error||'Could not remove video','error'); return; }
+    const bk=state.bookings.find(b=>b.id===bookingId);
+    if(bk){ const f=type==='pre'?'customerPreTripVideos':'customerPostTripVideos'; bk[f]=(bk[f]||[]).filter(v=>v&&v.key!==key); }
+    _renderTripModule(); renderBookings();
+    toast('Video removed','success');
+  }catch(e){ toast('Network error','error'); }
+  finally{ hideLoading(); }
+}
+function openVideoPlayer(url){
+  const vid=document.getElementById('vpm-video');
+  vid.src=url;
+  document.getElementById('videoPlayerModal').style.display='flex';
+  try{ vid.play(); }catch(_){}
+}
+function closeVideoPlayer(){
+  const vid=document.getElementById('vpm-video');
+  try{ vid.pause(); }catch(_){}
+  vid.removeAttribute('src'); vid.load();
+  document.getElementById('videoPlayerModal').style.display='none';
 }
 
 function openPhotoModal(src){
