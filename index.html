@@ -4359,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v197';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v198';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8467,6 +8467,11 @@ function _bkLabel(key,gran){
   var d=new Date(key+'T00:00:00');
   return gran==='week' ? d.toLocaleString('en-US',{month:'short',day:'numeric'}) : (d.getMonth()+1)+'/'+d.getDate();
 }
+function _bkRange(key,gran){ // [from,to] date strings covered by a bucket key
+  if(gran==='month'){ var p=key.split('-'), last=new Date(+p[0],+p[1],0).getDate(); return {from:key+'-01', to:key+'-'+(last<10?'0':'')+last}; }
+  if(gran==='week'){ return {from:key, to:dateStr(addDays(new Date(key+'T00:00:00'),6))}; }
+  return {from:key, to:key};
+}
 // Draw the value at each horizontal bar's end (inside the bar if it fits, else just past it)
 var _barLabelPlugin={ id:'barLabels', afterDatasetsDraw:function(chart){
   var o=(chart.options.plugins||{}).barLabels; if(!o||!o.display) return;
@@ -8518,7 +8523,43 @@ function renderCharts(filtered){
     R[pk]=(R[pk]||0)+netRevenue(b);
     C[pk]=(C[pk]||0)+getEstCost(b);
   });
-  var keys=Object.keys(R); Object.keys(C).forEach(function(k){ if(keys.indexOf(k)<0) keys.push(k); }); keys.sort();
+  // Enumerate EVERY bucket in the active window (so the axis is continuous -- the 7-day filter shows
+  // all 7 days, not only the days that had a booking) AND fold logged operating EXPENSES into the cost
+  // buckets so "Est. Cost" matches the KPI (totalCost = per-booking cost + logged expenses) instead of
+  // $0 when cost is tracked as expenses. Per-bucket getTotalExpenses handles recurring + sums to loggedExp.
+  var winKeys=[];
+  (function(){
+    var eTo, eFrom, clampLo;
+    if(_kpiPeriod==='all'){
+      eTo=($d('filterTo')&&$d('filterTo').value)||todayStr();
+      clampLo=($d('filterFrom')&&$d('filterFrom').value)||'';
+      var _ds=[]; active.forEach(function(b){ var d=(b.pickupDate||b.date||''); if(d)_ds.push(String(d).slice(0,10)); });
+      expenses.forEach(function(e){ if(e&&!e._deleted&&e.date)_ds.push(String(e.date).slice(0,10)); });
+      _ds.sort(); eFrom=(clampLo&&clampLo>(_ds[0]||''))?clampLo:(_ds.length?_ds[0]:eTo);
+    } else {
+      // Match _applyKpiPeriod's window EXACTLY (it filters the chart's bookings): 7d = today-6..today
+      // (7 days), 30d = today-29 (30), 90d = today-89 (90), today = just today. So the axis spans the
+      // full window -- all 7 days on the 7-day filter, not only days that had a booking.
+      eTo=todayStr();
+      var _pn=_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:_kpiPeriod==='90'?89:0;
+      eFrom=_kpiPeriod==='today'?eTo:dateStr(addDays(new Date(eTo+'T00:00:00'),-_pn));
+      clampLo=eFrom;
+    }
+    if(!eFrom||eFrom>eTo) return;
+    var cur=eFrom, guard=0;
+    while(cur<=eTo && guard++<800){
+      var k=_bkKey(cur,gran), rng=_bkRange(k,gran);
+      winKeys.push(k);
+      var f=(clampLo&&rng.from<clampLo)?clampLo:rng.from, t=rng.to>eTo?eTo:rng.to;
+      var ex=getTotalExpenses(f,t); if(ex) C[k]=(C[k]||0)+ex;
+      cur=dateStr(addDays(new Date(rng.to+'T00:00:00'),1));
+    }
+  })();
+  // Fixed period -> show the whole continuous window (every day/week); All Time -> only buckets with data.
+  var keys=(_kpiPeriod==='all')?[]:winKeys.slice();
+  Object.keys(R).forEach(function(k){ if(keys.indexOf(k)<0) keys.push(k); });
+  Object.keys(C).forEach(function(k){ if(keys.indexOf(k)<0) keys.push(k); });
+  keys.sort();
   var labels=keys.map(function(k){ return _bkLabel(k,gran); });
   var revData=keys.map(function(k){ return Math.round(R[k]||0); });
   var costData=keys.map(function(k){ return Math.round(C[k]||0); });
@@ -23304,6 +23345,28 @@ function _fkpi(label,val,color,sub){
     '<div class="kpi-val" style="color:'+(color||'var(--text)')+'">'+val+'</div>'+
     (sub?'<div class="kpi-sub">'+esc(sub)+'</div>':'')+'</div>';
 }
+// Fleet-window revenue on an EARNED-date basis. Base rental revenue is attributed to the pickup
+// window; each extension to its createdAt window (paidAt/pickup fallback); each qualifying portal
+// charge to its paidAt window. Over All Time this equals totalRevenue(b) exactly (base = total minus
+// extensionCharge minus portalChargesRevenue, so no piece is double counted or dropped). This lets a
+// recently-earned extension show up in a short Fleet window even when the original rental was earlier.
+function _fleetEarnedRev(b){
+  if(_fleetPeriod==='all') return totalRevenue(b);
+  var cutoff=_fleetCutoff(), tod=todayStr();
+  function _inW(ds){ ds=(ds||'').slice(0,10); return !!ds && ds>=cutoff && ds<=tod; }
+  var rev=0, pickup=b.pickupDate||b.date||'';
+  if(_inW(pickup)) rev += (totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b));  // base fields
+  (b.extensions||[]).forEach(function(e){
+    var amt=Number(e&&e.additionalCharge)||0; if(!amt) return;
+    var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
+    if(_inW(ed)) rev+=amt;
+  });
+  (b.portalCharges||[]).forEach(function(c){
+    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return;
+    if(_inW(dateStr(new Date(c.paidAt)))) rev+=Number(c.amount)||0;
+  });
+  return rev;
+}
 function renderVehiclePnL(){
   var el=$d('fleetPnL'); if(!el) return;
   var today=new Date(); today.setHours(0,0,0,0);
@@ -23313,8 +23376,11 @@ function renderVehiclePnL(){
   var fleet={rev:0,cost:0,bookings:0,bookedDays:0,capDays:0,activeV:0};
   var cards=ALL_VEHICLES.map(function(v){
     var vAll=bookings.filter(function(b){ return !b._deleted&&b.vehicle===v&&b.status!=='cancelled'; });
-    var vBookings=isAll?vAll:vAll.filter(_fleetInPeriod);
-    var rev=vBookings.reduce(function(s,b){ return s+totalRevenue(b); },0);
+    var vBookings=isAll?vAll:vAll.filter(_fleetInPeriod);   // utilization + booking count (rental-date)
+    // Revenue on an EARNED-date basis: a booking's base counts in its pickup window; each extension
+    // counts in its createdAt window; each portal charge in its paidAt window -> a recent extension
+    // (e.g. added yesterday for an upcoming stay) surfaces in short windows even if the rental was earlier.
+    var rev=vAll.reduce(function(s,b){ return s+_fleetEarnedRev(b); },0);
     var maintCost=maintenance.filter(function(m){ return !m._deleted&&m.vehicle===v&&_fleetDateIn(m.date); }).reduce(function(s,m){ return s+(Number(m.cost)||0); },0);
     var expCost=expenses.filter(function(e){ return !e._deleted&&(e.vehicle===v||(e.description||'').toLowerCase().indexOf(v.toLowerCase())!==-1)&&_fleetDateIn(e.date); }).reduce(function(s,e){ return s+(Number(e.amount)||0); },0);
     var totalCost=maintCost+expCost;
