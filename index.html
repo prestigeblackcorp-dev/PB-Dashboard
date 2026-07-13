@@ -4359,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v205';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v206';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7577,12 +7577,12 @@ function _paymentsReceived(b){
   // `card` = carries the 13.25% fee. Online-collected types (portal charge, extension, authorized-driver --
   // all paid through the Stripe portal/site, where the worker often stamps NO method) default to CARD unless
   // an explicit P2P/cash method is set. The BASE balance always gets a 'Stripe (...)' method stamped when
-  // paid online, so a BLANK balance is a manual mark of unknown type -> NOT counted as card. Date locks are
-  // excluded (owner's long-standing model: the card base was revenue - dateLock).
+  // paid online, so a BLANK balance is a manual mark of unknown type -> NOT counted as card. The date-lock
+  // hold is charged online via Stripe at booking, so it DOES carry the card fee (owner opted in 2026-07-13).
   function _p2p(m){ return /zelle|cash|venmo|cashapp|cash app|wire|check|apple ?pay|other/.test(String(m||'').toLowerCase()); }
   function _cardOnline(m){ return !_p2p(m); }   // blank or stripe/card -> card; explicit P2P -> not
   var out=[];
-  if(Number(b.dateLock)>0 && b.dateLockPaidAt) out.push({label:'Date Lock', amount:Number(b.dateLock)||0, method:'', ts:_ts(b.dateLockPaidAt), card:false});
+  if(Number(b.dateLock)>0 && b.dateLockPaidAt) out.push({label:'Date Lock', amount:Number(b.dateLock)||0, method:'', ts:_ts(b.dateLockPaidAt), card:true}); // online Stripe hold -> carries the 13.25%
   // (base-balance payments -- dated partials or the legacy single record -- are appended below)
   (b.portalCharges||[]).forEach(function(c){
     if(!c||!c.paidAt||c._foldedIntoRevenue||c._extPayment||c._extRecorded||c._extId||_isDepositCharge(c)) return;
