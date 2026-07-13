@@ -132,14 +132,32 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 .kpi.purple .kpi-val { color: var(--purple); }
 
 /* -- Charts -- */
-.charts-row { display: grid; grid-template-columns: 1fr 1fr 280px; gap: 16px; }
+.charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .chart-card { background: var(--card); border: none; border-radius: 20px; padding: 22px;
   box-shadow: var(--shadow-card); min-width: 0; }
-.chart-card.span2 { grid-column: 1 / 3; }
+.chart-card.span2 { grid-column: 1 / -1; }
 .chart-card.full { grid-column: 1 / -1; }
-.chart-ttl { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; }
-/* Ensure canvases never overflow their card */
+.chart-ttl { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+/* Responsive chart wrapper: Chart.js (responsive:true, maintainAspectRatio:false) fills
+   this box; its height is set per-chart in JS. This replaces the old manual-canvas sizing
+   that caused stretched/blurry charts on laptop + mobile. */
+.chart-box { position: relative; width: 100%; }
+.chart-box canvas { display: block; }
 .chart-card canvas { max-width: 100%; }
+.chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; font-weight: 600; }
+/* Summary stat strip above the trend chart */
+.chart-stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+.cs-cell { background: var(--card2); border-radius: 12px; padding: 9px 11px; min-width: 0; }
+.cs-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; }
+.cs-val { font-size: 16px; font-weight: 800; margin-top: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Legend list carrying the real numbers (booking-type split) */
+.chart-legend { margin-top: 14px; display: flex; flex-direction: column; gap: 9px; }
+.cl-row { display: grid; grid-template-columns: 14px 1fr auto auto; align-items: center; gap: 9px; }
+.cl-dot { width: 11px; height: 11px; border-radius: 3px; }
+.cl-name { font-size: 12px; font-weight: 700; color: var(--text); }
+.cl-val { font-size: 12px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.cl-sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 768px) { .chart-stat-row { grid-template-columns: repeat(2, 1fr); } }
 
 /* -- Tables -- */
 .tbl-card { background: var(--card); border: none; border-radius: 20px; overflow: hidden;
@@ -1774,10 +1792,24 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
     <div id="chauffeurEconSection" style="margin-bottom:16px"></div>
     <div class="budget-section" id="budgetSection"></div>
     <div class="charts-row">
-      <div class="chart-card span2"><div class="chart-ttl">Monthly Revenue vs Est. Cost</div><canvas id="chartMonthly"></canvas></div>
-      <div class="chart-card"><div class="chart-ttl">Booking Type Split</div><canvas id="chartType"></canvas></div>
-      <div class="chart-card"><div class="chart-ttl">Revenue by Vehicle</div><canvas id="chartRevVehicle"></canvas></div>
-      <div class="chart-card span2"><div class="chart-ttl">Bookings per Vehicle</div><canvas id="chartBkVehicle"></canvas></div>
+      <div class="chart-card span2">
+        <div class="chart-ttl" id="ttlMonthly">Revenue vs Est. Cost</div>
+        <div class="chart-stat-row" id="statMonthly"></div>
+        <div class="chart-box" id="boxMonthly"><canvas id="chartMonthly"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-ttl">Revenue by Booking Type</div>
+        <div class="chart-box" id="boxType"><canvas id="chartType"></canvas></div>
+        <div class="chart-legend" id="legendType"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-ttl">Revenue by Vehicle</div>
+        <div class="chart-box" id="boxRvv"><canvas id="chartRevVehicle"></canvas></div>
+      </div>
+      <div class="chart-card span2">
+        <div class="chart-ttl">Bookings per Vehicle</div>
+        <div class="chart-box" id="boxBvv"><canvas id="chartBkVehicle"></canvas></div>
+      </div>
     </div>
     <div class="tbl-card">
       <div class="tbl-head"><div class="tbl-title">Vehicle Performance</div><div class="tbl-meta" id="vehicleMeta"></div></div>
@@ -4327,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v195';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v196';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8413,117 +8445,190 @@ function _durStr(b, count, abbrev){
   return n+' '+(isHr?(n!==1?'hours':'hour'):(n!==1?'days':'day'));
 }
 
-// Shared mobile-aware plugin options
-function _chartPlugins(legendPos){
-  var mobile=_isMobile();
-  return {
-    legend:{ position: legendPos||'bottom', labels:{ usePointStyle:true, padding: mobile?10:16, font:{size: mobile?11:13, weight:'700'} }},
-    tooltip:{ titleFont:{size: mobile?12:13, weight:'700'}, bodyFont:{size: mobile?11:12} }
-  };
+// -- Chart format helpers + custom plugins (responsive, revenue-aware redesign) --
+var CHART_FONT='-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+var _GRID='rgba(255,255,255,.06)';
+function _km(n){ // compact currency for axis ticks + bar-end labels: $980, $1.2k, $3.4M
+  n=Number(n)||0; var neg=n<0; n=Math.abs(n);
+  var s = n>=1e6 ? (n/1e6).toFixed(n>=1e7?0:1)+'M'
+        : n>=1e3 ? (n/1e3).toFixed(n>=1e4?0:1)+'k'
+        : String(Math.round(n));
+  return (neg?'-$':'$')+s;
 }
-function _scaleY(prefix){
-  return { ticks:{ callback:function(v){ return (prefix||'$')+v.toLocaleString(); }, maxTicksLimit: _isMobile()?4:8, font:{size: _isMobile()?11:13, weight:'600'} }};
+function _pct(part,total){ return total>0 ? Math.round(part/total*100) : 0; }
+function _statCell(label,val,clr){ return '<div class="cs-cell"><div class="cs-lbl">'+esc(label)+'</div><div class="cs-val" style="color:'+clr+'">'+esc(val)+'</div></div>'; }
+function _emptyChart(boxId){ var b=$d(boxId); if(!b) return; var e=document.createElement('div'); e.className='chart-empty'; e.textContent='No data for this period'; b.appendChild(e); }
+// Adaptive trend-chart bucketing: month (All Time) / week (90d) / day (today,7,30)
+function _chartGran(){ return _kpiPeriod==='all'?'month':_kpiPeriod==='90'?'week':'day'; }
+function _mondayOf(ds){ var d=new Date(ds+'T00:00:00'); var off=(d.getDay()+6)%7; d.setDate(d.getDate()-off); return dateStr(d); }
+function _bkKey(ds,gran){ if(!ds) return ''; ds=String(ds).substring(0,10); if(ds.length<7) return ''; return gran==='month'?ds.substring(0,7):gran==='week'?_mondayOf(ds):ds; }
+function _bkLabel(key,gran){
+  if(gran==='month'){ var p=key.split('-'); return new Date(+p[0],+p[1]-1,1).toLocaleString('en-US',{month:'short',year:'2-digit'}); }
+  var d=new Date(key+'T00:00:00');
+  return gran==='week' ? d.toLocaleString('en-US',{month:'short',day:'numeric'}) : (d.getMonth()+1)+'/'+d.getDate();
 }
-function _scaleX(){
-  return { grid:{display:false}, ticks:{ maxRotation: _isMobile()?45:0, font:{size: _isMobile()?11:13, weight:'600'}, maxTicksLimit: _isMobile()?6:12 }};
-}
+// Draw the value at each horizontal bar's end (inside the bar if it fits, else just past it)
+var _barLabelPlugin={ id:'barLabels', afterDatasetsDraw:function(chart){
+  var o=(chart.options.plugins||{}).barLabels; if(!o||!o.display) return;
+  // NB: format by a string mode, NOT a function option -- Chart.js scriptable-option
+  // resolution would otherwise CALL a function-valued plugin option with its own context.
+  var ctx=chart.ctx, area=chart.chartArea, fmt=(o.mode==='money')?function(v){return _km(v);}:function(v){return String(v);};
+  ctx.save(); ctx.font='800 '+(o.fontSize||12)+'px '+CHART_FONT; ctx.textBaseline='middle';
+  chart.getDatasetMeta(0).data.forEach(function(bar,i){
+    var v=chart.data.datasets[0].data[i]; if(v==null) return;
+    var txt=fmt(v,i), w=ctx.measureText(txt).width, inside=(bar.x-area.left)>(w+18);
+    if(inside){ ctx.textAlign='right'; ctx.fillStyle=o.insideColor||'#12100c'; ctx.fillText(txt,bar.x-8,bar.y); }
+    else { ctx.textAlign='left'; ctx.fillStyle=o.outsideColor||'#e7e7ea'; ctx.fillText(txt,bar.x+8,bar.y); }
+  });
+  ctx.restore();
+}};
+// Total in the middle of a doughnut
+function _donutCenter(top,bottom){ return { id:'donutCenter', afterDraw:function(chart){
+  var m=chart.getDatasetMeta(0); if(!m||!m.data||!m.data.length||!m.data[0]) return;
+  var el=m.data[0], ctx=chart.ctx;
+  ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='#f4f2ee'; ctx.font='800 '+(_isMobile()?18:22)+'px '+CHART_FONT; ctx.fillText(top, el.x, el.y-7);
+  ctx.fillStyle='rgba(255,255,255,.5)'; ctx.font='700 11px '+CHART_FONT; ctx.fillText(bottom, el.x, el.y+13);
+  ctx.restore();
+}}; }
+// Shared dark tooltip (gold hairline, no color box) + supplied callbacks
+function _tt(cbs){ return { backgroundColor:'rgba(18,18,22,.97)', borderColor:'rgba(201,169,98,.4)', borderWidth:1, cornerRadius:10, padding:10, titleColor:'#f4f2ee', bodyColor:'#d8d8dc', titleFont:{size:13,weight:'800'}, bodyFont:{size:12,weight:'600'}, displayColors:false, callbacks:cbs||{} }; }
 
 function dc(id){ if(charts[id]){charts[id].destroy();delete charts[id];} }
 
 function renderCharts(filtered){
   var active=filtered.filter(function(b){ return b.status!=='cancelled'; });
-
-  // Monthly trend \u2014 base revenue bucketed by pickup month, extension charges by extension createdAt month
-  var mR={},mC={};
-  active.forEach(function(b){
-    var m=((b.pickupDate||b.date)||'').substring(0,7); if(!m) return;
-    // Base revenue without extension charges (those go into their own month bucket below)
-    // Subtract broker fees so monthly trend reflects net to PBR
-    var _brkDeduct=brokerFeeTotal(b);
-    var baseRev=(Number(b.revenue)||0)-_foldedChargesTotal(b)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)-_brkDeduct;
-    mR[m]=(mR[m]||0)+baseRev;
-    // Extension charges: bucket by extension createdAt month
-    (b.extensions||[]).forEach(function(ext){
-      if(!(Number(ext.additionalCharge)>0)) return;
-      var em=ext.createdAt ? dateStr(new Date(ext.createdAt)).substring(0,7) : m;
-      mR[em]=(mR[em]||0)+(Number(ext.additionalCharge)||0);
-    });
-    // Portal charges: bucket by paidAt month
-    (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return;
-      var pm=dateStr(new Date(c.paidAt)).substring(0,7);
-      mR[pm]=(mR[pm]||0)+(Number(c.amount)||0);
-    });
-    mC[m]=(mC[m]||0)+getEstCost(b);
-  });
-  var months=Object.keys(mR).sort();
-  var mLabels=months.map(function(m){
-    var p=m.split('-'); return new Date(+p[0],+p[1]-1,1).toLocaleString('en-US',{month:'short',year:'2-digit'});
-  });
   var mobile=_isMobile();
+  var gran=_chartGran();
+  var axisFont={size:mobile?10:12,weight:'600'}, axisClr='rgba(255,255,255,.55)';
+  // clear any prior empty-state overlays (canvases are static elements in the page)
+  ['boxMonthly','boxType','boxRvv','boxBvv'].forEach(function(id){ var b=$d(id); if(b){ var e=b.querySelector('.chart-empty'); if(e) e.remove(); } });
 
-  // Mobile chart helper: set canvas to explicit pixel size BEFORE Chart.js reads it.
-  // Chart.js measures the canvas element dimensions at construction time.
-  // Setting style.height after new Chart() does nothing \u2014 Chart.js ignores it.
-  // Size a chart canvas crisply on BOTH mobile and desktop. Charts use responsive:false,
-  // so the canvas drawing buffer must be set to (display size \u00D7 devicePixelRatio) BEFORE
-  // Chart.js reads it. Previously desktop bailed out \u2192 kept the tiny 300\u00D7150 default and
-  // got CSS-stretched (blurry, distorted text). Now desktop fills its card at full density.
-  function _mobileSize(canvasId, w, h, dRatio){
-    var c=$d(canvasId);
-    if(!c) return;
-    var dpr=window.devicePixelRatio||1;
-    var cssW, cssH;
-    if(mobile){ cssW=w; cssH=h; }
-    else {
-      var p=c.parentElement, cs=p?getComputedStyle(p):null;
-      var pad=cs?(parseFloat(cs.paddingLeft||0)+parseFloat(cs.paddingRight||0)):44;
-      cssW=(p?p.clientWidth:0)-pad;
-      if(!cssW||cssW<120) cssW=560;                        // not laid out yet \u2192 sane default
-      cssH=Math.min(Math.round(cssW*(dRatio||0.45)), 340); // keep a tidy, non-stretched aspect
+  // ---------- 1) Revenue vs Est. Cost -- buckets + title ADAPT to the active period ----------
+  var R={}, C={};
+  active.forEach(function(b){
+    var pd=(b.pickupDate||b.date)||'', pk=_bkKey(pd,gran);
+    var baseRev=(Number(b.revenue)||0)-_foldedChargesTotal(b)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)-brokerFeeTotal(b);
+    if(pk){ R[pk]=(R[pk]||0)+baseRev; C[pk]=(C[pk]||0)+getEstCost(b); }
+    (b.extensions||[]).forEach(function(ext){ if(Number(ext.additionalCharge)>0){ var ek=_bkKey(ext.createdAt?dateStr(new Date(ext.createdAt)):pd,gran)||pk; if(ek) R[ek]=(R[ek]||0)+(Number(ext.additionalCharge)||0); } });
+    (b.portalCharges||[]).forEach(function(c){ if(c&&c.paidAt&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._foldedIntoRevenue){ var ck=_bkKey(dateStr(new Date(c.paidAt)),gran); if(ck) R[ck]=(R[ck]||0)+(Number(c.amount)||0); } });
+  });
+  var keys=Object.keys(R); Object.keys(C).forEach(function(k){ if(keys.indexOf(k)<0) keys.push(k); }); keys.sort();
+  var labels=keys.map(function(k){ return _bkLabel(k,gran); });
+  var revData=keys.map(function(k){ return Math.round(R[k]||0); });
+  var costData=keys.map(function(k){ return Math.round(C[k]||0); });
+  var totRev=revData.reduce(function(s,v){return s+v;},0), totCost=costData.reduce(function(s,v){return s+v;},0), net=totRev-totCost;
+  var granTxt=gran==='month'?'Monthly':gran==='week'?'Weekly':'Daily';
+  var perTxt=_kpiPeriod==='all'?'':' ('+(_kpiPeriod==='today'?'Today':_kpiPeriod==='7'?'Last 7 Days':_kpiPeriod==='30'?'Last 30 Days':'Last 90 Days')+')';
+  var _tm=$d('ttlMonthly'); if(_tm) _tm.textContent='Revenue vs Est. Cost - '+granTxt+perTxt;
+  var _sm=$d('statMonthly'); if(_sm) _sm.innerHTML=
+    _statCell('Revenue',$$(totRev),GOLD)+_statCell('Est. Cost',$$(totCost),RED)+
+    _statCell('Net Profit',(net<0?'-':'')+'$'+Math.abs(net).toLocaleString(),net>=0?GREEN:RED)+
+    _statCell('Margin',_pct(net,totRev)+'%',net>=0?GREEN:RED);
+  var _bm=$d('boxMonthly'); if(_bm) _bm.style.height=(mobile?230:300)+'px';
+  dc('monthly');
+  if(!keys.length){ _emptyChart('boxMonthly'); }
+  else charts['monthly']=new Chart($d('chartMonthly'),{ type:'bar',
+    data:{labels:labels,datasets:[
+      {label:'Revenue',data:revData,backgroundColor:GOLD,borderRadius:5,maxBarThickness:mobile?16:44},
+      {label:'Est. Cost',data:costData,backgroundColor:'rgba(255,92,92,.8)',borderRadius:5,maxBarThickness:mobile?16:44}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{position:'top',align:'end',labels:{usePointStyle:true,pointStyle:'rectRounded',boxWidth:10,boxHeight:10,padding:14,color:'#d8d8dc',font:{size:mobile?11:12,weight:'700'}}},
+        tooltip:_tt({ title:function(it){ return it[0].label; },
+          label:function(it){ return it.dataset.label+':  '+$$(Math.round(it.parsed.y)); },
+          afterBody:function(it){ var i=it[0].dataIndex, p=revData[i]-costData[i]; return 'Net profit:  '+(p<0?'-':'')+'$'+Math.abs(p).toLocaleString()+'  ('+_pct(p,revData[i])+'%)'; } })
+      },
+      scales:{
+        y:{beginAtZero:true,border:{display:false},grid:{color:_GRID},ticks:{callback:function(v){return _km(v);},font:axisFont,color:axisClr,maxTicksLimit:mobile?5:7}},
+        x:{border:{display:false},grid:{display:false},ticks:{font:axisFont,color:axisClr,maxRotation:mobile?60:0,autoSkip:true,maxTicksLimit:mobile?7:16}}
+      }
     }
-    if(!cssW||cssW<60) return;
-    c.width=Math.round(cssW*dpr);
-    c.height=Math.round(cssH*dpr);
-    c.style.width=cssW+'px';
-    c.style.height=cssH+'px';
+  });
+
+  // ---------- 2) Revenue by Booking Type -- by REVENUE (with counts + %) ----------
+  var TYPES=[{k:'daily',label:'Daily',c:GOLD},{k:'hourly',label:'Hourly',c:BLUE},{k:'chauffeur',label:'Chauffeur',c:GREEN},{k:'event',label:'Events',c:PURPLE}];
+  var tRev={daily:0,hourly:0,chauffeur:0,event:0}, tCnt={daily:0,hourly:0,chauffeur:0,event:0};
+  active.forEach(function(b){ var k=b.isEvent?'event':(b.type||'daily'); if(tRev[k]==null) k='daily'; tRev[k]+=netRevenue(b); tCnt[k]++; });
+  var tTotRev=TYPES.reduce(function(s,t){return s+tRev[t.k];},0), tTotCnt=TYPES.reduce(function(s,t){return s+tCnt[t.k];},0);
+  var shown=TYPES.filter(function(t){ return tRev[t.k]>0||tCnt[t.k]>0; });
+  var _bt=$d('boxType'); if(_bt) _bt.style.height=(mobile?200:230)+'px';
+  dc('type');
+  if(!tTotCnt){ _emptyChart('boxType'); if($d('legendType')) $d('legendType').innerHTML=''; }
+  else {
+    charts['type']=new Chart($d('chartType'),{ type:'doughnut',
+      data:{labels:shown.map(function(t){return t.label;}),datasets:[{data:shown.map(function(t){return Math.round(tRev[t.k]);}),backgroundColor:shown.map(function(t){return t.c;}),borderColor:'#0f0f12',borderWidth:3,hoverOffset:6}]},
+      options:{responsive:true,maintainAspectRatio:false,cutout:'66%',
+        plugins:{ legend:{display:false},
+          tooltip:_tt({ label:function(it){ var t=shown[it.dataIndex], rev=tRev[t.k], cnt=tCnt[t.k];
+            return [t.label+':  '+$$(Math.round(rev))+'  ('+_pct(rev,tTotRev)+'%)', cnt+' booking'+(cnt!==1?'s':'')+',  avg '+$$(cnt?Math.round(rev/cnt):0)]; } })
+        }
+      },
+      plugins:[_donutCenter($$(Math.round(tTotRev)), tTotCnt+' booking'+(tTotCnt!==1?'s':''))]
+    });
+    if($d('legendType')) $d('legendType').innerHTML=shown.map(function(t){ var rev=tRev[t.k], cnt=tCnt[t.k];
+      return '<div class="cl-row"><span class="cl-dot" style="background:'+t.c+'"></span><span class="cl-name">'+t.label+'</span><span class="cl-val">'+$$(Math.round(rev))+'</span><span class="cl-sub">'+_pct(rev,tTotRev)+'% ('+cnt+')</span></div>';
+    }).join('');
   }
 
-  // Available width: viewport minus padding (12px each side)
-  var mW = mobile ? Math.min(window.innerWidth, 400) - 24 : 0;
+  // ---------- vehicle series helper (sorted desc; folds the long tail into "Other") ----------
+  function _vehSeries(valFn, topN){
+    var m={}, cnt={};
+    active.forEach(function(b){ var v=b.vehicle||'Unknown'; m[v]=(m[v]||0)+valFn(b); cnt[v]=(cnt[v]||0)+1; });
+    var arr=Object.keys(m).map(function(v){ return {v:v,val:m[v],cnt:cnt[v]}; }).sort(function(a,b){ return b.val-a.val; });
+    if(arr.length>topN){ var tail=arr.slice(topN-1); arr=arr.slice(0,topN-1);
+      arr.push({v:'Other ('+tail.length+')',val:tail.reduce(function(s,x){return s+x.val;},0),cnt:tail.reduce(function(s,x){return s+x.cnt;},0),_other:true}); }
+    return arr;
+  }
+  var topN=mobile?6:9;
 
-  dc('monthly');
-  _mobileSize('chartMonthly', mW, Math.round(mW * 0.5), 0.42);
-  charts['monthly']=new Chart($d('chartMonthly'),{type:'line',data:{labels:mLabels,datasets:[
-    {label:'Revenue',data:months.map(function(m){return mR[m]||0;}),borderColor:GOLD,backgroundColor:'rgba(201,169,98,.08)',fill:true,tension:.4,pointBackgroundColor:GOLD,pointRadius:mobile?2:4},
-    {label:'Est. Cost',data:months.map(function(m){return mC[m]||0;}),borderColor:'rgba(255,92,92,.7)',backgroundColor:'rgba(255,92,92,.06)',fill:true,tension:.4,pointBackgroundColor:RED,pointRadius:mobile?2:4}
-  ]},options:{responsive:false,maintainAspectRatio:false,plugins:_chartPlugins('bottom'),scales:{y:_scaleY('$'),x:_scaleX()}}});
-
-  // Type split \u2014 doughnut
-  var tc={daily:0,hourly:0,chauffeur:0,event:0};
-  active.forEach(function(b){ var _tk=b.isEvent?'event':(b.type||'daily'); tc[_tk]=(tc[_tk]||0)+1; });
-  dc('type');
-  _mobileSize('chartType', mW, Math.round(mW * 0.75), 0.82);
-  charts['type']=new Chart($d('chartType'),{type:'doughnut',data:{labels:['Daily','Hourly','Chauffeur','Events'],datasets:[{data:[tc.daily,tc.hourly,tc.chauffeur,tc.event],backgroundColor:[GOLD,BLUE,GREEN,PURPLE],borderWidth:0,hoverOffset:8}]},options:{responsive:false,maintainAspectRatio:false,cutout:'64%',plugins:_chartPlugins('bottom')}});
-
-  // Revenue by vehicle \u2014 horizontal bar
-  var rv={};
-  active.forEach(function(b){ rv[b.vehicle]=(rv[b.vehicle]||0)+netRevenue(b); });
-  var vl=Object.keys(rv).sort(function(a,b){return rv[b]-rv[a];}).slice(0,mobile?6:10);
-  var vlLabels=vl.map(function(v){ return mobile&&v.length>10?v.slice(0,9)+'\u2026':v; });
+  // ---------- 3) Revenue by Vehicle -- horizontal bars, value labels, rich tooltip ----------
+  var rvA=_vehSeries(function(b){ return netRevenue(b); }, topN);
+  var vRevTot=rvA.reduce(function(s,x){return s+x.val;},0);
+  var _br=$d('boxRvv'); if(_br) _br.style.height=Math.max(150, rvA.length*(mobile?34:40)+30)+'px';
   dc('rvv');
-  var rvvH = mobile ? Math.max(120, vl.length * 34) : 0;
-  _mobileSize('chartRevVehicle', mW, rvvH, 0.52);
-  charts['rvv']=new Chart($d('chartRevVehicle'),{type:'bar',data:{labels:vlLabels,datasets:[{label:'Revenue',data:vl.map(function(v){return rv[v];}),backgroundColor:GOLD,borderRadius:5}]},options:{responsive:false,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return vl[items[0].dataIndex]; }}}},scales:{x:{ticks:{callback:function(v){return'$'+v.toLocaleString();},font:{size:mobile?11:13,weight:'600'},maxTicksLimit:mobile?3:6},grid:{display:false}},y:{grid:{display:false},ticks:{font:{size:mobile?11:13,weight:'600'}}}}}});
+  if(!rvA.length){ _emptyChart('boxRvv'); }
+  else charts['rvv']=new Chart($d('chartRevVehicle'),{ type:'bar',
+    data:{labels:rvA.map(function(x){return x.v;}),datasets:[{data:rvA.map(function(x){return Math.round(x.val);}),backgroundColor:GOLD,borderRadius:5,barThickness:mobile?17:22}]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',layout:{padding:{right:mobile?40:54}},
+      plugins:{ legend:{display:false},
+        barLabels:{display:true,fontSize:mobile?11:12,mode:'money'},
+        tooltip:_tt({ title:function(it){ return rvA[it[0].dataIndex].v; },
+          label:function(it){ var x=rvA[it.dataIndex]; return $$(Math.round(x.val))+'  ('+_pct(x.val,vRevTot)+'% of shown)'; },
+          afterBody:function(it){ var x=rvA[it[0].dataIndex]; return x.cnt+' booking'+(x.cnt!==1?'s':'')+',  avg '+$$(x.cnt?Math.round(x.val/x.cnt):0); } })
+      },
+      scales:{
+        x:{beginAtZero:true,border:{display:false},grid:{color:_GRID},ticks:{callback:function(v){return _km(v);},font:axisFont,color:axisClr,maxTicksLimit:mobile?3:5}},
+        y:{border:{display:false},grid:{display:false},ticks:{font:{size:mobile?11:12,weight:'700'},color:'#e7e7ea'}}
+      }
+    },
+    plugins:[_barLabelPlugin]
+  });
 
-  // Bookings per vehicle
-  var bv={};
-  active.forEach(function(b){ bv[b.vehicle]=(bv[b.vehicle]||0)+1; });
-  var bl=Object.keys(bv).sort(function(a,b){return bv[b]-bv[a];});
-  var blLabels=bl.map(function(v){ return mobile&&v.length>8?v.slice(0,7)+'\u2026':v; });
+  // ---------- 4) Bookings per Vehicle -- horizontal bars, value labels, rich tooltip ----------
+  var bkA=_vehSeries(function(){ return 1; }, topN);
+  var revByVeh={}; active.forEach(function(b){ var v=b.vehicle||'Unknown'; revByVeh[v]=(revByVeh[v]||0)+netRevenue(b); });
+  var bkTot=bkA.reduce(function(s,x){return s+x.val;},0);
+  var _bb=$d('boxBvv'); if(_bb) _bb.style.height=Math.max(150, bkA.length*(mobile?34:40)+30)+'px';
   dc('bvv');
-  _mobileSize('chartBkVehicle', mW, mobile ? Math.round(mW * 0.45) : 0, 0.45);
-  charts['bvv']=new Chart($d('chartBkVehicle'),{type:'bar',data:{labels:blLabels,datasets:[{label:'Bookings',data:bl.map(function(v){return bv[v];}),backgroundColor:'rgba(100,180,255,.55)',borderRadius:5}]},options:{responsive:false,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:function(items){ return bl[items[0].dataIndex]; }}}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,font:{size:mobile?11:13,weight:'600'}},grid:{display:false}},x:{grid:{display:false},ticks:{maxRotation:mobile?45:0,font:{size:mobile?11:13,weight:'600'}}}}}});
+  if(!bkA.length){ _emptyChart('boxBvv'); }
+  else charts['bvv']=new Chart($d('chartBkVehicle'),{ type:'bar',
+    data:{labels:bkA.map(function(x){return x.v;}),datasets:[{data:bkA.map(function(x){return x.val;}),backgroundColor:BLUE,borderRadius:5,barThickness:mobile?17:22}]},
+    options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',layout:{padding:{right:mobile?34:44}},
+      plugins:{ legend:{display:false},
+        barLabels:{display:true,fontSize:mobile?11:12,mode:'count'},
+        tooltip:_tt({ title:function(it){ return bkA[it[0].dataIndex].v; },
+          label:function(it){ var x=bkA[it.dataIndex]; return x.val+' booking'+(x.val!==1?'s':'')+'  ('+_pct(x.val,bkTot)+'%)'; },
+          afterBody:function(it){ var x=bkA[it[0].dataIndex]; if(x._other) return ''; var rev=revByVeh[x.v]||0; return 'Revenue '+$$(Math.round(rev))+',  avg '+$$(x.val?Math.round(rev/x.val):0); } })
+      },
+      scales:{
+        x:{beginAtZero:true,border:{display:false},grid:{color:_GRID},ticks:{stepSize:1,precision:0,font:axisFont,color:axisClr,maxTicksLimit:mobile?4:6}},
+        y:{border:{display:false},grid:{display:false},ticks:{font:{size:mobile?11:12,weight:'700'},color:'#e7e7ea'}}
+      }
+    },
+    plugins:[_barLabelPlugin]
+  });
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -12349,7 +12454,7 @@ function _fmtMediaTs(ts){ ts=Number(ts)||0; if(!ts) return ''; try{ return new D
 // A GET needs the dashboard secret in a header, which a <video src> cannot send -- so we fetch
 // the clip as a blob (auth in the header) then play/download the blob. Additive; photos untouched.
 async function _ownerFetchVideoBlob(bookingId, key, dl){
-  var url=WORKER+'/video/get?bookingId='+encodeURIComponent(bookingId)+'&key='+encodeURIComponent(key)+(dl?'&dl=1':'');
+  var url=WORKER_URL+'/video/get?bookingId='+encodeURIComponent(bookingId)+'&key='+encodeURIComponent(key)+(dl?'&dl=1':'');
   var r=await fetch(url,{headers:_authHeader()});
   if(!r.ok) throw new Error('video '+r.status);
   return await r.blob();
@@ -12381,20 +12486,27 @@ function _ownerHandleVideo(input, phase){
   if(file.size>1024*1024*1024){ showToast('Video too large (max 1GB)'); return; }
   var prog=$d(phase==='post'?'coVideoProg':'ciVideoProg'), fill=$d(phase==='post'?'coVideoProgFill':'ciVideoProgFill');
   if(prog) prog.style.display='block'; if(fill) fill.style.width='0';
-  var url=WORKER+'/video/upload?bookingId='+encodeURIComponent(bookingId)+'&role=owner&phase='+phase+'&name='+encodeURIComponent(file.name||'video.mp4');
+  var url=WORKER_URL+'/video/upload?bookingId='+encodeURIComponent(bookingId)+'&role=owner&phase='+phase+'&name='+encodeURIComponent(file.name||'video.mp4');
   var xhr=new XMLHttpRequest(); xhr.open('POST',url);
   var ah=_authHeader(); if(ah.Authorization) xhr.setRequestHeader('Authorization',ah.Authorization);
   xhr.setRequestHeader('Content-Type',file.type||'video/mp4');
   xhr.upload.onprogress=function(ev){ if(ev.lengthComputable&&fill) fill.style.width=Math.round(ev.loaded/ev.total*100)+'%'; };
   xhr.onload=function(){ if(prog) prog.style.display='none'; var d={}; try{d=JSON.parse(xhr.responseText);}catch(_){}
-    if(xhr.status>=200&&xhr.status<300&&d.ok){ var bk=bookings.find(function(x){return x.id===bookingId;}); if(bk){ var f=phase==='post'?'checkOutVideos':'checkInVideos'; bk[f]=(bk[f]||[]).concat([d.meta]); bk._t=Date.now(); if(typeof flushCloudSave==='function') flushCloudSave(); } _ownerRenderVideoGrid(bookingId,phase); showToast('Video uploaded'); }
+    if(xhr.status>=200&&xhr.status<300&&d.ok){
+      // Build a valid entry from whatever the worker returns: prefer d.meta, else d.key + the
+      // local file. Never append a bare d.meta (older workers omit it) -- that stored [null] and
+      // showed "No videos yet". filter(Boolean) also self-heals any null a prior upload left.
+      var _vk=(d.meta&&d.meta.key)||d.key||''; var _vm=_vk?Object.assign({name:(file.name||'video.mp4'),size:file.size,at:Date.now(),by:'owner'},(d.meta||{}),{key:_vk}):null;
+      var bk=bookings.find(function(x){return x.id===bookingId;});
+      if(bk&&_vm){ var f=phase==='post'?'checkOutVideos':'checkInVideos'; bk[f]=(bk[f]||[]).filter(Boolean).concat([_vm]); bk._t=Date.now(); if(typeof flushCloudSave==='function') flushCloudSave(); }
+      _ownerRenderVideoGrid(bookingId,phase); showToast(_vm?'Video uploaded':'Video uploaded - reopen to view'); }
     else showToast((d&&d.error)||'Upload failed'); };
   xhr.onerror=function(){ if(prog) prog.style.display='none'; showToast('Upload failed'); };
   xhr.send(file);
 }
 async function _ownerDeleteVideo(bookingId, key, phase){
   if(!confirm('Remove this video?')) return;
-  try{ var r=await fetch(WORKER+'/video/delete',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({bookingId:bookingId,key:key})}); var d=await r.json();
+  try{ var r=await fetch(WORKER_URL+'/video/delete',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({bookingId:bookingId,key:key})}); var d=await r.json();
     if(!r.ok){ showToast(d.error||'Could not remove'); return; }
     var bk=bookings.find(function(x){return x.id===bookingId;}); if(bk){ ['checkInVideos','checkOutVideos'].forEach(function(f){ if(bk[f]) bk[f]=bk[f].filter(function(v){return v&&v.key!==key;}); }); bk._t=Date.now(); if(typeof flushCloudSave==='function') flushCloudSave(); }
     if(phase) _ownerRenderVideoGrid(bookingId,phase); showToast('Video removed');

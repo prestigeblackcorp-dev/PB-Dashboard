@@ -3420,10 +3420,14 @@ function handleVideoUpload(e){
     if(prog) prog.style.display='none';
     let d={}; try{ d=JSON.parse(xhr.responseText); }catch(_){}
     if(xhr.status>=200 && xhr.status<300 && d.ok){
+      // Build a valid entry from whatever the worker returns (prefer d.meta, else d.key + the
+      // local file). Never append a bare d.meta -- older workers omit it, storing [null] which
+      // filtered out to "no videos". filter(Boolean) also self-heals any prior null.
+      const vk=(d.meta&&d.meta.key)||d.key||''; const vm=vk?Object.assign({name:(file.name||'video.mp4'),size:file.size,at:Date.now(),by:'client'},(d.meta||{}),{key:vk}):null;
       const bk=state.bookings.find(b=>b.id===bookingId);
-      if(bk){ const f=type==='pre'?'customerPreTripVideos':'customerPostTripVideos'; bk[f]=[...(bk[f]||[]), d.meta]; }
+      if(bk&&vm){ const f=type==='pre'?'customerPreTripVideos':'customerPostTripVideos'; bk[f]=[...(bk[f]||[]).filter(Boolean), vm]; }
       _renderTripModule(); renderBookings();
-      toast('Video uploaded!','success');
+      toast(vm?'Video uploaded!':'Video uploaded - reopen to view','success');
     } else { toast((d&&d.error)||'Upload failed','error'); }
   };
   xhr.onerror = () => { if(prog) prog.style.display='none'; toast('Upload failed','error'); };
