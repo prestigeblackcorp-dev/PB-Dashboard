@@ -4359,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v200';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v201';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7828,6 +7828,15 @@ function extensionBrokerTotal(b){ return (b.extensions||[]).reduce(function(s,e)
 // Total broker fee owed: original days \u00D7 rate + each extension's own broker fee. For a
 // booking with no extensions this is identical to the old brokerFee \u00D7 days.
 function brokerFeeTotal(b){ return (Number(b.brokerFee)||0)*brokerRateDays(b)+extensionBrokerTotal(b); }
+// 13.25% card-processing gross-up (5% processing + 8.25% tax) on card/Stripe-collected amounts only.
+// Matches the KPI grossRev card-fee base: Stripe-paid base (revenue - dateLock) + portal charges (portal
+// links are card/Stripe). Sum over active == the KPI's _stripeBase*0.1325. It is BOTH gross revenue (the
+// customer paid it) AND a processing cost, so charts add it to revenue AND to cost -> net profit unchanged.
+function _stripeCardFee(b){
+  if(!b) return 0;
+  var base = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe' ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
+  return (base + portalChargesRevenue(b)) * 0.1325;
+}
 function netRevenue(b){ return totalRevenue(b)-(brokerFeeTotal(b)); }
 
 function getEstCost(b){ return Number(b.cost)||0; }
@@ -8345,7 +8354,7 @@ function renderKPIs(filtered, containerId){
   var grossRev;
   if(containerId==='kpiGrid' && _kpiPeriod === 'today'){
     // Cash-basis: mirror Net, add back broker fees collected today + Stripe card uplift (5% + 8.25% tax)
-    grossRev = revenue + _bfToday;  // gross = net + broker add-back (no card-fee gross-up)
+    grossRev = revenue + _bfToday + (_stripeBaseToday * 0.1325);  // gross = net + broker add-back + 13.25% card-fee gross-up on Stripe
   } else if(containerId==='kpiGrid'){
     // 7/30/90/all \u2014 accrual gross + uplift on Stripe-paid amounts in the period
     var _stripeBasePeriod = active.reduce(function(s,b){
@@ -8353,14 +8362,16 @@ function renderKPIs(filtered, containerId){
         ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
       return s + _sb + portalChargesRevenue(b);
     },0);
-    grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+otherIncome+rideRev;  // date lock is already inside b.revenue (do NOT add dateLockPeriodRev -- that double-counted it); no card-fee gross-up
+    grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+otherIncome+rideRev + (_stripeBasePeriod * 0.1325);  // date lock already inside b.revenue (NOT re-added); + 13.25% card-fee gross-up on Stripe/portal sales
   } else {
     grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+otherIncome+rideRev;  // date lock already in b.revenue -- not re-added
   }
 
+  var cardFeeUplift = (containerId==='kpiGrid') ? ((_kpiPeriod==='today' ? _stripeBaseToday : _stripeBasePeriod) * 0.1325) : 0;
   var cards = [
     {label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
-    {label:'Gross Revenue',         val:$$(grossRev),           sub:'Before broker fees \u00B7 incl. rides + income',           cls:''},
+    {label:'Gross Revenue',         val:$$(grossRev),           sub:'Before broker fees \u00B7 incl. rides, income, card fees', cls:''},
+    {label:'Card Fees (13.25%)',    val:$$(cardFeeUplift),      sub:'5% processing + 8.25% tax on card/Stripe sales \u00B7 in gross', cls:'blue'},
     {label:'Net Revenue',           val:$$(revenue),            sub:revSub,                                                cls:''},
     {label:'Date Locks',            val:$$(dateLockCardVal),    sub:dateLockCardSub,                                       cls:'blue'},
     {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(deposits-depositKept)+' returned to clients',      cls:'purple'},
@@ -8517,6 +8528,7 @@ function renderCharts(filtered){
   var _rideList=(typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns.filter(function(t){ return t&&_inWinC(t.completedAt?dateStr(new Date(t.completedAt)):''); }):[];
   var _chartIncome=_incList.reduce(function(s,i){ return s+(Number(i.amount)||0); },0);
   var _chartRide=_rideList.reduce(function(s,t){ return s+(Number(t.amount)||0); },0);
+  var _chartCardFee=active.reduce(function(s,b){ return s+_stripeCardFee(b); },0); // 13.25% card-fee gross-up (Stripe/portal), added to revenue AND cost so net is unchanged
 
   // ---------- 1) Revenue vs Est. Cost -- buckets + title ADAPT to the active period ----------
   // Revenue = GROSS (totalRevenue, before broker fees) = what customers paid. Broker commissions are
@@ -8527,8 +8539,8 @@ function renderCharts(filtered){
   active.forEach(function(b){
     var ds=(b.pickupDate||b.date)||(b._t?dateStr(new Date(Number(b._t))):dateStr(new Date()));
     var pk=_bkKey(ds,gran); if(!pk) return;
-    R[pk]=(R[pk]||0)+totalRevenue(b);
-    C[pk]=(C[pk]||0)+getEstCost(b)+brokerFeeTotal(b);
+    R[pk]=(R[pk]||0)+totalRevenue(b)+_stripeCardFee(b);   // card fee is gross revenue...
+    C[pk]=(C[pk]||0)+getEstCost(b)+brokerFeeTotal(b)+_stripeCardFee(b);  // ...AND a processing cost -> nets out in profit
   });
   // add non-booking revenue to the trend: income by fromDate, ride fares by completedAt
   _incList.forEach(function(i){ var k=_bkKey((i.fromDate||'').slice(0,10),gran); if(k) R[k]=(R[k]||0)+(Number(i.amount)||0); });
@@ -8604,10 +8616,11 @@ function renderCharts(filtered){
   });
 
   // ---------- 2) Revenue by Booking Type -- by REVENUE (with counts + %) ----------
-  var TYPES=[{k:'daily',label:'Daily',c:GOLD,noun:'booking'},{k:'hourly',label:'Hourly',c:BLUE,noun:'booking'},{k:'chauffeur',label:'Chauffeur',c:GREEN,noun:'booking'},{k:'event',label:'Events',c:PURPLE,noun:'booking'},{k:'rides',label:'Chauffeur Rides',c:'#2dd4bf',noun:'ride'},{k:'income',label:'Other Income',c:'#f472b6',noun:'entry'}];
-  var tRev={daily:0,hourly:0,chauffeur:0,event:0,rides:0,income:0}, tCnt={daily:0,hourly:0,chauffeur:0,event:0,rides:0,income:0};
+  var TYPES=[{k:'daily',label:'Daily',c:GOLD,noun:'booking'},{k:'hourly',label:'Hourly',c:BLUE,noun:'booking'},{k:'chauffeur',label:'Chauffeur',c:GREEN,noun:'booking'},{k:'event',label:'Events',c:PURPLE,noun:'booking'},{k:'rides',label:'Chauffeur Rides',c:'#2dd4bf',noun:'ride'},{k:'income',label:'Other Income',c:'#f472b6',noun:'entry'},{k:'cardfee',label:'Card Fees (13.25%)',c:'#fbbf24',noun:'card sale'}];
+  var tRev={daily:0,hourly:0,chauffeur:0,event:0,rides:0,income:0,cardfee:0}, tCnt={daily:0,hourly:0,chauffeur:0,event:0,rides:0,income:0,cardfee:0};
   active.forEach(function(b){ var k=b.isEvent?'event':(b.type||'daily'); if(tRev[k]==null) k='daily'; tRev[k]+=totalRevenue(b); tCnt[k]++; }); // GROSS booking revenue
   tRev.rides=_chartRide; tCnt.rides=_rideList.length; tRev.income=_chartIncome; tCnt.income=_incList.length; // non-booking revenue as slices -> doughnut total == KPI Gross Revenue
+  tRev.cardfee=_chartCardFee; tCnt.cardfee=active.filter(function(b){return _stripeCardFee(b)>0;}).length; // 13.25% card-fee gross-up slice (Stripe/portal) -> keeps doughnut total == KPI Gross Revenue
   var tTotRev=TYPES.reduce(function(s,t){return s+tRev[t.k];},0), tTotCnt=TYPES.reduce(function(s,t){return s+tCnt[t.k];},0);
   var shown=TYPES.filter(function(t){ return tRev[t.k]>0||tCnt[t.k]>0; });
   var _bt=$d('boxType'); if(_bt) _bt.style.height=(mobile?200:230)+'px';
@@ -8641,7 +8654,7 @@ function renderCharts(filtered){
   var topN=mobile?6:9;
 
   // ---------- 3) Revenue by Vehicle -- horizontal bars, value labels, rich tooltip ----------
-  var rvA=_vehSeries(function(b){ return totalRevenue(b); }, topN); // GROSS revenue (matches the Monthly chart)
+  var rvA=_vehSeries(function(b){ return totalRevenue(b); }, topN); // GROSS booking revenue by vehicle (excludes card fees + rides + income, which don't map to a single vehicle)
   var vRevTot=rvA.reduce(function(s,x){return s+x.val;},0);
   var _br=$d('boxRvv'); if(_br) _br.style.height=Math.max(150, rvA.length*(mobile?34:40)+30)+'px';
   dc('rvv');
