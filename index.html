@@ -4359,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v204';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v205';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7574,29 +7574,36 @@ function _paymentsReceived(b){
   if(!b) return [];
   function _ts(x){ var t=new Date(x).getTime(); return isNaN(t)?0:t; }
   function _m(x){ x=String(x||'').trim(); if(!x) return ''; if(x.toLowerCase()==='stripe') return 'Card'; return x.charAt(0).toUpperCase()+x.slice(1); }
+  // `card` = carries the 13.25% fee. Online-collected types (portal charge, extension, authorized-driver --
+  // all paid through the Stripe portal/site, where the worker often stamps NO method) default to CARD unless
+  // an explicit P2P/cash method is set. The BASE balance always gets a 'Stripe (...)' method stamped when
+  // paid online, so a BLANK balance is a manual mark of unknown type -> NOT counted as card. Date locks are
+  // excluded (owner's long-standing model: the card base was revenue - dateLock).
+  function _p2p(m){ return /zelle|cash|venmo|cashapp|cash app|wire|check|apple ?pay|other/.test(String(m||'').toLowerCase()); }
+  function _cardOnline(m){ return !_p2p(m); }   // blank or stripe/card -> card; explicit P2P -> not
   var out=[];
-  if(Number(b.dateLock)>0 && b.dateLockPaidAt) out.push({label:'Date Lock', amount:Number(b.dateLock)||0, method:'', ts:_ts(b.dateLockPaidAt)});
+  if(Number(b.dateLock)>0 && b.dateLockPaidAt) out.push({label:'Date Lock', amount:Number(b.dateLock)||0, method:'', ts:_ts(b.dateLockPaidAt), card:false});
   // (base-balance payments -- dated partials or the legacy single record -- are appended below)
   (b.portalCharges||[]).forEach(function(c){
     if(!c||!c.paidAt||c._foldedIntoRevenue||c._extPayment||c._extRecorded||c._extId||_isDepositCharge(c)) return;
-    out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt)});
+    out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt), card:_cardOnline(c.paidMethod)});
   });
   (b.extensions||[]).forEach(function(e){
     if(!e||!e.paidAt||!(Number(e.additionalCharge)>0)) return;
-    out.push({label:'Extension', amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt)});
+    out.push({label:'Extension', amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt), card:_cardOnline(e.paymentMethod)});
   });
   (Array.isArray(b.extraDrivers)?b.extraDrivers:[]).forEach(function(d){
     if(!d||!d.paid||!d.paidAt||!(Number(d.payAmount)>0)) return;
-    out.push({label:'Authorized Driver'+(d.name?' ('+String(d.name)+')':''), amount:Number(d.payAmount)||0, method:_m(d.paidMethod), ts:_ts(d.paidAt)});
+    out.push({label:'Authorized Driver'+(d.name?' ('+String(d.name)+')':''), amount:Number(d.payAmount)||0, method:_m(d.paidMethod), ts:_ts(d.paidAt), card:_cardOnline(d.paidMethod)});
   });
   if(Array.isArray(b.balancePayments) && b.balancePayments.length){
     var _bn=b.balancePayments.length;
     b.balancePayments.forEach(function(p,i){
       if(!p||!(Number(p.amount)>0)) return;
-      out.push({label:'Balance payment'+(_bn>1?' '+(i+1)+'/'+_bn:''), amount:Number(p.amount)||0, method:_m(p.method), ts:_ts(p.ts)});
+      out.push({label:'Balance payment'+(_bn>1?' '+(i+1)+'/'+_bn:''), amount:Number(p.amount)||0, method:_m(p.method), ts:_ts(p.ts), card:_isCardMethod(p.method)});
     });
   } else if(b.balancePaidAt && (Number(b.balancePaidAmount)||0)>0){
-    out.push({label:'Balance', amount:Number(b.balancePaidAmount)||0, method:_m(b.balancePaidMethod), ts:_ts(b.balancePaidAt)});
+    out.push({label:'Balance', amount:Number(b.balancePaidAmount)||0, method:_m(b.balancePaidMethod), ts:_ts(b.balancePaidAt), card:_isCardMethod(b.balancePaidMethod)});
   }
   out.sort(function(x,y){ return (x.ts||0)-(y.ts||0); });
   return out;
@@ -7627,7 +7634,10 @@ function _recordBalancePayment(b, amount, method){
 // A payment method that ran through CARD processing and therefore carried the 5% + 8.25% tax (the 13.25%
 // gross-up): Stripe, Card, or Apple Pay. Cash/Zelle/Venmo/CashApp/Wire/Check are P2P/bank -> no card fee.
 // Matches the mark-paid dropdown values (see 'methods' list). Blank/unknown -> no fee for a marked balance.
-function _isCardMethod(m){ m=String(m||'').trim().toLowerCase(); return m==='stripe'||m==='card'; }  // Apple Pay / P2P (zelle/cash/venmo/cashapp/wire/check) carry no card fee per owner
+// Carries the 13.25% card fee? Substring match so it catches every Stripe/Card label the worker stamps --
+// 'Stripe (portal)', 'Stripe (website)', 'Stripe', 'Card', 'card'. Apple Pay + P2P (zelle/cash/venmo/
+// cashapp/wire/check) and blank do NOT contain stripe/card, so they're excluded (per owner: no Apple Pay).
+function _isCardMethod(m){ m=String(m||'').trim().toLowerCase(); return m.indexOf('stripe')>=0 || m.indexOf('card')>=0; }
 function _baseCashOn(b, dayStr){
   var baseBalance=Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
   if(Array.isArray(b.balancePayments) && b.balancePayments.length){
@@ -7859,7 +7869,7 @@ function _cardFeeBaseInWindow(fromStr, toStr, list){
   return arr.reduce(function(s,b){
     if(!b || b._deleted || b.status==='cancelled') return s;
     return s + _paymentsReceived(b).reduce(function(ss,p){
-      if(!_isCardMethod(p.method)) return ss;
+      if(!p.card) return ss;   // per-entry card flag (online types default to card; balance needs explicit card)
       var ds=p.ts?dateStr(new Date(p.ts)):''; if(!ds) return ss;
       if(fromStr && ds<fromStr) return ss;
       if(toStr && ds>toStr) return ss;
@@ -8582,7 +8592,7 @@ function renderCharts(filtered){
   (_cfList||[]).forEach(function(b){
     if(!b||b._deleted||b.status==='cancelled') return;
     _paymentsReceived(b).forEach(function(p){
-      if(!_isCardMethod(p.method)) return;
+      if(!p.card) return;
       var ds=p.ts?dateStr(new Date(p.ts)):''; if(!ds||!_inWinC(ds)) return;
       var fee=(Number(p.amount)||0)*0.1325; if(!fee) return;
       _chartCardFee+=fee; _chartCardFeeN++;
