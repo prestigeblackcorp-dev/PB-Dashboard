@@ -2241,9 +2241,10 @@ function _calcMiles(id,start,inc,rate,unlimited){
 }
 
 // One read-only video "play" row (client streams from R2 via the worker; never a download).
+function _fmtMediaTs(ts){ ts=Number(ts)||0; if(!ts) return ''; try{ return new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}); }catch(e){ return ''; } }
 function _vidRow(bookingId, vid, who){
   const url=(`${WORKER}/video/get?bookingId=${encodeURIComponent(bookingId)}&key=${encodeURIComponent(vid.key)}&token=${encodeURIComponent(state.token)}`).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-  return `<div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:8px;padding:6px 9px"><button onclick="openVideoPlayer(&quot;${url}&quot;)" title="Play" style="width:28px;height:28px;flex-shrink:0;border-radius:6px;background:var(--gold);color:#000;border:none;font-size:12px;cursor:pointer">&#9654;</button><div style="flex:1;min-width:0;font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(vid.name||'Video')}</div><div style="font-size:9.5px;color:var(--text-muted);flex-shrink:0">${esc(who)}</div></div>`;
+  return `<div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:8px;padding:6px 9px"><button onclick="openVideoPlayer(&quot;${url}&quot;)" title="Play" style="width:28px;height:28px;flex-shrink:0;border-radius:6px;background:var(--gold);color:#000;border:none;font-size:12px;cursor:pointer">&#9654;</button><div style="flex:1;min-width:0"><div style="font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(vid.name||'Video')}</div>${vid.at?`<div style="font-size:9px;color:var(--text-muted)">${_fmtMediaTs(vid.at)}</div>`:''}</div><div style="font-size:9.5px;color:var(--text-muted);flex-shrink:0">${esc(who)}</div></div>`;
 }
 function showCondition(booking){
   const s = (booking.status||'').toLowerCase();
@@ -3287,8 +3288,10 @@ function _renderTripModule(){
   document.getElementById('tpm-finish').style.display=locked?'none':'block';
   // ---- Photos ----
   let g='';
+  const pMeta=((type==='pre'?bk.customerPreTripPhotoMeta:bk.customerPostTripPhotoMeta)||[]);
   arr.forEach((src,i)=>{
-    g+=`<div style="position:relative"><img class="photo-thumb" src="${src}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${src}')">${locked?'':`<button onclick="deleteTripPhoto(${i})" title="Remove photo" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#ef4444;color:#fff;border:2px solid var(--surface);font-size:11px;font-weight:800;cursor:pointer;line-height:1">\u2715</button>`}</div>`;
+    const _pt=(pMeta[i]&&pMeta[i].at)?`<div style="font-size:8px;color:var(--text-muted);text-align:center;line-height:1.15;margin-top:2px">${_fmtMediaTs(pMeta[i].at)}</div>`:'';
+    g+=`<div style="position:relative"><img class="photo-thumb" src="${src}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${src}')">${locked?'':`<button onclick="deleteTripPhoto(${i})" title="Remove photo" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#ef4444;color:#fff;border:2px solid var(--surface);font-size:11px;font-weight:800;cursor:pointer;line-height:1">\u2715</button>`}${_pt}</div>`;
   });
   if(!locked && arr.length<12){
     g+=`<button onclick="triggerPhotoUpload('${esc(bk.id)}','${type}')" title="Add photo" style="height:84px;border:1.5px dashed rgba(201,169,98,.4);border-radius:10px;background:transparent;color:var(--gold);font-size:22px;cursor:pointer">+</button>`;
@@ -3302,7 +3305,7 @@ function _renderTripModule(){
     const mb=vid.size?(' \u00b7 '+(vid.size/1048576).toFixed(1)+' MB'):'';
     v+=`<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:9px 11px">`+
        `<button onclick="openVideoPlayer(&quot;${url.replace(/&/g,'&amp;').replace(/"/g,'&quot;')}&quot;)" title="Play" style="width:34px;height:34px;flex-shrink:0;border-radius:8px;background:var(--gold);color:#000;border:none;font-size:13px;cursor:pointer">\u25b6</button>`+
-       `<div style="flex:1;min-width:0"><div style="font-size:12.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(vid.name||'Video')}</div><div style="font-size:10.5px;color:var(--text-muted)">Uploaded${mb}</div></div>`+
+       `<div style="flex:1;min-width:0"><div style="font-size:12.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(vid.name||'Video')}</div><div style="font-size:10.5px;color:var(--text-muted)">${vid.at?'Uploaded '+_fmtMediaTs(vid.at):'Uploaded'}${mb}</div></div>`+
        (locked?'':`<button onclick="deleteTripVideo('${esc(vid.key)}')" title="Remove video" style="width:26px;height:26px;flex-shrink:0;border-radius:6px;background:transparent;border:1px solid var(--border);color:#ef4444;font-size:12px;font-weight:800;cursor:pointer">\u2715</button>`)+
        `</div>`;
   });
