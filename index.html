@@ -4359,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v202';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v203';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7624,6 +7624,10 @@ function _recordBalancePayment(b, amount, method){
 // the LEGACY single balancePaidAmount stamped on balancePaidAt (or pickup-anchored when the balance was
 // manually zeroed) -- i.e. a booking WITHOUT balancePayments returns byte-identical values to the prior
 // inline logic, so existing data + the plain full-payment flow are unchanged.
+// A payment method that ran through CARD processing and therefore carried the 5% + 8.25% tax (the 13.25%
+// gross-up): Stripe, Card, or Apple Pay. Cash/Zelle/Venmo/CashApp/Wire/Check are P2P/bank -> no card fee.
+// Matches the mark-paid dropdown values (see 'methods' list). Blank/unknown -> no fee for a marked balance.
+function _isCardMethod(m){ m=String(m||'').trim().toLowerCase(); return m==='stripe'||m==='card'||m==='apple pay'||m==='applepay'; }
 function _baseCashOn(b, dayStr){
   var baseBalance=Math.max(0,(Number(b.revenue)||0)-_foldedChargesTotal(b)-(Number(b.dateLock)||0));
   if(Array.isArray(b.balancePayments) && b.balancePayments.length){
@@ -7642,7 +7646,7 @@ function _baseCashOn(b, dayStr){
   var extPaidDay=(b.extensions||[]).reduce(function(es,e){ return (e&&e.paidAt&&dateStr(new Date(e.paidAt))===dayStr)?es+(Number(e.additionalCharge)||0):es; },0);
   var collected=(b.balancePaidAmount!=null && !isNaN(Number(b.balancePaidAmount)))?Number(b.balancePaidAmount):baseBalance;
   var base=Math.max(0,Math.min(collected-extPaidDay,baseBalance));
-  var stripe=(String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe')?base:0;
+  var stripe=(_isCardMethod(b.balancePaidMethod))?base:0;
   return { base:base, stripe:stripe };
 }
 // Sum of extension-charge fees already folded into b.revenue. Cash/chart sums that count
@@ -7843,7 +7847,7 @@ function _cardPortalChargesRevenue(b){
 // AND a processing cost, so charts add it to revenue AND to cost -> net profit unchanged.
 function _stripeCardFee(b){
   if(!b) return 0;
-  var base = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe' ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
+  var base = _isCardMethod(b.balancePaidMethod) ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
   return (base + _cardPortalChargesRevenue(b)) * 0.1325;
 }
 function netRevenue(b){ return totalRevenue(b)-(brokerFeeTotal(b)); }
@@ -8234,7 +8238,7 @@ function renderKPIs(filtered, containerId){
     _stripeBaseToday += allActive.reduce(function(s,b){
       return s+((Array.isArray(b.extraDrivers)?b.extraDrivers:[]).reduce(function(ds,d){
         var _m=String((d&&d.paidMethod)||'').toLowerCase();
-        return (d&&d.paid&&Number(d.payAmount)>0&&d.paidAt&&dateStr(new Date(d.paidAt))===tod&&(_m==='card'||_m==='stripe')) ? ds+Number(d.payAmount) : ds; },0));
+        return (d&&d.paid&&Number(d.payAmount)>0&&d.paidAt&&dateStr(new Date(d.paidAt))===tod&&_isCardMethod(_m)) ? ds+Number(d.payAmount) : ds; },0));
     },0);
     _bfToday   = _baseBfToday + _extBfToday;   // total broker netted out of net today = base + extension
     pureBase   = pickupBalance - addons;
@@ -8367,7 +8371,7 @@ function renderKPIs(filtered, containerId){
   } else if(containerId==='kpiGrid'){
     // 7/30/90/all \u2014 accrual gross + uplift on Stripe-paid amounts in the period
     var _stripeBasePeriod = active.reduce(function(s,b){
-      var _sb = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe'
+      var _sb = _isCardMethod(b.balancePaidMethod)
         ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
       return s + _sb + _cardPortalChargesRevenue(b);  // only CARD portal charges carry the 13.25% (not zelle/cash)
     },0);
