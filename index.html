@@ -4366,7 +4366,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v209';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v210';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8019,6 +8019,10 @@ function countdownLabel(dateStr){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 function switchTab(name){
   activeTab=name; _bPage=0;
+  // STOP the 15s fleet poll the instant we leave Drivers. It does a whole-ride_requests read on the worker
+  // and used to keep running FOREVER once started (even on other tabs / in the background) -- that was the
+  // Firebase "Outgoing Bandwidth" spike. Now it only runs while you're actually viewing the live fleet.
+  if(name!=='drivers' && _fleetRefreshTimer){ clearInterval(_fleetRefreshTimer); _fleetRefreshTimer=null; }
   if(name!=='drivers' && typeof _fleetMapFs!=='undefined' && _fleetMapFs) fleetMapFsToggle();
   document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
@@ -8038,6 +8042,19 @@ function switchTab(name){
   else if(name==='drivers'){  renderDriversTab(); setTimeout(function(){ initFleetMap(); refreshFleetMap(); if(!_fleetRefreshTimer){ _fleetRefreshTimer=setInterval(refreshFleetMap,15000); } },200); }
   else if(name==='brokers')   renderBrokerTab();
   else if(name==='outreach')  renderOutreachTab();
+}
+
+// Pause the fleet poll while the browser tab is hidden (minimised / another app / phone asleep) and resume
+// it only when you come back TO the Drivers tab -- no point hitting /chauffeur/dashboard when nobody's
+// looking. This + the leave-tab stop above cut idle Firebase egress to zero without losing any live updates.
+if(typeof document!=='undefined' && document.addEventListener){
+  document.addEventListener('visibilitychange', function(){
+    if(document.hidden){
+      if(_fleetRefreshTimer){ clearInterval(_fleetRefreshTimer); _fleetRefreshTimer=null; }
+    } else if(activeTab==='drivers' && !_fleetRefreshTimer && typeof refreshFleetMap==='function'){
+      refreshFleetMap(); _fleetRefreshTimer=setInterval(refreshFleetMap,15000);
+    }
+  });
 }
 
 // Reveal a booking's trip CARD in the list (so search takes you to the card + its quick
