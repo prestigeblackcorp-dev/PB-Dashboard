@@ -183,6 +183,8 @@ tr:hover td { background: rgba(255,255,255,.02); }
   grid-template-columns: 88px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto; gap: 14px; align-items: center;
   box-shadow: var(--shadow-card); transition: transform .15s, box-shadow .15s; cursor: pointer; }
 .trip-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+.trip-card.tripcard-flash { animation: tripcardFlash 1.1s ease-out 2; }
+@keyframes tripcardFlash { 0%,100%{ box-shadow: var(--shadow-card); } 20%{ box-shadow: 0 0 0 3px rgba(201,169,98,.9), 0 0 26px rgba(201,169,98,.6); } }
 .trip-card-actions { display: flex; gap: 6px; flex-wrap: wrap; grid-column: 1 / -1;
   border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
 .trip-date-big { font-size: 28px; font-weight: 900; color: var(--text); line-height: 1; }
@@ -4323,7 +4325,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v193';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v194';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7948,6 +7950,37 @@ function switchTab(name){
   else if(name==='outreach')  renderOutreachTab();
 }
 
+// Reveal a booking's trip CARD in the list (so search takes you to the card + its quick
+// actions, not just the read-only details modal): switch to the tab that holds it, scroll
+// it into view, and flash a gold highlight. Falls back to the details modal if the card
+// isn't rendered (e.g., filtered out of the current view).
+function _bookingTabFor(b){
+  if(!b) return 'current';
+  var st=(b.status||'').toLowerCase();
+  if(st==='cancelled') return 'cancelled';
+  if(st==='completed') return 'previous';
+  var today=todayStr();
+  var start=normDateStr(b.pickupDate||b.date);
+  var end=tripEndDate(b);
+  if(end && end<today) return 'previous';
+  if(start && start>today) return 'upcoming';
+  return 'current';
+}
+function goToTripCard(bid){
+  var b=bookings.find(function(x){ return x.id===bid; });
+  if(!b){ if(typeof openBookingDetail==='function') openBookingDetail(bid); return; }
+  var tab=_bookingTabFor(b);
+  if(activeTab!==tab) switchTab(tab);
+  setTimeout(function(){
+    var panel=$d('tab-'+tab);
+    var el=panel?panel.querySelector('[id="tripcard-'+bid+'"]'):$d('tripcard-'+bid);
+    if(!el){ if(typeof openBookingDetail==='function') openBookingDetail(bid); return; }  // not in this view -> details
+    el.scrollIntoView({behavior:'smooth',block:'center'});
+    el.classList.remove('tripcard-flash'); void el.offsetWidth; el.classList.add('tripcard-flash');
+    setTimeout(function(){ el.classList.remove('tripcard-flash'); }, 2600);
+  }, 70);
+}
+
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  FILTERS
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -10522,7 +10555,7 @@ function tripCard(b, showCountdown){
   var vc=VEHICLE_COSTS[b.vehicle]||{};
   var vImgHtml=vc.image?'<img src="'+vc.image+'" style="width:32px;height:32px;border-radius:6px;object-fit:cover;margin-right:6px;vertical-align:middle" onerror="this.style.display=\'none\'">':'';
 
-  return '<div class="trip-card" style="cursor:pointer" onclick="openBookingDetail(\''+b.id+'\')">'+
+  return '<div class="trip-card" id="tripcard-'+b.id+'" style="cursor:pointer" onclick="openBookingDetail(\''+b.id+'\')">'+
     '<div>'+dateColHtml+'</div>'+
     '<div>'+
       '<div class="trip-vehicle">'+vImgHtml+_slingDot(b)+esc(b.vehicle)+'</div>'+
@@ -11582,7 +11615,7 @@ function onVehicleChange(){
   var type=$d('fType')?$d('fType').value:'daily';
   if(!$d('fRevenue')._manual && type!=='chauffeur'){
     if(v==='Polaris Slingshot' && type==='hourly'){
-      $d('fRevenue').value = _slingshotHourlyPrice(days);   // tiered: 2/4/8 hr = $75/$150/$225
+      $d('fRevenue').value = _slingshotHourlyPrice(days);   // tiered: 2/4/8 hr = $100/$150/$225
       updateLiveTotal();
       updateRemainingBalance(true);
     } else if(vc && vc.rate){
@@ -12343,7 +12376,7 @@ function _ownerHandleVideo(input, phase){
   var file=input.files&&input.files[0]; var bookingId=phase==='post'?closeOutId:checkInId; if(input) input.value='';
   if(!file||!bookingId) return;
   if(!/^video\//i.test(file.type||'')){ showToast('Please choose a video file'); return; }
-  if(file.size>300*1024*1024){ showToast('Video too large (max 300MB)'); return; }
+  if(file.size>1024*1024*1024){ showToast('Video too large (max 1GB)'); return; }
   var prog=$d(phase==='post'?'coVideoProg':'ciVideoProg'), fill=$d(phase==='post'?'coVideoProgFill':'ciVideoProgFill');
   if(prog) prog.style.display='block'; if(fill) fill.style.width='0';
   var url=WORKER+'/video/upload?bookingId='+encodeURIComponent(bookingId)+'&role=owner&phase='+phase+'&name='+encodeURIComponent(file.name||'video.mp4');
@@ -24133,7 +24166,7 @@ function renderCmdPalette(){
       matches.forEach(function(b){
         var i=_cmdPaletteItems.length;
         var sub=esc(b.vehicle)+(b.pickupDate?' \u00B7 '+fmtDate(b.pickupDate):'')+'<span style="color:var(--muted);font-size:10px;margin-left:6px">PBR-'+(b.id||'').slice(-6).toUpperCase()+'</span>';
-        var item={icon:'\uD83D\uDCCB',label:b.name||'Booking',sub:sub,action:(function(bid){ return function(){ openBookingDetail(bid); }; })(b.id)};
+        var item={icon:'\uD83D\uDCCB',label:b.name||'Booking',sub:sub,action:(function(bid){ return function(){ goToTripCard(bid); }; })(b.id)};
         _cmdPaletteItems.push(item);
         html+=_cmdItemSub('\uD83D\uDCCB',esc(b.name||'Booking'),sub,b.status,i);
       });
