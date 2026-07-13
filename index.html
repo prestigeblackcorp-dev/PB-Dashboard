@@ -4359,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v201';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v202';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7820,7 +7820,7 @@ function _addlIncomeAmt(b){ return (b&&b.addlIncome&&Number(b.addlIncome.amount)
 // totalRevenue so it counts in EVERY accrual KPI/chart/per-vehicle/table/filter; the Today cash-basis KPI
 // adds it separately by paidAt. It is a distinct field (not in b.revenue/charges) -> counted exactly once.
 function _authDriverPaidTotal(b){ return ((b&&Array.isArray(b.extraDrivers))?b.extraDrivers:[]).reduce(function(s,d){ return (d&&d.paid&&Number(d.payAmount)>0)?s+Number(d.payAmount):s; },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(b.refundSent?0:(Number(b.depositKept)||0))+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b); }  // a RETURNED deposit (refundSent) is not revenue -- mirror the Deposits Kept card + close-out invariant
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
 function brokerRateDays(b){ var x=(b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
@@ -7828,14 +7828,23 @@ function extensionBrokerTotal(b){ return (b.extensions||[]).reduce(function(s,e)
 // Total broker fee owed: original days \u00D7 rate + each extension's own broker fee. For a
 // booking with no extensions this is identical to the old brokerFee \u00D7 days.
 function brokerFeeTotal(b){ return (Number(b.brokerFee)||0)*brokerRateDays(b)+extensionBrokerTotal(b); }
-// 13.25% card-processing gross-up (5% processing + 8.25% tax) on card/Stripe-collected amounts only.
-// Matches the KPI grossRev card-fee base: Stripe-paid base (revenue - dateLock) + portal charges (portal
-// links are card/Stripe). Sum over active == the KPI's _stripeBase*0.1325. It is BOTH gross revenue (the
-// customer paid it) AND a processing cost, so charts add it to revenue AND to cost -> net profit unchanged.
+// Portal charges that were CARD/Stripe-collected only (blank method defaults to card). Mirrors
+// portalChargesRevenue's exclusions PLUS drops zelle/cash/venmo/wire/check -- those carried NO card
+// fee+tax, so they must not enter the 13.25% gross-up base (matches the Today-branch filter ~8216).
+function _cardPortalChargesRevenue(b){
+  return ((b&&b.portalCharges)||[]).reduce(function(s,c){
+    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return s;
+    return /zelle|cash|venmo|wire|check/.test(String(c.paidMethod||'').toLowerCase()) ? s : s+(Number(c.amount)||0);
+  },0);
+}
+// 13.25% card-processing gross-up (5% processing + 8.25% tax) on CARD/Stripe-collected amounts only.
+// Matches the KPI grossRev card-fee base: Stripe-paid base (revenue - dateLock) + CARD portal charges.
+// Sum over active == the KPI's _stripeBasePeriod*0.1325. It is BOTH gross revenue (the customer paid it)
+// AND a processing cost, so charts add it to revenue AND to cost -> net profit unchanged.
 function _stripeCardFee(b){
   if(!b) return 0;
   var base = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe' ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
-  return (base + portalChargesRevenue(b)) * 0.1325;
+  return (base + _cardPortalChargesRevenue(b)) * 0.1325;
 }
 function netRevenue(b){ return totalRevenue(b)-(brokerFeeTotal(b)); }
 
@@ -8074,7 +8083,7 @@ function setForecastPeriod(p){ _forecastPeriod=p; renderForecast(); }
 function _kpiDateRange(){
   if(_kpiPeriod==='all') return {from:'',to:''};
   var tod=todayStr();
-  var from=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  var from=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
   return {from:from, to:tod};
 }
 
@@ -8121,7 +8130,7 @@ function renderKPIs(filtered, containerId){
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     tod    = todayStr();
     cutoff = _kpiPeriod==='today' ? tod
-           : dateStr(addDays(new Date(tod+'T00:00:00'), -(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+           : dateStr(addDays(new Date(tod+'T00:00:00'), -(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
     filtered = filtered.filter(function(b){
       if(_kpiPeriod==='today'){
         return (b.pickupDate||'')===tod;
@@ -8285,7 +8294,7 @@ function renderKPIs(filtered, containerId){
   var profit    = revenue - totalCost;
   var margin    = revenue>0 ? profit/revenue*100 : 0;
 
-  var uncollected = active.filter(function(b){ return (Number(b.deposit)||0)===0 && b.status!=='cancelled'; }).length;
+  var uncollected = active.filter(function(b){ var s=(b.status||'').toLowerCase(); return (Number(b.deposit)||0)===0 && (s==='confirmed'||s==='pending'); }).length; // match the 'Confirmed/pending' label -- exclude completed/in-progress
   var carPayments = expenses.filter(function(e){
     if(e._deleted) return false;
     if(e.category!=='Car Payment') return false;
@@ -8360,7 +8369,7 @@ function renderKPIs(filtered, containerId){
     var _stripeBasePeriod = active.reduce(function(s,b){
       var _sb = String(b.balancePaidMethod||'').trim().toLowerCase()==='stripe'
         ? Math.max(0,(Number(b.revenue)||0)-(Number(b.dateLock)||0)) : 0;
-      return s + _sb + portalChargesRevenue(b);
+      return s + _sb + _cardPortalChargesRevenue(b);  // only CARD portal charges carry the 13.25% (not zelle/cash)
     },0);
     grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+otherIncome+rideRev + (_stripeBasePeriod * 0.1325);  // date lock already inside b.revenue (NOT re-added); + 13.25% card-fee gross-up on Stripe/portal sales
   } else {
@@ -8374,7 +8383,7 @@ function renderKPIs(filtered, containerId){
     {label:'Card Fees (13.25%)',    val:$$(cardFeeUplift),      sub:'5% processing + 8.25% tax on card/Stripe sales \u00B7 in gross', cls:'blue'},
     {label:'Net Revenue',           val:$$(revenue),            sub:revSub,                                                cls:''},
     {label:'Date Locks',            val:$$(dateLockCardVal),    sub:dateLockCardSub,                                       cls:'blue'},
-    {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(deposits-depositKept)+' returned to clients',      cls:'purple'},
+    {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(Math.max(0,deposits-depositKept))+' returned to clients', cls:'purple'},
     {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
     {label:'Logged Expenses',       val:$$(loggedExp),          sub:$$(bookingCost)+' direct booking costs',               cls:'red'},
     {label:'Net Profit',            val:$$(profit),             sub:'Margin: '+pct(margin),                               cls:profit>=0?'green':'red'},
@@ -8522,7 +8531,9 @@ function renderCharts(filtered){
   // Non-booking revenue for the active period (standalone income + chauffeur ride-app fares), so the
   // charts reconcile with the corrected KPI Gross Revenue = bookings gross + income + rides. Scoped to
   // the same window the KPI uses (income by fromDate, rides by completedAt = _rideRevForPeriod basis).
-  var _krC=_kpiDateRange(), _cLo=_krC.from||'', _cHi=_krC.to||todayStr();
+  // On 'all', match the KPI income/ride basis (bounded only by the filter bar, NOT capped at today) so a
+  // future-dated income entry counts in both. Fixed periods keep _krC.to = today.
+  var _krC=_kpiDateRange(), _cLo=_krC.from||'', _cHi=_krC.to||(($d('filterTo')&&$d('filterTo').value)||'9999-12-31');
   function _inWinC(d){ d=(d||'').slice(0,10); return !!d && (!_cLo||d>=_cLo) && d<=_cHi; }
   var _incList=(incomes||[]).filter(function(i){ return i&&!i._deleted&&_inWinC(i.fromDate); });
   var _rideList=(typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns.filter(function(t){ return t&&_inWinC(t.completedAt?dateStr(new Date(t.completedAt)):''); }):[];
@@ -8544,7 +8555,7 @@ function renderCharts(filtered){
   });
   // add non-booking revenue to the trend: income by fromDate, ride fares by completedAt
   _incList.forEach(function(i){ var k=_bkKey((i.fromDate||'').slice(0,10),gran); if(k) R[k]=(R[k]||0)+(Number(i.amount)||0); });
-  _rideList.forEach(function(t){ var k=_bkKey(dateStr(new Date(t.completedAt)),gran); if(k) R[k]=(R[k]||0)+(Number(t.amount)||0); });
+  _rideList.forEach(function(t){ var k=_bkKey(dateStr(new Date(t.completedAt)),gran); if(k){ R[k]=(R[k]||0)+(Number(t.amount)||0); C[k]=(C[k]||0)+(Number(t.amount)||0)*0.35; } }); // ride fare -> revenue; 35% chauffeur payout -> cost (so chart Net == KPI Net Profit)
   // Enumerate EVERY bucket in the active window (so the axis is continuous -- the 7-day filter shows
   // all 7 days, not only the days that had a booking) AND fold logged operating EXPENSES into the cost
   // buckets so "Est. Cost" matches the KPI (totalCost = per-booking cost + logged expenses) instead of
@@ -9791,7 +9802,7 @@ function _bkRebooked(b, all){
 function _rideOwnerLossForPeriod(){
   if(!_rideCancelTxns||!_rideCancelTxns.length) return 0;
   var tod=todayStr();
-  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
   return _rideCancelTxns.reduce(function(s,t){
     if(!t || t.rebooked) return s;
     var amt=(Number(t.amount)||0)*0.65;
@@ -9806,7 +9817,7 @@ function _rideCancelLossForPeriod(){
   if(!_rideCancelTxns||!_rideCancelTxns.length) return 0;
   if(_kpiPeriod==='all') return _rideCancelTxns.reduce(function(s,t){ return s+(Number(t.amount)||0); },0);
   var tod=todayStr();
-  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
   return _rideCancelTxns.reduce(function(s,t){
     var d=t&&t.at?dateStr(new Date(t.at)):'';
     if(!d) return s;
@@ -9819,7 +9830,7 @@ function _rideRevForPeriod(){
   if(!_rideTxns||!_rideTxns.length) return 0;
   if(_kpiPeriod==='all') return _rideTxns.reduce(function(s,t){ return s+(Number(t.amount)||0); },0);
   var tod=todayStr();
-  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
   return _rideTxns.reduce(function(s,t){
     var d=t&&t.completedAt?dateStr(new Date(t.completedAt)):'';
     if(!d) return s;
@@ -9832,7 +9843,7 @@ function _rideCountForPeriod(){
   if(!_rideTxns||!_rideTxns.length) return 0;
   if(_kpiPeriod==='all') return _rideTxns.length;
   var tod=todayStr();
-  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?7:_kpiPeriod==='30'?30:90)));
+  var cutoff=_kpiPeriod==='today'?tod:dateStr(addDays(new Date(tod+'T00:00:00'),-(_kpiPeriod==='7'?6:_kpiPeriod==='30'?29:89)));
   return _rideTxns.filter(function(t){
     var d=t&&t.completedAt?dateStr(new Date(t.completedAt)):'';
     if(!d) return false;
@@ -9971,7 +9982,7 @@ async function deleteRideRecord(id){
     // Drop this ride from the KPI revenue cache RIGHT NOW so its fare stops counting immediately,
     // then hard-reload from the worker (which excludes EVERY _deleted ride) to reconcile. The hard
     // reload also clears any PAST-deleted rides a throttled/never-run refresh had left in the KPI.
-    try{ _rideTxns=(_rideTxns||[]).filter(function(t){ return t && t.id!==id; }); }catch(e){}
+    try{ _rideTxns=(_rideTxns||[]).filter(function(t){ return t && t.id!==id; }); _rideCancelTxns=(_rideCancelTxns||[]).filter(function(t){ return t && t.id!==id; }); }catch(e){} // prune BOTH caches so a deleted CANCELLED ride clears the Cancellation-Losses KPI instantly
     try{ if($d('kpiGrid') && typeof getFiltered==='function' && typeof renderKPIs==='function') renderKPIs(getFiltered(),'kpiGrid'); }catch(e){}
     loadRideRevenue(true, true);
     refreshFleetMap();
@@ -23360,7 +23371,7 @@ function _fleetInPeriod(b){
   if(_fleetPeriod==='all') return true;
   var tod=todayStr(), cutoff=_fleetCutoff();
   var pickup=b.pickupDate||b.date||'', ret=tripEndDate(b)||pickup;
-  return (pickup>=cutoff&&pickup<=tod)||(ret>=cutoff&&ret<=tod);
+  return pickup<=tod && ret>=cutoff;   // interval [pickup,ret] OVERLAPS the window [cutoff,tod] -- catches a rental that SPANS the window (pickup before it, return after it) = the C300 0%-util bug
 }
 function _fleetDateIn(ds){ if(_fleetPeriod==='all') return true; if(!ds) return false; return ds>=_fleetCutoff()&&ds<=todayStr(); }
 function setFleetPeriod(p){ _fleetPeriod=p; try{ localStorage.setItem('pb_fleet_period',p); }catch(e){} renderVehiclePnL(); renderHeatmap(); }
@@ -23460,7 +23471,8 @@ function renderVehiclePnL(){
       '<div style="margin-top:4px;font-size:11px;color:var(--muted)">Utilization ('+winDays+'d): <strong style="color:var(--text)">'+fleetUtil+'%</strong></div>'+
     '</div>'+
   '</div>';
-  el.innerHTML = '<div style="margin-bottom:12px">'+pills+'</div>' + overall +
+  var _fleetNote='<div style="font-size:10.5px;color:var(--muted);margin:-4px 0 12px;line-height:1.5;max-width:640px">Fleet has its <strong>own period</strong> (separate from the Overview pills above). Revenue here = per-vehicle <strong>gross</strong> on an earned-date basis; it excludes chauffeur rides, other income &amp; the card-fee gross-up (none map to a single vehicle), so it will not equal the Overview\'s Gross Revenue.</div>';
+  el.innerHTML = '<div style="margin-bottom:12px">'+pills+'</div>' + _fleetNote + overall +
     (cards.length
       ? '<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Vehicle P&L</div><div class="kpi-grid">'+cards.join('')+plTotal+'</div>'
       : '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No vehicle activity in this period.</div>');
