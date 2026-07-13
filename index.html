@@ -931,6 +931,12 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 }
 .kpi::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,rgba(201,169,98,.3),transparent); pointer-events:none; }
 .kpi:hover { box-shadow: var(--card-hover-glow); transform: translateY(-2px); }
+.kpi.kpitap { cursor: pointer; }
+.kpi.kpitap:hover { border-color: rgba(201,169,98,.42); }
+.kpi.kpitap:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.kpi-cue { position: absolute; top: 12px; right: 15px; font-size: 16px; line-height: 1; color: var(--gold); opacity: .28; pointer-events: none; transition: opacity .15s ease; font-weight: 400; }
+.kpi.kpitap:hover .kpi-cue { opacity: .9; }
+@media (max-width: 768px){ .kpi-cue { display: none; } }
 .kpi-val { font-size: 28px; background: var(--gold-shine); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; white-space: nowrap; overflow: hidden; line-height: 1.15; }
 .kpi.green .kpi-val { background: linear-gradient(135deg,#22c55e,#4ade80); -webkit-background-clip: text; background-clip: text; }
 .kpi.red   .kpi-val { background: linear-gradient(135deg,#ef4444,#f87171); -webkit-background-clip: text; background-clip: text; }
@@ -4366,7 +4372,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v211';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v212';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8164,6 +8170,148 @@ function _applyKpiPeriod(arr){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  KPIs
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// ============================ KPI DRILL-DOWN =============================================================
+// Click any Overview KPI card -> a modal itemizing EVERYTHING behind that number for the current filter.
+// Reconciles by using the exact snapshot renderKPIs froze; a balancing row guarantees no gaps.
+var _kpiSnapshot=null, _kdExpanded={};
+function closeKpiDetail(){ var m=document.getElementById('kpiDetailModal'); if(m) m.classList.remove('open'); }
+function _kdInW(s){ var c=s.cutoff,t=s.tod; return function(ds){ if(!c) return true; ds=(ds||'').slice(0,10); return !!ds&&ds>=c&&ds<=t; }; }
+function _bkEarnedComponents(b, cutoff, tod){
+  var out=[], inW=function(ds){ if(!cutoff)return true; ds=(ds||'').slice(0,10); return !!ds&&ds>=cutoff&&ds<=(tod||todayStr()); }, pk=b.pickupDate||b.date||'';
+  if(inW(pk)){
+    var dl=Number(b.dateLock)||0, ad=getAddons(b), rb=(Number(b.revenue)||0)-dl-ad;
+    if(rb>0.005) out.push({l:'Rental base',a:rb}); if(ad>0.005) out.push({l:'Add-ons',a:ad}); if(dl>0.005) out.push({l:'Date lock',a:dl});
+    if((Number(b.fuelCharge)||0)>0.005) out.push({l:'Fuel',a:Number(b.fuelCharge)||0});
+    if((Number(b.mileageCharge)||0)>0.005) out.push({l:'Mileage',a:Number(b.mileageCharge)||0});
+    if(!b.refundSent&&(Number(b.depositKept)||0)>0.005) out.push({l:'Deposit kept',a:Number(b.depositKept)||0});
+    if((Number(b.lateReturnFee)||0)>0.005) out.push({l:'Late fee',a:Number(b.lateReturnFee)||0});
+    if(_addlIncomeAmt(b)>0.005) out.push({l:'Additional income',a:_addlIncomeAmt(b)});
+    if(_authDriverPaidTotal(b)>0.005) out.push({l:'Authorized-driver pay',a:_authDriverPaidTotal(b)});
+  }
+  (b.extensions||[]).forEach(function(e,i){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pk); if(inW(ed)) out.push({l:'Extension '+(i+1),a:amt}); });
+  (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c)))return; if(inW(dateStr(new Date(c.paidAt)))) out.push({l:(c.description?String(c.description):'Portal charge'),a:Number(c.amount)||0}); });
+  return out;
+}
+function _kdRideList(s){ var inW=_kdInW(s); return ((typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns:[]).filter(function(t){ return t && (!s.cutoff||inW(t.completedAt?dateStr(new Date(t.completedAt)):'')); }); }
+function _kdIncomeList(s){ return (typeof incomes!=='undefined'?incomes:[]).filter(function(i){ if(!i||i._deleted)return false; var d=(i.fromDate||'').slice(0,10); if(s.from&&d<s.from)return false; if(s.to&&d>s.to)return false; return true; }); }
+function _kdExpenseList(s){ return (typeof expenses!=='undefined'?expenses:[]).filter(function(e){ if(!e||e._deleted)return false; var d=(e.date||'').slice(0,10); if(s.from&&d<s.from)return false; if(s.to&&d>s.to)return false; return true; }); }
+function _kdCancelRides(s){ var inW=_kdInW(s); return ((typeof _rideCancelTxns!=='undefined'&&_rideCancelTxns)?_rideCancelTxns:[]).filter(function(t){ return t && !t._deleted && !t.rebooked && (!s.cutoff||inW(t.at?dateStr(new Date(t.at)):'')); }); }
+function _kdBkRow(b, amt, expand){ return { name:esc(b.name||'(no name)'), sub:esc((b.vehicle||'Vehicle')+(b.pickupDate||b.date?' \u00B7 '+(b.pickupDate||b.date):'')+(b.status&&b.status!=='confirmed'?' \u00B7 '+b.status:'')), amt:amt, expand:expand||null }; }
+function _kdSort(r){ r.sort(function(a,b){ return Math.abs(b.amt)-Math.abs(a.amt); }); return r; }
+function _kdValRows(list, valFn){ var r=[]; (list||[]).forEach(function(b){ var a=valFn(b); if(Math.abs(a)>0.005) r.push(_kdBkRow(b,a)); }); return _kdSort(r); }
+// Builds {title, total, note, groups:[{head, rows:[{name,sub,amt,expand,delRide}]}]} for a KPI key
+// TODAY is cash-basis (money COLLECTED today), not accrual -> itemize the 4 revenue KPIs from the today components.
+function _kdTodayBuild(key, s){
+  var tp=s.todayParts||{}, v=s.vals, rows=[];
+  function add(name,amt,sub){ if(Math.abs(Number(amt)||0)>0.005) rows.push({name:name,sub:sub||'',amt:Number(amt)||0}); }
+  if(key==='dateLocks'){ add('Date locks received today', tp.dateLock,'Payment landed today'); if(!rows.length) rows.push({name:'None received today',sub:'',amt:0,plain:true}); return {title:'Date Locks',total:v.dateLocks,note:'Date-lock fees whose payment landed TODAY (cash-basis).',groups:[{head:'Received today',rows:rows}]}; }
+  if(key==='cardFee'){ add('13.25% on card/Stripe collected today', tp.cardFee, tp.stripeBase?('$'+Math.round(tp.stripeBase)+' card base collected today'):''); if(!rows.length) rows.push({name:'No card/Stripe money collected today',sub:'',amt:0,plain:true}); return {title:'Card Fees (13.25%)',total:v.cardFee,note:'5% processing + 8.25% tax on CARD/Stripe money COLLECTED today (Apple Pay / cash / Zelle excluded).',groups:[{head:'Card collected today',rows:rows}]}; }
+  add('Rental collected today', tp.baseGross,'Base + add-ons cash taken today (gross of broker)');
+  add('Date locks', tp.dateLock,'Received today'); add('Fuel', tp.fuel); add('Mileage', tp.mile); add('Deposit kept', tp.depositKept); add('Late fees', tp.late);
+  add('Extensions', tp.ext,'Paid today'); add('Portal charges', tp.portal,'Paid today'); add('Authorized-driver pay', tp.authDriver,'Paid today');
+  if(!rows.length) rows.push({name:'No booking money collected today',sub:'',amt:0,plain:true});
+  var groups=[{head:'Money collected today',rows:rows}];
+  var rd=_kdRideList(s); if(rd.length) groups.push({head:'Chauffeur rides',rows:_kdSort(rd.map(function(t){return {name:esc(t.rider||t.driver||'Chauffeur ride'),sub:esc(t.completedAt?dateStr(new Date(t.completedAt)):''),amt:Number(t.amount)||0};}))}); else if(Math.abs(tp.rides)>0.005) groups.push({head:'Chauffeur rides',rows:[{name:'Rides completed today',sub:'',amt:tp.rides}]});
+  var inc=_kdIncomeList(s); if(inc.length) groups.push({head:'Other income',rows:_kdSort(inc.map(function(i){return {name:esc(i.description||i.source||'Other income'),sub:esc(i.fromDate||''),amt:Number(i.amount)||0};}))}); else if(Math.abs(tp.income)>0.005) groups.push({head:'Other income',rows:[{name:'Income today',sub:'',amt:tp.income}]});
+  if(key==='netRevenue'){ if(Math.abs(tp.bfToday)>0.005) groups.push({head:'Broker fees',rows:[{name:'Broker fees (deducted)',sub:'',amt:-tp.bfToday}]}); return {title:'Net Revenue',total:v.netRevenue,note:'Money collected today, net of broker fees (cash-basis).',groups:groups}; }
+  if(Math.abs(tp.cardFee)>0.005) groups.push({head:'Card-fee gross-up (13.25%)',rows:[{name:'13.25% on card/Stripe collected today',sub:'5% processing + 8.25% tax',amt:tp.cardFee}]});
+  return {title:'Gross Revenue',total:v.grossRev,note:'All money COLLECTED today (cash-basis), before broker fees, plus the card-fee gross-up.',groups:groups};
+}
+function _kpiDetailData(key, s){
+  var v=s.vals, cutoff=s.cutoff, tod=s.tod;
+  if(s.period==='today' && s.todayParts && (key==='grossRev'||key==='netRevenue'||key==='dateLocks'||key==='cardFee')) return _kdTodayBuild(key, s);
+  if(key==='grossRev'){
+    var g=[]; (s.allActive||[]).forEach(function(b){ var a=_earnedRevInWindow(b,cutoff,tod); if(Math.abs(a)>0.005) g.push(_kdBkRow(b,a,_bkEarnedComponents(b,cutoff,tod))); });
+    var groups=[{head:'Booking revenue earned in period',rows:_kdSort(g)}];
+    var rd=_kdRideList(s); if(rd.length) groups.push({head:'Chauffeur rides',rows:_kdSort(rd.map(function(t){return {name:esc(t.rider||t.driver||'Chauffeur ride'),sub:esc((t.rideType||'ride')+(t.completedAt?' \u00B7 '+dateStr(new Date(t.completedAt)):'')),amt:Number(t.amount)||0};}))});
+    var inc=_kdIncomeList(s); if(inc.length) groups.push({head:'Other income',rows:_kdSort(inc.map(function(i){return {name:esc(i.description||i.source||'Other income'),sub:esc(i.fromDate||''),amt:Number(i.amount)||0};}))});
+    if(Math.abs(v.cardFee)>0.005) groups.push({head:'Card-fee gross-up (13.25%)',rows:[{name:'13.25% on card/Stripe revenue',sub:'5% processing + 8.25% tax',amt:v.cardFee}]});
+    return {title:'Gross Revenue',total:v.grossRev,note:'Everything customers paid (before broker fees): booking revenue EARNED in this period + chauffeur rides + other income + the card-fee gross-up.',groups:groups};
+  }
+  if(key==='netRevenue'){
+    var g=[]; (s.allActive||[]).forEach(function(b){ var a=_earnedRevInWindow(b,cutoff,tod)-_earnedBrokerInWindow(b,cutoff,tod); if(Math.abs(a)>0.005) g.push(_kdBkRow(b,a,_bkEarnedComponents(b,cutoff,tod))); });
+    var groups=[{head:'Booking net (after broker fees)',rows:_kdSort(g)}];
+    var rd=_kdRideList(s); if(rd.length) groups.push({head:'Chauffeur rides',rows:_kdSort(rd.map(function(t){return {name:esc(t.rider||'Chauffeur ride'),sub:esc(t.completedAt?dateStr(new Date(t.completedAt)):''),amt:Number(t.amount)||0};}))});
+    var inc=_kdIncomeList(s); if(inc.length) groups.push({head:'Other income',rows:_kdSort(inc.map(function(i){return {name:esc(i.description||'Other income'),sub:esc(i.fromDate||''),amt:Number(i.amount)||0};}))});
+    return {title:'Net Revenue',total:v.netRevenue,note:'Revenue to Prestige Black after broker fees are deducted (earned-date basis) + rides + other income.',groups:groups};
+  }
+  if(key==='cardFee'){
+    var g=[]; (s.allActive||[]).forEach(function(b){ var cr=_earnedCardRevInWindow(b,cutoff,tod); if(cr>0.005){ var row=_kdBkRow(b,cr*0.1325); row.sub=esc((b.vehicle||'')+' \u00B7 '+_kdMoney(cr)+' card revenue \u00D7 13.25%'); g.push(row); } });
+    return {title:'Card Fees (13.25%)',total:v.cardFee,note:'5% processing + 8.25% tax on CARD/Stripe-collected revenue only (cash/Zelle/etc excluded). Per booking = its card revenue this period \u00D7 13.25%.',groups:[{head:'Card/Stripe bookings',rows:_kdSort(g)}]};
+  }
+  if(key==='netProfit'){
+    var revRows=[{name:'Net Revenue',sub:'Bookings (after broker) + rides + income',amt:v.netRevenue}];
+    var costRows=[]; if(v.bookingCost>0.005) costRows.push({name:'Direct booking costs',sub:'Est. cost of the vehicles out',amt:-v.bookingCost});
+    if(v.loggedExp>0.005) costRows.push({name:'Logged operating expenses',sub:'Fuel, maintenance, marketing, etc.',amt:-v.loggedExp});
+    if(v.driverPayouts>0.005) costRows.push({name:'Chauffeur payouts (35%)',sub:'Driver share of completed rides',amt:-v.driverPayouts});
+    if(!costRows.length) costRows.push({name:'No costs in period',sub:'',amt:0,plain:true});
+    return {title:'Net Profit',total:v.netProfit,note:'Net Revenue minus all costs (direct booking cost + logged expenses + chauffeur payouts). Margin '+pct(v.margin)+'. Tap Net Revenue or a cost KPI to drill further.',groups:[{head:'Revenue',rows:revRows},{head:'Costs',rows:costRows}]};
+  }
+  if(key==='netAfterCar'){
+    var carRows=[]; if(v.carPayments>0.005) carRows.push({name:'Vehicle loan/lease payments',sub:'"Car Payment" expenses this period',amt:-v.carPayments}); else carRows.push({name:'No car payments in period',sub:'',amt:0,plain:true});
+    return {title:'Net After Car Payments',total:v.netAfterCar,note:'Net Revenue minus your vehicle loan/lease payments this period. (Operating costs are NOT subtracted here \u2014 see Net Profit for the fully-costed figure.)',groups:[{head:'Revenue',rows:[{name:'Net Revenue',sub:'Bookings (after broker) + rides + income',amt:v.netRevenue}]},{head:'Car payments',rows:carRows}]};
+  }
+  if(key==='cancelLoss'){
+    var bk=(s.cancelBks||[]).map(function(b){ var a=Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)-_bkDriverWageMissed(b)); return _kdBkRow(b,a); }).filter(function(r){return Math.abs(r.amt)>0.005;});
+    var rides=_kdCancelRides(s).map(function(t){ return {name:esc((t.rider||t.riderEmail||'Obsidian ride')),sub:esc('cancelled'+(t.at?' \u00B7 '+dateStr(new Date(t.at)):'')+' \u00B7 65% of $'+(Number(t.amount)||0)),amt:(Number(t.amount)||0)*0.65,delRide:t.id||null}; }).filter(function(r){return Math.abs(r.amt)>0.005;});
+    var groups=[]; if(bk.length) groups.push({head:'Cancelled bookings (net lost)',rows:_kdSort(bk)});
+    if(rides.length) groups.push({head:'Cancelled chauffeur/Obsidian rides (65% of fare)',rows:_kdSort(rides)});
+    if(!groups.length) groups.push({head:'Nothing counted',rows:[]});
+    return {title:'\uD83D\uDEAB Cancellation Losses',total:v.bkCancelLoss+v.rideCancelLoss,note:'Net income lost on trips cancelled and NOT rebooked within 30 min. Deleted rides are excluded \u2014 use the trash icon to delete a test ride so it stops counting.',groups:groups};
+  }
+  if(key==='dateLocks') return {title:'Date Locks',total:v.dateLocks,note:'Upfront booking-hold fees collected/on file for this period.',groups:[{head:'Bookings with a date lock',rows:_kdValRows(s.active,function(b){return Number(b.dateLock)||0;})}]};
+  if(key==='depositsKept') return {title:'Deposits Kept',total:v.depositsKept,note:'Security deposits the owner kept (not refunded) this period.',groups:[{head:'Bookings with a kept deposit',rows:_kdValRows(s.active,function(b){return b.refundSent?0:(Number(b.depositKept)||0);})}]};
+  if(key==='addons') return {title:'Add-on Revenue',total:v.addons,note:'Delivery, unlimited miles, pet, photoshoot, champagne, decor, bouquet, etc. (already inside Gross Revenue).',groups:[{head:'Bookings with add-ons',rows:_kdValRows(s.active,function(b){return getAddons(b);})}]};
+  if(key==='brokerFees') return {title:'Broker Fees Paid',total:v.brokerFees,note:'Commission paid to partners/brokers (original days + each extension).',groups:[{head:'Bookings with a broker fee',rows:_kdValRows(s.active,function(b){return brokerFeeTotal(b);})}]};
+  if(key==='remainBal') return {title:'Remaining Balances',total:v.remainBal,note:'Money still owed across active bookings (unpaid balance).',groups:[{head:'Bookings with a balance due',rows:_kdValRows(s.active,function(b){return getRemainingBalance(b);})}]};
+  if(key==='loggedExp'){ var _mg=(typeof _recurringSourcesWithChildren==='function')?_recurringSourcesWithChildren():{}; var er=[]; (typeof expenses!=='undefined'?expenses:[]).forEach(function(e){ if(!e||e._deleted) return; if(e.recurring && !e._autoGenerated && _mg[e.id]) return; var amt=(typeof _expandExpenseAmount==='function')?_expandExpenseAmount(e,s.from||null,s.to||null):(Number(e.amount)||0); if(Math.abs(amt)<=0.005) return; er.push({name:esc(e.description||e.category||'Expense'),sub:esc((e.category||'')+(e.date?' \u00B7 '+e.date:'')+(e.vehicle?' \u00B7 '+e.vehicle:'')+(e.recurring?' \u00B7 recurring':'')),amt:-amt}); }); return {title:'Logged Expenses',total:-v.loggedExp,note:'Operating expenses in this period (fuel, maintenance, marketing, car payments, etc.). Recurring items show their in-period portion.',groups:[{head:'Expense entries',rows:_kdSort(er)}]}; }
+  if(key==='chauffeurGross'||key==='driverPayouts'||key==='pbRideNet'){
+    var mult=key==='driverPayouts'?0.35:key==='pbRideNet'?0.65:1;
+    var rows=_kdRideList(s).map(function(t){ return {name:esc(t.rider||t.driver||'Chauffeur ride'),sub:esc((t.driver?'Driver '+t.driver+' \u00B7 ':'')+(t.completedAt?dateStr(new Date(t.completedAt)):'')+(mult!==1?' \u00B7 '+Math.round(mult*100)+'% of $'+(Number(t.amount)||0):'')),amt:(Number(t.amount)||0)*mult}; });
+    var titles={chauffeurGross:'\uD83D\uDE98 Chauffeur Gross Fares',driverPayouts:'\uD83E\uDDD1\u200D\u2708\uFE0F Driver Payouts (35%)',pbRideNet:'\u25C6 PB Ride Net (65%)'};
+    var tot=key==='driverPayouts'?v.driverPayouts:key==='pbRideNet'?v.pbRideNet:v.rideRev;
+    return {title:titles[key],total:tot,note:'Completed chauffeur rides in this period'+(mult!==1?' \u00D7 '+Math.round(mult*100)+'%':' (full fare, before the driver split)')+'.',groups:[{head:'Completed rides',rows:_kdSort(rows)}]};
+  }
+  if(key==='totalBookings'){ var rows=(s.filtered||[]).map(function(b){ return {name:esc(b.name||'(no name)'),sub:esc((b.vehicle||'')+' \u00B7 '+(b.status||'')+(b.pickupDate||b.date?' \u00B7 '+(b.pickupDate||b.date):'')),amt:0,plain:true}; }); return {title:'Total Bookings',total:v.totalBookings,count:true,note:v.activeCount+' active (not cancelled) of '+v.totalBookings+' in this period.',groups:[{head:'All bookings in period',rows:rows}]}; }
+  if(key==='uncollected'){ var rows=(s.active||[]).filter(function(b){ var st=(b.status||'').toLowerCase(); return (Number(b.deposit)||0)===0 && (st==='confirmed'||st==='pending'); }).map(function(b){ return {name:esc(b.name||'(no name)'),sub:esc((b.vehicle||'')+' \u00B7 '+(b.status||'')),amt:0,plain:true}; }); return {title:'\u26A0 Uncollected Deposits',total:v.uncollected,count:true,note:'Confirmed/pending bookings with $0 security deposit on file.',groups:[{head:'Bookings missing a deposit',rows:rows}]}; }
+  if(key==='avgBooking'){ return {title:'Avg / Booking',total:v.avgBooking,noReconcile:true,note:'Gross Revenue ('+_kdMoney(v.grossRev)+') \u00F7 active bookings ('+v.activeCount+'). Tap Gross Revenue to see each booking.',groups:[{head:'Calculation',rows:[{name:'Gross Revenue',sub:'',amt:v.grossRev},{name:'\u00F7 '+v.activeCount+' active bookings',sub:'',amt:0,plain:true}]}]}; }
+  return null;
+}
+function _kdMoney(n){ return (typeof $$==='function')?$$(n):('$'+Math.round(n)); }
+function openKpiDetail(key){
+  var s=_kpiSnapshot; if(!s){ return; }
+  var D=_kpiDetailData(key,s); if(!D){ return; }
+  var periodLabel=s.period==='today'?'Today':s.period==='7'?'Last 7 Days':s.period==='30'?'Last 30 Days':s.period==='90'?'Last 90 Days':'All Time';
+  // reconciliation guard -> never leave a gap between the itemized rows and the KPI total
+  var rowSum=0; (D.groups||[]).forEach(function(g){ (g.rows||[]).forEach(function(r){ if(!r.plain) rowSum+=(Number(r.amt)||0); }); });
+  if(!D.count && !D.noReconcile && Math.abs(rowSum-(Number(D.total)||0))>0.02){
+    var gap=(Number(D.total)||0)-rowSum;
+    (D.groups=D.groups||[]).push({head:'Other / adjustments',rows:[{name:'Not itemized above',sub:'balances to the KPI total',amt:gap}]});
+  }
+  _kdExpanded={};
+  var gh=(D.groups||[]).map(function(g,gi){
+    var rows=(g.rows||[]).map(function(r,ri){
+      var amtHtml=r.plain?'':'<span style="font-weight:800;color:'+((Number(r.amt)||0)<0?'var(--red)':'var(--text)')+';font-variant-numeric:tabular-nums;white-space:nowrap">'+((Number(r.amt)||0)<0?'-':'')+_kdMoney(Math.abs(Number(r.amt)||0))+'</span>';
+      var exp=(r.expand&&r.expand.length)?('<div style="margin-top:6px;padding-left:10px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:3px">'+r.expand.map(function(c){return '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>'+esc(c.l)+'</span><span style="font-variant-numeric:tabular-nums">'+_kdMoney(c.a)+'</span></div>';}).join('')+'</div>'):'';
+      var del=r.delRide?'<button onclick="event.stopPropagation();_kdDeleteRide(\''+_jsAttr(r.delRide)+'\')" title="Delete this cancelled ride" style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#f87171;border-radius:7px;padding:2px 7px;font-size:11px;cursor:pointer;margin-left:8px">\uD83D\uDDD1</button>':'';
+      return '<div style="padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.05)"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis">'+r.name+'</div>'+(r.sub?'<div style="font-size:10.5px;color:var(--muted);margin-top:1px">'+r.sub+'</div>':'')+'</div><div style="display:flex;align-items:center">'+amtHtml+del+'</div></div>'+exp+'</div>';
+    }).join('')||'<div style="padding:12px 2px;color:var(--muted);font-size:12px">None in this period.</div>';
+    var grpSum=(g.rows||[]).reduce(function(a,r){return a+(r.plain?0:(Number(r.amt)||0));},0);
+    var grpTot=(g.rows&&g.rows.length&&!g.rows[0].plain)?'<span style="font-size:11px;color:var(--muted);font-weight:700;font-variant-numeric:tabular-nums">'+((grpSum<0?'-':'')+_kdMoney(Math.abs(grpSum)))+'</span>':'';
+    return '<div style="margin-top:'+(gi?16:4)+'px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px"><div style="font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--gold)">'+esc(g.head)+' <span style="color:var(--muted)">('+(g.rows||[]).length+')</span></div>'+grpTot+'</div>'+rows+'</div>';
+  }).join('');
+  var totFmt=D.count?String(D.total):((Number(D.total)||0)<0?'-'+_kdMoney(Math.abs(D.total)):_kdMoney(D.total));
+  var html='<div class="modal-bg" onclick="closeKpiDetail()"></div><div class="modal-card" style="max-width:560px">'+
+    '<div class="modal-title" style="align-items:flex-start"><div><div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">'+esc(periodLabel)+' \u00B7 breakdown</div><div style="font-size:18px;font-weight:800;margin-top:1px">'+D.title+'</div><div style="font-size:26px;font-weight:900;letter-spacing:-.5px;margin-top:4px;color:'+((Number(D.total)||0)<0?'var(--red)':'var(--gold)')+'">'+totFmt+'</div></div>'+
+    '<button class="modal-close" onclick="closeKpiDetail()">\u2715</button></div>'+
+    (D.note?'<div style="font-size:12px;color:var(--muted);line-height:1.5;margin:-6px 0 6px">'+esc(D.note)+'</div>':'')+
+    gh+
+    '<div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;border-top:2px solid var(--gold-dim);padding-top:10px"><span style="font-size:13px;font-weight:800">Total \u2014 '+esc(D.title.replace(/^[^A-Za-z]+/,''))+'</span><span style="font-size:16px;font-weight:900;font-variant-numeric:tabular-nums;color:'+((Number(D.total)||0)<0?'var(--red)':'var(--gold)')+'">'+totFmt+'</span></div>';
+  var m=document.getElementById('kpiDetailModal');
+  if(!m){ m=document.createElement('div'); m.id='kpiDetailModal'; m.className='modal'; document.body.appendChild(m); }
+  m.innerHTML=html; m.classList.add('open');
+}
+function _kdDeleteRide(id){ if(typeof deleteRideRecord==='function'){ closeKpiDetail(); deleteRideRecord(id); } }
 function renderKPIs(filtered, containerId){
   // -- Period pill bar (overview only) --------------------------------------
   if(containerId==='kpiGrid'){
@@ -8442,18 +8590,18 @@ function renderKPIs(filtered, containerId){
     grossRev = active.reduce(function(s,b){return s+totalRevenue(b);},0)+otherIncome+rideRev;
   }
   var cards = [
-    {label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
-    {label:'Gross Revenue',         val:$$(grossRev),           sub:'Before broker fees \u00B7 incl. rides, income, card fees', cls:''},
-    {label:'Net Profit',            val:$$(profit),             sub:'Margin: '+pct(margin),                               cls:profit>=0?'green':'red'},
-    {label:'Net Revenue',           val:$$(revenue),            sub:revSub,                                                cls:''},
-    {label:'Date Locks',            val:$$(dateLockCardVal),    sub:dateLockCardSub,                                       cls:'blue'},
-    {label:'Deposits Kept',         val:$$(depositKept),        sub:$$(Math.max(0,deposits-depositKept))+' returned to clients', cls:'purple'},
-    {label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
-    {label:'Logged Expenses',       val:$$(loggedExp),          sub:$$(bookingCost)+' direct booking costs',               cls:'red'},
-    {label:'Card Fees (13.25%)',    val:$$(cardFeeUplift),      sub:'5% processing + 8.25% tax on card/Stripe sales \u00B7 in gross', cls:'blue'},
-    {label:'Avg / Booking',         val:$$(active.length? grossRev/active.length : 0), sub:'Gross revenue \u00F7 active bookings, excl. cancelled', cls:''},
-    {label:'Net After Car Payments',val:$$(netAfterCar),        sub:$$(carPayments)+' in car payments',                   cls:''},
-    {label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Paid to partners',                                   cls:'red'},
+    {key:'totalBookings', label:'Total Bookings',        val:filtered.length,       sub:active.length+' active',                               cls:''},
+    {key:'grossRev', label:'Gross Revenue',         val:$$(grossRev),           sub:'Before broker fees \u00B7 incl. rides, income, card fees', cls:''},
+    {key:'netProfit', label:'Net Profit',            val:$$(profit),             sub:'Margin: '+pct(margin),                               cls:profit>=0?'green':'red'},
+    {key:'netRevenue', label:'Net Revenue',           val:$$(revenue),            sub:revSub,                                                cls:''},
+    {key:'dateLocks', label:'Date Locks',            val:$$(dateLockCardVal),    sub:dateLockCardSub,                                       cls:'blue'},
+    {key:'depositsKept', label:'Deposits Kept',         val:$$(depositKept),        sub:$$(Math.max(0,deposits-depositKept))+' returned to clients', cls:'purple'},
+    {key:'addons', label:'Add-on Revenue',        val:$$(addons),             sub:'Included in total revenue above',                    cls:'blue'},
+    {key:'loggedExp', label:'Logged Expenses',       val:$$(loggedExp),          sub:$$(bookingCost)+' direct booking costs',               cls:'red'},
+    {key:'cardFee', label:'Card Fees (13.25%)',    val:$$(cardFeeUplift),      sub:'5% processing + 8.25% tax on card/Stripe sales \u00B7 in gross', cls:'blue'},
+    {key:'avgBooking', label:'Avg / Booking',         val:$$(active.length? grossRev/active.length : 0), sub:'Gross revenue \u00F7 active bookings, excl. cancelled', cls:''},
+    {key:'netAfterCar', label:'Net After Car Payments',val:$$(netAfterCar),        sub:$$(carPayments)+' in car payments',                   cls:''},
+    {key:'brokerFees', label:'Broker Fees Paid',      val:$$(totalBrokerFees),    sub:'Paid to partners',                                   cls:'red'},
   ];
   // Remaining balances card \u2014 only on overview
   if(containerId==='kpiGrid'){
@@ -8465,19 +8613,39 @@ function renderKPIs(filtered, containerId){
     var _cancelBks = filtered.filter(function(b){ return b&&!b._deleted&&b.status==='cancelled' && !_bkRebooked(b, bookings); });
     var bkCancelLoss = _cancelBks.reduce(function(s,b){ return s+Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)-_bkDriverWageMissed(b)); },0);
     var rideCancelLoss = (typeof _rideOwnerLossForPeriod==='function')?_rideOwnerLossForPeriod():0;
-    cards.push({label:'\uD83D\uDEAB Cancellation Losses', val:$$(bkCancelLoss+rideCancelLoss), sub:'My net lost \u00B7 excl. rebooked <30m \u00B7 '+$$(rideCancelLoss)+' rides \u00B7 '+$$(bkCancelLoss)+' bookings', cls:(bkCancelLoss+rideCancelLoss)>0?'red':''});
-    cards.push({label:'\uD83D\uDE98 Chauffeur Gross Fares', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' \u00B7 before driver split', cls:''});
-    cards.push({label:'\uD83E\uDDD1\u200D\u2708\uFE0F Driver Payouts (35%)', val:$$(driverPayouts), sub:'Paid to chauffeurs \u00B7 deducted as cost', cls:'red'});
-    cards.push({label:'\u25C6 PB Ride Net (65%)', val:$$(pbRideNet), sub:'Prestige Black share of ride fares', cls:'green'});
-    cards.push({label:'\u26A0 Uncollected Deposits', val:uncollected, sub:'Confirmed/pending, $0 deposit', cls: uncollected>0?'red':''});
+    cards.push({key:'cancelLoss', label:'\uD83D\uDEAB Cancellation Losses', val:$$(bkCancelLoss+rideCancelLoss), sub:'My net lost \u00B7 excl. rebooked <30m \u00B7 '+$$(rideCancelLoss)+' rides \u00B7 '+$$(bkCancelLoss)+' bookings', cls:(bkCancelLoss+rideCancelLoss)>0?'red':''});
+    cards.push({key:'chauffeurGross', label:'\uD83D\uDE98 Chauffeur Gross Fares', val:$$(rideRev), sub:rideCount+' completed ride'+(rideCount!==1?'s':'')+' \u00B7 before driver split', cls:''});
+    cards.push({key:'driverPayouts', label:'\uD83E\uDDD1\u200D\u2708\uFE0F Driver Payouts (35%)', val:$$(driverPayouts), sub:'Paid to chauffeurs \u00B7 deducted as cost', cls:'red'});
+    cards.push({key:'pbRideNet', label:'\u25C6 PB Ride Net (65%)', val:$$(pbRideNet), sub:'Prestige Black share of ride fares', cls:'green'});
+    cards.push({key:'uncollected', label:'\u26A0 Uncollected Deposits', val:uncollected, sub:'Confirmed/pending, $0 deposit', cls: uncollected>0?'red':''});
     var remainBalSum = active.reduce(function(s,b){ return s+getRemainingBalance(b); },0);
-    cards.push({label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'red':'green'});
+    cards.push({key:'remainBal', label:'Remaining Balances', val:$$(remainBalSum), sub:'Total outstanding across active bookings', cls: remainBalSum>0?'red':'green'});
+    // -- KPI DRILL-DOWN SNAPSHOT: freeze the EXACT data + values that produced these cards so a click opens
+    //    a breakdown that reconciles to the number shown for the current filter/period. (overview only) --
+    _kpiSnapshot = {
+      period:_kpiPeriod, cutoff:(_kpiPeriod==='all'?'':(cutoff||'')), tod:(tod||todayStr()), from:from, to:to,
+      filtered:filtered, active:active, allActive:allActive, cancelBks:_cancelBks,
+      vals:{
+        totalBookings:filtered.length, activeCount:active.length,
+        grossRev:grossRev, netProfit:profit, netRevenue:revenue, cardFee:cardFeeUplift, bookingEarnedGross:_bookingEarnedGross,
+        dateLocks:dateLockCardVal, depositsKept:depositKept, depositsHeld:deposits, addons:addons,
+        loggedExp:loggedExp, bookingCost:bookingCost, brokerFees:totalBrokerFees,
+        netAfterCar:netAfterCar, carPayments:carPayments, uncollected:uncollected,
+        rideRev:rideRev, rideCount:rideCount, driverPayouts:driverPayouts, pbRideNet:pbRideNet,
+        remainBal:remainBalSum, bkCancelLoss:bkCancelLoss, rideCancelLoss:rideCancelLoss,
+        otherIncome:otherIncome, avgBooking:(active.length? grossRev/active.length : 0), margin:margin
+      },
+      todayParts: (_kpiPeriod==='today') ? { baseGross:(pickupBalance+_baseBfToday), fuel:fuelTotal, mile:mileTotal, depositKept:depositKept, late:lateReturnTotal, dateLock:dateLockPeriodRev, ext:(extChargeTotal||0), portal:(portalChargeTodayRev||0), authDriver:(authDriverTodayRev||0), income:otherIncome, rides:rideRev, cardFee:cardFeeUplift, bfToday:_bfToday, stripeBase:_stripeBaseToday } : null
+    };
   }
 
   $d(containerId).innerHTML=cards.map(function(k){
     var vs=String(k.val), vl=vs.length;
     var fs=vl>=13?'font-size:12px':vl>=12?'font-size:13px':vl>=11?'font-size:15px':vl>=10?'font-size:17px':vl>=9?'font-size:19px':vl>=8?'font-size:22px':vl>=7?'font-size:25px':'';
-    return '<div class="kpi '+k.cls+'"><div class="kpi-label">'+k.label+'</div><div class="kpi-val"'+(fs?' style="'+fs+'"':'')+'>'+k.val+'</div><div class="kpi-sub">'+k.sub+'</div></div>';
+    var tap=(containerId==='kpiGrid' && k.key);
+    var att=tap?(' onclick="openKpiDetail(\''+k.key+'\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();openKpiDetail(\''+k.key+'\')}" role="button" tabindex="0" title="Tap for the full breakdown"'):'';
+    var cue=tap?'<div class="kpi-cue">\u203A</div>':'';
+    return '<div class="kpi '+k.cls+(tap?' kpitap':'')+'"'+att+'>'+cue+'<div class="kpi-label">'+k.label+'</div><div class="kpi-val"'+(fs?' style="'+fs+'"':'')+'>'+k.val+'</div><div class="kpi-sub">'+k.sub+'</div></div>';
   }).join('');
 
   // -- Chauffeur economics subsection (overview only): driver pay vs PB net --
