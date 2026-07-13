@@ -1045,13 +1045,15 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId){
     if(!data||!data.booking){ toast('Could not load your contract.'); _restore(); return; }
     var bk=data.booking;
     var exts=(bk.extensions||[]).filter(Boolean);
-    var tmpl='', _uptoLabel='';
+    var tmpl='', _uptoLabel='', _extPart='';
     if(_pbCumulativeOn() && exts.length){
       var upto=exts.length-1;   // original + ALL extensions
-      if(extId){ var ix=exts.findIndex(function(e){ return e&&e.id===extId; }); if(ix>=0){ upto=ix; _uptoLabel=' thru Extension '+(ix+1); } }
+      if(extId){ var ix=exts.findIndex(function(e){ return e&&e.id===extId; }); if(ix>=0){ upto=ix; _uptoLabel=' thru Extension '+(ix+1);
+        // extension file saves as "<Client First Last> Extension <N> <start date>" (start = ext.fromDate)
+        var _ex=exts[ix]||{}; var _sd=(_ex.fromDate||_ex.toDate||_ex.sigDate||'')+''; _extPart='Extension '+(ix+1)+(_sd?' '+_sd:''); } }
       tmpl=_buildCumulativeContractHtml(bk, data, upto, {});
     }
-    if(!tmpl){ tmpl=_smFillContractTmpl(bk, data, null, true); _uptoLabel=''; }   // fallback: base-only (cumulative off / no exts / build failed)
+    if(!tmpl){ tmpl=_smFillContractTmpl(bk, data, null, true); _uptoLabel=''; _extPart=''; }   // fallback: base-only (cumulative off / no exts / build failed)
     if(!tmpl){ toast('No contract on file for this booking.'); _restore(); return; }
     var isHtml=tmpl.trim().toLowerCase().startsWith('<!doctype')||tmpl.trim().startsWith('<html');
     var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:760px;visibility:hidden';
@@ -1065,7 +1067,8 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId){
     } else {
       holder.innerHTML='<div>'+tmpl+'</div>'; rootEl=holder;
     }
-    var fname=(((bk.name||'Client')+'').trim().replace(/\s+/g,' ')+' Signed Contract'+_uptoLabel).replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
+    var _base=((bk.name||'Client')+'').trim().replace(/\s+/g,' ')||'Client';
+    var fname=(_extPart ? (_base+' '+_extPart) : (_base+' Signed Contract'+_uptoLabel)).replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
     if(rootEl){ await _downloadSignedContractPdf(rootEl, fname); }
     else { toast('Could not render the contract for download.'); }
     try{ document.body.removeChild(holder); }catch(e){}

@@ -4359,7 +4359,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v196';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v197';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8505,13 +8505,18 @@ function renderCharts(filtered){
   ['boxMonthly','boxType','boxRvv','boxBvv'].forEach(function(id){ var b=$d(id); if(b){ var e=b.querySelector('.chart-empty'); if(e) e.remove(); } });
 
   // ---------- 1) Revenue vs Est. Cost -- buckets + title ADAPT to the active period ----------
+  // Revenue basis is netRevenue(b) per booking -- IDENTICAL to the trusted KPI's booking revenue
+  // (renderKPIs bookingRev = sum netRevenue) and to the Type-split + vehicle charts. Each booking's
+  // FULL net revenue lands in one bucket (by pickup date; _t/today fallback so none are dropped) ->
+  // the chart total reconciles exactly with the KPI and the other charts. (Earlier this used a
+  // hand-rolled base+extensions+portal formula that omitted addl income / auth-driver pay and
+  // split charges into other months -> totals didn't match the KPIs.)
   var R={}, C={};
   active.forEach(function(b){
-    var pd=(b.pickupDate||b.date)||'', pk=_bkKey(pd,gran);
-    var baseRev=(Number(b.revenue)||0)-_foldedChargesTotal(b)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(Number(b.depositKept)||0)+(Number(b.lateReturnFee)||0)-brokerFeeTotal(b);
-    if(pk){ R[pk]=(R[pk]||0)+baseRev; C[pk]=(C[pk]||0)+getEstCost(b); }
-    (b.extensions||[]).forEach(function(ext){ if(Number(ext.additionalCharge)>0){ var ek=_bkKey(ext.createdAt?dateStr(new Date(ext.createdAt)):pd,gran)||pk; if(ek) R[ek]=(R[ek]||0)+(Number(ext.additionalCharge)||0); } });
-    (b.portalCharges||[]).forEach(function(c){ if(c&&c.paidAt&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._foldedIntoRevenue){ var ck=_bkKey(dateStr(new Date(c.paidAt)),gran); if(ck) R[ck]=(R[ck]||0)+(Number(c.amount)||0); } });
+    var ds=(b.pickupDate||b.date)||(b._t?dateStr(new Date(Number(b._t))):dateStr(new Date()));
+    var pk=_bkKey(ds,gran); if(!pk) return;
+    R[pk]=(R[pk]||0)+netRevenue(b);
+    C[pk]=(C[pk]||0)+getEstCost(b);
   });
   var keys=Object.keys(R); Object.keys(C).forEach(function(k){ if(keys.indexOf(k)<0) keys.push(k); }); keys.sort();
   var labels=keys.map(function(k){ return _bkLabel(k,gran); });
@@ -20606,9 +20611,14 @@ function copyContract(){
 function _contractFileBase(){
   var b=_contractBookingId?bookings.find(function(x){return x.id===_contractBookingId;}):null;
   var nm=(((b&&b.name)||'Client')+'').trim().replace(/\s+/g,' ')||'Client';
-  var typ=_contractIsWaiver?'Waiver':'Contract';
   var dnow=new Date();
-  var dt=(b&&b.customerSigDate)?(b.customerSigDate+''):((dnow.getMonth()+1)+'/'+dnow.getDate()+'/'+dnow.getFullYear());
+  var _fb=(dnow.getMonth()+1)+'/'+dnow.getDate()+'/'+dnow.getFullYear();
+  var typ, dt;
+  // Extension docs save as "<Client First Last> Extension <N> <start date>" (N is 1-based;
+  // date = when the extension starts = ext.fromDate). Original doc keeps Contract/Waiver + sig date.
+  var _ext=(_contractActiveExtIdx>=0 && b && b.extensions) ? b.extensions[_contractActiveExtIdx] : null;
+  if(_ext){ typ='Extension '+(_contractActiveExtIdx+1); dt=((_ext.fromDate||_ext.toDate||_ext.sigDate||'')+'')||_fb; }
+  else { typ=_contractIsWaiver?'Waiver':'Contract'; dt=(b&&b.customerSigDate)?(b.customerSigDate+''):_fb; }
   dt=dt.replace(/[\/\\:*?"<>|]/g,'-');
   return (nm+' '+typ+' '+dt).replace(/\s+/g,' ').trim();
 }
@@ -23318,18 +23328,22 @@ function renderVehiclePnL(){
     }
     var util=Math.round(bookedDays/winDays*100);
     fleet.rev+=rev; fleet.cost+=totalCost; fleet.bookings+=vBookings.length; fleet.bookedDays+=bookedDays; fleet.capDays+=winDays; if(rev||totalCost) fleet.activeV++;
-    if(!rev&&!maintCost&&!expCost) return null;
+    // Show EVERY fleet vehicle. Idle cars (no revenue/expense this period) still appear -- muted
+    // and sorted last -- so the whole fleet is always visible (e.g. a C300 sitting unrented at 0%).
+    var _idle=(!rev&&!maintCost&&!expCost);
     var netColor=net>=0?'var(--green)':'var(--red)';
-    return '<div class="kpi" style="min-width:160px">'+
-      '<div class="kpi-label" style="white-space:normal;line-height:1.3">'+esc(v)+'</div>'+
+    return { net:net, rev:rev, html:'<div class="kpi" style="min-width:160px'+(_idle?';opacity:.55':'')+'">'+
+      '<div class="kpi-label" style="white-space:normal;line-height:1.3">'+esc(v)+(_idle?' <span style="color:var(--muted);font-weight:600;font-size:10px">idle</span>':'')+'</div>'+
       '<div style="margin-top:6px;font-size:12px;line-height:1.8">'+
         '<div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Revenue</span><span style="font-weight:700;color:var(--gold)">'+$$(rev)+'</span></div>'+
         '<div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Expenses</span><span style="font-weight:700;color:var(--red)">'+$$(totalCost)+'</span></div>'+
         '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:4px;margin-top:2px"><span style="color:var(--muted)">Net</span><span style="font-weight:800;color:'+netColor+'">'+$$(net)+'</span></div>'+
         '<div style="margin-top:4px;font-size:11px;color:var(--muted)">Utilization ('+winDays+'d): <strong style="color:var(--text)">'+util+'%</strong></div>'+
       '</div>'+
-    '</div>';
-  }).filter(Boolean);
+    '</div>' };
+  });
+  cards.sort(function(a,b){ return (b.rev-a.rev)||(b.net-a.net); });   // earners first, idle ($0) last
+  cards = cards.map(function(c){ return c.html; });
   var pills=_pillBar([{val:'7',label:'7 Days'},{val:'30',label:'30 Days'},{val:'60',label:'60 Days'},{val:'90',label:'90 Days'},{val:'all',label:'All Time'}], _fleetPeriod, 'setFleetPeriod', 'Period');
   var netFleet=fleet.rev-fleet.cost;
   var margin=fleet.rev?Math.round(netFleet/fleet.rev*100):0;
