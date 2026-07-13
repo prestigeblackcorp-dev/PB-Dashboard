@@ -4366,7 +4366,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v208';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v209';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8407,9 +8407,14 @@ function renderKPIs(filtered, containerId){
   //    PAYMENT-DATE / cash-basis for EVERY period (not just Today): counts money by when it was received
   //    (via the _paymentsReceived ledger), so a card payment marked this week lands in this week's fee
   //    regardless of when the trip falls. 'all' = unbounded. --
-  var cardFeeUplift = (containerId==='kpiGrid')
-    ? _cardFeeBaseInWindow(_kpiPeriod==='all'?'':cutoff, _kpiPeriod==='all'?'':tod, allFiltered) * 0.1325
-    : 0;
+  var cardFeeUplift = 0;
+  if(containerId==='kpiGrid'){
+    // EARNED-DATE card fee for 7/30/90/all so it grosses up the SAME earned booking revenue (13.25% of the
+    // earned CARD portion); Today stays cash-basis (13.25% of card actually collected today).
+    cardFeeUplift = (_kpiPeriod==='today')
+      ? _stripeBaseToday * 0.1325
+      : allActive.reduce(function(s,b){ return s+_earnedCardRevInWindow(b, _kpiPeriod==='all'?'':cutoff, tod); },0) * 0.1325;
+  }
   // -- Gross revenue (before broker fees) + the card-fee uplift --
   var grossRev;
   if(containerId==='kpiGrid' && _kpiPeriod === 'today'){
@@ -8589,42 +8594,36 @@ function renderCharts(filtered){
   // of revenue. Net (revenue - cost) = gross - broker - cost = the SAME net profit the KPI shows
   // (broker cancels), so the bottom line still reconciles. Bucketed by pickup date (_t/today fallback).
   var R={}, C={};
-  // EARNED-DATE bucketing (matches the KPI + Fleet): base at PICKUP, each extension at its createdAt, each
-  // portal charge at its paidAt. Iterates ALL non-cancelled bookings (not just the period-filtered set) so
-  // an extension added this week to a rental that STARTED earlier lands in this week -- the old pickup-only
-  // sum dropped those. Base broker -> pickup bucket, extension broker -> its bucket (net stays consistent).
+  // EARNED-DATE bucketing (matches the KPI + Fleet) WITH the 13.25% card-fee gross-up folded in per card
+  // piece by earned date: base at PICKUP, each extension at its createdAt, each portal charge at its paidAt.
+  // The CARD portion (method not explicit P2P; blank = card) adds 13.25% to BOTH revenue and cost (nets out
+  // in profit) so the chart total == KPI Gross. Iterates ALL non-cancelled bookings, not just the period set.
   var _erList; try{ _erList=(typeof getFiltered==='function')?getFiltered():(bookings||[]); }catch(_e){ _erList=(bookings||[]); }
   (_erList||[]).forEach(function(b){
     if(!b||b._deleted||b.status==='cancelled') return;
     var pickup=b.pickupDate||b.date||'';
-    if(_inWinC(pickup)){ var pk=_bkKey(pickup,gran); if(pk){ R[pk]=(R[pk]||0)+(totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b)); C[pk]=(C[pk]||0)+getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b); } }
+    var _cardBal=!_p2pMethod(b.balancePaidMethod), _cardDL=!_p2pMethod(b.dateLockMethod);
+    if(_inWinC(pickup)){ var pk=_bkKey(pickup,gran); if(pk){
+      var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
+      R[pk]=(R[pk]||0)+baseAll; C[pk]=(C[pk]||0)+getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b);
+      var cf=((_cardBal?Math.max(0,baseAll-dl):0)+(_cardDL?dl:0))*0.1325;
+      if(cf){ R[pk]=(R[pk]||0)+cf; C[pk]=(C[pk]||0)+cf; _chartCardFee+=cf; _chartCardFeeN++; }
+    } }
     (b.extensions||[]).forEach(function(e){
       var amt=Number(e&&e.additionalCharge)||0; if(!amt) return;
       var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
-      if(!_inWinC(ed)) return; var k=_bkKey(ed,gran); if(k){ R[k]=(R[k]||0)+amt; C[k]=(C[k]||0)+(Number(e.brokerFee)||0); }
+      if(!_inWinC(ed)) return; var k=_bkKey(ed,gran); if(k){ R[k]=(R[k]||0)+amt; C[k]=(C[k]||0)+(Number(e.brokerFee)||0);
+        if(!_p2pMethod(e&&e.paymentMethod)){ var cfe=amt*0.1325; R[k]=(R[k]||0)+cfe; C[k]=(C[k]||0)+cfe; _chartCardFee+=cfe; } }
     });
     (b.portalCharges||[]).forEach(function(c){
       if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return;
-      var cd=dateStr(new Date(c.paidAt)); if(!_inWinC(cd)) return; var k=_bkKey(cd,gran); if(k){ R[k]=(R[k]||0)+(Number(c.amount)||0); }
+      var cd=dateStr(new Date(c.paidAt)); if(!_inWinC(cd)) return; var k=_bkKey(cd,gran); if(k){ R[k]=(R[k]||0)+(Number(c.amount)||0);
+        if(!_p2pMethod(c.paidMethod)){ var cfc=(Number(c.amount)||0)*0.1325; R[k]=(R[k]||0)+cfc; C[k]=(C[k]||0)+cfc; _chartCardFee+=cfc; } }
     });
   });
   // add non-booking revenue to the trend: income by fromDate, ride fares by completedAt
   _incList.forEach(function(i){ var k=_bkKey((i.fromDate||'').slice(0,10),gran); if(k) R[k]=(R[k]||0)+(Number(i.amount)||0); });
   _rideList.forEach(function(t){ var k=_bkKey(dateStr(new Date(t.completedAt)),gran); if(k){ R[k]=(R[k]||0)+(Number(t.amount)||0); C[k]=(C[k]||0)+(Number(t.amount)||0)*0.35; } }); // ride fare -> revenue; 35% chauffeur payout -> cost (so chart Net == KPI Net Profit)
-  // Card-fee gross-up bucketed by PAYMENT date (cash-basis, matches the KPI): each CARD payment in the
-  // window adds 13.25% to BOTH revenue and cost of its receipt bucket (nets out in profit). Iterates ALL
-  // bookings' payments (not just pickup-in-window) so money collected this week counts this week.
-  var _cfList; try{ _cfList=(typeof getFiltered==='function')?getFiltered():(typeof bookings!=='undefined'?bookings:[]); }catch(_e){ _cfList=(typeof bookings!=='undefined'?bookings:[]); }
-  (_cfList||[]).forEach(function(b){
-    if(!b||b._deleted||b.status==='cancelled') return;
-    _paymentsReceived(b).forEach(function(p){
-      if(!p.card) return;
-      var ds=p.ts?dateStr(new Date(p.ts)):''; if(!ds||!_inWinC(ds)) return;
-      var fee=(Number(p.amount)||0)*0.1325; if(!fee) return;
-      _chartCardFee+=fee; _chartCardFeeN++;
-      var k=_bkKey(ds,gran); if(k){ R[k]=(R[k]||0)+fee; C[k]=(C[k]||0)+fee; }
-    });
-  });
   // Enumerate EVERY bucket in the active window (so the axis is continuous -- the 7-day filter shows
   // all 7 days, not only the days that had a booking) AND fold logged operating EXPENSES into the cost
   // buckets so "Est. Cost" matches the KPI (totalCost = per-booking cost + logged expenses) instead of
@@ -8665,7 +8664,7 @@ function renderCharts(filtered){
   var labels=keys.map(function(k){ return _bkLabel(k,gran); });
   var revData=keys.map(function(k){ return Math.round(R[k]||0); });
   var costData=keys.map(function(k){ return Math.round(C[k]||0); });
-  var totRev=revData.reduce(function(s,v){return s+v;},0), totCost=costData.reduce(function(s,v){return s+v;},0), net=totRev-totCost;
+  var totRev=keys.reduce(function(s,k){return s+(R[k]||0);},0), totCost=keys.reduce(function(s,k){return s+(C[k]||0);},0), net=totRev-totCost; // sum UNROUNDED (bars round per-bucket, but the strip total must round once like the KPI -> no $1 drift)
   var granTxt=gran==='month'?'Monthly':gran==='week'?'Weekly':'Daily';
   var perTxt=_kpiPeriod==='all'?'':' ('+(_kpiPeriod==='today'?'Today':_kpiPeriod==='7'?'Last 7 Days':_kpiPeriod==='30'?'Last 30 Days':'Last 90 Days')+')';
   var _tm=$d('ttlMonthly'); if(_tm) _tm.textContent='Revenue vs Est. Cost - '+granTxt+perTxt;
@@ -23499,6 +23498,33 @@ function _earnedBrokerInWindow(b, cutoff, tod){
     if(_inW(ed)) bk+=bf;
   });
   return bk;
+}
+// Explicit P2P / non-card method (blank does NOT match -> defaults to card for the earned gross-up).
+function _p2pMethod(m){ return /zelle|cash|venmo|cashapp|cash app|wire|check|apple ?pay|other/.test(String(m||'').toLowerCase()); }
+// Earned-date CARD revenue in [cutoff,tod] -> the 13.25% base, on the SAME attribution as _earnedRevInWindow
+// but only the CARD portion: base (excl. date lock) by balancePaidMethod, date lock by dateLockMethod,
+// extensions by paymentMethod, portal charges by paidMethod. Blank = card; explicit P2P (cash/zelle/etc)
+// excluded. So gross = earned revenue + 13.25% x earned CARD revenue (a $3,500 all-card week -> $463.75).
+function _earnedCardRevInWindow(b, cutoff, tod){
+  if(!b) return 0;
+  function _cardM(m){ return !_p2pMethod(m); }
+  var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
+  function _inW(ds){ if(!cutoff) return true; ds=(ds||'').slice(0,10); return !!ds && ds>=cutoff && ds<=(tod||todayStr()); }
+  var pickup=b.pickupDate||b.date||'', rev=0;
+  if(_inW(pickup)){
+    if(_cardM(b.balancePaidMethod)) rev+=Math.max(0,baseAll-dl);
+    if(_cardM(b.dateLockMethod))    rev+=dl;
+  }
+  (b.extensions||[]).forEach(function(e){
+    var amt=Number(e&&e.additionalCharge)||0; if(!amt||!_cardM(e&&e.paymentMethod)) return;
+    var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
+    if(_inW(ed)) rev+=amt;
+  });
+  (b.portalCharges||[]).forEach(function(c){
+    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return;
+    if(_cardM(c.paidMethod) && _inW(dateStr(new Date(c.paidAt)))) rev+=Number(c.amount)||0;
+  });
+  return rev;
 }
 function _fleetEarnedRev(b){ return _earnedRevInWindow(b, _fleetPeriod==='all'?'':_fleetCutoff(), todayStr()); }
 function renderVehiclePnL(){
