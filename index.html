@@ -2694,6 +2694,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
           <option value="tolls">Tolls</option>
           <option value="extension">Extension</option>
           <option value="deposit">Deposit</option>
+          <option value="datelock">Date Lock (holds the date, applied to the balance)</option>
           <option value="other">Other</option>
         </select>
       </div>
@@ -4446,7 +4447,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v223';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v224';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7618,7 +7619,7 @@ function recordExtension(b, opts){
 // Sum of portal charges that have been paid (base amount only \u2014 fee/tax go to Stripe/processor).
 // EXCLUDES every extension-linked charge (_extPayment collection, _extId/_extRecorded contract entry,
 // legacy _foldedIntoRevenue) \u2014 those are revenue ONLY via extensionCharge(), never counted twice here.
-function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId) ? s+(Number(c.amount)||0) : s; },0); }
+function portalChargesTotal(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId) ? s+(Number(c.amount)||0) : s; },0); }
 // A SECURITY-DEPOSIT portal charge is a REFUNDABLE HOLD, not revenue -- collecting it must never
 // inflate the rental's revenue (a deposit "given back" nets to $0). The KEPT amount, if any, is
 // recorded separately via the close-out depositKept (which DEFAULTS to returned). So every REVENUE
@@ -7629,12 +7630,12 @@ function _isDepositCharge(c){
   if(chargeCategory(c)==='deposit') return true;
   return /deposit/.test((String(c.category||'')+' '+String(c.description||'')).toLowerCase());
 }
-function portalChargesRevenue(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c)) ? s+(Number(c.amount)||0) : s; },0); }
+function portalChargesRevenue(b){ return (b.portalCharges||[]).reduce(function(s,c){ return (c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)) ? s+(Number(c.amount)||0) : s; },0); }
 // Sum of UNPAID portal charges still owed (base amount) -- excludes refundable deposit HOLDS and
 // extension-linked charges (those flow through extensionCharge). Used ONLY to SURFACE the amount owed
 // in the Balance Due display; each charge is still paid on its own Payment Request in the portal, so
 // folding this into the shown total can never enable a double-charge.
-function _unpaidChargesTotal(b){ return (((b&&b.portalCharges))||[]).reduce(function(s,c){ return (c&&!c.paidAt&&!c._extPayment&&!c._extRecorded&&!c._extId&&!c._foldedIntoRevenue&&!_isDepositCharge(c)) ? s+Math.max(0,Number(c.amount)||0) : s; },0); }
+function _unpaidChargesTotal(b){ return (((b&&b.portalCharges))||[]).reduce(function(s,c){ return (c&&!c.paidAt&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!c._foldedIntoRevenue&&!_isDepositCharge(c)) ? s+Math.max(0,Number(c.amount)||0) : s; },0); }
 // Owed balance INCLUDING unpaid portal charges -- an unpaid charge adds to the balance exactly like an
 // unpaid extension (shows red until paid/marked-paid, then drops off). DISPLAY helper for the trip card +
 // booking detail; getRemainingBalance (KPIs + the balance modal) stays rental-only on purpose. Mirrors
@@ -7673,7 +7674,7 @@ function _paymentsReceived(b){
   if(Number(b.dateLock)>0 && b.dateLockPaidAt) out.push({label:'Date Lock', amount:Number(b.dateLock)||0, method:_m(b.dateLockMethod), ts:_ts(b.dateLockPaidAt), card:_cardOnline(b.dateLockMethod)}); // Stripe/Card date lock carries the 13.25%; blank (legacy/online) defaults to card
   // (base-balance payments -- dated partials or the legacy single record -- are appended below)
   (b.portalCharges||[]).forEach(function(c){
-    if(!c||!c.paidAt||c._foldedIntoRevenue||c._extPayment||c._extRecorded||c._extId||_isDepositCharge(c)) return;
+    if(!c||!c.paidAt||c._foldedIntoRevenue||c._extPayment||c._extRecorded||c._dlApplied||c._extId||_isDepositCharge(c)) return;
     out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt), card:_cardOnline(c.paidMethod)});
   });
   (b.extensions||[]).forEach(function(e){
@@ -7854,6 +7855,13 @@ function _reconcilePaidExtensionCharges(){
         changed=true;
         logNotif('charge','Extension auto-applied after card payment \u2014 '+(c.description||'Charge')+' +'+_q+_u,(b.name||''),b.id);
       }
+      // A DATE-LOCK charge paid by card (worker set paidAt) folds into b.dateLock on the owner's next sync,
+      // via the SAME _applyDateLockCharge as manual Mark Paid -- idempotent through _dlApplied.
+      if(c && c.paidAt && !c._dlApplied && chargeCategory(c)==='datelock'){
+        _applyDateLockCharge(b, c);
+        b._t=Date.now(); changed=true;
+        logNotif('charge','Date lock auto-applied after payment \u2014 '+(c.description||'Charge')+' '+$$(Number(c.amount)||0),(b.name||''),b.id);
+      }
       // Any paid portal charge LINKED to an extension (card request, recorded charge, etc.) \u2192 mark
       // that extension PAID + clear its amount from the balance \u2014 no matter which flow paid it.
       if(c && c.paidAt && c._extId){
@@ -7896,18 +7904,46 @@ function chargeCategory(c){
   if(/clean|detail|smok/.test(d)) return 'cleaning';
   if(/damage|repair|scratch|dent|windshield|tire|wheel|curb/.test(d)) return 'damage';
   if(/toll/.test(d)) return 'tolls';
+  if(/date ?lock|hold the date|reservation hold/.test(d)) return 'datelock';
   if(/deposit/.test(d)) return 'deposit';
   if(/extend|extension|extra (day|hour)|additional (day|hour)|added (day|hour)/.test(d)) return 'extension';
   return 'other';
 }
-var CHARGE_CAT_LABEL={late:'Late fee',mileage:'Mileage overage',fuel:'Fuel',cleaning:'Cleaning',damage:'Damage',tolls:'Tolls',deposit:'Deposit',extension:'Extension',other:'Other'};
+// A DATE-LOCK portal charge, once PAID, folds into the booking's native dateLock (like a deposit charge
+// folds into deposit): it's a prepaid, applied-to-the-balance hold. _dlApplied then excludes it from every
+// portal-charge revenue/balance sum (the 15 loops patched above) so its value is counted ONCE -- via
+// b.dateLock (which feeds revenue, the Date Locks KPI, the card-fee gross-up, Today/earned-date, and
+// getRemainingBalance's revenue+deposit-dateLock). Idempotent via _dlApplied; reversible via _revertDateLockCharge.
+function _applyDateLockCharge(b, c){
+  if(!b||!c||c._dlApplied) return;
+  var amt=Number(c.amount)||0; if(amt<=0){ c._dlApplied=true; return; }
+  b.dateLock=(Number(b.dateLock)||0)+amt;
+  b.dateLockPaidAt=c.paidAt||Date.now();
+  var _m=String(c.paidMethod||c.paymentMethod||'').toLowerCase();
+  b.dateLockMethod=_m||'card';                 // portal Stripe pays by card -> drives the 13.25% card fee
+  // getRemainingBalance uses the STORED remainingBalance when it is set (else it derives
+  // revenue+deposit-dateLock which auto-drops). If stored, drop it by the prepaid amount so the balance
+  // reduces exactly once.
+  if(b.remainingBalance!=null) b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt);
+  c._dlApplied=true;
+}
+// Exact reverse (delete a date-lock charge): pull the amount back out of dateLock + restore the balance.
+function _revertDateLockCharge(b, c){
+  if(!b||!c||!c._dlApplied) return;
+  var amt=Number(c.amount)||0;
+  b.dateLock=Math.max(0,(Number(b.dateLock)||0)-amt);
+  if(b.remainingBalance!=null) b.remainingBalance=(Number(b.remainingBalance)||0)+amt;
+  if((Number(b.dateLock)||0)<=0) b.dateLockPaidAt=null;
+  c._dlApplied=false;
+}
+var CHARGE_CAT_LABEL={late:'Late fee',mileage:'Mileage overage',fuel:'Fuel',cleaning:'Cleaning',damage:'Damage',tolls:'Tolls',deposit:'Deposit',datelock:'Date Lock',extension:'Extension',other:'Other'};
 // Sum PAID portal charges by category across bookings; onlyDate (YYYY-MM-DD)
 // restricts to charges paid on that day (cash-basis "today" KPIs).
 function splitPaidCharges(list,onlyDate){
   var out={late:0,mileage:0,fuel:0,cleaning:0,damage:0,tolls:0,deposit:0,extension:0,other:0,total:0};
   (list||[]).forEach(function(b){
     (b.portalCharges||[]).forEach(function(c){
-      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue||_isDepositCharge(c)) return;  // deposit holds aren't revenue
+      if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._dlApplied||c._foldedIntoRevenue||_isDepositCharge(c)) return;  // deposit holds aren't revenue
       if(onlyDate && dateStr(new Date(c.paidAt))!==onlyDate) return;
       var amt=Number(c.amount)||0;
       out[chargeCategory(c)]+=amt;
@@ -7935,7 +7971,7 @@ function brokerFeeTotal(b){ return (Number(b.brokerFee)||0)*brokerRateDays(b)+ex
 // fee+tax, so they must not enter the 13.25% gross-up base (matches the Today-branch filter ~8216).
 function _cardPortalChargesRevenue(b){
   return ((b&&b.portalCharges)||[]).reduce(function(s,c){
-    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return s;
+    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c))) return s;
     return /zelle|cash|venmo|wire|check/.test(String(c.paidMethod||'').toLowerCase()) ? s : s+(Number(c.amount)||0);
   },0);
 }
@@ -8264,7 +8300,7 @@ function _bkEarnedComponents(b, cutoff, tod){
     if(_authDriverPaidTotal(b)>0.005) out.push({l:'Authorized-driver pay',a:_authDriverPaidTotal(b)});
   }
   (b.extensions||[]).forEach(function(e,i){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pk); if(inW(ed)) out.push({l:'Extension '+(i+1),a:amt}); });
-  (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c)))return; if(inW(dateStr(new Date(c.paidAt)))) out.push({l:(c.description?String(c.description):'Portal charge'),a:Number(c.amount)||0}); });
+  (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)))return; if(inW(dateStr(new Date(c.paidAt)))) out.push({l:(c.description?String(c.description):'Portal charge'),a:Number(c.amount)||0}); });
   return out;
 }
 function _kdRideList(s){ var inW=_kdInW(s); return ((typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns:[]).filter(function(t){ return t && (!s.cutoff||inW(t.completedAt?dateStr(new Date(t.completedAt)):'')); }); }
@@ -8505,7 +8541,7 @@ function renderKPIs(filtered, containerId){
     // Portal charges paid today (cash-basis, non-extension \u2014 extension-linked charges excluded)
     var portalChargeTodayRev = allActive.reduce(function(s,b){
       return s+(b.portalCharges||[]).reduce(function(cs,c){
-        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue||_isDepositCharge(c)) return cs;  // deposit holds aren't revenue
+        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._dlApplied||c._foldedIntoRevenue||_isDepositCharge(c)) return cs;  // deposit holds aren't revenue
         return dateStr(new Date(c.paidAt))===tod ? cs+(Number(c.amount)||0) : cs;
       },0);
     },0);
@@ -8516,7 +8552,7 @@ function renderKPIs(filtered, containerId){
     // charge at face value via portalChargeTodayRev (~8036).
     _stripeBaseToday += allActive.reduce(function(s,b){
       return s+(b.portalCharges||[]).reduce(function(cs,c){
-        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue||_isDepositCharge(c)) return cs;
+        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._dlApplied||c._foldedIntoRevenue||_isDepositCharge(c)) return cs;
         if(dateStr(new Date(c.paidAt))!==tod) return cs;
         return /zelle|cash|venmo|wire|check/.test(String(c.paidMethod||'').toLowerCase()) ? cs : cs+(Number(c.amount)||0);
       },0);
@@ -8893,7 +8929,7 @@ function renderCharts(filtered){
         if(!_p2pMethod(e&&e.paymentMethod)){ var cfe=amt*0.1325; R[k]=(R[k]||0)+cfe; C[k]=(C[k]||0)+cfe; _chartCardFee+=cfe; } }
     });
     (b.portalCharges||[]).forEach(function(c){
-      if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return;
+      if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c))) return;
       var cd=dateStr(new Date(c.paidAt)); if(!_inWinC(cd)) return; var k=_bkKey(cd,gran); if(k){ R[k]=(R[k]||0)+(Number(c.amount)||0);
         if(!_p2pMethod(c.paidMethod)){ var cfc=(Number(c.amount)||0)*0.1325; R[k]=(R[k]||0)+cfc; C[k]=(C[k]||0)+cfc; _chartCardFee+=cfc; } }
     });
@@ -9297,7 +9333,7 @@ function renderVehicleTable(filtered){
     // Portal charges paid today \u2014 bucket by vehicle
     allActive.forEach(function(b){
       (b.portalCharges||[]).forEach(function(c){
-        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._foldedIntoRevenue) return;
+        if(!c||!c.paidAt||c._extPayment||c._extId||c._extRecorded||c._dlApplied||c._foldedIntoRevenue) return;
         if(dateStr(new Date(c.paidAt))!==_kpiDR3.from) return;
         _seedV(b.vehicle);
         map[b.vehicle].revenue+=Number(c.amount)||0;
@@ -11465,7 +11501,7 @@ function openBookingDetail(id){
 
     // Revenue
     '<div class="fsec">Revenue</div>'+
-    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(function(){ var _ao=getAddons(b), _pc=portalChargesRevenue(b); if(!_ao&&!_pc) return ''; var _p=['base '+$$(Math.max(0,(Number(b.revenue)||0)-_ao))]; if(_ao) _p.push('add-ons '+$$(_ao)); if(_pc){ var _n=(b.portalCharges||[]).filter(function(c){return c&&c.paidAt&&Number(c.amount)>0&&!_isDepositCharge(c)&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._foldedIntoRevenue;}).length; _p.push('Portal Charge'+(_n!==1?'s':'')+' '+$$(_pc)); } return '<span style="font-size:10px;opacity:.7"> ('+_p.join(' + ')+')</span>'; })()+'</span></div>'+
+    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(function(){ var _ao=getAddons(b), _pc=portalChargesRevenue(b); if(!_ao&&!_pc) return ''; var _p=['base '+$$(Math.max(0,(Number(b.revenue)||0)-_ao))]; if(_ao) _p.push('add-ons '+$$(_ao)); if(_pc){ var _n=(b.portalCharges||[]).filter(function(c){return c&&c.paidAt&&Number(c.amount)>0&&!_isDepositCharge(c)&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._dlApplied&&!c._foldedIntoRevenue;}).length; _p.push('Portal Charge'+(_n!==1?'s':'')+' '+$$(_pc)); } return '<span style="font-size:10px;opacity:.7"> ('+_p.join(' + ')+')</span>'; })()+'</span></div>'+
     (b.brokerFee||extensionBrokerTotal(b)?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">\u2212'+$$(brokerFeeTotal(b))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+_durUnit(b)+' \u00D7 '+brokerRateDays(b)+(extensionBrokerTotal(b)?' + '+$$(extensionBrokerTotal(b))+' ext':'')+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">\u2212'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
@@ -16494,7 +16530,7 @@ function sendReceiptEmail(b){
   // Itemize extensions + real (paid, non-deposit, non-ext-linked) charges so the Trip total is self-consistent
   var _extraRows='';
   (b.extensions||[]).forEach(function(e){ if(e&&Number(e.additionalCharge)>0) _extraRows+='<tr><td style="padding:6px 0;color:#666">Rental extension'+(e.toDate?' (to '+esc((typeof fmtDate==='function'?fmtDate(e.toDate):e.toDate))+')':'')+'</td><td style="padding:6px 0;text-align:right">'+$$(e.additionalCharge)+'</td></tr>'; });
-  (b.portalCharges||[]).forEach(function(c){ if(c&&c.paidAt&&Number(c.amount)>0&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._foldedIntoRevenue&&!(typeof _isDepositCharge==='function'&&_isDepositCharge(c))) _extraRows+='<tr><td style="padding:6px 0;color:#666">'+esc(c.description||'Additional charge')+'</td><td style="padding:6px 0;text-align:right">'+$$(c.amount)+'</td></tr>'; });
+  (b.portalCharges||[]).forEach(function(c){ if(c&&c.paidAt&&Number(c.amount)>0&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._dlApplied&&!c._foldedIntoRevenue&&!(typeof _isDepositCharge==='function'&&_isDepositCharge(c))) _extraRows+='<tr><td style="padding:6px 0;color:#666">'+esc(c.description||'Additional charge')+'</td><td style="padding:6px 0;text-align:right">'+$$(c.amount)+'</td></tr>'; });
   var sumRows='<tr><td style="padding:6px 0;color:#666;width:150px">Vehicle</td><td style="padding:6px 0;font-weight:600;text-align:right">'+esc(b.vehicle)+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#666">Pickup</td><td style="padding:6px 0;text-align:right">'+esc(b.pickupDate||b.date||'')+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#666">Drop-off</td><td style="padding:6px 0;text-align:right">'+(b.dropoffDate?esc(b.dropoffDate):'&mdash;')+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</td></tr>'+
@@ -22008,12 +22044,15 @@ function markChargePaid(bookingId, chargeId){
   var _foldedQty=(chargeCategory(_cp)==='extension' && (parseInt(_cp.extensionDays,10)||0)>0 && !_cp._extApplied) ? (parseInt(_cp.extensionDays,10)||0) : 0;
   var _foldedUnit=(_cp.extensionUnit==='hours')?'hr':'day';
   if(_foldedQty) _applyExtensionCharge(bookings[idx], _cp);
+  // Date-lock charge -> fold into the booking's native date lock (prepaid hold, applied to the balance).
+  var _foldedDL=(chargeCategory(_cp)==='datelock' && !_cp._dlApplied) ? (Number(_cp.amount)||0) : 0;
+  if(_foldedDL) _applyDateLockCharge(bookings[idx], _cp);
   bookings[idx]._t=Date.now();
   var _newDrop=(bookings[idx].dropoffDate||'')+((_foldedUnit==='hr'&&bookings[idx].dropoffTime)?(' '+bookings[idx].dropoffTime):'');
   bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['charge "'+(_cp.description||chargeId)+'" marked paid ('+(method||'manual')+')'+(_foldedQty?(' \u2014 extended +'+_foldedQty+_foldedUnit+', new dropoff '+_newDrop):'')]}]);
-  logNotif('charge','Charge marked paid \u2014 '+(_cp.description||'Charge')+' '+$$(Number(_cp.amount)||0)+' ('+(_cp.paidMethod||'manual')+')'+(_foldedQty?(' \u00B7 +'+_foldedQty+_foldedUnit+' extension'):''),(bookings[idx].name||''),bookingId);
+  logNotif('charge','Charge marked paid \u2014 '+(_cp.description||'Charge')+' '+$$(Number(_cp.amount)||0)+' ('+(_cp.paidMethod||'manual')+')'+(_foldedQty?(' \u00B7 +'+_foldedQty+_foldedUnit+' extension'):'')+(_foldedDL?(' \u00B7 date lock applied'):''),(bookings[idx].name||''),bookingId);
   save(); if(typeof flushCloudSave==='function') flushCloudSave();   // force the PAID status to Firebase now so the client's portal shows it paid immediately (Zelle/cash etc., not just Stripe)
-  toast(_foldedQty?('\uD83D\uDCB8 Paid + rental extended +'+_foldedQty+' '+(_foldedUnit==='hr'?'hour':'day')+(_foldedQty!==1?'s':'')+' \u2705'):'\uD83D\uDCB8 Charge marked paid \u2705');
+  toast(_foldedQty?('\uD83D\uDCB8 Paid + rental extended +'+_foldedQty+' '+(_foldedUnit==='hr'?'hour':'day')+(_foldedQty!==1?'s':'')+' \u2705'):_foldedDL?('\uD83D\uDD12 Date lock paid + applied to the balance \u2705'):'\uD83D\uDCB8 Charge marked paid \u2705');
   render();
   if(activeTab==='upcoming')  renderUpcoming();
   if(activeTab==='current')   renderCurrent();
@@ -22032,6 +22071,7 @@ function deletePortalCharge(bookingId, chargeId){
   if(!c){ toast('Charge not found'); return; }
   var _amt=Number(c.amount)||0;
   var _isExt=!!c._extApplied;
+  var _isDL=!!c._dlApplied;
   var _extN=_isExt?(parseInt(c.extensionDays,10)||0):0;
   var _extU=(c.extensionUnit==='hours')?'hour':'day';
   var _extUAbbr=(c.extensionUnit==='hours')?'hr':'d';
@@ -22042,6 +22082,7 @@ function deletePortalCharge(bookingId, chargeId){
     '\nBooking totals revert immediately. (This does not refund any card payment.)';
   if(!confirm(_msg)) return;
   if(_isExt) _revertExtensionCharge(bookings[idx], c);
+  if(_isDL) _revertDateLockCharge(bookings[idx], c);
   bookings[idx].portalCharges=charges.filter(function(x){ return !x || x.id!==chargeId; });
   bookings[idx]._t=Date.now();
   bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['portal charge deleted: "'+(c.description||chargeId)+'" '+$$(_amt)+(c.paidAt?' (was paid)':'')+(_isExt?(' \u2014 extension reverted (-'+_extN+_extUAbbr+')'):'')]}]);
@@ -22068,7 +22109,7 @@ function deleteAllPortalCharges(bookingId){
     (_extCount>0?('Any extensions roll back ('+_extCount+' extension'+(_extCount!==1?'s':'')+' \u2014 dropoff restored). '):'')+
     '\nBooking totals revert immediately. This cannot be undone. (Does not refund any card payment.)';
   if(!confirm(_msg)) return;
-  charges.forEach(function(c){ if(c&&c._extApplied) _revertExtensionCharge(bookings[idx], c); });
+  charges.forEach(function(c){ if(c&&c._extApplied) _revertExtensionCharge(bookings[idx], c); if(c&&c._dlApplied) _revertDateLockCharge(bookings[idx], c); });
   bookings[idx].portalCharges=[];
   bookings[idx]._t=Date.now();
   bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['ALL portal charges deleted ('+charges.length+', '+$$(_paidTotal)+' paid'+(_extCount?(', '+_extCount+' ext reverted'):'')+')']}]);
@@ -23862,7 +23903,7 @@ function _earnedRevInWindow(b, cutoff, tod){
     if(_inW(ed)) rev+=amt;
   });
   (b.portalCharges||[]).forEach(function(c){
-    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return;
+    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c))) return;
     if(_inW(dateStr(new Date(c.paidAt)))) rev+=Number(c.amount)||0;
   });
   return rev;
@@ -23904,7 +23945,7 @@ function _earnedCardRevInWindow(b, cutoff, tod){
     if(_inW(ed)) rev+=amt;
   });
   (b.portalCharges||[]).forEach(function(c){
-    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._extId&&!_isDepositCharge(c))) return;
+    if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c))) return;
     if(_cardM(c.paidMethod) && _inW(dateStr(new Date(c.paidAt)))) rev+=Number(c.amount)||0;
   });
   return rev;
