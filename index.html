@@ -4521,7 +4521,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v232';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v233';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -9068,6 +9068,8 @@ function renderCharts(filtered){
       {label:'Est. Cost',data:costData,backgroundColor:'rgba(255,92,92,.8)',borderRadius:5,maxBarThickness:mobile?16:44}
     ]},
     options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      onClick:function(ev,el){ if(el&&el.length){ var k=keys[el[0].index]; if(k) openBucketDrilldown(k); } },
+      onHover:function(ev,el){ if(ev&&ev.native&&ev.native.target) ev.native.target.style.cursor=(el&&el.length)?'pointer':'default'; },
       plugins:{
         legend:{position:'top',align:'end',labels:{usePointStyle:true,pointStyle:'rectRounded',boxWidth:10,boxHeight:10,padding:14,color:'#d8d8dc',font:{size:mobile?11:12,weight:'700'}}},
         tooltip:_tt({ title:function(it){ return it[0].label; },
@@ -9096,6 +9098,8 @@ function renderCharts(filtered){
     charts['type']=new Chart($d('chartType'),{ type:'doughnut',
       data:{labels:shown.map(function(t){return t.label;}),datasets:[{data:shown.map(function(t){return Math.round(tRev[t.k]);}),backgroundColor:shown.map(function(t){return t.c;}),borderColor:'#0f0f12',borderWidth:3,hoverOffset:6}]},
       options:{responsive:true,maintainAspectRatio:false,cutout:'66%',
+        onClick:function(ev,el){ if(el&&el.length){ var t=shown[el[0].index]; if(t) openTypeDrilldown(t.k); } },
+        onHover:function(ev,el){ if(ev&&ev.native&&ev.native.target) ev.native.target.style.cursor=(el&&el.length)?'pointer':'default'; },
         plugins:{ legend:{display:false},
           tooltip:_tt({ label:function(it){ var t=shown[it.dataIndex], rev=tRev[t.k], cnt=tCnt[t.k], nn=t.noun||'item', np=cnt!==1?(nn==='entry'?'entries':nn+'s'):nn;
             return [t.label+':  '+$$(Math.round(rev))+'  ('+_pct(rev,tTotRev)+'%)', cnt+' '+np+',  avg '+$$(cnt?Math.round(rev/cnt):0)]; } })
@@ -9133,6 +9137,8 @@ function renderCharts(filtered){
   else charts['rvv']=new Chart($d('chartRevVehicle'),{ type:'bar',
     data:{labels:rvA.map(function(x){return x.v;}),datasets:[{data:rvA.map(function(x){return Math.round(x.val);}),backgroundColor:GOLD,borderRadius:5,barThickness:mobile?17:22}]},
     options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',layout:{padding:{right:mobile?40:54}},
+      onClick:function(ev,el){ if(el&&el.length){ var x=rvA[el[0].index]; if(x&&!x._other) openVehicleDrilldown(x.v); } },
+      onHover:function(ev,el){ if(ev&&ev.native&&ev.native.target) ev.native.target.style.cursor=(el&&el.length&&!(rvA[el[0].index]||{})._other)?'pointer':'default'; },
       plugins:{ legend:{display:false},
         barLabels:{display:true,fontSize:mobile?11:12,mode:'money'},
         tooltip:_tt({ title:function(it){ return rvA[it[0].dataIndex].v; },
@@ -9157,6 +9163,8 @@ function renderCharts(filtered){
   else charts['bvv']=new Chart($d('chartBkVehicle'),{ type:'bar',
     data:{labels:bkA.map(function(x){return x.v;}),datasets:[{data:bkA.map(function(x){return x.val;}),backgroundColor:BLUE,borderRadius:5,barThickness:mobile?17:22}]},
     options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',layout:{padding:{right:mobile?34:44}},
+      onClick:function(ev,el){ if(el&&el.length){ var x=bkA[el[0].index]; if(x&&!x._other) openVehicleDrilldown(x.v); } },
+      onHover:function(ev,el){ if(ev&&ev.native&&ev.native.target) ev.native.target.style.cursor=(el&&el.length&&!(bkA[el[0].index]||{})._other)?'pointer':'default'; },
       plugins:{ legend:{display:false},
         barLabels:{display:true,fontSize:mobile?11:12,mode:'count'},
         tooltip:_tt({ title:function(it){ return bkA[it[0].dataIndex].v; },
@@ -9358,6 +9366,113 @@ function openVehicleDrilldown(vehicle){
   modal.style.display='flex';
 }
 function closeVehicleDrilldown(){ var m=$d('vehicleDrillModal'); if(m) m.style.display='none'; }
+// ============ CHART SEGMENT DRILL-DOWNS (click any bar / slice / bucket to itemize it) ============
+// Reuse the vehicle-drill modal shell (#vehicleDrillModal / #vehicleDrillContent / closeVehicleDrilldown).
+function _cdPeriodLabel(){ return _kpiPeriod==='all'?'All Time':_kpiPeriod==='today'?'Today':_kpiPeriod==='7'?'Last 7 Days':_kpiPeriod==='30'?'Last 30 Days':'Last 90 Days'; }
+function _cdShow(html){ var m=$d('vehicleDrillModal'); if(!m) return; var c=$d('vehicleDrillContent'); if(c) c.innerHTML=html; m.style.display='flex'; }
+function _cdHead(title,sub){ return '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px"><div><div style="font-size:18px;font-weight:800;color:var(--gold)">'+esc(title)+'</div><div style="font-size:11px;color:var(--muted);margin-top:2px">'+esc(sub)+'</div></div><button onclick="closeVehicleDrilldown()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:4px 8px">\u2715</button></div>'; }
+function _cdChip(label,val,clr){ return '<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px;padding:9px 15px;min-width:96px"><div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em">'+label+'</div><div style="font-size:19px;font-weight:800;color:'+(clr||'var(--gold)')+'">'+val+'</div></div>'; }
+function _cdChips(arr){ return '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">'+arr.join('')+'</div>'; }
+function _cdWin(){ var dr=_kpiDateRange(); return { lo: dr.from||'', hi: dr.to||(($d('filterTo')&&$d('filterTo').value)||'9999-12-31') }; }
+// Itemized table: rows = {id?,date,name,sub?,vehicle?,val}. Rows with an id open that booking on click.
+function _cdTable(list, valLabel, valClr){
+  if(!list.length) return '<div style="color:var(--muted);font-size:13px;padding:8px 0 14px">Nothing here for this period.</div>';
+  var tot=list.reduce(function(s,x){return s+(Number(x.val)||0);},0), clr=valClr||'var(--gold)';
+  return '<div style="overflow-x:auto;margin-bottom:16px"><table style="width:100%;border-collapse:collapse;font-size:13px">'+
+    '<thead><tr style="border-bottom:1px solid var(--border)">'+
+      '<th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:700;white-space:nowrap">Date</th>'+
+      '<th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:700">Item</th>'+
+      '<th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:700">Vehicle</th>'+
+      '<th style="text-align:right;padding:6px 8px;color:var(--muted);font-weight:700">'+valLabel+'</th>'+
+    '</tr></thead><tbody>'+
+    list.map(function(x){
+      var attr=x.id ? ' style="border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" onclick="closeVehicleDrilldown();openBookingDetail(\''+x.id+'\')" title="Open booking"' : ' style="border-bottom:1px solid rgba(255,255,255,.04)"';
+      return '<tr'+attr+'>'+
+        '<td style="padding:7px 8px;white-space:nowrap">'+(x.date?fmtDate(x.date):'\u2014')+'</td>'+
+        '<td style="padding:7px 8px">'+esc(x.name||'\u2014')+(x.sub?'<br><span style="font-size:10px;color:var(--muted)">'+esc(x.sub)+'</span>':'')+'</td>'+
+        '<td style="padding:7px 8px;color:var(--muted);font-size:12px">'+esc(x.vehicle||'')+'</td>'+
+        '<td style="padding:7px 8px;text-align:right;font-weight:700;color:'+clr+'">'+$$(Math.round(Number(x.val)||0))+'</td>'+
+      '</tr>';
+    }).join('')+
+    '<tr style="border-top:1px solid var(--border)"><td colspan="3" style="padding:7px 8px;font-weight:700;font-size:12px">Total ('+list.length+')</td><td style="padding:7px 8px;text-align:right;font-weight:800;color:'+clr+'">'+$$(Math.round(tot))+'</td></tr>'+
+    '</tbody></table></div>';
+}
+
+// Doughnut slice -> everything that makes up one booking-type / rides / income / card-fee slice.
+function openTypeDrilldown(typeKey){
+  try{
+    var w=_cdWin(), lo=w.lo, hi=w.hi;
+    function inWin(d){ d=(d||'').slice(0,10); return !!d && (!lo||d>=lo) && d<=hi; }
+    var LBL={daily:'Daily Rentals',hourly:'Hourly Bookings',chauffeur:'Chauffeur Bookings',event:'Events',rides:'Chauffeur Rides',income:'Other Income',cardfee:'Card Fees (13.25% gross-up)'};
+    var title=LBL[typeKey]||typeKey, total=0, body='', note='', clr='var(--gold)';
+    if(typeKey==='rides'){
+      clr='#2dd4bf';
+      var rl=(typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns.filter(function(t){return t&&inWin(t.completedAt?dateStr(new Date(t.completedAt)):'');}):[];
+      var rr=rl.map(function(t){ total+=Number(t.amount)||0; return {date:t.completedAt?dateStr(new Date(t.completedAt)):'',name:(t.riderName||t.rider||'Chauffeur ride'),sub:(t.rideType||'')||'ride fare',vehicle:(t.vehicle||''),val:Number(t.amount)||0}; });
+      rr.sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}); body=_cdTable(rr,'Fare',clr);
+    } else if(typeKey==='income'){
+      clr='#f472b6';
+      var il=(incomes||[]).filter(function(i){return i&&!i._deleted&&inWin(i.fromDate);});
+      var ir=il.map(function(i){ total+=Number(i.amount)||0; return {date:(i.fromDate||''),name:(i.description||'Income'),sub:(i.category||''),vehicle:(i.vehicle||''),val:Number(i.amount)||0}; });
+      ir.sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}); body=_cdTable(ir,'Amount',clr);
+    } else if(typeKey==='cardfee'){
+      clr='#fbbf24';
+      note='<div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">The 13.25% card-processing gross-up (5% processing + 8.25% TX tax) is added to BOTH revenue and cost per card sale, so your net profit is unchanged. Each card-paid piece below (base at pickup, extensions at their date, portal charges when paid):</div>';
+      var cr=[];
+      (bookings||[]).forEach(function(b){ if(!b||b._deleted||b.status==='cancelled')return;
+        var pickup=b.pickupDate||b.date||'', fee=0;
+        if(inWin(pickup)){ var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
+          if(!_p2pMethod(b.balancePaidMethod)) fee+=Math.max(0,baseAll-dl)*0.1325;
+          if(!_p2pMethod(b.dateLockMethod)) fee+=dl*0.1325; }
+        (b.extensions||[]).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(inWin(ed)&&!_p2pMethod(e&&e.paymentMethod)) fee+=amt*0.1325; });
+        (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)))return; if(inWin(dateStr(new Date(c.paidAt)))&&!_p2pMethod(c.paidMethod)) fee+=(Number(c.amount)||0)*0.1325; });
+        if(fee>0.5){ total+=fee; cr.push({id:b.id,date:(b.pickupDate||b.date||''),name:b.name,sub:'card sale',vehicle:b.vehicle,val:fee}); }
+      });
+      cr.sort(function(a,b){return b.val-a.val;}); body=_cdTable(cr,'Fee',clr);
+    } else {
+      var list=[];
+      (bookings||[]).forEach(function(b){ if(!b||b._deleted||b.status==='cancelled')return; var k=b.isEvent?'event':(b.type||'daily'); if(k!==typeKey)return; var er=_earnedRevInWindow(b,lo,hi); if(!er)return; total+=er; list.push({id:b.id,date:(b.pickupDate||b.date||''),name:b.name,sub:(b.broker?'via '+b.broker:''),vehicle:b.vehicle,val:er}); });
+      list.sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}); body=_cdTable(list,'Earned rev',clr);
+    }
+    _cdShow(_cdHead(title, _cdPeriodLabel()+' \u00b7 earned-date revenue')+_cdChips([_cdChip('Revenue',$$(Math.round(total)),clr)])+note+body);
+  }catch(e){ console.error('openTypeDrilldown',e); }
+}
+
+// Monthly bar -> every revenue + cost item that lands in that one time bucket (day/week/month).
+function openBucketDrilldown(bucketKey){
+  try{
+    var gran=_chartGran(), rng=_bkRange(bucketKey,gran); if(!rng) return;
+    var w=_cdWin();
+    var lo=(w.lo&&rng.from<w.lo)?w.lo:rng.from, hi=(w.hi&&rng.to>w.hi)?w.hi:rng.to;
+    function inWin(d){ d=(d||'').slice(0,10); return !!d && d>=lo && d<=hi; }
+    var revRows=[], costRows=[], totR=0, totC=0;
+    (bookings||[]).forEach(function(b){ if(!b||b._deleted||b.status==='cancelled')return;
+      var pickup=b.pickupDate||b.date||'';
+      if(inWin(pickup)){
+        var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
+        var cf=((!_p2pMethod(b.balancePaidMethod)?Math.max(0,baseAll-dl):0)+(!_p2pMethod(b.dateLockMethod)?dl:0))*0.1325;
+        totR+=baseAll+cf; revRows.push({id:b.id,date:pickup,name:b.name,sub:'base'+(cf?' + card fee':''),vehicle:b.vehicle,val:baseAll+cf});
+        var cost=getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b)+cf;
+        if(cost){ totC+=cost; costRows.push({id:b.id,date:pickup,name:b.name,sub:'est cost'+(b.brokerFee?' + broker':'')+(cf?' + card fee':''),vehicle:b.vehicle,val:cost}); }
+      }
+      (b.extensions||[]).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(!inWin(ed))return; var cfe=!_p2pMethod(e&&e.paymentMethod)?amt*0.1325:0; totR+=amt+cfe; revRows.push({id:b.id,date:ed,name:b.name,sub:'extension',vehicle:b.vehicle,val:amt+cfe}); var ce=(Number(e.brokerFee)||0)+cfe; if(ce){ totC+=ce; costRows.push({id:b.id,date:ed,name:b.name,sub:'ext broker/fee',vehicle:b.vehicle,val:ce}); } });
+      (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)))return; var cd=dateStr(new Date(c.paidAt)); if(!inWin(cd))return; var amt=Number(c.amount)||0, cfc=!_p2pMethod(c.paidMethod)?amt*0.1325:0; totR+=amt+cfc; revRows.push({id:b.id,date:cd,name:b.name,sub:(c.description||'portal charge'),vehicle:b.vehicle,val:amt+cfc}); if(cfc){ totC+=cfc; costRows.push({id:b.id,date:cd,name:b.name,sub:'charge card fee',vehicle:b.vehicle,val:cfc}); } });
+    });
+    (incomes||[]).forEach(function(i){ if(!i||i._deleted)return; var d=(i.fromDate||'').slice(0,10); if(!inWin(d))return; var amt=Number(i.amount)||0; totR+=amt; revRows.push({date:d,name:(i.description||'Other income'),sub:(i.category||'income'),vehicle:(i.vehicle||''),val:amt}); });
+    ((typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns:[]).forEach(function(t){ if(!t||!t.completedAt)return; var d=dateStr(new Date(t.completedAt)); if(!inWin(d))return; var amt=Number(t.amount)||0; totR+=amt; revRows.push({date:d,name:(t.riderName||t.rider||'Chauffeur ride'),sub:'ride fare',vehicle:(t.vehicle||''),val:amt}); var pay=amt*0.35; totC+=pay; costRows.push({date:d,name:(t.riderName||t.rider||'Chauffeur ride'),sub:'chauffeur payout (35%)',vehicle:(t.vehicle||''),val:pay}); });
+    var exTot=(typeof getTotalExpenses==='function')?getTotalExpenses(lo,hi):0; if(exTot) totC+=exTot;
+    revRows.sort(function(a,b){return (b.date||'').localeCompare(a.date||'')||(b.val-a.val);});
+    costRows.sort(function(a,b){return (b.date||'').localeCompare(a.date||'')||(b.val-a.val);});
+    var net=totR-totC, unit=gran==='month'?'month':gran==='week'?'week':'day';
+    var html=_cdHead(_bkLabel(bucketKey,gran)+' \u2014 breakdown', _cdPeriodLabel()+' \u00b7 one '+unit)
+      +_cdChips([_cdChip('Revenue',$$(Math.round(totR)),'var(--gold)'),_cdChip('Est. Cost',$$(Math.round(totC)),'var(--red)'),_cdChip('Net',(net<0?'-':'')+'$'+Math.round(Math.abs(net)).toLocaleString(),net>=0?'var(--green)':'var(--red)')])
+      +'<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">\ud83d\udcc8 Revenue this '+unit+'</div>'+_cdTable(revRows,'Amount','var(--gold)')
+      +'<div style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:6px 0 8px">\ud83d\udcb8 Est. Cost this '+unit+'</div>'+_cdTable(costRows,'Amount','var(--red)')
+      +(exTot?'<div style="background:rgba(255,92,92,.06);border:1px solid rgba(255,92,92,.15);border-radius:6px;padding:8px 12px;font-size:13px;margin-top:-6px"><span style="color:var(--muted)">+ logged operating expenses in this '+unit+' (recurring-aware):</span> <span style="color:var(--red);font-weight:700">'+$$(Math.round(exTot))+'</span></div>':'');
+    _cdShow(html);
+  }catch(e){ console.error('openBucketDrilldown',e); }
+}
+
 
 function renderVehicleTable(filtered){
   // filtered is already period-scoped by pickup date via _applyKpiPeriod
