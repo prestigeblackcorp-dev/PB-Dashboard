@@ -4521,7 +4521,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v228';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v229';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -16602,16 +16602,20 @@ function sendExtensionLink(id){
 
 function sendReceiptEmail(b){
   if(!MESSAGING_URL||!b||!b.email) return;
+  if(b._receiptSent) return; b._receiptSent=Date.now();   // once per booking (fires on close-out OR mark-complete, never twice)
   var firstName=(b.name||'').split(' ')[0]||'there';
   var LOGO='https://prestigeblackcorp-dev.github.io/PB-Dashboard/icon.png';
   var ref='PBR-'+String(b.id||'').slice(-6).toUpperCase();
   // --- Trip summary (what the trip cost) ---
   var addons=[];
   if(Number(b.delivery)>0) addons.push({label:'Delivery',val:b.delivery});
+  if(Number(b.stop)>0) addons.push({label:'Extra Stop',val:b.stop});
+  if(Number(b.wait)>0) addons.push({label:'Extra Wait',val:b.wait});
   if(Number(b.unlimited)>0) addons.push({label:'Unlimited Miles',val:b.unlimited});
   if(Number(b.pet)>0) addons.push({label:'Pet Fee',val:b.pet});
   if(Number(b.photo)>0) addons.push({label:'Photo Package',val:b.photo});
   if(Number(b.champagne)>0) addons.push({label:'Champagne',val:b.champagne});
+  if(Number(b.redcarpet)>0) addons.push({label:'Red Carpet Arrival',val:b.redcarpet});
   if(Number(b.decor)>0) addons.push({label:'Decor',val:b.decor});
   if(Number(b.bouquet)>0) addons.push({label:'Bouquet',val:b.bouquet});
   // Itemize extensions + real (paid, non-deposit, non-ext-linked) charges so the Trip total is self-consistent
@@ -16662,7 +16666,7 @@ function sendReceiptEmail(b){
         '<div style="background:linear-gradient(135deg,#1a1a2e 0%,#0d0d0d 100%);padding:30px 28px;text-align:center">'+
           '<img src="'+LOGO+'" alt="Prestige Black Rentals" width="58" height="58" style="border-radius:13px;display:block;margin:0 auto 14px;object-fit:contain">'+
           '<h1 style="margin:0;color:#C9A962;font-size:23px;font-weight:800;letter-spacing:-.3px;line-height:1.2">Your Receipt, '+esc(firstName)+'</h1>'+
-          '<p style="margin:8px 0 0;color:rgba(255,255,255,.55);font-size:13.5px">Booking '+ref+' &middot; Thank you for renting with Prestige Black</p>'+
+          '<p style="margin:8px 0 0;color:rgba(255,255,255,.55);font-size:13.5px">Booking '+ref+' &middot; Thank you for '+(b.type==='chauffeur'?'riding':'renting')+' with Prestige Black</p>'+
         '</div>'+
         '<div style="padding:28px">'+
           '<div style="background:#faf9f7;border:1px solid #efece4;border-radius:12px;padding:20px;margin:0 0 20px">'+
@@ -16895,6 +16899,7 @@ function quickStatus(id, newStatus){
   bookings[idx]._t=Date.now();
   if(newStatus==='completed'){ bookings[idx]._completedAt=Date.now(); }
   if(newStatus==='completed') sendReviewRequest(bookings[idx]);
+  if(newStatus==='completed' && bookings[idx].type==='chauffeur') sendReceiptEmail(bookings[idx]);
   if(newStatus==='confirmed'){ sendConfirmationEmail(bookings[idx]); autoSendVerification(bookings[idx]); }
   if(newStatus==='cancelled') checkWaitlistOnCancel(bookings[idx]);
   if(oldStatus!==newStatus){
