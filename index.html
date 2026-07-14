@@ -2188,8 +2188,10 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
       <div style="display:flex;flex-direction:column;gap:13px;max-width:520px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px">
           <div>
-            <label style="font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:5px">Booking ID</label>
-            <input id="tabDrvAssignBookingId" class="inp" placeholder="BK-&#8230;" style="width:100%">
+            <label style="font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:5px">Booking</label>
+            <select id="tabDrvAssignBookingId" class="inp" style="width:100%" onchange="_tabAssignBkChanged()">
+              <option value="">&#8212; select a booking &#8212;</option>
+            </select>
           </div>
           <div>
             <label style="font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:5px">Driver</label>
@@ -2198,6 +2200,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
             </select>
           </div>
         </div>
+        <div id="tabDrvAssignBkSummary" style="display:none;font-size:12px;color:var(--muted);line-height:1.55;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 12px"></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:11px">
           <div>
             <label style="font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:5px">Pay Type</label>
@@ -4372,7 +4375,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v213';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v214';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -9589,6 +9592,7 @@ async function renderDriversTab(){
     };
     popSel('tabDrvAssignDriver');
     popSel('drvAssignDriver');
+    _popTabAssignBookings();
     var tabSel=$d('tabDrvAssignDriver');
     if(tabSel) tabSel.onchange=function(){
       var opt=tabSel.options[tabSel.selectedIndex];
@@ -10431,6 +10435,49 @@ function renderFleetDeleted(){
   wrap.innerHTML=html;
 }
 
+// Populate the "Assign Driver to a Booking" picker with UPCOMING / CURRENT chauffeur + Luxury-Event bookings
+// (not cancelled / completed / deleted, trip not yet ended), so the owner picks one instead of typing an id.
+function _popTabAssignBookings(){
+  var sel=$d('tabDrvAssignBookingId'); if(!sel) return;
+  var tod=(typeof todayStr==='function')?todayStr():'';
+  var list=((typeof bookings!=='undefined'&&bookings)?bookings:[]).filter(function(b){
+    if(!b||b._deleted) return false;
+    if(b.status==='cancelled'||b.status==='completed') return false;
+    var isCh=(b.type==='chauffeur'), isEv=(b.isEvent||b.type==='event');
+    if(!isCh&&!isEv) return false;
+    var end=(typeof tripEndDate==='function'?tripEndDate(b):'')||b.dropoffDate||b.pickupDate||b.date||'';
+    return !tod || !end || String(end).slice(0,10)>=tod;   // upcoming or still active
+  }).sort(function(a,b){
+    var ka=(a.pickupDate||a.date||'9999-99-99')+' '+(a.pickupTime||''), kb=(b.pickupDate||b.date||'9999-99-99')+' '+(b.pickupTime||'');
+    return ka<kb?-1:ka>kb?1:0;
+  });
+  var cur=sel.value;
+  var opts='<option value="">'+(list.length?'\u2014 select a booking \u2014':'No upcoming chauffeur or event bookings')+'</option>';
+  opts+=list.map(function(b){
+    var when=(typeof fmtDate==='function'&&(b.pickupDate||b.date))?fmtDate(b.pickupDate||b.date):(b.pickupDate||b.date||'TBD');
+    if(b.pickupTime) when+=' '+b.pickupTime;
+    var tag=(b.isEvent||b.type==='event')?('Event'+((b.eventPackage||b.eventType)?': '+(b.eventPackage||b.eventType):'')):'Chauffeur';
+    var veh=b.vehicleDisplay||b.vehicle||'Vehicle';
+    var mark=(b.assignedDriver&&b.assignedDriver.email)?' \u2713':'';
+    return '<option value="'+esc(b.id)+'">'+esc(when+'  \u00B7  '+(b.name||'(no name)')+'  \u00B7  '+veh+'  \u00B7  '+tag+mark)+'</option>';
+  }).join('');
+  sel.innerHTML=opts;
+  if(cur){ sel.value=cur; if(sel.value!==cur){ /* selection no longer available */ _tabAssignBkChanged(); } }
+}
+// Show a confirmation summary for the picked booking so the owner is sure it's the right one.
+function _tabAssignBkChanged(){
+  var sel=$d('tabDrvAssignBookingId'), sum=$d('tabDrvAssignBkSummary'); if(!sum) return;
+  var b=(sel&&sel.value&&typeof bookings!=='undefined'&&bookings)?bookings.find(function(x){return x&&x.id===sel.value;}):null;
+  if(!b){ sum.style.display='none'; sum.innerHTML=''; return; }
+  var rows=[];
+  rows.push('<b style="color:var(--text)">'+esc(b.name||'(no name)')+'</b> \u00B7 '+esc(b.vehicleDisplay||b.vehicle||''));
+  rows.push('\uD83D\uDCC5 '+esc((b.pickupDate||b.date||'TBD')+(b.pickupTime?' at '+b.pickupTime:'')));
+  if(b.pickupAddress||b.dropoffAddress) rows.push('\uD83D\uDCCD '+esc((b.pickupAddress||'?')+' \u2192 '+(b.dropoffAddress||'?')));
+  else if(b.address) rows.push('\uD83D\uDCCD '+esc(b.address));
+  if(b.isEvent||b.type==='event') rows.push('\uD83C\uDF89 Event'+((b.eventPackage||b.eventType)?': '+esc(b.eventPackage||b.eventType):''));
+  if(b.assignedDriver&&b.assignedDriver.email) rows.push('<span style="color:var(--gold)">Currently assigned: '+esc(b.assignedDriver.email)+' \u00B7 $'+(Number(b.assignedDriver.payAmount)||0)+' \u2014 reassigning will replace this</span>');
+  sum.innerHTML=rows.join('<br>'); sum.style.display='block';
+}
 async function submitTabAssignDriver(){
   var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
   var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'';
@@ -10451,7 +10498,8 @@ async function submitTabAssignDriver(){
     if(!r.ok){ st.style.color='var(--red)'; st.textContent=d.error||'Error.'; return; }
     st.style.color='var(--green)'; st.textContent='\u2705 Assigned & notified!';
     $d('tabDrvAssignBookingId').value=''; $d('tabDrvAssignDriver').value=''; $d('tabDrvAssignAmount').value=''; $d('tabDrvAssignNotes').value='';
-    setTimeout(function(){ st.style.display='none'; if(typeof loadData==='function') loadData(); },2000);
+    try{ _tabAssignBkChanged(); }catch(e){}
+    setTimeout(function(){ st.style.display='none'; if(typeof loadData==='function') loadData(); try{ _popTabAssignBookings(); }catch(e){} },2000);
   }catch(e){ st.style.color='var(--red)'; st.textContent='Network error.'; }
 }
 
