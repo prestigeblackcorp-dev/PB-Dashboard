@@ -1338,6 +1338,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <div class="hbg-divider"></div>
           <button class="hbg-item" id="hbg-btn-settings" onclick="openSettings();closeHamburger()">&#9881;&#65039; Settings</button>
           <button class="hbg-item" id="hbg-btn-push" onclick="_ownerPushSubscribe(true).then(function(ok){ showToast(ok?'Push notifications enabled on this device':'Enable notifications for this site in your browser settings'); });closeHamburger()">&#128276; Enable Push (this device)</button>
+          <button class="hbg-item" onclick="pbDataUsage();closeHamburger()">&#128202; PB Data Usage</button>
         </div>
       </div>
     <div style="display:flex;align-items:center;gap:12px">
@@ -4110,6 +4111,60 @@ async function _ownerPushSubscribe(interactive){
     return true;
   }catch(e){ return false; }
 }
+// ===== Data-usage diagnostic (hamburger -> PB Data Usage). Wraps fetch, tallies per-endpoint traffic,
+// flags Firebase-backed endpoints, renders an on-screen panel. Opt-in: fetch is only wrapped while open;
+// Close restores it. Firebase free quota = 360 MB/DAY. =====
+function pbDataUsage(){
+  if(window.PBnet && window.PBnet._on){ try{ PBnet.report(); }catch(e){} return; }
+  var of=window.fetch, agg={}, t0=Date.now();
+  var FB=['/chauffeur/dashboard','/chauffeur/revenue','/sync/load','/sync/savedAt','/available','/owner-alerts','/chauffeur/ride-status','/chauffeur/driver-rides','/photo','/fleet-catalog','/waitlist'];
+  function norm(u){ try{ var x=new URL(u,location.href); var p=x.pathname; if(x.searchParams.get('full')==='1') p+=' [full]'; return (x.host.indexOf('workers.dev')>=0||x.host.indexOf('firebase')>=0||x.host===location.host)?p:x.host+p; }catch(e){ return String(u).split('?')[0]; } }
+  function isFB(p){ p=String(p).split(' ')[0]; return FB.some(function(f){ return p.indexOf(f)>=0; }); }
+  function rec(p,rq,rs){ var a=agg[p]||(agg[p]={n:0,rs:0,rq:0}); a.n++; a.rs+=(rs||0); a.rq+=(rq||0); }
+  window.fetch=function(u,o){
+    var url=(typeof u==='string')?u:(u&&u.url)||'', p=norm(url), rq=(o&&o.body)?(''+o.body).length:0;
+    return of.apply(this,arguments).then(function(res){
+      try{ var cl=res.headers.get('content-length'); if(cl!=null){ rec(p,rq,+cl); } else { res.clone().text().then(function(t){ rec(p,rq,t.length); }).catch(function(){ rec(p,rq,0); }); } }catch(e){ rec(p,rq,0); }
+      return res;
+    });
+  };
+  function KB(b){ return (b/1024).toFixed(b<10240?1:0); }
+  window.PBnet={ _on:true,
+    stop:function(){ window.fetch=of; var e=document.getElementById('_pbnet'); if(e) e.remove(); },
+    reset:function(){ agg={}; t0=Date.now(); if(typeof PBnet!=='undefined') PBnet.report(); },
+    report:function(){
+      var mins=Math.max(0.25,(Date.now()-t0)/60000);
+      var rows=Object.keys(agg).map(function(p){ var a=agg[p]; return { p:p, n:a.n, cpd:a.n/mins*1440, avg:a.rs/(a.n||1), bpd:a.rs/mins*1440, fb:isFB(p) }; }).sort(function(x,y){ return y.bpd-x.bpd; });
+      var fbBpd=rows.filter(function(r){ return r.fb; }).reduce(function(s,r){ return s+r.bpd; },0);
+      var fbMBday=fbBpd/1e6, FREE=360, overGBday=Math.max(0,(fbMBday-FREE))/1000, cost=overGBday*30*1;
+      var tips=[];
+      rows.forEach(function(r){
+        if(r.p.indexOf('/chauffeur/dashboard')>=0 && r.p.indexOf('[full]')<0 && r.cpd>800) tips.push('<b>/chauffeur/dashboard</b> ~'+Math.round(r.cpd).toLocaleString()+'/day \u2014 the 15s fleet poll (already capped at 200 rides). Only runs while on the Drivers tab.');
+        if(r.p.indexOf('/chauffeur/revenue')>=0 && r.cpd>400) tips.push('<b>/chauffeur/revenue</b> ~'+Math.round(r.cpd).toLocaleString()+'/day (whole-node) \u2014 could throttle 120s\u2192300s to halve it.');
+        if(r.p.indexOf('/sync/load')>=0 && r.cpd>800) tips.push('<b>/sync/load</b> ~'+Math.round(r.cpd).toLocaleString()+'/day \u2014 should only full-pull when /sync/savedAt changes.');
+      });
+      if(!tips.length) tips.push('Nothing hammering Firebase in this '+mins.toFixed(1)+'-min sample. Sit on the <b>Drivers</b> tab ~60s and tap Refresh.');
+      var tb=rows.map(function(r){ return '<tr style="border-top:1px solid #2a2a33"><td style="padding:4px 8px 4px 0;word-break:break-all">'+(r.fb?'\ud83d\udd25 ':'\u00b7 ')+r.p+'</td><td style="text-align:right;padding:4px 8px">'+r.n+'</td><td style="text-align:right;padding:4px 8px">'+Math.round(r.cpd).toLocaleString()+'</td><td style="text-align:right;padding:4px 8px">'+KB(r.avg)+'K</td><td style="text-align:right;padding:4px 0;color:'+(r.bpd>5e7?'#f87171':r.bpd>1e7?'#fbbf24':'#4ade80')+';font-weight:700">'+(r.bpd/1e6).toFixed(1)+'</td></tr>'; }).join('');
+      var e=document.getElementById('_pbnet'); if(e) e.remove();
+      e=document.createElement('div'); e.id='_pbnet';
+      e.style.cssText='position:fixed;right:10px;bottom:10px;z-index:2147483647;width:min(620px,94vw);max-height:82vh;overflow:auto;background:#14141a;color:#e8e8ea;border:1px solid #C9A962;border-radius:14px;padding:16px;font:12.5px/1.55 -apple-system,system-ui,sans-serif;box-shadow:0 12px 44px rgba(0,0,0,.65)';
+      e.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><b style="color:#C9A962;font-size:15px">\ud83d\udcca PB Data Usage</b><span style="color:#888">'+mins.toFixed(1)+' min \u00b7 '+rows.reduce(function(s,r){return s+r.n;},0)+' req</span></div>'+
+        '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px">'+
+          '<div><div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.5px">Firebase reads / day</div><div style="font-size:22px;font-weight:800;color:'+(fbMBday>FREE?'#f87171':'#4ade80')+'">'+fbMBday.toFixed(0)+' MB <span style="font-size:12px;color:#888;font-weight:600">/ '+FREE+' free</span></div></div>'+
+          '<div><div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.5px">Est. cost / month</div><div style="font-size:22px;font-weight:800;color:'+(cost>1?'#f87171':'#4ade80')+'">~$'+cost.toFixed(2)+(fbMBday<=FREE?' <span style="font-size:12px;color:#4ade80;font-weight:600">(free tier)</span>':'')+'</div></div>'+
+        '</div>'+
+        '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:#888;text-align:left"><th style="padding:0 8px 4px 0">Endpoint</th><th style="text-align:right;padding:0 8px 4px">Calls</th><th style="text-align:right;padding:0 8px 4px">/day</th><th style="text-align:right;padding:0 8px 4px">Avg</th><th style="text-align:right;padding:0 0 4px">MB/day\u2193</th></tr></thead><tbody>'+tb+'</tbody></table>'+
+        '<div style="margin-top:12px;font-size:11px;color:#aaa">\ud83d\udd25 = triggers a Firebase read (the billed egress). <b>Calls/day</b> is the lever; whole-node reads cost more server-side than shown. Free quota: 360 MB/day.</div>'+
+        '<ul style="margin:8px 0 0;padding-left:18px;color:#ddd">'+tips.map(function(t){ return '<li style="margin-bottom:5px">'+t+'</li>'; }).join('')+'</ul>'+
+        '<div style="margin-top:12px;display:flex;gap:8px"><button onclick="PBnet.report()" style="flex:1;background:#C9A962;color:#000;border:none;border-radius:8px;padding:9px;font-weight:800;cursor:pointer">Refresh</button><button onclick="PBnet.reset()" style="background:#2a2a33;color:#ccc;border:none;border-radius:8px;padding:9px 13px;cursor:pointer">Reset</button><button onclick="PBnet.stop()" style="background:#2a2a33;color:#ccc;border:none;border-radius:8px;padding:9px 13px;cursor:pointer">Close</button></div>';
+      document.body.appendChild(e);
+    }
+  };
+  try{ PBnet.report(); }catch(e){}
+  if(typeof showToast==='function') showToast('Data Usage: now measuring \u2014 use the dashboard ~60s (open the Drivers tab), then tap Refresh');
+  setTimeout(function(){ if(window.PBnet && window.PBnet._on){ try{ PBnet.report(); }catch(e){} } }, 60000);
+}
+
 (function(){
   try{
     var _oaInit=function(){
@@ -4541,8 +4596,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v235';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v237';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v236';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v238';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
