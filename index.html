@@ -1317,6 +1317,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <button class="hbg-item" onclick="openContractTemplate('waiver');closeHamburger()">&#127949; Slingshot Waiver</button>
           <div class="hbg-divider"></div>
           <button class="hbg-item" id="hbg-btn-settings" onclick="openSettings();closeHamburger()">&#9881;&#65039; Settings</button>
+          <button class="hbg-item" id="hbg-btn-push" onclick="_ownerPushSubscribe(true).then(function(ok){ showToast(ok?'Push notifications enabled on this device':'Enable notifications for this site in your browser settings'); });closeHamburger()">&#128276; Enable Push (this device)</button>
         </div>
       </div>
     <div style="display:flex;align-items:center;gap:12px">
@@ -4064,9 +4065,32 @@ function _dismissOwnerAlert(id){
     }
   }catch(e){}
 }
+// Subscribe THIS device to owner Web Push (new-booking + delivery-2h notifications). interactive=true prompts for permission.
+function _ownerPushKeyU8(s){ s=String(s||'').replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='='; var bin=atob(s); var u=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u; }
+async function _ownerPushSubscribe(interactive){
+  try{
+    var vapid=(typeof PB_VAPID_PUBLIC!=='undefined'?PB_VAPID_PUBLIC:(window.PB_VAPID_PUBLIC||''));
+    if(!vapid || typeof WORKER_URL==='undefined' || !WORKER_URL || typeof DASHBOARD_SECRET==='undefined' || !DASHBOARD_SECRET) return false;
+    if(!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return false;
+    var reg=await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      if(Notification.permission!=='granted'){ if(!interactive) return false; var p=await Notification.requestPermission(); if(p!=='granted') return false; }
+      sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_ownerPushKeyU8(vapid)});
+    }
+    if(navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({type:'pb-push-auth', role:'owner', token:DASHBOARD_SECRET, worker:WORKER_URL, vapid:vapid});
+    await fetch(WORKER_URL+'/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:'owner', token:DASHBOARD_SECRET, subscription:sub.toJSON()})});
+    try{ localStorage.setItem('pb_owner_push','1'); }catch(_){}
+    return true;
+  }catch(e){ return false; }
+}
 (function(){
   try{
-    var _oaInit=function(){ _loadOwnerAlerts(); setInterval(_loadOwnerAlerts, 45000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) _loadOwnerAlerts(); }); };
+    var _oaInit=function(){
+      _loadOwnerAlerts(); setInterval(_loadOwnerAlerts, 45000);
+      document.addEventListener('visibilitychange', function(){ if(!document.hidden) _loadOwnerAlerts(); });
+      try{ if(('Notification' in window) && Notification.permission==='granted') _ownerPushSubscribe(false); }catch(_){}
+    };
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', _oaInit); else _oaInit();
   }catch(e){}
 })();
@@ -4491,7 +4515,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v225';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v226';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a

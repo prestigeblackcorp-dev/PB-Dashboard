@@ -1,4 +1,4 @@
-const CACHE = 'pb-v227';
+const CACHE = 'pb-v228';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
@@ -68,6 +68,13 @@ self.addEventListener('push', function(e){
   e.waitUntil(_pbReadAuth().then(function(auth){
     var title='Prestige Black', body='Tap to open', data={app:'./obsidian.html'};
     var show=function(){ return self.registration.showNotification(title, { body:body, icon:'./icon.png', badge:'./icon.png', tag:'pb-'+(data.rideId||'update'), renotify:true, data:data }); };
+    if(auth && auth.role==='owner' && auth.worker && auth.token){
+      // Owner (dashboard) device: fetch the newest owner alert and show it. Unique rideId -> notifications stack.
+      return fetch(auth.worker+'/owner-alerts?_='+Date.now(), {headers:{'Authorization':'Bearer '+auth.token}, cache:'no-store'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){ var a=d&&d.alerts&&d.alerts[0]; data={app:'./index.html', rideId:'ow'+Date.now()}; title='Prestige Black'; body=(a&&a.text)?a.text:'New booking activity on your dashboard'; return show(); })
+        .catch(function(){ title='Prestige Black'; body='New booking activity'; data={app:'./index.html', rideId:'ow'+Date.now()}; return show(); });
+    }
     if(auth && auth.role==='driver' && auth.worker && auth.token){
       return fetch(auth.worker+'/chauffeur/driver-rides?token='+encodeURIComponent(auth.token)+'&_='+Date.now(), {cache:'no-store'})
         .then(function(r){ return r.json(); })
