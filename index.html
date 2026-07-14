@@ -4446,7 +4446,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v222';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v223';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -24823,10 +24823,20 @@ function _ocSendTest(){
 }
 function _ocSendConfirmOpen(){
   var m=_ocValidateMessage(); if(!m) return;
-  var list=_ocSelectedContacts(); if(!list.length){ toast('Select at least one recipient'); return; }
-  $d('ocConfirmBody').innerHTML='You are about to email <strong>'+list.length+'</strong> recipient'+(list.length===1?'':'s')+' from <strong>'+esc(_ocFromName())+'</strong>.<br><br>Subject: <strong>'+esc(m.subject)+'</strong><br><br>Opted-out addresses are skipped automatically. This cannot be undone once sent.';
-  $d('ocProgress').style.display='none'; $d('ocConfirmSend').style.display=''; $d('ocConfirmSend').disabled=false; $d('ocConfirmSend').textContent='Send now';
-  $d('ocConfirm').style.display='flex';
+  if(!_ocSelectedContacts().length){ toast('Select at least one recipient'); return; }
+  // COMPLIANCE HARD STOP: re-pull the ONE shared, email-keyed opt-out list right before confirming, then
+  // DROP any now-suppressed address from the selection -- so someone opted out since this device last
+  // loaded (in EITHER audience, or via an email reply) can never slip through even if their box was ticked.
+  // The worker ALSO re-verifies opt-outs on send and fails closed, so this is belt-and-suspenders.
+  _ocSuppLoad(true).then(function(){
+    var supp=_ocSuppSet(); Object.keys(_ocState.sel||{}).forEach(function(e){ if(supp[e]) delete _ocState.sel[e]; });
+    _ocRenderList();
+    var list=_ocSelectedContacts();
+    if(!list.length){ toast('Every selected address is opted out - nothing to send'); return; }
+    $d('ocConfirmBody').innerHTML='You are about to email <strong>'+list.length+'</strong> recipient'+(list.length===1?'':'s')+' from <strong>'+esc(_ocFromName())+'</strong>.<br><br>Subject: <strong>'+esc(m.subject)+'</strong><br><br>Opted-out addresses are ALWAYS skipped &mdash; one shared list across Bookings &amp; Obsidian, re-verified on the server before every send. This cannot be undone once sent.';
+    $d('ocProgress').style.display='none'; $d('ocConfirmSend').style.display=''; $d('ocConfirmSend').disabled=false; $d('ocConfirmSend').textContent='Send now';
+    $d('ocConfirm').style.display='flex';
+  });
 }
 function _ocSendConfirmClose(){ if(_ocState.sending) return; $d('ocConfirm').style.display='none'; }
 function _ocSetProgress(done,total){ var f=$d('ocProgFill'), t=$d('ocProgText'); if(f) f.style.width=(total?Math.round(done/total*100):0)+'%'; if(t) t.textContent='Sending '+done+' / '+total+'...'; }
@@ -24843,6 +24853,10 @@ function _ocDoSend(){
 }
 function _ocDoSendCore(recipients, isTest, m, campaignName, onDone){
   if(!WORKER_URL){ toast('Set the Worker URL in Settings first'); return; }
+  // FINAL opt-out guard at the ONE choke point every send passes through: strip any suppressed address
+  // before it can be POSTed (a real send only; a test goes to the owner). The shared opt-out list is
+  // email-keyed, so Bookings/Obsidian can never leak into each other. Worker re-checks + fails closed too.
+  if(!isTest){ var _supp=_ocSuppSet(); recipients=(recipients||[]).filter(function(r){ return r && r.email && !_supp[String(r.email).toLowerCase().trim()]; }); if(!recipients.length){ toast('All recipients are opted out - nothing sent'); return; } }
   _ocCampaignId='c'+Date.now();
   var html=_ocBuildEmailHtml(m.body, { ctaText:($d('ocCtaText').value||''), ctaUrl:($d('ocCtaUrl').value||'') });
   var BATCH=50, i=0, agg={sent:0,failed:0,skipped:0}, total=recipients.length;
