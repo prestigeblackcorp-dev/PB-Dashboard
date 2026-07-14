@@ -4521,7 +4521,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v233';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v234';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8230,7 +8230,7 @@ function switchTab(name){
   else if(name==='tax')       renderTaxTab();
   else if(name==='fleet')     renderFleetTab();
   else if(name==='customers') renderCustomersTab();
-  else if(name==='drivers'){  renderDriversTab(); setTimeout(function(){ initFleetMap(); refreshFleetMap(); if(!_fleetRefreshTimer){ _fleetRefreshTimer=setInterval(refreshFleetMap,15000); } },200); }
+  else if(name==='drivers'){  renderDriversTab(); setTimeout(function(){ initFleetMap(); refreshFleetMap(); loadRideHistFull(); if(!_fleetRefreshTimer){ _fleetRefreshTimer=setInterval(refreshFleetMap,15000); } },200); }
   else if(name==='brokers')   renderBrokerTab();
   else if(name==='outreach')  renderOutreachTab();
 }
@@ -8243,7 +8243,7 @@ if(typeof document!=='undefined' && document.addEventListener){
     if(document.hidden){
       if(_fleetRefreshTimer){ clearInterval(_fleetRefreshTimer); _fleetRefreshTimer=null; }
     } else if(activeTab==='drivers' && !_fleetRefreshTimer && typeof refreshFleetMap==='function'){
-      refreshFleetMap(); _fleetRefreshTimer=setInterval(refreshFleetMap,15000);
+      refreshFleetMap(); loadRideHistFull(); _fleetRefreshTimer=setInterval(refreshFleetMap,15000);
     }
   });
 }
@@ -10396,6 +10396,17 @@ function renderLiveRides(rides){
 }
 
 var _rideHist=[], _lastRidesSig='';
+var _rideHistFull=null, _rideHistFullAt=0;  // Ride-History tab shows ALL rides via an on-demand ?full=1 fetch; the 15s live poll only pulls the recent 200 (Firebase egress fix)
+function loadRideHistFull(force){
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+  var secret=typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:''; if(!secret) return;
+  if(!force && _rideHistFull && (Date.now()-_rideHistFullAt)<45000) return;   // throttle: one whole-node read per Drivers visit, not every 15s
+  _rideHistFullAt=Date.now();
+  fetch(WORKER+'/chauffeur/dashboard?full=1&_t='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+secret}})
+    .then(function(r){ return r&&r.ok?r.json():null; })
+    .then(function(d){ if(d&&Array.isArray(d.rides)){ _rideHistFull=d.rides; if(typeof renderRideHistory==='function') renderRideHistory(); } })
+    .catch(function(){});
+}
 // Owner soft-delete state (Drivers tab): rides & drivers removed by the owner.
 // Populated from the worker (deletedRides / deletedDrivers) and surfaced in the
 // "Recently Deleted \u2014 Fleet" panel for restore-within-30-days.
@@ -10517,7 +10528,7 @@ function _rhDay(ts){ if(!ts) return ''; var dt=new Date(ts); var n=new Date(); v
 function renderRideHistory(){
   var listEl=$d('ride-hist-list'); var sumEl=$d('ride-hist-summary');
   if(!listEl) return;
-  var rides=(_rideHist||[]).filter(Boolean);
+  var rides=(_rideHistFull||_rideHist||[]).filter(Boolean);
   // -- Summary across ALL rides --
   var nComplete=0,nCancel=0,nActive=0,revenue=0;
   rides.forEach(function(r){
@@ -10617,7 +10628,7 @@ async function deleteRideRecord(id){
     try{ _rideTxns=(_rideTxns||[]).filter(function(t){ return t && t.id!==id; }); _rideCancelTxns=(_rideCancelTxns||[]).filter(function(t){ return t && t.id!==id; }); }catch(e){} // prune BOTH caches so a deleted CANCELLED ride clears the Cancellation-Losses KPI instantly
     try{ if($d('kpiGrid') && typeof getFiltered==='function' && typeof renderKPIs==='function') renderKPIs(getFiltered(),'kpiGrid'); }catch(e){}
     loadRideRevenue(true, true);
-    refreshFleetMap();
+    refreshFleetMap(); loadRideHistFull(true);
   }catch(e){ alert('Network error deleting ride.'); }
 }
 async function restoreRideRecord(id){
@@ -10627,7 +10638,7 @@ async function restoreRideRecord(id){
     if(!r||!r.ok){ alert('Could not restore ride'+(r?' ('+r.status+')':'')+'.'); return; }
     if(typeof showToast==='function') showToast('Ride restored.');
     loadRideRevenue(true, true);   // hard pull so the restored ride's fare returns to the KPI revenue
-    refreshFleetMap();
+    refreshFleetMap(); loadRideHistFull(true);
   }catch(e){ alert('Network error restoring ride.'); }
 }
 async function deleteFleetDriver(email){
