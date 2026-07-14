@@ -3346,7 +3346,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
     <div style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:14px 16px;margin-top:14px">
       <div style="font-size:12px;font-weight:800;color:var(--gold);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">&#127919; Today&#8217;s Focus &#8212; My Goals</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Pin up to 5 of your own goals to the Overview instead of the AI briefing. They automatically revert to Claude-generated focus after 24 hours. Check each one off as you finish &#8212; every completion is logged and fed back to Claude so tomorrow&#8217;s focus and ideas keep getting sharper.</div>
-      <div id="focusGoalInputs">
+      <div id="focusGoalInputs" oninput="_focusGoalsDirty=true">
         <div style="margin-bottom:10px"><input type="text" class="finput" id="focusGoal0" maxlength="120" placeholder="Goal 1 &#8212; the main point" style="width:100%;font-weight:700"><input type="text" class="finput" id="focusGoalDesc0" maxlength="240" placeholder="What to do + the payoff (optional)" style="width:100%;margin-top:4px;font-size:12px;color:var(--muted)"></div>
         <div style="margin-bottom:10px"><input type="text" class="finput" id="focusGoal1" maxlength="120" placeholder="Goal 2 &#8212; the main point" style="width:100%;font-weight:700"><input type="text" class="finput" id="focusGoalDesc1" maxlength="240" placeholder="What to do + the payoff (optional)" style="width:100%;margin-top:4px;font-size:12px;color:var(--muted)"></div>
         <div style="margin-bottom:10px"><input type="text" class="finput" id="focusGoal2" maxlength="120" placeholder="Goal 3 &#8212; the main point" style="width:100%;font-weight:700"><input type="text" class="finput" id="focusGoalDesc2" maxlength="240" placeholder="What to do + the payoff (optional)" style="width:100%;margin-top:4px;font-size:12px;color:var(--muted)"></div>
@@ -4680,8 +4680,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v249';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v251';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v250';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v252';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -15053,7 +15053,7 @@ function openSettings(){
     loadNotifLog();
     mergeCommLogsIntoNotifLog();
     renderStaffPinList();
-    try{ renderFocusGoalsSettings(); }catch(e){}
+    try{ _focusGoalsDirty=false; renderFocusGoalsSettings(); }catch(e){}
     renderBlacklist();
     var settWorkerUrl=$d('settWorkerUrl');             if(settWorkerUrl)       settWorkerUrl.value       = WORKER_URL||'';
     var settVerifyUrl=$d('settVerifyUrl');             if(settVerifyUrl)       settVerifyUrl.value       = VERIFY_URL||'';
@@ -17927,14 +17927,14 @@ function saveManualFocus(){
   try{ localStorage.setItem('pb_focus_manual',JSON.stringify({setAt:Date.now(),date:today,items:items})); }catch(e){}
   try{ localStorage.setItem('pb_focus_manual_cleared','0'); }catch(e){}   // this set supersedes any prior revert
   try{ if(typeof cloudSave==='function') cloudSave(); if(typeof flushCloudSave==='function') flushCloudSave(); }catch(e){}
-  _tfLoadedDate=null; try{ renderTodaysFocus(); }catch(e){} try{ renderFocusGoalsSettings(); }catch(e){}
+  _tfLoadedDate=null; try{ renderTodaysFocus(); }catch(e){} try{ _focusGoalsDirty=false; renderFocusGoalsSettings(); }catch(e){}
   try{ if(typeof toast==='function') toast('Your goals are pinned to Today\u2019s Focus for 24h'); }catch(e){}
 }
 function clearManualFocus(){
   try{ localStorage.removeItem('pb_focus_manual'); }catch(e){}
   try{ localStorage.setItem('pb_focus_manual_cleared',String(Date.now())); }catch(e){}
   try{ if(typeof cloudSave==='function') cloudSave(); if(typeof flushCloudSave==='function') flushCloudSave(); }catch(e){}
-  _tfLoadedDate=null; try{ renderTodaysFocus(); }catch(e){} try{ renderFocusGoalsSettings(); }catch(e){}
+  _tfLoadedDate=null; try{ renderTodaysFocus(); }catch(e){} try{ _focusGoalsDirty=false; renderFocusGoalsSettings(); }catch(e){}
   try{ if(typeof toast==='function') toast('Reverted to Claude-generated focus'); }catch(e){}
 }
 // today's ACTUAL focus goals (manual override if pinned, else the Claude briefing shown today) -> Settings prefill
@@ -17946,10 +17946,17 @@ function _focusTodayGoals(){
   try{ var c=JSON.parse(localStorage.getItem('pb_daily_focus')||'null'); if(c && c.date===today && Array.isArray(c.items) && c.items.length) return c.items.map(function(g){ return {t:g.t,d:g.d||''}; }); }catch(e){}
   return [];
 }
+var _focusGoalsDirty=false;   // true once the owner types in a goal input -> blocks the periodic sync re-render from clobbering their edits (caret jump / erased text)
 function renderFocusGoalsSettings(){
   var m=_focusManual();
   var goals=_focusTodayGoals();
-  for(var i=0;i<5;i++){ var el=$d('focusGoal'+i); if(el) el.value=(goals[i]&&goals[i].t)||''; var de=$d('focusGoalDesc'+i); if(de) de.value=(goals[i]&&goals[i].d)||''; }
+  // Never overwrite the inputs while the owner is editing (focused) or has unsaved edits -- a background
+  // cloud-sync re-render would otherwise move the caret or erase what they just typed.
+  var _ae=document.activeElement, _editing=(_ae&&_ae.id&&/^focusGoal(Desc)?[0-9]$/.test(_ae.id));
+  if(!_editing && !_focusGoalsDirty){
+    // Only rewrite an input if its value actually changed -> a re-render with identical data never resets the caret.
+    for(var i=0;i<5;i++){ var el=$d('focusGoal'+i), tv=(goals[i]&&goals[i].t)||''; if(el && el.value!==tv) el.value=tv; var de=$d('focusGoalDesc'+i), dv=(goals[i]&&goals[i].d)||''; if(de && de.value!==dv) de.value=dv; }
+  }
   var st=$d('focusGoalsStatus'); if(!st) return;
   var msg;
   if(m){ var hrs=Math.max(0,Math.ceil((_FOCUS_TTL-(Date.now()-m.setAt))/3600000));
