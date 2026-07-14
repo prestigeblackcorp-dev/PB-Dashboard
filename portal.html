@@ -2612,6 +2612,46 @@ async function payCharge(bookingId, chargeId){
 
 /* ---------- Chauffeur self-service: Add Time + Add Extras (flag: chauffeurPortal) ---------- */
 function _chPortalOn(){ return !!((window.PB_FLAGS||{}).chauffeurPortal); }
+function _chPromoOn(){ return !!((window.PB_FLAGS||{}).promoCodes); }
+var _chPromoApplied={};   // bid -> {code,discType,discValue,minSubtotal,label} once validated by /promo/validate
+// The promo row inside the Enhance card (input <-> "applied" states); regenerated on apply/clear so hours/extras selection is preserved.
+function _chPromoRowHtml(bid){
+  var ap=_chPromoApplied[bid];
+  return (ap
+    ? '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'+
+        '<div style="font-size:12px;color:#7ee0a0;font-weight:700;">\u2713 '+esc(ap.label)+' applied</div>'+
+        '<button onclick="_chClearPromo(\''+bid+'\')" style="background:none;border:none;color:rgba(255,255,255,.55);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Remove</button>'+
+      '</div>'
+    : '<div style="display:flex;gap:8px;align-items:stretch;">'+
+        '<input id="chPromoInput_'+bid+'" type="text" placeholder="Promo code" autocomplete="off" oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key===\'Enter\'){event.preventDefault();_chApplyPromo(\''+bid+'\');}" style="flex:1;min-width:0;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:rgba(255,255,255,.05);color:#fff;font-size:13px;text-transform:uppercase;letter-spacing:.04em;">'+
+        '<button onclick="_chApplyPromo(\''+bid+'\')" id="chPromoBtn_'+bid+'" style="padding:9px 14px;border:1px solid rgba(201,169,98,.4);border-radius:9px;background:rgba(201,169,98,.14);color:#C9A962;font-size:12px;font-weight:800;cursor:pointer;white-space:nowrap;">Apply</button>'+
+      '</div>')+
+    '<div id="chPromoMsg_'+bid+'" style="font-size:11px;margin-top:5px;min-height:14px;line-height:1.4;"></div>';
+}
+async function _chApplyPromo(bid){
+  var inp=document.getElementById('chPromoInput_'+bid); if(!inp) return;
+  var code=String(inp.value||'').trim().toUpperCase(); if(!code) return;
+  var b=state.bookings.find(function(x){ return x.id===bid; }); if(!b) return;
+  var rate=_chHourlyRate(b), rng=document.getElementById('chTimeRange_'+bid), add=rng?Math.max(0,Math.round(Number(rng.value)||0)):0;
+  var subtotal=(add>0?rate*add:0);
+  document.querySelectorAll('.chxck_'+bid).forEach(function(ck){ if(ck.checked){ var pr=Number(ck.getAttribute('data-price'))||0; var id=ck.getAttribute('data-id'); var q=1; var qi=document.querySelector('.chxqty_'+bid+'[data-id="'+id+'"]'); if(qi){ q=Math.max(1,Math.min(12,Math.round(Number(qi.value)||1))); } subtotal+=pr*q; } });
+  subtotal=Math.round(subtotal*100)/100;
+  var msg=document.getElementById('chPromoMsg_'+bid), pbtn=document.getElementById('chPromoBtn_'+bid);
+  if(pbtn){ pbtn.disabled=true; pbtn.textContent='\u2026'; }
+  try{
+    var r=await fetch(`${WORKER}/promo/validate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,kind:'chauffeur',subtotal:subtotal})});
+    var d=await r.json();
+    if(d && d.ok){
+      _chPromoApplied[bid]={code:d.code,discType:d.discType,discValue:Number(d.discValue)||0,minSubtotal:Number(d.minSubtotal)||0,label:d.label};
+      var w=document.getElementById('chPromoWrap_'+bid); if(w) w.innerHTML=_chPromoRowHtml(bid);
+      _chEnhRecalc(bid);
+    } else {
+      if(msg){ msg.style.color='#ff8f8f'; msg.textContent=(d&&d.reason)||'That code is not valid.'; }
+      if(pbtn){ pbtn.disabled=false; pbtn.textContent='Apply'; }
+    }
+  }catch(e){ if(msg){ msg.style.color='#ff8f8f'; msg.textContent='Network error. Try again.'; } if(pbtn){ pbtn.disabled=false; pbtn.textContent='Apply'; } }
+}
+function _chClearPromo(bid){ delete _chPromoApplied[bid]; var w=document.getElementById('chPromoWrap_'+bid); if(w) w.innerHTML=_chPromoRowHtml(bid); _chEnhRecalc(bid); }
 
 // Default extras menu -- MIRRORED in the worker (self-checkout re-prices authoritatively).
 // A chauffeur booking may carry its own b.chauffeurExtras snapshot (owner-set); else this default.
@@ -2707,10 +2747,12 @@ function showChauffeurEnhance(b){
     '</div>'+
     '<button onclick="chauffeurEnhance(\''+bid+'\')" id="chPayBtn_'+bid+'" disabled style="width:100%;margin-top:8px;padding:12px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;opacity:.5;letter-spacing:.02em;">Select an enhancement</button>';
 
+  var promoBlock = _chPromoOn() ? ('<div id="chPromoWrap_'+bid+'" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">'+_chPromoRowHtml(bid)+'</div>') : '';
+
   return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
     '<div id="chEnhBox_'+bid+'" style="background:rgba(124,196,255,.05);border:1px solid rgba(124,196,255,.22);border-radius:12px;padding:14px 16px;">'+
       '<div style="font-size:14px;font-weight:800;color:#fff;margin-bottom:10px;">Enhance Your Trip</div>'+
-      timeBlock+extrasBlock+payBlock+
+      timeBlock+extrasBlock+promoBlock+payBlock+
     '</div></div>';
 }
 function _chEnhRecalc(bid){
@@ -2723,12 +2765,27 @@ function _chEnhRecalc(bid){
   var eEl=document.getElementById('chTimeEnd_'+bid); if(eEl) eEl.textContent=(add>0&&startMs)?('new end \u00b7 '+_chFmtClock(startMs+(booked+add)*3600000)):'';
   var extrasCost=0;
   document.querySelectorAll('.chxck_'+bid).forEach(function(ck){ if(ck.checked){ var pr=Number(ck.getAttribute('data-price'))||0; var id=ck.getAttribute('data-id'); var q=1; var qi=document.querySelector('.chxqty_'+bid+'[data-id="'+id+'"]'); if(qi){ q=Math.max(1,Math.min(12,Math.round(Number(qi.value)||1))); } extrasCost+=pr*q; } });
-  var total=hoursCost+extrasCost;
-  var tEl=document.getElementById('chEnhTotal_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString();
+  var subtotal=Math.round((hoursCost+extrasCost)*100)/100;
+  // PROMO preview -- mirrors the worker _promoResolve EXACTLY (deposit is never part of this flow). The worker
+  // re-validates + re-applies authoritatively at pay, so this is display only and can't change what is charged.
+  var ap=_chPromoApplied[bid], disc=0, belowMin=false;
+  if(ap && subtotal>0){
+    if(ap.minSubtotal && subtotal<ap.minSubtotal){ belowMin=true; disc=0; }
+    else { disc = ap.discType==='amount' ? Math.min(ap.discValue, subtotal) : Math.round(subtotal*ap.discValue)/100; disc=Math.round(Math.min(Math.max(0,disc),subtotal)*100)/100; }
+  }
+  var net=Math.round((subtotal-disc)*100)/100;
+  var pmsg=document.getElementById('chPromoMsg_'+bid);
+  if(pmsg && ap){
+    if(subtotal<=0){ pmsg.textContent=''; }
+    else if(belowMin){ pmsg.style.color='#f0b46b'; pmsg.textContent='Add $'+(ap.minSubtotal-subtotal).toLocaleString()+' more to use '+ap.code+' (min $'+ap.minSubtotal.toLocaleString()+').'; }
+    else { pmsg.style.color='#7ee0a0'; pmsg.textContent='\u2212$'+disc.toLocaleString()+'  \u00b7  '+ap.label; }
+  }
+  var tEl=document.getElementById('chEnhTotal_'+bid); if(tEl) tEl.textContent='$'+net.toLocaleString();
   var btn=document.getElementById('chPayBtn_'+bid);
   if(btn){
-    if(total>0){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='Add to My Trip \u2014 $'+Math.round(total*1.1325).toLocaleString()+' \u2192'; }
-    else { btn.disabled=true; btn.style.opacity='.5'; btn.textContent='Select an enhancement'; }
+    if(subtotal<=0){ btn.disabled=true; btn.style.opacity='.5'; btn.textContent='Select an enhancement'; }
+    else if(disc>0 && net<0.5){ btn.disabled=true; btn.style.opacity='.5'; btn.textContent='Call (214) 207-2481 to redeem'; }
+    else { btn.disabled=false; btn.style.opacity='1'; btn.textContent='Add to My Trip \u2014 $'+Math.round(net*1.1325).toLocaleString()+' \u2192'; }
   }
 }
 async function chauffeurEnhance(bid){
@@ -2738,10 +2795,14 @@ async function chauffeurEnhance(bid){
   if(add<=0 && !sel.length){ toast('Select added time or an extra first.','error'); return; }
   var btn=document.getElementById('chPayBtn_'+bid); if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
   try{
-    var r=await fetch(`${WORKER}/portal/self-checkout`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId:bid,kind:'combo',hours:add,selection:sel})});
+    var pc=(_chPromoApplied[bid]&&_chPromoApplied[bid].code)||'';
+    var r=await fetch(`${WORKER}/portal/self-checkout`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId:bid,kind:'combo',hours:add,selection:sel,promoCode:pc})});
     var d=await r.json();
     if(r.status===401){ _portalSessionExpired(); return; }
-    if(!r.ok||!d.url){ toast(d.error||'Unable to open payment. Call (214) 207-2481.','error'); if(btn){ btn.disabled=false; _chEnhRecalc(bid); } return; }
+    if(!r.ok||!d.url){
+      if(d&&d.promoInvalid){ delete _chPromoApplied[bid]; var w=document.getElementById('chPromoWrap_'+bid); if(w) w.innerHTML=_chPromoRowHtml(bid); }
+      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error'); if(btn){ btn.disabled=false; _chEnhRecalc(bid); } return;
+    }
     window.location.href=d.url;
   }catch(e){ toast('Network error. Please try again.','error'); if(btn){ btn.disabled=false; _chEnhRecalc(bid); } }
 }
