@@ -1899,6 +1899,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   var paidBkId   = sp.get('bookingId');
   var paidChgId  = sp.get('chargeId');
   var paidSid    = sp.get('session_id');   // Stripe checkout session id -> the worker verifies the payment before marking paid
+  var paidSelfKind = sp.get('selfKind');   // 'extras' | 'addtime' -> chauffeur self-service checkout (mark-self-paid appends the paid charge / folds add-time hours in)
 
   if(signId){
     hideLoading();
@@ -1966,7 +1967,7 @@ document.addEventListener('DOMContentLoaded',()=>{
               showApp();
               switchTab('bookings');
               var ref = paidBkId ? 'PBR-'+paidBkId.slice(-6).toUpperCase() : 'your booking';
-              var msg = paidChgId ? '\u2705 Payment received! Receipt is on its way to your email.' : '\u2705 Balance paid for '+ref+'! Receipt sent to your email.';
+              var msg = paidSelfKind ? '\u2705 Your enhancements were added \u2014 receipt is on its way to your email.' : (paidChgId ? '\u2705 Payment received! Receipt is on its way to your email.' : '\u2705 Balance paid for '+ref+'! Receipt sent to your email.');
               setTimeout(function(){ toast(msg,'success'); }, 300);
             });
         });
@@ -2607,6 +2608,161 @@ async function payCharge(bookingId, chargeId){
   }
 }
 
+/* ---------- Chauffeur self-service: Add Time + Add Extras (flag: chauffeurPortal) ---------- */
+function _chPortalOn(){ return !!((window.PB_FLAGS||{}).chauffeurPortal); }
+
+// Default extras menu -- MIRRORED in the worker (self-checkout re-prices authoritatively).
+// A chauffeur booking may carry its own b.chauffeurExtras snapshot (owner-set); else this default.
+var DEFAULT_CHAUFFEUR_EXTRAS = [
+  { id:'stop',      label:'Additional Stop',          price:75,  qty:true  },
+  { id:'champagne', label:'Champagne Service',         price:150, qty:false },
+  { id:'decor',     label:'Interior Decor',            price:100, qty:false },
+  { id:'redcarpet', label:'Red Carpet Arrival',        price:125, qty:false },
+  { id:'bouquet',   label:'Flower Bouquet',            price:75,  qty:false }
+];
+function _chExtrasMenu(b){
+  var m = b && b.chauffeurExtras;
+  if(Array.isArray(m) && m.length) return m.filter(function(x){ return x && x.id && Number(x.price)>=0; });
+  return DEFAULT_CHAUFFEUR_EXTRAS;
+}
+function _chStartMs(b){
+  var d = (b && (b.pickupDate||b.date))||''; if(!d) return 0;
+  var dm = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d)); if(!dm) return 0;
+  var t = (b && b.pickupTime)||'10:00';
+  var tm = /^(\d{1,2}):(\d{2})/.exec(String(t)); var hh = tm?(+tm[1]):10, mn = tm?(+tm[2]):0;
+  return new Date(+dm[1], (+dm[2])-1, +dm[3], hh, mn, 0, 0).getTime();
+}
+function _chBookedHrs(b){ return Math.max(1, Math.round(Number(b&&b.days)||1)); }
+function _chHourlyRate(b){ var h=_chBookedHrs(b); var rev=Number(b&&b.revenue)||0; return Math.max(0, Math.round(rev/h)); }
+function _chFmtClock(ms){
+  var d=new Date(ms); var h=d.getHours(), m=d.getMinutes(), ap=h>=12?'PM':'AM'; var h12=h%12; if(h12===0)h12=12;
+  return h12+':'+(m<10?'0':'')+m+' '+ap;
+}
+function _chFmtCountdown(ms){
+  if(ms<=0) return '0m';
+  var s=Math.floor(ms/1000);
+  var d=Math.floor(s/86400); s-=d*86400;
+  var h=Math.floor(s/3600); s-=h*3600;
+  var m=Math.floor(s/60); s-=m*60;
+  if(d>0) return d+'d '+h+'h '+m+'m';
+  if(h>0) return h+'h '+m+'m '+s+'s';
+  return m+'m '+s+'s';
+}
+
+// -- Enhance Your Trip: ONE card, ONE pay button covering add-time hours + extras --
+function showChauffeurEnhance(b){
+  if(!_chPortalOn() || !b || b.type!=='chauffeur') return '';
+  var s=(b.status||'').toLowerCase(); if(['cancelled','completed'].indexOf(s)!==-1) return '';
+  var bid=b.id, booked=_chBookedHrs(b), maxAdd=12-booked, rate=_chHourlyRate(b), startMs=_chStartMs(b);
+  var canTime = maxAdd>=1 && rate>0;
+  var cutoff = startMs ? startMs-5*3600000 : 0;
+  var extrasOpen = !!startMs && Date.now()<cutoff;
+
+  var timeBlock='';
+  if(canTime){
+    timeBlock=
+      '<div style="font-size:13px;font-weight:800;color:#7cc4ff;margin-bottom:3px;">\u23f1 Add Time</div>'+
+      '<div style="font-size:11px;color:rgba(255,255,255,.5);line-height:1.5;margin-bottom:10px;">You have <strong style="color:#7cc4ff;">'+booked+' hr</strong> booked at $'+rate.toLocaleString()+'/hr. Slide to add more (up to 12 hr total).</div>'+
+      '<input type="range" id="chTimeRange_'+bid+'" min="0" max="'+maxAdd+'" value="0" step="1" oninput="_chEnhRecalc(\''+bid+'\')" style="width:100%;accent-color:#7cc4ff;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:8px;">'+
+        '<div style="font-size:18px;font-weight:800;color:#7cc4ff;">+<span id="chTimeHrs_'+bid+'">0</span> hr</div>'+
+        '<div id="chTimeEnd_'+bid+'" style="font-size:11px;color:rgba(255,255,255,.5);"></div>'+
+      '</div>';
+  } else if(booked>=12){
+    timeBlock='<div style="font-size:12px;color:rgba(255,255,255,.55);line-height:1.5;">\u23f1 You are at the 12-hour maximum. Need more time? Call <a href="tel:2142072481" style="color:#7cc4ff;">(214) 207-2481</a>.</div>';
+  }
+
+  var extrasBlock='';
+  if(startMs){
+    if(extrasOpen){
+      var menu=_chExtrasMenu(b);
+      var rows=menu.map(function(x){
+        var pr=Number(x.price)||0;
+        return '<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;cursor:pointer;">'+
+          '<input type="checkbox" class="chxck_'+bid+'" data-id="'+esc(x.id)+'" data-price="'+pr+'" onchange="_chEnhRecalc(\''+bid+'\')" style="width:16px;height:16px;accent-color:#C9A962;">'+
+          '<span style="flex:1;color:rgba(255,255,255,.9);">'+esc(x.label)+'</span>'+
+          (x.qty?('<input type="number" class="chxqty_'+bid+'" data-id="'+esc(x.id)+'" value="1" min="1" max="12" oninput="_chEnhRecalc(\''+bid+'\')" style="width:46px;padding:5px;border:1px solid var(--border);border-radius:7px;background:rgba(255,255,255,.05);color:#fff;font-size:12px;text-align:center;">'):'')+
+          '<span style="color:#C9A962;font-weight:700;white-space:nowrap;">$'+pr.toLocaleString()+(x.qty?' ea':'')+'</span>'+
+        '</label>';
+      }).join('');
+      extrasBlock='<div id="chExtrasSub_'+bid+'" style="'+(timeBlock?'margin-top:14px;padding-top:12px;border-top:1px solid var(--border);':'')+'">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'+
+          '<div style="font-size:13px;font-weight:800;color:#C9A962;">\u2728 Add Extras</div>'+
+          '<div style="font-size:11px;color:rgba(255,255,255,.55);white-space:nowrap;">closes in <span data-ch-cutoff="'+cutoff+'" data-ch-bid="'+bid+'" style="color:#C9A962;font-weight:700;">'+_chFmtCountdown(cutoff-Date.now())+'</span></div>'+
+        '</div>'+rows+
+      '</div>';
+    } else {
+      extrasBlock='<div id="chExtrasSub_'+bid+'" style="'+(timeBlock?'margin-top:14px;padding-top:12px;border-top:1px solid var(--border);':'')+'font-size:12px;color:rgba(255,255,255,.5);line-height:1.5;">\u2728 The window to add extras has closed (extras are added at least 5 hours before pickup).</div>';
+    }
+  }
+
+  if(!timeBlock && !extrasBlock) return '';
+
+  var payBlock=
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;">'+
+      '<div style="font-size:12px;color:rgba(255,255,255,.6);">Total <span style="font-size:10px;">(+5% fee +8.25% tax at checkout)</span></div>'+
+      '<div id="chEnhTotal_'+bid+'" style="font-size:18px;font-weight:800;color:#fff;">$0</div>'+
+    '</div>'+
+    '<button onclick="chauffeurEnhance(\''+bid+'\')" id="chPayBtn_'+bid+'" disabled style="width:100%;margin-top:8px;padding:12px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;opacity:.5;letter-spacing:.02em;">Select an enhancement</button>';
+
+  return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
+    '<div id="chEnhBox_'+bid+'" style="background:rgba(124,196,255,.05);border:1px solid rgba(124,196,255,.22);border-radius:12px;padding:14px 16px;">'+
+      '<div style="font-size:14px;font-weight:800;color:#fff;margin-bottom:10px;">Enhance Your Trip</div>'+
+      timeBlock+extrasBlock+payBlock+
+    '</div></div>';
+}
+function _chEnhRecalc(bid){
+  var b=state.bookings.find(function(x){ return x.id===bid; }); if(!b) return;
+  var rate=_chHourlyRate(b), booked=_chBookedHrs(b), startMs=_chStartMs(b);
+  var rng=document.getElementById('chTimeRange_'+bid);
+  var add=rng?Math.max(0,Math.round(Number(rng.value)||0)):0;
+  var hoursCost=add>0?rate*add:0;
+  var hEl=document.getElementById('chTimeHrs_'+bid); if(hEl) hEl.textContent=add;
+  var eEl=document.getElementById('chTimeEnd_'+bid); if(eEl) eEl.textContent=(add>0&&startMs)?('new end \u00b7 '+_chFmtClock(startMs+(booked+add)*3600000)):'';
+  var extrasCost=0;
+  document.querySelectorAll('.chxck_'+bid).forEach(function(ck){ if(ck.checked){ var pr=Number(ck.getAttribute('data-price'))||0; var id=ck.getAttribute('data-id'); var q=1; var qi=document.querySelector('.chxqty_'+bid+'[data-id="'+id+'"]'); if(qi){ q=Math.max(1,Math.min(12,Math.round(Number(qi.value)||1))); } extrasCost+=pr*q; } });
+  var total=hoursCost+extrasCost;
+  var tEl=document.getElementById('chEnhTotal_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString();
+  var btn=document.getElementById('chPayBtn_'+bid);
+  if(btn){
+    if(total>0){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='Add to My Trip \u2014 $'+Math.round(total*1.1325).toLocaleString()+' \u2192'; }
+    else { btn.disabled=true; btn.style.opacity='.5'; btn.textContent='Select an enhancement'; }
+  }
+}
+async function chauffeurEnhance(bid){
+  var rng=document.getElementById('chTimeRange_'+bid);
+  var add=rng?Math.max(0,Math.round(Number(rng.value)||0)):0;
+  var sel=[]; document.querySelectorAll('.chxck_'+bid).forEach(function(ck){ if(ck.checked){ var id=ck.getAttribute('data-id'); var q=1; var qi=document.querySelector('.chxqty_'+bid+'[data-id="'+id+'"]'); if(qi){ q=Math.max(1,Math.min(12,Math.round(Number(qi.value)||1))); } sel.push({id:id,qty:q}); } });
+  if(add<=0 && !sel.length){ toast('Select added time or an extra first.','error'); return; }
+  var btn=document.getElementById('chPayBtn_'+bid); if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
+  try{
+    var r=await fetch(`${WORKER}/portal/self-checkout`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId:bid,kind:'combo',hours:add,selection:sel})});
+    var d=await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok||!d.url){ toast(d.error||'Unable to open payment. Call (214) 207-2481.','error'); if(btn){ btn.disabled=false; _chEnhRecalc(bid); } return; }
+    window.location.href=d.url;
+  }catch(e){ toast('Network error. Please try again.','error'); if(btn){ btn.disabled=false; _chEnhRecalc(bid); } }
+}
+
+// -- Live 1s ticker: updates the extras cutoff countdown; at T-5h swaps the extras sub-block to a "closed" note + recomputes the total --
+var _chCountdownTimer=null;
+function _chStartCountdowns(){
+  if(_chCountdownTimer){ clearInterval(_chCountdownTimer); _chCountdownTimer=null; }
+  function tick(){
+    var els=document.querySelectorAll('[data-ch-cutoff]');
+    if(!els.length){ if(_chCountdownTimer){ clearInterval(_chCountdownTimer); _chCountdownTimer=null; } return; }
+    var now=Date.now();
+    els.forEach(function(el){
+      var cut=Number(el.getAttribute('data-ch-cutoff'))||0; var rem=cut-now;
+      if(rem<=0){
+        var bid=el.getAttribute('data-ch-bid'); var sub=document.getElementById('chExtrasSub_'+bid);
+        if(sub){ sub.innerHTML='\u2728 The window to add extras has closed (extras are added at least 5 hours before pickup).'; sub.style.color='rgba(255,255,255,.5)'; sub.style.fontSize='12px'; sub.style.lineHeight='1.5'; if(typeof _chEnhRecalc==='function') _chEnhRecalc(bid); }
+      } else { el.textContent=_chFmtCountdown(rem); }
+    });
+  }
+  tick(); _chCountdownTimer=setInterval(tick,1000);
+}
+
 function renderTripCountdown(){
   const el = document.getElementById('trip-countdown');
   if(!el) return;
@@ -2652,6 +2808,7 @@ function renderBookings(){
       ${progressBar(b.status)}
       ${showSignContract(b)}
       ${showAddUnlimited(b)}
+      ${showChauffeurEnhance(b)}
       ${showPayBalance(b)}
       ${showPendingCharges(b)}
       ${showMileageTracker(b)}
@@ -2661,6 +2818,7 @@ function renderBookings(){
       ${rebookBtn}
     </div>`;
   }).join('');
+  _chStartCountdowns();
 }
 
 function _buildPaymentHistory(b){

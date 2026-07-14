@@ -1264,6 +1264,8 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
 </head>
 <body>
 
+<div id="ownerAlertsBar" style="position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:10050;display:none;flex-direction:column;gap:8px;width:min(92vw,460px);pointer-events:none"></div>
+
 <!-- &#9552;&#9552;&#9552; SIGNING MODE (shown when ?sign=BOOKINGID in URL) &#9552;&#9552;&#9552; -->
 <div id="signingModeWrap" style="display:none;position:fixed;inset:0;z-index:9999;background:#0a0a0a;overflow-y:auto;padding:0">
   <div style="max-width:720px;margin:0 auto;padding:24px 16px 40px">
@@ -2481,7 +2483,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       </div>
       <div class="fgroup"><div class="flabel">Total Revenue ($) *</div><input type="number" class="finput" id="fRevenue" min="0" step="1" placeholder="0" oninput="this._manual=true;updateBrokerCalc();updateLiveTotal();updateRemainingBalance();fCalcLateReturn();updateWeekdayDiscountHint()"></div>
       <div class="fgroup"><div class="flabel">Date Lock / Booking Fee ($)</div><input type="number" class="finput" id="fDateLock" min="0" step="1" value="100" oninput="updateRemainingBalance()" title="Upfront fee paid to hold the date &#8212; subtracted from total"></div>
-      <div class="fgroup"><div class="flabel">Date Lock Paid Via</div><select class="finput" id="fDateLockMethod" title="How the date-lock hold was collected &#8212; Stripe/Card carry the 13.25% card fee; Cash/Zelle/etc do not"><option value="Stripe">Stripe (online)</option><option value="Card">Card</option><option value="Cash">Cash</option><option value="Zelle">Zelle</option><option value="Venmo">Venmo</option><option value="CashApp">CashApp</option><option value="Apple Pay">Apple Pay</option><option value="Wire">Wire</option><option value="Check">Check</option><option value="Other">Other</option></select></div>
+      <div class="fgroup"><div class="flabel">Date Lock Paid Via</div><select class="finput" id="fDateLockMethod" title="How the date-lock hold was collected &#8212; Stripe/Card carry the 13.25% card fee; Cash/Zelle/etc do not"><option value="">&#8212; method &#8212;</option><option value="Stripe">Stripe (online)</option><option value="Card">Card</option><option value="Cash">Cash</option><option value="Zelle">Zelle</option><option value="Venmo">Venmo</option><option value="CashApp">CashApp</option><option value="Apple Pay">Apple Pay</option><option value="Wire">Wire</option><option value="Check">Check</option><option value="Other">Other</option></select></div>
       <div class="fgroup ffull" style="background:rgba(201,169,98,.07);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 14px;gap:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <div>
@@ -4027,6 +4029,48 @@ var DASHBOARD_SECRET = localStorage.getItem('pb_dashboard_secret') || '';
 // Helper: returns Authorization header object if secret is set, empty object otherwise
 function _authHeader(){ return DASHBOARD_SECRET ? {'Authorization':'Bearer '+DASHBOARD_SECRET} : {}; }
 
+// Owner alert banners: portal enhancement payments + new web bookings. Dismiss deletes server-side
+// (via /owner-alerts/dismiss) so X-ing once on ANY device clears it everywhere.
+function _loadOwnerAlerts(){
+  try{
+    if(document.hidden) return;
+    if(typeof WORKER_URL==='undefined' || !WORKER_URL) return;
+    fetch(WORKER_URL+'/owner-alerts?_='+Date.now(),{headers:_authHeader(),cache:'no-store'})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(d){ if(d && Array.isArray(d.alerts)) _renderOwnerAlerts(d.alerts); })
+      .catch(function(){});
+  }catch(e){}
+}
+function _renderOwnerAlerts(alerts){
+  var bar=document.getElementById('ownerAlertsBar'); if(!bar) return;
+  if(!alerts || !alerts.length){ bar.innerHTML=''; bar.style.display='none'; return; }
+  bar.style.display='flex';
+  bar.innerHTML=alerts.map(function(a){
+    var t=String(a.text||'').replace(/[<>&]/g,function(c){ return c==='<'?'&lt;':c==='>'?'&gt;':'&amp;'; });
+    var id=String(a.id||'').replace(/[^A-Za-z0-9_]/g,'');
+    return '<div class="owner-alert" data-id="'+id+'" style="pointer-events:auto;display:flex;align-items:center;gap:10px;background:linear-gradient(135deg,#1c1c1c,#141414);border:1px solid var(--gold-dim,rgba(201,169,98,.4));border-left:3px solid var(--gold,#C9A962);border-radius:10px;padding:10px 12px;box-shadow:0 6px 20px rgba(0,0,0,.35);font-size:13px;color:#f2ece0">'+
+      '<span style="font-size:15px">&#128276;</span>'+
+      '<span style="flex:1;line-height:1.35">'+t+'</span>'+
+      '<button onclick="_dismissOwnerAlert(\''+id+'\')" title="Dismiss" style="flex:none;width:22px;height:22px;border-radius:6px;border:1px solid rgba(255,255,255,.15);background:transparent;color:rgba(255,255,255,.55);font-size:13px;line-height:1;cursor:pointer">&#10005;</button>'+
+    '</div>';
+  }).join('');
+}
+function _dismissOwnerAlert(id){
+  var el=document.querySelector('.owner-alert[data-id="'+id+'"]'); if(el) el.remove();
+  var bar=document.getElementById('ownerAlertsBar'); if(bar && !bar.querySelector('.owner-alert')){ bar.style.display='none'; bar.innerHTML=''; }
+  try{
+    if(typeof WORKER_URL!=='undefined' && WORKER_URL){
+      fetch(WORKER_URL+'/owner-alerts/dismiss',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({id:id})}).catch(function(){});
+    }
+  }catch(e){}
+}
+(function(){
+  try{
+    var _oaInit=function(){ _loadOwnerAlerts(); setInterval(_loadOwnerAlerts, 45000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) _loadOwnerAlerts(); }); };
+    if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', _oaInit); else _oaInit();
+  }catch(e){}
+})();
+
 // iOS Safari ignores user-scalable=no and pinch-zooms the page anyway \u2014 block
 // its native gesture events so the dashboard (incl. the booking modal) stays
 // flush with no zoom/slide. MapLibre's fleet-map pinch uses raw touch events,
@@ -4447,7 +4491,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v224';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v225';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -12022,7 +12066,7 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fDays').value     = b?b.days    : 1;
   $d('fRevenue').value          = b?b.revenue      : '';
   $d('fDateLock').value         = b?(b.dateLock!=null?b.dateLock:100):100;
-  if($d('fDateLockMethod')) $d('fDateLockMethod').value = (b&&b.dateLockMethod)||'Stripe';
+  if($d('fDateLockMethod')) $d('fDateLockMethod').value = (b&&b.dateLockMethod)||'';
   var rbEl=$d('fRemainingBalance'); rbEl._manual=(b&&b.remainingBalance!=null);
   rbEl.value = b?(b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock!=null?b.dateLock:100)||100))):'';;
   $d('fDeposit').value          = b?b.deposit      : 0;
@@ -16342,7 +16386,7 @@ function sendConfirmationEmail(b, showFeedback){
           '<tr><td style="padding:6px 14px 6px 0;color:#555;white-space:nowrap">Vehicle</td><td style="padding:6px 0;font-weight:600">'+esc(b.vehicle)+'</td></tr>'+
           '<tr><td style="padding:6px 14px 6px 0;color:#555">Pickup</td><td style="padding:6px 0"><strong>'+fmtDate(b.pickupDate||b.date)+'</strong>'+(b.pickupTime?' at <strong>'+fmtTime(b.pickupTime)+'</strong>':'')+(b.address?'<br><span style="font-size:13px;color:#555">\uD83D\uDCCD '+esc(b.address)+'</span>':'')+'</td></tr>'+
           (b.dropoffDate?'<tr><td style="padding:6px 14px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+'</td></tr>':'')+
-          '<tr><td style="padding:6px 14px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+(b.type==='hourly'?b.days+' hour'+(b.days!==1?'s':''):b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
+          '<tr><td style="padding:6px 14px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+((b.type==='hourly'||b.type==='chauffeur')?b.days+' hour'+(b.days!==1?'s':''):b.days+' day'+(b.days!==1?'s':''))+'</td></tr>'+
           (addons.length?'<tr><td style="padding:6px 14px 6px 0;color:#555;vertical-align:top">Add-ons</td><td style="padding:6px 0">'+addons.join('<br>')+'</td></tr>':'')+
           '<tr style="border-top:1px solid #eee"><td style="padding:8px 14px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
           (dateLockPaid?'<tr><td style="padding:6px 14px 6px 0;color:#555">Date Lock Paid</td><td style="padding:6px 0;color:#22c55e">'+$$(b.dateLock)+'</td></tr>':'');
@@ -16391,6 +16435,11 @@ function sendConfirmationEmail(b, showFeedback){
               '<tr><td style="padding:6px 14px 6px 0;color:#888;white-space:nowrap;vertical-align:top;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Payment</td>'+
                 '<td style="padding:6px 0;color:#222">We accept cash, Zelle, CashApp, and Apple Pay \u2014 no fees, no hassle. Card payments are also welcome; please note a <strong>5% processing fee and applicable state taxes</strong> apply to card transactions. If paying cash, feel free to stop by the bank beforehand and settle up when you arrive.</td></tr>'+
             '</table>'+
+          '</div>'+
+          '<div style="background:#faf8f2;border:1px solid #e8dfc0;border-radius:12px;padding:22px 24px;margin:24px 0;text-align:center">'+
+            '<div style="font-size:15px;font-weight:800;color:#7a6320;margin-bottom:6px">Manage Your Booking Online</div>'+
+            '<div style="font-size:13px;color:#666;line-height:1.6;margin-bottom:16px">View your trip details, pay your balance, sign your documents'+(((window.PB_FLAGS||{}).chauffeurPortal&&b.type==='chauffeur')?', add extras or extend your time,':',')+' and more \u2014 all in your private client portal.</div>'+
+            '<a href="https://prestigeblackcorp-dev.github.io/PB-Dashboard/portal.html" style="display:inline-block;padding:12px 28px;background-color:#b8982e;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border-radius:10px;text-decoration:none;font-weight:800;font-size:14px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(184,152,46,.35)">Manage My Booking \u2192</a>'+
           '</div>'+
           '<p style="font-size:13px;color:#888;margin:20px 0 0">Questions? Text or call us at <a href="tel:2142072481" style="color:#b8982e;font-weight:700">(214) 207-2481</a></p>'+
           '<p style="font-size:11px;color:#bbb;margin:16px 0 0;padding-top:12px;border-top:1px solid #eee">Booking #PBR-'+b.id.slice(-6).toUpperCase()+' \u00B7 Prestige Black Rentals</p>'+
@@ -16891,7 +16940,7 @@ function duplicateBooking(id){
   $d('fBroker').value           = b.broker||'';
   $d('fBrokerFee').value        = b.brokerFee||0;
   $d('fDateLock').value         = b.dateLock!=null?b.dateLock:100;
-  if($d('fDateLockMethod')) $d('fDateLockMethod').value = b.dateLockMethod||'Stripe';
+  if($d('fDateLockMethod')) $d('fDateLockMethod').value = b.dateLockMethod||'';
   var _rbEl=$d('fRemainingBalance'); _rbEl._manual=false;
   _rbEl.value = b.remainingBalance!=null?b.remainingBalance:Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock!=null?b.dateLock:100)));
   updateBrokerCalc(); updateLiveTotal(); updateRemainingBalance(); updateMileageHint(); updateMaintWarning(); updatePricingRuleWarning();
