@@ -1170,6 +1170,11 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
    (everything past the screen edge unreachable). min-width:0 here + on the panels lets them shrink to fit. */
 #outreachContent{min-width:0}
 .oc-wrap{max-width:1180px;margin:0 auto;padding:14px 16px 60px;min-width:0}
+.oc-modebar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.oc-modelbl{font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.oc-modeswap{display:inline-flex;background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:3px;gap:3px}
+.oc-ms{border:none;background:transparent;color:var(--muted);font-size:12.5px;font-weight:700;padding:7px 16px;border-radius:9px;cursor:pointer;transition:all .15s;white-space:nowrap}
+.oc-ms.active{background:var(--gold-shine,#C9A962);color:#111;box-shadow:0 2px 8px rgba(201,169,98,.3)}
 .oc-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:14px}
 .oc-h1{font-size:22px;font-weight:800;color:var(--text);letter-spacing:.3px}
 .oc-sub{font-size:12.5px;color:var(--muted);margin-top:3px;max-width:520px}
@@ -4441,7 +4446,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v216';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v217';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -24287,6 +24292,7 @@ var _cmdPaletteItems = [];
 var _ocState = { built:false, filter:'all', vehicle:'', search:'', sel:{}, manual:[], suppLoaded:false, view:'compose', sending:false, lastProvider:'' };
 var _ocContactIndex = {};
 var _ocCampaignId = '';
+var _ocMode = (function(){ try{ return localStorage.getItem('pb_outreach_mode')||'bookings'; }catch(e){ return 'bookings'; } })(); // 'bookings' | 'obsidian'
 var _OC_TOKENS = [
   { k:'{{firstName}}', d:'First name' },
   { k:'{{name}}',      d:'Full name' },
@@ -24311,8 +24317,65 @@ function _ocFirstName(name){ name=String(name||'').trim(); if(!name) return ''; 
 function _ocBookingTs(b){ var t=Number(b.createdAt)||0; if(!t){ t=Date.parse(b.pickupDate||b.date||'')||0; } return t; }
 function _ocFlag(){ return (window.PB_FLAGS||{}).outreach!==false; }
 
+/* ---- Obsidian rider mode: swap the WHOLE tab's audience from booking clients to Obsidian rider-app
+   users. Same contact SHAPE as bookings, so every downstream function (filter/select/compose/personalize/
+   send/CSV/history/opt-outs) works identically. Riders come from the loaded ride data (_rideTxns completed +
+   _rideCancelTxns). Emails: cancels carry riderEmail; completed rides carry riderEmail after the worker
+   /chauffeur/revenue addition (before that, only rides whose rider field is itself an email are usable). ---- */
+function _ocBuildRiderContacts(){
+  var map={}, cut30=Date.now()-30*86400000;
+  function looksEmail(s){ s=String(s||''); return s.indexOf('@')>0; }
+  function add(email,name,phone,amount,ts,vehicle,rideType,flag){
+    email=String(email||'').trim().toLowerCase(); if(!email || email.indexOf('@')<1) return;
+    var c=map[email];
+    if(!c){ c=map[email]={ email:email, name:'', _nameActive:false, phone:'', count:0, spend:0, lastTs:0, lastVehicle:'', vehicles:{}, vehList:[], hasActive:false, hasUpcoming:false, hasCompleted:false, hasCancelled:false, hasDeleted:false, source:'obsidian' }; }
+    c.count++;
+    name=String(name||'').trim(); if(name && !looksEmail(name) && !c.name) c.name=name;
+    if(phone && !c.phone) c.phone=String(phone).trim();
+    amount=Number(amount)||0; if(amount>0) c.spend+=amount;
+    ts=Number(ts)||0; if(ts>c.lastTs){ c.lastTs=ts; if(vehicle) c.lastVehicle=vehicle; }
+    var vk=vehicle||rideType; if(vk) c.vehicles[vk]=(c.vehicles[vk]||0)+1;
+    if(flag==='completed'){ c.hasCompleted=true; if(ts>=cut30) c.hasActive=true; }  // hasActive here = rode in the last 30 days
+    if(flag==='cancelled') c.hasCancelled=true;
+  }
+  ((typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns:[]).forEach(function(t){
+    if(!t) return;
+    var em=t.riderEmail || (looksEmail(t.rider)?t.rider:'');
+    add(em, t.riderName||t.rider, t.riderPhone, Number(t.amount)||0, t.completedAt||0, t.vehicle||'', t.rideType||'', 'completed');
+  });
+  ((typeof _rideCancelTxns!=='undefined'&&_rideCancelTxns)?_rideCancelTxns:[]).forEach(function(t){
+    if(!t||t._deleted) return;
+    add(t.riderEmail||(looksEmail(t.rider)?t.rider:''), t.riderName||t.rider, t.riderPhone, 0, t.at||0, t.vehicle||'', t.rideType||'', 'cancelled');
+  });
+  return Object.keys(map).map(function(k){ var c=map[k]; c.firstName=_ocFirstName(c.name); c.vehList=Object.keys(c.vehicles); return c; });
+}
+function _ocChipsHtml(){
+  return _ocMode==='obsidian'
+    ? _ocChip('all','Everyone')+_ocChip('active','Recent (30d)')+_ocChip('past','All riders')+_ocChip('cancelled','Cancelled')+_ocChip('vip','VIP / Repeat')+_ocChip('optedout','Opted-out')
+    : _ocChip('all','Everyone')+_ocChip('active','Active / Upcoming')+_ocChip('past','Past')+_ocChip('cancelled','Cancelled')+_ocChip('deleted','Removed')+_ocChip('vip','VIP / Repeat')+_ocChip('optedout','Opted-out');
+}
+function _ocSetMode(m){
+  m=(m==='obsidian')?'obsidian':'bookings'; if(m===_ocMode) return;
+  _ocMode=m; try{ localStorage.setItem('pb_outreach_mode',m); }catch(e){}
+  _ocState.filter='all'; _ocState.sel={}; _ocState.vehicle=''; _ocState.search='';
+  var f=$d('ocFilters'); if(f) f.innerHTML=_ocChipsHtml();
+  var srch=$d('ocSearch'); if(srch) srch.value='';
+  _ocUpdateModeUI();
+  _ocRefresh();
+}
+function _ocUpdateModeUI(){
+  var b=$d('ocMsBookings'), o=$d('ocMsObsidian');
+  if(b) b.classList.toggle('active', _ocMode!=='obsidian');
+  if(o) o.classList.toggle('active', _ocMode==='obsidian');
+  var sub=$d('ocHeadSub'); if(sub) sub.innerHTML = _ocMode==='obsidian'
+    ? 'Reach your Obsidian rider-app users by email &mdash; everyone who has taken (or tried to take) a ride.'
+    : 'Reach any client in your system by email &mdash; active, past, cancelled, even removed bookings.';
+  var vf=$d('ocVehFilter'); if(vf){ var op=vf.querySelector('option[value=""]'); if(op) op.textContent=_ocMode==='obsidian'?'All ride types':'All vehicles'; }
+}
+
 /* ---- contacts ---- */
 function _ocBuildContacts(){
+  if(_ocMode==='obsidian') return _ocBuildRiderContacts();
   var map={};
   (bookings||[]).forEach(function(b){
     if(!b) return;
@@ -24419,8 +24482,15 @@ function _ocBuildShell(host){
   var s=(outreachSettings||{});
   var h=''+
   '<div class="oc-wrap">'+
+    '<div class="oc-modebar">'+
+      '<span class="oc-modelbl">Audience</span>'+
+      '<div class="oc-modeswap">'+
+        '<button class="oc-ms'+(_ocMode!=='obsidian'?' active':'')+'" id="ocMsBookings" onclick="_ocSetMode(\'bookings\')">\uD83D\uDE97 Bookings</button>'+
+        '<button class="oc-ms'+(_ocMode==='obsidian'?' active':'')+'" id="ocMsObsidian" onclick="_ocSetMode(\'obsidian\')">\u25C6 Obsidian</button>'+
+      '</div>'+
+    '</div>'+
     '<div class="oc-head">'+
-      '<div><div class="oc-h1">Outreach</div><div class="oc-sub">Reach any client in your system by email &mdash; active, past, cancelled, even removed bookings.</div></div>'+
+      '<div><div class="oc-h1">Outreach</div><div class="oc-sub" id="ocHeadSub">Reach any client in your system by email &mdash; active, past, cancelled, even removed bookings.</div></div>'+
       '<div class="oc-viewtabs">'+
         '<button class="oc-vt active" id="ocVtcompose" onclick="_ocSetView(\'compose\')">Compose</button>'+
         '<button class="oc-vt" id="ocVthistory" onclick="_ocSetView(\'history\')">History</button>'+
@@ -24434,7 +24504,7 @@ function _ocBuildShell(host){
       '<div class="oc-left oc-panel">'+
         '<div class="oc-label">Recipients</div>'+
         '<div class="oc-filters" id="ocFilters">'+
-          _ocChip('all','Everyone')+_ocChip('active','Active / Upcoming')+_ocChip('past','Past')+_ocChip('cancelled','Cancelled')+_ocChip('deleted','Removed')+_ocChip('vip','VIP / Repeat')+_ocChip('optedout','Opted-out')+
+          _ocChipsHtml()+
         '</div>'+
         '<div class="oc-rowline">'+
           '<select class="oc-input" id="ocVehFilter" onchange="_ocState.vehicle=this.value;_ocRenderList();" style="max-width:48%"><option value="">All vehicles</option></select>'+
@@ -24505,6 +24575,7 @@ function _ocBuildShell(host){
     '</div></div>'+
   '</div>';
   host.innerHTML=h;
+  _ocUpdateModeUI();
   _ocRenderTokens();
   if(!$d('ocBody').value){ _ocLoadStarterInto(_OC_STARTERS[0]); }
   _ocPreview();
@@ -24517,7 +24588,12 @@ function _ocRenderStats(){
   var all=_ocBuildContacts(), supp=(_ocState.suppression||[]).length;
   var withEmail=all.length, vip=all.filter(function(c){return c.count>=2||c.spend>=2000;}).length, cancelled=all.filter(function(c){return c.hasCancelled;}).length;
   var el=$d('ocStats'); if(!el) return;
-  el.innerHTML=_ocStat(withEmail,'contacts')+_ocStat(all.filter(function(c){return c.hasActive||c.hasUpcoming;}).length,'active')+_ocStat(vip,'VIP / repeat')+_ocStat(cancelled,'cancelled')+_ocStat(supp,'opted-out');
+  if(_ocMode==='obsidian'){
+    var recent=all.filter(function(c){return c.hasActive;}).length;
+    el.innerHTML=_ocStat(withEmail,'riders')+_ocStat(recent,'recent 30d')+_ocStat(vip,'VIP / repeat')+_ocStat(cancelled,'cancelled')+_ocStat(supp,'opted-out');
+  } else {
+    el.innerHTML=_ocStat(withEmail,'contacts')+_ocStat(all.filter(function(c){return c.hasActive||c.hasUpcoming;}).length,'active')+_ocStat(vip,'VIP / repeat')+_ocStat(cancelled,'cancelled')+_ocStat(supp,'opted-out');
+  }
 }
 function _ocStat(n,l){ return '<div class="oc-stat"><div class="oc-stat-n">'+n+'</div><div class="oc-stat-l">'+esc(l)+'</div></div>'; }
 function _ocRenderList(){
