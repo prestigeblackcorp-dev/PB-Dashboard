@@ -23,22 +23,23 @@
 <script>
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
+    // Was the page ALREADY controlled by a SW? false on the very first install.
+    var hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js').then(function(reg){
-      // Force update check on every page load \u2014 bypasses Safari's 24-hr throttle
-      reg.update();
-      // When a new SW is found and finishes installing, reload to get fresh HTML
-      reg.addEventListener('updatefound', function(){
-        var next = reg.installing;
-        if(!next) return;
-        next.addEventListener('statechange', function(){
-          if(next.state === 'activated') window.location.reload();
-        });
-      });
-    });
-    // If a new SW takes control mid-session, reload once
+      reg.update(); // force an update check each load \u2014 bypasses Safari's 24-hr throttle
+    }).catch(function(){});
+    // Reload ONCE only when a NEW sw replaces an already-controlling one (a real deploy) so the
+    // fresh HTML loads. On first install (hadController=false) do NOT reload \u2014 that was the cause of
+    // the splash showing twice. And stash a flag so the reloaded page hides its splash instantly
+    // (no visible second splash on an update). controllerchange alone is the right signal (the sw's
+    // clients.claim() fires it on activate), so the old updatefound->reload path is gone (it
+    // double-reloaded).
     var reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', function(){
-      if(!reloading){ reloading = true; window.location.reload(); }
+      if(reloading || !hadController) return;
+      reloading = true;
+      try{ sessionStorage.setItem('pb_splashSkip','1'); }catch(e){}
+      window.location.reload();
     });
   });
 }
@@ -937,6 +938,19 @@ body { background: radial-gradient(ellipse at 20% 0%, rgba(201,169,98,.06) 0%, t
 .kpi-cue { position: absolute; top: 12px; right: 15px; font-size: 16px; line-height: 1; color: var(--gold); opacity: .28; pointer-events: none; transition: opacity .15s ease; font-weight: 400; }
 .kpi.kpitap:hover .kpi-cue { opacity: .9; }
 @media (max-width: 768px){ .kpi-cue { display: none; } }
+.aopt-strat{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:12px 13px}
+.aopt-st-t{font-weight:700;font-size:12.5px;color:var(--text);margin-bottom:4px}
+.aopt-st-d{font-size:11px;color:var(--muted);line-height:1.5}
+.aopt-step{display:flex;gap:11px;align-items:flex-start;font-size:12px;color:var(--muted);line-height:1.5}
+.aopt-step b{color:var(--text)}
+.aopt-step-n{width:22px;height:22px;border-radius:50%;background:var(--gold-dim);color:var(--gold);font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.aopt-tile{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:12px 13px}
+.aopt-tile .v{font-size:22px;font-weight:900;color:var(--gold);line-height:1}
+.aopt-tile .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;font-weight:600}
+.aopt-tile .s{font-size:10px;color:var(--muted);margin-top:4px;line-height:1.35}
+.aopt-rec{display:flex;gap:10px;align-items:flex-start;background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 12px}
+.aopt-rec .ic{font-size:15px;flex-shrink:0;line-height:1.3}
+.aopt-heading{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);margin-bottom:10px}
 .kpi-val { font-size: 28px; background: var(--gold-shine); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; white-space: nowrap; overflow: hidden; line-height: 1.15; }
 .kpi.green .kpi-val { background: linear-gradient(135deg,#22c55e,#4ade80); -webkit-background-clip: text; background-clip: text; }
 .kpi.red   .kpi-val { background: linear-gradient(135deg,#ef4444,#f87171); -webkit-background-clip: text; background-clip: text; }
@@ -1383,6 +1397,11 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
     <div style="width:6px;height:6px;border-radius:50%;background:#C9A962;animation:splashDot 1.1s 1.25s ease-in-out infinite"></div>
   </div>
 </div>
+<script>
+/* If this load is the auto-reload triggered by a service-worker update, hide the splash INSTANTLY
+   so it never appears a second time. (Runs inline right after the splash element is parsed.) */
+try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_splashSkip'); var _sp=document.getElementById('splashScreen'); if(_sp){ _sp.style.transition='none'; _sp.style.opacity='0'; _sp.style.display='none'; } } }catch(e){}
+</script>
 
 <div id="lockScreen" style="display:none;position:fixed;inset:0;z-index:99999;background:#0a0a0a;flex-direction:column;align-items:center;justify-content:center;gap:20px">
   <div style="font-size:36px">&#128274;</div>
@@ -2222,6 +2241,53 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
         <div style="display:flex;align-items:center;gap:12px;margin-top:2px">
           <button class="btn btn-gold" onclick="submitTabAssignDriver()" style="padding:11px 20px;font-weight:800">&#128242; Assign &amp; Notify Driver</button>
           <span id="tabDrvAssignStatus" style="font-size:13px;display:none;font-weight:600"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Obsidian App Optimization & Growth ===== -->
+    <div class="tbl-card" style="margin-top:16px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 4px;padding:14px 16px;background:linear-gradient(135deg,rgba(201,169,98,.16),rgba(201,169,98,.02));border-bottom:1px solid var(--gold-dim)">
+        <div style="width:38px;height:38px;border-radius:11px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">&#128640;</div>
+        <div style="flex:1;min-width:0">
+          <div class="tbl-title" style="margin-bottom:1px">Obsidian App &#8212; Optimization &amp; Growth</div>
+          <div style="font-size:11.5px;color:var(--muted)">Who&#8217;s using the app, what to do today, and how to launch on the App Store &amp; Google Play</div>
+        </div>
+        <button class="btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="renderAppOptimization()">&#8635; Refresh</button>
+      </div>
+      <div style="padding:16px">
+        <div id="appOptStats"></div>
+        <div id="appOptRecs"></div>
+        <div id="appOptAnalytics"></div>
+
+        <!-- Curated: growth strategies -->
+        <div style="margin-top:24px">
+          <div style="font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);margin-bottom:4px">Make Obsidian stand out &amp; get known</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:12px">A luxury ride brand is sold on emotion and proof. Run these in parallel &#8212; the fleet is your best marketing asset.</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">
+            <div class="aopt-strat"><div class="aopt-st-t">&#127760; Own local search</div><div class="aopt-st-d">Claim the Google Business Profile as &#8220;Obsidian by Prestige Black,&#8221; post fleet photos weekly, and target &#8220;luxury car service Dallas / DFW black car / exotic chauffeur.&#8221; Most high-intent riders start on Google Maps.</div></div>
+            <div class="aopt-strat"><div class="aopt-st-t">&#127909; Reels are the fleet</div><div class="aopt-st-d">Post 4&#8211;5 cinematic 15-second clips per week on Instagram + TikTok &#8212; doors up, night city rolls, arrivals. The cars sell themselves; consistency beats production budget.</div></div>
+            <div class="aopt-strat"><div class="aopt-st-t">&#11088; Creator &amp; athlete rides</div><div class="aopt-st-d">Comp a handful of rides for DFW creators, athletes and photographers in exchange for tagged content. One viral arrival clip out-earns a month of ads.</div></div>
+            <div class="aopt-strat"><div class="aopt-st-t">&#127976; Concierge partnerships</div><div class="aopt-st-d">Set standing referral deals with luxury hotels, event planners, steakhouses and nightlife venues &#8212; they need reliable black-car service for VIP guests every week.</div></div>
+            <div class="aopt-strat"><div class="aopt-st-t">&#127873; Referral credits</div><div class="aopt-st-d">Give riders a ride credit for every friend who books. Affluent circles are tight-knit &#8212; word-of-mouth is your cheapest, highest-converting channel.</div></div>
+            <div class="aopt-strat"><div class="aopt-st-t">&#11088; A reviews engine</div><div class="aopt-st-d">Auto-ask every completed ride for a 5-star Google review (you already capture ratings). Social proof is the #1 driver of first-time luxury bookings.</div></div>
+            <div class="aopt-strat"><div class="aopt-st-t">&#127919; Geo-targeted ads</div><div class="aopt-st-d">Instagram + Google ads geofenced to DFW/Love Field airports, AT&amp;T Stadium, American Airlines Center, and high-income zip codes on event nights.</div></div>
+            <div class="aopt-strat"><div class="aopt-st-t">&#129346; Signature moments</div><div class="aopt-st-d">Chilled water, a branded scent, red-carpet arrival option. Every detail that makes a ride photo-worthy turns a customer into a marketer.</div></div>
+          </div>
+        </div>
+
+        <!-- Curated: app store launch roadmap -->
+        <div style="margin-top:24px">
+          <div style="font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);margin-bottom:4px">Launch as a real App Store &amp; Google Play app</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Your apps are already installable web apps (service worker + web push). The fastest path to real store listings is <b style="color:var(--text)">PWABuilder</b> &#8212; it wraps your hosted URLs into store-ready packages. Ship <b style="color:var(--text)">Rider</b> and <b style="color:var(--text)">Driver</b> as two separate apps; keep this owner dashboard as web.</div>
+          <div style="display:flex;flex-direction:column;gap:9px">
+            <div class="aopt-step"><div class="aopt-step-n">1</div><div><b>Add a manifest + icons</b> to obsidian.html (Rider) and driver.html (Driver) &#8212; name, theme color, and 512&#215;512 / maskable icons so each installs as its own app.</div></div>
+            <div class="aopt-step"><div class="aopt-step-n">2</div><div><b>Package on pwabuilder.com</b> &#8212; point it at each hosted URL and download the store bundles. Nothing changes server-side (backend is decoupled on Cloudflare + Firebase).</div></div>
+            <div class="aopt-step"><div class="aopt-step-n">3</div><div><b>Google Play &#8212; $25 one-time.</b> The Android package is a Trusted Web Activity and gets accepted easily. Start here for the quick win.</div></div>
+            <div class="aopt-step"><div class="aopt-step-n">4</div><div><b>Apple App Store &#8212; $99/yr.</b> The iOS package is a WebView wrapper Apple scrutinizes harder (Guideline 4.2, &#8220;not just a website&#8221;). You already add app-like value with web push + offline &#8212; lead with that in review notes.</div></div>
+            <div class="aopt-step"><div class="aopt-step-n">5</div><div><b>Payments &amp; login are clear.</b> Rides/rentals are real-world services &#8212; exempt from Apple&#8217;s 30% in-app-purchase rule (Stripe/cards are fine). Email-OTP login is first-party, so &#8220;Sign in with Apple&#8221; is not required.</div></div>
+          </div>
+          <div style="margin-top:12px;font-size:10.5px;color:var(--muted);background:var(--gold-faint);border:1px solid var(--gold-dim);border-radius:8px;padding:9px 11px">&#128161; If Apple pushes back on the thin wrapper, the next step up is <b style="color:var(--gold)">Capacitor</b> &#8212; a proper native shell with real background GPS + push. More work, but bulletproof for review. Budget: Apple $99/yr + Google $25 once + a few hours of packaging.</div>
         </div>
       </div>
     </div>
@@ -4375,7 +4441,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v214';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v215';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -9555,6 +9621,61 @@ async function resolveDriverReq(reqId,action){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 var _drvList=[]; // cached driver roster
 
+// Obsidian App Optimization: real rider/ride/driver metrics from the loaded ride data + rule-based
+// recommendations + an 8-week trend. Pure client-side (no worker read); Refresh + Drivers-tab open call it.
+function renderAppOptimization(){
+  if(!$d('appOptStats')) return;
+  var rides=(typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns:[];
+  var cancels=(typeof _rideCancelTxns!=='undefined'&&_rideCancelTxns)?_rideCancelTxns.filter(function(t){return t&&!t._deleted;}):[];
+  var tod=todayStr();
+  var cut30=dateStr(addDays(new Date(tod+'T00:00:00'),-29)), cut60=dateStr(addDays(new Date(tod+'T00:00:00'),-59));
+  function rk(t){ return String((t&&(t.riderEmail||t.rider))||'').toLowerCase().trim(); }
+  function rd(t){ return t&&t.completedAt?dateStr(new Date(t.completedAt)):''; }
+  var byRider={}; rides.forEach(function(t){ var k=rk(t); if(!k)return; (byRider[k]=byRider[k]||[]).push(t); });
+  var totalRiders=Object.keys(byRider).length;
+  var riders30={}, ridersPrev={}, rev30=0, rides30=0;
+  rides.forEach(function(t){ var d=rd(t), k=rk(t); if(!d||!k)return; if(d>=cut30){riders30[k]=1; rev30+=(Number(t.amount)||0); rides30++;} else if(d>=cut60){ridersPrev[k]=1;} });
+  var active30=Object.keys(riders30).length, prev30=Object.keys(ridersPrev).length;
+  var repeat=0; Object.keys(byRider).forEach(function(k){ if(byRider[k].length>=2) repeat++; });
+  var repeatRate=totalRiders?Math.round(repeat/totalRiders*100):0;
+  var completedRides=rides.length, rideRev=rides.reduce(function(s,t){return s+(Number(t.amount)||0);},0);
+  var avgFare=completedRides?rideRev/completedRides:0;
+  var cancelCount=cancels.length, cancelRate=(completedRides+cancelCount)?Math.round(cancelCount/(completedRides+cancelCount)*100):0;
+  var drivers=(typeof _rosterDrivers!=='undefined'&&_rosterDrivers)?_rosterDrivers.length:0;
+  var growth=prev30>0?Math.round((active30-prev30)/prev30*100):(active30>0?100:0);
+  function tile(label,val,sub,cls){ return '<div class="aopt-tile"><div class="l">'+label+'</div><div class="v"'+(cls?' style="color:'+cls+'"':'')+'>'+val+'</div>'+(sub?'<div class="s">'+esc(String(sub))+'</div>':'')+'</div>'; }
+  var gTxt=growth>0?'\u2191 '+growth+'% vs prior 30d':growth<0?'\u2193 '+Math.abs(growth)+'% vs prior 30d':'flat vs prior 30d';
+  $d('appOptStats').innerHTML='<div class="aopt-heading">App usage at a glance</div>'+
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">'+
+    tile('Active riders (30d)',active30,gTxt,growth>0?'var(--green)':(growth<0?'var(--red)':''))+
+    tile('Total riders',totalRiders,'unique all-time')+
+    tile('Completed rides',completedRides,$$(Math.round(rideRev))+' in fares')+
+    tile('Avg fare',$$(Math.round(avgFare)),rides30+' rides last 30d')+
+    tile('Repeat riders',repeatRate+'%',repeat+' booked 2+ times',repeatRate>=30?'var(--green)':'')+
+    tile('Cancel rate',cancelRate+'%',cancelCount+' cancelled',cancelRate>15?'var(--red)':'var(--green)')+
+    tile('Chauffeurs',drivers,'on roster')+
+    tile('Rider revenue (30d)',$$(Math.round(rev30)),'from the app')+
+    '</div>'+
+    (completedRides===0?'<div style="font-size:11px;color:var(--muted);margin-top:8px">No completed app rides yet \u2014 these fill in as Obsidian riders finish trips. Open the Overview once so ride data loads, then hit Refresh.</div>':'');
+  var recs=[];
+  if(completedRides>=3&&cancelRate>15) recs.push({ic:'\uD83D\uDEA6',t:'Cut your '+cancelRate+'% cancellation rate',d:'Keep an on-call chauffeur for peak hours and confirm ETAs fast \u2014 most cancels happen while a rider waits to be matched.'});
+  if(totalRiders>=5&&repeatRate<30) recs.push({ic:'\uD83D\uDC8E',t:'Only '+repeatRate+'% of riders come back \u2014 add loyalty',d:'A VIP tier or a "5th ride" perk turns one-timers into regulars. Announce it to past riders from the Outreach tab.'});
+  if(totalRiders>=10&&active30<totalRiders*0.4) recs.push({ic:'\uD83D\uDCE3',t:'Win back '+(totalRiders-active30)+' lapsed riders',d:'They booked before but not in the last 30 days \u2014 send a comeback ride-credit via Outreach this week.'});
+  if(growth>15) recs.push({ic:'\uD83D\uDCC8',t:'Riders up '+growth+'% \u2014 pour fuel on it',d:'Find the channel driving the jump and double the posting or ad spend there while it is working.'});
+  if(completedRides>0&&recs.length<2) recs.push({ic:'\u2B50',t:'Turn every ride into a 5-star review',d:'Auto-ask each completed ride for a Google review \u2014 reviews are the #1 trigger for first-time luxury bookings.'});
+  var focus=['Post one cinematic fleet Reel today.','Message one DFW hotel or event planner about a referral deal.','Reply to every comment and DM within the hour \u2014 speed reads as premium.','Ask your last happy rider for a Google review and a story tag.','Geo-target tonight\u2019s ad to an event venue or the airport.','Comp one creator ride in exchange for tagged content.'];
+  recs.push({ic:'\uD83C\uDFAF',t:'Today\u2019s focus',d:focus[Math.floor(Date.now()/86400000)%focus.length]});
+  $d('appOptRecs').innerHTML='<div class="aopt-heading" style="margin-top:22px">Recommendations for today</div><div style="display:flex;flex-direction:column;gap:9px">'+
+    recs.map(function(r){ return '<div class="aopt-rec"><div class="ic">'+r.ic+'</div><div><div style="font-weight:700;font-size:12.5px;color:var(--text);margin-bottom:2px">'+esc(r.t)+'</div><div style="font-size:11px;color:var(--muted);line-height:1.45">'+esc(r.d)+'</div></div></div>'; }).join('')+'</div>';
+  var weeks=[]; for(var w=7;w>=0;w--){ weeks.push({lo:dateStr(addDays(new Date(tod+'T00:00:00'),-(w*7+6))),hi:dateStr(addDays(new Date(tod+'T00:00:00'),-(w*7))),n:0}); }
+  rides.forEach(function(t){ var d=rd(t); if(!d)return; for(var i=0;i<weeks.length;i++){ if(d>=weeks[i].lo&&d<=weeks[i].hi){ weeks[i].n++; break; } } });
+  var maxN=Math.max(1,weeks.reduce(function(m,x){return Math.max(m,x.n);},0));
+  var bars=weeks.map(function(x){ return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px"><div style="width:100%;max-width:26px;height:'+Math.max(3,Math.round(x.n/maxN*54))+'px;background:var(--gold-shine);border-radius:4px 4px 0 0"></div><div style="font-size:9px;color:var(--muted)">'+x.n+'</div></div>'; }).join('');
+  var top=Object.keys(byRider).map(function(k){ return {n:byRider[k].length,rev:byRider[k].reduce(function(s,t){return s+(Number(t.amount)||0);},0),name:byRider[k][0].rider||k}; }).sort(function(a,b){return b.n-a.n;}).slice(0,5);
+  var topHtml=top.length?('<div style="margin-top:14px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px">Top riders</div>'+top.map(function(r){ return '<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05)"><span style="color:var(--text)">'+esc(r.name)+'</span><span style="color:var(--muted)">'+r.n+' rides \u00B7 '+$$(Math.round(r.rev))+'</span></div>'; }).join('')+'</div>'):'';
+  $d('appOptAnalytics').innerHTML='<div class="aopt-heading" style="margin-top:22px">Ride trend \u2014 last 8 weeks</div><div style="display:flex;align-items:flex-end;gap:6px;height:70px;padding:4px 2px 0">'+bars+'</div>'+topHtml;
+}
+
 async function renderDriversTab(){
   // Load pending requests into the tab's requests panel
   var reqPanel=$d('tabDriverRequestsPanel');
@@ -9593,6 +9714,7 @@ async function renderDriversTab(){
     popSel('tabDrvAssignDriver');
     popSel('drvAssignDriver');
     _popTabAssignBookings();
+    try{ renderAppOptimization(); }catch(e){}
     var tabSel=$d('tabDrvAssignDriver');
     if(tabSel) tabSel.onchange=function(){
       var opt=tabSel.options[tabSel.selectedIndex];
