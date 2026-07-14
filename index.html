@@ -4372,7 +4372,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v212';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v213';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8252,12 +8252,12 @@ function _kpiDetailData(key, s){
     return {title:'Net After Car Payments',total:v.netAfterCar,note:'Net Revenue minus your vehicle loan/lease payments this period. (Operating costs are NOT subtracted here \u2014 see Net Profit for the fully-costed figure.)',groups:[{head:'Revenue',rows:[{name:'Net Revenue',sub:'Bookings (after broker) + rides + income',amt:v.netRevenue}]},{head:'Car payments',rows:carRows}]};
   }
   if(key==='cancelLoss'){
-    var bk=(s.cancelBks||[]).map(function(b){ var a=Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)-_bkDriverWageMissed(b)); return _kdBkRow(b,a); }).filter(function(r){return Math.abs(r.amt)>0.005;});
+    var bk=(s.cancelBks||[]).map(function(b){ var a=Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)-_bkDriverWageMissed(b)); var _r=_kdBkRow(b,a); _r.delBk=b.id; return _r; }).filter(function(r){return Math.abs(r.amt)>0.005;});
     var rides=_kdCancelRides(s).map(function(t){ return {name:esc((t.rider||t.riderEmail||'Obsidian ride')),sub:esc('cancelled'+(t.at?' \u00B7 '+dateStr(new Date(t.at)):'')+' \u00B7 65% of $'+(Number(t.amount)||0)),amt:(Number(t.amount)||0)*0.65,delRide:t.id||null}; }).filter(function(r){return Math.abs(r.amt)>0.005;});
     var groups=[]; if(bk.length) groups.push({head:'Cancelled bookings (net lost)',rows:_kdSort(bk)});
     if(rides.length) groups.push({head:'Cancelled chauffeur/Obsidian rides (65% of fare)',rows:_kdSort(rides)});
     if(!groups.length) groups.push({head:'Nothing counted',rows:[]});
-    return {title:'\uD83D\uDEAB Cancellation Losses',total:v.bkCancelLoss+v.rideCancelLoss,note:'Net income lost on trips cancelled and NOT rebooked within 30 min. Deleted rides are excluded \u2014 use the trash icon to delete a test ride so it stops counting.',groups:groups};
+    return {title:'\uD83D\uDEAB Cancellation Losses',total:v.bkCancelLoss+v.rideCancelLoss,note:'Net income lost on trips cancelled and NOT rebooked within 30 min. A cancelled booking counts as a loss until you DELETE it \u2014 tap the trash icon on any test booking or ride to soft-delete it and remove it from this number. Deleted items are excluded everywhere.',groups:groups};
   }
   if(key==='dateLocks') return {title:'Date Locks',total:v.dateLocks,note:'Upfront booking-hold fees collected/on file for this period.',groups:[{head:'Bookings with a date lock',rows:_kdValRows(s.active,function(b){return Number(b.dateLock)||0;})}]};
   if(key==='depositsKept') return {title:'Deposits Kept',total:v.depositsKept,note:'Security deposits the owner kept (not refunded) this period.',groups:[{head:'Bookings with a kept deposit',rows:_kdValRows(s.active,function(b){return b.refundSent?0:(Number(b.depositKept)||0);})}]};
@@ -8293,7 +8293,8 @@ function openKpiDetail(key){
     var rows=(g.rows||[]).map(function(r,ri){
       var amtHtml=r.plain?'':'<span style="font-weight:800;color:'+((Number(r.amt)||0)<0?'var(--red)':'var(--text)')+';font-variant-numeric:tabular-nums;white-space:nowrap">'+((Number(r.amt)||0)<0?'-':'')+_kdMoney(Math.abs(Number(r.amt)||0))+'</span>';
       var exp=(r.expand&&r.expand.length)?('<div style="margin-top:6px;padding-left:10px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:3px">'+r.expand.map(function(c){return '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>'+esc(c.l)+'</span><span style="font-variant-numeric:tabular-nums">'+_kdMoney(c.a)+'</span></div>';}).join('')+'</div>'):'';
-      var del=r.delRide?'<button onclick="event.stopPropagation();_kdDeleteRide(\''+_jsAttr(r.delRide)+'\')" title="Delete this cancelled ride" style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#f87171;border-radius:7px;padding:2px 7px;font-size:11px;cursor:pointer;margin-left:8px">\uD83D\uDDD1</button>':'';
+      var _delBtn=function(fn,arg,ttl){ return '<button onclick="event.stopPropagation();'+fn+'(\''+_jsAttr(arg)+'\')" title="'+ttl+'" style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#f87171;border-radius:7px;padding:2px 7px;font-size:11px;cursor:pointer;margin-left:8px">\uD83D\uDDD1</button>'; };
+      var del=r.delRide?_delBtn('_kdDeleteRide',r.delRide,'Delete this cancelled ride'):(r.delBk?_delBtn('_kdDeleteBooking',r.delBk,'Delete this cancelled booking'):'');
       return '<div style="padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.05)"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis">'+r.name+'</div>'+(r.sub?'<div style="font-size:10.5px;color:var(--muted);margin-top:1px">'+r.sub+'</div>':'')+'</div><div style="display:flex;align-items:center">'+amtHtml+del+'</div></div>'+exp+'</div>';
     }).join('')||'<div style="padding:12px 2px;color:var(--muted);font-size:12px">None in this period.</div>';
     var grpSum=(g.rows||[]).reduce(function(a,r){return a+(r.plain?0:(Number(r.amt)||0));},0);
@@ -8312,6 +8313,22 @@ function openKpiDetail(key){
   m.innerHTML=html; m.classList.add('open');
 }
 function _kdDeleteRide(id){ if(typeof deleteRideRecord==='function'){ closeKpiDetail(); deleteRideRecord(id); } }
+// Soft-delete a cancelled BOOKING straight from the Cancellation-Losses breakdown (same path as confirmDelete:
+// _deleted flag + fresh _t + save + flushCloudSave), then refresh the KPI snapshot and re-open the breakdown so
+// the deleted booking drops out of the loss immediately (and stays out cross-device via the _t-stamped sync).
+function _kdDeleteBooking(id){
+  var b=(typeof bookings!=='undefined'&&bookings)?bookings.find(function(x){return x&&x.id===id;}):null;
+  var nm=b?(b.name||'this booking'):'this booking';
+  if(!confirm('Delete "'+nm+'"? This soft-deletes the booking and removes it from Cancellation Losses everywhere. Cannot be undone.')) return;
+  var idx=(bookings||[]).findIndex(function(x){return x&&x.id===id;});
+  if(idx===-1){ return; }
+  bookings[idx]._deleted=true; bookings[idx]._t=Date.now();
+  try{ if(typeof save==='function') save(); }catch(e){}
+  try{ if(typeof flushCloudSave==='function') flushCloudSave(); }catch(e){}
+  try{ if(typeof render==='function') render(); }catch(e){}
+  try{ renderKPIs(getFiltered(),'kpiGrid'); }catch(e){}
+  openKpiDetail('cancelLoss');
+}
 function renderKPIs(filtered, containerId){
   // -- Period pill bar (overview only) --------------------------------------
   if(containerId==='kpiGrid'){
