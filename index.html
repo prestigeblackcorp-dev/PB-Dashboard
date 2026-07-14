@@ -4615,8 +4615,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v245';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v247';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v246';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v248';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -24166,6 +24166,10 @@ var _pinLockedUntil = 0;
 function initLock(){
   var pin=localStorage.getItem('pb_lock_pin');
   if(!pin) return; // no PIN set \u2014 app is always open
+  // Already unlocked earlier in THIS browser session (a manual reload, or the version-checker's auto-refresh)?
+  // Stay unlocked so a reload never dumps you to the lock screen mid-work. A genuine new session
+  // (tab closed+reopened, or a new device) has no flag -> PIN still required at login. Idle/manual lock clear it.
+  if(sessionStorage.getItem('pb_unlocked')==='1'){ _appUnlocked=true; _pbLastActivity=Date.now(); return; }
   if(!_appUnlocked){ showLockScreen(); }
 }
 function showLockScreen(){
@@ -24198,6 +24202,8 @@ async function unlockApp(){
   if(ownerMatch){
     _pinAttempts=0; _pinLockedUntil=0;
     _appUnlocked=true; _currentUser='owner'; _currentRole='full';
+    try{ sessionStorage.setItem('pb_unlocked','1'); }catch(e){}   // stay unlocked across reloads this session
+    _pbLastActivity=Date.now();                                   // fresh 10-min idle window
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
     applyRoleUI();
@@ -24216,6 +24222,8 @@ async function unlockApp(){
   if(staff){
     _pinAttempts=0; _pinLockedUntil=0;
     _appUnlocked=true; _currentUser=staff.name; _currentRole=staff.role||'checkin';
+    try{ sessionStorage.setItem('pb_unlocked','1'); }catch(e){}
+    _pbLastActivity=Date.now();
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
     applyRoleUI();
@@ -24241,13 +24249,18 @@ async function unlockApp(){
 }
 function lockApp(){
   _appUnlocked = false;
+  try{ sessionStorage.removeItem('pb_unlocked'); }catch(e){}   // idle-timeout OR manual Lock -> require the PIN again (even across a reload)
   showLockScreen();
 }
 // -- 10-MINUTE IDLE AUTO-LOCK: after 10 min of no activity, lock the dashboard (require the PIN again) and
 // clear the Google Calendar session so a fresh Google login is needed on resume. Only when a PIN is set. --
 var _pbLastActivity = Date.now();
 function _pbBumpActivity(){ _pbLastActivity = Date.now(); }
-['mousedown','keydown','touchstart','pointerdown','click','wheel','scroll'].forEach(function(ev){ try{ document.addEventListener(ev, _pbBumpActivity, { passive:true, capture:true }); }catch(e){} });
+// Count ANY sign of presence -- crucially mousemove (reading/hovering without clicking was being treated as
+// idle -> the "locked while not idle" bug). Also reset when the tab regains focus/visibility.
+['mousemove','mousedown','keydown','keyup','touchstart','touchmove','pointerdown','pointermove','click','wheel','scroll','input','focusin'].forEach(function(ev){ try{ document.addEventListener(ev, _pbBumpActivity, { passive:true, capture:true }); }catch(e){} });
+try{ document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') _pbBumpActivity(); }, false); }catch(e){}
+try{ window.addEventListener('focus', _pbBumpActivity, false); }catch(e){}
 setInterval(function(){
   try{
     if(!_appUnlocked) return;                            // already locked
@@ -24342,6 +24355,8 @@ async function verifyRecoveryOtp(){
     if(r.ok && d.ok){
       _pinAttempts=0; _pinLockedUntil=0; _recoveryOtpToken='';
       _appUnlocked=true; _currentUser='owner'; _currentRole='full';
+      try{ sessionStorage.setItem('pb_unlocked','1'); }catch(e){}
+      _pbLastActivity=Date.now();
       cancelPinRecovery();   // reset lock UI to default for next time
       hideLockScreen();
       applyRoleUI();
