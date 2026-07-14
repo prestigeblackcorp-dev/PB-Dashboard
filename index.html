@@ -2553,6 +2553,12 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
             <input type="number" class="addon-price-input" id="fChampagne" value="0" min="0">
           </div>
           <div class="addon-row">
+            <input type="checkbox" id="chkRedCarpet" onchange="toggleAddon('fRedCarpet',125,this.checked)">
+            <span class="addon-name">&#10024; Red Carpet Arrival</span>
+            <span class="addon-hint"></span>
+            <input type="number" class="addon-price-input" id="fRedCarpet" value="0" min="0">
+          </div>
+          <div class="addon-row">
             <input type="checkbox" id="chkDecor" onchange="toggleAddon('fDecor',100,this.checked)">
             <span class="addon-name">&#127872; Decor</span>
             <span class="addon-hint"></span>
@@ -3933,7 +3939,7 @@ var EVENT_PRICING_DEFAULT = {
       "Lambo Huracan":     { price:700, deposit:1000, over:10.0, unlimited:false }
     }
   },
-  addons: { decor:100, flowers:200, delivery:120, stop:75, wait:100 }
+  addons: { decor:100, redcarpet:125, flowers:200, delivery:120, stop:75, wait:100 }
 };
 var EVENT_TYPES = ["Wedding","Prom","Photoshoot","Music Video","Birthday / Celebration","Date Night","Proposal","Chauffeur Experience","Other"];
 var EVENT_PRICING = (function(){
@@ -4515,7 +4521,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v226';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v227';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8165,7 +8171,7 @@ function getTotalExpenses(from, to){
 function getAddons(b){
   var days=Math.max(1,Number(b.days)||1);
   return (Number(b.delivery)||0)+(Number(b.stop)||0)+(Number(b.wait)||0)+(Number(b.unlimited)||0)*days+(Number(b.pet)||0)+
-         (Number(b.photo)||0)+(Number(b.champagne)||0)+(Number(b.decor)||0)+(Number(b.bouquet)||0);
+         (Number(b.photo)||0)+(Number(b.champagne)||0)+(Number(b.decor)||0)+(Number(b.redcarpet)||0)+(Number(b.bouquet)||0);
 }
 function getProfit(b){ return totalRevenue(b)-getEstCost(b); }
 
@@ -11152,6 +11158,7 @@ function tripCard(b, showCountdown){
   if(b.pet)         addonsArr.push('\uD83D\uDC3E Pet '+$$(b.pet));
   if(b.photo)       addonsArr.push('\uD83D\uDCF7 Photoshoot '+$$(b.photo));
   if(b.champagne)   addonsArr.push('\uD83E\uDD42 Champagne '+$$(b.champagne));
+  if(b.redcarpet)   addonsArr.push('\u2728 Red Carpet '+$$(b.redcarpet));
   if(b.decor)       addonsArr.push('\uD83C\uDF80 Decor '+$$(b.decor));
   if(b.bouquet)     addonsArr.push('\uD83D\uDC90 Bouquet '+$$(b.bouquet));
 
@@ -11537,7 +11544,7 @@ function openBookingDetail(id){
   var addonFields=[
     {label:'Delivery',val:b.delivery},{label:'Extra Stop',val:b.stop},{label:'Extra Wait',val:b.wait},{label:'Unlimited Miles ('+$$(b.unlimited)+'/'+_durUnit(b)+' \u00D7 '+(b.days||1)+_durUnit(b).charAt(0)+')',val:(Number(b.unlimited)||0)*(Number(b.days)||1)},
     {label:'Pet Fee',val:b.pet},{label:'Photoshoot',val:b.photo},
-    {label:'Champagne',val:b.champagne},{label:'Decor',val:b.decor},{label:'Bouquet',val:b.bouquet}
+    {label:'Champagne',val:b.champagne},{label:'Red Carpet Arrival',val:b.redcarpet},{label:'Decor',val:b.decor},{label:'Bouquet',val:b.bouquet}
   ];
   addonFields.forEach(function(a){
     if(Number(a.val)>0) addonsHtml+='<div class="detail-row"><span class="detail-label">'+a.label+'</span><span class="detail-val">'+$$(a.val)+'</span></div>';
@@ -12116,6 +12123,7 @@ function openModal(id, vehiclePreset, datePreset){
   setAddon('chkPet',       'fPet',       b?b.pet:0);
   setAddon('chkPhoto',     'fPhoto',     b?b.photo:0);
   setAddon('chkChampagne', 'fChampagne', b?b.champagne:0);
+  setAddon('chkRedCarpet', 'fRedCarpet', b?b.redcarpet:0);
   setAddon('chkDecor',     'fDecor',     b?b.decor:0);
   setAddon('chkBouquet',   'fBouquet',   b?b.bouquet:0);
 
@@ -12248,13 +12256,14 @@ function _evRecalc(){
   if(sw) sw.style.display=self?'none':'';
   if(ww) ww.style.display=self?'none':'';
   var decor    = $d('chkDecor')&&$d('chkDecor').checked ? (Number(A.decor)||0) : 0;
+  var redcarpet= $d('chkRedCarpet')&&$d('chkRedCarpet').checked ? (Number(A.redcarpet)||0) : 0;
   var flowers  = $d('chkBouquet')&&$d('chkBouquet').checked ? (Number(A.flowers)||0) : 0;
   var delivery = (self&&$d('chkDelivery')&&$d('chkDelivery').checked) ? (Number(A.delivery)||0) : 0;
   var stop     = (!self&&$d('chkEventStop')&&$d('chkEventStop').checked) ? (Number(A.stop)||0) : 0;
   var wait     = (!self&&$d('chkEventWait')&&$d('chkEventWait').checked) ? (Number(A.wait)||0) : 0;
   var unlimited= $d('chkUnlimited')&&$d('chkUnlimited').checked ? (parseFloat($d('fUnlimited').value)||0) : 0;
   var base=_eventBasePrice(name,veh,hours);
-  var addTotal=decor+flowers+delivery+stop+wait+unlimited;
+  var addTotal=decor+redcarpet+flowers+delivery+stop+wait+unlimited;
   var total=Math.round((base+addTotal)*100)/100;
   var dn=_evDateNightCar(veh);
   if(name==='Date Night'&&dn){
@@ -12610,6 +12619,7 @@ function saveBooking(){
     pet:       parseFloat($d('fPet').value)||0,
     photo:     parseFloat($d('fPhoto').value)||0,
     champagne: parseFloat($d('fChampagne').value)||0,
+    redcarpet: parseFloat($d('fRedCarpet').value)||0,
     decor:     parseFloat($d('fDecor').value)||0,
     bouquet:   parseFloat($d('fBouquet').value)||0,
     cost:      editingId ? (bookings.find(function(b){return b.id===editingId;})||{}).cost||0 : 0,
@@ -15331,6 +15341,7 @@ function sendStripeVerification(){
         if(Number(b.photo))     _addons.push('Photoshoot ($'+b.photo+')');
         if(Number(b.champagne)) _addons.push('Champagne ($'+b.champagne+')');
         if(Number(b.decor))     _addons.push('Decor ($'+b.decor+')');
+        if(Number(b.redcarpet))     _addons.push('Red Carpet Arrival ($'+b.redcarpet+')');
         if(Number(b.bouquet))   _addons.push('Bouquet ($'+b.bouquet+')');
         if(Number(b.delivery))  _addons.push('Delivery ($'+b.delivery+')');
         if(Number(b.unlimited)) _addons.push('Unlimited Miles ($'+b.unlimited+'/'+_durUnit(b)+')');
@@ -15743,6 +15754,7 @@ function sendCustomerVerifiedEmail(b){
   if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
   if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+  if(Number(b.redcarpet))     addons.push('Red Carpet Arrival ($'+b.redcarpet+')');
   if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
   if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
   if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/'+_durUnit(b)+')');
@@ -16321,6 +16333,7 @@ function resendVerificationEmail(id, skipConfirm){
     if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
     if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
     if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+    if(Number(b.redcarpet))     addons.push('Red Carpet Arrival ($'+b.redcarpet+')');
     if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
     if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
     if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/'+_durUnit(b)+')');
@@ -16401,6 +16414,7 @@ function sendConfirmationEmail(b, showFeedback){
         if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
         if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
         if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+        if(Number(b.redcarpet))     addons.push('Red Carpet Arrival ($'+b.redcarpet+')');
         if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
         if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
         if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/'+_durUnit(b)+')');
@@ -16715,6 +16729,7 @@ function sendOwnerBookingNotification(b){
   if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
   if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+  if(Number(b.redcarpet))     addons.push('Red Carpet Arrival ($'+b.redcarpet+')');
   if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
   if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
   if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/'+_durUnit(b)+')');
@@ -16767,6 +16782,7 @@ function sendDateLockConfirmation(b){
   if(Number(b.photo))     addons.push('Photoshoot ($'+b.photo+')');
   if(Number(b.champagne)) addons.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addons.push('Decor ($'+b.decor+')');
+  if(Number(b.redcarpet))     addons.push('Red Carpet Arrival ($'+b.redcarpet+')');
   if(Number(b.bouquet))   addons.push('Bouquet ($'+b.bouquet+')');
   if(Number(b.delivery))  addons.push('Delivery ($'+b.delivery+')');
   if(Number(b.unlimited)) addons.push('Unlimited Miles ($'+b.unlimited+'/'+_durUnit(b)+')');
@@ -19679,6 +19695,7 @@ function _renderContractContent(){
   if(Number(b.photo))     addonLines.push('Photoshoot ($'+b.photo+')');
   if(Number(b.champagne)) addonLines.push('Champagne ($'+b.champagne+')');
   if(Number(b.decor))     addonLines.push('Decor ($'+b.decor+')');
+  if(Number(b.redcarpet))     addonLines.push('Red Carpet Arrival ($'+b.redcarpet+')');
   if(Number(b.bouquet))   addonLines.push('Flower Bouquet ($'+b.bouquet+')');
   var _bd=_buildContractBreakdown(b);
   var rev=totalRevenue(b), dep=_bd.depositAmt, bal=Math.max(0,getRemainingBalance(b));
