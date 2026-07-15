@@ -4700,8 +4700,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v267';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v269';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v268';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v270';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -13272,7 +13272,7 @@ function saveBooking(){
     }
   } else {
     // NEW BOOKING \u2014 auto-carry verified ID from a past booking for the same customer
-    var _carried=_autoCarryVerifyLookup(entry.email,entry.phone,null);
+    var _carried=_autoCarryVerifyLookup(entry.email,entry.phone,null,_pbTripEndStr(entry));
     if(_carried) entry.verify=_carried;
     bookings.push(entry);
     // Fire owner notification and customer date-lock confirmation on new bookings only
@@ -14284,7 +14284,7 @@ function openVerify(id){
     var _immPend=null;
     try{ _immPend=localStorage.getItem('pb_pending_vsession_'+id); }catch(e){}
     if(!_immPend){
-      var _immCarry=_autoCarryVerifyLookup(b.email, b.phone, id);
+      var _immCarry=_autoCarryVerifyLookup(b.email, b.phone, id, _pbTripEndStr(b));
       console.log('[PB openVerify] booking '+id+' email="'+b.email+'" phone="'+b.phone+'" carry\u2192',_immCarry?{idVerified:_immCarry.idVerified,idName:_immCarry.idName,idNumber:_immCarry.idNumber,from:_immCarry.carriedFromBooking}:'null');
       if(_immCarry){
         var _immIdx=bookings.findIndex(function(x){ return x.id===id; });
@@ -16646,7 +16646,27 @@ function _normPhone(p){
   return s; // returns 10-digit string, or shorter if the input had fewer digits
 }
 
-function _autoCarryVerifyLookup(email, phone, bookingIdToExclude){
+// Last day the customer will be driving on a booking -- the DL must be valid THROUGH this for auto-verify.
+function _pbTripEndStr(b){
+  if(!b) return '';
+  if(b.returnDate) return String(b.returnDate).slice(0,10);
+  var start=String(b.date||b.pickupDate||'').slice(0,10);
+  if(!start) return '';
+  var days=Number(b.days)||1;
+  if(days<=1 || b.type==='hourly' || b.type==='chauffeur') return start;
+  try{ return dateStr(addDays(parseLocalDate(start), days-1)); }catch(e){ return start; }
+}
+// ISO date-string compare: true only if idExpiry is present AND does not expire before throughStr.
+function _pbDlValidThrough(idExpiry, throughStr){
+  var e=String(idExpiry||'').slice(0,10), t=String(throughStr||'').slice(0,10);
+  if(!e||!t) return false;
+  return e>=t;
+}
+// Find a returning customer's prior verified booking and return a verify object to carry onto a NEW booking.
+// AUTO-VERIFIES (idVerified:true) only when the prior license is valid THROUGH throughStr (the new booking's
+// trip end date); otherwise carries the ID data for pre-fill but leaves idVerified false (owner re-confirms).
+// Carries ID fields only -- booking-specific tracking (stripeSessionId/url/firstSentAt) is intentionally dropped.
+function _autoCarryVerifyLookup(email, phone, bookingIdToExclude, throughStr){
   var bEmail=(email||'').toLowerCase().trim();
   var bPhone=_normPhone(phone);
   if(!bEmail&&bPhone.length<10) return null;
@@ -16659,10 +16679,16 @@ function _autoCarryVerifyLookup(email, phone, bookingIdToExclude){
   }).sort(function(a,b){
     return (Date.parse((b.verify&&b.verify.verifiedAt)||'')||0)-(Date.parse((a.verify&&a.verify.verifiedAt)||'')||0);
   });
-  console.log('[PB carryLookup] email="'+bEmail+'" phone="'+bPhone+'" exclude='+bookingIdToExclude+' \u2192 '+past.length+' match(es)', past.map(function(x){ return {id:x.id,name:x.name,email:x.email,phone:x.phone,idVerified:x.verify&&x.verify.idVerified}; }));
   if(!past.length) return null;
-  // Carry ID data only \u2014 idVerified stays false until owner/Stripe confirms this booking
-  return Object.assign({},past[0].verify,{idVerified:false,carriedFromBooking:past[0].id});
+  var _pv=past[0].verify;
+  var _autoOk=_pbDlValidThrough(_pv.idExpiry, throughStr);   // DL unexpired through the trip -> auto-verified
+  var carried={
+    idName:_pv.idName||'', idDob:_pv.idDob||'', idType:_pv.idType||'', idNumber:_pv.idNumber||'',
+    idState:_pv.idState||'', idExpiry:_pv.idExpiry||'', idAddress:_pv.idAddress||'',
+    idVerified:_autoOk, verifiedAt:_pv.verifiedAt||'', carriedFromBooking:past[0].id
+  };
+  if(_autoOk) carried.autoVerified=true;
+  return carried;
 }
 
 // Scan ALL bookings and carry verified ID into any unverified booking from the same customer.
@@ -16671,12 +16697,38 @@ function _autoCarryVerifyForAll(){
   var changed=false;
   bookings.forEach(function(b,idx){
     if(b._deleted||(b.verify&&b.verify.idVerified)) return;
-    var carried=_autoCarryVerifyLookup(b.email,b.phone,b.id);
+    var carried=_autoCarryVerifyLookup(b.email,b.phone,b.id,_pbTripEndStr(b));
     if(!carried) return;
     bookings[idx]=Object.assign({},b,{verify:carried,_t:Date.now()});
     changed=true;
   });
   if(changed) save();
+  try{ _pbIndexVerifiedCustomers(); }catch(e){}   // bootstrap the worker's returning-customer index (deduped)
+}
+
+// Push each already-verified customer (with a captured DL expiry) to the worker's verified_customers index,
+// ONCE per customer, so a returning customer's NEXT website booking auto-verifies + skips the verify email
+// even if they verified before this feature shipped. Deduped via a persisted key set; fire-and-forget.
+function _pbIndexVerifiedCustomers(){
+  var WK=(typeof PB_WORKER!=='undefined'?PB_WORKER:(typeof WORKER_URL!=='undefined'?WORKER_URL:''));
+  var secret=(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'');
+  if(!WK||!secret) return;
+  var done={}; try{ done=JSON.parse(localStorage.getItem('pb_vc_indexed')||'{}')||{}; }catch(e){ done={}; }
+  var seen={};
+  bookings.forEach(function(b){
+    if(b._deleted||!b.verify||!b.verify.idVerified||!b.verify.idExpiry||!b.email) return;
+    var key=(b.email||'').toLowerCase().trim().replace(/[^a-z0-9]/g,'_');
+    if(!key||seen[key]) return;
+    seen[key]=true;
+    // Skip if already indexed for this exact expiry (re-push if their DL was renewed to a later date).
+    if(done[key]===b.verify.idExpiry) return;
+    fetch(WK+'/verify/index-customer',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+secret},
+      body:JSON.stringify({ email:b.email, fromBooking:b.id, verify:{
+        idName:b.verify.idName||'', idDob:b.verify.idDob||'', idType:b.verify.idType||'', idNumber:b.verify.idNumber||'',
+        idState:b.verify.idState||'', idExpiry:b.verify.idExpiry||'', idAddress:b.verify.idAddress||'',
+        idVerified:true, verifiedAt:b.verify.verifiedAt||'' } })
+    }).then(function(r){ if(r&&r.ok){ done[key]=b.verify.idExpiry; try{ localStorage.setItem('pb_vc_indexed',JSON.stringify(done)); }catch(e){} } }).catch(function(){});
+  });
 }
 
 function checkReturningCustomer(){
