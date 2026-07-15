@@ -2247,7 +2247,9 @@ function _calcMiles(id,start,inc,rate,unlimited){
 }
 
 // One read-only video "play" row (client streams from R2 via the worker; never a download).
-function _fmtMediaTs(ts){ ts=Number(ts)||0; if(!ts) return ''; try{ return new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}); }catch(e){ return ''; } }
+// MM/DD/YYYY h:mm AM/PM (DFW / America-Chicago) timestamp for condition media -- shown as a caption
+// under every pre/post-trip photo and video so the client can see exactly when each was taken.
+function _fmtMediaTs(ts){ ts=Number(ts)||0; if(!ts) return ''; try{ return new Date(ts).toLocaleString('en-US',{timeZone:'America/Chicago',month:'2-digit',day:'2-digit',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).replace(', ',' ')+' CT'; }catch(e){ return ''; } }
 function _vidRow(bookingId, vid, who){
   const url=(`${WORKER}/video/get?bookingId=${encodeURIComponent(bookingId)}&key=${encodeURIComponent(vid.key)}&token=${encodeURIComponent(state.token)}`).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
   return `<div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:8px;padding:6px 9px"><button onclick="openVideoPlayer(&quot;${url}&quot;)" title="Play" style="width:28px;height:28px;flex-shrink:0;border-radius:6px;background:var(--gold);color:#000;border:none;font-size:12px;cursor:pointer">&#9654;</button><div style="flex:1;min-width:0"><div style="font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(vid.name||'Video')}</div>${vid.at?`<div style="font-size:9px;color:var(--text-muted)">${_fmtMediaTs(vid.at)}</div>`:''}</div><div style="font-size:9.5px;color:var(--text-muted);flex-shrink:0">${esc(who)}</div></div>`;
@@ -2272,9 +2274,10 @@ function showCondition(booking){
   const col = (label, ownerArr, custArr, type, open, locked, notYetMsg) => {
     const ownerVids = ((type==='pre'?booking.checkInVideos:booking.checkOutVideos)||[]).filter(Boolean);
     const custVids  = ((type==='pre'?booking.customerPreTripVideos:booking.customerPostTripVideos)||[]).filter(Boolean);
+    const custMeta = ((type==='pre'?booking.customerPreTripPhotoMeta:booking.customerPostTripPhotoMeta)||[]);
     let html = `<div><div class="condition-col-label">${label}</div><div class="photo-grid">`;
-    ownerArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Uploaded by Prestige Black">`; });
-    custArr.forEach(src=>{ html += `<img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Your photo">`; });
+    ownerArr.forEach(src=>{ html += `<div style="display:flex;flex-direction:column;align-items:center;gap:2px"><img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Uploaded by Prestige Black"></div>`; });
+    custArr.forEach((src,i)=>{ const _t=(custMeta[i]&&custMeta[i].at)?_fmtMediaTs(custMeta[i].at):''; html += `<div style="display:flex;flex-direction:column;align-items:center;gap:2px"><img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Your photo">${_t?`<div style="font-size:8px;color:var(--text-muted);text-align:center;line-height:1.1;max-width:64px">${_t}</div>`:''}</div>`; });
     html += '</div>';
     if(ownerVids.length || custVids.length){
       html += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
@@ -3587,8 +3590,13 @@ function handlePhotoUpload(e){
         if(!r.ok){ toast(d.error||'Error uploading','error'); return; }
         const bk = state.bookings.find(b=>b.id===bookingId);
         if(bk){
-          if(type==='pre') bk.customerPreTripPhotos = [...(bk.customerPreTripPhotos||[]), photo];
-          else             bk.customerPostTripPhotos = [...(bk.customerPostTripPhotos||[]), photo];
+          // Mirror the worker: append the photo AND an index-aligned {at} timestamp so the MM/DD/YYYY
+          // caption shows immediately (older entries padded null); the worker's server stamp wins on resync.
+          const pf=type==='pre'?'customerPreTripPhotos':'customerPostTripPhotos';
+          const mf=type==='pre'?'customerPreTripPhotoMeta':'customerPostTripPhotoMeta';
+          const arr=[...(bk[pf]||[]), photo];
+          const meta=(bk[mf]||[]).slice(0,arr.length-1); while(meta.length<arr.length-1) meta.push(null); meta.push({at:Date.now()});
+          bk[pf]=arr; bk[mf]=meta;
         }
         renderBookings();
         if(_tripModule) _renderTripModule();   // refresh the open module grid
