@@ -4686,8 +4686,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v262';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v264';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v263';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v265';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -9262,7 +9262,8 @@ function renderCharts(filtered){
   // future-dated income entry counts in both. Fixed periods keep _krC.to = today.
   var _krC=_kpiDateRange(), _cLo=_krC.from||'', _cHi=_krC.to||(($d('filterTo')&&$d('filterTo').value)||'9999-12-31');
   function _inWinC(d){ d=(d||'').slice(0,10); return !!d && (!_cLo||d>=_cLo) && d<=_cHi; }
-  var _incList=(incomes||[]).filter(function(i){ return i&&!i._deleted&&_inWinC(i.fromDate); });
+  var _incList=(incomes||[]).filter(function(i){ return i&&!i._deleted&&_inWinC(i.fromDate); })
+    .concat((typeof _grouponIncomeEntries==='function'?_grouponIncomeEntries('',''):[]).filter(function(g){ return _inWinC(g.fromDate); }));   // Groupon payouts count as Other Income in the charts too
   var _rideList=(typeof _rideTxns!=='undefined'&&_rideTxns)?_rideTxns.filter(function(t){ return t&&_inWinC(t.completedAt?dateStr(new Date(t.completedAt)):''); }):[];
   var _chartIncome=_incList.reduce(function(s,i){ return s+(Number(i.amount)||0); },0);
   var _chartRide=_rideList.reduce(function(s,t){ return s+(Number(t.amount)||0); },0);
@@ -9406,7 +9407,7 @@ function renderCharts(filtered){
   }
 
   // ---------- vehicle series helper (sorted desc; folds the long tail into "Other") ----------
-  function _vehSeries(valFn, topN, listOverride){
+  function _vehSeries(valFn, topN, listOverride, extraByVeh){
     var m={}, cnt={};
     (listOverride||active).forEach(function(b){
       if(listOverride && (!b||b._deleted||b.status==='cancelled')) return;
@@ -9414,6 +9415,7 @@ function renderCharts(filtered){
       if(listOverride && !val) return;   // earned-date list: skip bookings with no revenue in the window
       var v=b.vehicle||'Unknown'; m[v]=(m[v]||0)+val; cnt[v]=(cnt[v]||0)+1;
     });
+    if(extraByVeh){ Object.keys(extraByVeh).forEach(function(v){ if(extraByVeh[v]) m[v]=(m[v]||0)+extraByVeh[v]; }); }   // per-vehicle income folded in BEFORE top-N/sort (e.g. Groupon payouts on the Slingshot)
     var arr=Object.keys(m).map(function(v){ return {v:v,val:m[v],cnt:cnt[v]}; }).sort(function(a,b){ return b.val-a.val; });
     if(arr.length>topN){ var tail=arr.slice(topN-1); arr=arr.slice(0,topN-1);
       arr.push({v:'Other ('+tail.length+')',val:tail.reduce(function(s,x){return s+x.val;},0),cnt:tail.reduce(function(s,x){return s+x.cnt;},0),_other:true}); }
@@ -9422,7 +9424,8 @@ function renderCharts(filtered){
   var topN=mobile?6:9;
 
   // ---------- 3) Revenue by Vehicle -- horizontal bars, value labels, rich tooltip ----------
-  var rvA=_vehSeries(function(b){ return _earnedRevInWindow(b,_cLo,_cHi); }, topN, _erList); // EARNED-DATE gross by vehicle (matches Fleet per-vehicle; excludes rides/income/card-fee which have no vehicle)
+  var _gpVehInc=(typeof _grouponIncomeEntries==='function'?_grouponIncomeEntries('',''):[]).filter(function(g){ return _inWinC(g.fromDate); }).reduce(function(s,g){ return s+(Number(g.amount)||0); },0); // the Slingshot's Groupon payouts in this window
+  var rvA=_vehSeries(function(b){ return _earnedRevInWindow(b,_cLo,_cHi); }, topN, _erList, (_gpVehInc>0?{'Polaris Slingshot':_gpVehInc}:null)); // EARNED-DATE gross by vehicle (matches Fleet per-vehicle) + the Slingshot's Groupon payouts
   var vRevTot=rvA.reduce(function(s,x){return s+x.val;},0);
   var _br=$d('boxRvv'); if(_br) _br.style.height=Math.max(150, rvA.length*(mobile?34:40)+30)+'px';
   dc('rvv');
@@ -9449,6 +9452,7 @@ function renderCharts(filtered){
   // ---------- 4) Bookings per Vehicle -- horizontal bars, value labels, rich tooltip ----------
   var bkA=_vehSeries(function(){ return 1; }, topN);
   var revByVeh={}; (_erList||[]).forEach(function(b){ if(!b||b._deleted||b.status==='cancelled')return; var er=_earnedRevInWindow(b,_cLo,_cHi); if(!er)return; var v=b.vehicle||'Unknown'; revByVeh[v]=(revByVeh[v]||0)+er; }); // earned-date per vehicle (tooltip)
+  if(_gpVehInc>0) revByVeh['Polaris Slingshot']=(revByVeh['Polaris Slingshot']||0)+_gpVehInc; // Groupon payouts in the Slingshot's revenue tooltip
   var bkTot=bkA.reduce(function(s,x){return s+x.val;},0);
   var _bb=$d('boxBvv'); if(_bb) _bb.style.height=Math.max(150, bkA.length*(mobile?34:40)+30)+'px';
   dc('bvv');
