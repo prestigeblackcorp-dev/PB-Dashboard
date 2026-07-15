@@ -4686,8 +4686,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v260';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v262';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v261';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v263';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -6668,6 +6668,7 @@ function renderGrouponSection(){
   var visiblePayouts = range==='all' ? allPayouts : allPayouts.filter(function(p){ return _inGpRange(p.date, range); });
   if(visiblePayouts.length){
     var isMobP=window.innerWidth<=768;
+    var _gpTotRcv=0, _gpTotBooks=0, _gpTotDirect=0;   // running totals for the payout-periods footer (net sum)
     var periodItems = visiblePayouts.map(function(p){
       var pidx = allPayouts.indexOf(p);
       var prevDate = pidx>0 ? allPayouts[pidx-1].date : '';
@@ -6677,6 +6678,7 @@ function renderGrouponSection(){
       });
       var directInPeriod = inPeriod.reduce(function(s,b){return s+totalRevenue(b);},0);
       var diff = Number(p.amount) - directInPeriod;
+      _gpTotRcv+=Number(p.amount)||0; _gpTotBooks+=inPeriod.length; _gpTotDirect+=directInPeriod;
       var diffColor=diff>=0?'var(--green)':'var(--red)';
       var deleteBtn=!p._fromAddlIncome
         ? '<button class="btn btn-sm" style="color:var(--red);border-color:rgba(255,92,92,.3);padding:2px 8px;font-size:11px" onclick="event.stopPropagation();deleteGrouponPayout(\''+p.id+'\')">\u2715 Delete</button>'
@@ -6737,14 +6739,29 @@ function renderGrouponSection(){
       '</tr>'+
       (bookingRows?'<tbody style="display:none">'+bookingRows+'</tbody>':'');
     }).join(isMobP?'':'' );
+    var _gpTotDiff=Math.round((_gpTotRcv-_gpTotDirect)*100)/100;
+    var _gpDiffCol=_gpTotDiff>=0?'var(--green)':'var(--red)';
+    var _gpMobTotals='<div style="background:var(--card2);border-radius:12px;padding:12px 14px;border:1px solid var(--border);font-weight:800">'+
+        '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span>Total Received</span><span style="color:var(--green)">'+$$(_gpTotRcv)+'</span></div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span>Total Direct Pay</span><span style="color:var(--gold)">'+(_gpTotDirect>0?$$(_gpTotDirect):'\u2014')+'</span></div>'+
+        '<div style="display:flex;justify-content:space-between;font-size:14px;padding-top:4px;border-top:1px solid var(--border)"><span>Net Sum</span><span style="color:'+_gpDiffCol+'">'+(_gpTotDiff>=0?'+':'')+$$(_gpTotDiff)+'</span></div>'+
+      '</div>';
+    var _gpDeskTotals='<tfoot><tr style="border-top:2px solid var(--border);font-weight:800">'+
+        '<td style="padding:9px 10px">Totals</td>'+
+        '<td style="padding:9px 10px;color:var(--green)">'+$$(_gpTotRcv)+'</td>'+
+        '<td style="padding:9px 10px">'+_gpTotBooks+'</td>'+
+        '<td style="padding:9px 10px;color:var(--gold)">'+(_gpTotDirect>0?$$(_gpTotDirect):'\u2014')+'</td>'+
+        '<td style="padding:9px 10px;color:'+_gpDiffCol+'" title="Net Sum">'+(_gpTotDiff>=0?'+':'')+$$(_gpTotDiff)+'</td>'+
+        '<td></td>'+
+      '</tr></tfoot>';
     periodsHtml =
       '<div class="tbl-card" style="margin-top:14px">'+
         '<div class="tbl-head"><div class="tbl-title">\uD83D\uDCB3 Payout Periods</div><div class="tbl-meta" style="font-size:11px;color:var(--muted)">'+(isMobP?'Tap to expand bookings':'Click a row to expand bookings')+'</div></div>'+
         (isMobP ?
-          '<div style="padding:10px 12px;display:flex;flex-direction:column;gap:10px">'+periodItems+'</div>' :
+          '<div style="padding:10px 12px;display:flex;flex-direction:column;gap:10px">'+periodItems+_gpMobTotals+'</div>' :
           '<div class="tbl-wrap"><table style="min-width:560px"><thead><tr>'+
             '<th>Payout Date</th><th>Amount Received</th><th>Bookings</th><th>Direct Payments</th><th>Net Diff</th><th></th>'+
-          '</tr></thead><tbody>'+periodItems+'</tbody></table></div>'
+          '</tr></thead><tbody>'+periodItems+'</tbody>'+_gpDeskTotals+'</table></div>'
         )+
       '</div>';
   }
