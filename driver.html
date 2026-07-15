@@ -1831,8 +1831,9 @@ function setDuty(on){
     ensurePushSubscription('driver');
   } else {
     stopDutyBroadcast();
-    // Only stop polling if no active ride
-    if(!_activeRide){ stopRidesPoll(); _drvReleaseWake(); }
+    // Off-duty with no active ride: re-arm at the slower cadence (still dispatchable for a manual owner
+    // dispatch, per the login comment) rather than fully stopping. _drvReleaseWake drops the screen lock.
+    if(!_activeRide){ startRidesPoll(); _drvReleaseWake(); }
     // Go offline
     if(drvState.token) fetch(WORKER+'/chauffeur/go-offline',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({token:drvState.token})}).catch(function(){});  // keepalive: the offline write survives even if the tab is closing, so an off-duty driver can't linger as dispatchable
   }
@@ -1947,11 +1948,23 @@ function updateMapSelfMarker(lat,lng,heading){
 }
 
 // -- Poll for incoming requests & active ride -----------------------------
+// Firebase-egress control: this is the highest-VOLUME poll in the system. Two guards:
+//  (1) NEVER poll a backgrounded tab -- push notifications cover alerts while hidden; _drvResume re-arms on
+//      return. A phone screen is off/backgrounded most of the day, so this alone is the big cut.
+//  (2) ADAPTIVE cadence: 5s while actually working (on-duty or on an active ride), 30s while off-duty idle
+//      (still dispatchable for a manual owner dispatch, just cheaper).
+var _ridesPollCadence = 0;
+function _ridesPollMs(){ return (_onDuty || _activeRide) ? 5000 : 30000; }
 function startRidesPoll(){
+  stopRidesPoll();
+  if(typeof document!=='undefined' && document.hidden) return; // backgrounded -> don't poll; resume on visibility
+  _ridesPollCadence = _ridesPollMs();
   pollDriverRides();
-  _ridesPollTimer=setInterval(pollDriverRides,5000);
+  _ridesPollTimer=setInterval(pollDriverRides,_ridesPollCadence);
 }
-function stopRidesPoll(){ clearInterval(_ridesPollTimer); _ridesPollTimer=null; }
+function stopRidesPoll(){ if(_ridesPollTimer){ clearInterval(_ridesPollTimer); _ridesPollTimer=null; } }
+// Re-arm only when needed: cadence should change (duty toggled / ride became active or ended) or it isn't running.
+function ensureRidesPoll(){ if(typeof document!=='undefined' && document.hidden){ return; } if(!_ridesPollTimer || _ridesPollCadence!==_ridesPollMs()) startRidesPoll(); }
 
 // -- Resilience (quick-win F): screen wake-lock + reconnect on visibility/online --
 // Additive only \u2014 poll cadence (5s) and broadcast (8s) are unchanged; this merely
@@ -1979,8 +1992,11 @@ function _drvResume(){
   }
 }
 if(typeof document!=='undefined'){
-  document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') _drvResume(); });
-  window.addEventListener('online', function(){ _drvResume(); if((window.PB_FLAGS||{}).resilience && _drvWantWake() && typeof drvToast==='function') drvToast('Back online'); });
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='visible'){ ensureRidesPoll(); _drvResume(); }   // returned -> re-arm poll (off-duty too, for manual dispatch) + catch up
+    else { stopRidesPoll(); }                                                       // backgrounded -> stop the ride poll (push covers alerts); the Firebase-egress cut
+  });
+  window.addEventListener('online', function(){ ensureRidesPoll(); _drvResume(); if((window.PB_FLAGS||{}).resilience && _drvWantWake() && typeof drvToast==='function') drvToast('Back online'); });
   window.addEventListener('offline', function(){ if((window.PB_FLAGS||{}).resilience && _drvWantWake() && typeof drvToast==='function') drvToast('Connection lost \u2014 reconnecting\u2026'); });
 }
 
@@ -2063,7 +2079,7 @@ async function pollDriverRides(){
       }
       if(Number(d.activeRide.hours||0)>Number(_prevRide.hours||0)){ drvToast('\u23F1 Trip extended to '+d.activeRide.hours+' hours','success'); }
     }
-    if(!_ridesPollTimer) startRidesPoll(); // keep polling during active ride
+    ensureRidesPoll(); // active ride -> ensure the fast (5s) cadence even if an off-duty slow timer was running
     renderActiveRidePanel();
     drawActiveRideOnMap(d.activeRide);
   } else if(!d.activeRide&&_activeRide&&['completed','cancelled'].includes(_activeRide.status)){

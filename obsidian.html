@@ -2083,7 +2083,7 @@ function startPolling(){
   _rideAcquireWake();
   _pbPushRide(_rideId);
 }
-function stopPolling(){ clearInterval(_pollTimer); _pollTimer=null; stopRiderWatch(); _rideReleaseWake(); _pbPushRide(null); }
+function stopPolling(){ _pollPaused=false; clearInterval(_pollTimer); _pollTimer=null; stopRiderWatch(); _rideReleaseWake(); _pbPushRide(null); }
 
 // -- Resilience (quick-win F): wake-lock + reconnect on visibility/online --
 // Additive only \u2014 4s poll cadence unchanged; just re-acquires the wake lock and
@@ -2103,9 +2103,21 @@ function _rideResume(){
   _rideAcquireWake();
   if(_rideId && _pollTimer){ pollRideStatus(); startRiderWatch(); }
 }
+// Firebase-egress control: PAUSE the 4s ride-status poll while the tab is backgrounded; resume on return.
+// _pollPaused distinguishes a hidden-pause (re-arm on visible) from an intentional stopPolling (terminal ride /
+// cancel -> stays stopped, never re-armed). Independent of the resilience flag -- the poll must always pause hidden.
+var _pollPaused=false;
+function _rideResumePoll(){
+  if(_pollPaused && _rideId && document.visibilityState==='visible'){
+    _pollPaused=false; _pollTimer=setInterval(pollRideStatus,4000); pollRideStatus(); startRiderWatch();
+  }
+}
 if(typeof document!=='undefined'){
-  document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') _rideResume(); });
-  window.addEventListener('online', _rideResume);
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='visible'){ _rideResumePoll(); _rideResume(); }
+    else if(_pollTimer){ _pollPaused=true; clearInterval(_pollTimer); _pollTimer=null; }  // backgrounded -> pause the poll
+  });
+  window.addEventListener('online', function(){ _rideResumePoll(); _rideResume(); });
 }
 
 // Track the rider's own device location live while a ride is active, so the
@@ -2496,6 +2508,7 @@ function updateStatusUI(ride, driverLoc){
   // Completed
   if(st==='completed'){
     stopPolling();
+    try{ localStorage.removeItem('pb_active_ride'); }catch(e){}  // ride is over -> a cold reopen must NOT re-arm the 4s poll
     _clearRiderRoute();
     $d('extendModal').style.display='none';
     $d('doneCard').style.display='block';
@@ -2524,6 +2537,7 @@ function updateStatusUI(ride, driverLoc){
   }
   if(['cancelled','no_driver'].includes(st)){
     stopPolling();
+    try{ localStorage.removeItem('pb_active_ride'); }catch(e){}  // ride is over -> a cold reopen must NOT re-arm the 4s poll
     _clearRiderRoute();
     $d('extendModal').style.display='none';
     $d('cancelRideBtn').style.display='none';
