@@ -4685,8 +4685,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v254';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v256';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v255';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v257';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8665,7 +8665,7 @@ function _kpiDetailData(key, s){
     return {title:'Net Revenue',total:v.netRevenue,note:'Revenue to Prestige Black after broker fees are deducted (earned-date basis) + rides + other income.',groups:groups};
   }
   if(key==='cardFee'){
-    var g=[]; (s.allActive||[]).forEach(function(b){ var cr=_earnedCardRevInWindow(b,cutoff,tod); if(cr>0.005){ var row=_kdBkRow(b,cr*0.1325); row.sub=esc((b.vehicle||'')+' \u00B7 '+_kdMoney(cr)+' card revenue \u00D7 13.25%'); g.push(row); } });
+    var g=[]; (s.allActive||[]).forEach(function(b){ var cr=_earnedCardRevInWindow(b,cutoff,tod); if(cr>0.005){ var row=_kdBkRow(b,cr*0.1325+_earnedDlPremiumDelta(b,cutoff,tod)); row.sub=esc((b.vehicle||'')+' \u00B7 '+_kdMoney(cr)+' card revenue \u00D7 13.25%'); g.push(row); } });
     return {title:'Card Fees (13.25%)',total:v.cardFee,note:'5% processing + 8.25% tax on CARD/Stripe-collected revenue only (cash/Zelle/etc excluded). Per booking = its card revenue this period \u00D7 13.25%.',groups:[{head:'Card/Stripe bookings',rows:_kdSort(g)}]};
   }
   if(key==='netProfit'){
@@ -9023,8 +9023,9 @@ function renderKPIs(filtered, containerId){
     // EARNED-DATE card fee for 7/30/90/all so it grosses up the SAME earned booking revenue (13.25% of the
     // earned CARD portion); Today stays cash-basis (13.25% of card actually collected today).
     cardFeeUplift = (_kpiPeriod==='today')
-      ? _stripeBaseToday * 0.1325
-      : allActive.reduce(function(s,b){ return s+_earnedCardRevInWindow(b, _kpiPeriod==='all'?'':cutoff, tod); },0) * 0.1325;
+      ? _stripeBaseToday * 0.1325 + allActive.reduce(function(s,b){ return s+((Number(b.dateLock)>0 && b.dateLockPaidAt && dateStr(new Date(b.dateLockPaidAt))===tod && !_p2pMethod(b.dateLockMethod)) ? _dlExactPremium(b) : 0); },0)
+      : allActive.reduce(function(s,b){ return s+_earnedCardRevInWindow(b, _kpiPeriod==='all'?'':cutoff, tod); },0) * 0.1325
+        + allActive.reduce(function(s,b){ return s+_earnedDlPremiumDelta(b, _kpiPeriod==='all'?'':cutoff, tod); },0);
   }
   // -- Gross revenue (before broker fees) + the card-fee uplift --
   var grossRev;
@@ -9237,7 +9238,7 @@ function renderCharts(filtered){
     if(_inWinC(pickup)){ var pk=_bkKey(pickup,gran); if(pk){
       var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
       R[pk]=(R[pk]||0)+baseAll; C[pk]=(C[pk]||0)+getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b);
-      var cf=((_cardBal?Math.max(0,baseAll-dl):0)+(_cardDL?dl:0))*0.1325;
+      var cf=(_cardBal?Math.max(0,baseAll-dl):0)*0.1325+(_cardDL?_dlExactPremium(b):0);
       if(cf){ R[pk]=(R[pk]||0)+cf; C[pk]=(C[pk]||0)+cf; _chartCardFee+=cf; _chartCardFeeN++; }
     } }
     (b.extensions||[]).forEach(function(e){
@@ -9667,7 +9668,7 @@ function openTypeDrilldown(typeKey){
         var pickup=b.pickupDate||b.date||'', fee=0;
         if(inWin(pickup)){ var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
           if(!_p2pMethod(b.balancePaidMethod)) fee+=Math.max(0,baseAll-dl)*0.1325;
-          if(!_p2pMethod(b.dateLockMethod)) fee+=dl*0.1325; }
+          if(!_p2pMethod(b.dateLockMethod)) fee+=_dlExactPremium(b); }
         (b.extensions||[]).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(inWin(ed)&&!_p2pMethod(e&&e.paymentMethod)) fee+=amt*0.1325; });
         (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)))return; if(inWin(dateStr(new Date(c.paidAt)))&&!_p2pMethod(c.paidMethod)) fee+=(Number(c.amount)||0)*0.1325; });
         if(fee>0.5){ total+=fee; cr.push({id:b.id,date:(b.pickupDate||b.date||''),name:b.name,sub:'card sale',vehicle:b.vehicle,val:fee}); }
@@ -9694,7 +9695,7 @@ function openBucketDrilldown(bucketKey){
       var pickup=b.pickupDate||b.date||'';
       if(inWin(pickup)){
         var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
-        var cf=((!_p2pMethod(b.balancePaidMethod)?Math.max(0,baseAll-dl):0)+(!_p2pMethod(b.dateLockMethod)?dl:0))*0.1325;
+        var cf=(!_p2pMethod(b.balancePaidMethod)?Math.max(0,baseAll-dl):0)*0.1325+(!_p2pMethod(b.dateLockMethod)?_dlExactPremium(b):0);
         totR+=baseAll+cf; revRows.push({id:b.id,date:pickup,name:b.name,sub:'base'+(cf?' + card fee':''),vehicle:b.vehicle,val:baseAll+cf});
         var cost=getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b)+cf;
         if(cost){ totC+=cost; costRows.push({id:b.id,date:pickup,name:b.name,sub:'est cost'+(b.brokerFee?' + broker':'')+(cf?' + card fee':''),vehicle:b.vehicle,val:cost}); }
@@ -24810,6 +24811,25 @@ function _earnedBrokerInWindow(b, cutoff, tod){
 }
 // Explicit P2P / non-card method (blank does NOT match -> defaults to card for the earned gross-up).
 function _p2pMethod(m){ return /zelle|cash|venmo|cashapp|cash app|wire|check|apple ?pay|other/.test(String(m||'').toLowerCase()); }
+// EXACT card premium the client paid on a date lock. The worker stores dateLockGross (base + 5% fee +
+// 8.25% tax, e.g. $113.66 on a $100 lock) while only dateLock ($100) credits the booking. The true
+// gross-up is dateLockGross - dateLock ($13.66) -- a hair over the flat 13.25% ($13.25) because tax also
+// applies to the fee. Falls back to the legacy 13.25% for older locks with no stored gross, so nothing
+// about existing data changes. Net revenue/profit still use dateLock ($100 flat); only GROSS gains this.
+function _dlExactPremium(b){
+  var dl=Number(b&&b.dateLock)||0, g=Number(b&&b.dateLockGross)||0;
+  return g>dl ? (g-dl) : dl*0.1325;
+}
+// DELTA between the exact date-lock premium and the flat 13.25% the 13.25% machinery already applied
+// (0 for legacy locks). Added on top where a date lock is counted at 13.25%, gated on pickup-in-window +
+// card method to mirror where that base counts it -> the aggregate becomes exact without touching the base.
+function _earnedDlPremiumDelta(b, cutoff, tod){
+  if(!b) return 0;
+  var dl=Number(b.dateLock)||0; if(dl<=0 || _p2pMethod(b.dateLockMethod)) return 0;
+  var ds=(b.pickupDate||b.date||'').slice(0,10);
+  if(cutoff && !(ds && ds>=cutoff && ds<=(tod||todayStr()))) return 0;
+  return _dlExactPremium(b) - dl*0.1325;
+}
 // Earned-date CARD revenue in [cutoff,tod] -> the 13.25% base, on the SAME attribution as _earnedRevInWindow
 // but only the CARD portion: base (excl. date lock) by balancePaidMethod, date lock by dateLockMethod,
 // extensions by paymentMethod, portal charges by paidMethod. Blank = card; explicit P2P (cash/zelle/etc)
