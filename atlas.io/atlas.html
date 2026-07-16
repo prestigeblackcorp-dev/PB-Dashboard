@@ -1610,8 +1610,9 @@ const Atlas = (function(){
     var exLines=extras.map(function(x){ var each=(x.price||0)*(x.qty||1); return {name:x.name, amt:(x.per==='unit')? each*periods : each}; });
     var exTotal=exLines.reduce(function(s,l){return s+l.amt;},0);
     var gross=(m.baseRate||0)*periods + addons + exTotal, disc=0;
-    if(m.monthlyDisc && periods>=28) disc=gross*m.monthlyDisc/100;
-    else if(m.weeklyDisc && periods>=7) disc=gross*m.weeklyDisc/100;
+    var _wkP=(m.rateModel==='hour'?168:m.rateModel==='week'?1:7), _moP=(m.rateModel==='hour'?672:m.rateModel==='week'?4:28);   // "weekly"/"monthly" thresholds in the CURRENT rate-model's periods (was a fixed 7/28 -> a 7-hour rental wrongly got the weekly discount)
+    if(m.monthlyDisc && periods>=_moP) disc=gross*m.monthlyDisc/100;
+    else if(m.weeklyDisc && periods>=_wkP) disc=gross*m.weeklyDisc/100;
     if(discount && discount.type && discount.type!=='none' && discount.value){
       disc += (discount.type==='percent')? gross*(discount.value||0)/100 : (discount.value||0); }
     disc=Math.min(disc, gross);
@@ -2307,6 +2308,7 @@ const Atlas = (function(){
   function assetUnblock(id,bid){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; a.blackouts=_blackouts(a).filter(function(x){return x.id!==bid;}); _saveAssets(); openAsset(id); }
   function renderOverview(){
     DATA.bookings=_bookings();
+    _recomputeUtil();   // real per-asset utilization from bookings -> KPI, charts + AI all agree
     const _bk=DATA.bookings.filter(b=>b.status!=='Cancelled');
     const rev=_bk.reduce((s,b)=>s+_bkTotal(b),0);
     const active=_bk.filter(b=>b.status==='On rent').length;   // On rent only -- Confirmed belongs to Upcoming (was double-counted in both KPIs)
@@ -2517,6 +2519,47 @@ const Atlas = (function(){
   function _upsertBooking(b){ var a=_bookings(); var i=a.map(function(x){return x.id;}).indexOf(b.id); if(i>=0)a[i]=b; else a.unshift(b); _saveBookings(a); }
   function _delBooking(id){ _saveBookings(_bookings().filter(function(b){return b.id!==id;})); }
   function _bkTotal(b){ return Math.round((b&&b.quote&&b.quote.total)||(b&&b.total)||0); }
+  // ---- Real metrics: ALL derived from _bookings() so the KPIs, charts, fleet grid, customers + Atlas.io agree ----
+  // Per-asset utilization = share of the trailing 30 days this asset is booked (excludes cancelled).
+  function _assetUtil(a){
+    if(!a||!a.name) return 0;
+    var now=Date.now(), win=30*86400000, from=now-win, booked=0, pm=_periodMs();
+    (_bookings()||[]).forEach(function(b){
+      if(!b||b.status==='Cancelled'||b.asset!==a.name) return;
+      var s=Number(b.startTs)||Number(b.createdAt)||0; if(!s) return;
+      var e=Number(b.endTs)||(s+(Number(b.periods)||1)*pm);
+      var lo=Math.max(s,from), hi=Math.min(e,now);
+      if(hi>lo) booked+=(hi-lo);
+    });
+    return Math.max(0,Math.min(100,Math.round(booked/win*100)));
+  }
+  // Recompute util onto every asset so the Overview KPI, fleet grid, Top Performers + AI read the SAME value.
+  function _recomputeUtil(){ try{ (DATA.assets||[]).forEach(function(a){ a.util=_assetUtil(a); }); }catch(e){} }
+  // 8-week revenue + booking-count series (oldest..newest) from real bookings, for the Overview chart.
+  function _revSeries(){
+    var now=Date.now(), wk=7*86400000, weeks=8, rev=[], cnt=[], i;
+    for(i=0;i<weeks;i++){ rev.push(0); cnt.push(0); }
+    (_bookings()||[]).forEach(function(b){
+      if(!b||b.status==='Cancelled') return;
+      var s=Number(b.startTs)||Number(b.createdAt)||0; if(!s) return;
+      var wi=Math.floor((now-s)/wk); if(wi<0)wi=0; if(wi>=weeks) return;
+      rev[weeks-1-wi]+=_bkTotal(b); cnt[weeks-1-wi]+=1;
+    });
+    return {rev:rev,cnt:cnt};
+  }
+  // Revenue-by-source breakdown from real bookings, for the donut.
+  function _srcBreakdown(){
+    var map={}, total=0, lab={website:'Website',portal:'Portal',direct:'Direct',manual:'Direct',partners:'Partners',partner:'Partners'};
+    (_bookings()||[]).forEach(function(b){ if(!b||b.status==='Cancelled')return; var k=(b.source||'direct').toLowerCase(); var amt=_bkTotal(b); map[k]=(map[k]||0)+amt; total+=amt; });
+    var segs=Object.keys(map).map(function(k){ return [lab[k]||(k.charAt(0).toUpperCase()+k.slice(1)), total>0?Math.round(map[k]/total*100):0, map[k]]; }).sort(function(x,y){return y[2]-x[2];});
+    return {segs:segs,total:total};
+  }
+  // Per-customer trips + spend from real bookings (excludes cancelled), keyed by email then name (matches viewCustomer).
+  function _custStats(name,email){
+    var trips=0, spent=0, key=(email||'').toLowerCase(), nm=(name||'').toLowerCase();
+    (_bookings()||[]).forEach(function(b){ if(!b||b.status==='Cancelled')return; var m=key?((b.custEmail||'').toLowerCase()===key):(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });
+    return {trips:trips,spent:spent};
+  }
   function _fmtDay(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
   function _perUnit(){ return S.money.rateModel==='hour'?'hrs':(S.money.rateModel==='week'?'wks':'days'); }
   function renderBookings(){
@@ -2821,9 +2864,9 @@ const Atlas = (function(){
   }
   function renderCustomers(){
     document.getElementById('custTbl').innerHTML=`<thead><tr><th>Customer</th><th>Trips</th><th>Total spent</th><th>Last active</th><th></th></tr></thead><tbody>`+
-      DATA.customers.map((c,i)=>`<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
-      <td class="tnum">${c.trips}</td><td class="tnum"><b>${money(c.spent)}</b></td><td class="tnum">${c.last} ago</td>
-      <td><button class="btn btn--ghost btn--sm" onclick="Atlas.viewCustomer(${i})">View</button></td></tr>`).join('')+`</tbody>`;
+      DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email); return `<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
+      <td class="tnum">${_cs.trips}</td><td class="tnum"><b>${money(_cs.spent)}</b></td><td class="tnum">${c.last} ago</td>
+      <td><button class="btn btn--ghost btn--sm" onclick="Atlas.viewCustomer(${i})">View</button></td></tr>`; }).join('')+`</tbody>`;
   }
   // Real customer profile: pulls this person's actual bookings (by email, then name), reconciled totals, clickable history.
   function viewCustomer(i){ var c=DATA.customers[i]; if(!c)return;
@@ -3134,13 +3177,13 @@ const Atlas = (function(){
     const cv=document.getElementById('revChart'); if(!cv)return; const ctx=cv.getContext('2d');
     const w=cv.clientWidth,h=cv.clientHeight,dpr=window.devicePixelRatio||1; cv.width=w*dpr;cv.height=h*dpr;ctx.scale(dpr,dpr);
     ctx.clearRect(0,0,w,h);
-    const data=[32,41,38,52,47,63,58,71], bk=[12,15,14,19,17,22,20,26], pad=8, bw=(w-pad*2)/data.length*0.5, gap=(w-pad*2)/data.length;
-    const max=Math.max(...data)*1.15, base=h-22;
+    var _rs=_revSeries(); const data=_rs.rev, bk=_rs.cnt, pad=8, bw=(w-pad*2)/data.length*0.5, gap=(w-pad*2)/data.length;
+    const max=Math.max(1,Math.max.apply(null,data))*1.15, bmax=Math.max(1,Math.max.apply(null,bk)), base=h-22;
     const brand=_cssVar('--brand'), brand1=_cssVar('--brand-100'), surf=_cssVar('--surface')||'#fff', faint=_cssVar('--faint')||'#A9AEB6';
     // line for bookings
     data.forEach((v,i)=>{ const x=pad+gap*i+gap/2, bh=(v/max)*(base-10);
       // bar
-      ctx.fillStyle=brand1; roundRect(ctx,x-bw/2,base-(bk[i]/max)*(base-10),bw,(bk[i]/max)*(base-10),3); ctx.fill();
+      ctx.fillStyle=brand1; var _bh=(bk[i]/bmax)*(base-10)*0.85; roundRect(ctx,x-bw/2,base-_bh,bw,_bh,3); ctx.fill();
     });
     ctx.strokeStyle=brand; ctx.lineWidth=2.4; ctx.beginPath();
     data.forEach((v,i)=>{ const x=pad+gap*i+gap/2, y=base-(v/max)*(base-10); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
@@ -3152,14 +3195,14 @@ const Atlas = (function(){
   function drawSrcChart(){
     const cv=document.getElementById('srcChart'); if(!cv)return; const ctx=cv.getContext('2d');
     const w=cv.clientWidth,h=cv.clientHeight,dpr=window.devicePixelRatio||1;cv.width=w*dpr;cv.height=h*dpr;ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);
-    const segs=[['Website',44],['Portal',28],['Direct',18],['Partners',10]];
+    var _sb=_srcBreakdown(); const segs=_sb.segs.length?_sb.segs:[['No bookings yet',100,0]];
     const brand=_cssVar('--brand'), surf=_cssVar('--surface')||'#fff', ink=_cssVar('--ink')||'#14181F', muted=_cssVar('--muted')||'#7C828C', body=_cssVar('--body')||'#3B434C';
     const cx=w*0.32,cy=h/2,r=Math.min(w*0.28,h*0.4),ir=r*0.6; let a=-Math.PI/2;
-    const cols=[brand,shade(brand,-18),tint(brand,.4),tint(brand,.7)];
-    segs.forEach((s,i)=>{const ang=s[1]/100*Math.PI*2;ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,a,a+ang);ctx.closePath();ctx.fillStyle=cols[i];ctx.fill();a+=ang;});
+    const cols=[brand,shade(brand,-18),tint(brand,.4),tint(brand,.7),tint(brand,.85)];
+    segs.forEach((s,i)=>{const ang=(s[1]||0)/100*Math.PI*2;ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,a,a+ang);ctx.closePath();ctx.fillStyle=cols[i%cols.length];ctx.fill();a+=ang;});
     ctx.beginPath();ctx.arc(cx,cy,ir,0,7);ctx.fillStyle=surf;ctx.fill();
-    ctx.fillStyle=ink;ctx.font='700 15px -apple-system';ctx.textAlign='center';ctx.fillText('$96k',cx,cy+2);ctx.fillStyle=muted;ctx.font='10px -apple-system';ctx.fillText('total',cx,cy+15);
-    segs.forEach((s,i)=>{const y=h/2-30+i*20;ctx.fillStyle=cols[i];roundRect(ctx,w*0.62,y-8,11,11,3);ctx.fill();ctx.fillStyle=body;ctx.font='12px -apple-system';ctx.textAlign='left';ctx.fillText(`${s[0]}  ${s[1]}%`,w*0.62+18,y+1);});
+    ctx.fillStyle=ink;ctx.font='700 15px -apple-system';ctx.textAlign='center';ctx.fillText(money(Math.round(_sb.total)),cx,cy+2);ctx.fillStyle=muted;ctx.font='10px -apple-system';ctx.fillText('total',cx,cy+15);
+    segs.slice(0,4).forEach((s,i)=>{const y=h/2-30+i*20;ctx.fillStyle=cols[i%cols.length];roundRect(ctx,w*0.62,y-8,11,11,3);ctx.fill();ctx.fillStyle=body;ctx.font='12px -apple-system';ctx.textAlign='left';ctx.fillText(`${s[0]}  ${s[1]}%`,w*0.62+18,y+1);});
   }
   function roundRect(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
@@ -3181,7 +3224,7 @@ const Atlas = (function(){
     var signed=(DATA.assets||[]).filter(function(a){return a.agreement&&(a.agreement.status==='signed'||a.agreement.status==='uploaded');}).length;
     var emails=_events().filter(function(e){return e.type==='email';}).length;
     return [['Bookings',bks.length.toLocaleString()],['Gross revenue',money(Math.round(rev))],[cap(S.fleet.nouns),(DATA.assets||[]).length.toLocaleString()],['Customers',(DATA.customers||[]).length.toLocaleString()],['Signed contracts',signed],['Emails sent',emails]]; }
-  function openLiveDashboard(){ _logEvent('owner','Opened live Prestige Black dashboard'); try{ window.open('https://prestigeblackcorp-dev.github.io/PB-Dashboard/','_blank','noopener'); }catch(e){} toast('Opening your live dashboard'); }
+  function openLiveDashboard(){ _logEvent('owner','Opened live Prestige Black dashboard'); try{ window.open('../index.html','_blank','noopener'); }catch(e){} toast('Opening your live dashboard'); }
   function checkUpdates(){ _logEvent('owner','Checked for updates'); toast('You are on the latest version (v'+APP_VERSION+')'); }
   function viewChangelog(){ openModal('<div class="modal__head"><h3>What is new &middot; v'+APP_VERSION+'</h3>'+_xBtn()+'</div><div class="modal__body"><div class="portal__docs" style="border:none;padding:0">'+APP_CHANGELOG.map(function(c){return '<div class="portal__doc" style="cursor:default"><span>&#10003; '+esc(c)+'</span></div>';}).join('')+'</div></div>'); }
   function toggleFlag(k,on){ if(!_isOwnerAcct()&&_curTier().id!=='diamond')return; _flags()[k]=!!on; save(); var lbl=(OWNER_FLAGS.filter(function(f){return f[0]===k;})[0]||['',k])[1]; _logEvent('owner','Upgrade '+(on?'enabled':'disabled')+': '+lbl,{flag:k}); toast(lbl+(on?' enabled':' disabled')); }
