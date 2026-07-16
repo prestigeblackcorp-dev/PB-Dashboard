@@ -954,13 +954,34 @@ async function verifyOtp(code){
   if(!r.ok){ const e=await r.json().catch(()=>{}); $d('otpStatus').textContent=(e&&e.error)||'Invalid code \u2014 try again'; $d('otpStatus').style.color='var(--red)'; $d('otpHiddenInp').value=''; renderOtp(''); return; }
   const d=await r.json();
   if(!d.token){ $d('otpStatus').textContent='Auth error'; return; }
-  _session={email,token:d.token,name:d.name||'',phone:d.phone||'',photo:d.photo||''};
+  _session={email,token:d.token,name:d.name||'',phone:d.phone||'',photo:d.photo||'',loginAt:Date.now()};
   try{ localStorage.setItem('pb_ride_session',JSON.stringify(_session)); }catch(e){}
   launchApp();
 }
 function signOut(){
   try{ localStorage.removeItem('pb_ride_session'); }catch(e){}
   _session=null; location.reload();
+}
+// Clear a dead session and send the rider back to sign-in with a message.
+function _reauth(msg){
+  try{ localStorage.removeItem('pb_ride_session'); }catch(e){}
+  _session=null;
+  alert(msg||'Your session expired. Please sign in again.');
+  location.reload();
+}
+// The rider app trusts its saved token but the server session expires (30d) or predates
+// the session store, so a stale token silently fails every call with "Unauthorized".
+// On that error from a rider action, auto-recover by re-authenticating. Guard against a
+// re-login loop: if the token was issued moments ago and STILL fails, it's a server-side
+// problem, so surface that instead of bouncing them to sign-in again.
+function _handleAuthErr(errText){
+  if(!errText || !/unauthor/i.test(String(errText))) return false;
+  if(_session && _session.loginAt && (Date.now()-_session.loginAt < 120000)){
+    alert('We could not verify your session. Please try again in a moment \u2014 if it keeps happening, contact support.');
+    return true;
+  }
+  _reauth('Your session expired \u2014 please sign in again, then request your chauffeur.');
+  return true;
 }
 // -- Profile modal ----------------------------------------------------------
 function openProfile(){
@@ -1957,7 +1978,7 @@ async function reserveRide(){
   if(_rideType==='hourly'){ body.hours=_hours; }
   var d=await fetch(WORKER+'/chauffeur/reserve-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
   btn.disabled=false; btn.textContent=_t;
-  if(!d||d.error){ alert(d&&d.error?d.error:'Could not reserve. Try again.'); return; }
+  if(!d||d.error){ if(_handleAuthErr(d&&d.error)) return; alert(d&&d.error?d.error:'Could not reserve. Try again.'); return; }
   setScheduleMode('now'); var s2=$d('scheduledAt'); if(s2) s2.value=''; _scheduledFor=0;
   loadUpcomingRides();
   alert('\u2705 Ride reserved for '+new Date(when).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'. Fare locked at $'+Number(d.price||0).toFixed(2)+'. We\'ll dispatch your chauffeur shortly before pickup.');
@@ -2043,7 +2064,7 @@ async function _dispatchRide(){
   const d=await fetch(WORKER+'/chauffeur/request-ride',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>null);
   btn.disabled=false;
   btn.textContent=_scheduleMode==='later'?'Reserve Chauffeur':'Request Chauffeur';
-  if(!d||d.error){ alert(d&&d.error?d.error:'Could not request ride. Try again.'); return; }
+  if(!d||d.error){ if(_handleAuthErr(d&&d.error)) return; alert(d&&d.error?d.error:'Could not request ride. Try again.'); return; }
   _rideId=d.rideId;
   ensurePushSubscription('rider');
   try{ localStorage.setItem('pb_active_ride',_rideId); }catch(e){}
