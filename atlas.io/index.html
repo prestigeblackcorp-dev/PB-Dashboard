@@ -586,6 +586,10 @@ table.tbl{width:100%;border-collapse:collapse}
 .drawer{position:fixed;top:0;left:0;bottom:0;width:83%;max-width:320px;background:var(--sidebar);color:var(--sidebar-text);z-index:61;transform:translateX(-102%);transition:transform .22s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;box-shadow:var(--shadow-lg)}
 .drawer.on{transform:none}
 .drawer__head{padding:16px 16px 13px;display:flex;align-items:center;gap:11px;border-bottom:1px solid var(--sidebar-line)}
+.drawer__search{position:relative;margin:12px 12px 2px}
+.drawer__search input{width:100%;border:1px solid var(--sidebar-line);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:11px 12px 11px 36px;font-size:16px;font-family:inherit}
+.drawer__search input::placeholder{color:var(--sidebar-text)}
+.drawer__search>svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--sidebar-text)}
 .drawer__logo{width:34px;height:34px;border-radius:9px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;overflow:hidden;flex:none}
 .drawer__logo img{width:100%;height:100%;object-fit:cover}
 .drawer__x{margin-left:auto;background:none;border:none;color:var(--sidebar-text);padding:6px;cursor:pointer;flex:none}
@@ -1833,7 +1837,7 @@ const Atlas = (function(){
     invite:()=>`
       <h2>Invite your team</h2><p class="ob-card__lead">Add employees now or skip &mdash; you can manage roles anytime.</p>
       <div class="field"><label>Teammate email</label><input class="input" placeholder="name@yourcompany.com" value="${esc(S.invite.email||'')}" oninput="Atlas.setField('invite.email',this.value)"></div>
-      <div class="field"><label>Role</label><select class="select" onchange="Atlas.setField('invite.role',this.value)"><option>Manager &mdash; full access except billing</option><option>Staff &mdash; bookings &amp; customers</option><option>Viewer &mdash; read-only</option></select></div>
+      <div class="field"><label>Role</label><select class="select" onchange="Atlas.setField('invite.role',this.value)"><option value="manager">Manager &mdash; full access except billing</option><option value="desk">Staff &mdash; bookings &amp; customers</option><option value="viewer">Viewer &mdash; read-only</option></select></div>
       <button class="btn btn--ghost btn--sm" onclick="Atlas.toast('Invitation queued')">+ Add another</button>
       ${obNav('Finish setup')}`,
 
@@ -2123,6 +2127,8 @@ const Atlas = (function(){
     d.innerHTML='<div class="drawer__head"><div class="drawer__logo">'+(S.brand.logo?'<img src="'+esc(S.brand.logo)+'">':esc(S.brand.initial))+'</div>'
       +'<div style="min-width:0;flex:1"><b style="color:#fff;font-size:15px;display:block;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(S.brand.name)+'</b><small style="color:var(--sidebar-text);font-size:11.5px">'+esc(_tierCap(_curTier()))+' plan</small></div>'
       +'<button class="drawer__x" onclick="Atlas.closeMenu()" aria-label="Close menu"><svg viewBox="0 0 20 20" width="20" height="20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>'
+      +'<div class="drawer__search"><svg viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
+      +'<input id="drawerSearch" placeholder="Search '+esc(_fterm('books'))+', '+esc(S.fleet.nouns)+', customers..." autocomplete="off" oninput="Atlas.search(this.value,\'drawerSearchPop\')"><div id="drawerSearchPop" class="search-pop" style="display:none"></div></div>'
       +'<nav class="drawer__nav"><div class="drawer__sec">Operations</div>'+shown.map(item).join('')
       +'<div class="drawer__sec">Quick actions</div>'
       +'<button class="nav-item" onclick="Atlas.closeMenu();Atlas.openAio()"><svg viewBox="0 0 20 20" fill="none"><path d="M10 2l1.6 4.4L16 8l-4.4 1.6L10 14l-1.6-4.4L4 8l4.4-1.6L10 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>Ask Atlas.io</button>'
@@ -2152,8 +2158,8 @@ const Atlas = (function(){
 
   /* ---- global search: bookings, units, properties, tenants, customers -- anything on the dashboard ---- */
   function _srItem(ic,title,sub,action){ return '<div class="sr" onmousedown="'+action+';Atlas._searchClose()"><span class="sr__ic">'+esc(String(ic).slice(0,2))+'</span><div style="min-width:0"><b>'+esc(title)+'</b><small>'+sub+'</small></div></div>'; }
-  function _searchClose(){ var el=document.getElementById('searchPop'); if(el)el.style.display='none'; var i=document.getElementById('globalSearch'); if(i)i.value=''; }
-  function search(q){ var el=document.getElementById('searchPop'); if(!el)return; q=(q||'').trim().toLowerCase();
+  function _searchClose(){ ['searchPop','drawerSearchPop'].forEach(function(p){ var el=document.getElementById(p); if(el){el.style.display='none';el.innerHTML='';} }); ['globalSearch','drawerSearch'].forEach(function(n){ var i=document.getElementById(n); if(i)i.value=''; }); }
+  function search(q,popId){ var el=document.getElementById(popId||'searchPop'); if(!el)return; q=(q||'').trim().toLowerCase();
     if(!q){ el.style.display='none'; el.innerHTML=''; return; }
     var m=function(s){ return String(s||'').toLowerCase().indexOf(q)>=0; }, out=[];
     function grp(g,items){ if(items.length){ out.push('<div class="sr-grp">'+esc(g)+'</div>'); out.push.apply(out,items); } }
@@ -2168,7 +2174,7 @@ const Atlas = (function(){
     el.innerHTML = out.length? out.join('') : '<div class="sr-empty">No matches for &ldquo;'+esc(q)+'&rdquo;</div>';
     el.style.display='block';
   }
-  function searchGo(kind,id){
+  function searchGo(kind,id){ try{closeMenu();}catch(e){}   // drawer search: navigate + close the menu (no-op on desktop)
     if(kind==='booking'){ if(_canMod('bookings')){ go('bookings'); openBooking(id); } }
     else if(kind==='asset'){ if(_canMod('fleet')){ go('fleet'); openAsset(id); } }
     else if(kind==='loc'){ if(_canMod('fleet')){ _fleetLocFilter=id; go('fleet'); renderFleet(); } }
@@ -2229,7 +2235,7 @@ const Atlas = (function(){
   function _ledger(){ if(!S.ledger) S.ledger={incomes:[],expenses:[]}; if(!S.ledger.incomes)S.ledger.incomes=[]; if(!S.ledger.expenses)S.ledger.expenses=[]; return S.ledger; }
   function _otherIncome(){ return _ledger().incomes.reduce(function(s,x){return s+(x.amount||0);},0); }
   function _totalExpenses(){ return _ledger().expenses.reduce(function(s,x){return s+(x.amount||0);},0); }
-  function _bookingRevenue(){ return (DATA.bookings||[]).filter(function(b){return b.status!=='Cancelled';}).reduce(function(s,b){return s+_bkTotal(b);},0); }
+  function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkTotal(b);},0); }
   function _netProfit(){ return _bookingRevenue() + _otherIncome() - _totalExpenses(); }
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
@@ -2245,17 +2251,17 @@ const Atlas = (function(){
   function _bkList(fn, opts){ opts=opts||{}; return (DATA.bookings||[]).filter(fn).map(function(b){ return {
     label:'<b>'+esc(b.cust||b.id)+'</b>', sub:esc(b.asset)+' &middot; '+b.id, chip:(opts.chip?statusChip(b.status):''),
     amt:opts.noAmt?null:_bkTotal(b), onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')" }; }); }
-  function drillKpi(which){ var nc=function(b){return b.status!=='Cancelled';};
+  function drillKpi(which){ var nc=_isCommitted;   // realized bookings only (excludes pending pipeline + cancelled) -- ties to every revenue surface
     if(which==='rev'||which==='anaRev'){ _drill('Revenue', 'Every '+_fterm('book')+' behind your revenue &mdash; tap one to open it', _bkList(nc).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total revenue'}); }
     else if(which==='active'){ _drill(cap(_fterm('active')), 'Out on rent or confirmed right now', _bkList(function(b){return b.status==='On rent'||b.status==='Confirmed';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing active right now.'}); }
     else if(which==='util'){ _drill(cap(_fterm('util')), 'Utilization per '+esc(S.fleet.noun), (DATA.assets||[]).slice().sort(function(a,b){return b.util-a.util;}).map(function(a){return {label:'<b>'+esc(a.name)+'</b>',sub:esc(a.status),chip:'<b class="tnum">'+a.util+'%</b>',onClick:"Atlas.closeModal();Atlas.openAsset('"+a.id+"')"};}), {showTotal:false}); }
     else if(which==='upcoming'){ _drill('Upcoming', 'Confirmed and pending '+_fterm('books'), _bkList(function(b){return b.status==='Confirmed'||b.status==='Pending';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing upcoming.'}); }
-    else if(which==='count'){ _drill(cap(_fterm('books')), 'All '+_fterm('books')+' (cancelled excluded)', _bkList(nc), {totalLabel:'Total revenue'}); }
+    else if(which==='count'){ _drill(cap(_fterm('books')), 'Earned '+_fterm('books')+' (pending + cancelled excluded)', _bkList(nc), {totalLabel:'Total revenue'}); }
     else if(which==='avg'){ _drill('Average '+_fterm('book'), 'The average is the mean of these', _bkList(nc).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total'}); }
     else if(which==='repeat'){ var by={}; (DATA.bookings||[]).filter(nc).forEach(function(b){ (by[b.cust]=by[b.cust]||[]).push(b); });
       _drill('Repeat customers', 'Customers with 2 or more '+_fterm('books'), Object.keys(by).map(function(c){return {n:by[c].length,name:c};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }
     else if(which==='net'){ _drill('Net profit', 'Booking revenue, plus other income, minus expenses', [
-      {label:'<b>Booking revenue</b>',sub:'non-cancelled '+_fterm('books'),amt:_bookingRevenue(),onClick:"Atlas.drillKpi('rev')"},
+      {label:'<b>Booking revenue</b>',sub:'earned '+_fterm('books'),amt:_bookingRevenue(),onClick:"Atlas.drillKpi('rev')"},
       {label:'<b>Other income</b>',sub:_ledger().incomes.length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"},
       {label:'<b>Expenses</b>',sub:_ledger().expenses.length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"}
     ], {total:_netProfit(), totalLabel:'Net profit'}); } }
@@ -2310,7 +2316,7 @@ const Atlas = (function(){
     DATA.bookings=_bookings();
     _recomputeUtil();   // real per-asset utilization from bookings -> KPI, charts + AI all agree
     const _bk=DATA.bookings.filter(b=>b.status!=='Cancelled');
-    const rev=_bk.reduce((s,b)=>s+_bkTotal(b),0);
+    const rev=_bk.filter(_isCommitted).reduce((s,b)=>s+_bkTotal(b),0);   // earned only -- pending stays in Upcoming, not Revenue
     const active=_bk.filter(b=>b.status==='On rent').length;   // On rent only -- Confirmed belongs to Upcoming (was double-counted in both KPIs)
     const util=Math.round(DATA.assets.reduce((s,a)=>s+a.util,0)/Math.max(1,DATA.assets.length));
     const kpis=[['Revenue',money(rev),'rev','M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7'],
@@ -2519,13 +2525,17 @@ const Atlas = (function(){
   function _upsertBooking(b){ var a=_bookings(); var i=a.map(function(x){return x.id;}).indexOf(b.id); if(i>=0)a[i]=b; else a.unshift(b); _saveBookings(a); }
   function _delBooking(id){ _saveBookings(_bookings().filter(function(b){return b.id!==id;})); }
   function _bkTotal(b){ return Math.round((b&&b.quote&&b.quote.total)||(b&&b.total)||0); }
+  // ONE basis for "realized business". A booking counts toward revenue, occupancy + reconciled reports only once it is
+  // COMMITTED (accepted). Pending = pipeline -- shown ONLY in the Upcoming KPI + the Bookings tab, never counted as earned
+  // revenue. Cancelled = excluded everywhere. Every money/util/report surface routes through this so they all tie out.
+  function _isCommitted(b){ return !!b && b.status!=='Cancelled' && b.status!=='Pending'; }
   // ---- Real metrics: ALL derived from _bookings() so the KPIs, charts, fleet grid, customers + Atlas.io agree ----
   // Per-asset utilization = share of the trailing 30 days this asset is booked (excludes cancelled).
   function _assetUtil(a){
     if(!a||!a.name) return 0;
     var now=Date.now(), win=30*86400000, from=now-win, booked=0, pm=_periodMs();
     (_bookings()||[]).forEach(function(b){
-      if(!b||b.status==='Cancelled'||b.asset!==a.name) return;
+      if(!_isCommitted(b)||b.asset!==a.name) return;
       var s=Number(b.startTs)||Number(b.createdAt)||0; if(!s) return;
       var e=Number(b.endTs)||(s+(Number(b.periods)||1)*pm);
       var lo=Math.max(s,from), hi=Math.min(e,now);
@@ -2540,7 +2550,7 @@ const Atlas = (function(){
     var now=Date.now(), wk=7*86400000, weeks=8, rev=[], cnt=[], i;
     for(i=0;i<weeks;i++){ rev.push(0); cnt.push(0); }
     (_bookings()||[]).forEach(function(b){
-      if(!b||b.status==='Cancelled') return;
+      if(!_isCommitted(b)) return;
       var s=Number(b.startTs)||Number(b.createdAt)||0; if(!s) return;
       var wi=Math.floor((now-s)/wk); if(wi<0)wi=0; if(wi>=weeks) return;
       rev[weeks-1-wi]+=_bkTotal(b); cnt[weeks-1-wi]+=1;
@@ -2550,14 +2560,14 @@ const Atlas = (function(){
   // Revenue-by-source breakdown from real bookings, for the donut.
   function _srcBreakdown(){
     var map={}, total=0, lab={website:'Website',portal:'Portal',direct:'Direct',manual:'Direct',partners:'Partners',partner:'Partners'};
-    (_bookings()||[]).forEach(function(b){ if(!b||b.status==='Cancelled')return; var k=(b.source||'direct').toLowerCase(); var amt=_bkTotal(b); map[k]=(map[k]||0)+amt; total+=amt; });
+    (_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var k=(b.source||'direct').toLowerCase(); var amt=_bkTotal(b); map[k]=(map[k]||0)+amt; total+=amt; });
     var segs=Object.keys(map).map(function(k){ return [lab[k]||(k.charAt(0).toUpperCase()+k.slice(1)), total>0?Math.round(map[k]/total*100):0, map[k]]; }).sort(function(x,y){return y[2]-x[2];});
     return {segs:segs,total:total};
   }
   // Per-customer trips + spend from real bookings (excludes cancelled), keyed by email then name (matches viewCustomer).
   function _custStats(name,email){
     var trips=0, spent=0, key=(email||'').toLowerCase(), nm=(name||'').toLowerCase();
-    (_bookings()||[]).forEach(function(b){ if(!b||b.status==='Cancelled')return; var m=key?((b.custEmail||'').toLowerCase()===key):(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });
+    (_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var m=key?((b.custEmail||'').toLowerCase()===key):(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });
     return {trips:trips,spent:spent};
   }
   function _fmtDay(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
@@ -2872,7 +2882,7 @@ const Atlas = (function(){
   function viewCustomer(i){ var c=DATA.customers[i]; if(!c)return;
     var key=(c.email||'').toLowerCase(), nm=(c.name||'').toLowerCase();
     var mine=(DATA.bookings||[]).filter(function(b){ return (b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm); });
-    var nc=mine.filter(function(b){return b.status!=='Cancelled';});
+    var nc=mine.filter(_isCommitted);   // earned only -- matches the Customers row (_custStats) + Analytics
     var spent=nc.reduce(function(s,b){return s+((b.quote&&b.quote.total)||0);},0), trips=nc.length;
     var codes={}; mine.forEach(function(b){ if(b.promoCode) codes[b.promoCode]=1; });
     var rows=mine.slice().sort(function(a,b){return (b.startTs||0)-(a.startTs||0);}).map(function(b){ var q=b.quote||{};
@@ -2893,7 +2903,7 @@ const Atlas = (function(){
   function renderAnalytics(){
     if(!document.getElementById('anaKpis')) return;   // only when the Analytics panel is mounted
     // All derived from real bookings + your ledger -- reconciles with Overview + Reports (no hardcoded figures).
-    var _nc=(DATA.bookings||[]).filter(b=>b.status!=='Cancelled');
+    var _nc=(DATA.bookings||[]).filter(_isCommitted);   // earned bookings -- revenue, count + avg all share this basis so they reconcile
     var _rev=_nc.reduce((s,b)=>s+((b.quote&&b.quote.total)||0),0), _cnt=_nc.length, _avg=_cnt?Math.round(_rev/_cnt):0;
     var _byCust={}; _nc.forEach(b=>{ _byCust[b.cust]=(_byCust[b.cust]||0)+1; });
     var _cu=Object.keys(_byCust), _rep=_cu.filter(c=>_byCust[c]>=2).length, _repPct=_cu.length?Math.round(_rep/_cu.length*100):0;
@@ -2932,7 +2942,7 @@ const Atlas = (function(){
     else { from=new Date(y,0,1).getTime(); label='This year ('+y+')'; }
     return {from:from,label:label,value:v}; }
   function renderReports(){ var el=document.getElementById('repBody'); if(!el)return; var r=_repRange();
-    var bks=(DATA.bookings||[]).filter(function(b){ return b.status!=='Cancelled' && (b.createdAt||b.startTs||0)>=r.from; });
+    var bks=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && (b.createdAt||b.startTs||0)>=r.from; });
     var gross=0,disc=0,fees=0,tax=0,total=0; bks.forEach(function(b){ var q=b.quote||{}; gross+=(q.gross||q.subtotal||q.total||0); disc+=(q.disc||0); fees+=(q.feeTotal||0); tax+=(q.taxAmt||0); total+=(q.total||0); });
     el.innerHTML='<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>Bookings</span><span class="tnum">'+bks.length+'</span></div>'
@@ -2942,7 +2952,7 @@ const Atlas = (function(){
       +'<div class="mp-row"><span>Tax collected</span><span class="tnum">'+money(Math.round(tax))+'</span></div>'
       +'<div class="mp-row mp-total"><span>Total collected</span><span class="tnum">'+money(Math.round(total))+'</span></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'bookings\')">Bookings CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'tax\')">Tax summary CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'events\')">Activity log CSV</button></div>'
-      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; ready for your accountant &amp; records &mdash; every figure ties to the bookings behind it.</div>'; }
+      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card, Bookings CSV and Tax CSV all tie to the same bookings.</div>'; }
   function renderLog(){ var el=document.getElementById('logBody'); if(!el)return; var evs=_events();
     if(!evs.length){ el.innerHTML='<div class="bk-lenhint" style="margin:0">No activity yet. Bookings, contracts, promos and emails appear here &mdash; each timestamped and exportable.</div>'; return; }
     el.innerHTML=evs.slice(0,12).map(function(e,i){ return '<div class="log-row" style="cursor:pointer" onclick="Atlas.drillLog('+i+')"><span class="log-dot log-dot--'+esc(e.type)+'"></span><div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--ink)">'+esc(e.text)+'</div><div style="font-size:11.5px;color:var(--muted)">'+_stamp(e.t)+'</div></div></div>'; }).join('')
@@ -2953,11 +2963,11 @@ const Atlas = (function(){
       return /[",\n]/.test(c)?('"'+c.replace(/"/g,'""')+'"'):c; }).join(','); }).join('\n');
     try{ var blob=new Blob([csv],{type:'text/csv'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='atlas-'+name+'-'+_todayStr()+'.csv'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Downloaded '+name+'.csv'); }catch(e){ toast('Download not available here'); } }
   function downloadReport(kind){ var rows,name;
-    if(kind==='bookings'){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){return (b.createdAt||b.startTs||0)>=r.from;});
+    if(kind==='bookings'){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r.from;});   // earned rows -- reconciles 1:1 with the report card + tax CSV (pending + cancelled shown in the Bookings tab)
       rows=[['Booking ID','Customer','Email','Asset','Start','Periods','Status','Promo','Gross','Discount','Tax','Total']];
       bks.forEach(function(b){ var q=b.quote||{}; rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',Math.round(q.gross||q.subtotal||q.total||0),Math.round(q.disc||0),Math.round(q.taxAmt||0),Math.round(q.total||0)]); });
       name='bookings'; }
-    else if(kind==='tax'){ var r2=_repRange(); var b2=(DATA.bookings||[]).filter(function(b){return b.status!=='Cancelled'&&(b.createdAt||b.startTs||0)>=r2.from;});
+    else if(kind==='tax'){ var r2=_repRange(); var b2=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r2.from;});
       var g=0,d=0,t=0,tot=0; b2.forEach(function(b){ var q=b.quote||{}; g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); t+=(q.taxAmt||0); tot+=(q.total||0); });
       rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Tax collected','Total collected'],[r2.label,b2.length,Math.round(g),Math.round(d),Math.round(t),Math.round(tot)]]; name='tax-summary'; }
     else { rows=[['Timestamp','Type','Event']]; _events().forEach(function(e){ rows.push([_stamp(e.t),e.type,e.text]); }); name='activity-log'; }
@@ -3219,7 +3229,7 @@ const Atlas = (function(){
   function setTab(id){ setCur=id; document.querySelectorAll('.set-tab').forEach(t=>t.classList.toggle('active',t.dataset.set===id)); renderSet(); _scrollActiveSetTab(); }
   function goSettings(sub){ go('settings'); if(sub){setCur=sub;buildSettings();} }
   /* ---- Diamond owner console ---- */
-  function _ownerAnalytics(){ var bks=DATA.bookings||[]; var nc=bks.filter(function(b){return b.status!=='Cancelled';});
+  function _ownerAnalytics(){ var bks=DATA.bookings||[]; var nc=bks.filter(_isCommitted);   // earned basis -- matches Overview + Analytics KPIs
     var rev=nc.reduce(function(s,b){return s+((b.quote&&b.quote.total)||0);},0);
     var signed=(DATA.assets||[]).filter(function(a){return a.agreement&&(a.agreement.status==='signed'||a.agreement.status==='uploaded');}).length;
     var emails=_events().filter(function(e){return e.type==='email';}).length;
@@ -3642,7 +3652,7 @@ const Atlas = (function(){
     if(s.includes('pric')||s.includes('rate')) return `Right now your base rate is <b>${money(m.baseRate)}/${m.rateModel}</b>, tax ${m.tax}%, and guests ${m.deposit.mode==='full'?'pay in full to reserve':m.deposit.mode==='percent'?('pay '+m.deposit.pct+'% upfront'):'pay nothing upfront'}. Want me to raise weekend rates, add a seasonal bump, or set per-${S.fleet.noun} pricing? Say the word and I'll apply it.`;
     if(s.includes('idle')||s.includes('utiliz')||s.includes('fill')||s.includes('slow')){ var _idle=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return _idle>0 ? `${_idle} of your ${S.fleet.nouns} ${_idle===1?'is':'are'} under 50% utilized. I can auto-create a limited-time promo for ${_idle===1?'it':'them'} and notify past renters. Want me to draft it?` : `Your ${S.fleet.nouns} are booking well right now. Want me to look for a growth opportunity in your market instead?`; }
     if(s.includes('market')||s.includes('gap')||s.includes('competitor')||s.includes('opportunit')||s.includes('demand')||s.includes('research')||s.includes('grow')||s.includes('idea')||s.includes('learn')||s.includes('advice')||s.includes('tip')||s.includes('improve')) return _aioMarketReply(s);
-    if(s.includes('analytic')||s.includes('number')||s.includes('revenue')){ var _bkA=(_bookings()||[]).filter(function(b){return b.status!=='Cancelled';}); var _revA=_bkA.reduce(function(t,b){return t+_bkTotal(b);},0); var _idleA=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return `Your booked revenue right now is <b>${money(_revA)}</b> across ${_bkA.length} ${_fterm(_bkA.length===1?'book':'books')}.${_idleA>0?` Your biggest lever is filling ${_idleA} idle ${S.fleet.nouns} \u2014 want a promo?`:` Open the Analytics tab for the full breakdown by ${S.fleet.noun} and source.`}`; }
+    if(s.includes('analytic')||s.includes('number')||s.includes('revenue')){ var _bkA=(_bookings()||[]).filter(_isCommitted); var _revA=_bkA.reduce(function(t,b){return t+_bkTotal(b);},0); var _idleA=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return `Your booked revenue right now is <b>${money(_revA)}</b> across ${_bkA.length} ${_fterm(_bkA.length===1?'book':'books')}.${_idleA>0?` Your biggest lever is filling ${_idleA} idle ${S.fleet.nouns} \u2014 want a promo?`:` Open the Analytics tab for the full breakdown by ${S.fleet.noun} and source.`}`; }
     if(s.includes('win-back')||s.includes('text')||s.includes('draft')||s.includes('message')) return `Here's a draft: <i>"Hi {name}, it's ${S.brand.name} \u2014 we miss you! Enjoy 15% off your next ${S.fleet.noun} rental this month. Reply to book."</i> Want me to send it to your ${(DATA.customers||[]).length||''}${(DATA.customers||[]).length?' ':''}past renters?`;
     if(s.includes('stripe')||s.includes('connect')||s.includes('payment')) return `Easy \u2014 go to <b>Settings \u2192 Integrations \u2192 Stripe \u2192 Connect</b>. I'll walk you through it step by step and test a $1 authorization so you know it works. Want me to open it now?`;
     if(s.includes('help')||s.includes('what can you')) return `I can adjust your pricing &amp; money rules, fill idle ${S.fleet.nouns}, research your local ${S.fleet.noun} market for gaps, draft &amp; send customer messages, explain any number, set up automations, and connect your tools. I learn your ${S.fleet.noun}-rental business as we go.`;
@@ -3733,7 +3743,17 @@ const Atlas = (function(){
   function closeModal(){ document.getElementById('modalScrim').classList.remove('on'); }
 
   /* ============================== misc ============================== */
-  function finish(){ S.onboarded=true; S.onboardStarted=false; save(); applyBrand(); buildApp(); show('app'); setTimeout(()=>toast('Welcome to '+S.brand.name+' on Atlas Rental.io'),300); }
+  function finish(){ S.onboarded=true; S.onboardStarted=false;
+    // The "Invite your team" onboarding step actually creates the teammate now (was collected into S.invite then discarded).
+    var iv=S.invite||{}, added='';
+    if(iv.email && String(iv.email).indexOf('@')>0){ S.team=S.team||[];
+      if(!S.team.some(function(m){return (m.email||'').toLowerCase()===String(iv.email).toLowerCase();})){
+        var role=(iv.role&&ROLE_PRESETS[iv.role])?iv.role:'desk';
+        added=(String(iv.email).split('@')[0]||'Teammate').replace(/[._-]+/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase();});
+        S.team.push({ id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:added, email:iv.email, role:role, perms:(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false)) });
+      } }
+    save(); applyBrand(); buildApp(); show('app');
+    setTimeout(function(){ toast('Welcome to '+S.brand.name+' on Atlas Rental.io'); if(added) setTimeout(function(){ toast(added+' added to your team - set their access in Team'); },1900); },300); }
   /* ---------- plan, tiers, Atlas.io credits &amp; billing (demo Stripe; real subscription + webhook come with the D1 worker) ---------- */
   function _trialDaysLeft(){ if(!S) return 0; return Math.max(0, (S.trialDays||7) - Math.floor((Date.now()-(S.trialStartedAt||Date.now()))/86400000)); }
   function _isActive(){ return !!S && S.plan==='active'; }
