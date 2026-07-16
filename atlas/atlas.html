@@ -2166,7 +2166,7 @@ const Atlas = (function(){
       <div class="kpi__val tnum">${k[1]}</div><div class="kpi__delta ${k[2]}">${k[2]==='up'?'&#9650;':'&#9660;'} ${k[3]} vs last month</div></div>`).join('');
     // util list
     document.getElementById('utilList').innerHTML=DATA.assets.slice(0,5).map(a=>`<div class="util-row">
-      <div class="util-row__t"><b>${a.name}</b><small>${a.status}</small><div class="bar"><i style="width:${a.util}%"></i></div></div>
+      <div class="util-row__t"><b>${esc(a.name)}</b><small>${esc(a.status)}</small><div class="bar"><i style="width:${a.util}%"></i></div></div>
       <span class="util-row__pct tnum">${a.util}%</span></div>`).join('');
     // bookings table
     const _pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':'d');
@@ -2205,7 +2205,7 @@ const Atlas = (function(){
     a.rate=parseFloat(val('aRate'))||a.rate; a.status=val('aStatus')||a.status;
     var tn=(val('aTenName')||'').trim();
     a.tenant = tn? { name:tn, phone:val('aTenPhone'), email:val('aTenEmail'), since:(a.tenant&&a.tenant.since)||Date.now() } : null;
-    _saveAssets(); closeModal(); renderFleet(); renderOverview(); toast(a.name+' saved');
+    _saveAssets(); closeModal(); renderFleet(); renderOverview(); toast(esc(a.name)+' saved');
   }
   function delAsset(id){ if(!_guard('fleetEdit'))return; if(!confirm('Remove this '+S.fleet.noun+'?'))return; DATA.assets=DATA.assets.filter(function(x){return x.id!==id;}); _saveAssets(); closeModal(); renderFleet(); renderOverview(); var fb=document.getElementById('fleetBadge'); if(fb)fb.textContent=DATA.assets.length; toast('Removed'); }
   // Send the rental agreement to this tenant/renter for e-signature, or upload an already-signed one -- documented on the unit.
@@ -2228,7 +2228,7 @@ const Atlas = (function(){
     var inp=document.createElement('input'); inp.type='file'; inp.accept='.pdf,image/*,.doc,.docx';
     inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var now=Date.now(); var prev=a.agreement||{};
       a.agreement={ status:'uploaded', uploadedAt:now, signedAt:now, sentAt:prev.sentAt, viewedAt:prev.viewedAt, to:prev.to, docText:prev.docText||_legal().agreement.text, file:f.name, events:(prev.events||[]).concat([{e:'uploaded',at:now}]) };
-      _saveAssets(); _logEvent('contract','Signed copy uploaded for '+a.name+' ('+f.name+')',{asset:a.id}); closeModal(); renderFleet(); toast('Signed copy documented: '+f.name); };
+      _saveAssets(); _logEvent('contract','Signed copy uploaded for '+a.name+' ('+f.name+')',{asset:a.id}); closeModal(); renderFleet(); toast('Signed copy documented: '+esc(f.name)); };
     inp.click(); }
   /* ---- real-time e-signature: what the client sees, the pad, submit, view, download ---- every step timestamped ---- */
   var _sig={drawing:false,ink:false,ctx:null,canvas:null};
@@ -2513,6 +2513,9 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Pre-rental condition &mdash; photos &amp; video</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCondition(\''+b.id+'\')">+ Add photo / video</button></div>'
         +'<div class="cond-sub">Captured before pickup and time-stamped automatically. Shown to '+esc((b.cust||'the customer').split(' ')[0])+' in their portal &mdash; documents the condition for both sides, on every rental type.</div>'
         +_condMediaHtml(b,{})+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Charges to portal</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCharge(\''+b.id+'\')">+ Send a charge</button></div>'
+        +'<div class="cond-sub">Bill '+esc((b.cust||'the customer').split(' ')[0])+' for extras, damage, cleaning, late fees or anything else &mdash; it appears in their portal to pay online.</div>'
+        +_chargesOwnerHtml(b)+'</div>'
       +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+a+'</div>'
       +'<div style="display:flex;gap:10px;margin-top:10px"><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openPortal(\''+b.id+'\')">Customer portal</button></div></div>');
   }
@@ -2745,7 +2748,9 @@ const Atlas = (function(){
     el.innerHTML=evs.slice(0,12).map(function(e){ return '<div class="log-row"><span class="log-dot log-dot--'+esc(e.type)+'"></span><div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--ink)">'+esc(e.text)+'</div><div style="font-size:11.5px;color:var(--muted)">'+_stamp(e.t)+'</div></div></div>'; }).join('')
       +(evs.length>12?'<div style="font-size:12px;color:var(--muted);margin-top:8px">Showing 12 of '+evs.length+'. Download the CSV for the full log.</div>':''); }
   function _csvDate(ts){ try{ return new Date(ts).toLocaleDateString('en-US'); }catch(e){ return ''; } }
-  function _downloadCsv(rows,name){ var csv=rows.map(function(r){ return r.map(function(c){ c=String(c==null?'':c); return /[",\n]/.test(c)?('"'+c.replace(/"/g,'""')+'"'):c; }).join(','); }).join('\n');
+  function _downloadCsv(rows,name){ var csv=rows.map(function(r){ return r.map(function(c){ c=String(c==null?'':c);
+      if(/^[=+\-@\t\r]/.test(c)) c="'"+c;   // neutralize spreadsheet formula/CSV injection (a customer named "=cmd|..." must not run in Excel/Sheets)
+      return /[",\n]/.test(c)?('"'+c.replace(/"/g,'""')+'"'):c; }).join(','); }).join('\n');
     try{ var blob=new Blob([csv],{type:'text/csv'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='atlas-'+name+'-'+_todayStr()+'.csv'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Downloaded '+name+'.csv'); }catch(e){ toast('Download not available here'); } }
   function downloadReport(kind){ var rows,name;
     if(kind==='bookings'){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){return (b.createdAt||b.startTs||0)>=r.from;});
@@ -3624,7 +3629,7 @@ const Atlas = (function(){
       +'<div class="web-grid">'+side+prev+'</div>';
   }
   function _webPreviewHtml(){ var w=_web(), rm=S.money.rateModel[0];
-    var logo=S.brand.logo?('<img src="'+S.brand.logo+'">'):esc(S.brand.initial);
+    var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'">'):esc(S.brand.initial);
     var h='<div class="site"><div class="site__hero"><div class="site__logo">'+logo+'</div>'
       +'<h1>'+esc(w.headline||S.brand.name)+'</h1><p>'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
       +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>';
@@ -3701,7 +3706,7 @@ const Atlas = (function(){
   function addPortalPerk(){ if(!_canMod('settings'))return; _portalCfg().perks.push('New perk'); save(); _refreshPerks(); }
   function editPortalPerk(i,v){ if(!_canMod('settings'))return; var ps=_portalCfg().perks; if(i>=0&&i<ps.length){ ps[i]=v; save(); } }
   function removePortalPerk(i){ if(!_canMod('settings'))return; _portalCfg().perks.splice(i,1); save(); _refreshPerks(); }
-  function autoGenPerks(){ if(!_canMod('settings'))return; _portalCfg().perks=_defaultPerks(); save(); _refreshPerks(); toast('Perks generated for your '+S.fleet.nouns); }
+  function autoGenPerks(){ if(!_canMod('settings'))return; _portalCfg().perks=_defaultPerks(); save(); _refreshPerks(); toast('Perks generated for your '+esc(S.fleet.nouns)); }
   function openPortal(id){ if(!id){ var b0=_bookings()[0]; id=b0&&b0.id; } if(!id){ toast('Create a booking first, then preview the portal'); return; } _portalBk=id; _portalView='home'; _renderPortal(); }
   function portalView(v){ _portalView=v; _renderPortal(); if(v==='sign') setTimeout(_initSigPad,40); }
   function _renderPortal(){ var b=_pBk(); if(!b){ closeModal(); return; } var p=_portal(b);
@@ -3715,7 +3720,7 @@ const Atlas = (function(){
     var signed=!!p.signedAt, paid=!!p.balancePaidAt, dep=!!p.depositPaidAt;
     var h='<div class="portal__body">'+(pc.welcome?'<div class="portal__welcome">'+esc(pc.welcome)+'</div>':'')
       +'<div class="portal__hi">Hi '+esc((b.cust||'there').split(' ')[0])+' \u{1F44B}</div>'
-      +'<div class="portal__card"><div class="portal__row"><span>'+cap(S.fleet.noun)+'</span><b>'+esc(b.asset)+'</b></div>'
+      +'<div class="portal__card"><div class="portal__row"><span>'+esc(cap(S.fleet.noun))+'</span><b>'+esc(b.asset)+'</b></div>'
       +'<div class="portal__row"><span>When</span><b>'+_bkWhen(b)+'</b></div>'
       +'<div class="portal__row"><span>Status</span>'+statusChip(b.status)+'</div>'
       +'<div class="portal__row"><span>Total</span><b>'+money(total)+'</b></div>'
@@ -3724,6 +3729,7 @@ const Atlas = (function(){
     if(sec.agreement) acts+=_pAct('Sign rental agreement', signed?('Signed '+_stamp(p.signedAt)):'Required before pickup', signed, 'Atlas.portalView(\'sign\')', signed?'View':'Sign');
     if(sec.balance) acts+=_pAct('Pay balance', paid?('Paid '+_stamp(p.balancePaidAt)):('Due '+money(due)), paid, 'Atlas.portalPay(\'balance\')', paid?'Paid':('Pay '+money(due)));
     if(sec.deposit&&hold) acts+=_pAct('Refundable deposit hold', dep?('Authorized '+_stamp(p.depositPaidAt)):('Hold '+money(hold)), dep, 'Atlas.portalPay(\'deposit\')', dep?'Done':'Authorize');
+    _charges(b).forEach(function(c){ acts+=_pAct(esc(c.label), c.paidAt?('Paid '+_stamp(c.paidAt)):('Charge from '+esc(S.brand.name)), !!c.paidAt, 'Atlas.portalPayCharge(\''+c.id+'\')', c.paidAt?'Paid':('Pay '+money(Math.round(c.amount)))); });
     if(sec.upload) acts+=_pAct('Upload ID &amp; documents', p.docs.length?(p.docs.length+' on file'):'License, insurance, etc.', p.docs.length>0, 'Atlas.portalUpload()', 'Upload');
     var _rv=b.review, _cp=b.commsPref||{};
     acts+=_pAct('Leave a review', _rv?('You rated '+_rv.rating+'/5 &mdash; thank you!'):'Tell '+esc(S.brand.name)+' how it went', !!_rv, 'Atlas.portalView(\'review\')', _rv?'View':'Review');
@@ -3794,7 +3800,7 @@ const Atlas = (function(){
     else { if(p.depositPaidAt)return; p.depositPaidAt=now; _logEvent('booking','Portal: deposit hold authorized on '+b.id,{booking:b.id}); toast('Deposit hold authorized (demo)'); }
     _upsertBooking(b); _renderPortal(); }
   function portalUpload(){ var b=_pBk(); if(!b)return; var inp=document.createElement('input'); inp.type='file'; inp.accept='.pdf,image/*,.doc,.docx';
-    inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var p=_portal(b); p.docs.push({name:f.name,at:Date.now()}); _upsertBooking(b); _logEvent('booking','Portal: document uploaded ('+f.name+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Uploaded '+f.name); };
+    inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var p=_portal(b); p.docs.push({name:f.name,at:Date.now()}); _upsertBooking(b); _logEvent('booking','Portal: document uploaded ('+f.name+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Uploaded '+esc(f.name)); };
     inp.click(); }
   /* ---- Pre-rental condition media: time-stamped photos + video on every booking, shown to the customer in the portal (any rental type) ---- */
   function _condMedia(b){ if(!b.conditionMedia) b.conditionMedia=[]; return b.conditionMedia; }
@@ -3817,6 +3823,27 @@ const Atlas = (function(){
     inp.onchange=function(){ if(!inp.files||!inp.files.length)return; _condAddFiles(b, inp.files, function(){ _upsertBooking(b); _logEvent('booking','Pre-rental condition media added on '+b.id+' ('+_condMedia(b).length+' on file)',{booking:b.id}); var sc=document.getElementById('modalScrim'); if(sc&&sc.classList.contains('on')) openBooking(id); toast('Condition media saved &mdash; time-stamped'); }); };
     inp.click(); }
   function bkRmCondition(id, cid){ var b=_getBooking(id); if(!b)return; b.conditionMedia=_condMedia(b).filter(function(m){return m.id!==cid;}); _upsertBooking(b); openBooking(id); }
+  /* ---- Charges to the client portal: operator bills the customer; they pay online in their portal ---- */
+  function _charges(b){ if(!b.charges) b.charges=[]; return b.charges; }
+  function _chargesOwnerHtml(b){ var cs=_charges(b); if(!cs.length) return '<div class="bk-lenhint" style="margin:0">No charges yet &mdash; add one and it shows up in the customer portal to pay.</div>';
+    return '<div style="display:flex;flex-direction:column;gap:6px">'+cs.map(function(c){
+      return '<div class="mp-row"><span style="min-width:0"><b style="color:var(--ink)">'+esc(c.label)+'</b> <span style="font-size:11px;color:var(--muted)">'+(c.paidAt?('paid '+_stamp(c.paidAt)):('sent '+_stamp(c.at)))+'</span></span>'
+        +'<span style="display:flex;gap:8px;align-items:center;flex:none"><b class="tnum">'+money(Math.round(c.amount))+'</b>'+(c.paidAt?'<span class="chip chip--ok" style="font-size:11px"><span class="dot"></span>Paid</span>':'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:4px 8px" onclick="Atlas.bkRmCharge(\''+b.id+'\',\''+c.id+'\')">Remove</button>')+'</span></div>';
+    }).join('')+'</div>'; }
+  function bkAddCharge(id){ var b=_getBooking(id); if(!b)return;
+    openModal('<div class="modal__head"><h3>Send a charge</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>What is it for?</label><input class="input" id="chLabel" placeholder="e.g. Cleaning fee, Damage, Extra day"></div>'
+      +'<div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="chAmt" style="width:auto;flex:1;text-align:left" placeholder="0.00"></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.sendCharge(\''+id+'\')">Send to '+esc((b.cust||'customer').split(' ')[0])+'\u2019s portal</button>'
+      +'<div class="bk-lenhint" style="margin:10px 0 0">They see it in their branded portal and pay online. It shows as paid here the moment they do.</div></div>'); }
+  function sendCharge(id){ var b=_getBooking(id); if(!b)return; var label=(val('chLabel')||'').trim(), amt=parseFloat(val('chAmt'))||0;
+    if(!label){ toast('Add a description'); return; } if(amt<=0){ toast('Enter an amount'); return; }
+    _charges(b).push({id:'ch'+Date.now(), label:label, amount:amt, at:Date.now(), paidAt:null}); _upsertBooking(b);
+    _logEvent('booking','Charge sent to portal: '+label+' '+money(Math.round(amt))+' on '+b.id,{booking:b.id});
+    closeModal(); openBooking(id); toast('Charge sent to the customer portal'); }
+  function bkRmCharge(id,cid){ var b=_getBooking(id); if(!b)return; b.charges=_charges(b).filter(function(c){return c.id!==cid;}); _upsertBooking(b); openBooking(id); }
+  function portalPayCharge(cid){ var b=_pBk(); if(!b)return; var c=_charges(b).filter(function(x){return x.id===cid;})[0]; if(!c||c.paidAt)return;
+    c.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(Math.round(c.amount))+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Payment received (demo)'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ portalView('sign'); return; }
     var sigHtml=p.sig?(p.sig.type==='draw'?('<img src="'+p.sig.data+'" style="max-height:70px">'):('<span class="sig-typed">'+esc(p.sig.data)+'</span>')):'-';
     openModal('<div class="modal__head"><h3>Rental agreement</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -3863,7 +3890,7 @@ const Atlas = (function(){
     if(q.hold) t+=_pad('+ Refundable deposit hold',32)+money(Math.round(q.hold))+'\n';
     t+='\n'+S.brand.name+' -- '+_siteUrl()+'\nManaged & securely processed through Atlas Rental.io -- atlasrentalio.com\n';
     try{ var blob=new Blob([t],{type:'text/plain'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='receipt-'+_receiptNo(b)+'.txt'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Receipt downloaded'); }catch(e){ toast('Download not available here'); } }
-  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; var to=b.custEmail||b.cust; _logEvent('booking','Receipt '+_receiptNo(b)+' sent to '+to,{booking:b.id}); toast('Receipt sent to '+to); }
+  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; var to=b.custEmail||b.cust; _logEvent('booking','Receipt '+_receiptNo(b)+' sent to '+to,{booking:b.id}); toast('Receipt sent to '+esc(to)); }
   /* --- domain manager --- */
   function _domainHtml(){ var w=_web(), d=w.domain, mode=w._ui||d.mode;
     var connected=(d.mode==='custom'&&d.custom);
@@ -4029,7 +4056,7 @@ const Atlas = (function(){
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,aioSend,aioAsk,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,viewCustomer,bkAddCondition,bkRmCondition,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,openAsset,saveAsset,delAsset,promptUpgrade,doUpgrade,openWebsite,
