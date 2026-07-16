@@ -1512,6 +1512,7 @@ const Atlas = (function(){
     rateModel:'day', baseRate:150, tax:0,
     deposit:{ mode:'full', pct:50 },      // deposit to reserve: how much of the total to collect upfront (full | percent | none)
     hold:{ type:'fixed', value:250 },      // refundable security hold (none | fixed | percent)
+    payout:{ enabled:false, label:'Partner payout', kind:'percent', value:0, base:'subtotal' },  // a commission/split that leaves you per booking (agent, referrer, staff) -> your net = revenue - tax - payout
     weeklyDisc:10, monthlyDisc:25, _rc:0,
     // How the operator's booking form behaves -- fully editable in Settings > Bookings ("teach + build").
     //   time:false      -> collect dates only; true -> also collect start (and end) times
@@ -1550,7 +1551,10 @@ const Atlas = (function(){
     var taxAmt=taxBase*(m.tax||0)/100, total=subtotal+feeTotal+taxAmt;
     var dep=m.deposit||{mode:'full'}, dueNow=(dep.mode==='percent')? total*(dep.pct||0)/100 : (dep.mode==='none'?0:total);
     var h=m.hold||{type:'none'}, holdAmt=(h.type==='percent')? subtotal*(h.value||0)/100 : (h.type==='fixed'?(h.value||0):0);
-    return {gross:gross,disc:disc,subtotal:subtotal,fees:fees,feeTotal:feeTotal,taxAmt:taxAmt,total:total,dueNow:dueNow,balance:Math.max(0,total-dueNow),hold:holdAmt,extrasLines:exLines,extrasTotal:exTotal};
+    var pay=m.payout||{}, payBase=(pay.base==='total')?total:subtotal;
+    var payoutAmt=(pay.enabled && pay.value)? (pay.kind==='percent'? payBase*(pay.value||0)/100 : (pay.value||0)) : 0;
+    var netToYou=Math.max(0, total - taxAmt - payoutAmt);   // your take-home: revenue minus pass-through tax minus the payout/commission
+    return {gross:gross,disc:disc,subtotal:subtotal,fees:fees,feeTotal:feeTotal,taxAmt:taxAmt,total:total,dueNow:dueNow,balance:Math.max(0,total-dueNow),hold:holdAmt,extrasLines:exLines,extrasTotal:exTotal,payoutAmt:payoutAmt,netToYou:netToYou};
   }
 
   /* ---------- theming ---------- */
@@ -1782,12 +1786,17 @@ const Atlas = (function(){
     save(); buildApp(); goSettings('branding'); }
   function setMoney(k,v){
     if(!_guard('pricing','Changing pricing'))return;
-    var m=S.money;
+    var m=S.money; if(!m.payout) m.payout={enabled:false,label:'Partner payout',kind:'percent',value:0,base:'subtotal'};
     if(k==='rateModel') m.rateModel=v;
     else if(k==='deposit.mode') m.deposit.mode=v;
     else if(k==='deposit.pct') m.deposit.pct=parseFloat(v)||0;
     else if(k==='hold.type') m.hold.type=v;
     else if(k==='hold.value') m.hold.value=parseFloat(v)||0;
+    else if(k==='payout.enabled') m.payout.enabled=!!v;
+    else if(k==='payout.label') m.payout.label=v;
+    else if(k==='payout.kind') m.payout.kind=v;
+    else if(k==='payout.base') m.payout.base=v;
+    else if(k==='payout.value') m.payout.value=parseFloat(v)||0;
     else m[k]=parseFloat(v)||0;
     save(); _updMoneyPrev();
   }
@@ -1943,6 +1952,8 @@ const Atlas = (function(){
     out+=row('Deposit to reserve (now)', money(Math.round(q.dueNow)), 'mp-brand');
     out+=row('Balance at pickup', money(Math.round(q.balance)));
     if(q.hold) out+=row('+ Refundable hold', money(Math.round(q.hold)), 'mp-muted');
+    if(q.payoutAmt) out+=row(esc((m.payout&&m.payout.label)||'Payout'), '-'+money(Math.round(q.payoutAmt)), 'mp-ok');
+    if(q.payoutAmt) out+=row('Your net (take-home)', money(Math.round(q.netToYou)), 'mp-total');
     return out;
   }
   function _updMoneyPrev(){ var el=document.getElementById('moneyPreview'); if(el) el.innerHTML=moneyPreviewHtml(); }
@@ -2066,33 +2077,47 @@ const Atlas = (function(){
   }
   /* ---- demo data ---- */
   let DATA={};
+  // Only the built-in demo accounts get sample data. A REAL signup starts empty (their own first asset + no fake bookings/customers/team).
+  function _isDemoTenant(){ var s=store.session(); return !!(s && (s.tenantId==='demo'||s.tenantId==='demobig')); }
+  // Real customers are derived from real bookings, so the Customers tab is always truthful (empty until they book).
+  function _customersFromBookings(){ var map={}, now=Date.now();
+    (DATA.bookings||[]).forEach(function(b){ if(b.status==='Cancelled')return; var k=b.cust||'Guest';
+      if(!map[k]) map[k]={name:k,trips:0,spent:0,email:b.custEmail||'',_t:0};
+      map[k].trips++; map[k].spent+=Math.round((b.quote&&b.quote.total)||0);
+      var t=b.createdAt||b.startTs||0; if(t>map[k]._t){ map[k]._t=t; if(b.custEmail)map[k].email=b.custEmail; } });
+    return Object.keys(map).map(function(k){ var c=map[k], d=Math.max(0,Math.floor((now-c._t)/86400000));
+      c.last=c._t?(d<1?'<1d':(d<30?d+'d':Math.floor(d/30)+'mo')):'new'; return c; }); }
   function seedData(){
-    // sample already has 6 real names per type; the noun-based pad is only a fallback if a type ever ships fewer
+    var demo=_isDemoTenant();
     const _nc=S.fleet.noun.charAt(0).toUpperCase()+S.fleet.noun.slice(1);
     const names=S.fleet.sample.concat([_nc+' 4',_nc+' 5',_nc+' 6']);
     DATA.assets=store.assets();
     if(!DATA.assets.length){
-      DATA.assets=names.slice(0,6).map((n,i)=>({name:n,rate:Math.round(S.money.baseRate*(1+(i%3-1)*.25)),
-        status:i===4?'On rent':i===2?'Maintenance':'Available',util:[86,72,0,64,91,48][i]}));
+      if(demo){ DATA.assets=names.slice(0,6).map((n,i)=>({name:n,rate:Math.round(S.money.baseRate*(1+(i%3-1)*.25)),
+        status:i===4?'On rent':i===2?'Maintenance':'Available',util:[86,72,0,64,91,48][i]})); }
+      else if(S.firstAsset && (S.firstAsset.name||'').trim()){ DATA.assets=[{ id:_assetId(), name:S.firstAsset.name.trim(),
+        rate:parseFloat(S.firstAsset.rate)||S.money.baseRate, status:(S.firstAsset.status==='Maintenance'?'Maintenance':'Available'), util:0 }]; }
+      else DATA.assets=[];
       store.saveAssets(DATA.assets);
     }
     var _fix=false; DATA.assets.forEach(function(a){ if(!a.id){ a.id=_assetId(); _fix=true; } }); if(_fix) store.saveAssets(DATA.assets);
-    const custs=['Marcus Bell','Priya Shah','Devin Cole','Ava Nguyen','Liam Foster','Sofia Reyes'];
-    const st=['Confirmed','On rent','Completed','Confirmed','Pending','Completed'];
     DATA.bookings=_bookings();
-    if(!DATA.bookings.length){
-      const seedP=[3,5,2,4,7,3];
+    if(!DATA.bookings.length && demo){
+      const custs=['Marcus Bell','Priya Shah','Devin Cole','Ava Nguyen','Liam Foster','Sofia Reyes'];
+      const st=['Confirmed','On rent','Completed','Confirmed','Pending','Completed']; const seedP=[3,5,2,4,7,3];
       DATA.bookings=custs.map((c,i)=>{ var per=seedP[i], q=calcQuote(S.money,per,0);
         return {id:'BK-'+(4821+i), cust:c, custEmail:c.toLowerCase().replace(' ','.')+'@email.com', asset:names[i%6],
           startTs:Date.now()+(i-2)*86400000, periods:per, addons:0, status:st[i], quote:q, createdAt:Date.now()-i*3600000}; });
       _saveBookings(DATA.bookings);
     }
-    DATA.customers=custs.map((c,i)=>({name:c,trips:[6,3,9,1,4,12][i],spent:[8420,3110,14600,540,4900,21050][i],
-      email:c.toLowerCase().replace(' ','.')+'@email.com',last:['2d','5d','1d','3w','1d','1w'][i]}));
-    if(!S.team || !S.team.length){ var dom=(S.brand.subdomain||'company')+'.com';
+    if(demo){ const cx=['Marcus Bell','Priya Shah','Devin Cole','Ava Nguyen','Liam Foster','Sofia Reyes'];
+      DATA.customers=cx.map((c,i)=>({name:c,trips:[6,3,9,1,4,12][i],spent:[8420,3110,14600,540,4900,21050][i],
+        email:c.toLowerCase().replace(' ','.')+'@email.com',last:['2d','5d','1d','3w','1d','1w'][i]})); }
+    else DATA.customers=_customersFromBookings();
+    if((!S.team || !S.team.length) && demo){ var dom=(S.brand.subdomain||'company')+'.com';
       S.team=[ {id:'m1',name:'Jordan Kim',email:'jordan@'+dom,role:'manager',perms:ROLE_PRESETS.manager.make()},
                {id:'m2',name:'Sam Ortiz', email:'sam@'+dom,   role:'desk',   perms:ROLE_PRESETS.desk.make()} ]; save(); }
-    DATA.team=S.team;
+    DATA.team=S.team||[];
   }
   const money=n=>'$'+Number(n).toLocaleString();
   // Per-type term for the current fleet (KPIs/labels reconfigure to what the client rents).
@@ -2456,6 +2481,8 @@ const Atlas = (function(){
       +'<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(Math.round(q.total))+'</span></div>'
       +'<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(Math.round(q.dueNow))+'</span></div>'
       +(q.hold?'<div class="mp-row mp-muted"><span>+ Refundable hold</span><span class="tnum">'+money(Math.round(q.hold))+'</span></div>':'')
+      +(function(){ var p=S.money.payout||{}; if(!p.enabled||!p.value) return ''; var base=(p.base==='total')?(q.total||0):(q.subtotal||q.total||0); var amt=(p.kind==='percent'?base*(p.value||0)/100:(p.value||0)); var net=Math.max(0,(q.total||0)-(q.taxAmt||0)-amt);
+        return '<div class="mp-row mp-ok"><span>'+esc(p.label||'Payout')+'</span><span class="tnum">&minus;'+money(Math.round(amt))+'</span></div><div class="mp-row"><span style="font-weight:650;color:var(--ink)">Your net</span><span class="tnum" style="font-weight:750">'+money(Math.round(net))+'</span></div>'; })()
       +'</div>'
       +(b.notes?'<div class="field" style="margin-bottom:14px"><label>Notes</label><div style="font-size:13px;color:var(--body);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;white-space:pre-wrap">'+esc(b.notes)+'</div></div>':'')
       +'<div class="cond-sec"><div class="cond-hd"><span>Pre-rental condition &mdash; photos &amp; video</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCondition(\''+b.id+'\')">+ Add photo / video</button></div>'
@@ -3033,6 +3060,7 @@ const Atlas = (function(){
     +'</div>'; }
   function renderSet(){
     const b=document.getElementById('setBody'); const m=S.money;
+    if(m && !m.payout) m.payout={enabled:false,label:'Partner payout',kind:'percent',value:0,base:'subtotal'};   // back-compat for tenants saved before payouts
     if(setCur==='owner'){ var oa=_ownerAnalytics();
       b.innerHTML='<div class="set-block owner-hero"><div class="owner-hero__ic">&#9670;</div><div><h3 style="margin-bottom:3px">Diamond &mdash; Owner / Admin</h3><div class="desc" style="margin:0">Limitless everything &mdash; no caps, no credit limits, every feature unlocked, for <b style="color:var(--ink)">'+esc(store.session()?store.session().email:'you')+'</b>.</div></div></div>'
         +'<div class="set-block"><h3>Your live dashboard</h3><div class="desc">Atlas is your headquarters. Jump straight to your existing Prestige Black dashboard &mdash; opens your live app in a new tab.</div>'
@@ -3108,6 +3136,13 @@ const Atlas = (function(){
           </div>`).join('')}
         </div>
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addRule()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add rule / fee</button>
+      </div>
+      <div class="set-block"><h3>Payouts &amp; commission</h3><div class="desc">A cut that leaves you on every booking &mdash; a booking agent, a referral partner, or a staff commission. Atlas subtracts it and shows your true take-home (net) on every booking and in analytics.</div>
+        <label class="cfg-check"><input type="checkbox" ${m.payout.enabled?'checked':''} onchange="Atlas.setMoney('payout.enabled',this.checked);Atlas.renderSetSoft()">Take a payout / commission off each booking</label>
+        ${m.payout.enabled?`<div class="row2" style="margin-top:12px">
+          <div class="field"><label>Label</label><input class="input" value="${esc(m.payout.label)}" onchange="Atlas.setMoney('payout.label',this.value)"></div>
+          <div class="field"><label>Amount</label><div style="display:flex;gap:8px"><select class="select" style="width:auto" onchange="Atlas.setMoney('payout.kind',this.value);Atlas.renderSetSoft()"><option value="percent" ${m.payout.kind==='percent'?'selected':''}>%</option><option value="flat" ${m.payout.kind==='flat'?'selected':''}>$ flat</option></select><div class="rule-input" style="padding:0 10px;flex:1">${m.payout.kind==='flat'?'<span>$</span>':''}<input class="tnum" style="width:100%;text-align:right" value="${m.payout.value}" oninput="Atlas.setMoney('payout.value',this.value)">${m.payout.kind==='percent'?'<span>%</span>':''}</div></div></div></div>
+          <div class="field"><label>Calculated on</label><select class="select" onchange="Atlas.setMoney('payout.base',this.value);Atlas.renderSetSoft()"><option value="subtotal" ${m.payout.base==='subtotal'?'selected':''}>Subtotal (after discounts, before tax)</option><option value="total" ${m.payout.base==='total'?'selected':''}>Total (tax included)</option></select><div class="hint">Shown to you only &mdash; never on the customer's receipt.</div></div>`:''}
       </div>
       <div class="set-block"><h3>Promo codes</h3><div class="desc">Discount codes customers enter at checkout &mdash; percent or flat, with an optional expiry, minimum length and usage cap. Every redemption is tracked.</div>
         <div id="promoList">${_promoListHtml()}</div>
