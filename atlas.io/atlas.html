@@ -1139,7 +1139,7 @@ table.tbl{width:100%;border-collapse:collapse}
           <div class="card" style="margin-bottom:16px"><div class="card__body" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
             <div class="feat__ic" style="margin:0"><svg viewBox="0 0 22 22" fill="none"><path d="M11 11a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM4 18a7 7 0 0114 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
             <div style="flex:1;min-width:200px"><b style="color:var(--ink)">Your branded member portal</b><div style="font-size:13px;color:var(--muted)" id="portalUrl">yourcompany.atlasrental.io/portal</div></div>
-            <button class="btn btn--ghost btn--sm" onclick="Atlas.toast('Portal preview opens in a new tab')">Preview portal</button>
+            <button class="btn btn--ghost btn--sm" onclick="Atlas.openPortal('')">Preview portal</button>
             <button class="btn btn--primary btn--sm" onclick="Atlas.copyPortal()">Copy link</button>
           </div></div>
           <div class="card"><div style="overflow-x:auto"><table class="tbl" id="custTbl"></table></div></div>
@@ -2309,7 +2309,7 @@ const Atlas = (function(){
     DATA.bookings=_bookings();
     const _bk=DATA.bookings.filter(b=>b.status!=='Cancelled');
     const rev=_bk.reduce((s,b)=>s+_bkTotal(b),0);
-    const active=_bk.filter(b=>b.status==='On rent'||b.status==='Confirmed').length;
+    const active=_bk.filter(b=>b.status==='On rent').length;   // On rent only -- Confirmed belongs to Upcoming (was double-counted in both KPIs)
     const util=Math.round(DATA.assets.reduce((s,a)=>s+a.util,0)/Math.max(1,DATA.assets.length));
     const kpis=[['Revenue',money(rev),'rev','M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7'],
       [_fterm('active'),active,'active','M4 4h12v12H4zM4 8h12'],
@@ -2974,7 +2974,7 @@ const Atlas = (function(){
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
     body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
-    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers and watch every vehicle move in real time &mdash; speed, trips, mileage, geofences and alerts.</p>'
+    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers and track every '+esc(S.fleet.noun)+' in real time &mdash; location, trips, mileage, geofences and alerts.</p>'
     +'<button class="btn btn--primary" onclick="Atlas.openTrackerConnect()">Connect a tracker</button>'
     +'<div class="trk-logos">'+TRACKERS.map(function(x){return '<span class="trk-logo">'+esc(x.name)+'</span>';}).join('')+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:6px">Works with '+TRACKERS.length+'+ providers &mdash; bring your API key or account login.</div></div>'; }
@@ -3027,7 +3027,7 @@ const Atlas = (function(){
     +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.connectTracker()">Connect &amp; go live</button></div>'); }
   function connectTracker(){ var prov=val('trkProv'), key=(val('trkKey')||'').trim(); if(!key){ toast('Paste your API key or login'); return; }
     var t=_trackers(); t.provider=prov; t.apiKey=key; t.connected=true; var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;
-    _trkSeed(); _logEvent('tracker','Connected '+nm+' -- '+(DATA.assets||[]).length+' vehicles now live',{provider:prov}); save(); closeModal(); renderTracking(); toast(nm+' connected -- your fleet is live'); }
+    _trkSeed(); _logEvent('tracker','Connected '+nm+' -- '+(DATA.assets||[]).length+' '+S.fleet.nouns+' now live',{provider:prov}); save(); closeModal(); renderTracking(); toast(nm+' connected -- your fleet is live'); }
   function disconnectTracker(){ if(!confirm('Disconnect the tracker? Live location will stop.'))return; var t=_trackers(); t.connected=false; t.vehicles={}; _trkSel=null; _trkRoute=null; _trkStop(); _logEvent('tracker','Tracker disconnected'); save(); renderTracking(); toast('Tracker disconnected'); }
   function _trkDashHtml(){ return '<div class="trk-kpis" id="trkKpis"></div><div class="trk-grid">'
     +'<div class="trk-map-wrap"><svg id="trkMap" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice">'+_trkMapBg()+'<g id="trkRouteG"></g><g id="trkMarkers"></g></svg>'
@@ -3597,10 +3597,10 @@ const Atlas = (function(){
     var _safe=_aioSafety(s); if(_safe) return _safe;   // refuse unsafe intent BEFORE any normal reply
     if(s.includes('website')||s.includes('web site')||s.includes('landing page')||(s.includes('site')&&/build|make|create|connect|need|want|new|my/.test(s))) return _aioWebsiteReply(s);
     if(s.includes('pric')||s.includes('rate')) return `Right now your base rate is <b>${money(m.baseRate)}/${m.rateModel}</b>, tax ${m.tax}%, and guests ${m.deposit.mode==='full'?'pay in full to reserve':m.deposit.mode==='percent'?('pay '+m.deposit.pct+'% upfront'):'pay nothing upfront'}. Want me to raise weekend rates, add a seasonal bump, or set per-${S.fleet.noun} pricing? Say the word and I'll apply it.`;
-    if(s.includes('idle')||s.includes('utiliz')||s.includes('fill')||s.includes('slow')) return `2 of your ${S.fleet.nouns} are under 50% utilized this week. I can auto-create a limited-time promo for them and notify past renters. Want me to draft it?`;
+    if(s.includes('idle')||s.includes('utiliz')||s.includes('fill')||s.includes('slow')){ var _idle=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return _idle>0 ? `${_idle} of your ${S.fleet.nouns} ${_idle===1?'is':'are'} under 50% utilized. I can auto-create a limited-time promo for ${_idle===1?'it':'them'} and notify past renters. Want me to draft it?` : `Your ${S.fleet.nouns} are booking well right now. Want me to look for a growth opportunity in your market instead?`; }
     if(s.includes('market')||s.includes('gap')||s.includes('competitor')||s.includes('opportunit')||s.includes('demand')||s.includes('research')||s.includes('grow')||s.includes('idea')||s.includes('learn')||s.includes('advice')||s.includes('tip')||s.includes('improve')) return _aioMarketReply(s);
-    if(s.includes('analytic')||s.includes('number')||s.includes('revenue')) return `You're trending <b>+18%</b> on revenue this month. Website is your top source (44%), and repeat customers are up 4 points. Your biggest lever right now is filling those 2 idle ${S.fleet.nouns}.`;
-    if(s.includes('win-back')||s.includes('text')||s.includes('draft')||s.includes('message')) return `Here's a draft: <i>"Hi {name}, it's ${S.brand.name} \u2014 we miss you! Enjoy 15% off your next ${S.fleet.noun} rental this month. Reply to book."</i> Want me to send it to your 42 past renters?`;
+    if(s.includes('analytic')||s.includes('number')||s.includes('revenue')){ var _bkA=(_bookings()||[]).filter(function(b){return b.status!=='Cancelled';}); var _revA=_bkA.reduce(function(t,b){return t+_bkTotal(b);},0); var _idleA=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return `Your booked revenue right now is <b>${money(_revA)}</b> across ${_bkA.length} ${_fterm(_bkA.length===1?'book':'books')}.${_idleA>0?` Your biggest lever is filling ${_idleA} idle ${S.fleet.nouns} \u2014 want a promo?`:` Open the Analytics tab for the full breakdown by ${S.fleet.noun} and source.`}`; }
+    if(s.includes('win-back')||s.includes('text')||s.includes('draft')||s.includes('message')) return `Here's a draft: <i>"Hi {name}, it's ${S.brand.name} \u2014 we miss you! Enjoy 15% off your next ${S.fleet.noun} rental this month. Reply to book."</i> Want me to send it to your ${(DATA.customers||[]).length||''}${(DATA.customers||[]).length?' ':''}past renters?`;
     if(s.includes('stripe')||s.includes('connect')||s.includes('payment')) return `Easy \u2014 go to <b>Settings \u2192 Integrations \u2192 Stripe \u2192 Connect</b>. I'll walk you through it step by step and test a $1 authorization so you know it works. Want me to open it now?`;
     if(s.includes('help')||s.includes('what can you')) return `I can adjust your pricing &amp; money rules, fill idle ${S.fleet.nouns}, research your local ${S.fleet.noun} market for gaps, draft &amp; send customer messages, explain any number, set up automations, and connect your tools. I learn your ${S.fleet.noun}-rental business as we go.`;
     if(/set ?up|scope|customi|configure|switch to|change what i rent|what do i rent|\bi (rent|manage|own|lease|list)\b/.test(s)) return _aioScopeReply(s);
@@ -3963,6 +3963,7 @@ const Atlas = (function(){
       rv:['Kitchen & bedding included','Delivery & setup available','24/7 roadside support','Flexible cancellation','Campsite recommendations'],
       air:['Flexible scheduling','Pre-flight briefing included','Catering on request','Priority rebooking','Concierge support'],
       equip:['Delivery & pickup','Operator training available','On-site support','Flexible rental terms','Damage-waiver options'],
+      construction:['Delivery to your job-site','Operator available on request','On-site support & servicing','Flexible daily / weekly / monthly terms','Damage-waiver options'],
       power:['Gear & helmets included','Delivery available','Safety briefing','Flexible cancellation','24/7 support'],
       trailer:['Delivery & pickup','Straps & gear included','Flexible rental terms','Roadside support','Easy online booking'] };
     return (map[S.fleet.id]||['Free delivery & pickup','24/7 support','Flexible cancellation','Loyalty perks on your next booking']).slice(); }
