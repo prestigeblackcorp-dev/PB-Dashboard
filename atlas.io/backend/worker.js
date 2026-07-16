@@ -8,7 +8,8 @@
  *   [[d1_databases]] binding = "DB"        database_name = "atlas"
  * Secrets (wrangler secret put ...):
  *   SESSION_KEY   - 32+ random bytes (HMAC/enc base for anything signed)
- *   ENC_KEY       - 32-byte base64 (AES-GCM key for integration secrets at rest)
+ *   ENC_KEY       - 32-byte base64 (AES-GCM key for integration secrets at rest; ciphertext is AAD-bound to tenant+provider)
+ *   ENC_KEY_2     - optional 32-byte base64; when set, new writes use it (key rotation) while ENC_KEY still decrypts old blobs
  *   OWNER_EMAIL   - the platform owner's email (always admin)
  *   STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, RESEND_KEY, TWILIO_SID, TWILIO_TOKEN,
  *   ANTHROPIC_KEY, DYNADOT_KEY  - filled in per integration phase
@@ -92,18 +93,45 @@ async function verifyPassword(password, saltB64, storedHash) {
 // A stored hash lacking the 'p2$' tag predates the 600k scheme -> re-hash on next successful login.
 function pwNeedsUpgrade(storedHash) { return !(typeof storedHash === 'string' && storedHash.slice(0, 3) === 'p2$'); }
 
-// AES-GCM encrypt/decrypt for integration secrets at rest (ENC_KEY base64, 32 bytes)
-async function encSecret(env, plain) {
-  const key = await crypto.subtle.importKey('raw', unb64(env.ENC_KEY), 'AES-GCM', false, ['encrypt']);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc(plain));
-  return b64(iv) + ':' + b64(ct);
+// AES-GCM for integration secrets at rest, hardened two ways:
+//  1) AAD (additionalData) binds each ciphertext to its tenant+provider, so a stolen/duplicated blob
+//     cannot be replayed under a different tenant or provider row -- GCM auth fails if the context differs.
+//  2) Key VERSIONING for rotation: the blob is "k<v>:<iv>:<ct>". Set ENC_KEY_2 to introduce a new key;
+//     new writes use the highest version while old ciphertext still decrypts under its own key. Rotate by
+//     re-encrypting lazily (decrypt old -> encrypt new) or in a migration. Legacy "<iv>:<ct>" blobs
+//     (pre-versioning, no AAD) still decrypt for back-compat.
+function _encKeys(env) {                     // highest version first
+  const ks = [];
+  if (env.ENC_KEY_2) ks.push({ v: 2, raw: env.ENC_KEY_2 });
+  if (env.ENC_KEY)   ks.push({ v: 1, raw: env.ENC_KEY });
+  return ks;
 }
-async function decSecret(env, blob) {
-  const [ivB, ctB] = String(blob).split(':');
-  const key = await crypto.subtle.importKey('raw', unb64(env.ENC_KEY), 'AES-GCM', false, ['decrypt']);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(ivB) }, key, unb64(ctB));
-  return new TextDecoder().decode(pt);
+async function encSecret(env, plain, aad) {
+  const ks = _encKeys(env); if (!ks.length) throw new Error('no ENC_KEY');
+  const { v, raw } = ks[0];                  // encrypt with the newest key
+  const key = await crypto.subtle.importKey('raw', unb64(raw), 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const params = { name: 'AES-GCM', iv };
+  if (aad != null) params.additionalData = enc(String(aad));
+  const ct = await crypto.subtle.encrypt(params, key, enc(plain));
+  return 'k' + v + ':' + b64(iv) + ':' + b64(ct);
+}
+async function decSecret(env, blob, aad) {
+  const parts = String(blob).split(':');
+  let v = 0, ivB, ctB;
+  if (parts.length === 3 && parts[0][0] === 'k') { v = parseInt(parts[0].slice(1), 10) || 0; ivB = parts[1]; ctB = parts[2]; }
+  else { ivB = parts[0]; ctB = parts[1]; }   // legacy unversioned blob (no AAD)
+  const params = { name: 'AES-GCM', iv: unb64(ivB) };
+  if (v && aad != null) params.additionalData = enc(String(aad));   // AAD only on versioned (new) blobs
+  const cand = v ? _encKeys(env).filter(k => k.v === v) : _encKeys(env);
+  for (const k of cand) {
+    try {
+      const key = await crypto.subtle.importKey('raw', unb64(k.raw), 'AES-GCM', false, ['decrypt']);
+      const pt = await crypto.subtle.decrypt(params, key, unb64(ctB));
+      return new TextDecoder().decode(pt);
+    } catch (e) { /* wrong key/version -> try the next */ }
+  }
+  throw new Error('decrypt failed');
 }
 
 // ---------------------------------------------------------------- cookies + sessions
@@ -333,7 +361,7 @@ export default {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         const body = await req.json().catch(() => ({}));
         if (!vStr(body.provider, 40) || !vStr(body.secret, 400)) return err(400, 'Provider and key required.');
-        const secret_enc = await encSecret(env, body.secret);
+        const secret_enc = await encSecret(env, body.secret, ctx.tenant_id + '|' + body.provider);   // AAD binds this ciphertext to this tenant+provider
         await env.DB.prepare('INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,provider) DO UPDATE SET secret_enc=?,meta=?,connected_at=?')
           .bind(ctx.tenant_id, body.provider, body.kind || '', secret_enc, JSON.stringify(body.meta || {}), Date.now(), secret_enc, JSON.stringify(body.meta || {}), Date.now()).run();
         await audit(env, ctx, req, 'integration.connect', { provider: body.provider });
