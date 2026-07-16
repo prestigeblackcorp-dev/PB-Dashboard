@@ -462,6 +462,11 @@ table.tbl{width:100%;border-collapse:collapse}
 .set-tab:hover{color:var(--ink)}
 .set-sec{display:none} .set-sec.active{display:block}
 .set-block{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+.nav-barrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;font-size:14px;font-weight:600;color:var(--ink);border-bottom:1px solid var(--line)}
+.nav-editor{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.nav-erow{display:flex;align-items:center;gap:8px}
+.nav-erow .input{flex:1;min-width:0}
+.nav-erow .btn{flex:none;min-width:92px}
 .set-block h3{font-size:16px;margin-bottom:4px}
 .set-block .desc{font-size:13.5px;color:var(--muted);margin-bottom:18px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -543,6 +548,8 @@ table.tbl{width:100%;border-collapse:collapse}
   .hmb-btn{display:inline-flex}
   .mnav{display:flex}
   .main .panel{padding-bottom:78px}   /* clear the bottom nav */
+  body.mnav-off .main .panel{padding-bottom:22px}   /* owner hid the tab bar -> reclaim the space */
+  body.mnav-off .toast-wrap{bottom:calc(22px + env(safe-area-inset-bottom))}
   .web-prev{position:static}
   .toast-wrap{bottom:calc(84px + env(safe-area-inset-bottom))}   /* sit above the bottom nav, not on it */
 }
@@ -798,6 +805,9 @@ table.tbl{width:100%;border-collapse:collapse}
 /* ---- guided walkthrough (spotlight coach-marks) ---- */
 .tour-spot{position:fixed;z-index:6000;border-radius:12px;pointer-events:none;display:none;
   box-shadow:0 0 0 3px var(--brand), 0 0 0 9999px rgba(9,17,14,.60);transition:top .24s cubic-bezier(.4,0,.2,1),left .24s cubic-bezier(.4,0,.2,1),width .24s cubic-bezier(.4,0,.2,1),height .24s cubic-bezier(.4,0,.2,1)}
+.tour-spot::after{content:'';position:absolute;inset:-3px;border:2px solid var(--brand);border-radius:14px;pointer-events:none;animation:tourPulse 1.6s ease-out infinite}
+@keyframes tourPulse{0%{transform:scale(1);opacity:.85}100%{transform:scale(1.05);opacity:0}}
+@media(prefers-reduced-motion:reduce){.tour-spot::after{animation:none;opacity:.6}}
 .tour-pop{position:fixed;z-index:6001;width:min(322px,calc(100vw - 28px));background:var(--surface);border:1px solid var(--line);border-radius:14px;
   padding:16px 16px 14px;box-shadow:0 18px 50px rgba(9,17,14,.30);display:none}
 .tour-pop.on,.tour-spot.on{display:block}
@@ -2077,6 +2087,41 @@ const Atlas = (function(){
     ['team','Team','M7 9a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM2 16a5 5 0 0110 0M13 9a2.5 2.5 0 000-5M18 16a5 5 0 00-4-4.9'],
     ['settings','Settings','M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM10 2l1.3 2 2.3-.6.6 2.3 2 1.3-2 1.3-.6 2.3-2.3-.6L10 18l-1.3-2-2.3.6-.6-2.3-2-1.3 2-1.3.6-2.3 2.3.6L10 2z']
   ];
+  // ---- Owner-customizable navigation ----
+  // The desktop sidebar + hamburger drawer ALWAYS list every allowed area (nothing is ever lost). The MOBILE bottom
+  // tab bar is the owner's to shape: hide specific tabs to declutter, rename them, or turn the whole bar off and rely
+  // on the hamburger. All of it is editable from Settings AND by asking Atlas.io -- and it persists (synced via S).
+  function _navCfg(){ S.nav=S.nav||{}; if(!Array.isArray(S.nav.hidden)) S.nav.hidden=[]; if(typeof S.nav.off!=='boolean') S.nav.off=false; S.nav.labels=S.nav.labels||{}; return S.nav; }
+  function _navAllowed(){ return NAV.filter(function(n){ return _canMod(n[0]); }); }
+  function _navKey(q){ q=(q||'').toString().trim().toLowerCase(); if(!q) return null;
+    var hit=_navAllowed().filter(function(n){ return n[0]===q || (n[1]||'').toLowerCase()===q || _navLabelFor(n).toLowerCase()===q; })[0];
+    if(hit) return hit[0];
+    hit=_navAllowed().filter(function(n){ return n[0].indexOf(q)>=0 || (n[1]||'').toLowerCase().indexOf(q)>=0 || _navLabelFor(n).toLowerCase().indexOf(q)>=0; })[0];
+    return hit?hit[0]:null; }
+  function _navLabelFor(n){ var c=_navCfg(); if(c.labels[n[0]]) return c.labels[n[0]]; return n[0]==='fleet'?cap(S.fleet.nouns):(n[0]==='bookings'?cap(_fterm('books')):n[1]); }
+  function _refreshNavBadges(){ try{ var na=(DATA.assets||[]).length, nb=(DATA.bookings||[]).filter(function(b){return b.status!=='Completed'&&b.status!=='Cancelled';}).length;
+    ['fleetBadge','m_fleetBadge'].forEach(function(id){ var e=document.getElementById(id); if(e)e.textContent=na; });
+    ['bookBadge','m_bookBadge'].forEach(function(id){ var e=document.getElementById(id); if(e)e.textContent=nb; }); }catch(e){} }
+  function _renderNavs(){ var all=_navAllowed(), cfg=_navCfg();
+    var a=(document.querySelector('.nav-item.active')||{}).dataset, active=(a&&a.nav)||'overview';
+    var side=document.getElementById('sideNav');
+    if(side) side.innerHTML='<div class="side__label">Operations</div>'+all.map(function(n){ return '<button class="nav-item'+(n[0]===active?' active':'')+'" data-nav="'+n[0]+'" onclick="Atlas.go(\''+n[0]+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(_navLabelFor(n))+(n[3]?'<span class="badge" id="'+n[3]+'"></span>':'')+'</button>'; }).join('');
+    var mob=document.getElementById('mobileNav'); if(mob){
+      if(cfg.off){ mob.innerHTML=''; mob.style.display='none'; document.body.classList.add('mnav-off'); }
+      else { mob.style.display=''; document.body.classList.remove('mnav-off');
+        var vis=all.filter(function(n){ return cfg.hidden.indexOf(n[0])<0; });
+        mob.innerHTML=vis.map(function(n){ return '<button class="mnav__i'+(n[0]===active?' active':'')+'" data-mnav="'+n[0]+'" onclick="Atlas.go(\''+n[0]+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(_navLabelFor(n))+(n[3]?'<span class="badge" id="m_'+n[3]+'"></span>':'')+'</button>'; }).join('');
+      }
+    }
+    _refreshNavBadges();
+  }
+  // Nav-edit actions -- callable from Settings AND from Atlas.io. Each persists + re-renders every nav surface.
+  function navHide(key){ var k=_navKey(key); if(!k) return false; if(k==='overview'){ toast('Overview stays pinned'); return false; } var c=_navCfg(); if(c.hidden.indexOf(k)<0) c.hidden.push(k); save(); _renderNavs(); try{buildSettings();}catch(e){} return true; }
+  function navShow(key){ var k=_navKey(key); if(!k) return false; var c=_navCfg(); c.hidden=c.hidden.filter(function(x){return x!==k;}); save(); _renderNavs(); try{buildSettings();}catch(e){} return true; }
+  function navRename(key,label){ var k=_navKey(key); if(!k) return false; var c=_navCfg(); label=(label||'').toString().trim().slice(0,18); if(label) c.labels[k]=label; else delete c.labels[k]; save(); _renderNavs(); try{buildSettings();}catch(e){} return true; }
+  function navSetBar(on){ var c=_navCfg(); c.off=!on; save(); _renderNavs(); try{buildSettings();}catch(e){} return true; }
+  function navToggleBar(){ var c=_navCfg(); c.off=!c.off; save(); _renderNavs(); try{buildSettings();}catch(e){} toast(c.off?'Bottom tab bar hidden - use the menu button':'Bottom tab bar shown'); }
+  function navReset(){ var c=_navCfg(); c.hidden=[]; c.off=false; c.labels={}; save(); _renderNavs(); try{buildSettings();}catch(e){} toast('Navigation reset to default'); }
   function buildApp(){
     // sidebar brand
     document.getElementById('sideName').textContent=S.brand.name;
@@ -2086,17 +2131,9 @@ const Atlas = (function(){
     const sl=document.getElementById('sideLogo'); sl.innerHTML=S.brand.logo?`<img src="${S.brand.logo}">`:`<span>${S.brand.initial}</span>`;
     document.getElementById('acctAv').textContent=S.brand.initial;
     document.getElementById('portalUrl').textContent=S.brand.subdomain+'.atlasrental.io/portal';
-    // nav (only the areas this actor is allowed to SEE)
-    var _navShown=NAV.filter(n=>_canMod(n[0]));
-    var _navLbl=n=>n[0]==='fleet'?cap(S.fleet.nouns):(n[0]==='bookings'?cap(_fterm('books')):n[1]);
-    document.getElementById('sideNav').innerHTML=`<div class="side__label">Operations</div>`+
-      _navShown.map((n,i)=>`<button class="nav-item ${i===0?'active':''}" data-nav="${n[0]}" onclick="Atlas.go('${n[0]}')">
-        <svg viewBox="0 0 20 20" fill="none"><path d="${n[2]}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>${_navLbl(n)}
-        ${n[3]?`<span class="badge" id="${n[3]}"></span>`:''}</button>`).join('');
-    // mobile bottom tab bar (phones) -- same allowed items, scrollable
-    document.getElementById('mobileNav').innerHTML=_navShown.map((n,i)=>`<button class="mnav__i ${i===0?'active':''}" data-mnav="${n[0]}" onclick="Atlas.go('${n[0]}')">
-        <svg viewBox="0 0 20 20" fill="none"><path d="${n[2]}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>${_navLbl(n)}
-        ${n[3]?`<span class="badge" id="m_${n[3]}"></span>`:''}</button>`).join('');
+    // nav: sidebar + hamburger drawer always list every allowed area; the mobile tab bar honors the owner's
+    // customization (hide/rename tabs, or turn the bar off entirely). See _renderNavs + the navHide/navRename/navSetBar API.
+    _renderNavs();
     // data + panels
     seedData(); renderOverview(); renderFleet(); renderBookings(); renderCustomers(); renderAnalytics(); renderWebsite(); renderTeam(); buildSettings(); buildAio();
     // greet
@@ -2120,7 +2157,7 @@ const Atlas = (function(){
   function _renderDrawer(){
     var d=document.getElementById('navDrawer'); if(!d||!S) return;
     var shown=NAV.filter(function(n){return _canMod(n[0]);});
-    var lbl=function(n){ return n[0]==='fleet'?cap(S.fleet.nouns):(n[0]==='bookings'?cap(_fterm('books')):n[1]); };
+    var lbl=function(n){ return esc(_navLabelFor(n)); };   // honors owner tab renames
     var act=(document.querySelector('.nav-item.active')||{}).dataset; var active=act?act.nav:'overview';
     var item=function(n){ return '<button class="nav-item '+(n[0]===active?'active':'')+'" onclick="Atlas.go(\''+n[0]+'\');Atlas.closeMenu()"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+lbl(n)+'</button>'; };
     var dark=_theme()==='dark';
@@ -2132,7 +2169,8 @@ const Atlas = (function(){
       +'<nav class="drawer__nav"><div class="drawer__sec">Operations</div>'+shown.map(item).join('')
       +'<div class="drawer__sec">Quick actions</div>'
       +'<button class="nav-item" onclick="Atlas.closeMenu();Atlas.openAio()"><svg viewBox="0 0 20 20" fill="none"><path d="M10 2l1.6 4.4L16 8l-4.4 1.6L10 14l-1.6-4.4L4 8l4.4-1.6L10 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>Ask Atlas.io</button>'
-      +'<button class="nav-item" onclick="Atlas.setTheme(\''+(dark?'light':'dark')+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="M16 11A6 6 0 019 4a6 6 0 108 8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>'+(dark?'Light mode':'Dark mode')+'</button></nav>'
+      +'<button class="nav-item" onclick="Atlas.setTheme(\''+(dark?'light':'dark')+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="M16 11A6 6 0 019 4a6 6 0 108 8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>'+(dark?'Light mode':'Dark mode')+'</button>'
+      +'<button class="nav-item" onclick="Atlas.closeMenu();Atlas.navToggleBar()"><svg viewBox="0 0 20 20" fill="none"><rect x="3" y="13.5" width="14" height="3.5" rx="1.2" stroke="currentColor" stroke-width="1.4"/><path d="M6.2 15.2h.01M9.5 15.2h.01M12.8 15.2h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'+(_navCfg().off?'Show bottom tab bar':'Hide bottom tab bar')+'</button></nav>'
       +'<div class="drawer__foot"><button class="nav-item" onclick="Atlas.closeMenu();Atlas.logout()"><svg viewBox="0 0 20 20" fill="none"><path d="M8 17H4a1 1 0 01-1-1V4a1 1 0 011-1h4M13 13l3-3-3-3M16 10H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Sign out</button></div>';
   }
   function toggleMenu(){ document.getElementById('navDrawer').classList.contains('on')?closeMenu():openMenu(); }
@@ -2798,7 +2836,7 @@ const Atlas = (function(){
   var _tour=null;
   function _bkTourSteps(){ var noun=S.fleet.noun, unit=_perUnit();
     return [
-      {sel:'[data-tour="new"]', title:'Start a booking', body:'Everything begins here. Tap <b>New booking</b> to open the form &mdash; I\'ll open it for you now.'},
+      {sel:'[data-tour="new"]', click:true, title:'Start a booking', body:'Everything begins here. Tap <b>New booking</b> right here to open the form &mdash; the tour follows you in.'},
       {before:function(){ var sc=document.getElementById('modalScrim'); if(!sc||!sc.classList.contains('on')||!document.getElementById('bkCust')) _bookingForm(null); }, sel:'#bkCust', title:'Who it\'s for', body:'Type the customer\'s name, email and phone. You can edit any of this later &mdash; nothing is locked in.'},
       {sel:'#bkAsset', title:'Pick the '+noun, body:'Choose which '+noun+' they\'re renting from your '+S.fleet.nouns+'.'},
       {sel:'#bkPeriods', title:'When &amp; how long', body:'Set the start date and the number of '+unit+'. Watch the price update instantly as you change it.'},
@@ -2809,8 +2847,8 @@ const Atlas = (function(){
       {sel:'#bkStatusF', title:'Set the status', body:'Mark where it stands: Pending, Confirmed, On rent, Completed or Cancelled. You can change it anytime.'},
       {sel:'#bkPreview', title:'Your live total', body:'This is the exact <b>total</b>, the <b>deposit due now</b>, and any <b>refundable hold</b> &mdash; all from your money rules.'},
       {sel:'[data-tour="save"]', title:'Save it', body:'Save the booking. It lands in your list and updates the Overview numbers automatically.'},
-      {before:function(){ closeModal(); go('bookings'); }, sel:'#bkFilters', title:'Filter fast', body:'Tap a chip to filter by status. The number shows how many are in each.'},
-      {sel:'#bookTblFull', title:'Open &amp; edit any booking', body:'Click any row to open it. From there you can <b>Edit</b>, move it along, cancel or delete. That\'s the whole flow!'}
+      {before:function(){ closeModal(); go('bookings'); }, sel:'#bkFilters', click:true, title:'Filter fast', body:'Tap a chip to filter by status &mdash; the number shows how many are in each. Give one a tap.'},
+      {sel:'#bookTblFull', click:true, title:'Open &amp; edit any booking', body:'Tap any row to open it. From there you can <b>Edit</b>, move it along, cancel or delete. That\'s the whole flow!'}
     ];
   }
   function bkTour(fromForm){ if(S && document.getElementById('view-app') && document.getElementById('view-app').style.display==='none') return;
@@ -2848,7 +2886,23 @@ const Atlas = (function(){
         spot.classList.add('on'); spot.style.top=(r.top-pad)+'px'; spot.style.left=(r.left-pad)+'px'; spot.style.width=(r.width+pad*2)+'px'; spot.style.height=(r.height+pad*2)+'px';
       } else { spot.classList.remove('on'); }
       _tourPopPos(el,pop);
+      _tourBindAdvance(el,st);
     }, el?90:10);
+  }
+  // Tapping the highlighted element itself advances the tour (mobile-natural). Opt-in per step via click:true;
+  // container steps (a list/toolbar) only advance when a real control inside is tapped, not an empty gap.
+  function _tourBindAdvance(el,st){
+    if(_tour && _tour._advEl && _tour._advFn){ try{ _tour._advEl.removeEventListener('click',_tour._advFn,true); }catch(e){} _tour._advEl=null; _tour._advFn=null; }
+    if(!el||!_tour||!st||st.click!==true) return;
+    var container=/^#(bkFilters|bookTblFull)$/.test(st.sel||'');
+    var at=_tour.i;
+    var fn=function(ev){
+      if(container && !(ev.target&&ev.target.closest&&ev.target.closest('button, tr, .bk-chip, [role=button]'))) return;
+      if(!_tour||_tour.i!==at) return;                 // already advanced
+      setTimeout(function(){ if(_tour&&_tour.i===at) tourNext(); }, container?280:190);
+    };
+    el.addEventListener('click',fn,true);              // capture: runs before the element's own handler (which opens the form)
+    _tour._advEl=el; _tour._advFn=fn;
   }
   function _tourPopHtml(st){ var i=_tour.i, n=_tour.steps.length;
     var dots=''; for(var k=0;k<n;k++) dots+='<i class="'+(k===i?'on':'')+'"></i>';
@@ -2868,6 +2922,7 @@ const Atlas = (function(){
   function tourNext(){ if(!_tour)return; _tour.i++; if(_tour.i>=_tour.steps.length){ tourEnd(true); return; } _tourStep(); }
   function tourBack(){ if(!_tour)return; _tour.i=Math.max(0,_tour.i-1); _tourStep(); }
   function tourEnd(complete){ var key=_tour&&_tour.key; var spot=document.getElementById('tourSpot'), pop=document.getElementById('tourPop');
+    if(_tour && _tour._advEl && _tour._advFn){ try{ _tour._advEl.removeEventListener('click',_tour._advFn,true); }catch(e){} }
     if(spot)spot.classList.remove('on'); if(pop)pop.classList.remove('on');
     if(key){ if(complete){ _lsSet(key+'_done',1); _lsSet(key+'_i',0); } }
     _tour=null; if(complete) toast('That\'s the tour &mdash; you\'re all set');
@@ -3336,6 +3391,13 @@ const Atlas = (function(){
           <button type="button" class="theme-opt ${_theme()!=='dark'?'sel':''}" onclick="Atlas.setTheme('light')"><span class="theme-prev theme-prev--light"><i></i><i></i></span>Light</button>
           <button type="button" class="theme-opt ${_theme()==='dark'?'sel':''}" onclick="Atlas.setTheme('dark')"><span class="theme-prev theme-prev--dark"><i></i><i></i></span>Dark</button>
         </div>
+      </div>
+      <div class="set-block"><h3>Navigation</h3><div class="desc">Shape your mobile bottom tab bar &mdash; hide tabs you rarely use, rename them, or turn the whole bar off and navigate from the menu button. Your sidebar and menu always list everything, so nothing is ever lost. You can also just ask Atlas.io &mdash; &ldquo;hide the Website tab&rdquo; or &ldquo;rename Bookings to Rentals&rdquo;.</div>
+        <label class="nav-barrow"><span>Show bottom tab bar on mobile</span><input type="checkbox" ${!_navCfg().off?'checked':''} onchange="Atlas.navSetBar(this.checked)"></label>
+        <div class="nav-editor">${_navAllowed().map(function(n){ var hidden=_navCfg().hidden.indexOf(n[0])>=0, pinned=(n[0]==='overview');
+          return '<div class="nav-erow"><input class="input" value="'+esc(_navLabelFor(n))+'"'+(pinned?' disabled':'')+' onchange="Atlas.navRename(\''+n[0]+'\',this.value)">'
+            +'<button class="btn btn--sm '+(pinned?'btn--ghost':(hidden?'btn--ghost':'btn--primary'))+'"'+(pinned?' disabled':'')+' onclick="Atlas.'+(hidden?'navShow':'navHide')+'(\''+n[0]+'\')">'+(pinned?'Pinned':(hidden?'Hidden':'In tab bar'))+'</button></div>'; }).join('')}</div>
+        <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.navReset()">Reset navigation</button>
       </div>`;
     else if(setCur==='money') b.innerHTML=`
       <div class="set-block"><h3>Base pricing</h3><div class="desc">Sensible defaults so revenue, gross and profit work from day one. All editable, and each ${S.fleet.noun} can override any of it.</div>
@@ -3648,6 +3710,7 @@ const Atlas = (function(){
   function aioReply(q){
     const s=q.toLowerCase(); const m=S.money;
     var _safe=_aioSafety(s); if(_safe) return _safe;   // refuse unsafe intent BEFORE any normal reply
+    var _navr=_aioNavReply(s); if(_navr) return _navr;   // #131: reshape the nav by voice ("hide the Website tab", "rename Bookings to Rentals")
     if(s.includes('website')||s.includes('web site')||s.includes('landing page')||(s.includes('site')&&/build|make|create|connect|need|want|new|my/.test(s))) return _aioWebsiteReply(s);
     if(s.includes('pric')||s.includes('rate')) return `Right now your base rate is <b>${money(m.baseRate)}/${m.rateModel}</b>, tax ${m.tax}%, and guests ${m.deposit.mode==='full'?'pay in full to reserve':m.deposit.mode==='percent'?('pay '+m.deposit.pct+'% upfront'):'pay nothing upfront'}. Want me to raise weekend rates, add a seasonal bump, or set per-${S.fleet.noun} pricing? Say the word and I'll apply it.`;
     if(s.includes('idle')||s.includes('utiliz')||s.includes('fill')||s.includes('slow')){ var _idle=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return _idle>0 ? `${_idle} of your ${S.fleet.nouns} ${_idle===1?'is':'are'} under 50% utilized. I can auto-create a limited-time promo for ${_idle===1?'it':'them'} and notify past renters. Want me to draft it?` : `Your ${S.fleet.nouns} are booking well right now. Want me to look for a growth opportunity in your market instead?`; }
@@ -3658,6 +3721,26 @@ const Atlas = (function(){
     if(s.includes('help')||s.includes('what can you')) return `I can adjust your pricing &amp; money rules, fill idle ${S.fleet.nouns}, research your local ${S.fleet.noun} market for gaps, draft &amp; send customer messages, explain any number, set up automations, and connect your tools. I learn your ${S.fleet.noun}-rental business as we go.`;
     if(/set ?up|scope|customi|configure|switch to|change what i rent|what do i rent|\bi (rent|manage|own|lease|list)\b/.test(s)) return _aioScopeReply(s);
     return `Got it \u2014 I know you rent <b>${esc(S.fleet.nouns)}</b>, so I can set your pricing, fill idle ${esc(S.fleet.nouns)}, research your local ${esc(S.fleet.noun)}-rental market for gaps, draft customer messages, or explain any number. What would you like to do?`;
+  }
+  // #131: Atlas.io reshapes the owner's navigation on request. Heuristic intent match for the demo responder; the live
+  // model receives these as documented actions. Specific-tab edits require an explicit "tab"/"nav" word so a casual
+  // "show bookings" still just navigates there.
+  function _aioNavReply(s){
+    var _lab=function(k){ var n=_navAllowed().filter(function(x){return x[0]===k;})[0]; return n?esc(_navLabelFor(n)):k; };
+    if(/(hide|turn off|remove|get rid of|collapse|disable)[a-z' ]{0,18}(bottom|tab) ?bar/.test(s)){ navSetBar(false); return 'Done \u2014 I hid your bottom tab bar. Everything is one tap from the menu button (top-left), and you can bring it back anytime by asking me or from Settings &gt; Navigation.'; }
+    if(/(show|turn on|bring back|restore|enable)[a-z' ]{0,18}(bottom|tab) ?bar/.test(s)){ navSetBar(true); return 'Your bottom tab bar is back.'; }
+    var rn=s.match(/(?:rename|relabel|call)\s+(?:the\s+)?([a-z ]+?)(?:\s+tab)?\s+(?:to|as)\s+([a-z0-9 ]{1,18})/);
+    if(rn){ var rk=_navKey(rn[1]); if(rk){ navRename(rk, rn[2].trim().replace(/\b\w/g,function(c){return c.toUpperCase();})); return 'Renamed it to <b>'+_lab(rk)+'</b> \u2014 updated across your sidebar, menu and tab bar.'; }
+      return 'Which tab? Yours are: '+_navAllowed().map(function(n){return esc(_navLabelFor(n));}).join(', ')+'.'; }
+    var navish=/\b(tab|tabs|nav|navigation)\b/.test(s);
+    if(navish && /\b(reset|restore default|defaults?)\b/.test(s)){ navReset(); return 'Navigation reset to the default set.'; }
+    if(!navish) return null;
+    var hd=s.match(/(?:hide|remove|drop|take off|take out|get rid of)\s+(?:the\s+)?([a-z ]+?)\s+tab/);
+    if(hd){ var hk=_navKey(hd[1]); if(hk){ if(hk==='overview') return 'Overview stays pinned as your home base, but I can hide any other tab.'; if(navHide(hk)) return 'Hid the <b>'+_lab(hk)+'</b> tab from your bottom bar \u2014 still in your menu and sidebar, and I can restore it anytime.'; }
+      return 'I could not match that to a tab. Yours are: '+_navAllowed().map(function(n){return esc(_navLabelFor(n));}).join(', ')+'.'; }
+    var sh=s.match(/(?:show|add|bring back|restore|unhide|put back)\s+(?:the\s+)?([a-z ]+?)\s+tab/);
+    if(sh){ var sk=_navKey(sh[1]); if(sk){ navShow(sk); return 'The <b>'+_lab(sk)+'</b> tab is back in your bottom bar.'; } }
+    return null;
   }
   // Market/gap research \u2014 fleet-specific. This is the seam where the live Atlas.io AI (worker + ANTHROPIC_KEY)
   // will run REAL market research on the owner's asset type + location on slow days; canned + personalized for now.
@@ -4401,6 +4484,7 @@ const Atlas = (function(){
     openPerm,setRolePreset,setPerm,inviteMember,saveInvite,removeMember,previewAs,exitPreview,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
+    navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,renderReports,downloadReport,applySitePromo,replyReview,
