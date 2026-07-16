@@ -278,14 +278,21 @@ img{max-width:100%}
 .ob-skip{font-size:13.5px;color:var(--muted);font-weight:600;background:none;border:none}
 .ob-skip:hover{color:var(--brand)}
 
-.tile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
-.tile{border:1.5px solid var(--line);border-radius:12px;padding:16px;cursor:pointer;transition:.15s;background:var(--surface);text-align:left;display:flex;gap:12px;align-items:flex-start}
+.tile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.tile{position:relative;min-width:0;border:1.5px solid var(--line);border-radius:12px;padding:15px;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s;background:var(--surface);text-align:left;display:flex;gap:11px;align-items:center;min-height:72px;-webkit-tap-highlight-color:transparent}
 .tile:hover{border-color:var(--brand);background:var(--brand-050)}
 .tile.sel{border-color:var(--brand);background:var(--brand-050);box-shadow:0 0 0 3px var(--brand-100)}
-.tile__ic{width:38px;height:38px;border-radius:10px;background:var(--surface-2);display:grid;place-items:center;flex:none;font-size:20px}
+.tile__ic{width:40px;height:40px;border-radius:10px;background:var(--surface-2);display:grid;place-items:center;flex:none;font-size:20px}
 .tile.sel .tile__ic{background:var(--brand-100)}
-.tile b{display:block;color:var(--ink);font-size:14.5px}
-.tile small{font-size:12.5px;color:var(--muted)}
+.tile__tx{min-width:0;flex:1}
+.tile b{display:block;color:var(--ink);font-size:14px;line-height:1.2}
+.tile small{display:block;font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile__chk{position:absolute;top:8px;right:8px;width:20px;height:20px;border-radius:50%;background:var(--brand);color:#fff;display:none;place-items:center}
+.tile.sel .tile__chk{display:grid}
+.tile__chk svg{width:12px;height:12px}
+.tile.sel .tile__tx{padding-right:18px}
+.tile__mn{display:inline-block;font-size:8.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--brand-700);background:var(--brand-100);border-radius:5px;padding:1px 5px;margin-left:5px;vertical-align:middle}
+@media(max-width:420px){.tile{padding:13px;min-height:66px;gap:9px}.tile__ic{width:34px;height:34px;font-size:18px}.tile b{font-size:13px}}
 
 .logo-drop{border:1.5px dashed var(--line);border-radius:12px;padding:20px;display:flex;align-items:center;gap:16px;cursor:pointer;transition:.15s;background:var(--surface-2)}
 .logo-drop:hover{border-color:var(--brand);background:var(--brand-050)}
@@ -1797,9 +1804,12 @@ const Atlas = (function(){
       ${obNav()}`,
 
     fleet:()=>`
-      <h2>What do you rent?</h2><p class="ob-card__lead">Pick what you rent &mdash; Atlas relabels itself to match how you talk about your business.</p>
-      <div class="tile-grid">${FLEET_TYPES.map(t=>`<button class="tile ${S.fleet.id===t.id?'sel':''}" onclick="Atlas.pickFleet('${t.id}')">
-        <div class="tile__ic">${t.emoji}</div><div><b>${t.label}</b><small>e.g. ${t.sample[0]}</small></div></button>`).join('')}</div>
+      <h2>What do you rent?</h2><p class="ob-card__lead">Tap everything you rent &mdash; you can pick more than one. Your <b>main</b> type sets how Atlas labels things, and each type keeps its own rates.</p>
+      <div class="tile-grid">${FLEET_TYPES.map(function(t){ var sel=_fleetSel().indexOf(t.id)>=0, main=(S.fleet.id===t.id&&_fleetSel().length>1);
+        return `<button class="tile ${sel?'sel':''}" onclick="Atlas.toggleFleet('${t.id}')">
+        <div class="tile__ic">${t.emoji}</div><div class="tile__tx"><b>${t.label}${main?' <span class="tile__mn">Main</span>':''}</b></div>
+        <span class="tile__chk"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>`; }).join('')}</div>
+      <div class="bk-lenhint" style="margin:8px 0 0">${_fleetSel().length>1?('Renting <b>'+_fleetSel().length+'</b> types &middot; main is <b>'+esc(S.fleet.label)+'</b> &middot; tap another to make more, tap again to remove.'):'Tip: renting more than one thing? Tap them all &mdash; the first is your main type.'}</div>
       ${obNav()}`,
 
     money:()=>`
@@ -1883,14 +1893,33 @@ const Atlas = (function(){
   function pickColor(c){ S.brand.color=c; save(); applyBrand();
     document.querySelectorAll('#swatches .swatch').forEach(s=>s.classList.toggle('sel',s.style.background===hexToRgbCss(c))); }
   function hexToRgbCss(h){let[r,g,b]=hex2rgb(h);return`rgb(${r}, ${g}, ${b})`}
-  function pickFleet(id){ S.fleet=FLEET_TYPES.find(t=>t.id===id); save(); document.querySelectorAll('.tile').forEach(t=>t.classList.remove('sel')); event.currentTarget.classList.add('sel'); }
+  function pickFleet(id){ var t=FLEET_TYPES.find(function(x){return x.id===id;}); if(!t)return; _setPrimaryFleet(t,S.fleet&&S.fleet.also); save(); document.querySelectorAll('.tile').forEach(t=>t.classList.remove('sel')); event.currentTarget.classList.add('sel'); }
+  // Multi-select "What do you rent?": S.fleet stays the PRIMARY type (drives all labels, so every existing code path
+  // is untouched); S.fleet.also holds the extra types the owner also rents. Assets can be tagged per type (Add-Asset).
+  function _fleetSel(){ var ids=[(S.fleet&&S.fleet.id)||'cars']; ((S.fleet&&S.fleet.also)||[]).forEach(function(x){ if(ids.indexOf(x)<0) ids.push(x); }); return ids; }
+  function _setPrimaryFleet(t,also){ S.fleet={id:t.id,emoji:t.emoji,label:t.label,noun:t.noun,nouns:t.nouns,sample:t.sample.slice(),also:(also||[]).filter(function(x){return x&&x!==t.id;})}; }
+  function toggleFleet(id){ var t=FLEET_TYPES.find(function(x){return x.id===id;}); if(!t)return;
+    S.fleet.also=Array.isArray(S.fleet.also)?S.fleet.also:[];
+    if(S.fleet.id===id){                                    // tapped the current main -> promote the next type, or refuse if it's the only one
+      if(S.fleet.also.length){ var np=S.fleet.also[0], nt=FLEET_TYPES.find(function(x){return x.id===np;}); _setPrimaryFleet(nt, S.fleet.also.slice(1)); }
+      else { toast('Keep at least one \u2014 tap a different type first'); return; }
+    } else if(S.fleet.also.indexOf(id)>=0){ S.fleet.also=S.fleet.also.filter(function(x){return x!==id;}); }  // remove an extra
+    else { S.fleet.also.push(id); }                          // add an extra
+    save(); obRefresh(); }
+  // Per-type rates (#129): each type the owner rents keeps its own default rate. S.money.byType maps typeId -> rate;
+  // the primary type falls back to the global base rate. Assets get tagged a.type so the fleet knows what each one is.
+  function _typeById(id){ return FLEET_TYPES.find(function(x){return x.id===id;})||S.fleet; }
+  function _typeRate(id){ var bt=(S.money&&S.money.byType)||{}; return (bt[id]!=null)?bt[id]:(S.money?S.money.baseRate:0); }
+  function _setTypeRate(id,rate){ S.money.byType=S.money.byType||{}; S.money.byType[id]=Math.max(0,Number(rate)||0); }
+  function _typeNoun(id){ var t=_typeById(id); return (t&&t.noun)||S.fleet.noun; }
+  function _typeNouns(id){ var t=_typeById(id); return (t&&t.nouns)||S.fleet.nouns; }
   // True only while the fleet still holds default demo/sample data (never matches a name the operator typed).
   function _isSampleAssets(){ return DATA.assets && DATA.assets.length>0 && DATA.assets.every(function(a){
     return /^unit\s*\d+$/i.test(a.name||'') || FLEET_TYPES.some(function(ft){return ft.sample.indexOf(a.name)>=0;}); }); }
   // Change what the operator rents anytime -> relabels the whole dashboard (KPIs, charts, fleet, plans, website).
   function setFleetType(id){ var t=FLEET_TYPES.find(function(x){return x.id===id;}); if(!t)return;
     var reseed=_isSampleAssets();      // only rename sample assets; anything you named yourself is left untouched
-    S.fleet={id:t.id,emoji:t.emoji,label:t.label,noun:t.noun,nouns:t.nouns,sample:t.sample.slice()}; save();
+    _setPrimaryFleet(t, (S.fleet&&S.fleet.also)||[]); save();   // keep any additional types the owner also rents
     if(reseed){ DATA.assets.forEach(function(a,i){ a.name = t.sample[i] || (cap(t.noun)+' '+('0'+(i+1)).slice(-2)); }); _saveAssets(); }
     buildApp(); goSettings('branding'); toast('Now set up for '+t.nouns);
   }
@@ -3911,12 +3940,15 @@ const Atlas = (function(){
   function addVehicle(){ if(!_guard('fleetEdit','Adding '+S.fleet.nouns))return; if(DATA.assets.length >= _vehCap()){ promptUpgrade('vehicles'); return; } _vehicleForm(); }
   function _vehicleForm(){ var capT=(_vehCap()===Infinity?'unlimited':_vehCap()), locLbl=cap(_fterm('loc'));
     var locs=[]; DATA.assets.forEach(function(a){ if(a.loc && locs.indexOf(a.loc)<0) locs.push(a.loc); });
-    openModal('<div class="modal__head"><h3>Add '+esc(S.fleet.nouns)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+    var _multi=_fleetSel().length>1, _pid=_fleetSel()[0];   // #129: pick which of the owner's types this asset is
+    var _typeField=_multi? ('<div class="field"><label>Type</label><select class="select" id="vType" onchange="Atlas.vehTypeChange()">'+_fleetSel().map(function(id){ var t=_typeById(id); return '<option value="'+esc(id)+'">'+esc(t.label)+(id===S.fleet.id?' (main)':'')+'</option>'; }).join('')+'</select></div>') : '';
+    openModal('<div class="modal__head"><h3>'+(_multi?'Add to your fleet':('Add '+esc(S.fleet.nouns)))+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +_typeField
       +'<div class="field"><label>'+esc(locLbl)+' <span style="color:var(--muted);font-weight:500">&mdash; group these under (optional)</span></label><input class="input" id="vLoc" list="vLocList" placeholder="e.g. Harbor Lofts" value="'+esc(_fleetLocFilter||'')+'"><datalist id="vLocList">'+locs.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('')+'</datalist></div>'
       +'<div class="row2"><div class="field"><label>How many</label><input class="input tnum" id="vQty" type="number" min="1" value="1" oninput="Atlas.vehFormHint()"></div>'
       +'<div class="field"><label>Number from</label><input class="input tnum" id="vStart" type="number" min="1" value="101" oninput="Atlas.vehFormHint()"></div></div>'
       +'<div class="field" id="vNameWrap"><label>Name</label><input class="input" id="vName" placeholder="e.g. '+esc(locLbl)+' #101"></div>'
-      +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="vRate" style="width:auto;flex:1;text-align:left" value="'+S.money.baseRate+'"><span>/ '+S.money.rateModel+'</span></div></div>'
+      +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="vRate" style="width:auto;flex:1;text-align:left" value="'+_typeRate(_pid)+'"><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="vStatus"><option>Available</option><option>Maintenance</option></select></div></div>'
       +'<div class="bk-lenhint" id="vHint" style="margin:0 0 6px"></div>'
       +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">'+DATA.assets.length+' of '+capT+' '+esc(S.fleet.nouns)+' used on '+esc(_curTier().name)+'.</div>'
@@ -3924,21 +3956,28 @@ const Atlas = (function(){
     vehFormHint();
   }
   function vehFormHint(){ var qty=Math.max(1,parseInt(val('vQty'))||1), start=parseInt(val('vStart'))||101, loc=(val('vLoc')||'').trim(), nw=document.getElementById('vNameWrap'), h=document.getElementById('vHint');
+    var _tid=val('vType')||_fleetSel()[0], tn=cap(_typeNoun(_tid)), tnn=_typeNouns(_tid);
     if(nw) nw.style.display=(qty===1)?'block':'none';
-    if(h){ if(qty>1){ var base=loc?(loc+' #'):(cap(S.fleet.noun)+' '); h.innerHTML='Creates <b>'+qty+'</b> '+esc(S.fleet.nouns)+': '+esc(base+start)+', '+esc(base+(start+1))+' \u2026 '+esc(base+(start+qty-1)); }
+    if(h){ if(qty>1){ var base=loc?(loc+' #'):(tn+' '); h.innerHTML='Creates <b>'+qty+'</b> '+esc(tnn)+': '+esc(base+start)+', '+esc(base+(start+1))+' \u2026 '+esc(base+(start+qty-1)); }
       else h.innerHTML=loc?('Added to <b>'+esc(loc)+'</b>'):''; } }
+  // #129: switching the type prefills that type's saved rate + relabels the name placeholder.
+  function vehTypeChange(){ var id=val('vType')||_fleetSel()[0], r=document.getElementById('vRate'); if(r) r.value=_typeRate(id);
+    var nm=document.getElementById('vName'); if(nm) nm.placeholder='e.g. '+cap(_typeNoun(id))+' #101'; vehFormHint(); }
   function saveVehicle(){
     if(!_guard('fleetEdit'))return;
     var qty=Math.max(1,parseInt(val('vQty'))||1), start=parseInt(val('vStart'))||101, loc=(val('vLoc')||'').trim();
+    var tid=val('vType')||_fleetSel()[0], tnoun=cap(_typeNoun(tid)), multi=_fleetSel().length>1;
     var left=_vehCap()-DATA.assets.length;
     if(left!==Infinity && qty>left){ closeModal(); promptUpgrade('vehicles'); return; }   // adding this many would exceed the plan
-    var rate=parseFloat(val('vRate'))||S.money.baseRate, status=val('vStatus')||'Available', names=[];
-    if(qty===1){ names=[(val('vName')||'').trim() || (loc?(loc+' #'+start):(cap(S.fleet.noun)+' '+start))]; }
-    else { for(var i=0;i<qty;i++){ names.push((loc?(loc+' #'):(cap(S.fleet.noun)+' '))+(start+i)); } }
-    names.forEach(function(nm){ var a={ id:_assetId(), name:nm, rate:rate, status:status, util:0, tenant:null }; if(loc) a.loc=loc; DATA.assets.push(a); });
+    var rate=parseFloat(val('vRate')); if(!(rate>=0)) rate=_typeRate(tid);
+    var status=val('vStatus')||'Available', names=[];
+    if(qty===1){ names=[(val('vName')||'').trim() || (loc?(loc+' #'+start):(tnoun+' '+start))]; }
+    else { for(var i=0;i<qty;i++){ names.push((loc?(loc+' #'):(tnoun+' '))+(start+i)); } }
+    _setTypeRate(tid,rate);   // remember this type's rate so the next one of the same type prefills it
+    names.forEach(function(nm){ var a={ id:_assetId(), name:nm, rate:rate, status:status, util:0, tenant:null }; if(loc) a.loc=loc; if(multi) a.type=tid; DATA.assets.push(a); });
     _saveAssets(); closeModal(); if(loc) _fleetLocFilter=null; renderFleet(); renderOverview();
     var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length;
-    toast(qty>1?(qty+' '+S.fleet.nouns+' added'+(loc?(' to '+loc):'')):(names[0]+' added'));
+    toast(qty>1?(qty+' '+_typeNouns(tid)+' added'+(loc?(' to '+loc):'')):(names[0]+' added'));
   }
   function _assetId(){ return 'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
   // --- Prorated upgrade: credit unused paid days this cycle, pay the difference ---
@@ -4470,14 +4509,14 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',init);
 
-  return {startTrial,demo,next,back,brandLive,logoPick,pickColor,pickFleet,setMoney,connect,doConnect,setActivePay,
+  return {startTrial,demo,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,connect,doConnect,setActivePay,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
-    addVehicle,saveVehicle,vehFormHint,openAsset,saveAsset,delAsset,promptUpgrade,doUpgrade,openWebsite,
+    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,promptUpgrade,doUpgrade,openWebsite,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webBookNow,webDomainMode,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
