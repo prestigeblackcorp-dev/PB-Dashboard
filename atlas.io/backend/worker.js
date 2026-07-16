@@ -155,6 +155,19 @@ export default {
     if (method === 'OPTIONS') return new Response(null, { status: 204, headers: securityHeaders() });
 
     try {
+      // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
+      if (path === '/api/health' && method === 'GET') {
+        const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
+          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL } };
+        try {
+          const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
+          h.user_tables = r ? r.n : 0;
+          h.schema_loaded = h.user_tables >= 15;
+        } catch (e) { h.db_error = String(e && e.message || e).slice(0, 160); }
+        h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;
+        return json(h);
+      }
+
       // ---- AUTH: signup -----------------------------------------------------
       if (path === '/api/auth/signup' && method === 'POST') {
         const ip = req.headers.get('CF-Connecting-IP') || 'x';
