@@ -1252,6 +1252,34 @@ const Atlas = (function(){
     assets(){ var s=store.session(); return s? _lsGet('atlas_assets_'+s.tenantId,[]) : []; },
     saveAssets(arr){ var s=store.session(); if(s) _lsSet('atlas_assets_'+s.tenantId, arr||[]); }
   };
+  // ---- Backend bridge (flag-gated). OFF = pure local, byte-for-byte today's behavior. ON = the live
+  //      Cloudflare Worker is authoritative for identity (per SECURITY.md); data stays local-first for an
+  //      instant UI and mirrors to D1 in the background. Flip ON only after the security pass + data-sync slice.
+  var ATLAS_API='https://atlas.prestigeblackcorp.workers.dev';
+  var ATLAS_BACKEND=false;              // master switch (also Atlas.setBackend(true) at runtime for ops/testing)
+  var _apiCsrf=null;
+  function setBackend(on){ ATLAS_BACKEND=!!on; }
+  function _api(path,opts){ opts=opts||{}; var h={'Content-Type':'application/json'};
+    if(_apiCsrf && opts.method && opts.method!=='GET') h['X-CSRF-Token']=_apiCsrf;
+    return fetch(ATLAS_API+path,{method:opts.method||'GET',headers:h,credentials:'include',body:opts.body?JSON.stringify(opts.body):undefined})
+      .then(function(r){ return r.json().catch(function(){return{};}).then(function(j){ return {status:r.status,json:j}; }); }); }
+  // Server-authoritative signup/login -> the server assigns tenant_id + a CSRF token (held in memory).
+  function _srvAuth(mode,email,pass){
+    var body = mode==='login' ? {email:email,password:pass}
+             : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars'};
+    return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; return {ok:true,tenant_id:res.json.tenant_id}; }
+      return {err:(res.json&&res.json.error)||'Could not sign in.'}; })
+    .catch(function(){ return {err:'Network error \u2014 check your connection.'}; }); }
+  // Pull the tenant's server rows into the local cache (keyed by the SERVER tenant id) so the sync UI just works.
+  function _srvHydrate(tid){ return Promise.all([_api('/api/data/bookings'),_api('/api/data/assets')]).then(function(r){
+    if(r[0].json&&r[0].json.items) _lsSet('atlas_bookings_'+tid, r[0].json.items);
+    if(r[1].json&&r[1].json.items) _lsSet('atlas_assets_'+tid, r[1].json.items); }).catch(function(){}); }
+  // Best-effort background mirror of a local write to D1 (upsert one row; never blocks the UI).
+  function _srvMirror(kind,item){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return;
+    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:item}).then(function(res){
+      if(res.status===404){ var b={}; for(var k in item) b[k]=item[k]; b.id=item.id; _api('/api/data/'+kind,{method:'POST',body:b}).catch(function(){}); } }).catch(function(){}); }
+  function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
   const FLEET_TYPES=[
     {id:'cars',emoji:'\u{1F697}',label:'Cars & Exotics',noun:'vehicle',nouns:'vehicles',sample:['2023 Corvette C8','BMW M3 Competition','Porsche Macan','Range Rover Sport','Tesla Model S','Mercedes G-Wagon']},
     {id:'property',emoji:'\u{1F3E0}',label:'Rental Properties',noun:'property',nouns:'properties',sample:['Beachfront Villa','Downtown Loft','Mountain Cabin','Lakeside Cottage','City Penthouse','Desert Retreat']},
@@ -1659,10 +1687,22 @@ const Atlas = (function(){
     _authErr('');
   }
   function _authErr(m){ var el=document.getElementById('authErr'); if(!el)return; if(m){ el.textContent=m; el.style.display='block'; } else { el.style.display='none'; } }
-  function authSubmit(){
+  async function authSubmit(){
     var email=(document.getElementById('authEmail')||{}).value||'', pass=(document.getElementById('authPass')||{}).value||'';
-    var r = _authMode==='login' ? store.login(email,pass) : store.signup(email,pass);
-    if(r.err){ _authErr(r.err); return; }
+    var r;
+    if(ATLAS_BACKEND){
+      // Server owns identity: the Worker verifies + assigns tenant_id. We mirror a local session under that
+      // SAME id so every existing (synchronous, instant) render keeps working -- then hydrate the server rows.
+      _authErr('');
+      r = await _srvAuth(_authMode, email, pass);
+      if(r.err){ _authErr(r.err); return; }
+      _lsSet(SK, {email:_emailKey(email), tenantId:r.tenant_id});
+      if(!_lsGet('atlas_tenant_'+r.tenant_id, null)) _lsSet('atlas_tenant_'+r.tenant_id, fresh());
+      await _srvHydrate(r.tenant_id);
+    } else {
+      r = _authMode==='login' ? store.login(email,pass) : store.signup(email,pass);
+      if(r.err){ _authErr(r.err); return; }
+    }
     S=load();
     if(_authMode==='signup'){ startTrial(); return; }                        // new account -> guided onboarding
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }           // returning -> resume exactly where they were
@@ -4192,7 +4232,7 @@ const Atlas = (function(){
     renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,
     openPortal,portalView,portalSubmitSig,portalPay,portalUpload,portalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
-    S:()=>S,save2:save};
+    S:()=>S,save2:save,setBackend};
 })();
 </script>
 </body>
