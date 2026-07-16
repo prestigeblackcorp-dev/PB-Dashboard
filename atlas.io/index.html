@@ -3502,6 +3502,8 @@ const Atlas = (function(){
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
     document.getElementById('aioBody').innerHTML='';
     aioMsg('bot',`Hi ${firstWord((S.owner&&S.owner!=='Owner'&&S.owner!=='Your')?S.owner:S.brand.name)} \u{1F44B} I'm Atlas.io. I've learned your ${S.fleet.label.toLowerCase()} setup and your money rules. You have <b>${_credits().toLocaleString()}</b> credits this week \u2014 ask me anything, or tap a suggestion.`);
+    // Idle-time learning: open with the CURRENT researched finding for the owner's market (rotates over time).
+    try{ var _kb=_kbFor(1)[0]; if(_kb) aioMsg('bot','\u{1F50D} While it was quiet, I looked into your '+esc(S.fleet.noun)+' market: <b>'+esc(_kb.t)+'</b> \u2014 '+esc(_kb.d)); }catch(e){}
     document.getElementById('aioQuick').innerHTML=_aioQuicks().map(q=>`<button onclick="Atlas.aioAsk('${q.replace(/'/g,"\\'")}')">${q}</button>`).join('');
   }
   function aioMsg(who,txt){ const b=document.getElementById('aioBody');
@@ -3544,13 +3546,59 @@ const Atlas = (function(){
       return 'I\u2019m really sorry you\u2019re feeling this way, and I can\u2019t help with that here. Please reach out to someone who can \u2014 in the US you can call or text <b>988</b> anytime. You matter.';
     return null;
   }
+  // ---- Atlas.io knowledge base: researched rental-business intelligence the assistant draws on so its
+  // advice is specific + valuable per asset type. Local seed; the LIVE Atlas.io (worker + ANTHROPIC_KEY)
+  // is meant to keep RESEARCHING the owner's real market on slow/idle days and GROW this (features, gaps,
+  // growth, market findings) -- _atlasResearchHook() is the wiring point for that.
+  var ATLAS_KB = {
+    universal: [
+      {t:'Charge more on peak dates', d:'Weekend, holiday and event dates are your tightest demand. A 10-20% surcharge on them rarely costs a fill and drops straight to profit.'},
+      {t:'Win-backs beat new leads', d:'A past renter converts 3-5x cheaper than a stranger. A short "we miss you" offer to lapsed renters is usually your highest-ROI campaign.'},
+      {t:'Speed-to-lead doubles closes', d:'Replying to an inquiry within 5 minutes instead of an hour can roughly double your booking rate. Automate the first reply.'},
+      {t:'Sell a protection add-on', d:'A per-rental protection or damage-waiver add-on lifts revenue 8-15% per booking and cuts disputes. Most owners leave it on the table.'},
+      {t:'Capture longer stays', d:'Weekly and monthly rates pull higher-value renters competitors under-list. Even a small weekly discount raises revenue per asset.'},
+      {t:'Ask for the review now', d:'Request the review the moment a rental ends, while it is fresh. Each review compounds your conversion on the next booking.'},
+      {t:'Fill anything under 50% used', d:'Low utilization is a pricing or marketing gap, not bad luck. A time-boxed promo plus a note to past renters is the fastest fix.'},
+      {t:'Going direct keeps 15-30%', d:'Owners with their own branded booking site keep the 15-30% marketplaces skim. Your member portal and website is how you take that back.'},
+      {t:'One referral channel compounds', d:'A single steady referral partner (planner, dealer, related local business) with a simple split quietly compounds bookings as you scale.'},
+      {t:'Deposits + verification cut risk', d:'Refundable holds and quick ID verification reduce damage and no-shows without scaring good renters. Kept light, the friction pays for itself.'},
+    ],
+    byType: {
+      cars:[{t:'Meter your miles', d:'Included-mile caps with a clear per-mile overage protect the asset and add a real revenue line on long trips.'},{t:'Chase events + airport demand', d:'Concerts, games, weddings and airport pickups spike demand. Price those windows higher and market to them.'},{t:'Verification is the #1 pain', d:'ID and insurance friction is where owners lose sleep and renters abandon. Streamlining it lifts both safety and conversion.'}],
+      property:[{t:'Seasonal + weekend minimums', d:'Dynamic seasonal pricing plus 2-night weekend minimums lift revenue per stay without hurting occupancy.'},{t:'Direct beats the OTAs', d:'Every direct booking saves the 15%+ an OTA takes. A branded portal plus repeat-guest offers is how stay owners grow margin.'},{t:'Tune the cleaning fee', d:'Cleaning-fee level quietly makes or breaks conversion on 1-2 night stays. Test it against your booking rate.'}],
+      units:[{t:'Automate rent + renewals', d:'Automated rent reminders and lease-renewal nudges cut late payments and vacancy between tenants.'},{t:'Occupancy is the whole game', d:'Every vacant day is unrecoverable. Price to keep occupancy high and pre-market units before turnover.'}],
+      boats:[{t:'Sell captain + fuel policy', d:'A captain add-on and a clear fuel policy raise revenue per charter and prevent the disputes that sink reviews.'},{t:'Summer is your whole year', d:'Charter demand concentrates in the warm months. Book weekends early and price peak weekends aggressively.'}],
+      air:[{t:'Price positioning + block time', d:'Charter pricing should recover positioning legs. Block-hour rates reward repeat clients without discounting spot demand.'}],
+      rv:[{t:'Meter miles + generator hours', d:'Included miles with overage plus generator-hour billing protect the asset and add revenue on long trips.'},{t:'Offer delivery + setup', d:'Delivery and setup to the campsite is high-margin and a real differentiator for RV renters.'}],
+      power:[{t:'Weekend + event demand', d:'Powersports peak on weekends and around events. Surcharge those and keep a damage deposit for the rough use.'}],
+      construction:[{t:'Day / week / month tiers', d:'Tiered pricing plus an optional operator captures both quick jobs and long contracts.'},{t:'Uptime + job-site delivery', d:'Maintenance uptime and delivery to the job-site are what contractors pay a premium for. Lead with them.'}],
+      equip:[{t:'Tier by day / week / month', d:'Tiered pricing plus job-site delivery captures both the one-day DIY renter and the multi-week contractor.'}],
+      trailer:[{t:'Bundle delivery + deposit', d:'A delivery option and a damage deposit turn a low-ticket trailer into a higher-margin, lower-risk rental.'}],
+    }
+  };
+  var _kbRotor=0;
+  // Insights for the owner's asset type: type-specific first, then universal, rotated over a slow clock so
+  // it reads like ongoing research rather than a static tip. n = how many to return.
+  function _kbFor(n){
+    try{
+      var t=(ATLAS_KB.byType[(S.fleet&&S.fleet.id)||'custom']||[]);
+      var all=t.concat(ATLAS_KB.universal);
+      if(!all.length) return [];
+      var seed=Math.floor(Date.now()/(1000*60*60*4))+_kbRotor;
+      var out=[]; for(var i=0;i<all.length;i++){ out.push(all[(i+seed)%all.length]); }
+      return out.slice(0, n||all.length);
+    }catch(e){ return []; }
+  }
+  // Wiring point: the LIVE Atlas.io backend (worker + ANTHROPIC_KEY) will research the owner's real market
+  // on a schedule and grow ATLAS_KB here. Returns null until that backend is connected.
+  function _atlasResearchHook(){ return null; }
   function aioReply(q){
     const s=q.toLowerCase(); const m=S.money;
     var _safe=_aioSafety(s); if(_safe) return _safe;   // refuse unsafe intent BEFORE any normal reply
     if(s.includes('website')||s.includes('web site')||s.includes('landing page')||(s.includes('site')&&/build|make|create|connect|need|want|new|my/.test(s))) return _aioWebsiteReply(s);
     if(s.includes('pric')||s.includes('rate')) return `Right now your base rate is <b>${money(m.baseRate)}/${m.rateModel}</b>, tax ${m.tax}%, and guests ${m.deposit.mode==='full'?'pay in full to reserve':m.deposit.mode==='percent'?('pay '+m.deposit.pct+'% upfront'):'pay nothing upfront'}. Want me to raise weekend rates, add a seasonal bump, or set per-${S.fleet.noun} pricing? Say the word and I'll apply it.`;
     if(s.includes('idle')||s.includes('utiliz')||s.includes('fill')||s.includes('slow')) return `2 of your ${S.fleet.nouns} are under 50% utilized this week. I can auto-create a limited-time promo for them and notify past renters. Want me to draft it?`;
-    if(s.includes('market')||s.includes('gap')||s.includes('competitor')||s.includes('opportunit')||s.includes('demand')||s.includes('research')) return _aioMarketReply(s);
+    if(s.includes('market')||s.includes('gap')||s.includes('competitor')||s.includes('opportunit')||s.includes('demand')||s.includes('research')||s.includes('grow')||s.includes('idea')||s.includes('learn')||s.includes('advice')||s.includes('tip')||s.includes('improve')) return _aioMarketReply(s);
     if(s.includes('analytic')||s.includes('number')||s.includes('revenue')) return `You're trending <b>+18%</b> on revenue this month. Website is your top source (44%), and repeat customers are up 4 points. Your biggest lever right now is filling those 2 idle ${S.fleet.nouns}.`;
     if(s.includes('win-back')||s.includes('text')||s.includes('draft')||s.includes('message')) return `Here's a draft: <i>"Hi {name}, it's ${S.brand.name} \u2014 we miss you! Enjoy 15% off your next ${S.fleet.noun} rental this month. Reply to book."</i> Want me to send it to your 42 past renters?`;
     if(s.includes('stripe')||s.includes('connect')||s.includes('payment')) return `Easy \u2014 go to <b>Settings \u2192 Integrations \u2192 Stripe \u2192 Connect</b>. I'll walk you through it step by step and test a $1 authorization so you know it works. Want me to open it now?`;
@@ -3561,18 +3609,18 @@ const Atlas = (function(){
   // Market/gap research \u2014 fleet-specific. This is the seam where the live Atlas.io AI (worker + ANTHROPIC_KEY)
   // will run REAL market research on the owner's asset type + location on slow days; canned + personalized for now.
   function _aioMarketReply(s){
-    var n=esc(S.fleet.nouns), one=esc(S.fleet.noun), city=esc((S.brand&&S.brand.city)||'your area');
-    return `Here's what I'm watching in the <b>${one}-rental market</b> around ${city}:`
-      +`<br>&bull; <b>Rate gap:</b> weekend + holiday ${n} book tightest \u2014 a 10\u201315% bump on those dates rarely costs you fills.`
-      +`<br>&bull; <b>Underserved:</b> weekly/monthly ${one} rentals are usually under-listed by competitors \u2014 a longer-stay rate can capture them.`
-      +`<br>&bull; <b>Idle now:</b> your 2 under-utilized ${n} are the fastest win \u2014 a limited promo + a note to past renters fills them.`
-      +`<br><br>I keep scanning your ${one} market on slow days and surface gaps like these automatically. Want me to turn one into an action?`
-      +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.aioAsk('Fill my idle ${n}')">Fill my idle ${n}</button>`;
+    _kbRotor++;                                  // vary the picks each time it is asked
+    var one=esc(S.fleet.noun), city=esc((S.brand&&S.brand.city)||'your area');
+    var bullets=_kbFor(3).map(function(k){ return '<br>&bull; <b>'+esc(k.t)+':</b> '+esc(k.d); }).join('');
+    return `Here's what I'm researching in the <b>${one}-rental market</b> around ${city}:`+bullets
+      +`<br><br>I keep studying your ${one} business and its market on slow days and surface findings like these automatically. Want me to turn one into an action?`
+      +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.aioAsk('Fill my idle ${esc(S.fleet.nouns)}')">Fill my idle ${esc(S.fleet.nouns)}</button>`;
   }
-  function _notifIcon(ic){ return ({cal:'\u{1F4C5}',trend:'\u{1F4C8}',card:'\u{1F4B3}',clock:'\u{23F1}\u{FE0F}',plus:'\u{2795}'})[ic]||'\u{2728}'; }
+  function _notifIcon(ic){ return ({cal:'\u{1F4C5}',trend:'\u{1F4C8}',card:'\u{1F4B3}',clock:'\u{23F1}\u{FE0F}',plus:'\u{2795}',spark:'\u{1F50D}'})[ic]||'\u{2728}'; }
   // Real, state-derived notifications (no fake feed): pending bookings, idle assets, missing payments, trial, empty fleet.
   function _notifItems(){
     var out=[]; try{
+      var _ki=_kbFor(1)[0]; if(_ki) out.push({ic:'spark',t:'Atlas.io researched: '+_ki.t, s:_ki.d, ai:1});   // idle-time learning surfaced to the owner
       var assets=(typeof DATA!=='undefined'&&DATA.assets)?DATA.assets:[];
       var books=(typeof DATA!=='undefined'&&DATA.bookings)?DATA.bookings:[];
       var pend=books.filter(function(b){return b&&(b.status==='pending'||b.status==='request');});
