@@ -27,9 +27,20 @@ There are **two products**:
 | `icon.png`, `obsidian-icon.png` | App icons | — |
 | `ride.html` | Empty redirect stub → obsidian.html (legacy) | — |
 
-- **Backend = the Cloudflare Worker** — handles Stripe, Firebase sync, ride dispatch, notifications, outreach, everything server-side (~8,400 lines). ⚠️ **Paste-deploy: NOT in the repo** — it's maintained via the clipboard workflow and lives in your Cloudflare account. *(Recommendation: commit it as `pb-worker.js` so its latest version is tracked like everything else.)*
-- **`booking.live`** = the **Shopify** site — a separate product, NOT this repo. Never edit repo files for booking.live issues.
-- **Deploy:** push to `main` → GitHub Pages serves it. Worker changes → copy to clipboard → paste into Cloudflare → Deploy.
+### Backend — 4 Cloudflare Workers (edit the file → paste into Cloudflare → Deploy)
+
+The workers are **not in this git repo** (they're paste-deployed), but they ARE on your Mac — the editable source files live in **`~/Downloads/`** and are snapshotted in **`~/Downloads/PB BACKUP/workers/`**:
+
+| File (`~/Downloads/…`) | Worker | What it does |
+|---|---|---|
+| `prestige-black-booking-worker.js` | **MAIN** (~9,100 lines) | Bookings, Stripe, `/sync`, e-signing, chauffeur dispatch, push, portal, outreach, scheduled emails |
+| `prestige-black-messaging-worker.js` | Messaging | Email/SMS sender (`/send-email`) |
+| `prestige-black-scheduler-worker.js` | Scheduler | Cron sweeps / scheduled tasks |
+| `prestige-black-verification-worker.js` | Verify | Driver/renter ID verification (Stripe Identity) |
+
+- **Full-system backup:** `~/Downloads/PB BACKUP/` — a restorable snapshot of everything (site + workers + Shopify files) with a dated `_BACKUP_MANIFEST.txt` that records the current build of each piece. **This manifest is the authoritative "what's deployed" record** — check it for the latest per-file version.
+- **`booking.live`** = the **Shopify** site — a separate product, NOT this repo. Its sections are also backed up in `PB BACKUP/` (`PB_Booking_live.js`, `pb-*-section.liquid`). Never edit repo files for booking.live issues.
+- **Deploy:** client files → push to `main` → GitHub Pages serves them. Worker files → open the file, edit, copy it into the matching Cloudflare Worker → Deploy (nothing auto-deploys the workers).
 
 ---
 
@@ -79,5 +90,6 @@ There are **two products**:
 
 - **The dashboard** → `index.html` (root). **The rider app** → `obsidian.html`. **Driver** → `driver.html`. **Customer portal** → `portal.html`.
 - **The Atlas app** → `atlas/atlas.html` (source) = `atlas.io/atlas.html` (deploy copy).
-- **Any backend** → PB worker = paste-deploy (not in repo, Cloudflare); Atlas worker = `atlas.io/backend/worker.js`.
-- **Which build is live** → `PB_BUILD` in `index.html` (currently v275).
+- **Any backend** → PB workers = `~/Downloads/prestige-black-*-worker.js` (also in `~/Downloads/PB BACKUP/workers/`); Atlas worker = `atlas.io/backend/worker.js`.
+- **Which build/worker is live** → `PB_BUILD` in `index.html` (currently v275) for the client; `~/Downloads/PB BACKUP/_BACKUP_MANIFEST.txt` for the authoritative per-worker version.
+- **A full restorable snapshot of everything PB** → `~/Downloads/PB BACKUP/` (site + 4 workers + Shopify sections + manifest).
