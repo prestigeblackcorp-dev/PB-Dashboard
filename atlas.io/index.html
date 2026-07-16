@@ -841,6 +841,9 @@ table.tbl{width:100%;border-collapse:collapse}
 .dream-conn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:650;font-family:inherit;color:var(--body);cursor:pointer}
 .dream-conn svg{width:15px;height:15px}
 .dream-conn.on{border-color:var(--brand);background:var(--brand-050);color:var(--brand-700)}
+.su-goals{display:flex;gap:8px;flex-wrap:wrap}
+.su-goal{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:8px 13px;font-size:13px;font-weight:600;font-family:inherit;color:var(--body);cursor:pointer}
+.su-goal.on{border-color:var(--brand);background:var(--brand-050);color:var(--brand-700)}
 /* ---- guided walkthrough (spotlight coach-marks) ---- */
 .tour-spot{position:fixed;z-index:6000;border-radius:12px;pointer-events:none;display:none;
   box-shadow:0 0 0 3px var(--brand), 0 0 0 9999px rgba(9,17,14,.60);transition:top .24s cubic-bezier(.4,0,.2,1),left .24s cubic-bezier(.4,0,.2,1),width .24s cubic-bezier(.4,0,.2,1),height .24s cubic-bezier(.4,0,.2,1)}
@@ -2683,7 +2686,7 @@ const Atlas = (function(){
     return '<div class="set-block"><h3>Signed documents &amp; activity</h3><div class="desc">Every agreement you send is tracked here &mdash; sent, opened and signed, each timestamped, saved and downloadable.</div>'+body+'</div>'; }
   function _assetCard(a){ var ten=a.tenant&&a.tenant.name;
     return `<div class="asset" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
-      <div class="asset__img"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+      <div class="asset__img"${a.photo?` style="background-image:url('${a.photo}');background-size:cover;background-position:center"`:''}>${a.photo?'':`<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`}
       <span class="chip chip--${a.status==='Available'?'ok':a.status==='Maintenance'?'warn':'info'}" style="position:absolute;top:10px;left:10px"><span class="dot"></span>${a.status}</span></div>
       <div class="asset__body"><b>${esc(a.name)}</b>${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(_fterm('book')==='reservation'?'Tenant':'Renter')}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div></div>`; }
   function renderFleet(){
@@ -3917,7 +3920,11 @@ const Atlas = (function(){
     document.getElementById('aioBody').innerHTML='';
     aioMsg('bot',`Hi ${firstWord((S.owner&&S.owner!=='Owner'&&S.owner!=='Your')?S.owner:S.brand.name)} \u{1F44B} I'm Atlas.io. I've learned your ${S.fleet.label.toLowerCase()} setup and your money rules. You have <b>${_credits().toLocaleString()}</b> credits this week \u2014 ask me anything, or tap a suggestion.`);
     // Idle-time learning: open with the CURRENT researched finding for the owner's market (rotates over time).
-    try{ var _kb=_kbFor(1)[0]; if(_kb) aioMsg('bot','\u{1F4AD} While you were away, I was <b>dreaming</b> about your '+esc(S.fleet.noun)+' business \u2014 hunting gaps, drafting campaigns, and lining up partners to reach. One idea: <b>'+esc(_kb.t)+'</b> \u2014 '+esc(_kb.d)+'<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See everything I dreamed up</button>'); }catch(e){}
+    try{
+      if(!_aioHasBiz() && !(S.setup&&S.setup.done)){
+        aioMsg('bot','Want me to <b>finish building your dashboard</b>? I will use what you told me, ask a couple of quick things and grab a photo of your '+esc(S.fleet.noun)+' if you have one &mdash; then it is all yours to edit.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.setupAssistant()">Finish my dashboard</button>');
+      } else { var _kb=_kbFor(1)[0]; if(_kb) aioMsg('bot','\u{1F4AD} While you were away, I was <b>dreaming</b> about your '+esc(S.fleet.noun)+' business &mdash; hunting gaps, drafting campaigns, and lining up partners to reach. One idea: <b>'+esc(_kb.t)+'</b> &mdash; '+esc(_kb.d)+'<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See everything I dreamed up</button>'); }
+    }catch(e){}
     document.getElementById('aioQuick').innerHTML=_aioQuicks().map(q=>`<button onclick="Atlas.aioAsk('${q.replace(/'/g,"\\'")}')">${q}</button>`).join('');
   }
   function aioMsg(who,txt){ const b=document.getElementById('aioBody');
@@ -4115,6 +4122,29 @@ const Atlas = (function(){
       +'<div class="dream-hint" style="margin-top:8px">I never send anything until you connect the channel and approve it.</div></div>'); }
   function dreamSend(reach){ var c=_dreamConn(); if(reach!=='email' && !c[reach]){ if(confirm('Connect '+_chName(reach)+' to send this?')) dreamConnect(reach); return; }
     closeModal(); toast('Outreach queued for your approval'); try{_logEvent('ai','Partner outreach drafted');}catch(e){} }
+  // ---- AI setup assistant: Atlas.io finishes building the dashboard from what it already knows (asset type, money
+  // rules) + a couple of smart questions + an optional photo. Everything it sets stays fully editable. It also feeds
+  // Dreaming (the city powers local campaigns + partner outreach). Re-openable anytime from the chat.
+  var _suGoalV='More bookings', _suPhotoData='';
+  function setupAssistant(){ var m=S.money;
+    openModal('<div class="modal__head"><h3>Let Atlas.io finish your dashboard</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="dream-lead">I already set you up for <b>'+esc(S.fleet.nouns)+'</b> at <b>'+money(m.baseRate)+'/'+m.rateModel+'</b>. Answer a few quick things and I will tailor the whole dashboard to you - and every bit of it stays editable.</div>'
+      +'<div class="field" style="margin-top:14px"><label>What city or area are you in?</label><input class="input" id="suCity" placeholder="e.g. Miami, FL" value="'+esc((S.brand&&S.brand.city)||'')+'"><div class="hint">I use this to research your real local market and aim ads + partner outreach nearby.</div></div>'
+      +'<div class="field"><label>What matters most right now?</label><div class="su-goals" id="suGoals">'+['More bookings','Higher prices','Fill idle time','Look more pro'].map(function(g){ return '<button type="button" class="su-goal'+(g===_suGoalV?' on':'')+'" onclick="Atlas._suGoal(this)">'+g+'</button>'; }).join('')+'</div></div>'
+      +'<div class="field"><label>Add your first '+esc(S.fleet.noun)+' <span style="color:var(--muted);font-weight:500">- optional</span></label><input class="input" id="suAsset" placeholder="e.g. '+esc((S.fleet.sample&&S.fleet.sample[0])||('My '+S.fleet.noun))+'"></div>'
+      +'<label class="logo-drop" for="suPhoto"><div class="logo-drop__prev" id="suPhotoPrev">'+(_suPhotoData?'<img src="'+_suPhotoData+'">':'<span>+</span>')+'</div><div><b style="color:var(--ink);font-size:13.5px">Add a photo</b><div style="font-size:12px;color:var(--muted)">Optional - I will show it on your portal, website + fleet.</div></div></label><input type="file" id="suPhoto" accept="image/*" style="display:none" onchange="Atlas._suPhoto(this)">'
+      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:14px" onclick="Atlas.setupFinish()">Build my dashboard</button>'
+      +'<div class="dream-hint" style="margin-top:8px">Nothing is locked in - change any of it later, and just ask me if you get stuck.</div>'
+      +'</div>'); }
+  function _suGoal(el){ _suGoalV=el.textContent; try{ [].forEach.call(el.parentElement.children,function(c){ c.classList.toggle('on',c===el); }); }catch(e){} }
+  function _suPhoto(inp){ var f=inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _suPhotoData=e.target.result; var p=document.getElementById('suPhotoPrev'); if(p)p.innerHTML='<img src="'+_suPhotoData+'">'; }; r.readAsDataURL(f); }
+  function setupFinish(){ var city=(val('suCity')||'').trim(), nm=(val('suAsset')||'').trim();
+    S.brand=S.brand||{}; if(city) S.brand.city=city; S.setup=S.setup||{}; S.setup.goal=_suGoalV; S.setup.done=true;
+    if(nm){ var a={id:_assetId(),name:nm,rate:_typeRate(_fleetSel()[0]),status:'Available',util:0,tenant:null}; if(_suPhotoData)a.photo=_suPhotoData; if(_fleetSel().length>1)a.type=_fleetSel()[0]; DATA.assets.push(a); _saveAssets(); }
+    save(); try{_logEvent('ai','Setup assistant: city='+(city||'-')+', goal='+_suGoalV+(nm?(', added '+nm):''));}catch(e){}
+    _suPhotoData=''; closeModal(); try{ buildApp(); go('overview'); }catch(e){}
+    try{ openAio(); aioMsg('bot','Done - your dashboard is tuned for <b>'+esc(S.fleet.nouns)+'</b>'+(city?(' in <b>'+esc(city)+'</b>'):'')+', aimed at <b>'+esc(_suGoalV.toLowerCase())+'</b>'+(nm?(', and I added <b>'+esc(nm)+'</b>'):'')+'. I will start dreaming up local campaigns and partners for you.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See what I dreamed up</button>'); }catch(e){}
+    toast('Dashboard tailored to you'+(city?(' - researching '+city):'')); }
   function _aioHasBiz(){ return (((typeof DATA!=='undefined'&&DATA.assets)||[]).length>0) || (((typeof DATA!=='undefined'&&DATA.bookings)||[]).length>0); }
   function aioReply(q){
     const s=q.toLowerCase(); const m=S.money;
@@ -4125,6 +4155,7 @@ const Atlas = (function(){
       return `I only ever answer from <b>your</b> real numbers, and your account is empty right now \u2014 so I won't make any up. Add your first ${esc(S.fleet.noun)} (and a booking or two) and I'll track your revenue, utilization and idle ${esc(S.fleet.nouns)} live.`
         +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('fleet')">Add your first ${esc(S.fleet.noun)}</button>`;
     if(s.includes('website')||s.includes('web site')||s.includes('landing page')||(s.includes('site')&&/build|make|create|connect|need|want|new|my/.test(s))) return _aioWebsiteReply(s);
+    if(/finish.{0,12}(setup|set ?up|dashboard)|set ?up my dashboard|build my dashboard|help me (finish|set ?up)|setup assistant|get set ?up/.test(s)) return _aioSetupReply(s);
     if(s.includes('pric')||s.includes('rate')) return `Right now your base rate is <b>${money(m.baseRate)}/${m.rateModel}</b>, tax ${m.tax}%, and guests ${m.deposit.mode==='full'?'pay in full to reserve':m.deposit.mode==='percent'?('pay '+m.deposit.pct+'% upfront'):'pay nothing upfront'}. Want me to raise weekend rates, add a seasonal bump, or set per-${S.fleet.noun} pricing? Say the word and I'll apply it.`;
     if(s.includes('idle')||s.includes('utiliz')||s.includes('fill')||s.includes('slow')){ var _idle=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return _idle>0 ? `${_idle} of your ${S.fleet.nouns} ${_idle===1?'is':'are'} under 50% utilized. I can auto-create a limited-time promo for ${_idle===1?'it':'them'} and notify past renters. Want me to draft it?` : `Your ${S.fleet.nouns} are booking well right now. Want me to look for a growth opportunity in your market instead?`; }
     if(/\bdream|campaign|\bads?\b|facebook|instagram|google ad|\bbrokers?\b|\bpartners?\b|reach out|more (client|customer|booking)|new client|\bgrow\b|expand|competiti/.test(s)) return _aioDreamReply(s);
@@ -4160,6 +4191,8 @@ const Atlas = (function(){
   function _aioDreamReply(s){ var one=esc(S.fleet.noun), many=esc(S.fleet.nouns);
     return `While your account is quiet I keep <b>dreaming</b> \u2014 hunting gaps in your ${one} market, drafting Facebook, Instagram and Google campaigns from them, and lining up brokers and partners who can push your ${many} to more clients. I build and optimize it; you approve every budget and every message before anything goes out.`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See what I dreamed up</button>`; }
+  function _aioSetupReply(s){ return `Happy to. I will use what I already know about your ${esc(S.fleet.noun)} business and just ask a couple of quick things &mdash; and grab a photo if you have one &mdash; to make your dashboard perfect. Everything I set stays fully editable.`
+      +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.setupAssistant()">Finish my dashboard</button>`; }
   // Market/gap research \u2014 fleet-specific. This is the seam where the live Atlas.io AI (worker + ANTHROPIC_KEY)
   // will run REAL market research on the owner's asset type + location on slow days; canned + personalized for now.
   function _aioMarketReply(s){
@@ -4900,7 +4933,7 @@ const Atlas = (function(){
 
   return {startTrial,demo,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
-    openDreaming,dreamConnect,dreamLaunch,dreamOutreach,dreamSend,
+    openDreaming,dreamConnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,
