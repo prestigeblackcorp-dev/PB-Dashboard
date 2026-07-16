@@ -30,6 +30,17 @@ function securityHeaders(origin) {
     'Permissions-Policy': 'geolocation=(self), camera=(), microphone=(), payment=(self)',
   };
 }
+// Cross-origin: the app (atlasrental.io / github.io / localhost) calls this Worker on a different
+// origin. Only these exact origins get CORS; anything else gets none (unknown sites can't use creds).
+const ALLOWED_ORIGINS = [
+  'https://atlasrental.io', 'https://www.atlasrental.io',
+  'https://prestigeblackcorp-dev.github.io',
+  'http://localhost:4321', 'http://127.0.0.1:4321',
+];
+function corsHeaders(origin) {
+  if (ALLOWED_ORIGINS.indexOf(origin) < 0) return {};
+  return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Vary': 'Origin' };
+}
 function json(body, status, extra) {
   return new Response(JSON.stringify(body), {
     status: status || 200,
@@ -44,21 +55,42 @@ function unb64(s) { const b = atob(s); const u = new Uint8Array(b.length); for (
 function randId(bytes) { const u = new Uint8Array(bytes || 32); crypto.getRandomValues(u); return b64(u).replace(/[+/=]/g, '').slice(0, (bytes || 32)); }
 function enc(str) { return new TextEncoder().encode(str); }
 
-const PBKDF2_ITERS = 100000;   // Cloudflare Workers caps native PBKDF2 at 100k. Hardening (SECURITY.md P0 #1): chain PBKDF2 or move to a WASM Argon2 for OWASP-grade before scaling to real data.
+// Password hashing. Cloudflare caps a SINGLE native PBKDF2 call at 100k iterations, so we CHAIN 6 rounds
+// (each round's 256-bit output feeds the next as key material) for 600k effective iterations -- OWASP's
+// PBKDF2-SHA256 floor. New hashes are tagged 'p2$'; legacy single-100k hashes (untagged) still verify and
+// are transparently re-hashed to the 600k scheme on the user's next successful login (see login handler).
+const PBKDF2_ITERS = 100000;
+const PBKDF2_ROUNDS = 6;               // 6 x 100k = 600k effective
+async function _pbkdf2(materialBytes, salt) {
+  const key = await crypto.subtle.importKey('raw', materialBytes, 'PBKDF2', false, ['deriveBits']);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: PBKDF2_ITERS, hash: 'SHA-256' }, key, 256));
+}
 async function hashPassword(password, saltB64) {
   const salt = saltB64 ? unb64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
-  const key = await crypto.subtle.importKey('raw', enc(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERS, hash: 'SHA-256' }, key, 256);
-  return { hash: b64(bits), salt: b64(salt) };
+  let bits = enc(password);
+  for (let i = 0; i < PBKDF2_ROUNDS; i++) bits = await _pbkdf2(bits, salt);
+  return { hash: 'p2$' + b64(bits), salt: b64(salt) };
 }
-async function verifyPassword(password, saltB64, hashB64) {
-  const { hash } = await hashPassword(password, saltB64);
-  // constant-time-ish compare
-  if (hash.length !== hashB64.length) return false;
-  let diff = 0; for (let i = 0; i < hash.length; i++) diff |= hash.charCodeAt(i) ^ hashB64.charCodeAt(i);
+function _ctEq(a, b) {                  // constant-time string compare (no early-exit)
+  a = String(a); b = String(b);
+  if (a.length !== b.length) return false;
+  let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
+async function verifyPassword(password, saltB64, storedHash) {
+  const salt = unb64(saltB64 || b64(new Uint8Array(16)));
+  let expected;
+  if (typeof storedHash === 'string' && storedHash.slice(0, 3) === 'p2$') {   // current 600k scheme
+    let bits = enc(password);
+    for (let i = 0; i < PBKDF2_ROUNDS; i++) bits = await _pbkdf2(bits, salt);
+    expected = 'p2$' + b64(bits);
+  } else {                                                                     // legacy single-100k hash
+    expected = b64(await _pbkdf2(enc(password), salt));
+  }
+  return _ctEq(expected, storedHash);
+}
+// A stored hash lacking the 'p2$' tag predates the 600k scheme -> re-hash on next successful login.
+function pwNeedsUpgrade(storedHash) { return !(typeof storedHash === 'string' && storedHash.slice(0, 3) === 'p2$'); }
 
 // AES-GCM encrypt/decrypt for integration secrets at rest (ENC_KEY base64, 32 bytes)
 async function encSecret(env, plain) {
@@ -81,8 +113,8 @@ function parseCookies(req) {
   return out;
 }
 function sessionCookie(id) {
-  // HttpOnly so JS can't read it; Secure + SameSite=Lax; 30-day cap (idle also enforced server-side)
-  return `atlas_sid=${id}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`;
+  // HttpOnly so JS can't read it; Secure + SameSite=None; 30-day cap (idle also enforced server-side)
+  return `atlas_sid=${id}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=2592000`;
 }
 const IDLE_MS = 1000 * 60 * 60 * 24;      // 24h idle
 const ABS_MS = 1000 * 60 * 60 * 24 * 30;   // 30d absolute
@@ -151,9 +183,14 @@ export default {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
+    const cors = corsHeaders(req.headers.get('Origin') || '');
 
-    if (method === 'OPTIONS') return new Response(null, { status: 204, headers: securityHeaders() });
+    // CORS preflight (browsers send this before a credentialed cross-origin write)
+    if (method === 'OPTIONS') return new Response(null, { status: 204, headers: Object.assign({}, securityHeaders(), cors, {
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-CSRF-Token', 'Access-Control-Max-Age': '86400' }) });
 
+    const resp = await (async () => {
     try {
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
@@ -198,10 +235,15 @@ export default {
         if (!await rateLimit(env, 'login:' + ip, 10, 900000)) return err(429, 'Too many attempts. Try again in a few minutes.');
         if (!await rateLimit(env, 'login:' + body.email.toLowerCase(), 8, 900000)) return err(429, 'Too many attempts for this account.');
         const user = await env.DB.prepare('SELECT * FROM users WHERE email=?').bind(body.email.toLowerCase()).first();
-        // always run a hash to blunt user-enumeration timing
-        const ok = user ? await verifyPassword(body.password, user.pw_salt, user.pw_hash) : await verifyPassword(body.password, b64(new Uint8Array(16)), '');
+        // Always run the FULL 600k KDF (even when the email is unknown) so response time can't reveal
+        // whether an account exists.
+        let ok;
+        if (user) ok = await verifyPassword(body.password, user.pw_salt, user.pw_hash);
+        else { await hashPassword(body.password, b64(new Uint8Array(16))); ok = false; }
         if (!user || !ok) { await audit(env, null, req, 'login_fail', { email: body.email.toLowerCase() }); return err(401, 'Wrong email or password.'); }
         await env.DB.prepare('UPDATE users SET last_login=? WHERE id=?').bind(Date.now(), user.id).run();
+        // Transparently upgrade a legacy single-100k hash to the 600k scheme now that we hold the plaintext.
+        if (pwNeedsUpgrade(user.pw_hash)) { try { const _up = await hashPassword(body.password); await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_up.hash, _up.salt, user.id).run(); } catch (e) {} }
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'login', {});
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
@@ -212,7 +254,7 @@ export default {
 
       if (path === '/api/auth/logout' && method === 'POST') {
         if (ctx) await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(Date.now(), ctx.session.id).run();
-        return json({ ok: true }, 200, { 'Set-Cookie': 'atlas_sid=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0' });
+        return json({ ok: true }, 200, { 'Set-Cookie': 'atlas_sid=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0' });
       }
       if (!ctx) return err(401, 'Not signed in.');
 
@@ -302,6 +344,9 @@ export default {
     } catch (e) {
       return err(500, 'Server error.');   // never leak internals
     }
+    })();
+    for (const k in cors) resp.headers.set(k, cors[k]);   // CORS on every response
+    return resp;
   },
 };
 

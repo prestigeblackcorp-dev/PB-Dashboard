@@ -33,7 +33,7 @@ D1 query.
 
 ## P0 — launch blockers (no real PII until ALL ship, server-side)
 
-1. **Password hashing** — replace the prototype hash with Argon2id/scrypt/bcrypt + per-user salt; verify server-side. Never hash/compare on the client.
+1. **Password hashing** — replace the prototype hash with Argon2id/scrypt/bcrypt + per-user salt; verify server-side. Never hash/compare on the client.  [DONE 2026-07-16: chained 600k, versioned + backward-compatible]
 2. **Sessions** — signed, `HttpOnly; Secure; SameSite` cookie (or signed JWT) minted only after credential verification; absolute + idle expiry; rotate on privilege change; server-side revocation on logout.
 3. **Owner/admin/comp status** — lives only in a server table keyed by the *authenticated* user; re-checked per request. A client-set email must never grant Diamond/owner, the domain marketplace, or comps.
 4. **Tenant isolation** — `tenant_id` comes from the server session, never the request; every query carries `WHERE tenant_id = ?`; every write validates the row's tenant; deny-by-default; add automated cross-tenant IDOR tests.
