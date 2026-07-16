@@ -550,8 +550,22 @@ body{color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Disp
           <div class="trips-head">Past Trips</div>
           <div id="pastTripsBody"><div class="rev-empty">Loading&#8230;</div></div>
         </div>
+        <button onclick="closeProfile();openWallet()" style="width:100%;background:rgba(255,255,255,.04);border:1px solid var(--border);color:#fff;border-radius:12px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between"><span>&#128179; Payment Methods</span><span id="profilePayCount" style="font-size:12px;color:var(--muted);font-weight:600"></span></button>
         <button class="btn-gold" onclick="closeProfile()">Done</button>
         <button class="profile-signout" onclick="signOut()">Sign Out</button>
+      </div>
+    </div>
+
+    <div id="walletModal" class="profile-overlay" style="display:none;z-index:10050" onclick="if(event.target===this)closeWallet()">
+      <div class="profile-card" style="text-align:left">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
+          <div style="font-size:19px;font-weight:900;color:#fff">Payment Methods</div>
+          <button onclick="closeWallet()" style="background:none;border:none;color:var(--muted);font-size:24px;cursor:pointer;line-height:1;padding:0">&times;</button>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:16px">Your primary card is charged by default. Add as many as you like and switch at checkout.</div>
+        <div id="walletList"></div>
+        <div id="walletAddForm"></div>
+        <button class="btn-gold" style="width:100%;margin-top:14px" onclick="closeWallet()">Done</button>
       </div>
     </div>
 
@@ -2017,27 +2031,44 @@ async function requestRide(){
 // Pre-dispatch payment sheet (demo): add a card if needed, "pay" the fare, then run runFn.
 function _collectFareThen(fareAmt, runFn, opts){
   opts=opts||{};
+  var _payPickOpen=false;
   var F=(window.PB_FLAGS||{});
   if(!F.cardOnFile){ runFn(); return; }   // payment off \u2192 dispatch directly (old behavior)
   var ov=document.getElementById('payOverlay'); if(ov) ov.remove();
   ov=document.createElement('div'); ov.id='payOverlay';
   ov.style.cssText='position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,.72);display:flex;align-items:flex-end;justify-content:center';
   function render(){
-    var p=_payMethod();
+    var p=_payMethod(); var cards=_payMethods();
     var demoNote=F.demoPay?'<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:10px;opacity:.7">Demo mode \u2014 no real card or charge</div>':'';
+    var cardBlock;
+    if(p){
+      var chg = cards.length>1
+        ? '<button onclick="_payPick()" style="background:none;border:none;color:#C9A962;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;padding:0">Change</button>'
+        : '<button onclick="_payManage()" style="background:none;border:none;color:#C9A962;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;padding:0">Manage</button>';
+      var picker = _payPickOpen ? ('<div style="margin:0 0 12px">'+cards.map(function(c){
+          var sel=(p&&p.id===c.id);
+          return '<button onclick="_payPickSet(\''+c.id+'\')" style="width:100%;text-align:left;display:flex;align-items:center;gap:8px;background:'+(sel?'rgba(201,169,98,.12)':'rgba(255,255,255,.03)')+';border:1px solid '+(sel?'rgba(201,169,98,.5)':'var(--border)')+';border-radius:10px;padding:10px 12px;margin-bottom:6px;color:#fff;font-size:13px;font-family:inherit;cursor:pointer">\uD83D\uDCB3 '+esc(c.brand)+' \u2022\u2022\u2022\u2022 '+esc(c.last4)+(c.primary?' <span style="font-size:9px;color:#C9A962;margin-left:2px">PRIMARY</span>':'')+(sel?'<span style="margin-left:auto;color:#C9A962">\u2713</span>':'')+'</button>';
+        }).join('')+'<button onclick="_payAddCard()" style="width:100%;background:none;border:1px dashed var(--border);color:var(--muted);border-radius:10px;padding:9px;font-size:12px;cursor:pointer;font-family:inherit">\uFF0B Add another card</button></div>') : '';
+      cardBlock = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:'+(_payPickOpen?'10px':'14px')+'"><span style="font-size:13px;color:#cfd3da">\uD83D\uDCB3 '+esc(p.brand)+' \u2022\u2022\u2022\u2022 '+esc(p.last4)+(p.demo?' <span style="font-size:9px;color:#C9A962;border:1px solid rgba(201,169,98,.35);border-radius:6px;padding:0 5px">DEMO</span>':'')+'</span>'+chg+'</div>'+picker
+        +'<button class="btn-gold" style="width:100%" onclick="_payConfirmDispatch()">Pay $'+fareAmt.toFixed(2)+' &amp; '+(opts.cta||'Request')+'</button>';
+    } else {
+      cardBlock = '<div style="font-size:13px;color:var(--muted);margin-bottom:12px">Add a card to continue</div><button class="btn-gold" style="width:100%" onclick="_payAddCard()">\uFF0B Add a card</button>';
+    }
     ov.innerHTML='<div style="background:#14110c;border:1px solid rgba(255,255,255,.08);border-radius:20px 20px 0 0;width:100%;max-width:480px;padding:22px 20px calc(20px + env(safe-area-inset-bottom,0px))">'
       +'<div style="font-size:18px;font-weight:900;color:#fff;margin-bottom:3px">'+(opts.title||'Confirm &amp; Pay')+'</div>'
       +'<div style="font-size:12px;color:var(--muted);margin-bottom:16px">'+(opts.sub||'Your chauffeur is dispatched once payment is accepted.')+'</div>'
       +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><span style="font-size:13px;color:var(--muted);font-weight:700">'+(opts.label||'Fare')+'</span><span style="font-size:22px;font-weight:900;color:#C9A962">$'+fareAmt.toFixed(2)+'</span></div>'
-      +(p
-        ? '<div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#cfd3da;margin-bottom:14px">\uD83D\uDCB3 '+esc(p.brand)+' \u2022\u2022\u2022\u2022 '+esc(p.last4)+(p.demo?' <span style="font-size:9px;color:#C9A962;border:1px solid rgba(201,169,98,.35);border-radius:6px;padding:0 5px">DEMO</span>':'')+'</div><button class="btn-gold" style="width:100%" onclick="_payConfirmDispatch()">Pay $'+fareAmt.toFixed(2)+' &amp; '+(opts.cta||'Request')+'</button>'
-        : '<div style="font-size:13px;color:var(--muted);margin-bottom:12px">Add a card to continue</div><button class="btn-gold" style="width:100%" onclick="_payAddCard()">\uFF0B Add a card</button>')
+      +cardBlock
       +'<button onclick="_payCancel()" style="width:100%;margin-top:8px;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:12px;padding:11px;font-size:13px;cursor:pointer">Cancel</button>'
       +demoNote+'</div>';
   }
-  window._payAddCard=function(){ _savePayMethod({brand:'Visa',last4:'4242',exp:'12/34',demo:true,addedAt:Date.now()}); render(); };
-  window._payCancel=function(){ var o=document.getElementById('payOverlay'); if(o) o.remove(); };
-  window._payConfirmDispatch=function(){ var o=document.getElementById('payOverlay'); if(o) o.remove(); runFn(); };
+  window._payOverlayRerender=render;
+  window._payPick=function(){ _payPickOpen=!_payPickOpen; render(); };
+  window._payPickSet=function(id){ _chargeCard=id; _payPickOpen=false; render(); };
+  window._payManage=function(){ openWallet(); };
+  window._payAddCard=function(){ openWallet(); _walletAdd=true; renderWallet(); };
+  window._payCancel=function(){ _chargeCard=null; window._payOverlayRerender=null; var o=document.getElementById('payOverlay'); if(o) o.remove(); };
+  window._payConfirmDispatch=function(){ _chargeCard=null; window._payOverlayRerender=null; var o=document.getElementById('payOverlay'); if(o) o.remove(); runFn(); };
   render();
   document.body.appendChild(ov);
 }
@@ -2628,10 +2659,64 @@ function _doneToReview(){
   var dn=(_activeDriver&&_activeDriver.name)||(_curRide&&_curRide.assignedDriverName)||'';
   if(_rideId) openReview(_rideId, de, dn);
 }
-function _payMethod(){ try{ return JSON.parse(localStorage.getItem('pb_pay_method')||'null'); }catch(e){ return null; } }
-function _savePayMethod(m){ try{ localStorage.setItem('pb_pay_method', JSON.stringify(m)); }catch(e){} }
-function addDemoCard(){ _savePayMethod({brand:'Visa',last4:'4242',exp:'12/34',demo:true,addedAt:Date.now()}); renderDoneCardPay(_curRide); }
-function removePayMethod(){ try{ localStorage.removeItem('pb_pay_method'); }catch(e){} renderDoneCardPay(_curRide); }
+/* ---- Cards on file (wallet): multiple cards, one primary, charge as requested ---- */
+var PAY_KEY='pb_pay_methods';
+var _chargeCard=null;   // per-charge card pick; null => use primary
+var _walletAdd=false;
+function _payMethods(){
+  var arr; try{ arr=JSON.parse(localStorage.getItem(PAY_KEY)||'null'); }catch(e){ arr=null; }
+  if(!Array.isArray(arr)){
+    arr=[];
+    try{ var old=JSON.parse(localStorage.getItem('pb_pay_method')||'null'); if(old&&old.last4){ old.id=old.id||('c'+(old.addedAt||Date.now())); old.primary=true; arr=[old]; } }catch(e){}
+    _savePayMethods(arr); try{ localStorage.removeItem('pb_pay_method'); }catch(e){}
+  }
+  return arr;
+}
+function _savePayMethods(arr){ try{ localStorage.setItem(PAY_KEY, JSON.stringify(arr||[])); }catch(e){} }
+function _primaryCard(){ var a=_payMethods(); return a.filter(function(c){return c.primary;})[0] || a[0] || null; }
+function _cardById(id){ return _payMethods().filter(function(c){return c.id===id;})[0]||null; }
+function _payMethod(){ return _chargeCard ? (_cardById(_chargeCard)||_primaryCard()) : _primaryCard(); }
+function _detectBrand(num){ num=String(num||'').replace(/\D/g,''); if(/^4/.test(num))return'Visa'; if(/^(5[1-5]|2[2-7])/.test(num))return'Mastercard'; if(/^3[47]/.test(num))return'Amex'; if(/^6/.test(num))return'Discover'; return'Card'; }
+function _addCard(num,exp){
+  num=String(num||'').replace(/\D/g,''); if(num.length<12) return false;
+  var a=_payMethods();
+  a.push({ id:'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), brand:_detectBrand(num), last4:num.slice(-4), exp:String(exp||'').trim(), demo:!!((window.PB_FLAGS||{}).demoPay), primary:(a.length===0), addedAt:Date.now() });
+  _savePayMethods(a); return true;
+}
+function _setPrimary(id){ var a=_payMethods(); a.forEach(function(c){ c.primary=(c.id===id); }); _savePayMethods(a); _chargeCard=null; renderWallet(); _payFlowsRefresh(); }
+function _removeCard(id){ var a=_payMethods().filter(function(c){return c.id!==id;}); if(a.length && !a.some(function(c){return c.primary;})) a[0].primary=true; _savePayMethods(a); if(_chargeCard===id)_chargeCard=null; renderWallet(); _payFlowsRefresh(); }
+function openWallet(){ _walletAdd=false; renderWallet(); var m=$d('walletModal'); if(m) m.style.display='flex'; }
+function closeWallet(){ var m=$d('walletModal'); if(m) m.style.display='none'; _payFlowsRefresh(); }
+function _payFlowsRefresh(){ if(window._payOverlayRerender) window._payOverlayRerender(); var b=$d('donePayBlock'); if(b && b.style.display!=='none' && typeof _curRide!=='undefined') renderDoneCardPay(_curRide); var pc=$d('profilePayCount'); if(pc){ var n=_payMethods().length; pc.textContent=n?(n+' on file'):''; } }
+function renderWallet(){
+  var list=$d('walletList'), form=$d('walletAddForm'); if(!list) return;
+  var a=_payMethods();
+  list.innerHTML = a.length ? a.map(function(c){
+    return '<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.04);border:1px solid '+(c.primary?'rgba(201,169,98,.5)':'var(--border)')+';border-radius:12px;padding:12px 13px;margin-bottom:8px">'
+      +'<span style="font-size:18px">\ud83d\udcb3</span>'
+      +'<div style="flex:1;min-width:0"><div style="font-size:14px;color:#fff;font-weight:700">'+esc(c.brand)+' \u2022\u2022\u2022\u2022 '+esc(c.last4)+(c.demo?' <span style="font-size:9px;color:#C9A962;border:1px solid rgba(201,169,98,.35);border-radius:6px;padding:0 4px">DEMO</span>':'')+'</div>'
+      +'<div style="font-size:11px;color:var(--muted)">'+(c.exp?('Exp '+esc(c.exp)):'On file')+(c.primary?' \u00b7 <span style="color:#C9A962;font-weight:700">Primary</span>':'')+'</div></div>'
+      +(c.primary?'':'<button onclick="_setPrimary(\''+c.id+'\')" style="background:none;border:1px solid var(--border);color:#cfd3da;border-radius:8px;padding:6px 9px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">Make primary</button>')
+      +'<button onclick="_removeCard(\''+c.id+'\')" title="Remove card" style="background:none;border:none;color:#f87171;font-size:19px;cursor:pointer;padding:0 2px;line-height:1">&times;</button>'
+    +'</div>';
+  }).join('') : '<div style="text-align:center;color:var(--muted);font-size:13px;padding:14px 0">No cards yet \u2014 add one below.</div>';
+  form.innerHTML = _walletAdd ?
+    ('<div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:14px;margin-top:6px">'
+    +'<input id="wcNum" inputmode="numeric" placeholder="Card number" maxlength="19" style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:9px;padding:11px;color:#fff;font-size:14px;font-family:inherit;margin-bottom:8px">'
+    +'<div style="display:flex;gap:8px;margin-bottom:10px"><input id="wcExp" placeholder="MM/YY" maxlength="5" style="flex:1;min-width:0;box-sizing:border-box;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:9px;padding:11px;color:#fff;font-size:14px;font-family:inherit"><input id="wcCvc" inputmode="numeric" placeholder="CVC" maxlength="4" style="width:84px;box-sizing:border-box;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:9px;padding:11px;color:#fff;font-size:14px;font-family:inherit"></div>'
+    +'<button class="btn-gold" style="width:100%" onclick="_walletSaveCard()">Save Card</button>'
+    +'<button onclick="_walletAdd=false;renderWallet()" style="width:100%;margin-top:8px;background:none;border:1px solid var(--border);color:var(--muted);border-radius:10px;padding:10px;font-size:13px;cursor:pointer;font-family:inherit">Cancel</button>'
+    +'<div style="font-size:10px;color:var(--muted);opacity:.75;text-align:center;margin-top:8px">'+(((window.PB_FLAGS||{}).demoPay)?'Demo mode \u2014 only the brand + last 4 are kept; no real card is charged.':'Secured by Stripe \u2014 the full number is never stored on our servers.')+'</div>'
+    +'</div>')
+    : '<button class="btn-gold" style="width:100%;margin-top:4px" onclick="_walletAdd=true;renderWallet()">\uff0b Add a card</button>';
+}
+function _walletSaveCard(){
+  var num=($d('wcNum')&&$d('wcNum').value)||'', exp=($d('wcExp')&&$d('wcExp').value)||'';
+  if(!_addCard(num,exp)){ alert('Enter a valid card number.'); return; }
+  _walletAdd=false; renderWallet(); _payFlowsRefresh();
+}
+function addDemoCard(){ openWallet(); _walletAdd=true; renderWallet(); }
+function removePayMethod(){ openWallet(); }
 function _fareOf(ride){ return Number((ride&&(ride.finalPrice||ride.lockedPrice||ride.estimatedPrice))||0); }
 function setDoneTip(v){ _doneTip=Number(v)||0; _renderDoneFlow(_curRide); }
 function payRateDriver(){
