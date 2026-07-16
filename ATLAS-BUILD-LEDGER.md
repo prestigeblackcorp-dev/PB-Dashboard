@@ -1,0 +1,108 @@
+# Atlas Rental.io — Build & Feature Ledger
+
+The single source of truth for **what's done, what needs connecting, and every feature** (built, planned, or considered). Living doc — ask Atlas/Claude to add anything and it gets appended here.
+
+**Legend:** ✅ Done & live · 🔌 Built, needs *you* to connect (a key/account/OAuth) · 🟡 Partial · ⬜ To build · 💡 Idea/considered
+**Last updated:** 2026‑07‑16 · Frontend `atlas/atlas.html` (live at atlasrental.io) · Backend `atlas.io/backend/worker.js` (Cloudflare Worker + D1)
+
+---
+
+## 1 · Base mechanisms & integrations (the plumbing to make the dashboard "complete")
+
+| Mechanism | What it powers | Status | What's needed to finish |
+|---|---|---|---|
+| **Cloudflare Worker + D1** | Real multi‑tenant backend (per‑tenant data isolation, auth, CRUD) | 🔌 Built + hardened | **Paste‑deploy** `worker.js` to `atlas.prestigeblackcorp.workers.dev` (it's on your clipboard) |
+| **Auth / sessions** | Sign‑up, sign‑in, tenant sessions | ✅ In worker (PBKDF2 600k, enumeration‑safe, CSRF) | — |
+| **Encryption at rest** | Integration secrets (AES‑GCM, AAD‑bound to tenant+provider, key rotation) | ✅ In worker | optional `ENC_KEY_2` to rotate |
+| **Stripe** (payments) | Booking payments, deposits/holds, subscription billing ($49.99/mo) | 🔌 Model built (PB worker proven); Atlas needs Connect | Add `STRIPE_SECRET` + `STRIPE_WEBHOOK_SECRET`; wire `/api/integrations/connect` → Stripe Connect |
+| **Resend** (email) | Confirmations, contracts, reminders, win‑backs, outreach | 🔌 Endpoints modeled (PB worker proven) | Add `RESEND_KEY`; port the send + template endpoints into the Atlas worker |
+| **Twilio** (SMS) | Text confirmations/reminders, 2‑way replies | 🔌 Modeled (PB worker proven) | Add `TWILIO_SID` + `TWILIO_TOKEN` + a from‑number; wire send endpoint |
+| **Web Push (VAPID)** | Owner alerts (new booking, delivery soon) | 🟡 Pattern proven in PB `sw.js` | Add VAPID keys + `/push/subscribe` to the Atlas worker |
+| **Meta (Facebook + Instagram) OAuth + Marketing API** | Dreaming → launch/optimize ad campaigns, DM outreach | ⬜ UI + drafts done; API not wired | Meta app + OAuth + ad‑account permission (your accounts) |
+| **Google Ads API** | Dreaming → high‑intent search campaigns | ⬜ UI + drafts done; API not wired | Google Ads account + OAuth |
+| **Anthropic (ANTHROPIC_KEY)** | The **live** Atlas.io AI (real research, real follow‑through, learns each owner's business) | ⬜ Seam ready (`_atlasResearchHook`) | Add `ANTHROPIC_KEY` to the worker + a `/aio` endpoint; swap the canned responder for the model |
+| **Maps / live GPS** | Live fleet map, asset location | 🟡 Tracker brands + UI + test data | Connect a telematics provider feed (Bouncie/Samsara/etc.) per owner |
+| **HTTPS + private repo (Cloudflare Pages)** | Secure `https://atlasrental.io`, stop stale‑cache, private source | ⬜ Plan ready | Move the site to Cloudflare Pages; point the domain; make the repo private |
+| **PWA / installable** | Add‑to‑home‑screen, offline shell | ✅ Manifest + SW + icons | (optional) custom install prompt |
+| **App stores (PWABuilder)** | iOS + Android listings | ⬜ | PWABuilder package + store accounts |
+
+---
+
+## 2 · Core modules — status
+
+| Module | Status | Notes |
+|---|---|---|
+| Landing site (hero, features, pricing, how‑it‑works, Atlas.io section, SEO) | ✅ | |
+| **30‑second commercial** (voiced, interactive) + `?film` deep‑link + MP4 export file | ✅ | |
+| Onboarding (account → identity → **multi‑select "what do you rent"** → money → connect → asset → invite → done) | ✅ | multi‑type + per‑type rates |
+| **AI setup assistant** (finishes the dashboard from what it knows + asks city/goal/photo) | ✅ | powers Dreaming localization |
+| Asset ("Asset management") — add (bulk), edit, photo, status, location, tenant/renter | ✅ | |
+| Bookings — create/edit, statuses, filters, price engine, drill‑downs | ✅ | |
+| Money engine (rate models, tax, deposit modes, discounts, per‑type rates, promos) | ✅ | 🟡 no true monthly model / metered run‑hours yet |
+| Contracts + e‑signature + legal docs (agreement/ToS/privacy, timestamps, IP) | ✅ | |
+| Deposits / refundable holds | 🟡 | model exists; full hold→settle flow is deeper |
+| Branded customer **member portal** | ✅ | self‑service; deeper flows ongoing |
+| Branded **website builder** + promo box + reviews embed | ✅ | |
+| Analytics + reports (tax/bookings/activity CSV, reconciled to bookings) | ✅ | |
+| **Team + roles (RBAC)** — presets, granular perms, preview‑as, enforced client+ (server TODO) | ✅ (client) / 🔌 (server re‑check) | worker must re‑check the same perms |
+| Promo codes | ✅ | |
+| Outreach / email campaigns (segments, AI draft, unsubscribe) | 🟡 | UI/model; real send needs Resend wired |
+| **Dreaming** (gaps → FB/IG/Google campaigns → broker/partner outreach, per type, "on since…") | ✅ (UI + drafts) / ⬜ (real launch/send) | |
+| **Atlas.io assistant** (chat, nav edits, money/ops/growth answers with follow‑through buttons) | ✅ (canned/heuristic) / ⬜ (live model) | |
+| Trackers / live map | 🟡 | brands + UI + test data |
+| Reviews + messaging preferences | ✅ | |
+| Notifications (real, state‑derived) + owner web push | ✅ / 🟡 push | |
+| Nav customization (hide/rename/collapse, by Settings or by asking Atlas.io) | ✅ | |
+| Dark mode, hamburger + bottom nav, mobile‑first | ✅ | |
+
+---
+
+## 3 · Full feature inventory (every feature, by area)
+
+### Getting started
+- ✅ 7‑day free trial, no card · ✅ multi‑select asset types · ✅ per‑type rates · ✅ AI setup assistant · ✅ demo tenants · ✅ import/bulk‑add assets · 💡 CSV/marketplace importer · 💡 "clone last season's setup"
+
+### Assets
+- ✅ add/edit, bulk, status, location, tenant, **photo on card** · ✅ availability blocks · 🟡 mileage/hours/maintenance log · 💡 condition‑report photos at pickup/return · 💡 per‑asset documents vault · 💡 metered run‑hour billing (generators)
+
+### Bookings
+- ✅ create/edit, statuses, filters, live price · ✅ drill‑downs · 🟡 calendar view · ⬜ incident/damage record on a booking · ⬜ cancellation policy engine · 💡 recurring/subscription rentals · 💡 waitlist / auto‑fill from cancellations
+
+### Money & payments
+- ✅ rate models (day/hour/week), tax, discounts (weekly/monthly), deposits, promos · 🔌 Stripe charge/hold/settle · ⬜ true monthly tier · ⬜ operator / delivery add‑ons as first‑class · 💡 net‑30 accounts (B2B) · 💡 partial payments / payment plans · 💡 multi‑currency
+
+### Contracts, deposits & risk
+- ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · 🟡 refundable hold flow · ⬜ damage‑claim workflow (document → keep deposit → draft claim → insurer) · 💡 ID verification · 💡 insurance add‑on marketplace
+
+### Customer‑facing
+- ✅ branded member portal · ✅ branded website + promo box · ✅ reviews · ✅ itemized receipts · 💡 loyalty / referral program · 💡 gift cards
+
+### Growth — Dreaming (idle‑time engine)
+- ✅ gaps per asset type · ✅ FB/IG/Google campaign drafts (headline/audience/budget) · ✅ broker/partner outreach targets + drafts (per type) · ✅ "Dreaming is on since…" status · 🔌 Connect ad accounts to launch · ⬜ pull N *real* local contacts (brokers/GCs) · ⬜ watch bid boards for open jobs · ⬜ actually send (email/DM) on approval
+
+### Atlas.io AI
+- ✅ chat: pricing, idle, analytics, **"what did I make this month"**, deposits, cancellations, **damage/incident**, expansion, win‑back, Stripe, nav edits · ✅ follow‑through buttons everywhere · ✅ refuses to invent data on empty accounts · ⬜ **live model** (real research/actions/learning per business) · ⬜ image understanding ("here's a photo of my asset") · ⬜ take real actions (apply a rule, send a campaign)
+
+### Team & ops
+- ✅ roles/RBAC + preview‑as · 🔌 server‑side perm re‑check · 💡 audit log per user · 💡 staff scheduling / shifts
+
+### Platform
+- ✅ PWA installable · ✅ dark mode · ✅ nav customization (+ by voice) · ✅ 30‑sec commercial + deep‑link · 🔌 push · ⬜ HTTPS via Cloudflare Pages · ⬜ app‑store listings · 💡 white‑label domains per tenant · 💡 Zapier/webhooks · 💡 QuickBooks/Xero export
+
+---
+
+## 4 · Next‑up priority (what to do to "complete" the dashboard)
+1. **Paste‑deploy the worker** (on your clipboard) → real backend live.
+2. **Connect Stripe** (payments + deposits + your own subscription billing).
+3. **Wire Resend + Twilio** in the worker (confirmations, reminders, outreach actually send).
+4. **HTTPS via Cloudflare Pages** (secure domain, kills the stale‑cache "old build" problem).
+5. **Live Atlas.io AI** (`ANTHROPIC_KEY`) — turns the canned assistant + Dreaming into real research, real outreach, and real per‑business learning.
+6. **Meta + Google OAuth** — so Dreaming can actually launch campaigns + message brokers.
+7. **App‑store submission** (PWABuilder) when ready.
+
+---
+
+## 5 · Add a feature
+Drop it below (or just tell Atlas.io / Claude and it gets slotted into the right area above with a status):
+- ⬜ _…_
+- ⬜ _…_
