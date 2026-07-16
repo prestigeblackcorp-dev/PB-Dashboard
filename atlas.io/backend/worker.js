@@ -44,7 +44,7 @@ function unb64(s) { const b = atob(s); const u = new Uint8Array(b.length); for (
 function randId(bytes) { const u = new Uint8Array(bytes || 32); crypto.getRandomValues(u); return b64(u).replace(/[+/=]/g, '').slice(0, (bytes || 32)); }
 function enc(str) { return new TextEncoder().encode(str); }
 
-const PBKDF2_ITERS = 210000;
+const PBKDF2_ITERS = 100000;   // Cloudflare Workers caps native PBKDF2 at 100k. Hardening (SECURITY.md P0 #1): chain PBKDF2 or move to a WASM Argon2 for OWASP-grade before scaling to real data.
 async function hashPassword(password, saltB64) {
   const salt = saltB64 ? unb64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey('raw', enc(password), 'PBKDF2', false, ['deriveBits']);
@@ -235,16 +235,17 @@ export default {
         // all writes: CSRF + origin
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
 
+        const hasUpd = (coll === 'assets' || coll === 'bookings');
         if (method === 'POST') {
           const body = await req.json().catch(() => ({}));
-          const rid = (coll === 'bookings' && vStr(body.id, 40)) ? body.id : (coll.slice(0, 2).toUpperCase() + '-' + randId(10));
+          const { cols, vals } = patchFields(coll, body);       // whitelisted domain fields
+          for (const c of (REQUIRED[coll] || [])) if (cols.indexOf(c) < 0) return err(400, 'Missing required field: ' + c);
           const now = Date.now();
-          // store the validated envelope; heavy fields live in data JSON
-          const hasUpd = (coll === 'assets' || coll === 'bookings');
-          const insSql = `INSERT INTO ${coll} (id,tenant_id,created_at${hasUpd ? ',updated_at' : ''}) VALUES (?,?,?${hasUpd ? ',?' : ''})`;
-          const insArgs = hasUpd ? [rid, ctx.tenant_id, now, now] : [rid, ctx.tenant_id, now];
-          await env.DB.prepare(insSql).bind(...insArgs).run();
-          await applyPatch(env, coll, ctx.tenant_id, rid, body);
+          const rid = (coll === 'bookings' && vStr(body.id, 40)) ? body.id : (coll.slice(0, 2).toUpperCase() + '-' + randId(10));
+          // ONE atomic insert: base columns + all provided fields (respects NOT NULL constraints)
+          const allCols = ['id', 'tenant_id', 'created_at'].concat(hasUpd ? ['updated_at'] : []).concat(cols);
+          const allVals = [rid, ctx.tenant_id, now].concat(hasUpd ? [now] : []).concat(vals);
+          await env.DB.prepare(`INSERT INTO ${coll} (${allCols.join(',')}) VALUES (${allCols.map(() => '?').join(',')})`).bind(...allVals).run();
           await audit(env, ctx, req, coll + '.create', { id: rid });
           return json({ ok: true, id: rid });
         }
@@ -252,7 +253,11 @@ export default {
           const owns = await env.DB.prepare(`SELECT id FROM ${coll} WHERE id=? AND tenant_id=?`).bind(id, ctx.tenant_id).first();
           if (!owns) return err(404, 'Not found.');           // cross-tenant writes are denied here
           const body = await req.json().catch(() => ({}));
-          await applyPatch(env, coll, ctx.tenant_id, id, body);
+          const { cols, vals } = patchFields(coll, body);
+          if (!cols.length) return json({ ok: true });          // nothing to change
+          const setCols = cols.slice(), setVals = vals.slice();
+          if (hasUpd) { setCols.push('updated_at'); setVals.push(Date.now()); }
+          await env.DB.prepare(`UPDATE ${coll} SET ${setCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...setVals, id, ctx.tenant_id).run();
           await audit(env, ctx, req, coll + '.update', { id });
           return json({ ok: true });
         }
@@ -300,12 +305,14 @@ export default {
   },
 };
 
-// Apply a validated field patch to a row's typed columns + data JSON.
-// Whitelisted per collection so a client can't write tenant_id/revenue directly.
-async function applyPatch(env, coll, tenant_id, id, body) {
-  const now = Date.now();
+// NOT NULL columns that must be present on create (else a clean 400, not a DB 500).
+const REQUIRED = { assets: ['name'], charges: ['amount_cents'], ledger: ['kind'], promos: ['code'] };
+
+// Whitelisted domain fields per collection -> {cols, vals}. NEVER id/tenant_id/timestamps
+// (server sets those) so a client can't cross tenants or forge revenue. Used by INSERT and UPDATE.
+function patchFields(coll, body) {
   const cols = [], vals = [];
-  function set(c, v) { cols.push(c + '=?'); vals.push(v); }
+  const set = (c, v) => { cols.push(c); vals.push(v); };
   if (coll === 'assets') {
     if (vStr(body.name, 160)) set('name', body.name);
     if (vStr(body.type, 60)) set('type', body.type);
@@ -313,7 +320,6 @@ async function applyPatch(env, coll, tenant_id, id, body) {
     if (vInt(body.day_rate_cents)) set('day_rate_cents', body.day_rate_cents);
     if (body.info) set('info', JSON.stringify(body.info));
     if (body.blackouts) set('blackouts', JSON.stringify(body.blackouts));
-    set('updated_at', now);
   } else if (coll === 'bookings') {
     if (vStr(body.customer_id, 40)) set('customer_id', body.customer_id);
     if (vStr(body.asset_id, 40)) set('asset_id', body.asset_id);
@@ -322,10 +328,9 @@ async function applyPatch(env, coll, tenant_id, id, body) {
     if (vStr(body.status, 30)) set('status', body.status);
     // revenue_cents is NOT settable from the client - server recomputes from money-rules (payments phase)
     if (body.data) set('data', JSON.stringify(body.data));
-    set('updated_at', now);
   } else if (coll === 'customers') {
     if (vStr(body.name, 160)) set('name', body.name);
-    if (body.email == null || vEmail(body.email)) set('email', body.email || '');
+    if (body.email != null && vEmail(body.email)) set('email', body.email);
     if (vStr(body.phone, 40)) set('phone', body.phone);
     if (body.data) set('data', JSON.stringify(body.data));
   } else if (coll === 'charges') {
@@ -346,8 +351,5 @@ async function applyPatch(env, coll, tenant_id, id, body) {
     if (vStr(body.scope, 30)) set('scope', body.scope);
     if (body.active === 0 || body.active === 1) set('active', body.active);
   }
-  if (!cols.length) return;
-  vals.push(id); vals.push(tenant_id);
-  const stmt = env.DB.prepare(`UPDATE ${coll} SET ${cols.join(',')} WHERE id=? AND tenant_id=?`);
-  await stmt.bind(...vals).run();
+  return { cols, vals };
 }
