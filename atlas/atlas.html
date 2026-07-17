@@ -1486,6 +1486,10 @@ body.trk-fs-on .trk-fs-exit{display:grid}
         <section class="panel" data-panel="analytics">
           <div style="margin-bottom:18px"><h2 style="font-size:22px">Analytics</h2><p style="color:var(--muted);font-size:14px">Full-scope insight across your website, portal and bookings.</p></div>
           <div class="kpi-row" id="anaKpis"></div>
+          <div class="card" id="anaForecastCard" style="display:none;margin-top:18px">
+            <div class="card__head"><h3>Forecast <span class="chip chip--brand" style="font-size:11px">Beta</span></h3><span style="font-size:11px;color:var(--muted)">projected from your trailing history</span></div>
+            <div class="card__body" id="anaForecast"></div>
+          </div>
           <div class="card" style="margin-top:18px">
             <div class="card__head"><h3>Income &amp; expenses</h3><span style="font-size:11px;color:var(--muted)">tap any figure to drill in</span></div>
             <div class="card__body" id="ledgerBody"></div>
@@ -2651,7 +2655,7 @@ const Atlas = (function(){
   function _docBlock(kind,doc){ var built=doc.status==='built'||doc.status==='uploaded';
     var chip = built? '<span class="chip chip--ok"><span class="dot"></span>'+(doc.status==='uploaded'?'Uploaded':'Built')+'</span>' : '<span class="chip chip--warn"><span class="dot"></span>Not set up yet</span>';
     var h='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'+chip
-      +(built?'<button class="btn btn--ghost btn--sm" onclick="Atlas.viewDoc(\''+kind+'\')">View / edit</button><button class="btn btn--ghost btn--sm" onclick="Atlas.reviewDoc(\''+kind+'\')">Review with Atlas.io</button>':'')+'</div>';
+      +(built?'<button class="btn btn--ghost btn--sm" onclick="Atlas.viewDoc(\''+kind+'\')">View / edit</button><button class="btn btn--ghost btn--sm" onclick="Atlas.reviewDoc(\''+kind+'\')">Review with Atlas.io</button><button class="btn btn--ghost btn--sm" onclick="Atlas.regenDoc(\''+kind+'\')">Regenerate</button><button class="btn btn--ghost btn--sm" onclick="Atlas.uploadDoc(\''+kind+'\')">Replace</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.deleteDoc(\''+kind+'\')">Delete</button>':'')+'</div>';
     if(!built) h+='<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn--primary" onclick="Atlas.buildDoc(\''+kind+'\')">Build my agreement</button><button class="btn btn--ghost" onclick="Atlas.uploadDoc(\''+kind+'\')">Upload existing</button></div>';
     if(doc.flags&&doc.flags.length){ h+='<div style="margin-top:14px"><div style="font-size:12.5px;font-weight:700;color:var(--ink);margin-bottom:8px">Atlas.io review &mdash; '+doc.flags.length+' point'+(doc.flags.length===1?'':'s')+' to look at</div>'
       +doc.flags.map(function(f){ var c=f.level==='high'?'danger':(f.level==='med'?'warn':'brand'); return '<div style="display:flex;gap:9px;align-items:flex-start;padding:9px 11px;border:1px solid var(--line);border-left:3px solid var(--'+c+');border-radius:9px;margin-bottom:7px;background:var(--surface)"><span class="chip chip--'+(c==='danger'?'danger':c==='warn'?'warn':'brand')+'" style="flex:none">'+(f.level==='high'?'Fix':f.level==='med'?'Review':'Tip')+'</span><span style="font-size:12.5px;color:var(--body)">'+esc(f.msg)+'</span></div>'; }).join('')+'</div>'; }
@@ -2659,7 +2663,7 @@ const Atlas = (function(){
   }
   function _legalMini(kind,label,doc){ var built=doc.status!=='none';
     return '<div style="border:1px solid var(--line);border-radius:12px;padding:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><b style="font-size:14px;color:var(--ink)">'+label+'</b>'+(built?'<span class="chip chip--ok"><span class="dot"></span>'+(doc.status==='uploaded'?'Uploaded':'Ready')+'</span>':'<span class="chip chip--muted">None</span>')+'</div>'
-      +(built?'<button class="btn btn--ghost btn--sm" onclick="Atlas.viewDoc(\''+kind+'\')">View / edit</button>':'<div style="display:flex;gap:8px"><button class="btn btn--primary btn--sm" onclick="Atlas.buildDoc(\''+kind+'\')">Generate</button><button class="btn btn--ghost btn--sm" onclick="Atlas.uploadDoc(\''+kind+'\')">Upload</button></div>')+'</div>';
+      +(built?'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.viewDoc(\''+kind+'\')">View / edit</button><button class="btn btn--ghost btn--sm" onclick="Atlas.regenDoc(\''+kind+'\')">Regenerate</button><button class="btn btn--ghost btn--sm" onclick="Atlas.uploadDoc(\''+kind+'\')">Replace</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.deleteDoc(\''+kind+'\')">Delete</button></div>':'<div style="display:flex;gap:8px"><button class="btn btn--primary btn--sm" onclick="Atlas.buildDoc(\''+kind+'\')">Generate</button><button class="btn btn--ghost btn--sm" onclick="Atlas.uploadDoc(\''+kind+'\')">Upload</button></div>')+'</div>';
   }
   // Website builder nudge: prompt the owner to publish a Terms of Service + Privacy Policy on their public site.
   function _webLegalHtml(){ var lg=_legal(), t=lg.tos.status!=='none', p=lg.privacy.status!=='none', both=t&&p;
@@ -2669,6 +2673,10 @@ const Atlas = (function(){
         ? '<div style="font-size:12px;color:var(--muted);margin:8px 0 10px">Linked in your site footer. Both include the required Atlas Rental.io processor clause.</div><button class="btn btn--ghost btn--sm" onclick="Atlas.goSettings(\'legal\')">Edit legal pages</button>'
         : '<div style="font-size:12px;color:var(--muted);margin:8px 0 10px">We generate both compliant to your country/state and link them in your footer &mdash; or you can upload your own.</div><button class="btn btn--primary btn--sm" onclick="Atlas.genWebLegal()">Generate both</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.goSettings(\'legal\')">Set up manually</button>');
   }
+  // Opens a stored legal doc from the public-site footer links -- makes the "linked in your site footer" claim real.
+  function webViewLegal(kind){ var lg=_legal(), d=lg[kind]; if(!d||d.status==='none'){ toast('That page is not published yet'); return; }
+    var title=kind==='tos'?'Terms of Service':kind==='privacy'?'Privacy Policy':'Rental Agreement';
+    openModal('<div class="modal__head"><h3>'+title+'</h3>'+_xBtn()+'</div><div class="modal__body"><div style="white-space:pre-wrap;font-size:12.5px;line-height:1.55;color:var(--body);max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:14px">'+esc(d.text||'')+'</div></div>'); }
   // Easy API keys the owner pastes to power their public site.
   var WEB_KEYS=[
     {id:'stripePk', label:'Stripe publishable key', ph:'pk_live_...', help:'Stripe Dashboard > Developers > API keys > Publishable key. Powers card checkout on your site.'},
@@ -2679,12 +2687,14 @@ const Atlas = (function(){
   ];
   function _webKeys(){ var w=_web(); if(!w.keys)w.keys={}; return w.keys; }
   function _webKeysInner(){ var k=_webKeys(); return WEB_KEYS.map(function(x){ var set=!!(k[x.id]&&String(k[x.id]).trim());
-    return '<div class="webkey"><div class="webkey__top"><label>'+x.label+'</label>'+(set?'<span class="chip chip--ok" style="min-width:0"><span class="dot"></span>Connected</span>':'')+'</div>'
+    return '<div class="webkey"><div class="webkey__top"><label>'+x.label+'</label>'+(set?'<span class="chip chip--ok" style="min-width:0"><span class="dot"></span>Saved</span>':'')+'</div>'
       +'<input class="input mono" value="'+esc(k[x.id]||'')+'" placeholder="'+esc(x.ph)+'" onchange="Atlas.setWebKey(\''+x.id+'\',this.value)">'
+      +(set?'<div style="margin-top:6px"><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.removeWebKey(\''+x.id+'\')">Remove</button></div>':'')
       +'<div class="webkey__help">'+esc(x.help)+'</div></div>'; }).join(''); }
   function _webKeysHtml(){ return '<div id="webKeysBox">'+_webKeysInner()+'</div>'; }
   function _webRefreshKeys(){ var el=document.getElementById('webKeysBox'); if(el)el.innerHTML=_webKeysInner(); }
-  function setWebKey(k,v){ if(!_guard('webEdit'))return; _webKeys()[k]=v; save(); _webRefreshKeys(); toast(String(v).trim()?'Key saved &amp; connected':'Key cleared'); }
+  function setWebKey(k,v){ if(!_guard('webEdit'))return; if(String(v||'').trim()) _webKeys()[k]=v; else delete _webKeys()[k]; save(); _webRefreshKeys(); toast(String(v).trim()?'Key saved':'Key cleared'); }
+  function removeWebKey(k){ if(!_guard('webEdit'))return; delete _webKeys()[k]; save(); _webRefreshKeys(); toast('Key removed'); }   // explicit delete for full key CRUD
   function genWebLegal(){ if(!_guard('webEdit'))return; var lg=_legal(); var made=[];
     ['tos','privacy'].forEach(function(k){ if(lg[k].status==='none'){ lg[k].text=_genDoc(k); lg[k].status='built'; lg[k].flags=_reviewFlags(k); made.push(k==='tos'?'Terms':'Privacy Policy'); } });
     save(); if(made.length){ var el=document.getElementById('webLegalBlock'); if(el)el.innerHTML='<h3>Legal pages</h3><div class="desc">Every public site needs these. We build them compliant to your country/state.</div>'+_webLegalHtml(); toast(made.join(' + ')+' generated'); } else toast('Already set up'); }
@@ -2694,22 +2704,42 @@ const Atlas = (function(){
     if(kind==='tos'){ return b+' -- TERMS OF SERVICE\n\nEffective for customers of '+b+', operating in '+jur+'.\n\n1. ACCEPTANCE. By booking or using this site you agree to these Terms.\n2. BOOKINGS. Rates, availability, deposits and fees are shown at checkout and may change until confirmed.\n3. PAYMENTS. You authorize the charges shown. Refunds follow our posted cancellation policy.\n4. RESPONSIBILITIES. You provide accurate information and use rentals lawfully and as agreed.\n5. LIABILITY. Services are provided as available; our liability is limited to the amount you paid, to the extent permitted in '+jur+'.\n6. CHANGES. We may update these Terms; continued use means acceptance.\n7. GOVERNING LAW. '+jur+'.\n\n'+_clauseBlock(); }
     return b+' -- PRIVACY POLICY\n\n'+b+' ("we") respects your privacy and follows applicable '+jur+' data-protection rules.\n\n1. WHAT WE COLLECT. Contact details, booking and payment information, and messages needed to provide our rental services.\n2. HOW WE USE IT. To take and manage bookings, process payments, communicate with you, and meet legal obligations.\n3. SHARING. We share data only with service providers who help us operate (payments, email, hosting) and where required by law. We do not sell your data.\n4. YOUR RIGHTS. Subject to '+jur+' law, you may request access, correction or deletion of your data.\n5. RETENTION & SECURITY. We keep data only as long as needed and protect it with reasonable safeguards.\n6. CONTACT. Contact '+b+' for any privacy request.\n\n'+_clauseBlock();
   }
-  function _reviewFlags(kind){ var lg=_legal(), f=[], m=S.money;
+  // Content-AWARE review: reads the actual document text and flags clauses that are present, missing or risky, so editing the doc changes the result.
+  function _reviewFlags(kind){ var lg=_legal(), f=[], m=S.money; var txt=String((lg[kind]&&lg[kind].text)||''), T=txt.toUpperCase(), has=function(re){ return re.test(T); };
+    if(!txt.trim()){ f.push({level:'high',msg:'This document is empty -- generate it or paste your own text.'}); return f; }
+    if(/^\[UPLOADED: /.test(T)) f.push({level:'high',msg:'This is only an upload placeholder, not real terms -- paste the actual document text so it is enforceable and signable.'});
     if(!lg.jur.region) f.push({level:'med',msg:'No state/region set -- add one so governing-law and consumer-protection wording is correct for where you operate.'});
+    if(!has(/GOVERNING LAW|LAWS OF/)) f.push({level:'med',msg:'No governing-law clause found -- name the state/country whose law applies.'});
     if(kind==='agreement'){
-      if(!(m.hold&&m.hold.type&&m.hold.type!=='none')) f.push({level:'med',msg:'You collect no security deposit/hold -- consider one, and make sure the damage & overage terms match your money rules.'});
-      f.push({level:'high',msg:'Insurance & liability: confirm the coverage requirement matches your real policy and '+(lg.jur.region||lg.jur.country)+' law -- this is the highest-risk clause.'});
-      f.push({level:'low',msg:'Add your specific prohibited-use items (e.g. smoking, off-road, mileage limits) so they are enforceable.'});
+      if(!has(/INSURAN|LIABILIT/)) f.push({level:'high',msg:'No insurance/liability language found -- the highest-risk gap; add who is responsible for loss, theft or damage.'});
+      else f.push({level:'high',msg:'Insurance & liability: confirm the coverage requirement matches your real policy and '+(lg.jur.region||lg.jur.country)+' law.'});
+      if(!has(/DEPOSIT|HOLD/)){ if(m.hold&&m.hold.type&&m.hold.type!=='none') f.push({level:'med',msg:'Your money rules take a deposit/hold but the agreement never mentions it -- add the security-deposit terms.'}); else f.push({level:'low',msg:'No security-deposit/hold clause -- consider one to cover damage or fuel.'}); }
+      if(!has(/CANCELLATION|REFUND/)) f.push({level:'med',msg:'No cancellation/refund terms found -- state your policy so it is enforceable.'});
+      if(!has(/PROHIBITED|PERMITTED USE/)) f.push({level:'low',msg:'Add your specific prohibited-use items (e.g. smoking, off-road, mileage limits) so they are enforceable.'});
+      if(!has(/SIGNATURE|_____/)) f.push({level:'low',msg:'No signature block found -- add owner + renter signature lines.'});
       f.push({level:'low',msg:'Have a licensed attorney in '+(lg.jur.region||lg.jur.country)+' review before use -- Atlas.io drafts a strong starting point, not legal advice.'});
     } else {
-      f.push({level:'med',msg:'Confirm this reflects how you actually handle refunds and cancellations.'});
-      f.push({level:'low',msg:'If you serve customers in the EU/UK or California, add the extra GDPR/CCPA rights language.'});
+      if(!has(/REFUND|CANCEL/)) f.push({level:'med',msg:'No refund/cancellation language -- confirm this reflects how you actually handle them.'});
+      if(kind==='privacy' && !has(/GDPR|CCPA|DATA-PROTECTION|DATA PROTECTION/)) f.push({level:'low',msg:'If you serve customers in the EU/UK or California, add the extra GDPR/CCPA rights language.'});
+      if(!has(/ATLAS RENTAL\.IO/)) f.push({level:'med',msg:'The required Atlas Rental.io processor clause is missing -- it is re-added on save.'});
     }
     return f;
   }
   function buildDoc(kind){ if(!_canMod('settings'))return; var lg=_legal(); lg[kind].text=_genDoc(kind); lg[kind].status='built'; lg[kind].flags=_reviewFlags(kind); save(); renderSet();
     toast((kind==='agreement'?'Agreement':kind==='tos'?'Terms of Service':'Privacy Policy')+' built'+(kind==='agreement'?' -- Atlas.io flagged '+lg[kind].flags.length+' points':'')); }
-  function reviewDoc(kind){ if(!_canMod('settings'))return; var lg=_legal(); lg[kind].flags=_reviewFlags(kind); save(); renderSet(); toast('Atlas.io reviewed '+(kind==='agreement'?'your agreement':'the document')+' -- '+lg[kind].flags.length+' points to look at'); }
+  function reviewDoc(kind){ if(!_canMod('settings'))return; var lg=_legal(); lg[kind].flags=_reviewFlags(kind); save(); renderSet();
+    toast('Atlas.io reviewed '+(kind==='agreement'?'your agreement':'the document')+' -- '+lg[kind].flags.length+' point'+(lg[kind].flags.length===1?'':'s')+' to look at');
+    try{ _reviewDocAI(kind); }catch(e){} }
+  // Live AI gap/risk pass via the worker (same /api/aio the council uses). Graceful: if the worker is unreachable the content-aware flags above stand.
+  function _reviewDocAI(kind){ var lg=_legal(), txt=String((lg[kind]&&lg[kind].text)||''); if(!txt.trim()) return; var region=(lg.jur.region?lg.jur.region+', ':'')+lg.jur.country;
+    var q='Review this '+(kind==='agreement'?'rental agreement':kind==='tos'?'terms of service':'privacy policy')+' for a rental business operating in '+(region||'their region')+'. Point out the biggest gaps, missing clauses and risky wording in a few short lines.';
+    _api('/api/aio',{method:'POST',body:{q:q, context:{kind:kind, doc:txt.slice(0,6000)}}}).then(function(res){ var j=res&&res.json;
+      var out=(j&&j.live&&(j.synthesis||(j.models&&j.models[0]&&j.models[0].text)))||'';
+      if(res.status>=200&&res.status<300&&out){ lg[kind].flags=(lg[kind].flags||[]).filter(function(x){return !x.ai;}); lg[kind].flags.push({level:'med',ai:true,msg:'Atlas.io live review: '+String(out).replace(/\s+/g,' ').trim().slice(0,500)}); save(); if(setCur==='legal') renderSet(); toast('Atlas.io live review added'); }
+    }).catch(function(){}); }
+  // Full document lifecycle: regenerate from current settings, or delete back to not-set-up (create + upload already exist).
+  function regenDoc(kind){ if(!_canMod('settings'))return; if(!confirm('Regenerate this document from your current settings? Any manual edits will be replaced.'))return; buildDoc(kind); }
+  function deleteDoc(kind){ if(!_canMod('settings'))return; if(!confirm('Delete this document? It resets to not-set-up and can be rebuilt anytime.'))return; var lg=_legal(); lg[kind]={status:'none',text:'',flags:[]}; save(); renderSet(); toast((kind==='agreement'?'Agreement':kind==='tos'?'Terms of Service':'Privacy Policy')+' deleted'); }
   function viewDoc(kind){ var lg=_legal(), d=lg[kind], ro=!_canMod('settings');
     openModal('<div class="modal__head"><h3>'+(kind==='agreement'?'Rental agreement':kind==='tos'?'Terms of Service':'Privacy Policy')+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<textarea class="input" id="docText" rows="16" style="font-size:12.5px;line-height:1.5;font-family:ui-monospace,monospace"'+(ro?' readonly':'')+'>'+esc(d.text)+'</textarea>'
@@ -2720,13 +2750,23 @@ const Atlas = (function(){
     if(kind==='tos'||kind==='privacy') t=_ensureTosClause(t);   // keep clause + live sub-processor list, non-removable
     else if(t.indexOf('Atlas Rental.io')<0) t+='\n\n'+ATLAS_CLAUSE;   // agreement: re-attach the required clause if removed
     lg[kind].text=t; save(); closeModal(); renderSet(); toast('Saved'); }
-  function uploadDoc(kind){ if(!_canMod('settings'))return; var inp=document.createElement('input'); inp.type='file'; inp.accept='.pdf,.doc,.docx,.txt,image/*';
-    inp.onchange=function(){ var file=inp.files&&inp.files[0]; if(!file)return; var lg=_legal();
-      var _clz=(kind==='tos'||kind==='privacy')?_clauseBlock():ATLAS_CLAUSE;
-      var done=function(txt){ lg[kind].status='uploaded'; lg[kind].text=txt?((kind==='tos'||kind==='privacy')?_ensureTosClause(txt):(txt.indexOf('Atlas Rental.io')<0?txt+'\n\n'+_clz:txt)):('[Uploaded: '+file.name+']\n\n'+_clz); if(kind==='agreement') lg[kind].flags=_reviewFlags(kind); save(); renderSet(); toast(file.name+' uploaded &amp; documented'); };
-      if(/\.txt$/i.test(file.name)){ var r=new FileReader(); r.onload=function(){ done(String(r.result||'')); }; r.readAsText(file); } else done(null);
-    }; inp.click();
-  }
+  // Upload/replace a legal doc with your OWN wording. Paste the text (or load a .txt) -- we store the REAL content, never a placeholder,
+  // so what the renter e-signs is what you wrote. PDF/DOCX can't be parsed in-browser, so we ask for pasted text instead of faking it.
+  function uploadDoc(kind){ if(!_canMod('settings'))return; var title=kind==='agreement'?'rental agreement':kind==='tos'?'Terms of Service':'Privacy Policy';
+    var cur=_legal()[kind]; var pre=(cur&&cur.status!=='none'&&cur.text&&!/^\[Uploaded: /.test(cur.text))?cur.text:'';
+    openModal('<div class="modal__head"><h3>Upload your '+title+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 10px">Paste your existing '+title+' text below, or load a <b>.txt</b> file. We store the real wording, so it is exactly what gets signed. PDF/DOCX can not be read in the browser yet &mdash; open yours and paste the text.</div>'
+      +'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin-bottom:10px">Load a .txt file<input type="file" accept=".txt,text/plain" style="display:none" onchange="Atlas._uploadDocFile(this)"></label>'
+      +'<textarea class="input" id="upDocText" rows="12" style="font-size:12.5px;line-height:1.5;font-family:ui-monospace,monospace" placeholder="Paste your '+title+' here...">'+esc(pre)+'</textarea>'
+      +'<div class="bk-lenhint" style="margin:10px 0 12px">The required Atlas Rental.io clause is added automatically when you save.</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.uploadDocSave(\''+kind+'\')">Save as my '+title+'</button></div>'); }
+  function _uploadDocFile(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return;
+    if(!/\.txt$/i.test(f.name)&&!/text\/plain/.test(f.type||'')){ toast('Only .txt can be read here -- paste the text instead'); return; }
+    var r=new FileReader(); r.onload=function(){ var t=document.getElementById('upDocText'); if(t) t.value=String(r.result||''); toast('Loaded '+f.name); }; r.readAsText(f); }
+  function uploadDocSave(kind){ if(!_canMod('settings'))return; var raw=(val('upDocText')||'').trim(); if(!raw){ toast('Paste your document text first'); return; }
+    var lg=_legal(), t=(kind==='tos'||kind==='privacy')?_ensureTosClause(raw):(raw.indexOf('Atlas Rental.io')<0?raw+'\n\n'+ATLAS_CLAUSE:raw);
+    lg[kind].text=t; lg[kind].status='uploaded'; if(kind==='agreement') lg[kind].flags=_reviewFlags(kind); save(); closeModal(); renderSet();
+    toast('Your '+(kind==='agreement'?'agreement':kind==='tos'?'Terms':'Privacy Policy')+' saved'); }
   function moneyPreviewHtml(){
     var m=S.money, q=calcQuote(m,3,0), per=m.rateModel;
     function row(l,v,cls){ return '<div class="mp-row '+(cls||'')+'"><span>'+l+'</span><span class="tnum">'+v+'</span></div>'; }
@@ -3148,6 +3188,7 @@ const Atlas = (function(){
     var tn=(val('aTenName')||(a.tenant&&a.tenant.name)||'').trim(); if(!tn){ toast('Add the '+((_fterm('book')==='reservation')?'tenant':'renter')+' first'); return; }
     var te=(val('aTenEmail')||(a.tenant&&a.tenant.email)||'').trim();
     if(_legal().agreement.status==='none'){ toast('Build your rental agreement first in Settings > Contracts & Legal'); goSettings('legal'); return; }
+    if(/^\[Uploaded: /.test(String(_legal().agreement.text||''))){ toast('Your agreement is only a placeholder -- paste the real text in Settings > Contracts & Legal before sending'); goSettings('legal'); return; }   // never send an unreadable placeholder for signature
     if(!a.tenant) a.tenant={}; a.tenant.name=tn; if(te) a.tenant.email=te;   // capture what's on screen so Send works without a separate Save
     var now=Date.now();
     var _dEmail=te||(a.tenant&&a.tenant.email)||'';
@@ -3359,6 +3400,28 @@ const Atlas = (function(){
     });
     return {rev:rev,cnt:cnt};
   }
+  // REAL predictive forecast: project next-period revenue + utilization from the trailing 8-week booking history (damped momentum).
+  function _forecast(){ var s=_revSeries(), rev=s.rev, cnt=s.cnt, n=rev.length;
+    var mean=function(a){ return a.length? a.reduce(function(x,y){return x+y;},0)/a.length : 0; };
+    var last4=mean(rev.slice(n-4)), prev4=mean(rev.slice(Math.max(0,n-8),n-4));
+    var projWkly=Math.max(0, last4+(last4-prev4)*0.5), projMonth=projWkly*4.345;
+    var growthPct= prev4>0? Math.round((last4-prev4)/prev4*100) : (last4>0?100:0);
+    _recomputeUtil(); var us=(DATA.assets||[]).map(function(a){return Number(a.util||0);});
+    var curUtil= us.length? Math.round(us.reduce(function(x,y){return x+y;},0)/us.length):0;
+    var c4=mean(cnt.slice(n-4)), cp4=mean(cnt.slice(Math.max(0,n-8),n-4)), utilTrend= cp4>0?(c4-cp4)/cp4:0;
+    var projUtil= Math.max(0, Math.min(100, Math.round(curUtil*(1+utilTrend*0.5))));
+    return {projWkly:projWkly, projMonth:projMonth, growthPct:growthPct, curUtil:curUtil, projUtil:projUtil, weeks:rev, committed:(DATA.bookings||[]).filter(_isCommitted).length}; }
+  function _forecastHtml(){ var fc=_forecast();
+    if(fc.committed<2) return '<div class="bk-lenhint" style="margin:0">Add a couple of '+_fterm('books')+' and Atlas.io will project your next period from the real trend.</div>';
+    var arrow=fc.growthPct>0?'&uarr;':fc.growthPct<0?'&darr;':'&rarr;', gc=fc.growthPct>0?'#2e9e6b':fc.growthPct<0?'var(--danger)':'var(--muted)';
+    var mx=Math.max.apply(null,fc.weeks.concat([1])); var spark='<div style="display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:8px">'+fc.weeks.map(function(v){ return '<div style="flex:1;background:var(--brand);opacity:.7;border-radius:2px;height:'+Math.max(2,Math.round(v/mx*34))+'px"></div>'; }).join('')+'</div>';
+    var cell=function(l,v,sub){ return '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--muted)">'+l+'</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+v+'</div>'+(sub?'<div style="font-size:11.5px;color:var(--muted)">'+sub+'</div>':'')+'</div>'; };
+    return '<div style="display:flex;gap:18px;flex-wrap:wrap">'
+      +cell('Projected next month', money(fc.projMonth), '~'+money(fc.projWkly)+'/week')
+      +cell('Revenue trend', '<span style="color:'+gc+'">'+arrow+' '+Math.abs(fc.growthPct)+'%</span>', 'vs. prior 4 weeks')
+      +cell('Utilization now', fc.curUtil+'%', 'projected '+fc.projUtil+'%')
+      +'</div>'+spark
+      +'<div class="bk-lenhint" style="margin:12px 0 0">Projected from your trailing 8-week '+_fterm('book')+' history (damped momentum). An estimate, not a guarantee.</div>'; }
   // Revenue-by-source breakdown from real bookings, for the donut.
   function _srcBreakdown(){
     var map={}, total=0, lab={website:'Website',portal:'Portal',direct:'Direct',manual:'Direct',partners:'Partners',partner:'Partners'};
@@ -3532,7 +3595,12 @@ const Atlas = (function(){
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
     openModal('<div class="modal__head"><h3>'+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar">'+esc((b.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(b.cust)+'</b><div style="font-size:12.5px;color:var(--muted)">'+contact+'</div></div>'+statusChip(b.status)+'</div>'
-      +(function(){ var v=b.idVerified; return '<div style="display:flex;align-items:center;gap:9px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-bottom:14px"><span class="chip '+(v?'chip--ok':'chip--warn')+'"><span class="dot"></span>'+(v?'ID verified':'ID not verified')+'</span><span style="flex:1;min-width:0;font-size:12px;color:var(--muted)">'+(v?('Verified '+_stamp(b.idVerifiedAt)):'Check the renter\u2019s license before pickup')+'</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkToggleVerify(\''+b.id+'\')">'+(v?'Undo':'Mark verified')+'</button></div>'; })()
+      +(function(){ var v=b.idVerified, rj=b.idRejected&&!v; var chipCls=v?'chip--ok':rj?'chip--danger':'chip--warn', chipTxt=v?'ID verified':rj?'ID rejected':'ID not verified';
+        var sub=v?('Verified '+_stamp(b.idVerifiedAt)):rj?('Rejected '+_stamp(b.idRejectedAt)+' \u2014 renter must re-submit'):'Check the renter\u2019s license before pickup';
+        var btns=v?('<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClearVerify(\''+b.id+'\')">Undo</button>')
+          :rj?('<button class="btn btn--ghost btn--sm" onclick="Atlas.bkToggleVerify(\''+b.id+'\')">Mark verified</button><button class="btn btn--ghost btn--sm" onclick="Atlas.bkClearVerify(\''+b.id+'\')">Clear</button>')
+          :('<button class="btn btn--ghost btn--sm" onclick="Atlas.bkToggleVerify(\''+b.id+'\')">Mark verified</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.bkRejectVerify(\''+b.id+'\')">Reject</button>');
+        return '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-bottom:14px"><span class="chip '+chipCls+'"><span class="dot"></span>'+chipTxt+'</span><span style="flex:1;min-width:0;font-size:12px;color:var(--muted)">'+sub+'</span>'+btns+'</div>'; })()
       +'<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>'+cap(S.fleet.noun)+'</span><span style="color:var(--ink);font-weight:600">'+esc(b.asset)+'</span></div>'
       +'<div class="mp-row"><span>'+(b.endTs?'When':'Dates')+'</span><span class="tnum" style="text-align:right;max-width:62%">'+_bkWhen(b)+'</span></div>'
@@ -3626,25 +3694,52 @@ const Atlas = (function(){
       nb.quote=b.quote?JSON.parse(JSON.stringify(b.quote)):calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount});
       delete nb.charges; delete nb.incidents; delete nb.review; delete nb.cancelFee; delete nb.cancelledAt; delete nb.portal;
       delete nb.promoCode; delete nb.referredByCode; delete nb.refAwarded;   // a recurring occurrence must not re-consume a promo cap slot or re-award a referral on each completion
-      delete nb.conditionMedia; delete nb.claim; delete nb.hold; delete nb.meter; delete nb.plan; delete nb.giftRedemptions; delete nb.idVerified; delete nb.idVerifiedAt;   // fix: a clone must not inherit the prior rental's photos/claim/hold/meter/plan/gift/ID-verification
+      delete nb.conditionMedia; delete nb.claim; delete nb.hold; delete nb.meter; delete nb.plan; delete nb.giftRedemptions; delete nb.idVerified; delete nb.idVerifiedAt; delete nb.idRejected; delete nb.idRejectedAt;   // fix: a clone must not inherit the prior rental's photos/claim/hold/meter/plan/gift/ID-verification
       _upsertBooking(nb); made++; }
     _logEvent('booking','Created '+made+' recurring bookings from '+b.id,{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; toast(made+' recurring bookings created'); }
   // ---- Booking-level ID verification ----
-  function bkToggleVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; if(b.idVerified){ b.idVerified=false; delete b.idVerifiedAt; } else { b.idVerified=true; b.idVerifiedAt=Date.now(); }
-    _upsertBooking(b); _logEvent('booking','ID '+(b.idVerified?'verified':'un-verified')+' for '+b.id,{booking:b.id}); save(); openBooking(id); toast(b.idVerified?'ID marked verified':'ID verification cleared'); }
+  function bkToggleVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=true; b.idVerifiedAt=Date.now(); b.idRejected=false; delete b.idRejectedAt;
+    _upsertBooking(b); _logEvent('booking','ID verified for '+b.id,{booking:b.id}); save(); openBooking(id); toast('ID marked verified'); }
+  function bkRejectVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=false; delete b.idVerifiedAt; b.idRejected=true; b.idRejectedAt=Date.now();
+    _upsertBooking(b); _logEvent('booking','ID rejected for '+b.id,{booking:b.id}); save(); openBooking(id); toast('ID marked rejected -- renter can re-submit'); }
+  function bkClearVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=false; delete b.idVerifiedAt; b.idRejected=false; delete b.idRejectedAt;
+    _upsertBooking(b); _logEvent('booking','ID status cleared for '+b.id,{booking:b.id}); save(); openBooking(id); toast('ID status cleared'); }
   // ---- Payment plans / partial payments: split a booking total into a tracked schedule ----
   function _planHtml(b){ var p=b.plan; if(!p||!p.installments||!p.installments.length) return '<div class="bk-lenhint" style="margin:0">Paid in full. Split it into installments if the customer prefers.</div>';
     var paidN=p.installments.filter(function(x){return x.paidAt;}).length;
     return '<div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">'+paidN+' of '+p.installments.length+' paid</div>'+p.installments.map(function(x){ var paid=!!x.paidAt; return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.label)+' &middot; '+money(x.amount)+'</b><div style="font-size:11.5px;color:var(--muted)">'+(paid?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)))+'</div></div>'+(paid?'<span class="chip chip--ok"><span class="dot"></span>Paid</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkPlanPaid(\''+b.id+'\',\''+x.id+'\')">Mark paid</button>')+'</div>'; }).join(''); }
-  function bkPaymentPlan(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=_r2(q.total||0);
+  // Custom payment-plan builder: owner adds/removes installment rows and edits each amount / due date / label; must sum to the total.
+  var _ppTotal=0, _ppRows=[];
+  function _ppDefaultRows(total){ var h=_r2(total/2); return [{label:'Deposit', amount:h, due:_ymd(new Date())},{label:'Balance', amount:_r2(total-h), due:_ymd(new Date(Date.now()+30*86400000))}]; }
+  function _ppSumHint(total){ var el=document.getElementById('ppSum'); if(!el)return; var sum=Math.round(_ppRows.reduce(function(s,r){return s+(parseFloat(r.amount)||0);},0)*100)/100; var ok=Math.abs(sum-total)<0.01;
+    el.innerHTML='Installments total <b>'+money(sum)+'</b> of '+money(total)+(ok?' &mdash; balances.':(' &mdash; '+(sum>total?'over':'under')+' by '+money(Math.abs(Math.round((total-sum)*100)/100)))); el.style.color=ok?'var(--brand)':'var(--danger)'; }
+  function _ppRenderRows(total){ var el=document.getElementById('ppRows'); if(!el)return;
+    el.innerHTML=_ppRows.map(function(r,i){ return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">'
+      +'<input class="input" style="flex:2;min-width:0" value="'+esc(r.label||'')+'" oninput="Atlas._ppEdit('+i+',\'label\',this.value)" placeholder="Label">'
+      +'<div class="rule-input" style="flex:1.2;min-width:0;padding:0 8px"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" inputmode="decimal" value="'+(r.amount||0)+'" oninput="Atlas._ppEdit('+i+',\'amount\',this.value)"></div>'
+      +'<input class="input" type="date" style="flex:1.3;min-width:0" value="'+esc(r.due||'')+'" onchange="Atlas._ppEdit('+i+',\'due\',this.value)">'
+      +'<button class="btn btn--ghost btn--sm" style="color:var(--danger);flex:none" onclick="Atlas._ppRmRow('+i+')">&times;</button></div>'; }).join(''); _ppSumHint(total); }
+  function _ppEdit(i,k,v){ if(!_ppRows[i])return; _ppRows[i][k]=(k==='amount')?(Math.round((parseFloat(v)||0)*100)/100):v; if(k==='amount')_ppSumHint(_ppTotal); }
+  function _ppAddRow(){ _ppRows.push({label:'Installment '+(_ppRows.length+1), amount:0, due:_ymd(new Date(Date.now()+_ppRows.length*30*86400000))}); _ppRenderRows(_ppTotal); }
+  function _ppRmRow(i){ _ppRows.splice(i,1); _ppRenderRows(_ppTotal); }
+  function _ppTypeChange(){ var t=val('ppType'), wrap=document.getElementById('ppCustomWrap'); if(wrap) wrap.style.display=(t==='custom')?'block':'none'; if(t==='custom'){ if(!_ppRows.length) _ppRows=_ppDefaultRows(_ppTotal); _ppRenderRows(_ppTotal); } }
+  function bkPaymentPlan(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=_r2(q.total||0); _ppTotal=total;
+    var cur=b.plan, isC=(cur&&cur.type==='custom');
+    _ppRows=(isC&&cur.installments)?cur.installments.map(function(x){return {label:x.label, amount:x.amount, due:_ymd(new Date(x.dueTs||Date.now()))};}):[];
     openModal('<div class="modal__head"><h3>Payment plan</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 12px">Split '+money(total)+' into a schedule for '+esc(b.cust||'this customer')+'. They pay each part in their portal (or you mark it paid).</div>'
-      +'<div class="field"><label>Plan</label><select class="select" id="ppType"><option value="none">Pay in full (no plan)</option><option value="half">50% now &middot; 50% before pickup</option><option value="3">3 monthly installments</option><option value="4">4 monthly installments</option></select></div>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.savePlan(\''+id+'\')">Save plan</button></div>'); }
+      +'<div class="field"><label>Plan</label><select class="select" id="ppType" onchange="Atlas._ppTypeChange()"><option value="none">Pay in full (no plan)</option><option value="half">50% now &middot; 50% before pickup</option><option value="3">3 monthly installments</option><option value="4">4 monthly installments</option><option value="custom"'+(isC?' selected':'')+'>Custom schedule</option></select></div>'
+      +'<div id="ppCustomWrap" style="display:'+(isC?'block':'none')+';margin-bottom:12px"><div id="ppRows"></div><button class="btn btn--ghost btn--sm" onclick="Atlas._ppAddRow()">+ Add installment</button><div class="bk-lenhint" id="ppSum" style="margin:8px 0 0"></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.savePlan(\''+id+'\')">Save plan</button></div>');
+    if(isC) setTimeout(function(){ _ppRenderRows(total); }, 20); }
   function savePlan(id){ var b=_getBooking(id); if(!b)return; var t=val('ppType'); var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=_r2(q.total||0), start=Number(b.startTs)||Date.now(), mo=30*86400000;
     if(t==='none'){ delete b.plan; }
     else if(t==='half'){ var half=_r2(total*0.5); b.plan={type:'half',installments:[{id:'pi1',label:'Deposit (50%)',amount:half,dueTs:Date.now(),paidAt:0},{id:'pi2',label:'Balance (50%)',amount:total-half,dueTs:start,paidAt:0}]}; }
+    else if(t==='custom'){ var cins=_ppRows.map(function(r,i){ return {id:'pi'+(i+1), label:(String(r.label||'').trim()||('Installment '+(i+1))), amount:Math.round((parseFloat(r.amount)||0)*100)/100, dueTs:(r.due?new Date(r.due).getTime():Date.now()), paidAt:0}; }).filter(function(x){ return x.amount>0; });
+      if(!cins.length){ toast('Add at least one installment amount'); return; }
+      var csum=Math.round(cins.reduce(function(s,x){return s+x.amount;},0)*100)/100; if(Math.abs(csum-total)>0.01){ toast('Installments must total '+money(total)+' (now '+money(csum)+')'); return; }
+      b.plan={type:'custom',installments:cins}; }
     else { var n=parseInt(t)||3, each=_r2(total/n), ins=[]; for(var i=0;i<n;i++){ ins.push({id:'pi'+(i+1),label:'Installment '+(i+1)+' of '+n,amount:(i===n-1?_r2(total-each*(n-1)):each),dueTs:Date.now()+i*mo,paidAt:0}); } b.plan={type:t,installments:ins}; }
     _upsertBooking(b); _logEvent('booking','Payment plan '+(t==='none'?'cleared':'set ('+t+')')+' on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast(t==='none'?'Plan cleared':'Payment plan saved'); }
   function bkPlanPaid(id,pid){ var b=_getBooking(id); if(!b||!b.plan)return; var x=(b.plan.installments||[]).filter(function(y){return y.id===pid;})[0]; if(x)x.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Plan installment paid on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Marked paid'); }
@@ -4186,6 +4281,7 @@ const Atlas = (function(){
       <div class="util-row__t"><b>${i+1}. ${esc(o.a.name)}</b><small>${money(o.rev)} booked &middot; ${o.a.util}% ${_fterm('occ')}</small><div class="bar"><i style="width:${o.a.util}%"></i></div></div>
       <span class="util-row__pct tnum">${o.a.util}%</span></div>`).join('');
     var _lb=document.getElementById('ledgerBody'); if(_lb) _lb.innerHTML=_ledgerCardHtml();
+    var _fcCard=document.getElementById('anaForecastCard'); if(_fcCard){ if(_flags().betaForecast){ _fcCard.style.display=''; var _fb=document.getElementById('anaForecast'); if(_fb)_fb.innerHTML=_forecastHtml(); } else _fcCard.style.display='none'; }   // betaForecast owner flag now drives a real projection
     renderReports(); renderLog(); renderReviews();
     setTimeout(()=>drawSrcChart(),30);
   }
@@ -4312,7 +4408,7 @@ const Atlas = (function(){
       } else if(v.status==='idle'){ if(Math.random()<0.16){ v.status='moving'; v.speed=18+Math.round(Math.random()*28); } }
       v.lastPing=Date.now();
     });
-    _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); if(_trkSel) _trkRenderDetail();
+    _gfCheck(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); if(_trkSel) _trkRenderDetail();
     if(_n3d && !_n3d.arrived) _n3dReroute();   // 3D nav: the route follows the asset live as it moves
     _trkSaveTick++; if(_trkSaveTick%12===0) save(); }
   function _trkStart(){ _trkStop(); if(_trackers().connected) _trkTimer=setInterval(_trkTick,2200); }
@@ -4322,7 +4418,7 @@ const Atlas = (function(){
     if(!_featOk('tracking')){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_lockOverlay('tracking'); return; }   // premium feature: locked below Pro
     if(!t.connected){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_trkConnectHtml(); return; }
     _trkReconcile();   // fix: reconcile trackers with the current fleet (add new assets, drop deleted) before rendering KPIs/map/list
-    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="trk-live"><i></i>Live</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkFullscreen()"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Full screen</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
+    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="trk-live"><i></i>Live</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkFullscreen()"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Full screen</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editTrackerConnect()">Edit connection</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
     body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
@@ -4380,9 +4476,46 @@ const Atlas = (function(){
   function connectTracker(){ var prov=val('trkProv'), key=(val('trkKey')||'').trim(); if(!key){ toast('Paste your API key or login'); return; }
     var t=_trackers(); t.provider=prov; t.apiKey=key; t.connected=true; var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;
     _trkSeed(); _logEvent('tracker','Connected '+nm+' -- '+(DATA.assets||[]).length+' '+S.fleet.nouns+' now live',{provider:prov}); save(); closeModal(); renderTracking(); toast(nm+' connected -- your fleet is live'); }
+  // Edit a LIVE connection's provider / API key in place -- update capability alongside connect (create) + disconnect (delete), without wiping vehicles or dropping the session.
+  function editTrackerConnect(){ var t=_trackers(); openModal('<div class="modal__head"><h3>Edit tracker connection</h3>'+_xBtn()+'</div><div class="modal__body">'
+    +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.map(function(x){return '<option value="'+x.id+'"'+(x.id===t.provider?' selected':'')+'>'+esc(x.name)+'</option>';}).join('')+'</select></div>'
+    +'<div id="trkGuide">'+_trkGuideHtml(t.provider||TRACKERS[0].id)+'</div>'
+    +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" value="'+esc(t.apiKey||'')+'" placeholder="Paste your API key or access token"></div>'
+    +'<div class="bk-lenhint" style="margin:0 0 14px">Rotate your key or switch provider without dropping the live session &mdash; your tracked '+esc(S.fleet.nouns)+' stay connected.</div>'
+    +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveTrackerConn()">Save changes</button></div>'); }
+  function saveTrackerConn(){ var prov=val('trkProv'), key=(val('trkKey')||'').trim(); if(!key){ toast('Paste your API key or login'); return; }
+    var t=_trackers(), nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name; t.provider=prov; t.apiKey=key;   // in-place update; t.vehicles + live session preserved
+    save(); _logEvent('tracker','Tracker connection updated ('+nm+')',{provider:prov}); closeModal(); renderTracking(); toast('Tracker connection updated'); }
   function disconnectTracker(){ if(!confirm('Disconnect the tracker? Live location will stop.'))return; var t=_trackers(); t.connected=false; t.vehicles={}; _trkSel=null; _trkRoute=null; _trkStop(); _logEvent('tracker','Tracker disconnected'); save(); renderTracking(); toast('Tracker disconnected'); }
+  /* ---- Geofences: owner-defined zone per asset (center + radius). Real entry/exit indicator vs the tracker's live position; in-app
+         entry/exit alerts fire when the Owner Console "Geofence entry/exit alerts" flag is on. [FLAG: true push-when-app-closed needs a backend.] ---- */
+  function _geofences(){ var t=_trackers(); if(!t.geofences) t.geofences=[]; return t.geofences; }
+  function _gfForAsset(id){ return _geofences().filter(function(g){return g.assetId===id;})[0]; }
+  function _miToPx(mi){ return mi*(620/((TRK_BOX.maxLat-TRK_BOX.minLat)*69)); }   // approx px-per-mile on the sim map (1 deg lat ~= 69 mi)
+  function _trkRenderGeofences(){ var g=document.getElementById('trkZones'); if(!g)return; g.innerHTML=_geofences().map(function(z){ var p=_trkProject(z.lat,z.lng), r=Math.max(8,_miToPx(z.radiusMi||0.5));
+    return '<circle cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="'+r.toFixed(1)+'" fill="var(--brand)" fill-opacity="0.07" stroke="var(--brand)" stroke-width="1.5" stroke-dasharray="5 4"/><text x="'+p.x.toFixed(1)+'" y="'+(p.y-r-4).toFixed(1)+'" text-anchor="middle" font-size="11" font-weight="700" fill="var(--brand)">'+esc(z.label||'Zone')+'</text>'; }).join(''); }
+  function _gfCheck(){ var t=_trackers(), zs=t.geofences||[]; if(!zs.length) return; var alertsOn=!!_flags().advancedGeofence;
+    zs.forEach(function(z){ var v=t.vehicles[z.assetId]; if(!v)return; var inside=_haversine(z.lat,z.lng,v.lat,v.lng)<=(z.radiusMi||0.5);
+      if(typeof z.inside==='boolean' && z.inside!==inside){ var a=(DATA.assets||[]).filter(function(x){return x.id===z.assetId;})[0], nm=a?a.name:z.assetId, msg=nm+(inside?' entered ':' left ')+(z.label||'geofence');
+        if(alertsOn){ try{_logEvent('tracker',msg,{asset:z.assetId,geofence:z.id});}catch(e){} toast(msg); } }
+      z.inside=inside; }); }
+  function gfEdit(assetId){ var a=(DATA.assets||[]).filter(function(x){return x.id===assetId;})[0]; if(!a){ toast('Select a '+esc(S.fleet.noun)+' on the map first'); return; } var z=_gfForAsset(assetId);
+    openModal('<div class="modal__head"><h3>'+(z?'Edit':'Add')+' geofence &mdash; '+esc(a.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Draw a zone and Atlas shows whether '+esc(a.name)+' is inside or outside it, live on the map. Turn on in-app entry/exit alerts from Settings &rsaquo; Owner Console (&ldquo;Geofence entry/exit alerts&rdquo;).</div>'
+      +'<div class="field"><label>Zone name</label><input class="input" id="gfLabel" value="'+esc(z?z.label:(a.name+' zone'))+'" placeholder="e.g. Depot, City limits"></div>'
+      +'<div class="row2"><div class="field"><label>Radius (miles)</label><input class="input tnum" id="gfRadius" inputmode="decimal" value="'+(z?z.radiusMi:1)+'"></div>'
+      +'<div class="field"><label>Center on</label><select class="select" id="gfCenter"><option value="base">Base / depot</option><option value="current">'+esc(a.name)+' now</option></select></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.gfSave(\''+assetId+'\')">Save geofence</button>'
+      +(z?'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.gfRemove(\''+assetId+'\')">Remove geofence</button>':'')
+      +'</div>'); }
+  function gfSave(assetId){ var lbl=(val('gfLabel')||'Zone').trim(), rad=Math.max(0.1,parseFloat(val('gfRadius'))||1), ctr=val('gfCenter'), v=_trackers().vehicles[assetId];
+    var lat=(ctr==='current'&&v)?v.lat:TRK_BASE.lat, lng=(ctr==='current'&&v)?v.lng:TRK_BASE.lng, z=_gfForAsset(assetId);
+    if(z){ z.label=lbl; z.radiusMi=rad; z.lat=lat; z.lng=lng; delete z.inside; } else { _geofences().push({id:'gf'+Date.now().toString(36), assetId:assetId, label:lbl, lat:lat, lng:lng, radiusMi:rad}); }
+    save(); try{ var a=(DATA.assets||[]).filter(function(x){return x.id===assetId;})[0]; _logEvent('tracker','Geofence '+(z?'updated':'added')+' for '+((a&&a.name)||assetId),{asset:assetId}); }catch(e){}
+    closeModal(); _trkRenderGeofences(); if(_trkSel) _trkRenderDetail(); toast('Geofence saved'); }
+  function gfRemove(assetId){ if(!confirm('Remove this geofence?'))return; var t=_trackers(); t.geofences=(t.geofences||[]).filter(function(g){return g.assetId!==assetId;}); save(); try{_logEvent('tracker','Geofence removed',{asset:assetId});}catch(e){} closeModal(); _trkRenderGeofences(); if(_trkSel) _trkRenderDetail(); toast('Geofence removed'); }
   function _trkDashHtml(){ return '<div class="trk-kpis" id="trkKpis"></div><div class="trk-grid">'
-    +'<div class="trk-map-wrap"><svg id="trkMap" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice">'+_trkMapBg()+'<g id="trkRouteG"></g><g id="trkMarkers"></g></svg>'
+    +'<div class="trk-map-wrap"><svg id="trkMap" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice">'+_trkMapBg()+'<g id="trkRouteG"></g><g id="trkZones"></g><g id="trkMarkers"></g></svg>'
     +'<div class="trk-map-legend"><span><i class="d-mv"></i>Moving</span><span><i class="d-id"></i>Idle</span><span><i class="d-pk"></i>Parked</span><span><i class="d-of"></i>Offline</span></div></div>'
     +'<div class="trk-side"><div class="trk-side__hd">Fleet</div><div id="trkList"></div></div></div><div id="trkDetail"></div>'; }
   function _trkMapBg(){ var s='<rect x="0" y="0" width="1000" height="620" fill="var(--trk-map)"/>';
@@ -4399,7 +4532,7 @@ const Atlas = (function(){
         el.innerHTML='<circle r="15" class="trk-mk__pulse"/><circle r="16" class="trk-mk__ring"/><circle r="9" class="trk-mk__dot"/><text y="4" text-anchor="middle" class="trk-mk__txt">'+esc(_trkInitial(a.name))+'</text>'; g.appendChild(el); }
       el.setAttribute('transform','translate('+p.x.toFixed(1)+','+p.y.toFixed(1)+')');
       el.setAttribute('class','trk-mk trk-mk--'+_trkMkClass(v)+(_trkSel===a.id?' trk-mk--sel':'')); });
-    _trkDrawRoute(); }
+    _trkRenderGeofences(); _trkDrawRoute(); }
   function _trkRenderList(){ var el=document.getElementById('trkList'); if(!el)return; var t=_trackers();
     el.innerHTML=(DATA.assets||[]).map(function(a){ var v=t.vehicles[a.id]; if(!v)return ''; var c=_trkMkClass(v); var lbl=v.status.charAt(0).toUpperCase()+v.status.slice(1);
       return '<div class="trk-li'+(_trkSel===a.id?' trk-li--sel':'')+'" onclick="Atlas.trkSelect(\''+a.id+'\')"><span class="trk-li__dot d-'+c+'"></span><div style="flex:1;min-width:0"><b>'+esc(a.name)+'</b><div class="trk-li__sub">'+lbl+(v.status==='moving'?(' &middot; '+Math.round(v.speed)+' mph'):'')+'</div></div>'+(v.status==='moving'?'<span class="trk-li__spd tnum">'+Math.round(v.speed)+'</span>':'')+'</div>'; }).join(''); }
@@ -4413,11 +4546,14 @@ const Atlas = (function(){
   function _trkRenderDetail(){ var d=document.getElementById('trkDetail'); if(!d)return; if(!_trkSel){ d.innerHTML=''; return; }
     var a=(DATA.assets||[]).filter(function(x){return x.id===_trkSel;})[0]; var v=_trackers().vehicles[_trkSel]; if(!a||!v){ d.innerHTML=''; return; }
     var bk=(DATA.bookings||[]).filter(function(b){return b.asset===a.name && b.status==='On rent';})[0]; var de=_trkDistETA(v); var routing=(_trkRoute===_trkSel);
+    var z=_gfForAsset(_trkSel), gfHtml;
+    if(z){ var inZone=_haversine(z.lat,z.lng,v.lat,v.lng)<=(z.radiusMi||0.5); gfHtml='<div style="display:flex;align-items:center;gap:9px;margin-top:12px;padding:9px 11px;border:1px solid var(--line);border-radius:9px"><span class="chip '+(inZone?'chip--ok':'chip--warn')+'"><span class="dot"></span>'+(inZone?'Inside':'Outside')+'</span><span style="flex:1;min-width:0;font-size:12.5px;color:var(--ink)">'+esc(z.label||'Geofence')+' &middot; '+(z.radiusMi||0.5)+' mi</span><button class="btn btn--ghost btn--sm" onclick="Atlas.gfEdit(\''+_trkSel+'\')">Edit</button></div>'; }
+    else { gfHtml='<div style="margin-top:12px"><button class="btn btn--ghost btn--sm" onclick="Atlas.gfEdit(\''+_trkSel+'\')">+ Add geofence</button></div>'; }
     d.innerHTML='<div class="card" style="margin-top:16px"><div class="card__head"><h3>'+esc(a.name)+'</h3><span class="chip '+(v.status==='moving'?'chip--ok':v.status==='offline'?'chip--muted':'chip--warn')+'"><span class="dot"></span>'+v.status.charAt(0).toUpperCase()+v.status.slice(1)+'</span></div><div class="card__body"><div class="trk-tel">'
       +_telCell('Speed', (v.status==='moving'?Math.round(v.speed):0)+' mph')+_telCell('Heading', _compass(v.heading))+_telCell('Miles today', Math.round(v.milesToday))
       +_telCell('Near', v.street)+_telCell('From base', de.mi.toFixed(1)+' mi')+_telCell('ETA', de.eta+' min')
       +_telCell('Last ping','just now')+_telCell('On trip', bk?(bk.id+' \u00b7 '+bk.cust):'Not on a trip')
-      +'</div><div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><button class="btn btn--primary btn--sm" onclick="Atlas.trkNav3d(\''+_trkSel+'\')"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M8 1.5l6 3.2-6 9.8-6-9.8 6-3.2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg> 3D Navigate</button>'
+      +'</div>'+gfHtml+'<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><button class="btn btn--primary btn--sm" onclick="Atlas.trkNav3d(\''+_trkSel+'\')"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M8 1.5l6 3.2-6 9.8-6-9.8 6-3.2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg> 3D Navigate</button>'
       +'<button class="btn '+(routing?'btn--ghost':'btn--ghost')+' btn--sm" onclick="Atlas.trkRoute(\''+_trkSel+'\')">'+(routing?'Clear route':'Route on map')+'</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkNavApp(\'apple\')"><svg viewBox="0 0 20 20" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M10 2a5 5 0 015 5c0 3.8-5 11-5 11S5 10.8 5 7a5 5 0 015-5z" stroke="currentColor" stroke-width="1.5"/></svg> Apple Maps</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkNavApp(\'google\')"><svg viewBox="0 0 20 20" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M10 2a5 5 0 015 5c0 3.8-5 11-5 11S5 10.8 5 7a5 5 0 015-5z" stroke="currentColor" stroke-width="1.5"/></svg> Google Maps</button>'
@@ -4965,7 +5101,7 @@ const Atlas = (function(){
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
           <div style="flex:1;min-width:180px"><div style="font-size:26px;font-weight:850;color:var(--ink)" class="tnum">${_c.toLocaleString()}</div><div style="font-size:12.5px;color:var(--muted)">credits available &middot; ${_t.credits.toLocaleString()} free every week on ${esc(_t.name)}</div></div>
           <button class="btn btn--primary btn--sm" onclick="Atlas.openCredits()">Buy credits</button></div>
-      </div>`;
+      </div>` + _addonsBillingHtml();
     }
   }
   function renderSetSoft(){ renderSet(); }
@@ -5241,7 +5377,7 @@ const Atlas = (function(){
       return '<div class="dream-camp"><span class="dream-camp__ch dch--'+p.reach+'">'+ic+'</span>'
       +'<div class="dream-camp__b"><b>'+esc(_dreamFill(p.who))+'</b><small>'+esc(_dreamFill(p.why))+'</small></div>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.dreamOutreach('+i+')">Draft</button></div>'; }).join('');
-    var connRow='<div class="dream-conns">'+['facebook','instagram','google'].map(function(ch){ var on=conn[ch]; return '<button class="dream-conn'+(on?' on':'')+'" onclick="Atlas.dreamConnect(\''+ch+'\')">'+_chIcon(ch)+_chName(ch)+(on?' &#10003;':'')+'</button>'; }).join('')+'</div>';
+    var connRow='<div class="dream-conns">'+['facebook','instagram','google'].map(function(ch){ var cc=conn[ch], on=!!cc, hnd=(cc&&cc.handle)?cc.handle:''; return '<button class="dream-conn'+(on?' on':'')+'" onclick="Atlas.dreamConnect(\''+ch+'\')" title="'+(on?'Edit or remove':'Link account')+'">'+_chIcon(ch)+_chName(ch)+(on?(' &#10003;'+(hnd?(' <span style="opacity:.7">'+esc(hnd)+'</span>'):'')):'')+'</button>'; }).join('')+'</div>';
     openModal('<div class="modal__head"><h3>Atlas.io has been dreaming</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="dream-lead">While your account was quiet, I went hunting for ways to grow your <b>'+one+'</b> business around '+city+' and out-work your competition. Here is what I dreamed up &mdash; all editable, nothing goes out without your yes.</div>'
       +'<div class="dream-status"><span class="dream-dot"></span>Dreaming is <b>on</b> &mdash; running '+_dreamSinceTxt()+' &middot; '+_kbFor(99).length+' ideas explored for your '+one+' market so far.</div>'
@@ -5250,9 +5386,16 @@ const Atlas = (function(){
       +connRow
       +'<div class="dream-sec">People &amp; partners to connect with</div><div class="dream-hint">Warm channels that can push your '+esc(S.fleet.nouns)+' to more clients &mdash; brokers, planners, local businesses. I draft it; you approve every send.</div>'+partHtml
       +'</div>'); }
-  function dreamConnect(ch){ var c=_dreamConn(); if(c[ch]){ toast(_chName(ch)+' is already connected'); return; }
-    if(!confirm('Connect your '+_chName(ch)+' account?\n\nAtlas.io will build and optimize your campaigns. Nothing spends until you approve the budget.')) return;
-    c[ch]=true; save(); try{_logEvent('ai',_chName(ch)+' connected for campaigns');}catch(e){} toast(_chName(ch)+' connected'); openDreaming(); }   // PROD: real Meta/Google OAuth here
+  // Ad channels: real OAuth needs a backend, so we honestly LINK an ad-account handle/ID (persist, edit, remove) instead of faking a live integration. [FLAG: true Meta/Google OAuth requires server work.]
+  function dreamConnect(ch){ var c=_dreamConn(), cur=(c[ch]&&c[ch].handle)?c[ch].handle:'';
+    openModal('<div class="modal__head"><h3>'+(cur?'Edit':'Link')+' your '+_chName(ch)+' ad account</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Save your '+_chName(ch)+' ad-account handle or ID so Atlas.io can reference it in your campaign drafts. Nothing posts or spends here &mdash; going fully live needs '+_chName(ch)+'\u2019s own sign-in, which arrives with the backend.</div>'
+      +'<div class="field"><label>'+_chName(ch)+' handle or account ID</label><input class="input" id="dreamHandle" value="'+esc(cur)+'" placeholder="@yourbrand or 1234567890"></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.dreamSaveConn(\''+ch+'\')">Save</button>'
+      +(cur?'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.dreamDisconnect(\''+ch+'\')">Remove connection</button>':'')
+      +'</div>'); }
+  function dreamSaveConn(ch){ var h=(val('dreamHandle')||'').trim(); if(!h){ toast('Enter your handle or account ID'); return; } var c=_dreamConn(); c[ch]={handle:h, at:Date.now()}; save(); try{_logEvent('ai',_chName(ch)+' ad account linked ('+h+')');}catch(e){} closeModal(); toast(_chName(ch)+' linked'); openDreaming(); }
+  function dreamDisconnect(ch){ var c=_dreamConn(); if(!c[ch])return; if(!confirm('Remove your '+_chName(ch)+' ad-account link?'))return; delete c[ch]; save(); try{_logEvent('ai',_chName(ch)+' ad account unlinked');}catch(e){} closeModal(); toast(_chName(ch)+' removed'); openDreaming(); }
   function dreamLaunch(i){ var p=_dreamPlays().campaigns[i]; if(!p)return; var c=_dreamConn();
     if(!c[p.ch]){ if(confirm('To launch on '+_chName(p.ch)+', connect your '+_chName(p.ch)+' account first. Connect now?')) dreamConnect(p.ch); return; }
     try{_logEvent('ai','Campaign queued: '+_dreamFill(p.h)+' ('+_chName(p.ch)+')');}catch(e){} closeModal();
@@ -5281,7 +5424,7 @@ const Atlas = (function(){
       +'<div class="dream-hint" style="margin-top:8px">Nothing is locked in - change any of it later, and just ask me if you get stuck.</div>'
       +'</div>'); }
   function _suGoal(el){ _suGoalV=el.textContent; try{ [].forEach.call(el.parentElement.children,function(c){ c.classList.toggle('on',c===el); }); }catch(e){} }
-  function _suPhoto(inp){ var f=inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _suPhotoData=e.target.result; var p=document.getElementById('suPhotoPrev'); if(p)p.innerHTML='<img src="'+_suPhotoData+'">'; }; r.readAsDataURL(f); }
+  function _suPhoto(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),900,0.72,function(out){ _suPhotoData=out; var p=document.getElementById('suPhotoPrev'); if(p)p.innerHTML='<img src="'+out+'">'; }); }; r.readAsDataURL(f); }   // fix: downscale like the fleet photo picker so the saved image is light + renders on portal/website/fleet
   function _obAssetPhoto(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),900,0.72,function(out){ if(!S.firstAsset)S.firstAsset={}; S.firstAsset.photo=out; try{save();}catch(_){} var p=document.getElementById('obAssetPrev'); if(p)p.innerHTML='<img src="'+out+'">'; }); }; r.readAsDataURL(f); }   // fix: onboarding first-asset photo capture (downscaled, previewed, persisted)
   function setupFinish(){ var city=(val('suCity')||'').trim(), nm=(val('suAsset')||'').trim();
     S.brand=S.brand||{}; if(city) S.brand.city=city; S.setup=S.setup||{}; S.setup.goal=_suGoalV; S.setup.done=true;
@@ -5711,6 +5854,19 @@ const Atlas = (function(){
     var price=f.addon?(mode==='once'?('$'+f.addon.once+' one-time'):('$'+f.addon.mo+'/mo')):'';
     closeModal(); toast(_featMeta(key).title.replace(/&amp;/g,'&')+' unlocked'+(price?(' ('+price+')'):''));
     var ap=document.querySelector('.panel.active'); if(ap){ var nav=ap.dataset.panel; if(nav==='tracking')renderTracking(); else if(nav==='website')renderWebsite(); else if(nav==='settings'&&typeof renderSet==='function')renderSet(); } }
+  // Turn a paid a-la-carte add-on back OFF -- the real "cancel anytime" behind the billing panel + the website "cancel anytime" promise.
+  function _addonPrice(key){ var f=GATED_FEATURES[key]; if(key==='website') return (S.websitePlan==='once'?('$'+((f&&f.addon&&f.addon.once)||199)+' one-time'):('$'+((f&&f.addon&&f.addon.mo)||19)+'/mo')); return f&&f.addon&&f.addon.mo?('$'+f.addon.mo+'/mo'):(f&&f.addon&&f.addon.once?('$'+f.addon.once+' one-time'):''); }
+  function _activeAddons(){ var out=[]; if(_addons()['tracking']) out.push({key:'tracking',title:_featMeta('tracking').title,price:_addonPrice('tracking')});
+    if(S&&S.websitePaid&&!_websiteIncluded()) out.push({key:'website',title:_featMeta('website').title,price:_addonPrice('website')}); return out; }
+  function removeAddon(key){ if(!_guard('billing','Managing billing'))return; var nm=_featMeta(key).title.replace(/&amp;/g,'&');
+    if(!confirm('Cancel '+nm+'? Access ends now -- you can add it back anytime.'))return;
+    if(_addons()[key]) delete _addons()[key]; if(key==='website'){ S.websitePaid=false; S.websitePlan=null; }
+    save(); try{_logEvent('billing',nm+' add-on cancelled',{addon:key});}catch(e){}
+    if(typeof renderSet==='function') renderSet(); var ap=document.querySelector('.panel.active'); if(ap){ var nav=ap.dataset.panel; if(nav==='tracking')renderTracking(); else if(nav==='website')renderWebsite(); }
+    toast(nm+' add-on cancelled'); }
+  function _addonsBillingHtml(){ var as=_activeAddons(); if(!as.length) return '';
+    return '<div class="set-block"><h3>Add-ons</h3><div class="desc">Extra features on your account. Cancel anytime.</div>'
+      +as.map(function(a){ return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">'+a.title+'</b><div style="font-size:12.5px;color:var(--muted)">'+esc(a.price)+' &middot; active</div></div><button class="btn btn--sm btn--danger" onclick="Atlas.removeAddon(\''+a.key+'\')">Cancel</button></div>'; }).join('')+'</div>'; }
   // What each plan unlocks beyond the one below it (sells the ladder in the Plans modal).
   function _tierUnlocks(id){ var m={ starter:'Bookings, contracts, member portal, analytics', pro:'+ Live GPS tracking &amp; 3D map', enterprise:'+ AI website builder, multi-location', business:'+ 500 '+((S.fleet&&S.fleet.nouns)||'assets')+', priority support', unlimited:'+ Unlimited everything' }; return m[id]||''; }
   function openWebsite(){ if(closeAio) closeAio(); go('website'); }
@@ -5766,11 +5922,12 @@ const Atlas = (function(){
       +'<div class="set-block"><h3>Sections</h3><div class="desc">Show or hide parts of your site.</div>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showFleet?'checked':'')+' onchange="Atlas.toggleWebSection(\'showFleet\',this.checked)">Fleet listings ('+DATA.assets.length+' '+esc(S.fleet.nouns)+')</label>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showAbout?'checked':'')+' onchange="Atlas.toggleWebSection(\'showAbout\',this.checked)">About section</label>'
-        +'<label class="cfg-check" style="margin-bottom:0"><input type="checkbox" '+(w.showContact?'checked':'')+' onchange="Atlas.toggleWebSection(\'showContact\',this.checked)">Contact &amp; booking</label>'
+        +'<label class="cfg-check"><input type="checkbox" '+(w.showContact?'checked':'')+' onchange="Atlas.toggleWebSection(\'showContact\',this.checked)">Contact &amp; booking</label>'
+        +'<label class="cfg-check" style="margin-bottom:0"><input type="checkbox" '+(w.showReviews!==false?'checked':'')+' onchange="Atlas.toggleWebSection(\'showReviews\',this.checked)">Customer reviews'+(_allReviews().length?(' ('+_allReviews().length+')'):'')+'</label>'
       +'</div>'
       +'<div class="set-block" id="domBlock"><h3>Domain</h3><div class="desc">Swap your web address anytime.</div>'+_domainHtml()+'</div>'
       +'<div class="set-block" id="webLegalBlock"><h3>Legal pages</h3><div class="desc">Every public site needs these. We build them compliant to your country/state.</div>'+_webLegalHtml()+'</div>'
-      +'<div class="set-block"><h3>Connections &amp; API keys</h3><div class="desc">Paste your keys to power your site. Read-only where possible &mdash; stored securely, never shared.</div>'+_webKeysHtml()+'</div>'
+      +'<div class="set-block"><h3>Connections &amp; API keys</h3><div class="desc">Save your integration keys here &mdash; stored securely on your account, never shared. Add, edit or remove them anytime.</div>'+_webKeysHtml()+'</div>'
       +'</div>';
     var prev='<div class="web-prev"><div class="browser"><div class="browser__bar"><div class="browser__dots"><i></i><i></i><i></i></div><div class="browser__url">'+esc(_siteUrl())+'</div></div>'
       +'<div class="browser__view" id="webPrev">'+_webPreviewHtml()+'</div></div>'
@@ -5785,14 +5942,18 @@ const Atlas = (function(){
       +'<h1>'+esc(w.headline||S.brand.name)+'</h1><p>'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
       +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>';
     if(w.showFleet){ var _bookable=(DATA.assets||[]).filter(function(a){return a.status!=='Maintenance';}); h+='<div class="site__sec"><h2>Our '+esc(S.fleet.nouns)+'</h2><div class="sub">'+_bookable.length+' available to book</div><div class="site__cars">'
-      +_bookable.slice(0,6).map(function(a){ return '<div class="site__car"><div class="site__car__img"><svg viewBox="0 0 24 24" fill="none" style="width:34px;height:34px"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></div>'
+      +_bookable.slice(0,6).map(function(a){ return '<div class="site__car"><div class="site__car__img"'+(a.photo?(' style="background-image:url(\''+a.photo+'\');background-size:cover;background-position:center"'):'')+'>'+(a.photo?'':'<svg viewBox="0 0 24 24" fill="none" style="width:34px;height:34px"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>')+'</div>'
         +'<div class="site__car__b"><b>'+esc(a.name)+'</b><div class="row"><span class="price">'+money(a.rate)+'/'+rm+'</span><button class="site__car__book" onclick="Atlas.webBookNow(\''+esc(a.name).replace(/'/g,"\\'")+'\')">Book</button></div></div></div>'; }).join('')
       +'</div></div>'; }
     if(w.showAbout){ h+='<div class="site__sec site__about"><h2>About '+esc(S.brand.name)+'</h2><p>'+esc(w.about||'')+'</p></div>'; }
-    h+=_siteReviewsHtml();
+    if(w.showReviews!==false) h+=_siteReviewsHtml();   // owner can hide the reviews section from the public site
     h+=_sitePromoSection();
     if(w.showContact){ h+='<div class="site__sec"><h2>Ready to book?</h2><div class="sub">Reserve online in minutes.</div><button class="site__cta" style="background:var(--brand);color:#fff" onclick="Atlas.webBookNow(\'\')">Start your booking</button></div>'; }
-    h+='<div class="site__foot">&copy; '+esc(S.brand.name)+' &middot; '+esc(_siteUrl())+'<div class="site__foot-sub">Powered by Atlas Rental.io</div></div></div>';
+    h+='<div class="site__foot">&copy; '+esc(S.brand.name)+' &middot; '+esc(_siteUrl())
+      +(function(){ var lg=_legal(), a=[], mk=function(k,l){ return '<a onclick="Atlas.webViewLegal(\''+k+'\')" style="color:inherit;text-decoration:underline;cursor:pointer">'+l+'</a>'; };
+        if(lg.tos.status!=='none')a.push(mk('tos','Terms of Service')); if(lg.privacy.status!=='none')a.push(mk('privacy','Privacy Policy')); if(lg.agreement.status!=='none')a.push(mk('agreement','Rental Agreement'));
+        return a.length?('<div style="margin-top:7px">'+a.join(' &middot; ')+'</div>'):''; })()
+      +'<div class="site__foot-sub">Powered by Atlas Rental.io</div></div></div>';
     return h;
   }
   // Verified customer reviews become social proof on the public site automatically.
@@ -5955,8 +6116,10 @@ const Atlas = (function(){
       collected:rentalPaid+chPaid, totalDue:rentalDue+chDue, twoStep:twoStep, paidInFull:(rentalDue===0) }; }
   function _portalHomeHtml(b,p){ var pc=_portalCfg(), sec=pc.sections; var q=b.quote||{}; var total=_r2(q.total||0), due=_r2(q.dueNow||total), hold=_r2(q.hold||0);
     var signed=!!p.signedAt, paid=!!p.balancePaidAt, dep=!!p.depositPaidAt;
+    var _pa=(DATA.assets||[]).filter(function(x){return x.name===b.asset;})[0], _paImg=(_pa&&_pa.photo)?('<div style="height:150px;border-radius:12px;background-image:url(\''+_pa.photo+'\');background-size:cover;background-position:center;margin:0 0 12px;border:1px solid var(--line)"></div>'):'';   // show the booked asset's photo to the customer (the "shown on your portal" promise)
     var h='<div class="portal__body">'+(pc.welcome?'<div class="portal__welcome">'+esc(pc.welcome)+'</div>':'')
       +'<div class="portal__hi">Hi '+esc((b.cust||'there').split(' ')[0])+' \u{1F44B}</div>'
+      +_paImg
       +'<div class="portal__card"><div class="portal__row"><span>'+esc(cap(S.fleet.noun))+'</span><b>'+esc(b.asset)+'</b></div>'
       +'<div class="portal__row"><span>When</span><b>'+_bkWhen(b)+'</b></div>'
       +'<div class="portal__row"><span>Status</span>'+statusChip(b.status)+'</div>'
@@ -6224,7 +6387,7 @@ const Atlas = (function(){
       +'<tr class="tot"><td>Net still outstanding</td><td class="r">'+money(Math.max(0,Math.round((cl.estAmount||0)-rec.total-(cl.settledAmount||0))))+'</td></tr>';
     var _pgrid=function(t,arr){ return arr.length?('<h2>'+t+' ('+arr.length+')</h2><div class="ph">'+arr.map(function(m){ return '<figure><img src="'+m.src+'"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):''; };
     var photoHtml=_pgrid('Condition evidence &mdash; at pickup',pickPh)+_pgrid('Condition evidence &mdash; at return',retPh);
-    var verified=b.idVerified?('ID verified '+_stamp(b.idVerifiedAt)):'ID not verified';
+    var verified=b.idVerified?('ID verified '+_stamp(b.idVerifiedAt)):(b.idRejected?('ID rejected '+_stamp(b.idRejectedAt)):'ID not verified');
     return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Damage Claim &mdash; '+esc(b.id)+'</title>'
       +'<style>'
       +'*{box-sizing:border-box}body{font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#14201a;margin:0;padding:32px;background:#f4f6f5}'
@@ -6542,12 +6705,12 @@ const Atlas = (function(){
 
   return {startTrial,demo,demoStart,demoSkip,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
-    openDreaming,dreamConnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
+    openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
+    goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
@@ -6556,18 +6719,18 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,webBookNow,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,
     search,searchGo,_searchClose,
-    setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
+    setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
-    renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
+    renderTracking,openTrackerConnect,connectTracker,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
 </script>
