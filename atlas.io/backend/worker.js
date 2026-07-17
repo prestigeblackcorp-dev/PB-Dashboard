@@ -223,34 +223,40 @@ function _aioCtx(context) { return context ? ('\n\nContext the owner shared abou
 
 // Each asker returns the model's plain text, or '' on any error (never throws).
 async function askClaude(key, q, context) {
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 700,
-      system: AIO_SAFETY_PROMPT + _aioCtx(context), messages: [{ role: 'user', content: q }] })
-  });
-  const j = await r.json().catch(() => ({}));
-  return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 700,
+        system: AIO_SAFETY_PROMPT + _aioCtx(context), messages: [{ role: 'user', content: q }] })
+    });
+    const j = await r.json().catch(() => ({}));
+    return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
+  } catch (e) { return ''; }   // network/DNS reject -> empty, never throws
 }
 async function askGPT(key, q, context) {
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'authorization': 'Bearer ' + key, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-4o', max_tokens: 700,
-      messages: [{ role: 'system', content: AIO_SAFETY_PROMPT + _aioCtx(context) }, { role: 'user', content: q }] })
-  });
-  const j = await r.json().catch(() => ({}));
-  return (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ? j.choices[0].message.content.trim() : '';
+  try {
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'authorization': 'Bearer ' + key, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o', max_tokens: 700,
+        messages: [{ role: 'system', content: AIO_SAFETY_PROMPT + _aioCtx(context) }, { role: 'user', content: q }] })
+    });
+    const j = await r.json().catch(() => ({}));
+    return (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ? j.choices[0].message.content.trim() : '';
+  } catch (e) { return ''; }
 }
 async function askGemini(key, q, context) {
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ systemInstruction: { parts: [{ text: AIO_SAFETY_PROMPT + _aioCtx(context) }] },
-      contents: [{ parts: [{ text: q }] }] })
-  });
-  const j = await r.json().catch(() => ({}));
-  try { return j.candidates[0].content.parts[0].text.trim(); } catch (e) { return ''; }
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: AIO_SAFETY_PROMPT + _aioCtx(context) }] },
+        contents: [{ parts: [{ text: q }] }] })
+    });
+    const j = await r.json().catch(() => ({}));
+    return (j.candidates[0].content.parts[0].text || '').trim();
+  } catch (e) { return ''; }
 }
 
 // ================================================================ router
@@ -343,8 +349,8 @@ export default {
       // /api/data/<collection>[/<id>]  -- every query is scoped to ctx.tenant_id
       const dm = path.match(/^\/api\/data\/([a-z]+)(?:\/([\w-]+))?$/);
       if (dm) {
-        const coll = COLLECTIONS[dm[1]]; const id = dm[2];
-        if (!coll) return err(404, 'Unknown collection.');
+        const coll = Object.prototype.hasOwnProperty.call(COLLECTIONS, dm[1]) ? COLLECTIONS[dm[1]] : null; const id = dm[2];
+        if (!coll) return err(404, 'Unknown collection.');   // hasOwnProperty so 'constructor'/proto names don't slip past as truthy
 
         if (method === 'GET') {
           const rows = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1000`).bind(ctx.tenant_id).all();
@@ -419,6 +425,8 @@ export default {
       // ---- Atlas.io council: Claude + GPT + Gemini in concert, one synthesis --
       if (path === '/api/aio' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        // per-tenant daily cap: each call fans out to up to 4 paid LLM requests on the PLATFORM's keys -> stop one tenant draining the AI budget
+        if (!await rateLimit(env, 'aio:' + ctx.tenant_id + ':' + new Date().toISOString().slice(0, 10), 120, 86400000)) return err(429, 'Daily Atlas.io limit reached. It resets tomorrow.');
         const body = await req.json().catch(() => ({}));
         const q = (typeof body.q === 'string' ? body.q : '').slice(0, 2000).trim();
         if (!q) return err(400, 'Ask a question.');
