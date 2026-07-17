@@ -2589,7 +2589,7 @@ const Atlas = (function(){
     return '<div class="cat-ex" data-ex="'+e.id+'">'
       +'<input class="input" value="'+esc(e.name)+'" oninput="Atlas.catSetExtra(\''+e.id+'\',\'name\',this.value)">'
       +'<div class="rule-input"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+e.price+'" oninput="Atlas.catSetExtra(\''+e.id+'\',\'price\',this.value)"></div>'
-      +'<select class="select" onchange="Atlas.catSetExtra(\''+e.id+'\',\'per\',this.value)"><option value="flat"'+(e.per==='flat'?' selected':'')+'>One-time</option><option value="unit"'+(e.per==='unit'?' selected':'')+'>Per '+_perUnitOne()+'</option></select>'
+      +'<select class="select" onchange="Atlas.catSetExtra(\''+e.id+'\',\'per\',this.value)">'+_extraPerOptions(e.per)+'</select>'
       +'<button class="ex-rm" title="Remove" onclick="Atlas.catRemoveExtra(\''+e.id+'\')"><svg viewBox="0 0 16 16" fill="none" style="width:15px;height:15px"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>'
       +'</div>'; }).join(''); }
   function catSetExtra(id,f,v){ var e=_ensureExtras().filter(function(x){return x.id===id;})[0]; if(!e)return; e[f]=(f==='price')?(parseFloat(v)||0):v; save(); _updBkModelPrev(); }
@@ -3421,7 +3421,7 @@ const Atlas = (function(){
       +'<div class="field"><label>Extras <span style="color:var(--muted);font-weight:500">&mdash; add, set the quantity, or create your own</span></label>'
       +'<div id="bkExtras" class="ex-list"></div>'
       +_bkProtHtml()
-      +'<div id="bkExNew" class="ex-new" style="display:none"><input class="input" id="bkExName" placeholder="Extra name"><input class="input tnum" id="bkExPrice" type="number" min="0" placeholder="$0"><select class="select" id="bkExPer"><option value="flat">One-time</option><option value="unit">Per '+unit+'</option></select><button type="button" class="btn btn--primary btn--sm" onclick="Atlas.bkSaveCustom()">Add</button></div>'
+      +'<div id="bkExNew" class="ex-new" style="display:none"><input class="input" id="bkExName" placeholder="Extra name"><input class="input tnum" id="bkExPrice" type="number" min="0" placeholder="$0"><select class="select" id="bkExPer">'+_extraPerOptions('flat')+'</select><button type="button" class="btn btn--primary btn--sm" onclick="Atlas.bkSaveCustom()">Add</button></div>'
       +'<button type="button" class="ex-add" onclick="Atlas.bkAddCustom()">+ Custom extra</button></div>'
       +'<div class="field"><label>Promo code</label><div style="display:flex;gap:8px"><input class="input" id="bkPromo" placeholder="Enter code" style="flex:1;text-transform:uppercase" value="'+esc((existing&&existing.promoCode)||'')+'"><button type="button" class="btn btn--ghost btn--sm" onclick="Atlas.applyBkPromo()">Apply</button></div><div id="bkPromoMsg" style="font-size:12px;margin-top:5px"></div></div>'
       +(_loy().on?('<div class="field"><label>Referral code (optional)</label><input class="input" id="bkRefCode" placeholder="A friend\u2019s code" style="text-transform:uppercase" value="'+esc((existing&&existing.referredByCode)||'')+'"><div class="bk-lenhint" style="margin:5px 0 0">Was this customer referred? Enter their friend\u2019s code &mdash; the referrer earns '+(_loy().refPts||250)+' points when this rental completes.</div></div>'):'')
@@ -3678,6 +3678,8 @@ const Atlas = (function(){
   function _periodMs(){ var rm=S.money.rateModel; return rm==='hour'?3600000:(rm==='week'?7*86400000:(rm==='month'?30*86400000:86400000)); }
   function _periodMsOf(u){ return u==='hour'?3600000:(u==='week'?604800000:((u==='month'||u==='pmonth')?2592000000:((u==='pday'||u==='day')?86400000:86400000))); }   // ms for an EXPLICIT period unit (used so protection/extras can bill per hour/day/week/month independent of the business rate model)
   function _protPerLabel(per){ return per==='hour'?'hour':(per==='pday'?'day':(per==='week'?'week':(per==='pmonth'?'month':(per==='trip'?'trip':_perUnitOne())))); }   // 'day' (legacy) = adaptive "matches your rate"; explicit units render literally
+  function _extraPerLabel(per){ return per==='flat'?'one-time':(per==='hour'?'per hour':(per==='pday'?'per day':(per==='week'?'per week':(per==='pmonth'?'per month':('per '+_perUnitOne()))))); }   // extras: flat=one-time, unit=matches rate, explicit hour/pday/week/pmonth
+  function _extraPerOptions(sel){ return [['flat','One-time'],['unit','Match rate ('+_perUnitOne()+')'],['hour','Per hour'],['pday','Per day'],['week','Per week'],['pmonth','Per month']].map(function(o){return '<option value="'+o[0]+'"'+((sel||'flat')===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join(''); }
   function _fmtWhen(ts, withTime){ if(!ts) return ''; try{ var d=new Date(ts); var s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
     if(withTime) s+=', '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}); return s; }catch(e){ return ''; } }
   // A booking's when-label: "Jul 16" | "Jul 16, 2:00 PM" | "Jul 16 -> Jul 20" | "Jul 16, 2 PM -> Jul 18, 10 AM"
@@ -3701,9 +3703,9 @@ const Atlas = (function(){
     _bkRenderExtras(); }
   function _exRowHtml(id,name,price,per,on,qty,custom){
     var chk='<svg viewBox="0 0 14 14" fill="none"><path d="M3 7.4l2.6 2.6L11 4.2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    var perLbl=(per==='unit')?('per '+_perUnitOne()):'one-time';
+    var perLbl=_extraPerLabel(per);
     var tg=custom?('Atlas.bkRmEx(\''+id+'\')'):('Atlas.bkToggleEx(\''+id+'\')');
-    var qtyUi=(on&&per==='unit')?'<div class="ex-qty"><button type="button" onclick="Atlas.bkQty(\''+id+'\',-1)">&minus;</button><span>'+(qty||1)+'</span><button type="button" onclick="Atlas.bkQty(\''+id+'\',1)">+</button></div>':'';
+    var qtyUi=(on&&per!=='flat')?'<div class="ex-qty"><button type="button" onclick="Atlas.bkQty(\''+id+'\',-1)">&minus;</button><span>'+(qty||1)+'</span><button type="button" onclick="Atlas.bkQty(\''+id+'\',1)">+</button></div>':'';
     var rm=custom?'<button type="button" class="ex-rm" title="Remove" onclick="Atlas.bkRmEx(\''+id+'\')"><svg viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>':'';
     return '<div class="ex-row'+(on?' on':'')+'">'
       +'<button type="button" class="ex-tg" onclick="'+tg+'">'+chk+'</button>'
