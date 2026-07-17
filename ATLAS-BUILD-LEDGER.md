@@ -75,7 +75,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · ✅ **refundable hold flow** (authorize → release / capture / charge‑difference) · ✅ **ID verification** · ✅ **damage‑claim workflow** (document → keep deposit / capture hold → itemized **claim packet** PDF for the insurer → track filed/settled + recovered) · 💡 insurance add‑on marketplace
 
 ### Customer‑facing
-- ✅ branded member portal · ✅ branded website + promo box · ✅ reviews · ✅ itemized receipts · 💡 loyalty / referral program · 💡 gift cards
+- ✅ branded member portal · ✅ branded website + promo box · ✅ reviews · ✅ itemized receipts · ✅ **loyalty program** (points per $ spent, tiers, redeem → real coupon, shown in portal) · ✅ **referrals** (each customer gets a shareable code; referrer earns points when a referred first rental completes) · 💡 gift cards
 
 ### Growth — Dreaming (idle‑time engine)
 - ✅ gaps per asset type · ✅ FB/IG/Google campaign drafts (headline/audience/budget) · ✅ broker/partner outreach targets + drafts (per type) · ✅ "Dreaming is on since…" status · 🔌 Connect ad accounts to launch · ⬜ pull N *real* local contacts (brokers/GCs) · ⬜ watch bid boards for open jobs · ⬜ actually send (email/DM) on approval
@@ -96,13 +96,45 @@ The single source of truth for **what's done, what needs connecting, and every f
 2. **Connect Stripe** (payments + deposits + your own subscription billing).
 3. **Wire Resend + Twilio** in the worker (confirmations, reminders, outreach actually send).
 4. **HTTPS via Cloudflare Pages** (secure domain, kills the stale‑cache "old build" problem).
-5. **Live Atlas.io AI** (`ANTHROPIC_KEY`) — turns the canned assistant + Dreaming into real research, real outreach, and real per‑business learning.
+5. **Live Atlas.io council** (`ANTHROPIC_KEY` + `OPENAI_KEY` + `GEMINI_KEY`) — the `/api/aio` endpoint is built; adding the 3 keys makes the assistant a live Claude+GPT+Gemini synthesis (auto, no code change).
 6. **Meta + Google OAuth** — so Dreaming can actually launch campaigns + message brokers.
 7. **App‑store submission** (PWABuilder) when ready.
 
 ---
 
-## 5 · Add a feature
+## 5 · Complete remaining backlog — every idea from our chat, nothing dropped
+Cross‑checked against the whole build so far. If it isn't ✅ above, it's here with a status + what unblocks it.
+
+### A. Self‑contained (buildable now — no keys, no accounts)
+- 💡 **Gift cards** — sell + redeem stored‑value codes (reuses the promo/coupon engine)
+- 💡 **Condition photos at RETURN + before/after compare** — pickup photos already exist; add the return set + a side‑by‑side (pairs with damage claims)
+- 💡 **Per‑user audit log view** — the timestamped event log exists globally; add a per‑staff filter
+- 💡 **Staff scheduling / shifts**
+- 💡 **CSV / marketplace importer** — bulk‑import assets, bookings, customers
+- 💡 **"Clone last season's setup"**
+- 💡 **True monthly rate tier** — long‑term / subscription rentals as a first‑class rate
+- 💡 **Operator / delivery add‑ons as first‑class line items**
+- 💡 **Multi‑currency display**
+- 💡 **Insurance add‑on marketplace** — offer coverage at checkout (display/config now; live quotes need a provider)
+
+### B. Owner‑key / account‑gated (built or modeled — flips on when you connect)
+- 🔌 **Stripe** — real charges, deposit/hold capture, your $49.99/mo subscription billing, per‑installment payment‑plan charges, B2B **net‑30** invoicing
+- 🔌 **Resend (email) + Twilio (SMS)** — confirmations, reminders, win‑backs, outreach actually send
+- 🔌 **Web Push (VAPID)** — owner alerts (new booking, delivery soon)
+- 🔌 **Atlas.io council live** — `/api/aio` built; add `ANTHROPIC_KEY`+`OPENAI_KEY`+`GEMINI_KEY`
+- ⬜ **Meta + Google Ads OAuth** — Dreaming launches real campaigns + DMs (UI + drafts done)
+- 🟡 **Telematics live GPS** (Bouncie/Samsara/etc.) — map + trackers UI done; connect a per‑owner feed
+- 💡 **White‑label domains per tenant** · 💡 **Zapier / webhooks**
+
+### C. Infra / platform (your setup)
+- 🔌 **Paste‑deploy the worker** (on your clipboard) — the ONE pending action → real backend live
+- ⬜ **HTTPS via Cloudflare Pages + private repo** — kills the stale‑cache "old build" problem
+- ⬜ **App‑store listings** (PWABuilder iOS + Android)
+
+### D. Deeper efforts (larger, when you want them)
+- ⬜ **Damage‑claim → insurer auto‑submit** — the claim packet is done; auto‑filing needs an insurer integration
+- ⬜ **Dreaming: pull N real local contacts** (brokers/GCs) + **watch bid boards** — currently one templated draft per partner category
+
+## 6 · Add a feature
 Drop it below (or just tell Atlas.io / Claude and it gets slotted into the right area above with a status):
-- ⬜ _…_
 - ⬜ _…_
