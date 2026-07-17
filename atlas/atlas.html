@@ -1841,7 +1841,7 @@ const Atlas = (function(){
     return ps.map(function(p){ var expired=p.expiry&&_todayStr()>p.expiry, capped=p.cap&&(p.used||0)>=p.cap;
       var meta=[]; if(p.minDays)meta.push('min '+p.minDays+' '+_perUnit()); if(p.expiry)meta.push((expired?'expired ':'ends ')+p.expiry); meta.push((p.used||0)+(p.cap?(' / '+p.cap):'')+' used');
       return '<div class="promo-row"><div style="min-width:0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="mono" style="color:var(--ink);font-size:14px;letter-spacing:.03em">'+esc(p.code)+'</b><span class="chip '+((p.active&&!expired&&!capped)?'chip--ok':'chip--muted')+'"><span class="dot"></span>'+(p.type==='pct'?(p.value+'% off'):(money(p.value)+' off'))+'</span></div><div style="font-size:12px;color:var(--muted);margin-top:3px">'+meta.join(' &middot; ')+'</div></div>'
-        +'<div style="display:flex;gap:6px;align-items:center;flex:none"><label class="switch" style="transform:scale(.85)"><input type="checkbox" '+(p.active?'checked':'')+' onchange="Atlas.togglePromo(\''+p.id+'\',this.checked)"><span class="switch__t"></span></label><button class="btn btn--sm" style="color:var(--danger);padding:6px 8px" onclick="Atlas.deletePromo(\''+p.id+'\')" title="Delete">&times;</button></div></div>';
+        +'<div style="display:flex;gap:6px;align-items:center;flex:none"><label class="switch" style="transform:scale(.85)"><input type="checkbox" '+(p.active?'checked':'')+' onchange="Atlas.togglePromo(\''+p.id+'\',this.checked)"><span class="switch__t"></span></label><button class="btn btn--ghost btn--sm" style="padding:6px 8px" onclick="Atlas.promoEdit(\''+p.id+'\')">Edit</button><button class="btn btn--sm" style="color:var(--danger);padding:6px 8px" onclick="Atlas.deletePromo(\''+p.id+'\')" title="Delete">&times;</button></div></div>';
     }).join(''); }
   function addPromo(){ if(!_canMod('settings'))return;
     openModal('<div class="modal__head"><h3>New promo code</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -1859,6 +1859,22 @@ const Atlas = (function(){
     _promos().push(p); _logEvent('promo','Promo code '+p.code+' created ('+(p.type==='pct'?p.value+'% off':money(p.value)+' off')+')',{code:p.code}); save(); closeModal(); renderSet(); toast('Code '+p.code+' created'); }
   function togglePromo(id,on){ if(!_canMod('settings'))return; var p=_promos().filter(function(x){return x.id===id;})[0]; if(p){ p.active=!!on; save(); var el=document.getElementById('promoList'); if(el)el.innerHTML=_promoListHtml(); } }
   function deletePromo(id){ if(!_canMod('settings'))return; if(!confirm('Delete this promo code?'))return; S.promos=_promos().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Promo code deleted'); }
+  function promoEdit(id){ if(!_canMod('settings'))return; var p=_promos().filter(function(x){return x.id===id;})[0]; if(!p)return;
+    openModal('<div class="modal__head"><h3>Edit promo code</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Code</label><input class="input mono" id="peCode" placeholder="SUMMER20" style="text-transform:uppercase" value="'+esc(p.code||'')+'"></div>'
+      +'<div class="row2"><div class="field"><label>Type</label><select class="select" id="peType"><option value="pct"'+(p.type!=='amt'?' selected':'')+'>% off</option><option value="amt"'+(p.type==='amt'?' selected':'')+'>$ off</option></select></div>'
+      +'<div class="field"><label>Amount</label><input class="input tnum" id="peVal" type="number" min="0" value="'+(p.value||0)+'"></div></div>'
+      +'<div class="row2"><div class="field"><label>Min '+_perUnit()+' (optional)</label><input class="input tnum" id="peMin" type="number" min="0" placeholder="0" value="'+(p.minDays||'')+'"></div>'
+      +'<div class="field"><label>Max uses (optional)</label><input class="input tnum" id="peCap" type="number" min="0" placeholder="Unlimited" value="'+(p.cap||'')+'"></div></div>'
+      +'<div class="field"><label>Expires (optional)</label><input class="input" id="peExp" type="date" value="'+esc(p.expiry||'')+'"></div>'
+      +'<div class="bk-lenhint" style="margin:0 0 8px">'+(p.used||0)+' redemption'+((p.used||0)===1?'':'s')+' so far &mdash; kept when you save.</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:8px" onclick="Atlas.savePromoEdit(\''+id+'\')">Save changes</button></div>'); }
+  function savePromoEdit(id){ if(!_canMod('settings'))return; var p=_promos().filter(function(x){return x.id===id;})[0]; if(!p)return;
+    var code=(val('peCode')||'').trim().toUpperCase().replace(/\s+/g,'');
+    if(!code){ toast('Enter a code'); return; } var other=_findPromo(code); if(other&&other.id!==id){ toast('That code already exists'); return; }
+    var v=parseFloat(val('peVal'))||0; if(v<=0){ toast('Enter a discount amount'); return; }
+    p.code=code; p.type=(val('peType')==='amt'?'amt':'pct'); p.value=v; p.minDays=parseInt(val('peMin'),10)||0; p.cap=parseInt(val('peCap'),10)||0; p.expiry=val('peExp')||'';
+    _logEvent('promo','Promo code '+p.code+' edited',{code:p.code}); save(); closeModal(); renderSet(); toast('Code '+p.code+' updated'); }
   /* ---- Loyalty & referrals: points from each customer's paid spend + a shareable referral code, redeemable to a real coupon ---- */
   function _loy(){ if(!S.loyalty) S.loyalty={on:true, perDollar:1, rewardPts:500, rewardVal:50, refPts:250, members:{}}; if(!S.loyalty.members) S.loyalty.members={}; return S.loyalty; }
   function _loyKey(email){ return String(email||'').trim().toLowerCase(); }
@@ -2974,7 +2990,7 @@ const Atlas = (function(){
     {label:'<b>'+esc(e.type||'event')+'</b>'}, {label:esc(e.text||'')}, {label:'<span style="color:var(--muted)">'+_stamp(e.t)+'</span>'}
   ], {showTotal:false}); }
   function drillLedger(kind){ var items=(kind==='income'?_ledger().incomes:_ledger().expenses).slice().sort(function(a,b){return (b.date||0)-(a.date||0);});
-    _drill(kind==='income'?'Other income':'Expenses', kind==='income'?'Income beyond bookings':'Costs you have logged', items.map(function(x){ return {label:'<b>'+esc(x.label)+'</b>',sub:(x.category?esc(x.category)+' &middot; ':'')+_csvDate(x.date),amt:x.amount,neg:(kind==='expense'),chip:'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.rmLedger(\''+kind+'\',\''+x.id+'\')">Remove</button>'};}), {totalLabel:kind==='income'?'Total income':'Total expenses', empty:'None logged yet.', foot:'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.logLedger(\''+kind+'\')">+ Log '+(kind==='income'?'income':'an expense')+'</button>'}); }
+    _drill(kind==='income'?'Other income':'Expenses', kind==='income'?'Income beyond bookings':'Costs you have logged', items.map(function(x){ return {label:'<b>'+esc(x.label)+'</b>',sub:(x.category?esc(x.category)+' &middot; ':'')+_csvDate(x.date),amt:x.amount,neg:(kind==='expense'),chip:'<button class="btn btn--ghost btn--sm" style="padding:2px 7px" onclick="Atlas.editLedger(\''+kind+'\',\''+x.id+'\')">Edit</button> <button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.rmLedger(\''+kind+'\',\''+x.id+'\')">Remove</button>'};}), {totalLabel:kind==='income'?'Total income':'Total expenses', empty:'None logged yet.', foot:'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.logLedger(\''+kind+'\')">+ Log '+(kind==='income'?'income':'an expense')+'</button>'}); }
   function logLedger(kind){ if(!_canMod('analytics')&&!_canMod('settings')){ toast('You do not have access to this'); return; }
     openModal('<div class="modal__head"><h3>Log '+(kind==='income'?'income':'an expense')+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="field"><label>Description</label><input class="input" id="ldLabel" placeholder="'+(kind==='income'?'e.g. Merchandise sale, tips, add-on service':'e.g. Insurance, fuel, cleaning, repair')+'"></div>'
@@ -2990,6 +3006,21 @@ const Atlas = (function(){
     _logEvent(kind==='income'?'income':'expense', (kind==='income'?'Income logged: ':'Expense logged: ')+label+' '+money(amt),{amount:amt});
     closeModal(); if(document.getElementById('anaKpis')) renderAnalytics(); toast((kind==='income'?'Income':'Expense')+' logged'); }
   function rmLedger(kind,id){ var arr=_ledger()[kind==='income'?'incomes':'expenses']; var i=arr.map(function(x){return x.id;}).indexOf(id); if(i>=0){ arr.splice(i,1); save(); if(document.getElementById('anaKpis')) renderAnalytics(); drillLedger(kind); } }
+  function editLedger(kind,id){ if(!_canMod('analytics')&&!_canMod('settings')){ toast('You do not have access to this'); return; }
+    var rec=(_ledger()[kind==='income'?'incomes':'expenses']||[]).filter(function(x){return x.id===id;})[0]; if(!rec){ toast('Entry not found'); return; }
+    var dstr=(function(){ try{ var d=new Date(rec.date||Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }catch(e){ return _todayStr(); } })();
+    openModal('<div class="modal__head"><h3>Edit '+(kind==='income'?'income':'expense')+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Description</label><input class="input" id="ldLabel" value="'+esc(rec.label||'')+'"></div>'
+      +(kind==='expense'?'<div class="field"><label>Category</label><input class="input" id="ldCat" value="'+esc(rec.category||'')+'"></div>':'')
+      +'<div class="row2"><div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="ldAmt" style="width:auto;flex:1;text-align:left" value="'+(rec.amount||0)+'"></div></div>'
+      +'<div class="field"><label>Date</label><input class="input" type="date" id="ldDate" value="'+esc(dstr)+'"></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:6px" onclick="Atlas.saveLedgerEdit(\''+kind+'\',\''+id+'\')">Save changes</button></div>'); }
+  function saveLedgerEdit(kind,id){ var rec=(_ledger()[kind==='income'?'incomes':'expenses']||[]).filter(function(x){return x.id===id;})[0]; if(!rec){ toast('Entry not found'); return; }
+    var label=(val('ldLabel')||'').trim(), amt=parseFloat(val('ldAmt'))||0;
+    if(!label){ toast('Add a description'); return; } if(amt<=0){ toast('Enter an amount'); return; }
+    var d=val('ldDate'), ts=d?new Date(d+'T12:00:00').getTime():(rec.date||Date.now());
+    rec.label=label; rec.amount=amt; rec.date=ts; if(kind==='expense') rec.category=(val('ldCat')||'').trim();
+    save(); closeModal(); if(document.getElementById('anaKpis')) renderAnalytics(); drillLedger(kind); toast((kind==='income'?'Income':'Expense')+' updated'); }
   function logIncome(){ logLedger('income'); }
   function logExpense(){ logLedger('expense'); }
   function _ledgerCardHtml(){ var inc=_otherIncome(), exp=_totalExpenses(), rev=_bookingRevenue(), pay=_totalPayouts();
@@ -3059,7 +3090,8 @@ const Atlas = (function(){
       +'<div class="field"><label>'+esc(locL)+'</label><input class="input" id="aLoc" list="vLocList2" value="'+esc(a.loc||'')+'"'+dis+'><datalist id="vLocList2">'+(function(){var ls=[];DATA.assets.forEach(function(x){if(x.loc&&ls.indexOf(x.loc)<0)ls.push(x.loc);});return ls.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('');})()+'</datalist></div></div>'
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aRate" style="width:auto;flex:1;text-align:left" value="'+a.rate+'"'+dis+'><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="aStatus"'+dis+'>'+['Available','On rent','Maintenance'].map(function(s){return '<option'+(a.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'
-      +(ro?'':'<div class="field"><label>Photo</label><div style="display:flex;align-items:center;gap:12px">'+(a.photo?('<img src="'+a.photo+'" style="width:56px;height:42px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">'):'<div style="width:56px;height:42px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">None</div>')+'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">'+(a.photo?'Replace photo':'Add photo')+'<input type="file" accept="image/*" style="display:none" onchange="Atlas.assetPhotoPick(\''+id+'\',this)"></label></div></div>')   // fix: assets created via add/CSV/bulk can now get a photo (a.photo, downscaled)
+      +((_fleetSel().length>1)?('<div class="field"><label>Type</label><select class="select" id="aType"'+dis+'>'+_fleetSel().map(function(tid){ var ft=_typeById(tid)||{}; return '<option value="'+esc(tid)+'"'+(((a.type||_fleetSel()[0])===tid)?' selected':'')+'>'+esc((ft.emoji?ft.emoji+' ':'')+(ft.label||tid))+'</option>'; }).join('')+'</select></div>'):'')   // fix: multi-type fleets can re-tag a mis-categorized asset in place
+      +(ro?'':'<div class="field"><label>Photo</label><div style="display:flex;align-items:center;gap:12px">'+(a.photo?('<img src="'+a.photo+'" style="width:56px;height:42px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">'):'<div style="width:56px;height:42px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">None</div>')+'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">'+(a.photo?'Replace photo':'Add photo')+'<input type="file" accept="image/*" style="display:none" onchange="Atlas.assetPhotoPick(\''+id+'\',this)"></label>'+(a.photo?('<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.assetPhotoRemove(\''+id+'\')">Remove photo</button>'):'')+'</div></div>')   // fix: assets created via add/CSV/bulk can now get a photo (a.photo, downscaled); and it can now be removed, not only replaced
       +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:14px 0 8px">Current '+rl+' <span style="color:var(--muted);font-weight:500">'+(t.name?('&middot; since '+_fmtWhen(t.since)):'&middot; vacant')+'</span></div>'
       +'<div class="row2"><div class="field"><label>'+cap(rl)+' name</label><input class="input" id="aTenName" value="'+esc(t.name||'')+'" placeholder="Vacant"'+dis+'></div>'
       +'<div class="field"><label>Phone</label><input class="input" id="aTenPhone" value="'+esc(t.phone||'')+'" placeholder="(555) 555-1234"'+dis+'></div></div>'
@@ -3075,12 +3107,14 @@ const Atlas = (function(){
   function saveAsset(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
     a.name=(val('aName')||a.name).trim(); var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
     var _r=parseFloat(val('aRate')); a.rate=(_r>=0?_r:a.rate); a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
+    if(_fleetSel().length>1){ var _at=val('aType'); if(_at&&_fleetSel().indexOf(_at)>=0) a.type=_at; }   // fix: persist the owner's per-asset type/category change (used by rate + filters)
     var tn=(val('aTenName')||'').trim();
     a.tenant = tn? { name:tn, phone:val('aTenPhone'), email:val('aTenEmail'), since:(a.tenant&&a.tenant.since)||Date.now() } : null;
     _saveAssets(); closeModal(); renderFleet(); renderOverview(); toast(esc(a.name)+' saved');
   }
   function assetPhotoPick(id, inp){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a||!inp||!inp.files||!inp.files[0])return;   // fix: store a downscaled per-asset photo
     var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''), 900, 0.72, function(out){ a.photo=out; _saveAssets(); try{ openAsset(id); }catch(_){} try{ renderFleet(); }catch(_){} toast('Photo added'); }); }; r.readAsDataURL(inp.files[0]); }
+  function assetPhotoRemove(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a||!a.photo)return; delete a.photo; _saveAssets(); try{ openAsset(id); }catch(_){} try{ renderFleet(); }catch(_){} toast('Photo removed'); }   // fix: owner can now clear a per-asset photo, not only swap it
   function delAsset(id){ if(!_guard('fleetEdit'))return; if(!confirm('Remove this '+S.fleet.noun+'?'))return; DATA.assets=DATA.assets.filter(function(x){return x.id!==id;}); _saveAssets(); closeModal(); renderFleet(); renderOverview(); var fb=document.getElementById('fleetBadge'); if(fb)fb.textContent=DATA.assets.length; toast('Removed'); }
   // ---- Asset service/mileage log + per-asset document vault ----
   function _asMaint(a){ if(!a.maint)a.maint=[]; return a.maint; }
@@ -3396,6 +3430,7 @@ const Atlas = (function(){
   function _availabilityConflict(assetName, startTs, endTs, excludeId){
     startTs=Number(startTs)||0; endTs=Number(endTs)||(startTs+_periodMs()); if(endTs<=startTs) endTs=startTs+_periodMs();
     var a=(DATA.assets||[]).filter(function(x){return x.name===assetName;})[0];
+    if(a && a.status==='Maintenance') return {type:'maintenance', reason:'in maintenance'};   // fix: a unit marked out of service is not bookable (owner can still knowingly override the confirm in createBooking)
     if(a && a.blackouts){ for(var i=0;i<a.blackouts.length;i++){ var bl=a.blackouts[i], f=Number(bl.from)||0, t=Number(bl.to)||0; if(t<f){var x=f;f=t;t=x;}
       if(_rangesOverlap(startTs,endTs,f,t+86400000)) return {type:'blackout', reason:(bl.reason||'blocked dates')}; } }   // blackout is a day range -> include the whole end day
     var c=(DATA.bookings||[]).filter(function(b){ return b.id!==excludeId && b.asset===assetName && b.status!=='Cancelled' && b.status!=='Completed'; })
@@ -3460,7 +3495,7 @@ const Atlas = (function(){
     var disc=_bkReadDiscount(), extras=(_bkDraft?_bkDraft.extras:[]).slice();
     var asset=val('bkAsset'), mEff=_moneyFor(asset);
     var _cf=_availabilityConflict(asset, w.startTs, w.endTs, editId);   // warn on double-book / blackout; owner can knowingly override
-    if(_cf && !confirm(esc(asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates ('+_cf.reason+')'):('already booked for those dates ('+_cf.reason+')'))+'.\n\nBook it anyway?')) return;
+    if(_cf && !confirm(esc(asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates ('+_cf.reason+')'):(_cf.type==='maintenance'?('marked out of service ('+_cf.reason+')'):('already booked for those dates ('+_cf.reason+')')))+'.\n\nBook it anyway?')) return;
     var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc});
     var b= editId? _getBooking(editId) : {id:_nextBkId(), createdAt:Date.now()};
     b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.rate=mEff.baseRate;
@@ -3525,6 +3560,9 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Charges to portal</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCharge(\''+b.id+'\')">+ Send a charge</button></div>'
         +'<div class="cond-sub">Bill '+esc((b.cust||'the customer').split(' ')[0])+' for extras, damage, cleaning, late fees or anything else &mdash; it appears in their portal to pay online.</div>'
         +_chargesOwnerHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Renter ID &amp; documents</span></div>'
+        +'<div class="cond-sub">Government ID, license and insurance '+esc((b.cust||'the customer').split(' ')[0])+' uploaded from their portal &mdash; review them before pickup.</div>'
+        +_portalDocsOwnerHtml(b)+'</div>'
       +'<div class="cond-sec"><div class="cond-hd"><span>Gift card</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkApplyGift(\''+b.id+'\')">+ Apply a gift card</button></div>'
         +'<div class="cond-sub">Redeem a gift card toward what this customer owes &mdash; it draws down the card balance and credits the amount due.</div>'
         +_giftHtml(b)+'</div>'
@@ -4081,7 +4119,7 @@ const Atlas = (function(){
     if(!card){ card=document.createElement('div'); card.id='waitCard'; card.className='card'; card.style.marginBottom='16px';
       var cc=document.getElementById('custTbl'); cc=cc&&cc.closest('.card'); if(cc) panel.insertBefore(card,cc); else panel.appendChild(card); }
     var wl=_waitlist();
-    var rows=wl.length? wl.map(function(w){ return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line-2)"><span class="avatar">'+esc((w.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(w.cust)+'</b><div style="font-size:12px;color:var(--muted)">'+(w.asset?esc(w.asset):('Any '+esc(S.fleet.noun)))+(w.note?(' &middot; '+esc(w.note)):'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.waitToBooking(\''+w.id+'\')">Book</button><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.rmWait(\''+w.id+'\')">'+_rmSvg()+'</button></div>'; }).join('') : '<div class="bk-lenhint" style="margin:0">No one waiting. Add people who wanted a booked-out '+esc(S.fleet.noun)+' &mdash; when one frees up, you fill it fast.</div>';
+    var rows=wl.length? wl.map(function(w){ return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line-2)"><span class="avatar">'+esc((w.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(w.cust)+'</b><div style="font-size:12px;color:var(--muted)">'+(w.asset?esc(w.asset):('Any '+esc(S.fleet.noun)))+(w.note?(' &middot; '+esc(w.note)):'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.waitToBooking(\''+w.id+'\')">Book</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editWaitlist(\''+w.id+'\')">Edit</button><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.rmWait(\''+w.id+'\')">'+_rmSvg()+'</button></div>'; }).join('') : '<div class="bk-lenhint" style="margin:0">No one waiting. Add people who wanted a booked-out '+esc(S.fleet.noun)+' &mdash; when one frees up, you fill it fast.</div>';
     card.innerHTML='<div class="card__head"><h3>Waitlist'+(wl.length?(' <span style="font-size:12px;color:var(--muted);font-weight:600">'+wl.length+'</span>'):'')+'</h3><button class="btn btn--ghost btn--sm" onclick="Atlas.addWaitlist()">+ Add</button></div><div class="card__body">'+rows+'</div>'; }
   function addWaitlist(){ if(!_guard('bookEdit','Managing the waitlist'))return;
     openModal('<div class="modal__head"><h3>Add to waitlist</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -4094,6 +4132,16 @@ const Atlas = (function(){
     _waitlist().push({id:'wl'+Date.now().toString(36), cust:nm, contact:(val('wlContact')||'').trim(), asset:(val('wlAsset')||'').trim(), note:(val('wlNote')||'').trim(), at:Date.now()});
     _logEvent('booking','Added '+nm+' to the waitlist',{}); save(); closeModal(); _renderWaitCard(); toast(nm+' added to the waitlist'); }
   function rmWait(id){ if(!_guard('bookEdit'))return; S.waitlist=_waitlist().filter(function(w){return w.id!==id;}); save(); _renderWaitCard(); }
+  function editWaitlist(id){ if(!_guard('bookEdit','Managing the waitlist'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return;
+    openModal('<div class="modal__head"><h3>Edit waitlist entry</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Customer name</label><input class="input" id="wlName" placeholder="Who is waiting" value="'+esc(w.cust||'')+'"></div>'
+      +'<div class="field"><label>Email or phone</label><input class="input" id="wlContact" placeholder="Optional" value="'+esc(w.contact||'')+'"></div>'
+      +'<div class="field"><label>'+cap(S.fleet.noun)+' they want</label><select class="select" id="wlAsset"><option value=""'+(w.asset?'':' selected')+'>Any '+esc(S.fleet.noun)+'</option>'+(DATA.assets||[]).map(function(a){return '<option'+(w.asset===a.name?' selected':'')+'>'+esc(a.name)+'</option>';}).join('')+'</select></div>'
+      +'<div class="field"><label>Note</label><input class="input" id="wlNote" placeholder="Dates, preferences..." value="'+esc(w.note||'')+'"></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveWaitlistEdit(\''+id+'\')">Save changes</button></div>'); }
+  function saveWaitlistEdit(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return; var nm=(val('wlName')||'').trim(); if(!nm){ toast('Add a name'); return; }
+    w.cust=nm; w.contact=(val('wlContact')||'').trim(); w.asset=(val('wlAsset')||'').trim(); w.note=(val('wlNote')||'').trim();
+    save(); closeModal(); _renderWaitCard(); toast('Waitlist entry updated'); }
   function waitToBooking(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return; _waitConvertId=id;   // fix: keep the waitlist entry until the booking is actually saved (createBooking removes it) -> no data loss if the operator abandons the form
     go('bookings'); newBooking(); setTimeout(function(){ var n=document.getElementById('bkCust'); if(n)n.value=w.cust; if(w.contact){ var e=document.getElementById('bkEmail'); if(e)e.value=w.contact; } var a=document.getElementById('bkAsset'); if(a&&w.asset){ try{ a.value=w.asset; }catch(_){}} try{ bkPreview&&bkPreview(); }catch(_){}}, 250);
     toast('Filling from the waitlist -- finish the booking'); }
@@ -4142,7 +4190,7 @@ const Atlas = (function(){
     setTimeout(()=>drawSrcChart(),30);
   }
   /* ---- customer reviews (owner view: average, list, reply, feature on site) ---- */
-  function _allReviews(){ return (DATA.bookings||[]).filter(function(b){return b.review&&b.review.rating;}).map(function(b){ var r=b.review; return {id:b.id,rating:r.rating,text:r.text,at:r.at,by:r.by||b.cust,asset:b.asset,reply:r.reply||'',verified:r.verified}; }).sort(function(a,b){return b.at-a.at;}); }
+  function _allReviews(){ return (DATA.bookings||[]).filter(function(b){return b.review&&b.review.rating;}).map(function(b){ var r=b.review; return {id:b.id,rating:r.rating,text:r.text,at:r.at,by:r.by||b.cust,asset:b.asset,reply:r.reply||'',verified:r.verified,hidden:!!r.hidden}; }).sort(function(a,b){return b.at-a.at;}); }
   function _avgRating(){ var rv=_allReviews(); return rv.length? (rv.reduce(function(s,r){return s+r.rating;},0)/rv.length):0; }
   function _starRow(n){ return '<span class="rev-stars-sm">'+[1,2,3,4,5].map(function(i){return '<span class="rev-star'+(i<=n?' on':'')+'">\u2605</span>';}).join('')+'</span>'; }
   function renderReviews(){ var el=document.getElementById('reviewsBody'); if(!el)return; var rv=_allReviews();
@@ -4151,12 +4199,15 @@ const Atlas = (function(){
     el.innerHTML='<div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap"><div style="font-size:34px;font-weight:850;color:var(--ink)" class="tnum">'+avgR.toFixed(1)+'</div><div>'+_starRow(Math.round(avg))+'<div style="font-size:12.5px;color:var(--muted);margin-top:2px">'+rv.length+' review'+(rv.length===1?'':'s')+' &middot; shown on your website</div></div></div>'
       +'<div style="display:flex;flex-direction:column;gap:10px">'+rv.slice(0,8).map(function(r){
         return '<div style="border:1px solid var(--line);border-radius:11px;padding:12px 14px">'
-          +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+_starRow(r.rating)+'<b style="color:var(--ink);font-size:13.5px">'+esc(r.by)+'</b>'+(r.verified?'<span class="chip chip--ok" style="font-size:11px"><span class="dot"></span>Verified</span>':'')+'<span style="flex:1"></span><span style="font-size:12px;color:var(--muted)">'+esc(r.asset)+' &middot; '+_csvDate(r.at)+'</span></div>'
+          +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+_starRow(r.rating)+'<b style="color:var(--ink);font-size:13.5px">'+esc(r.by)+'</b>'+(r.verified?'<span class="chip chip--ok" style="font-size:11px"><span class="dot"></span>Verified</span>':'')+(r.hidden?'<span class="chip chip--muted" style="font-size:11px"><span class="dot"></span>Hidden</span>':'')+'<span style="flex:1"></span><span style="font-size:12px;color:var(--muted)">'+esc(r.asset)+' &middot; '+_csvDate(r.at)+'</span></div>'
           +(r.text?'<div style="font-size:13.5px;color:var(--body);margin-top:8px;line-height:1.5">'+esc(r.text)+'</div>':'')
-          +(r.reply?'<div style="font-size:12.5px;color:var(--body);margin-top:8px;background:var(--brand-050);border-radius:9px;padding:8px 10px"><b style="color:var(--ink)">You replied:</b> '+esc(r.reply)+'</div>':'<button class="btn btn--ghost btn--sm" style="margin-top:8px" onclick="Atlas.replyReview(\''+r.id+'\')">Reply</button>')
+          +(r.reply?'<div style="font-size:12.5px;color:var(--body);margin-top:8px;background:var(--brand-050);border-radius:9px;padding:8px 10px"><b style="color:var(--ink)">You replied:</b> '+esc(r.reply)+'</div>':'')
+          +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'+(r.reply?'<button class="btn btn--ghost btn--sm" onclick="Atlas.replyReview(\''+r.id+'\')">Edit reply</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.reviewRemoveReply(\''+r.id+'\')">Remove reply</button>':'<button class="btn btn--ghost btn--sm" onclick="Atlas.replyReview(\''+r.id+'\')">Reply</button>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.reviewToggleHidden(\''+r.id+'\','+(r.hidden?'false':'true')+')">'+(r.hidden?'Unhide':'Hide')+'</button></div>'
           +'</div>';
       }).join('')+'</div>'; }
   function replyReview(id){ if(!_canMod('settings')&&!_canMod('analytics'))return; var b=_getBooking(id); if(!b||!b.review)return; var t=prompt('Your public reply to this review:',b.review.reply||''); if(t===null)return; b.review.reply=t.trim(); _upsertBooking(b); renderReviews(); toast('Reply saved'); }
+  function reviewRemoveReply(id){ if(!_canMod('settings')&&!_canMod('analytics'))return; var b=_getBooking(id); if(!b||!b.review)return; if(!confirm('Remove your public reply to this review?'))return; b.review.reply=''; _upsertBooking(b); renderReviews(); toast('Reply removed'); }
+  function reviewToggleHidden(id,on){ if(!_canMod('settings')&&!_canMod('analytics'))return; var b=_getBooking(id); if(!b||!b.review)return; b.review.hidden=!!on; _upsertBooking(b); renderReviews(); toast(on?'Review hidden from your public site':'Review shown on your public site'); }
   /* ---- reports (tax + documentation) + activity log ---- */
   function _repRange(){ var v=val('repRange')||'ytd'; var now=new Date(), y=now.getFullYear(), m=now.getMonth(), from, label;
     if(v==='mtd'){ from=new Date(y,m,1).getTime(); label='This month'; }
@@ -4473,6 +4524,7 @@ const Atlas = (function(){
   function _member(id){ return (S.team||[]).filter(function(x){return x.id===id;})[0]; }
   function openPerm(id){ if(!_guard('teamManage','Managing team &amp; access'))return; var m=_member(id); if(!m)return; var p=m.perms||_permsAll(false); m.perms=p;
     openModal('<div class="modal__head"><h3>Access &mdash; '+esc(m.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="row2"><div class="field"><label>Name</label><input class="input" value="'+esc(m.name||'')+'" onchange="Atlas.setMemberField(\''+id+'\',\'name\',this.value)"></div><div class="field"><label>Email</label><input class="input" value="'+esc(m.email||'')+'" onchange="Atlas.setMemberField(\''+id+'\',\'email\',this.value)"></div></div>'
       +'<div class="field"><label>Role preset</label><select class="select" onchange="Atlas.setRolePreset(\''+id+'\',this.value)">'
         +Object.keys(ROLE_PRESETS).map(function(k){return '<option value="'+k+'"'+(m.role===k?' selected':'')+'>'+ROLE_PRESETS[k].label+'</option>';}).join('')+'</select>'
         +'<div class="hint">Start from a preset, then fine-tune. Any manual change makes it Custom.</div></div>'
@@ -4502,6 +4554,9 @@ const Atlas = (function(){
   }
   function removeMember(id){ if(!_guard('teamManage'))return; if(!confirm('Remove this teammate and their access?'))return;
     if(S._actAs===id) exitPreview(); S.team=(S.team||[]).filter(function(x){return x.id!==id;}); save(); closeModal(); renderTeam(); renderSet(); toast('Teammate removed'); }   // fix: renderSet() refreshes Settings>Team
+  function setMemberField(id,field,v){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; v=(v||'').trim();   // fix: rename a teammate / correct their email in place, leaving role + perms untouched
+    if(field==='name'){ if(!v){ toast('Name cannot be empty'); renderTeam(); return; } m.name=v; } else if(field==='email'){ m.email=v; } else return;
+    save(); renderTeam(); renderSet(); toast('Teammate updated'); }
   /* ---- preview-as: see exactly what a worker sees; every gate below applies live ---- */
   function _firstMod(){ var f=NAV.filter(function(n){return _canMod(n[0]);})[0]; return f?f[0]:'overview'; }
   function previewAs(id){ if(!_guard('teamManage','Managing team'))return; if(!_member(id))return; S._actAs=id; save(); closeModal&&closeModal(); buildApp(); go(_firstMod()); toast('Previewing as this teammate'); }
@@ -4714,7 +4769,10 @@ const Atlas = (function(){
             <input class="input" style="padding:8px 10px" value="${esc(r.name)}" onchange="Atlas.setRule('${r.id}','name',this.value)">
             <select class="select" style="width:auto;padding:8px 26px 8px 10px" onchange="Atlas.setRule('${r.id}','kind',this.value);Atlas.renderSetSoft()"><option value="flat" ${r.kind==='flat'?'selected':''}>$ flat</option><option value="percent" ${r.kind==='percent'?'selected':''}>% </option></select>
             <div class="rule-input" style="padding:0 10px;width:96px">${r.kind==='flat'?'<span>$</span>':''}<input class="tnum" style="width:100%;text-align:right" value="${r.value}" oninput="Atlas.setRule('${r.id}','value',this.value)">${r.kind==='percent'?'<span>%</span>':''}</div>
-            <button class="btn btn--sm" style="color:var(--danger);padding:6px 9px" onclick="Atlas.removeRule('${r.id}')" title="Remove">&times;</button>
+            <div style="display:flex;align-items:center;gap:9px;justify-self:end">
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap;cursor:pointer" title="Include this fee in the taxable base"><input type="checkbox" ${r.taxable?'checked':''} onchange="Atlas.setRule('${r.id}','taxable',this.checked)" style="accent-color:var(--brand);width:15px;height:15px">Taxable</label>
+              <button class="btn btn--sm" style="color:var(--danger);padding:6px 9px" onclick="Atlas.removeRule('${r.id}')" title="Remove">&times;</button>
+            </div>
           </div>`).join('')}
         </div>
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addRule()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add rule / fee</button>
@@ -5726,8 +5784,8 @@ const Atlas = (function(){
     var h='<div class="site"><div class="site__hero"><div class="site__logo">'+logo+'</div>'
       +'<h1>'+esc(w.headline||S.brand.name)+'</h1><p>'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
       +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>';
-    if(w.showFleet){ h+='<div class="site__sec"><h2>Our '+esc(S.fleet.nouns)+'</h2><div class="sub">'+DATA.assets.length+' available to book</div><div class="site__cars">'
-      +DATA.assets.slice(0,6).map(function(a){ return '<div class="site__car"><div class="site__car__img"><svg viewBox="0 0 24 24" fill="none" style="width:34px;height:34px"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></div>'
+    if(w.showFleet){ var _bookable=(DATA.assets||[]).filter(function(a){return a.status!=='Maintenance';}); h+='<div class="site__sec"><h2>Our '+esc(S.fleet.nouns)+'</h2><div class="sub">'+_bookable.length+' available to book</div><div class="site__cars">'
+      +_bookable.slice(0,6).map(function(a){ return '<div class="site__car"><div class="site__car__img"><svg viewBox="0 0 24 24" fill="none" style="width:34px;height:34px"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></div>'
         +'<div class="site__car__b"><b>'+esc(a.name)+'</b><div class="row"><span class="price">'+money(a.rate)+'/'+rm+'</span><button class="site__car__book" onclick="Atlas.webBookNow(\''+esc(a.name).replace(/'/g,"\\'")+'\')">Book</button></div></div></div>'; }).join('')
       +'</div></div>'; }
     if(w.showAbout){ h+='<div class="site__sec site__about"><h2>About '+esc(S.brand.name)+'</h2><p>'+esc(w.about||'')+'</p></div>'; }
@@ -5738,7 +5796,7 @@ const Atlas = (function(){
     return h;
   }
   // Verified customer reviews become social proof on the public site automatically.
-  function _siteReviewsHtml(){ var rv=_allReviews(); if(!rv.length) return ''; var avg=_avgRating();
+  function _siteReviewsHtml(){ var rv=_allReviews().filter(function(r){return !r.hidden;}); if(!rv.length) return ''; var avg=rv.reduce(function(s,r){return s+r.rating;},0)/rv.length;   // fix: owner-hidden reviews are moderated off the public site and out of its average
     var feat=rv.filter(function(r){return r.rating>=4 && r.text;}).slice(0,3); if(!feat.length) feat=rv.slice(0,3);
     return '<div class="site__sec site__reviews"><h2>What our customers say</h2><div class="sub">'+_starRow(Math.round(avg))+' '+(Math.round(avg*10)/10).toFixed(1)+' from '+rv.length+' review'+(rv.length===1?'':'s')+'</div>'
       +'<div class="site__revs">'+feat.map(function(r){ return '<div class="site__rev">'+_starRow(r.rating)+(r.text?'<p>&ldquo;'+esc(r.text)+'&rdquo;</p>':'')+'<div class="site__rev-by">&mdash; '+esc(r.by)+', verified customer</div></div>'; }).join('')+'</div></div>'; }
@@ -6488,27 +6546,27 @@ const Atlas = (function(){
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
-    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
+    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
-    drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
+    drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webBookNow,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
-    openPerm,setRolePreset,setPerm,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,
+    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
-    applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,
+    applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
-    openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
+    openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
