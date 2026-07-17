@@ -298,8 +298,9 @@ export default {
         const now = Date.now();
         const tid = 't' + randId(12), uid = 'u' + randId(12);
         const { hash, salt } = await hashPassword(body.password);
+        const fleet = (typeof body.fleet === 'string' && body.fleet) ? body.fleet.slice(0, 40) : 'cars';   // a non-string fleet (object/array) used to reach .bind() and 500; coerce to a safe string -> clean result
         await env.DB.prepare('INSERT INTO tenants (id,name,fleet_type,plan,trial_ends,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
-          .bind(tid, body.business.slice(0, 120), body.fleet || 'cars', 'trial', now + 7 * 24 * 3600 * 1000, now, now).run();
+          .bind(tid, body.business.slice(0, 120), fleet, 'trial', now + 7 * 24 * 3600 * 1000, now, now).run();
         await env.DB.prepare('INSERT INTO users (id,email,pw_hash,pw_salt,tenant_id,role,created_at) VALUES (?,?,?,?,?,?,?)')
           .bind(uid, body.email.toLowerCase(), hash, salt, tid, 'owner', now).run();
         const user = { id: uid, email: body.email.toLowerCase(), tenant_id: tid };
@@ -352,11 +353,17 @@ export default {
         if (!coll) return err(404, 'Unknown collection.');   // hasOwnProperty so 'constructor'/proto names don't slip past as truthy
 
         if (method === 'GET') {
+          if (id) {   // /api/data/<coll>/<id> -> return the ONE row (tenant-scoped), not the whole collection
+            const one = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? AND id=? LIMIT 1`).bind(ctx.tenant_id, id).first();
+            return one ? json({ item: one }) : err(404, 'Not found.');
+          }
           const rows = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1000`).bind(ctx.tenant_id).all();
           return json({ items: rows.results || [] });
         }
         // all writes: CSRF + origin
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        // server-side RBAC floor: a read-only member can never mutate tenant data, even with a valid session + CSRF
+        if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
 
         const hasUpd = (coll === 'assets' || coll === 'bookings');
         if (method === 'POST') {
@@ -364,7 +371,20 @@ export default {
           const { cols, vals } = patchFields(coll, body);       // whitelisted domain fields
           for (const c of (REQUIRED[coll] || [])) if (cols.indexOf(c) < 0) return err(400, 'Missing required field: ' + c);
           const now = Date.now();
-          const rid = (coll === 'bookings' && vStr(body.id, 40)) ? body.id : (coll.slice(0, 2).toUpperCase() + '-' + randId(10));
+          let rid = (coll === 'bookings' && vStr(body.id, 40)) ? body.id : (coll.slice(0, 2).toUpperCase() + '-' + randId(10));
+          // The client picks booking ids (BK-<n>) but the PK is global -> guard the collision instead of letting the INSERT 500:
+          if (coll === 'bookings') {
+            const clash = await env.DB.prepare('SELECT tenant_id FROM bookings WHERE id=?').bind(rid).first();
+            if (clash) {
+              if (clash.tenant_id === ctx.tenant_id) {   // same tenant re-POSTing the same id -> UPDATE, don't duplicate or 500
+                const uCols = cols.slice(), uVals = vals.slice(); uCols.push('updated_at'); uVals.push(now);
+                await env.DB.prepare(`UPDATE bookings SET ${uCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...uVals, rid, ctx.tenant_id).run();
+                await audit(env, ctx, req, 'bookings.update', { id: rid });
+                return json({ ok: true, id: rid, updated: true });
+              }
+              rid = 'BK-' + randId(10);   // id taken by ANOTHER tenant on the global PK -> mint a fresh server id so this booking is never lost
+            }
+          }
           // ONE atomic insert: base columns + all provided fields (respects NOT NULL constraints)
           const allCols = ['id', 'tenant_id', 'created_at'].concat(hasUpd ? ['updated_at'] : []).concat(cols);
           const allVals = [rid, ctx.tenant_id, now].concat(hasUpd ? [now] : []).concat(vals);
@@ -416,7 +436,7 @@ export default {
         if (!vStr(body.provider, 40) || !vStr(body.secret, 400)) return err(400, 'Provider and key required.');
         const secret_enc = await encSecret(env, body.secret, ctx.tenant_id + '|' + body.provider);   // AAD binds this ciphertext to this tenant+provider
         await env.DB.prepare('INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,provider) DO UPDATE SET secret_enc=?,meta=?,connected_at=?')
-          .bind(ctx.tenant_id, body.provider, body.kind || '', secret_enc, JSON.stringify(body.meta || {}), Date.now(), secret_enc, JSON.stringify(body.meta || {}), Date.now()).run();
+          .bind(ctx.tenant_id, body.provider, (typeof body.kind === 'string' ? body.kind : ''), secret_enc, JSON.stringify(body.meta || {}), Date.now(), secret_enc, JSON.stringify(body.meta || {}), Date.now()).run();
         await audit(env, ctx, req, 'integration.connect', { provider: body.provider });
         return json({ ok: true, connected: body.provider });       // UI shows masked "Connected", never the key
       }

@@ -139,6 +139,25 @@ The strict per‑module audit (owner + customer‑portal ends) reproduced these 
 - 🏗️ **Silent data‑loss root fixed earlier this pass** — big media (condition videos, asset docs) that used to overflow the browser's storage quota and be lost on reload now offload to IndexedDB (mirrors the proven Prestige Black shim).
 - 📝 *Noted, low‑risk, deferred:* a referral code derived only from a name can collide for two different no‑email customers who share a name — fixing it would rotate every existing customer's shared code, so left as‑is.
 
+## 6b · Full turnkey close-out — 43-finding deep audit + portal money model + worker (2026‑07‑17)
+An exhaustive per-module audit (18 modules, owner app + customer portal + worker; audit → adversarial-verify → synthesize) surfaced **43 confirmed findings** (3 high, 18 medium, 20 low, 2 polish). Every real one was fixed, kept pure‑ASCII, jsc‑clean, and browser‑checked before deploy.
+
+**The 3 high‑severity (all fixed):**
+- **Editing a booking no longer shifts the date.** The edit form seeded the date from UTC but the time from local, so an evening booking anywhere in the Americas jumped forward a day on every save. Now both come from local time — no drift.
+- **Blocked/booked dates are actually enforced.** "Block days" and existing bookings were never checked, so blackout dates stayed bookable on both the owner form and the public website. Added a real availability check: the owner gets a warning they can override, the website hard‑blocks.
+- **Plan upgrades unlock what you paid for.** The website upsell charged a Starter subscriber for the *next* tier (Pro) while the website stays gated to Enterprise+, so they paid and stayed locked. Upgrades now target the tier that actually unlocks the feature.
+
+**Portal money model (rebuilt to your two calls — two‑step deposit, charges count as income everywhere):**
+- Two‑step **reserve → balance**: paying the deposit to reserve no longer marks the whole booking "paid in full"; the remaining balance stays collectible, and installments are payable in the portal.
+- **Gift credit** shows on the portal and receipt and reduces what's owed (no more overpaying).
+- **ID upload keeps the file** (KYC) — the owner can view the customer's ID, not just a filename.
+- The receipt reflects the **true amount paid vs owed**, add‑on charges, and the refundable hold separately.
+- **Collected add‑on charges** (cleaning, damage, extra day) now count as income in the headline KPI, reports, and the tax/QuickBooks exports — all reconciled.
+
+**Worker (`worker.js`, paste‑deploy):** GET‑by‑id returns one row; bookings POST is collision‑safe (no swallowed 500s, no cross‑tenant clobber); non‑string `fleet`/`kind` no longer 500; a server‑side **read‑only‑role floor** blocks writes even with a valid session. (Hard plan/trial enforcement + AI‑credit metering remain gated on the billing schema — the per‑tenant AI daily cap already caps abuse.)
+
+**Plus the medium/low/polish sweep:** metered re‑bill dedup, recurring‑clone risk‑state isolation, RBAC guards on billing + per‑customer loyalty, referral‑once‑per‑customer, email monthly‑cap reset, setup‑snapshot now includes loyalty/promos/gift cards, live team‑table refresh, dark‑mode palette fix, reduced‑motion + button accessibility names, SEO price, and more.
+
 ## 7 · Add a feature
 Drop it below (or just tell Atlas.io / Claude and it gets slotted into the right area above with a status):
 - ⬜ _…_
