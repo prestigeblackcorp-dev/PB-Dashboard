@@ -3164,6 +3164,9 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Incidents &amp; damage</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkLogIncident(\''+b.id+'\')">+ Log incident</button></div>'
         +'<div class="cond-sub">Record damage, late returns or policy issues &mdash; time-stamped, and bill any of them to the portal in one tap.</div>'
         +_incidentsHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Payment plan</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkPaymentPlan(\''+b.id+'\')">'+(b.plan?'Change':'Set a plan')+'</button></div>'
+        +'<div class="cond-sub">Let '+esc((b.cust||'the customer').split(' ')[0])+' pay in installments &mdash; the schedule shows in their portal and here.</div>'
+        +_planHtml(b)+'</div>'
       +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+a+'</div>'
       +'<div style="display:flex;gap:10px;margin-top:10px"><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openPortal(\''+b.id+'\')">Customer portal</button></div></div>');
   }
@@ -3213,6 +3216,21 @@ const Atlas = (function(){
   // ---- Booking-level ID verification ----
   function bkToggleVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; if(b.idVerified){ b.idVerified=false; delete b.idVerifiedAt; } else { b.idVerified=true; b.idVerifiedAt=Date.now(); }
     _upsertBooking(b); _logEvent('booking','ID '+(b.idVerified?'verified':'un-verified')+' for '+b.id,{booking:b.id}); save(); openBooking(id); toast(b.idVerified?'ID marked verified':'ID verification cleared'); }
+  // ---- Payment plans / partial payments: split a booking total into a tracked schedule ----
+  function _planHtml(b){ var p=b.plan; if(!p||!p.installments||!p.installments.length) return '<div class="bk-lenhint" style="margin:0">Paid in full. Split it into installments if the customer prefers.</div>';
+    var paidN=p.installments.filter(function(x){return x.paidAt;}).length;
+    return '<div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">'+paidN+' of '+p.installments.length+' paid</div>'+p.installments.map(function(x){ var paid=!!x.paidAt; return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.label)+' &middot; '+money(x.amount)+'</b><div style="font-size:11.5px;color:var(--muted)">'+(paid?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)))+'</div></div>'+(paid?'<span class="chip chip--ok"><span class="dot"></span>Paid</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkPlanPaid(\''+b.id+'\',\''+x.id+'\')">Mark paid</button>')+'</div>'; }).join(''); }
+  function bkPaymentPlan(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=Math.round(q.total||0);
+    openModal('<div class="modal__head"><h3>Payment plan</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Split '+money(total)+' into a schedule for '+esc(b.cust||'this customer')+'. They pay each part in their portal (or you mark it paid).</div>'
+      +'<div class="field"><label>Plan</label><select class="select" id="ppType"><option value="none">Pay in full (no plan)</option><option value="half">50% now &middot; 50% before pickup</option><option value="3">3 monthly installments</option><option value="4">4 monthly installments</option></select></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.savePlan(\''+id+'\')">Save plan</button></div>'); }
+  function savePlan(id){ var b=_getBooking(id); if(!b)return; var t=val('ppType'); var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=Math.round(q.total||0), start=Number(b.startTs)||Date.now(), mo=30*86400000;
+    if(t==='none'){ delete b.plan; }
+    else if(t==='half'){ var half=Math.round(total*0.5); b.plan={type:'half',installments:[{id:'pi1',label:'Deposit (50%)',amount:half,dueTs:Date.now(),paidAt:0},{id:'pi2',label:'Balance (50%)',amount:total-half,dueTs:start,paidAt:0}]}; }
+    else { var n=parseInt(t)||3, each=Math.round(total/n), ins=[]; for(var i=0;i<n;i++){ ins.push({id:'pi'+(i+1),label:'Installment '+(i+1)+' of '+n,amount:(i===n-1?(total-each*(n-1)):each),dueTs:Date.now()+i*mo,paidAt:0}); } b.plan={type:t,installments:ins}; }
+    _upsertBooking(b); _logEvent('booking','Payment plan '+(t==='none'?'cleared':'set ('+t+')')+' on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast(t==='none'?'Plan cleared':'Payment plan saved'); }
+  function bkPlanPaid(id,pid){ var b=_getBooking(id); if(!b||!b.plan)return; var x=(b.plan.installments||[]).filter(function(y){return y.id===pid;})[0]; if(x)x.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Plan installment paid on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Marked paid'); }
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
   function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':'day'); }
@@ -5210,6 +5228,8 @@ const Atlas = (function(){
     var _prefLbl=(_cp.email&&_cp.sms)?'Email + text':_cp.sms?'Text only':(b.commsPref&&!_cp.email&&!_cp.sms)?'No messages':'Email';
     acts+=_pAct('Message preferences', 'How you hear from us: '+_prefLbl, !!b.commsPref, 'Atlas.portalView(\'prefs\')', 'Update');
     if(acts) h+='<div class="portal__acts">'+acts+'</div>';
+    if(b.plan&&b.plan.installments&&b.plan.installments.length){ h+='<div class="portal__docs"><div class="portal__docs-hd">Payment schedule</div>'
+      +b.plan.installments.map(function(x){ return '<div class="portal__doc"><span>'+esc(x.label)+' &middot; '+money(x.amount)+'</span><span>'+(x.paidAt?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs))) +'</span></div>'; }).join('')+'</div>'; }
     // Pre-rental condition media ALWAYS shows, on every rental type, so the customer sees the time-stamped condition.
     h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at pickup &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true})+'<div class="cond-note">Each item shows the exact date and time it was captured, so the '+esc(S.fleet.noun)+' condition is clear for both sides.</div></div>';
     if(sec.perks&&pc.perks.length){ h+='<div class="portal__perks"><div class="portal__docs-hd">Perks of booking with '+esc(S.brand.name)+'</div>'+pc.perks.map(function(x){ return '<div class="portal__perk"><span class="portal__perk-ic">&#10003;</span>'+esc(x)+'</div>'; }).join('')+'</div>'; }
@@ -5616,7 +5636,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
