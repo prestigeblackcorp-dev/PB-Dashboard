@@ -2428,6 +2428,11 @@ const Atlas = (function(){
   // the primary type falls back to the global base rate. Assets get tagged a.type so the fleet knows what each one is.
   function _typeById(id){ return FLEET_TYPES.find(function(x){return x.id===id;})||S.fleet; }
   function _typeRate(id){ var bt=(S.money&&S.money.byType)||{}; return (bt[id]!=null)?bt[id]:(S.money?S.money.baseRate:0); }
+  // The price a specific asset actually rents for: its own rate, else its type rate, else the global base. Bookings price + display off THIS (was: everything used the global baseRate, so a $300 asset billed at the global $150).
+  function _assetRate(name){ var a=(DATA.assets||[]).filter(function(x){return x.name===name;})[0];
+    if(a){ if(a.rate!=null && a.rate>=0) return a.rate; if(a.type) return _typeRate(a.type); }
+    return (S.money&&S.money.baseRate)||0; }
+  function _moneyFor(name){ var m=S.money||{}, r=_assetRate(name); if(r===(m.baseRate||0)) return m; var mm={}; for(var k in m) mm[k]=m[k]; mm.baseRate=r; return mm; }   // shallow copy with the asset's rate as baseRate (calcQuote only reads the rest)
   function _setTypeRate(id,rate){ S.money.byType=S.money.byType||{}; S.money.byType[id]=Math.max(0,Number(rate)||0); }
   function _typeNoun(id){ var t=_typeById(id); return (t&&t.noun)||S.fleet.noun; }
   function _typeNouns(id){ var t=_typeById(id); return (t&&t.nouns)||S.fleet.nouns; }
@@ -3293,9 +3298,10 @@ const Atlas = (function(){
     // In End-date mode, show the auto-calculated length so the operator/guest sees what they'll be charged for.
     var hint=document.getElementById('bkLenHint');
     if(hint){ hint.innerHTML = _bkUsesEnd()? ('= <b>'+per+' '+_perUnit()+'</b>'+(w.endTs<=w.startTs?' (end must be after start)':'')) : ''; }
-    var q=calcQuote(S.money,{periods:per,addons:0,extras:(_bkDraft?_bkDraft.extras:[]),discount:_bkReadDiscount()});
+    var mEff=_moneyFor(val('bkAsset')), rate=mEff.baseRate;
+    var q=calcQuote(mEff,{periods:per,addons:0,extras:(_bkDraft?_bkDraft.extras:[]),discount:_bkReadDiscount()});
     var el=document.getElementById('bkPreview'); if(!el)return;
-    var h='<div class="mp-row"><span>'+money(S.money.baseRate)+' &times; '+per+' '+_perUnit()+'</span><span class="tnum">'+money(Math.round(S.money.baseRate*per))+'</span></div>';
+    var h='<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+'</span><span class="tnum">'+money(Math.round(rate*per))+'</span></div>';
     (q.extrasLines||[]).forEach(function(l){ h+='<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(Math.round(l.amt))+'</span></div>'; });
     if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(Math.round(q.disc))+'</span></div>';
     q.fees.forEach(function(f){ h+='<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(Math.round(f.amt))+'</span></div>'; });
@@ -3312,9 +3318,10 @@ const Atlas = (function(){
     var cust=(val('bkCust')||'').trim(); if(!cust){ toast('Enter a customer name'); return; }
     var w=_bkReadWhen();
     var disc=_bkReadDiscount(), extras=(_bkDraft?_bkDraft.extras:[]).slice();
-    var q=calcQuote(S.money,{periods:w.periods,addons:0,extras:extras,discount:disc});
+    var asset=val('bkAsset'), mEff=_moneyFor(asset);
+    var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc});
     var b= editId? _getBooking(editId) : {id:_nextBkId(), createdAt:Date.now()};
-    b.cust=cust; b.custEmail=val('bkEmail'); b.asset=val('bkAsset');
+    b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.rate=mEff.baseRate;
     if(document.getElementById('bkPhone')) b.phone=val('bkPhone');       // only touch fields the operator's form collects
     if(document.getElementById('bkNotes')) b.notes=val('bkNotes');
     b.periods=w.periods; b.startTs=w.startTs; b.endTs=w.endTs; b.time=w.time;
@@ -3351,7 +3358,7 @@ const Atlas = (function(){
       +'<div class="mp-row"><span>'+cap(S.fleet.noun)+'</span><span style="color:var(--ink);font-weight:600">'+esc(b.asset)+'</span></div>'
       +'<div class="mp-row"><span>'+(b.endTs?'When':'Dates')+'</span><span class="tnum" style="text-align:right;max-width:62%">'+_bkWhen(b)+'</span></div>'
       +'<div class="mp-row"><span>Length</span><span class="tnum">'+b.periods+' '+_perUnit()+'</span></div>'
-      +'<div class="mp-row"><span>'+money(S.money.baseRate)+' &times; '+b.periods+' '+_perUnit()+'</span><span class="tnum">'+money(Math.round(S.money.baseRate*b.periods))+'</span></div>'
+      +'<div class="mp-row"><span>'+money(b.rate!=null?b.rate:S.money.baseRate)+' &times; '+b.periods+' '+_perUnit()+'</span><span class="tnum">'+money(Math.round((b.rate!=null?b.rate:S.money.baseRate)*b.periods))+'</span></div>'
       +(q.extrasLines||[]).map(function(l){return '<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(Math.round(l.amt))+'</span></div>';}).join('')
       +(q.disc?'<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(Math.round(q.disc))+'</span></div>':'')
       +q.fees.map(function(f){return '<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(Math.round(f.amt))+'</span></div>';}).join('')
@@ -5563,9 +5570,9 @@ const Atlas = (function(){
     var asset=assetName || (DATA.assets[0]&&DATA.assets[0].name) || S.fleet.sample[0];
     var code=(_sitePromo||val('sitePromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=null;
     if(code){ promo=_findPromo(code); var r=_validatePromo(promo,3); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'), value:promo.value}; else { code=''; promo=null; } }
-    var per=3, q=calcQuote(S.money,{periods:per,addons:0,extras:[],discount:disc});
+    var mEff=_moneyFor(asset), per=3, q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc});
     var b={ id:_nextBkId(), createdAt:Date.now(), cust:'Website Visitor', custEmail:'guest@'+_siteUrl(),
-      asset:asset, periods:per, startTs:Date.now()+2*86400000, endTs:Date.now()+2*86400000+per*_periodMs(), time:false,
+      asset:asset, rate:mEff.baseRate, periods:per, startTs:Date.now()+2*86400000, endTs:Date.now()+2*86400000+per*_periodMs(), time:false,
       extras:[], discount:disc, addons:0, status:'Pending', quote:q, source:'website', promoCode:code };
     _upsertBooking(b);
     if(code&&promo){ promo.used=(promo.used||0)+1; _logEvent('promo','Promo '+code+' redeemed on your website ('+b.id+')',{code:code,booking:b.id}); }
@@ -5910,8 +5917,8 @@ const Atlas = (function(){
   /* ============================================================ BRANDED ITEMIZED RECEIPTS ============================================================ */
   function _receiptNo(b){ return 'R-'+String(b.id||'').replace(/[^0-9]/g,''); }
   function _receiptItems(b){ var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons||0,extras:b.extras||[],discount:b.discount||{type:'none'}});
-    var m=S.money, base=Math.round((m.baseRate||0)*(b.periods||1)); var items=[];
-    items.push({label:money(m.baseRate)+' x '+(b.periods||1)+' '+_perUnit(), amt:base});
+    var m=S.money, rt=(b.rate!=null?b.rate:(m.baseRate||0)), base=Math.round(rt*(b.periods||1)); var items=[];
+    items.push({label:money(rt)+' x '+(b.periods||1)+' '+_perUnit(), amt:base});
     (q.extrasLines||[]).forEach(function(l){ items.push({label:l.name, amt:Math.round(l.amt)}); });
     if(q.disc) items.push({label:'Discount'+(b.promoCode?(' ('+b.promoCode+')'):''), amt:-Math.round(q.disc), disc:true});
     (q.fees||[]).forEach(function(f){ items.push({label:f.name, amt:Math.round(f.amt)}); });
