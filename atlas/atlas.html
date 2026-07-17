@@ -1887,6 +1887,53 @@ const Atlas = (function(){
       +'<div class="meta">Redeemable toward any rental'+(city?(' in '+esc(city)):'')+'. Balance: '+money(g.balance||0)+'.</div>'
       +'<div class="foot">Issued '+_stamp(g.createdAt)+' &middot; Present this code at checkout</div>'
       +'</div></body></html>'; }
+  /* ---- Damage protection / waiver: owner sets tiers; picked at booking it rides the extras engine (counts as revenue), with a printable coverage + waiver doc ---- */
+  function _protection(){ if(!S.money.protection){ var n=(S.fleet&&S.fleet.noun)||'asset'; S.money.protection={ on:true, plans:[
+      {id:'basic',name:'Basic',price:19,per:'day',deductible:2500,covers:'Collision damage waiver on the '+n+' with a reduced deductible for accidental damage during the rental period.'},
+      {id:'premium',name:'Premium',price:39,per:'day',deductible:500,covers:'Everything in Basic, plus a low deductible, tire and glass coverage, and 24/7 roadside assistance.'} ] }; }
+    if(!S.money.protection.plans) S.money.protection.plans=[]; return S.money.protection; }
+  function _protPlan(id){ return _protection().plans.filter(function(p){return p.id===id;})[0]; }
+  function setProtection(field,v){ if(!_canMod('settings'))return; var P=_protection(); if(field==='on') P.on=!!v; save(); renderSet(); }
+  function protAddPlan(){ if(!_canMod('settings'))return; _protection().plans.push({id:'p'+Date.now().toString(36),name:'New tier',price:25,per:'day',deductible:1000,covers:'Describe what this protection covers.'}); save(); renderSet(); }
+  function protSetPlan(id,field,v){ if(!_canMod('settings'))return; var p=_protPlan(id); if(!p)return; if(field==='price'||field==='deductible') p[field]=Math.max(0,parseFloat(v)||0); else p[field]=v; save(); if(field==='per'||field==='name') renderSet(); }
+  function protRmPlan(id){ if(!_canMod('settings'))return; var P=_protection(); P.plans=P.plans.filter(function(p){return p.id!==id;}); save(); renderSet(); }
+  function _protSettingsHtml(){ var P=_protection();
+    var rows=P.plans.map(function(p){ return '<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">'
+      +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input class="input" style="flex:1;font-weight:650" value="'+esc(p.name)+'" onchange="Atlas.protSetPlan(\''+p.id+'\',\'name\',this.value)"><button class="btn btn--sm" style="color:var(--danger)" onclick="Atlas.protRmPlan(\''+p.id+'\')" title="Remove">&times;</button></div>'
+      +'<div class="row2"><div class="field" style="margin:0"><label>Price</label><div class="rule-input" style="padding:0 12px"><span>'+_curSym()+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+p.price+'" onchange="Atlas.protSetPlan(\''+p.id+'\',\'price\',this.value)"><select class="select" style="border:0;background:transparent;width:auto;padding:0" onchange="Atlas.protSetPlan(\''+p.id+'\',\'per\',this.value)"><option value="day"'+(p.per==='day'?' selected':'')+'>/'+_perUnit()+'</option><option value="trip"'+(p.per!=='day'?' selected':'')+'>/trip</option></select></div></div>'
+      +'<div class="field" style="margin:0"><label>Deductible</label><div class="rule-input" style="padding:0 12px"><span>'+_curSym()+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(p.deductible||0)+'" onchange="Atlas.protSetPlan(\''+p.id+'\',\'deductible\',this.value)"></div></div></div>'
+      +'<div class="field" style="margin:8px 0 0"><label>What it covers</label><textarea class="input" rows="2" onchange="Atlas.protSetPlan(\''+p.id+'\',\'covers\',this.value)">'+esc(p.covers||'')+'</textarea></div>'
+      +'<button class="btn btn--ghost btn--sm" style="margin-top:8px" onclick="Atlas.protectionDoc(\''+p.id+'\')">Preview coverage doc</button></div>'; }).join('');
+    return '<label style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><label class="switch"><input type="checkbox" '+(P.on?'checked':'')+' onchange="Atlas.setProtection(\'on\',this.checked)"><span class="switch__t"></span></label><span style="font-size:13.5px;color:var(--ink)">Offer damage protection '+(P.on?'<b>on</b>':'off')+'</span></label>'
+      +rows+'<button class="btn btn--ghost btn--sm" onclick="Atlas.protAddPlan()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a tier</button>'; }
+  function _bkProtSel(){ if(!_bkDraft) return null; return _bkDraft.extras.filter(function(x){return x.protection;})[0]||null; }
+  function bkSetProtection(planId){ if(!_bkDraft)return; _bkDraft.extras=_bkDraft.extras.filter(function(x){return !x.protection;});
+    var p=_protPlan(planId); if(p){ _bkDraft.extras.push({id:'prot',planId:p.id,name:'Damage protection ('+p.name+')',price:p.price,per:(p.per==='day'?'unit':'flat'),qty:1,protection:true}); }
+    _bkRenderExtras(); }
+  function _bkProtHtml(){ var P=_protection(); if(!P.on||!P.plans.length) return ''; var cur=_bkProtSel(), curId=cur?cur.planId:'';
+    return '<div class="field"><label>Damage protection</label><select class="select" onchange="Atlas.bkSetProtection(this.value)"><option value="">None</option>'
+      +P.plans.map(function(p){ return '<option value="'+esc(p.id)+'"'+(curId===p.id?' selected':'')+'>'+esc(p.name)+' - '+_curSym()+p.price+'/'+(p.per==='day'?_perUnit():'trip')+'</option>'; }).join('')
+      +'</select><div class="bk-lenhint" style="margin:5px 0 0">Optional coverage the customer can add &mdash; it rides the quote and shows in their portal with a coverage summary.</div></div>'; }
+  function protectionDoc(planId){ var p=_protPlan(planId); if(!p){ toast('Pick a tier first'); return; } var biz=(S.brand&&S.brand.name)||'Atlas Rental.io', noun=(S.fleet&&S.fleet.noun)||'asset';
+    var doc='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(p.name)+' Protection &mdash; '+esc(biz)+'</title>'
+      +'<style>*{box-sizing:border-box}body{font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#14201a;margin:0;padding:32px;background:#f4f6f5}'
+      +'.doc{max-width:760px;margin:0 auto;background:#fff;border:1px solid #dfe6e2;border-radius:14px;padding:32px 36px}'
+      +'.top{border-bottom:2px solid #14201a;padding-bottom:14px;margin-bottom:18px}.top .b{font-size:19px;font-weight:800}.top .t{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#6b7c74;margin-top:2px}'
+      +'.tier{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:6px 0 14px}.tier h1{font-size:22px;margin:0}.tier .pr{font-size:20px;font-weight:800;color:#2e7d5b}'
+      +'h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:#2e7d5b;margin:20px 0 6px}'
+      +'.grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 20px}.grid div{padding:3px 0;border-bottom:1px solid #eef2f0}.grid b{color:#6b7c74;font-weight:600;margin-right:8px}'
+      +'p{margin:6px 0}.fine{font-size:11.5px;color:#8a978f;margin-top:18px;border-top:1px solid #eef2f0;padding-top:12px}'
+      +'.noprint{max-width:760px;margin:0 auto 14px}.btn{background:#14201a;color:#fff;border:0;border-radius:9px;padding:9px 16px;font-weight:600;cursor:pointer}'
+      +'@media print{body{background:#fff;padding:0}.doc{border:0;border-radius:0}.noprint{display:none}}</style></head><body>'
+      +'<div class="noprint"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>'
+      +'<div class="doc"><div class="top"><div class="b">'+esc(biz)+'</div><div class="t">Damage protection &amp; waiver summary</div></div>'
+      +'<div class="tier"><h1>'+esc(p.name)+' protection</h1><div class="pr">'+_curSym()+p.price+' / '+(p.per==='day'?_perUnit():'trip')+'</div></div>'
+      +'<h2>What it covers</h2><p>'+esc(p.covers||'')+'</p>'
+      +'<h2>Key terms</h2><div class="grid"><div><b>Deductible</b>'+_curSym()+Number(p.deductible||0).toLocaleString()+'</div><div><b>Applies to</b>the rented '+esc(noun)+'</div><div><b>Price</b>'+_curSym()+p.price+' per '+(p.per==='day'?_perUnit():'trip')+'</div><div><b>Term</b>the rental period</div></div>'
+      +'<h2>Damage waiver</h2><p>When this protection is purchased, '+esc(biz)+' waives its right to hold the renter responsible for accidental damage to the '+esc(noun)+' above the stated deductible, subject to the rental agreement. It does not cover intentional damage, use in violation of the agreement, unauthorized drivers, or loss of personal belongings.</p>'
+      +'<p class="fine">This is a damage waiver offered by '+esc(biz)+', not an insurance policy, and is not a contract of insurance. Coverage is governed by your signed rental agreement. Review that agreement for the complete terms and any exclusions.</p>'
+      +'</div></body></html>';
+    try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener'); if(!w){ var a=document.createElement('a'); a.href=url; a.download='protection-'+p.id+'.html'; a.click(); } setTimeout(function(){URL.revokeObjectURL(url);},6000); }catch(e){ toast('Could not open the coverage doc here'); } }
   /* ---- timestamped event log (audit trail + tax/documentation) ---- */
   function _events(){ if(!S.events) S.events=[]; return S.events; }
   function _logEvent(type,text,meta){ try{ var e=_events(); e.unshift({t:Date.now(),type:type,text:text,meta:meta||null}); if(e.length>800) e.length=800; save(); }catch(err){} }
@@ -3184,6 +3231,7 @@ const Atlas = (function(){
       +_bkWhenFieldsHtml(b.periods||3)
       +'<div class="field"><label>Extras <span style="color:var(--muted);font-weight:500">&mdash; add, set the quantity, or create your own</span></label>'
       +'<div id="bkExtras" class="ex-list"></div>'
+      +_bkProtHtml()
       +'<div id="bkExNew" class="ex-new" style="display:none"><input class="input" id="bkExName" placeholder="Extra name"><input class="input tnum" id="bkExPrice" type="number" min="0" placeholder="$0"><select class="select" id="bkExPer"><option value="flat">One-time</option><option value="unit">Per '+unit+'</option></select><button type="button" class="btn btn--primary btn--sm" onclick="Atlas.bkSaveCustom()">Add</button></div>'
       +'<button type="button" class="ex-add" onclick="Atlas.bkAddCustom()">+ Custom extra</button></div>'
       +'<div class="field"><label>Promo code</label><div style="display:flex;gap:8px"><input class="input" id="bkPromo" placeholder="Enter code" style="flex:1;text-transform:uppercase" value="'+esc((existing&&existing.promoCode)||'')+'"><button type="button" class="btn btn--ghost btn--sm" onclick="Atlas.applyBkPromo()">Apply</button></div><div id="bkPromoMsg" style="font-size:12px;margin-top:5px"></div></div>'
@@ -3459,7 +3507,7 @@ const Atlas = (function(){
   function _bkRenderExtras(){ var host=document.getElementById('bkExtras'); if(!host||!_bkDraft)return;
     var cat=_extrasCatalog(), chosen=_bkDraft.extras, catIds=cat.map(function(e){return e.id;});
     var h=cat.map(function(e){ var on=chosen.filter(function(x){return x.id===e.id;})[0]; return _exRowHtml(e.id,e.name,e.price,e.per,!!on,on?on.qty:1,false); }).join('');
-    h+=chosen.filter(function(x){return catIds.indexOf(x.id)<0;}).map(function(x){ return _exRowHtml(x.id,x.name,x.price,x.per,true,x.qty,true); }).join('');
+    h+=chosen.filter(function(x){return catIds.indexOf(x.id)<0 && !x.protection;}).map(function(x){ return _exRowHtml(x.id,x.name,x.price,x.per,true,x.qty,true); }).join('');
     host.innerHTML=h; bkPreview();
   }
   /* ---- 30-second product film: a pre-made, voiced, interactive commercial that teases the whole product.
@@ -4427,6 +4475,9 @@ const Atlas = (function(){
       <div class="set-block"><h3>Gift cards</h3><div class="desc">Issue stored-value gift cards customers redeem toward any booking &mdash; each with a unique code and a printable certificate. Balances draw down automatically as they are used.</div>
         <div id="giftList">${_giftListHtml()}</div>
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.issueGift()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Issue a gift card</button>
+      </div>
+      <div class="set-block"><h3>Damage protection &amp; waiver</h3><div class="desc">Offer optional protection tiers at checkout &mdash; a real upsell that also lowers your risk. Each tier rides the quote as revenue and comes with a printable coverage + waiver summary for the customer.</div>
+        ${_protSettingsHtml()}
       </div>
       <div class="set-block"><h3>Live preview</h3><div class="desc">A sample 3-${m.rateModel} booking, priced by your rules right now &mdash; updates as you edit.</div>
         <div class="mp" id="moneyPreview">${moneyPreviewHtml()}</div>
@@ -5481,6 +5532,7 @@ const Atlas = (function(){
     if(_condMedia(b).some(function(m){return m.phase==='return';})){ h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at return &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'return'})+'</div>'; }
     if(sec.perks&&pc.perks.length){ h+='<div class="portal__perks"><div class="portal__docs-hd">Perks of booking with '+esc(S.brand.name)+'</div>'+pc.perks.map(function(x){ return '<div class="portal__perk"><span class="portal__perk-ic">&#10003;</span>'+esc(x)+'</div>'; }).join('')+'</div>'; }
     if(_loy().on){ h+='<div class="portal__perks"><div class="portal__docs-hd">'+esc(S.brand.name)+' rewards</div>'+_portalLoyaltyHtml(b)+'</div>'; }
+    var _pProt=(b.extras||[]).filter(function(x){return x.protection;})[0]; if(_pProt&&_pProt.planId){ h+='<div class="portal__perks"><div class="portal__docs-hd">Your protection</div><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;color:var(--ink)">'+esc(_pProt.name)+'</span><button class="btn btn--ghost btn--sm" onclick="Atlas.protectionDoc(\''+esc(_pProt.planId)+'\')">View coverage</button></div></div>'; }
     if(sec.documents){ h+='<div class="portal__docs"><div class="portal__docs-hd">Your documents</div>'
       +'<div class="portal__doc" onclick="Atlas.portalDoc()"><span>Rental agreement</span><span>'+(signed?'Signed':'Pending signature')+'</span></div>'
       +'<div class="portal__doc" onclick="Atlas.openReceipt(\''+b.id+'\',\'portal\')"><span>Receipt '+_receiptNo(b)+'</span><span>View</span></div>'
@@ -6016,6 +6068,7 @@ const Atlas = (function(){
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,bkApplyGift,bkRemoveGift,
+    setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,

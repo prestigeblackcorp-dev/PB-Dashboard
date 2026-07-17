@@ -72,7 +72,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ rate models (day/hour/week), tax, discounts (weekly/monthly), deposits, promos · 🔌 Stripe charge/hold/settle · ✅ **partial payments / payment plans** (half · 3 · 4) · ✅ **metered run‑hour billing** · ✅ **multi‑currency display** (14 currencies; symbol across the app + every customer doc) · 💡 true monthly tier · 💡 net‑30 accounts (B2B)
 
 ### Contracts, deposits & risk
-- ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · ✅ **refundable hold flow** (authorize → release / capture / charge‑difference) · ✅ **ID verification** · ✅ **damage‑claim workflow** (document → keep deposit / capture hold → itemized **claim packet** PDF for the insurer → track filed/settled + recovered) · 💡 insurance add‑on marketplace
+- ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · ✅ **refundable hold flow** (authorize → release / capture / charge‑difference) · ✅ **ID verification** · ✅ **damage‑claim workflow** (document → keep deposit / capture hold → itemized **claim packet** PDF for the insurer → track filed/settled + recovered) · ✅ **damage protection / waiver** (owner‑set tiers at checkout, rides the quote as revenue, printable coverage + waiver summary)
 
 ### Customer‑facing
 - ✅ branded member portal · ✅ branded website + promo box · ✅ reviews · ✅ itemized receipts · ✅ **loyalty program** (points per $ spent, tiers, redeem → real coupon, shown in portal) · ✅ **referrals** (each customer gets a shareable code; referrer earns points when a referred first rental completes) · ✅ **gift cards** (issue stored‑value codes + printable certificate; redeem on a booking, balance draws down as a credit)
@@ -111,7 +111,7 @@ Cross‑checked against the whole build so far. If it isn't ✅ above, it's here
 - 💡 **"Clone last season's setup"**
 - 💡 **True monthly rate tier** — long‑term / subscription rentals as a first‑class rate
 - 💡 **Operator / delivery add‑ons as first‑class line items**
-- 💡 **Insurance add‑on marketplace** — offer coverage at checkout (display/config now; live quotes need a provider)
+- 💡 **Live insurance quotes** — a real per‑trip insurance marketplace (needs a provider API; the damage‑waiver upsell above ships today)
 
 ### B. Owner‑key / account‑gated (built or modeled — flips on when you connect)
 - 🔌 **Stripe** — real charges, deposit/hold capture, your $49.99/mo subscription billing, per‑installment payment‑plan charges, B2B **net‑30** invoicing
