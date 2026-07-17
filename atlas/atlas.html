@@ -1853,8 +1853,8 @@ const Atlas = (function(){
   function _findGift(code){ code=String(code||'').trim().toUpperCase(); return _giftcards().filter(function(g){ return (g.code||'').toUpperCase()===code; })[0]; }
   function _giftListHtml(){ var gs=_giftcards(); if(!gs.length) return '<div class="bk-lenhint" style="margin:0">No gift cards yet. Issue one and share the code or the printable certificate.</div>';
     return gs.slice().sort(function(a,b){return (b.createdAt||0)-(a.createdAt||0);}).map(function(g){ var bal=g.balance||0, spent=(g.initial||0)-bal;
-      return '<div class="promo-row"><div style="min-width:0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="mono" style="color:var(--ink);font-size:14px;letter-spacing:.03em">'+esc(g.code)+'</b><span class="chip '+(bal>0?'chip--ok':'chip--muted')+'"><span class="dot"></span>'+money(bal)+' left</span></div><div style="font-size:12px;color:var(--muted);margin-top:3px">'+money(g.initial||0)+' issued'+(g.to?(' &middot; to '+esc(g.to)):'')+(spent>0?(' &middot; '+money(spent)+' used'):'')+'</div></div>'
-        +'<div style="display:flex;gap:6px;align-items:center;flex:none"><button class="btn btn--ghost btn--sm" onclick="Atlas.giftCert(\''+g.id+'\')">Certificate</button><button class="btn btn--sm" style="color:var(--danger);padding:6px 8px" onclick="Atlas.deleteGift(\''+g.id+'\')" title="Delete">&times;</button></div></div>';
+      return '<div class="promo-row"><div style="min-width:0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="mono" style="color:var(--ink);font-size:14px;letter-spacing:.03em">'+esc(g.code)+'</b><span class="chip '+((bal>0&&!g.disabled)?'chip--ok':'chip--muted')+'"><span class="dot"></span>'+(g.disabled?'off':(money(bal)+' left'))+'</span></div><div style="font-size:12px;color:var(--muted);margin-top:3px">'+money(g.initial||0)+' issued'+(g.to?(' &middot; to '+esc(g.to)):'')+(spent>0?(' &middot; '+money(spent)+' used'):'')+'</div></div>'
+        +'<div style="display:flex;gap:6px;align-items:center;flex:none"><button class="btn btn--ghost btn--sm" onclick="Atlas.giftEdit(\''+g.id+'\')">Edit</button><button class="btn btn--ghost btn--sm" onclick="Atlas.giftCert(\''+g.id+'\')">Certificate</button><button class="btn btn--sm" style="color:var(--danger);padding:6px 8px" onclick="Atlas.deleteGift(\''+g.id+'\')" title="Delete">&times;</button></div></div>';
     }).join(''); }
   function issueGift(){ if(!_canMod('settings'))return;
     openModal('<div class="modal__head"><h3>Issue a gift card</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -1876,6 +1876,7 @@ const Atlas = (function(){
     return rs.map(function(r,idx){ return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b class="mono" style="color:var(--ink);font-size:13px">'+esc(r.code)+'</b><div style="font-size:11.5px;color:var(--muted)">'+money(r.amt)+' applied &middot; '+_stamp(r.at)+'</div></div><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.bkRemoveGift(\''+b.id+'\','+idx+')"><svg viewBox="0 0 18 18" fill="none" width="15" height="15"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>'; }).join(''); }
   function bkApplyGift(id){ var b=_getBooking(id); if(!b)return; var code=prompt('Gift card code:'); if(code===null)return; var g=_findGift(code);
     if(!g){ toast('No gift card with that code'); return; }
+    if(g.disabled){ toast('That gift card is turned off'); return; }
     if((g.balance||0)<=0){ toast('That gift card has no balance left'); return; }
     var q=b.quote||{}; var netDue=Math.max(0, Math.round(q.dueNow||q.total||0) - _giftApplied(b));
     var amt=Math.min(g.balance, netDue>0?netDue:g.balance); amt=Math.round(amt*100)/100;
@@ -1909,6 +1910,24 @@ const Atlas = (function(){
       +'<div class="meta">Redeemable toward any rental'+(city?(' in '+esc(city)):'')+'. Balance: '+money(g.balance||0)+'.</div>'
       +'<div class="foot">Issued '+_stamp(g.createdAt)+' &middot; Present this code at checkout</div>'
       +'</div></body></html>'; }
+  function giftEdit(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return;
+    openModal('<div class="modal__head"><h3>Gift card '+esc(g.code)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<label style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><label class="switch"><input type="checkbox" id="geOn" '+(g.disabled?'':'checked')+'><span class="switch__t"></span></label><span style="font-size:13.5px;color:var(--ink)">Active (can be redeemed)</span></label>'
+      +'<div class="field"><label>Balance</label><div class="rule-input" style="padding:0 12px"><span>'+_curSym()+'</span><input class="tnum" id="geBal" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+(g.balance||0)+'"></div><div class="bk-lenhint" style="margin:5px 0 0">Issued '+money(g.initial||0)+'. Adjust the remaining balance up or down at any time.</div></div>'
+      +'<div class="row2"><div class="field"><label>To</label><input class="input" id="geTo" value="'+esc(g.to||'')+'"></div><div class="field"><label>From</label><input class="input" id="geFrom" value="'+esc(g.from||'')+'"></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveGiftEdit(\''+id+'\')">Save</button>'
+      +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.deleteGift(\''+id+'\')">Delete gift card</button></div>'); }
+  function saveGiftEdit(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return;
+    g.disabled=!(document.getElementById('geOn')&&document.getElementById('geOn').checked);
+    g.balance=Math.max(0, Math.round((parseFloat(val('geBal'))||0)*100)/100);
+    g.to=(val('geTo')||'').trim(); g.from=(val('geFrom')||'').trim();
+    save(); _logEvent('gift','Gift card '+g.code+' updated (balance '+money(g.balance)+(g.disabled?', OFF':'')+')',{code:g.code}); closeModal(); renderSet(); toast('Gift card updated'); }
+  function _custGiftCards(c){ if(!c) return []; var key=_loyKey(c.email), nm=(c.name||'').toLowerCase();
+    var mine={}; (DATA.bookings||[]).forEach(function(b){ if((b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm)) mine[b.id]=1; });
+    return _giftcards().filter(function(g){ if(g.to && String(g.to).toLowerCase()===nm) return true; return (g.redeemed||[]).some(function(r){ return mine[r.bookingId]; }); }); }
+  function _custGiftHtml(c){ var gs=_custGiftCards(c); if(!gs.length) return '';
+    return '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:750;margin:0 0 8px">Gift cards</div>'
+      +gs.map(function(g){ var bal=g.balance||0; return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b class="mono" style="color:var(--ink);font-size:13px">'+esc(g.code)+'</b><div style="font-size:11.5px;color:var(--muted)">'+money(bal)+' of '+money(g.initial||0)+(g.disabled?' &middot; off':'')+(g.to?(' &middot; to '+esc(g.to)):'')+'</div></div><button class="btn btn--ghost btn--sm" onclick="Atlas.giftEdit(\''+g.id+'\')">Manage</button></div>'; }).join('')+'</div>'; }
   /* ---- Damage protection / waiver: owner sets tiers; picked at booking it rides the extras engine (counts as revenue), with a printable coverage + waiver doc ---- */
   function _protection(){ if(!S.money.protection){ var n=(S.fleet&&S.fleet.noun)||'asset'; S.money.protection={ on:true, plans:[
       {id:'basic',name:'Basic',price:19,per:'day',deductible:2500,covers:'Collision damage waiver on the '+n+' with a reduced deductible for accidental damage during the rental period.'},
@@ -3932,6 +3951,7 @@ const Atlas = (function(){
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar" style="width:44px;height:44px;font-size:18px">'+esc((c.name||'?')[0])+'</span><div style="min-width:0"><div style="font-size:13px;color:var(--muted)">'+esc(c.email||'')+'</div>'+(c.phone?('<div style="font-size:13px;color:var(--muted)">'+esc(c.phone)+'</div>'):'')+'</div></div>'
       +'<div style="display:flex;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin-bottom:16px">'+stat('Trips',trips)+stat('Spent',money(Math.round(spent)))+stat('Codes',String(Object.keys(codes).length))+'</div>'
       +(_loy().on?_custLoyaltyHtml(c,i):'')
+      +_custGiftHtml(c)
       +'<div style="font-size:13px;font-weight:750;margin:0 0 8px">Booking history</div>'
       +'<div class="cust-bklist" style="display:flex;flex-direction:column;gap:8px">'+rows+'</div>'
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:14px" onclick="Atlas.closeModal();Atlas.newBooking()">New booking</button>'
@@ -6153,7 +6173,7 @@ const Atlas = (function(){
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
-    issueGift,saveGift,deleteGift,giftCert,bkApplyGift,bkRemoveGift,
+    issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
