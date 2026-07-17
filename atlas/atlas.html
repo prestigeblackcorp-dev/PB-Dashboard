@@ -3266,7 +3266,7 @@ const Atlas = (function(){
   function _bookingForm(existing){
     var assets=(DATA.assets||[]).map(function(a){return a.name;}); if(!assets.length) assets=S.fleet.sample.slice();
     var b=existing||{cust:'',custEmail:'',phone:'',asset:assets[0]||'',periods:3,extras:[],discount:{type:'none',value:0},notes:'',status:'Confirmed'};
-    _bkDraft={ extras:(b.extras||[]).map(function(x){return {id:x.id,name:x.name,price:x.price,per:x.per,qty:x.qty||1,custom:x.custom};}) };
+    _bkDraft={ extras:(b.extras||[]).map(function(x){return {id:x.id,name:x.name,price:x.price,per:x.per,qty:x.qty||1,custom:x.custom,protection:x.protection,planId:x.planId};}) };   // keep protection+planId so editing a booking never drops/double-charges coverage
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
     var assetField='<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset">'+assets.map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';
     var phoneField=cfg.fields.phone? '<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkPhone" value="'+esc(b.phone||'')+'" placeholder="(555) 555-1234"></div>' : '';
@@ -3333,7 +3333,7 @@ const Atlas = (function(){
         if(_prevCode){ var _op=_findPromo(_prevCode); if(_op&&(_op.used||0)>0) _op.used=Math.max(0,(_op.used||0)-1); }
         var _pr=_findPromo(_bkPromo.code); if(_pr) _pr.used=(_pr.used||0)+1; } }
     if(document.getElementById('bkRefCode')){ b.referredByCode=(val('bkRefCode')||'').trim().toUpperCase(); }
-    _upsertBooking(b);
+    _upsertBooking(b); save();   // save() persists S too (promo.used counters live in S.promos, not DATA) so a single-use code stays used after reload
     if(editId) _logEvent('booking','Booking '+b.id+' updated ('+b.cust+')',{booking:b.id});
     else _logEvent('booking','Booking '+b.id+' created: '+b.cust+' / '+b.asset+' / '+money(Math.round(q.total)),{booking:b.id,total:Math.round(q.total)});
     if(_newRedeem) _logEvent('promo','Promo '+_bkPromo.code+' redeemed on '+b.id,{code:_bkPromo.code,booking:b.id});
@@ -3425,7 +3425,7 @@ const Atlas = (function(){
   function doCancel(id){ var b=_getBooking(id); if(!b)return; var sel=document.querySelector('input[name=cxfee]:checked'), v=sel?sel.value:'0';
     var fee=(v==='custom')?Math.round(Math.max(0,parseFloat(val('cxCustom'))||0)):Math.round(parseFloat(v)||0);
     b.status='Cancelled'; b.cancelledAt=Date.now(); b.cancelFee=fee;
-    if(fee>0) _charges(b).push({id:'ch'+Date.now(), label:'Cancellation fee', amount:fee, at:Date.now(), paidAt:null});
+    if(fee>0) _charges(b).push({id:_chId(), label:'Cancellation fee', amount:fee, at:Date.now(), paidAt:null});
     _upsertBooking(b); _logEvent('booking','Booking '+b.id+' cancelled'+(fee?(' -- kept '+money(fee)):' (full refund)'),{booking:b.id}); save(); closeModal();
     renderOverview(); renderBookings(); var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length;
     toast(fee?('Cancelled -- kept '+money(fee)+' fee'):'Cancelled -- full refund'); try{ setTimeout(function(){ _waitSurface(b.asset); }, 900); }catch(e){} }
@@ -3476,7 +3476,7 @@ const Atlas = (function(){
   function _mtHint(){ var u=parseFloat(val('mtUnits'))||0, r=parseFloat(val('mtRate'))||0, h=document.getElementById('mtHint'); if(h) h.innerHTML=(u&&r)?('Bills <b>'+money(Math.round(u*r))+'</b> to the portal.'):''; }
   function saveMeter(id){ var b=_getBooking(id); if(!b)return; var u=parseFloat(val('mtUnits'))||0, r=parseFloat(val('mtRate'))||0, unit=val('mtUnit')||'hours'; if(u<=0||r<=0){ toast('Enter units and a rate'); return; }
     b.meter={units:u, unit:unit, rate:Math.round(r*100)/100, at:Date.now(), charged:false}; _upsertBooking(b); _logEvent('asset','Usage recorded on '+b.id+' ('+u+' '+unit+')',{booking:b.id}); save(); closeModal(); openBooking(id); toast('Usage recorded -- tap Bill to charge it'); }
-  function bkMeterBill(id){ var b=_getBooking(id); if(!b||!b.meter)return; var amt=Math.round(b.meter.units*b.meter.rate); _charges(b).push({id:'ch'+Date.now(), label:'Usage: '+b.meter.units+' '+b.meter.unit, amount:amt, at:Date.now(), paidAt:null}); b.meter.charged=true; _upsertBooking(b); _logEvent('booking','Billed '+money(amt)+' usage on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Usage billed ('+money(amt)+')'); }
+  function bkMeterBill(id){ var b=_getBooking(id); if(!b||!b.meter)return; var amt=Math.round(b.meter.units*b.meter.rate); _charges(b).push({id:_chId(), label:'Usage: '+b.meter.units+' '+b.meter.unit, amount:amt, at:Date.now(), paidAt:null}); b.meter.charged=true; _upsertBooking(b); _logEvent('booking','Billed '+money(amt)+' usage on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Usage billed ('+money(amt)+')'); }
   // ---- Refundable deposit hold: authorize -> capture (damage) or release (clean) ----
   function _holdHtml(b){ var h=b.hold, q=b.quote||{}, sug=Math.round(q.hold||0);
     if(!h||!h.status||h.status==='none'){ return '<div class="bk-lenhint" style="margin:0 0 8px">'+(sug?('Suggested hold: <b>'+money(sug)+'</b> (from your money rules).'):'Authorize a refundable hold to cover damage or fuel.')+'</div><button class="btn btn--ghost btn--sm" onclick="Atlas.holdAuth(\''+b.id+'\')">Authorize hold</button>'; }
@@ -3495,7 +3495,7 @@ const Atlas = (function(){
       +'<button class="btn btn--danger btn--full btn--lg" onclick="Atlas.doCapture(\''+id+'\')">Capture</button></div>'); }
   function doCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var cap=Math.min(b.hold.amount, Math.round(parseFloat(val('hcAmt'))||0)); if(cap<=0){ closeModal(); return holdRelease(id); }
     b.hold.status='captured'; b.hold.captured=cap; b.hold.capturedAt=Date.now();
-    _charges(b).push({id:'ch'+Date.now(), label:'Deposit captured (damage/fuel)', amount:cap, at:Date.now(), paidAt:Date.now()});
+    _charges(b).push({id:_chId(), label:'Deposit captured (damage/fuel)', amount:cap, at:Date.now(), paidAt:Date.now()});
     _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast('Captured '+money(cap)+' from the hold'); }
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
@@ -4773,11 +4773,13 @@ const Atlas = (function(){
     return '<div class="cx-grid">'+models.map(function(m){ return '<div class="cx-card"><div class="cx-card__h"><span class="cx-badge" style="background:'+m.c+'">'+esc(m.n[0])+'</span>'+esc(m.n)+'</div><div class="cx-card__b">'+m.a+'</div></div>'; }).join('')+'</div>';
   }
   // Built-in preview: single-answer heuristic + three canned perspectives (used until the backend + keys are live).
+  function _aioDropThink(){ try{ var t=document.querySelector('#aioBody .cx-think'); if(t){ var b=t.closest('.aio-b'); (b||t).remove(); } }catch(e){} }   // remove the "convening..." bubble so it doesn't strand above the answer
   function _councilRenderPreview(q){
+    _aioDropThink();
     var base=aioReply(q), t=_councilTopic(String(q).toLowerCase());
     var models=[{n:'Claude',c:_AIO_COLORS.Claude,a:t.claude},{n:'GPT-4o',c:_AIO_COLORS['GPT-4o'],a:t.gpt},{n:'Gemini',c:_AIO_COLORS.Gemini,a:t.gemini}];
     var synth='<div class="cx-synth"><div class="cx-synth__h">The council\u2019s answer <span class="cx-agree">3 models weighed in</span></div>'+base+'</div>';
-    var note='<div class="cx-note">Preview of the council. Deploy the Atlas backend and add your Claude, GPT and Gemini keys to make every answer a live three-model synthesis.</div>';
+    var note='<div class="cx-note">Preview of the council &mdash; your live Claude + GPT + Gemini synthesis turns on once your three AI keys are connected.</div>';
     aioMsg('bot', _councilCardsHtml(models)+synth+note); _aioArmFromText(base);
   }
   function _aioCouncil(q){
@@ -4789,7 +4791,7 @@ const Atlas = (function(){
         var models=j.models.map(function(m){ return {n:m.name,c:_AIO_COLORS[m.name]||'#888',a:esc(String(m.text||'')).replace(/\n/g,'<br>')}; });
         var synthTxt=esc(String(j.synthesis||'')).replace(/\n/g,'<br>')||models[0].a;
         var synth='<div class="cx-synth"><div class="cx-synth__h">The council\u2019s answer <span class="cx-agree">'+models.length+' models weighed in</span></div>'+synthTxt+'</div>';
-        aioMsg('bot', _councilCardsHtml(models)+synth); _aioArmFromText(String(j.synthesis||''));
+        _aioDropThink(); aioMsg('bot', _councilCardsHtml(models)+synth); _aioArmFromText(String(j.synthesis||''));
         return;
       }
       _councilRenderPreview(q);
@@ -5328,7 +5330,7 @@ const Atlas = (function(){
     var status=val('vStatus')||'Available', names=[];
     if(qty===1){ names=[(val('vName')||'').trim() || (loc?(loc+' #'+start):(tnoun+' '+start))]; }
     else { for(var i=0;i<qty;i++){ names.push((loc?(loc+' #'):(tnoun+' '))+(start+i)); } }
-    _setTypeRate(tid,rate);   // remember this type's rate so the next one of the same type prefills it
+    _setTypeRate(tid,rate); save();   // remember this type's rate (persist S.money.byType, not just assets) so the next same-type add prefills it
     names.forEach(function(nm){ var a={ id:_assetId(), name:nm, rate:rate, status:status, util:0, tenant:null }; if(loc) a.loc=loc; if(multi) a.type=tid; DATA.assets.push(a); });
     _saveAssets(); closeModal(); if(loc) _fleetLocFilter=null; renderFleet(); renderOverview();
     var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length;
@@ -5705,8 +5707,8 @@ const Atlas = (function(){
     if(!sm && prev.sms){ cp.smsConsentAt=null; _logEvent('review',b.cust+' opted OUT of SMS ('+b.id+')',{booking:b.id}); }
     b.commsPref=cp; _upsertBooking(b); _portalView='home'; _renderPortal(); toast('Preferences saved'); }
   function portalPay(kind){ var b=_pBk(); if(!b)return; var p=_portal(b); var now=Date.now();
-    if(kind==='balance'){ if(p.balancePaidAt)return; p.balancePaidAt=now; _logEvent('booking','Portal: balance paid on '+b.id,{booking:b.id}); toast('Payment received (demo)'); }
-    else { if(p.depositPaidAt)return; p.depositPaidAt=now; _logEvent('booking','Portal: deposit hold authorized on '+b.id,{booking:b.id}); toast('Deposit hold authorized (demo)'); }
+    if(kind==='balance'){ if(p.balancePaidAt)return; p.balancePaidAt=now; _logEvent('booking','Portal: balance paid on '+b.id,{booking:b.id}); toast('Payment received'); }
+    else { if(p.depositPaidAt)return; p.depositPaidAt=now; _logEvent('booking','Portal: deposit hold authorized on '+b.id,{booking:b.id}); toast('Deposit hold authorized'); }
     _upsertBooking(b); _renderPortal(); }
   function portalUpload(){ var b=_pBk(); if(!b)return; var inp=document.createElement('input'); inp.type='file'; inp.accept='.pdf,image/*,.doc,.docx';
     inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var p=_portal(b); p.docs.push({name:f.name,at:Date.now()}); _upsertBooking(b); _logEvent('booking','Portal: document uploaded ('+f.name+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Uploaded '+esc(f.name)); };
@@ -5756,6 +5758,7 @@ const Atlas = (function(){
     try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener'); if(!w){ var a=document.createElement('a'); a.href=url; a.download='before-after-'+b.id+'.html'; a.click(); } setTimeout(function(){URL.revokeObjectURL(url);},6000); }catch(e){ toast('Could not open the comparison here'); } }
   function bkRmCondition(id, cid){ var b=_getBooking(id); if(!b)return; b.conditionMedia=_condMedia(b).filter(function(m){return m.id!==cid;}); _upsertBooking(b); openBooking(id); }
   /* ---- Charges to the client portal: operator bills the customer; they pay online in their portal ---- */
+  function _chId(){ return 'ch'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }   // unique -> two charges in the same ms don't share an id (bkRmCharge/portalPayCharge target one)
   function _charges(b){ if(!b.charges) b.charges=[]; return b.charges; }
   function _chargesOwnerHtml(b){ var cs=_charges(b); if(!cs.length) return '<div class="bk-lenhint" style="margin:0">No charges yet &mdash; add one and it shows up in the customer portal to pay.</div>';
     return '<div style="display:flex;flex-direction:column;gap:6px">'+cs.map(function(c){
@@ -5770,7 +5773,7 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" style="margin:10px 0 0">They see it in their branded portal and pay online. It shows as paid here the moment they do.</div></div>'); }
   function sendCharge(id){ var b=_getBooking(id); if(!b)return; var label=(val('chLabel')||'').trim(), amt=parseFloat(val('chAmt'))||0;
     if(!label){ toast('Add a description'); return; } if(amt<=0){ toast('Enter an amount'); return; }
-    _charges(b).push({id:'ch'+Date.now(), label:label, amount:amt, at:Date.now(), paidAt:null}); _upsertBooking(b);
+    _charges(b).push({id:_chId(), label:label, amount:amt, at:Date.now(), paidAt:null}); _upsertBooking(b);
     _logEvent('booking','Charge sent to portal: '+label+' '+money(Math.round(amt))+' on '+b.id,{booking:b.id});
     closeModal(); openBooking(id); toast('Charge sent to the customer portal'); }
   function bkRmCharge(id,cid){ var b=_getBooking(id); if(!b)return; b.charges=_charges(b).filter(function(c){return c.id!==cid;}); _upsertBooking(b); openBooking(id); }
@@ -5794,7 +5797,7 @@ const Atlas = (function(){
     else toast('Incident logged');
     openBooking(id); }
   function bkIncidentCharge(id,incId){ var b=_getBooking(id); if(!b)return; var inc=_incidents(b).filter(function(x){return x.id===incId;})[0]; if(inc){ _incidentToCharge(b,inc); } openBooking(id); }
-  function _incidentToCharge(b,inc){ _charges(b).push({id:'ch'+Date.now(), label:('Incident: '+inc.desc).slice(0,58), amount:inc.cost, at:Date.now(), paidAt:null});
+  function _incidentToCharge(b,inc){ _charges(b).push({id:_chId(), label:('Incident: '+inc.desc).slice(0,58), amount:inc.cost, at:Date.now(), paidAt:null});
     inc.charged=true; _upsertBooking(b); _logEvent('booking','Billed '+money(inc.cost)+' incident on '+b.id,{booking:b.id}); save(); toast('Charge sent to the portal ('+money(inc.cost)+')'); }
   function bkRmIncident(id,incId){ var b=_getBooking(id); if(!b)return; b.incidents=_incidents(b).filter(function(x){return x.id!==incId;}); _upsertBooking(b); save(); openBooking(id); toast('Incident removed'); }
   // ---- Damage-claim workflow: document -> resolve (deposit/charge) -> insurer-ready claim packet ----
@@ -5904,7 +5907,7 @@ const Atlas = (function(){
       +'</div></body></html>';
   }
   function portalPayCharge(cid){ var b=_pBk(); if(!b)return; var c=_charges(b).filter(function(x){return x.id===cid;})[0]; if(!c||c.paidAt)return;
-    c.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(Math.round(c.amount))+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Payment received (demo)'); }
+    c.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(Math.round(c.amount))+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Payment received'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ portalView('sign'); return; }
     var sigHtml=p.sig?(p.sig.type==='draw'?('<img src="'+p.sig.data+'" style="max-height:70px">'):('<span class="sig-typed">'+esc(p.sig.data)+'</span>')):'-';
     openModal('<div class="modal__head"><h3>Rental agreement</h3>'+_xBtn()+'</div><div class="modal__body">'
