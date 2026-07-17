@@ -2936,8 +2936,10 @@ const Atlas = (function(){
   function _ledger(){ if(!S.ledger) S.ledger={incomes:[],expenses:[]}; if(!S.ledger.incomes)S.ledger.incomes=[]; if(!S.ledger.expenses)S.ledger.expenses=[]; return S.ledger; }
   function _otherIncome(){ return _ledger().incomes.reduce(function(s,x){return s+(x.amount||0);},0); }
   function _totalExpenses(){ return _ledger().expenses.reduce(function(s,x){return s+(x.amount||0);},0); }
+  function _payoutLabel(){ return (S.money&&S.money.payout&&S.money.payout.label)||'Partner payout'; }
+  function _totalPayouts(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+((b.quote&&b.quote.payoutAmt)||0); },0); }   // commission/split that leaves the owner on each booking -- a real deduction from take-home
   function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarned(b);},0); }   // rental + collected add-on charges (owner chose: count charges as income everywhere)
-  function _netProfit(){ return _bookingRevenue() + _otherIncome() - _totalExpenses(); }
+  function _netProfit(){ return _bookingRevenue() + _otherIncome() - _totalExpenses() - _totalPayouts(); }   // take-home now subtracts partner payouts (the settings copy promises net "in analytics")
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
     var tot = (opts.total!=null) ? opts.total : rows.reduce(function(s,r){return s+(typeof r.amt==='number'?r.amt:0);},0);
@@ -2961,11 +2963,13 @@ const Atlas = (function(){
     else if(which==='avg'){ _drill('Average '+_fterm('book'), 'The average is the mean of these', _bkList(nc).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total'}); }
     else if(which==='repeat'){ var by={}; (DATA.bookings||[]).filter(nc).forEach(function(b){ (by[b.cust]=by[b.cust]||[]).push(b); });
       _drill('Repeat customers', 'Customers with 2 or more '+_fterm('books'), Object.keys(by).filter(function(c){return by[c].length>=2;}).map(function(c){return {n:by[c].length,name:c};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }   // fix: list only repeat customers (n>=2) to match the heading
-    else if(which==='net'){ _drill('Net profit', 'Booking revenue, plus other income, minus expenses', [
+    else if(which==='net'){ var _pay=_totalPayouts(); var _nrows=[
       {label:'<b>Booking revenue</b>',sub:'earned '+_fterm('books'),amt:_bookingRevenue(),onClick:"Atlas.drillKpi('rev')"},
       {label:'<b>Other income</b>',sub:_ledger().incomes.length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"},
-      {label:'<b>Expenses</b>',sub:_ledger().expenses.length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"}
-    ], {total:_netProfit(), totalLabel:'Net profit'}); } }
+      {label:'<b>Expenses</b>',sub:_ledger().expenses.length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"}];
+      if(_pay>0) _nrows.push({label:'<b>'+esc(_payoutLabel())+'</b>',sub:'commission on '+_fterm('books'),amt:_pay,neg:true,onClick:"Atlas.drillKpi('payout')"});
+      _drill('Net profit', 'Booking revenue, plus other income, minus expenses'+(_pay>0?' and payouts':''), _nrows, {total:_netProfit(), totalLabel:'Net profit'}); }
+    else if(which==='payout'){ _drill(_payoutLabel(), 'The commission or split that leaves you on each '+_fterm('book'), (DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&((b.quote&&b.quote.payoutAmt)||0)>0;}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:((b.quote&&b.quote.payoutAmt)||0), neg:true, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total payout', empty:'No payouts yet -- turn on a payout/commission in Settings > Money rules.'}); } }
   function drillLog(i){ var e=_events()[i]; if(!e)return; _drill('Activity', '', [
     {label:'<b>'+esc(e.type||'event')+'</b>'}, {label:esc(e.text||'')}, {label:'<span style="color:var(--muted)">'+_stamp(e.t)+'</span>'}
   ], {showTotal:false}); }
@@ -2988,11 +2992,12 @@ const Atlas = (function(){
   function rmLedger(kind,id){ var arr=_ledger()[kind==='income'?'incomes':'expenses']; var i=arr.map(function(x){return x.id;}).indexOf(id); if(i>=0){ arr.splice(i,1); save(); if(document.getElementById('anaKpis')) renderAnalytics(); drillLedger(kind); } }
   function logIncome(){ logLedger('income'); }
   function logExpense(){ logLedger('expense'); }
-  function _ledgerCardHtml(){ var inc=_otherIncome(), exp=_totalExpenses(), rev=_bookingRevenue();
+  function _ledgerCardHtml(){ var inc=_otherIncome(), exp=_totalExpenses(), rev=_bookingRevenue(), pay=_totalPayouts();
     return '<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'rev\')"><span>Booking revenue</span><b class="tnum">'+money(rev)+'</b></div>'
       +'<div class="mp-row mp-ok" style="cursor:pointer" onclick="Atlas.drillLedger(\'income\')"><span>+ Other income</span><b class="tnum">'+money(inc)+'</b></div>'
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillLedger(\'expense\')"><span>&minus; Expenses</span><b class="tnum" style="color:var(--danger)">'+money(exp)+'</b></div>'
+      +(pay>0?'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'payout\')"><span>&minus; '+esc(_payoutLabel())+'</span><b class="tnum" style="color:var(--danger)">'+money(pay)+'</b></div>':'')
       +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'net\')"><span>Net profit</span><b class="tnum">'+money(_netProfit())+'</b></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.logIncome()">+ Log income</button><button class="btn btn--ghost btn--sm" onclick="Atlas.logExpense()">+ Log expense</button></div>'; }
   /* ---- Blocked / unavailable days per asset ---- */
