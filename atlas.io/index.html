@@ -3193,7 +3193,7 @@ const Atlas = (function(){
     if(fee>0) _charges(b).push({id:'ch'+Date.now(), label:'Cancellation fee', amount:fee, at:Date.now(), paidAt:null});
     _upsertBooking(b); _logEvent('booking','Booking '+b.id+' cancelled'+(fee?(' -- kept '+money(fee)):' (full refund)'),{booking:b.id}); save(); closeModal();
     renderOverview(); renderBookings(); var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length;
-    toast(fee?('Cancelled -- kept '+money(fee)+' fee'):'Cancelled -- full refund'); }
+    toast(fee?('Cancelled -- kept '+money(fee)+' fee'):'Cancelled -- full refund'); try{ setTimeout(function(){ _waitSurface(b.asset); }, 900); }catch(e){} }
   // ---- Recurring / subscription rentals: clone a booking into a future series ----
   function bkRepeat(id){ if(!_guard('bookEdit','Creating bookings'))return; var b=_getBooking(id); if(!b)return;
     openModal('<div class="modal__head"><h3>Repeat this booking</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -3630,7 +3630,33 @@ const Atlas = (function(){
       DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email); return `<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
       <td class="tnum">${_cs.trips}</td><td class="tnum"><b>${money(_cs.spent)}</b></td><td class="tnum">${c.last} ago</td>
       <td><button class="btn btn--ghost btn--sm" onclick="Atlas.viewCustomer(${i})">View</button></td></tr>`; }).join('')+`</tbody>`;
+    _renderWaitCard();
   }
+  // ---- Waitlist: capture demand for booked-out assets, and auto-surface it when a booking cancels ----
+  function _waitlist(){ if(!S.waitlist) S.waitlist=[]; return S.waitlist; }
+  function _renderWaitCard(){ var panel=document.querySelector('.panel[data-panel="customers"]'); if(!panel)return;
+    var card=document.getElementById('waitCard');
+    if(!card){ card=document.createElement('div'); card.id='waitCard'; card.className='card'; card.style.marginBottom='16px';
+      var cc=document.getElementById('custTbl'); cc=cc&&cc.closest('.card'); if(cc) panel.insertBefore(card,cc); else panel.appendChild(card); }
+    var wl=_waitlist();
+    var rows=wl.length? wl.map(function(w){ return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line-2)"><span class="avatar">'+esc((w.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(w.cust)+'</b><div style="font-size:12px;color:var(--muted)">'+(w.asset?esc(w.asset):('Any '+esc(S.fleet.noun)))+(w.note?(' &middot; '+esc(w.note)):'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.waitToBooking(\''+w.id+'\')">Book</button><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.rmWait(\''+w.id+'\')">'+_rmSvg()+'</button></div>'; }).join('') : '<div class="bk-lenhint" style="margin:0">No one waiting. Add people who wanted a booked-out '+esc(S.fleet.noun)+' &mdash; when one frees up, you fill it fast.</div>';
+    card.innerHTML='<div class="card__head"><h3>Waitlist'+(wl.length?(' <span style="font-size:12px;color:var(--muted);font-weight:600">'+wl.length+'</span>'):'')+'</h3><button class="btn btn--ghost btn--sm" onclick="Atlas.addWaitlist()">+ Add</button></div><div class="card__body">'+rows+'</div>'; }
+  function addWaitlist(){ if(!_guard('bookEdit','Managing the waitlist'))return;
+    openModal('<div class="modal__head"><h3>Add to waitlist</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Customer name</label><input class="input" id="wlName" placeholder="Who is waiting"></div>'
+      +'<div class="field"><label>Email or phone</label><input class="input" id="wlContact" placeholder="Optional"></div>'
+      +'<div class="field"><label>'+cap(S.fleet.noun)+' they want</label><select class="select" id="wlAsset"><option value="">Any '+esc(S.fleet.noun)+'</option>'+(DATA.assets||[]).map(function(a){return '<option>'+esc(a.name)+'</option>';}).join('')+'</select></div>'
+      +'<div class="field"><label>Note</label><input class="input" id="wlNote" placeholder="Dates, preferences..."></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveWaitlist()">Add to waitlist</button></div>'); }
+  function saveWaitlist(){ var nm=(val('wlName')||'').trim(); if(!nm){ toast('Add a name'); return; }
+    _waitlist().push({id:'wl'+Date.now().toString(36), cust:nm, contact:(val('wlContact')||'').trim(), asset:(val('wlAsset')||'').trim(), note:(val('wlNote')||'').trim(), at:Date.now()});
+    _logEvent('booking','Added '+nm+' to the waitlist',{}); save(); closeModal(); _renderWaitCard(); toast(nm+' added to the waitlist'); }
+  function rmWait(id){ S.waitlist=_waitlist().filter(function(w){return w.id!==id;}); save(); _renderWaitCard(); }
+  function waitToBooking(id){ var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return; S.waitlist=_waitlist().filter(function(x){return x.id!==id;}); save();
+    go('bookings'); newBooking(); setTimeout(function(){ var n=document.getElementById('bkCust'); if(n)n.value=w.cust; if(w.contact){ var e=document.getElementById('bkEmail'); if(e)e.value=w.contact; } var a=document.getElementById('bkAsset'); if(a&&w.asset){ try{ a.value=w.asset; }catch(_){}} try{ bkPreview&&bkPreview(); }catch(_){}}, 250);
+    toast('Filling from the waitlist -- finish the booking'); }
+  function _waitSurface(assetName){ var wl=_waitlist().filter(function(w){ return !w.asset || w.asset===assetName; }); if(!wl.length) return;
+    toast(wl.length+' on the waitlist for this '+S.fleet.noun+' -- check Customers to fill it'); }
   // Real customer profile: pulls this person's actual bookings (by email, then name), reconciled totals, clickable history.
   function viewCustomer(i){ var c=DATA.customers[i]; if(!c)return;
     var key=(c.email||'').toLowerCase(), nm=(c.name||'').toLowerCase();
@@ -5589,7 +5615,7 @@ const Atlas = (function(){
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
