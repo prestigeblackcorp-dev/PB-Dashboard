@@ -84,7 +84,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ chat: pricing, idle, analytics, **"what did I make this month"**, deposits, cancellations, **damage/incident**, expansion, win‑back, Stripe, nav edits · ✅ follow‑through buttons everywhere · ✅ refuses to invent data on empty accounts · 🔌 **live model** &mdash; Claude + GPT + Gemini **council** via `/api/aio`, one synthesis, auto‑live when you add the 3 keys · ⬜ image understanding ("here's a photo of my asset") · ⬜ take real actions (apply a rule, send a campaign)
 
 ### Team & ops
-- ✅ roles/RBAC + preview‑as · 🔌 server‑side perm re‑check · ✅ **per‑user audit log** (every event attributed to who did it + a team‑member filter + CSV "By" column) · 💡 staff scheduling / shifts
+- ✅ roles/RBAC + preview‑as · 🔌 server‑side perm re‑check · ✅ **per‑user audit log** (every event attributed to who did it + a team‑member filter + CSV "By" column) · ✅ **staff scheduling / shifts** (assign shifts across the week, weekly hours per person, overnight‑aware)
 
 ### Platform
 - ✅ PWA installable · ✅ dark mode · ✅ nav customization (+ by voice) · ✅ 30‑sec commercial + deep‑link · 🔌 push · ⬜ HTTPS via Cloudflare Pages · ⬜ app‑store listings · ✅ **QuickBooks/Xero export** (accounting CSV) · 💡 white‑label domains per tenant · 💡 Zapier/webhooks
@@ -105,11 +105,9 @@ The single source of truth for **what's done, what needs connecting, and every f
 ## 5 · Complete remaining backlog — every idea from our chat, nothing dropped
 Cross‑checked against the whole build so far. If it isn't ✅ above, it's here with a status + what unblocks it.
 
-### A. Self‑contained (buildable now — no keys, no accounts)
-- 💡 **Staff scheduling / shifts** — the one remaining self-contained build
-- 💡 **Live insurance quotes** — a real per‑trip insurance marketplace (needs a provider API; the damage‑waiver upsell above ships today)
-
-_Operator / delivery add‑ons already ship as extras (Delivery &amp; pickup, Additional driver in the extras catalog)._
+### A. Self‑contained (buildable now — no keys, no accounts) — ✅ ALL SHIPPED
+Everything on this list is now built and live: gift cards, return‑condition photos + before/after, CSV importer, multi‑currency, damage‑waiver tiers, true monthly rate tier, per‑user audit log, snapshot/restore setup, and staff scheduling. Operator / delivery add‑ons already ship as extras. The only "self‑contained" idea left needs an outside provider:
+- 💡 **Live insurance quotes** — a real per‑trip insurance marketplace (needs a provider API; the damage‑waiver upsell already ships today)
 
 ### B. Owner‑key / account‑gated (built or modeled — flips on when you connect)
 - 🔌 **Stripe** — real charges, deposit/hold capture, your $49.99/mo subscription billing, per‑installment payment‑plan charges, B2B **net‑30** invoicing

@@ -4221,6 +4221,36 @@ const Atlas = (function(){
         +'<td style="white-space:nowrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.openPerm(\''+m.id+'\')">Edit access</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.previewAs(\''+m.id+'\')">Preview</button></td></tr>'; }).join('');
     document.getElementById('teamTbl').innerHTML='<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>'+you+rows+'</tbody>';
   }
+  // ---- Staff scheduling / shifts: assign shifts across the week, weekly hours per person ----
+  function _shifts(){ if(!S.shifts) S.shifts=[]; return S.shifts; }
+  function _shiftRoster(){ var out=[{id:'owner',name:firstWord((S.owner&&S.owner!=='Owner'&&S.owner!=='Your')?S.owner:S.brand.name)+' (you)'}]; (S.team||[]).forEach(function(m){ if(m.name) out.push({id:m.id,name:m.name}); }); return out; }
+  function _shiftHours(sh){ try{ var s=String(sh.start||'').split(':'), e=String(sh.end||'').split(':'); var mins=(parseInt(e[0],10)*60+parseInt(e[1],10))-(parseInt(s[0],10)*60+parseInt(s[1],10)); if(mins<0) mins+=1440; return Math.round(mins/60*10)/10; }catch(err){ return 0; } }
+  function _shiftDateLabel(d){ try{ var dt=new Date(d+'T12:00:00'); return dt.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+(d===_todayStr()?' (Today)':''); }catch(e){ return d; } }
+  function _shiftsHtml(){ var today=_todayStr();
+    var up=_shifts().filter(function(x){ return x.date>=today; }).sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); });
+    var wkEnd=(function(){ var d=new Date(); d.setDate(d.getDate()+7); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
+    var hrs={}; up.forEach(function(x){ if(x.date<=wkEnd){ hrs[x.memberName]=(hrs[x.memberName]||0)+_shiftHours(x); } });
+    var sum=Object.keys(hrs).length? ('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">'+Object.keys(hrs).sort().map(function(n){ return '<span class="chip chip--info" style="font-size:11.5px"><span class="dot"></span>'+esc(n)+': '+hrs[n]+'h this week</span>'; }).join('')+'</div>') : '';
+    if(!up.length) return sum+'<div class="bk-lenhint" style="margin:0">No shifts scheduled yet. Add one and your team can see who is on.</div>';
+    var byDate={}; up.forEach(function(x){ (byDate[x.date]=byDate[x.date]||[]).push(x); });
+    var body=Object.keys(byDate).sort().slice(0,10).map(function(d){
+      return '<div style="margin-bottom:10px"><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">'+_shiftDateLabel(d)+'</div>'
+        +byDate[d].map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--line-2)"><span class="avatar" style="width:26px;height:26px;font-size:11px">'+esc((x.memberName||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.memberName)+'</b><div style="font-size:11.5px;color:var(--muted)">'+esc(x.start)+' - '+esc(x.end)+' &middot; '+_shiftHours(x)+'h'+(x.note?(' &middot; '+esc(x.note)):'')+'</div></div><button class="icon-btn" style="color:var(--danger)" onclick="Atlas.rmShift(\''+x.id+'\')" title="Remove">'+_rmSvg()+'</button></div>'; }).join('')+'</div>';
+    }).join('');
+    return sum+body; }
+  function addShift(){ if(!_guard('teamManage','Scheduling shifts'))return; var roster=_shiftRoster();
+    openModal('<div class="modal__head"><h3>Add a shift</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Team member</label><select class="select" id="shWho">'+roster.map(function(r){ return '<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>'; }).join('')+'</select></div>'
+      +'<div class="field"><label>Date</label><input class="input" id="shDate" type="date" value="'+_todayStr()+'"></div>'
+      +'<div class="row2"><div class="field"><label>Start</label><input class="input" id="shStart" type="time" value="09:00"></div><div class="field"><label>End</label><input class="input" id="shEnd" type="time" value="17:00"></div></div>'
+      +'<div class="field"><label>Note (optional)</label><input class="input" id="shNote" placeholder="Front desk, deliveries, on-call..."></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveShift()">Add shift</button></div>'); }
+  function saveShift(){ if(!_guard('teamManage'))return; var who=val('shWho'), date=val('shDate'), start=val('shStart')||'09:00', end=val('shEnd')||'17:00';
+    if(!date){ toast('Pick a date'); return; }
+    var r=_shiftRoster().filter(function(x){return x.id===who;})[0]; var nm=r?r.name.replace(' (you)',''):'Team';
+    _shifts().push({ id:'sh'+Date.now().toString(36), memberId:who, memberName:nm, date:date, start:start, end:end, note:(val('shNote')||'').trim() });
+    save(); _logEvent('team','Shift added: '+nm+' '+date+' '+start+'-'+end,{}); closeModal(); renderSet(); toast('Shift added &mdash; '+_shiftHours({start:start,end:end})+'h'); }
+  function rmShift(id){ if(!_guard('teamManage'))return; S.shifts=_shifts().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Shift removed'); }
   function _member(id){ return (S.team||[]).filter(function(x){return x.id===id;})[0]; }
   function openPerm(id){ if(!_guard('teamManage','Managing team &amp; access'))return; var m=_member(id); if(!m)return; var p=m.perms||_permsAll(false); m.perms=p;
     openModal('<div class="modal__head"><h3>Access &mdash; '+esc(m.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -4627,6 +4657,10 @@ const Atlas = (function(){
         <button class="btn btn--primary btn--sm" style="margin-bottom:14px" onclick="Atlas.inviteMember()">+ Invite teammate</button>
         <div style="overflow-x:auto"><table class="tbl" style="border:1px solid var(--line);border-radius:10px">${document.getElementById('teamTbl')?document.getElementById('teamTbl').innerHTML:''}</table></div>
         <p style="font-size:12.5px;color:var(--muted);margin-top:12px">Roles: <b>Owner</b> (everything), <b>Manager</b> (all but billing), <b>Staff</b> (bookings &amp; customers), <b>Viewer</b> (read-only). Fully customizable per person.</p>
+      </div>
+      <div class="set-block"><h3>Shifts &amp; scheduling</h3><div class="desc">Assign shifts across the week so everyone knows who's on &mdash; with weekly hours per person, ready when you add payroll.</div>
+        ${_shiftsHtml()}
+        <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addShift()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a shift</button>
       </div>`;
     else if(setCur==='billing'){ var _t=_curTier(), _c=_credits(); b.innerHTML = (_isActive() ? `
       <div class="set-block"><h3>Plan &amp; billing</h3><div class="desc">Your subscription.</div>
@@ -6106,7 +6140,7 @@ const Atlas = (function(){
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webBookNow,webDomainMode,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
-    openPerm,setRolePreset,setPerm,inviteMember,saveInvite,removeMember,previewAs,exitPreview,
+    openPerm,setRolePreset,setPerm,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
