@@ -864,6 +864,31 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 .portal__support{margin-top:14px;font-size:12.5px;color:var(--muted);text-align:center;background:var(--surface-2);border-radius:10px;padding:11px}
 .perk-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
 .perk-row .input{flex:1}
+.wg-edit{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px;background:var(--surface)}
+.wg-edit__hd{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.wg-title{flex:1;font-weight:650}
+.wg-show{margin:0;white-space:nowrap;font-size:12px}
+.wg-mv,.wg-x{border:1px solid var(--line);background:var(--surface);border-radius:8px;width:30px;height:32px;cursor:pointer;font-size:14px;color:var(--body);flex:0 0 auto}
+.wg-mv:disabled{opacity:.4;cursor:not-allowed}
+.wg-x{color:var(--danger)}
+.wg-edit__ty{font-size:11px;color:var(--muted);margin-top:6px;text-transform:uppercase;letter-spacing:.04em}
+.wg-item{display:flex;gap:6px;margin-bottom:6px}
+.wg-item .input{flex:1}
+.wg-cat-list{display:flex;flex-direction:column;gap:8px}
+.wg-cat{display:flex;flex-direction:column;align-items:flex-start;gap:2px;border:1px solid var(--line);border-radius:11px;padding:12px 14px;background:var(--surface);cursor:pointer;text-align:left;position:relative;width:100%;font-family:inherit}
+.wg-cat:hover{border-color:var(--brand);background:var(--brand-050)}
+.wg-cat b{color:var(--ink);font-size:14px}
+.wg-cat span{font-size:12.5px;color:var(--muted)}
+.wg-cat__cat{position:absolute;top:12px;right:14px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--brand-700);background:var(--brand-100);border-radius:999px;padding:2px 8px}
+.pw-list{margin:6px 0 0;padding-left:18px;color:var(--body);font-size:13.5px;line-height:1.6}
+.pw-faq{margin-top:8px}
+.pw-faq b{color:var(--ink);font-size:13.5px;display:block}
+.pw-faq div{color:var(--muted);font-size:13px;margin-top:2px}
+.pw-body{color:var(--body);font-size:13.5px;line-height:1.55;white-space:pre-wrap}
+.pw-notice{border-radius:10px;padding:11px 13px;font-size:13px;line-height:1.5}
+.pw-notice b{display:block;margin-bottom:2px}
+.pw-notice--info{background:var(--info-bg);color:var(--info)}
+.pw-notice--warn{background:var(--warn-bg);color:var(--warn)}
 /* ---- receipt ---- */
 .rcpt{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface)}
 .rcpt-hd{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line-2)}
@@ -4822,6 +4847,10 @@ const Atlas = (function(){
         <div id="portalPerks">${_portalPerksHtml()}</div>
         <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.addPortalPerk()">+ Add perk</button><button class="btn btn--ghost btn--sm" onclick="Atlas.autoGenPerks()">Auto-generate</button></div>
       </div>
+      <div class="set-block"><h3>Custom widgets</h3><div class="desc">Add anything you like to your portal &mdash; rules, an FAQ, care tips, a special offer, a video link. Pick from the catalog by category, then edit, reorder, show/hide or remove. Everything is displayed safely.</div>
+        <div id="portalWidgets">${_portalWidgetsEditHtml()}</div>
+        <button class="btn btn--primary btn--sm" style="margin-top:12px" onclick="Atlas.portalWidgetPicker('All')">+ Add widget</button>
+      </div>
       <div class="set-block"><h3>Support contact</h3><div class="desc">How customers reach you from the portal.</div>
         <div class="row2"><div class="field"><label>Phone</label><input class="input" value="${esc(pc.supportPhone)}" placeholder="(555) 555-1234" onchange="Atlas.setPortalField('supportPhone',this.value)"></div>
         <div class="field"><label>Email</label><input class="input" value="${esc(pc.supportEmail)}" placeholder="hello@${esc(S.brand.subdomain||'you')}.com" onchange="Atlas.setPortalField('supportEmail',this.value)"></div></div>
@@ -5752,6 +5781,55 @@ const Atlas = (function(){
   function editPortalPerk(i,v){ if(!_canMod('settings'))return; var ps=_portalCfg().perks; if(i>=0&&i<ps.length){ ps[i]=v; save(); } }
   function removePortalPerk(i){ if(!_canMod('settings'))return; _portalCfg().perks.splice(i,1); save(); _refreshPerks(); }
   function autoGenPerks(){ if(!_canMod('settings'))return; _portalCfg().perks=_defaultPerks(); save(); _refreshPerks(); toast('Perks generated for your '+esc(S.fleet.nouns)); }
+  /* ---- Portal WIDGETS: owners add/edit/reorder/remove/create any content block on the customer portal, from a filterable catalog. All content is esc()'d on render (no HTML injection) and links are scheme-checked, so a widget can never break the portal. ---- */
+  var WIDGET_CATALOG=[
+    {cat:'Info', type:'text', name:'Text block', desc:'A titled paragraph of anything you want.'},
+    {cat:'Info', type:'list', name:'Checklist / highlights', desc:'A scannable bulleted list.'},
+    {cat:'Info', type:'faq', name:'FAQ', desc:'Questions and answers.'},
+    {cat:'Safety', type:'notice', name:'Important notice', desc:'A highlighted callout for rules or warnings.'},
+    {cat:'Safety', type:'list', name:'Requirements', desc:'Space, power, age, what to bring.'},
+    {cat:'Safety', type:'text', name:'Policy', desc:'Cancellation, weather or damage terms.'},
+    {cat:'Media', type:'link', name:'Link or video', desc:'A button to a video, gallery or site.'},
+    {cat:'Media', type:'text', name:'Care instructions', desc:'How to use and handle it.'},
+    {cat:'Promo', type:'notice', name:'Offer / upsell', desc:'Promote an add-on or discount.'},
+    {cat:'Custom', type:'custom', name:'Blank block', desc:'Start from scratch \u2014 a title + your text.'}
+  ];
+  function _widgetTypeName(type){ var c=WIDGET_CATALOG.filter(function(w){return w.type===type;})[0]; return c?c.name:'Section'; }
+  function _widgetDefaults(type){ if(type==='list')return {items:['New item']}; if(type==='faq')return {items:[{q:'Question?',a:'Answer.'}]}; if(type==='link')return {url:'',linkLabel:'Open',body:''}; if(type==='notice')return {body:'Your message here.',tone:'info'}; return {body:'Your text here.'}; }
+  function _portalWidgets(){ var pc=_portalCfg(); if(!pc.widgets) pc.widgets=[]; return pc.widgets; }
+  function _wid(){ return 'wg'+Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
+  function _safeUrl(u){ u=String(u||'').trim(); if(/^https?:\/\//i.test(u))return u; if(/^[a-z][a-z0-9+.-]*:/i.test(u))return '#'; return u?('https://'+u.replace(/^\/+/,'')):'#'; }   // block javascript:/data: etc; bare domains get https://
+  function portalWidgetPicker(cat){ if(!_canMod('settings'))return; cat=cat||'All';
+    var cats=['All'].concat(WIDGET_CATALOG.map(function(w){return w.cat;}).filter(function(c,i,a){return a.indexOf(c)===i;}));
+    var chips=cats.map(function(c){ return '<button class="bk-chip'+(c===cat?' active':'')+'" onclick="Atlas.portalWidgetPicker(\''+c+'\')">'+esc(c)+'</button>'; }).join('');
+    var list=WIDGET_CATALOG.filter(function(w){return cat==='All'||w.cat===cat;}).map(function(w){ return '<button class="wg-cat" onclick="Atlas.portalAddWidget(\''+w.type+'\')"><b>'+esc(w.name)+'</b><span>'+esc(w.desc)+'</span><span class="wg-cat__cat">'+esc(w.cat)+'</span></button>'; }).join('');
+    openModal('<div class="modal__head"><h3>Add a widget</h3>'+_xBtn()+'</div><div class="modal__body"><div class="desc" style="margin:0 0 10px">Pick a block for your customer portal &mdash; filter by category, then fully edit it. You can add as many as you like.</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'+chips+'</div><div class="wg-cat-list">'+list+'</div></div>'); }
+  function portalAddWidget(type){ if(!_canMod('settings'))return; var ws=_portalWidgets(); if(ws.length>=16){ toast('That is plenty of widgets \u2014 remove one first'); return; } var w=Object.assign({id:_wid(),type:type,on:true,title:_widgetTypeName(type)}, _widgetDefaults(type)); ws.push(w); save(); closeModal(); _refreshWidgets(); toast('Widget added \u2014 edit it below'); }
+  function portalEditWidget(id,field,v){ if(!_canMod('settings'))return; var w=_portalWidgets().filter(function(x){return x.id===id;})[0]; if(w){ w[field]=v; save(); } }
+  function portalToggleWidget(id,on){ if(!_canMod('settings'))return; var w=_portalWidgets().filter(function(x){return x.id===id;})[0]; if(w){ w.on=!!on; save(); } }
+  function portalRemoveWidget(id){ if(!_canMod('settings'))return; var pc=_portalCfg(); pc.widgets=_portalWidgets().filter(function(x){return x.id!==id;}); save(); _refreshWidgets(); }
+  function portalMoveWidget(id,dir){ if(!_canMod('settings'))return; var ws=_portalWidgets(); var i=ws.map(function(x){return x.id;}).indexOf(id), j=i+dir; if(i<0||j<0||j>=ws.length)return; var t=ws[i]; ws[i]=ws[j]; ws[j]=t; save(); _refreshWidgets(); }
+  function portalWidgetItem(id,idx,field,v){ if(!_canMod('settings'))return; var w=_portalWidgets().filter(function(x){return x.id===id;})[0]; if(!w||!w.items||w.items[idx]==null)return; if(w.type==='faq') w.items[idx][field]=v; else w.items[idx]=v; save(); }
+  function portalAddWidgetItem(id){ if(!_canMod('settings'))return; var w=_portalWidgets().filter(function(x){return x.id===id;})[0]; if(!w)return; w.items=w.items||[]; w.items.push(w.type==='faq'?{q:'Question?',a:'Answer.'}:'New item'); save(); _refreshWidgets(); }
+  function portalRemoveWidgetItem(id,idx){ if(!_canMod('settings'))return; var w=_portalWidgets().filter(function(x){return x.id===id;})[0]; if(!w||!w.items)return; w.items.splice(idx,1); save(); _refreshWidgets(); }
+  function _refreshWidgets(){ var el=document.getElementById('portalWidgets'); if(el) el.innerHTML=_portalWidgetsEditHtml(); }
+  function _portalWidgetsEditHtml(){ var ws=_portalWidgets(); if(!ws.length) return '<div class="bk-lenhint" style="margin:0">No custom widgets yet. Add one to show anything you like &mdash; rules, an FAQ, care tips, an offer, a video.</div>';
+    return ws.map(function(w,i){ var body='';
+      if(w.type==='list'||w.type==='faq'){ body=(w.items||[]).map(function(it,idx){ return w.type==='faq'
+          ? '<div class="wg-item"><input class="input" value="'+esc(it.q||'')+'" placeholder="Question" onchange="Atlas.portalWidgetItem(\''+w.id+'\','+idx+',\'q\',this.value)"><input class="input" value="'+esc(it.a||'')+'" placeholder="Answer" onchange="Atlas.portalWidgetItem(\''+w.id+'\','+idx+',\'a\',this.value)"><button class="wg-x" onclick="Atlas.portalRemoveWidgetItem(\''+w.id+'\','+idx+')">&times;</button></div>'
+          : '<div class="wg-item"><input class="input" value="'+esc(it)+'" onchange="Atlas.portalWidgetItem(\''+w.id+'\','+idx+',\'\',this.value)"><button class="wg-x" onclick="Atlas.portalRemoveWidgetItem(\''+w.id+'\','+idx+')">&times;</button></div>'; }).join('')
+        +'<button class="btn btn--ghost btn--sm" onclick="Atlas.portalAddWidgetItem(\''+w.id+'\')">+ Add item</button>'; }
+      else if(w.type==='link'){ body='<input class="input" value="'+esc(w.body||'')+'" placeholder="Short description" onchange="Atlas.portalEditWidget(\''+w.id+'\',\'body\',this.value)" style="margin-bottom:6px"><div class="row2"><input class="input" value="'+esc(w.url||'')+'" placeholder="https://..." onchange="Atlas.portalEditWidget(\''+w.id+'\',\'url\',this.value)"><input class="input" value="'+esc(w.linkLabel||'Open')+'" placeholder="Button label" onchange="Atlas.portalEditWidget(\''+w.id+'\',\'linkLabel\',this.value)"></div>'; }
+      else { body='<textarea class="input" rows="2" style="resize:vertical;font-family:inherit" onchange="Atlas.portalEditWidget(\''+w.id+'\',\'body\',this.value)">'+esc(w.body||'')+'</textarea>'+(w.type==='notice'?('<select class="select" style="margin-top:6px" onchange="Atlas.portalEditWidget(\''+w.id+'\',\'tone\',this.value)"><option value="info"'+(w.tone!=='warn'?' selected':'')+'>Info (blue)</option><option value="warn"'+(w.tone==='warn'?' selected':'')+'>Warning (amber)</option></select>'):''); }
+      return '<div class="wg-edit"><div class="wg-edit__hd"><input class="input wg-title" value="'+esc(w.title||'')+'" placeholder="Title" onchange="Atlas.portalEditWidget(\''+w.id+'\',\'title\',this.value)"><label class="cfg-check wg-show"><input type="checkbox" '+(w.on!==false?'checked':'')+' onchange="Atlas.portalToggleWidget(\''+w.id+'\',this.checked)">Show</label><button class="wg-mv" onclick="Atlas.portalMoveWidget(\''+w.id+'\',-1)"'+(i===0?' disabled':'')+' title="Move up">&uarr;</button><button class="wg-mv" onclick="Atlas.portalMoveWidget(\''+w.id+'\',1)"'+(i===ws.length-1?' disabled':'')+' title="Move down">&darr;</button><button class="wg-x" onclick="Atlas.portalRemoveWidget(\''+w.id+'\')" title="Remove widget">&times;</button></div><div class="wg-edit__bd">'+body+'</div><div class="wg-edit__ty">'+esc(_widgetTypeName(w.type))+'</div></div>'; }).join(''); }
+  function _portalWidgetsHtml(){ var ws=_portalWidgets().filter(function(w){return w.on!==false;}); if(!ws.length) return '';
+    return ws.map(function(w){ var inner='';
+      if(w.type==='list'){ inner='<ul class="pw-list">'+(w.items||[]).map(function(it){return '<li>'+esc(it)+'</li>';}).join('')+'</ul>'; }
+      else if(w.type==='faq'){ inner=(w.items||[]).map(function(it){return '<div class="pw-faq"><b>'+esc(it.q||'')+'</b><div>'+esc(it.a||'')+'</div></div>';}).join(''); }
+      else if(w.type==='link'){ inner=(w.body?'<div class="pw-body">'+esc(w.body)+'</div>':'')+(w.url?'<a class="btn btn--ghost btn--sm" style="margin-top:8px" href="'+esc(_safeUrl(w.url))+'" target="_blank" rel="noopener noreferrer">'+esc(w.linkLabel||'Open')+'</a>':''); }
+      else if(w.type==='notice'){ return '<div class="portal__perks"><div class="pw-notice pw-notice--'+(w.tone==='warn'?'warn':'info')+'">'+(w.title?'<b>'+esc(w.title)+'</b>':'')+(w.body?'<div>'+esc(w.body)+'</div>':'')+'</div></div>'; }
+      else { inner='<div class="pw-body">'+esc(w.body||'')+'</div>'; }
+      return '<div class="portal__perks">'+(w.title?'<div class="portal__docs-hd">'+esc(w.title)+'</div>':'')+inner+'</div>'; }).join(''); }
   function openPortal(id){ if(!id){ var b0=_bookings()[0]; id=b0&&b0.id; } if(!id){ toast('Create a booking first, then preview the portal'); return; } _portalBk=id; _portalView='home'; _renderPortal(); }
   function portalView(v){ _portalView=v; _renderPortal(); if(v==='sign') setTimeout(_initSigPad,40); }
   function _renderPortal(){ var b=_pBk(); if(!b){ closeModal(); return; } var p=_portal(b);
@@ -5813,6 +5891,7 @@ const Atlas = (function(){
     h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at pickup &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'pickup'})+'<div class="cond-note">Each item shows the exact date and time it was captured, so the '+esc(S.fleet.noun)+' condition is clear for both sides.</div></div>';
     if(_condMedia(b).some(function(m){return m.phase==='return';})){ h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at return &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'return'})+'</div>'; }
     if(sec.perks&&pc.perks.length){ h+='<div class="portal__perks"><div class="portal__docs-hd">Perks of booking with '+esc(S.brand.name)+'</div>'+pc.perks.map(function(x){ return '<div class="portal__perk"><span class="portal__perk-ic">&#10003;</span>'+esc(x)+'</div>'; }).join('')+'</div>'; }
+    h+=_portalWidgetsHtml();   // owner-built custom widgets (FAQ, rules, care tips, offers, links) render here
     if(_loy().on && !_loyOff(b.custEmail,b.cust)){ h+='<div class="portal__perks"><div class="portal__docs-hd">'+esc(S.brand.name)+' rewards</div>'+_portalLoyaltyHtml(b)+'</div>'; }
     var _pProt=(b.extras||[]).filter(function(x){return x.protection;})[0]; if(_pProt&&_pProt.planId){ h+='<div class="portal__perks"><div class="portal__docs-hd">Your protection</div><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;color:var(--ink)">'+esc(_pProt.name)+'</span><button class="btn btn--ghost btn--sm" onclick="Atlas.protectionDoc(\''+esc(_pProt.planId)+'\',true)">View coverage</button></div></div>'; }   // fix: portal flag -> friendly customer message if the tier was removed
     if(sec.documents){ h+='<div class="portal__docs"><div class="portal__docs-hd">Your documents</div>'
@@ -6391,7 +6470,7 @@ const Atlas = (function(){
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,
     renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
-    openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalSetStars,portalSubmitReview,portalSavePrefs,
+    openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
