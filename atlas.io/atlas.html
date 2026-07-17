@@ -3039,7 +3039,7 @@ const Atlas = (function(){
       var nx={'Pending':['Confirmed','Confirm'],'Confirmed':['On rent','Start rental'],'On rent':['Completed','Complete return']}[b.status];
       if(nx) a+='<button class="btn btn--primary btn--sm" onclick="Atlas.setBookingStatus(\''+b.id+'\',\''+nx[0]+'\')">'+nx[1]+'</button>';
       a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button>';
-      a+='<button class="btn btn--sm btn--danger" onclick="Atlas.setBookingStatus(\''+b.id+'\',\'Cancelled\')">Cancel</button>';
+      a+='<button class="btn btn--sm btn--danger" onclick="Atlas.bkCancelFlow(\''+b.id+'\')">Cancel</button>';
     } else { a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button><button class="btn btn--sm btn--danger" onclick="Atlas.deleteBooking(\''+b.id+'\')">Delete</button>'; }
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
     openModal('<div class="modal__head"><h3>'+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -3075,6 +3075,30 @@ const Atlas = (function(){
   function setBookingStatus(id,st){ if(!_guard('bookEdit','Updating bookings'))return; var b=_getBooking(id); if(!b)return; b.status=st; _upsertBooking(b); _logEvent('booking','Booking '+b.id+' marked '+st,{booking:b.id,status:st}); closeModal(); renderOverview(); renderBookings();
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; toast('Booking '+st.toLowerCase()); }
   function deleteBooking(id){ if(!_guard('bookEdit','Deleting bookings'))return; if(!confirm('Delete this booking permanently?'))return; _delBooking(id); closeModal(); renderOverview(); renderBookings(); _bkBadge(); toast('Booking deleted'); }
+  // ---- Cancellation-policy engine: cancel with a smart fee (kept via the reconciled portal-charge model) ----
+  function _cxWindow(){ return (S.money&&S.money.cancelWindowHrs!=null)?S.money.cancelWindowHrs:48; }
+  function bkCancelFlow(id){ if(!_guard('bookEdit','Cancelling bookings'))return; var b=_getBooking(id); if(!b)return;
+    var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount});
+    var dep=Math.round(q.dueNow||0), half=Math.round((q.total||0)*0.5), win=_cxWindow();
+    var hrs=b.startTs?Math.round((Number(b.startTs)-Date.now())/3600000):null, late=(hrs!=null&&hrs<win);
+    var note=late?('This is within '+win+'h of the '+esc(_fterm('book'))+' &mdash; your policy suggests keeping a fee.'):('Plenty of notice &mdash; a full refund is typical.');
+    var rr=function(v,lbl,ck){ return '<label style="display:flex;align-items:center;gap:9px;padding:9px 0;font-size:13.5px;color:var(--ink);border-top:1px solid var(--line-2)"><input type="radio" name="cxfee" value="'+v+'"'+(ck?' checked':'')+'> '+lbl+'</label>'; };
+    openModal('<div class="modal__head"><h3>Cancel '+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">'+note+'</div>'
+      +rr('0','No fee &mdash; full refund',!late)
+      +(dep>0?rr(dep,'Keep the deposit ('+money(dep)+')',late):'')
+      +rr(half,'Keep 50% ('+money(half)+')',false)
+      +rr('custom','Custom amount',false)
+      +'<div class="rule-input" id="cxCustomWrap" style="display:none;margin:6px 0 0;padding:0 12px"><span>$</span><input class="tnum" id="cxCustom" inputmode="decimal" style="width:auto;flex:1;text-align:left" placeholder="0"></div>'
+      +'<button class="btn btn--danger btn--full btn--lg" style="margin-top:16px" onclick="Atlas.doCancel(\''+id+'\')">Cancel booking</button></div>');
+    setTimeout(function(){ [].forEach.call(document.getElementsByName('cxfee'),function(r){ r.addEventListener('change',function(){ var c=document.querySelector('input[name=cxfee]:checked'); document.getElementById('cxCustomWrap').style.display=(c&&c.value==='custom')?'flex':'none'; }); }); },30); }
+  function doCancel(id){ var b=_getBooking(id); if(!b)return; var sel=document.querySelector('input[name=cxfee]:checked'), v=sel?sel.value:'0';
+    var fee=(v==='custom')?Math.round(Math.max(0,parseFloat(val('cxCustom'))||0)):Math.round(parseFloat(v)||0);
+    b.status='Cancelled'; b.cancelledAt=Date.now(); b.cancelFee=fee;
+    if(fee>0) _charges(b).push({id:'ch'+Date.now(), label:'Cancellation fee', amount:fee, at:Date.now(), paidAt:null});
+    _upsertBooking(b); _logEvent('booking','Booking '+b.id+' cancelled'+(fee?(' -- kept '+money(fee)):' (full refund)'),{booking:b.id}); save(); closeModal();
+    renderOverview(); renderBookings(); var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length;
+    toast(fee?('Cancelled -- kept '+money(fee)+' fee'):'Cancelled -- full refund'); }
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
   function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':'day'); }
@@ -5422,7 +5446,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,promptUpgrade,doUpgrade,openWebsite,
