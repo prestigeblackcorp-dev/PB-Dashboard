@@ -3167,6 +3167,12 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Payment plan</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkPaymentPlan(\''+b.id+'\')">'+(b.plan?'Change':'Set a plan')+'</button></div>'
         +'<div class="cond-sub">Let '+esc((b.cust||'the customer').split(' ')[0])+' pay in installments &mdash; the schedule shows in their portal and here.</div>'
         +_planHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Refundable deposit hold</span></div>'
+        +'<div class="cond-sub">Authorize a hold, then <b>release it</b> on a clean return or <b>capture</b> part of it for damage &mdash; no fees until you capture.</div>'
+        +_holdHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Usage / metered billing</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkMeter(\''+b.id+'\')">'+(b.meter?'Update':'Record usage')+'</button></div>'
+        +'<div class="cond-sub">Bill exact hours or miles used &mdash; ideal for generators, tools and hourly gear.</div>'
+        +_meterHtml(b)+'</div>'
       +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+a+'</div>'
       +'<div style="display:flex;gap:10px;margin-top:10px"><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openPortal(\''+b.id+'\')">Customer portal</button></div></div>');
   }
@@ -3231,6 +3237,40 @@ const Atlas = (function(){
     else { var n=parseInt(t)||3, each=Math.round(total/n), ins=[]; for(var i=0;i<n;i++){ ins.push({id:'pi'+(i+1),label:'Installment '+(i+1)+' of '+n,amount:(i===n-1?(total-each*(n-1)):each),dueTs:Date.now()+i*mo,paidAt:0}); } b.plan={type:t,installments:ins}; }
     _upsertBooking(b); _logEvent('booking','Payment plan '+(t==='none'?'cleared':'set ('+t+')')+' on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast(t==='none'?'Plan cleared':'Payment plan saved'); }
   function bkPlanPaid(id,pid){ var b=_getBooking(id); if(!b||!b.plan)return; var x=(b.plan.installments||[]).filter(function(y){return y.id===pid;})[0]; if(x)x.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Plan installment paid on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Marked paid'); }
+  // ---- Metered / run-hour billing: bill exact hours or miles used at return ----
+  function _meterHtml(b){ var m=b.meter; if(!m) return '<div class="bk-lenhint" style="margin:0">For usage-based assets (generators, tools, hourly gear) &mdash; bill the exact hours or miles used.</div>';
+    var amt=Math.round(m.units*m.rate); return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+m.units+' '+esc(m.unit)+' &times; '+money(m.rate)+'</b><div style="font-size:11.5px;color:var(--muted)">'+_stamp(m.at)+(m.charged?(' &middot; billed'):'')+'</div></div>'+(m.charged?'<span class="chip chip--ok"><span class="dot"></span>Billed '+money(amt)+'</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkMeterBill(\''+b.id+'\')">Bill '+money(amt)+'</button>')+'</div>'; }
+  function bkMeter(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return;
+    openModal('<div class="modal__head"><h3>Usage / metered billing</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="row2"><div class="field"><label>Units used</label><input class="input tnum" id="mtUnits" inputmode="decimal" placeholder="e.g. 18" oninput="Atlas._mtHint&&Atlas._mtHint()"></div>'
+      +'<div class="field"><label>Unit</label><select class="select" id="mtUnit"><option>hours</option><option>miles</option><option>days</option><option>units</option></select></div></div>'
+      +'<div class="field"><label>Rate per unit</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="mtRate" inputmode="decimal" style="width:auto;flex:1;text-align:left" placeholder="0" oninput="Atlas._mtHint&&Atlas._mtHint()"></div></div>'
+      +'<div class="bk-lenhint" id="mtHint" style="margin:0 0 12px"></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveMeter(\''+id+'\')">Record usage</button></div>'); }
+  function _mtHint(){ var u=parseFloat(val('mtUnits'))||0, r=parseFloat(val('mtRate'))||0, h=document.getElementById('mtHint'); if(h) h.innerHTML=(u&&r)?('Bills <b>'+money(Math.round(u*r))+'</b> to the portal.'):''; }
+  function saveMeter(id){ var b=_getBooking(id); if(!b)return; var u=parseFloat(val('mtUnits'))||0, r=parseFloat(val('mtRate'))||0, unit=val('mtUnit')||'hours'; if(u<=0||r<=0){ toast('Enter units and a rate'); return; }
+    b.meter={units:u, unit:unit, rate:Math.round(r*100)/100, at:Date.now(), charged:false}; _upsertBooking(b); _logEvent('asset','Usage recorded on '+b.id+' ('+u+' '+unit+')',{booking:b.id}); save(); closeModal(); openBooking(id); toast('Usage recorded -- tap Bill to charge it'); }
+  function bkMeterBill(id){ var b=_getBooking(id); if(!b||!b.meter)return; var amt=Math.round(b.meter.units*b.meter.rate); _charges(b).push({id:'ch'+Date.now(), label:'Usage: '+b.meter.units+' '+b.meter.unit, amount:amt, at:Date.now(), paidAt:null}); b.meter.charged=true; _upsertBooking(b); _logEvent('booking','Billed '+money(amt)+' usage on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Usage billed ('+money(amt)+')'); }
+  // ---- Refundable deposit hold: authorize -> capture (damage) or release (clean) ----
+  function _holdHtml(b){ var h=b.hold, q=b.quote||{}, sug=Math.round(q.hold||0);
+    if(!h||!h.status||h.status==='none'){ return '<div class="bk-lenhint" style="margin:0 0 8px">'+(sug?('Suggested hold: <b>'+money(sug)+'</b> (from your money rules).'):'Authorize a refundable hold to cover damage or fuel.')+'</div><button class="btn btn--ghost btn--sm" onclick="Atlas.holdAuth(\''+b.id+'\')">Authorize hold</button>'; }
+    var st=h.status, lbl=st==='authorized'?('Holding '+money(h.amount)):st==='captured'?('Kept '+money(h.captured||h.amount)+' of '+money(h.amount)):('Released '+money(h.amount));
+    var chip='<span class="chip '+(st==='authorized'?'chip--warn':st==='captured'?'chip--danger':'chip--ok')+'"><span class="dot"></span>'+lbl+'</span>';
+    return '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">'+chip+'<span style="flex:1;min-width:60px;font-size:11.5px;color:var(--muted)">'+_stamp(h.at)+'</span>'
+      +(st==='authorized'?'<button class="btn btn--ghost btn--sm" style="color:var(--brand)" onclick="Atlas.holdRelease(\''+b.id+'\')">Release (clean)</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.holdCapture(\''+b.id+'\')">Capture (damage)</button>':'')+'</div>'; }
+  function holdAuth(id){ var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var amt=Math.round(q.hold||0);
+    if(amt<=0){ toast('Set a deposit hold in Settings > Money rules first'); return; }
+    b.hold={amount:amt, status:'authorized', at:Date.now()}; _upsertBooking(b); _logEvent('booking','Authorized '+money(amt)+' refundable hold on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Hold authorized ('+money(amt)+') -- $0 in fees until you capture'); }
+  function holdRelease(id){ var b=_getBooking(id); if(!b||!b.hold)return; b.hold.status='released'; b.hold.releasedAt=Date.now(); _upsertBooking(b); _logEvent('booking','Released the hold on '+b.id+' -- clean return',{booking:b.id}); save(); openBooking(id); toast('Hold released -- nothing charged'); }
+  function holdCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var max=b.hold.amount;
+    openModal('<div class="modal__head"><h3>Capture from hold</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Keep part or all of the '+money(max)+' hold for damage, fuel or cleaning. The rest is released.</div>'
+      +'<div class="field"><label>Amount to keep</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="hcAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+max+'"></div></div>'
+      +'<button class="btn btn--danger btn--full btn--lg" onclick="Atlas.doCapture(\''+id+'\')">Capture</button></div>'); }
+  function doCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var cap=Math.min(b.hold.amount, Math.round(parseFloat(val('hcAmt'))||0)); if(cap<=0){ closeModal(); return holdRelease(id); }
+    b.hold.status='captured'; b.hold.captured=cap; b.hold.capturedAt=Date.now();
+    _charges(b).push({id:'ch'+Date.now(), label:'Deposit captured (damage/fuel)', amount:cap, at:Date.now(), paidAt:Date.now()});
+    _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast('Captured '+money(cap)+' from the hold'); }
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
   function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':'day'); }
@@ -5636,7 +5676,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
