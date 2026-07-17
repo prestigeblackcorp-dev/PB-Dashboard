@@ -1355,6 +1355,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
   <footer class="lp-foot">
     <a class="brandmark" href="#" onclick="return false"><span class="brandmark__glyph"><svg viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" d="M12 2.2 L21.6 21.4 H2.4 Z M13.5 4 Q11.3 12 10.3 21.4 H12.5 Q13.3 12.6 15.1 5 Z M12 13.2 L9.8 18.6 H14.2 Z" fill="#fff"/></svg></span>Atlas Rental.io</a>
     <small>&copy; 2026 Atlas Rental.io &middot; atlasrental.io &middot; The Digital Headquarters for Rental Businesses &middot; Vehicles, property, construction &amp; equipment, tools, events &amp; anything you rent out</small>
+    <small style="display:block;margin-top:6px"><a href="/terms" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">Terms</a> &middot; <a href="/privacy" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">Privacy Policy</a></small>
   </footer>
 </div>
 
@@ -1369,6 +1370,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       <div id="authErr" style="display:none;background:var(--danger-bg);color:var(--danger);font-size:13px;font-weight:600;border-radius:9px;padding:10px 12px;margin-bottom:14px"></div>
       <div class="field"><label>Work email</label><input class="input" id="authEmail" type="email" placeholder="you@yourcompany.com" autocomplete="email" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
       <div class="field"><label>Password</label><input class="input" id="authPass" type="password" placeholder="At least 6 characters" autocomplete="current-password" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
+      <div id="authConsent" style="margin:2px 0 6px"><label class="cfg-check" style="align-items:flex-start;gap:9px;font-size:12px;color:var(--muted);text-align:left"><input type="checkbox" id="authAgree" style="margin-top:2px;flex:none"><span>I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Terms</a> &amp; <a href="/privacy" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Privacy Policy</a>. My 7-day free trial converts to $49.99/mo after the trial unless I cancel &mdash; cancel anytime.</span></label></div>
       <button class="btn btn--primary btn--full btn--lg" id="authBtn" onclick="Atlas.authSubmit()" style="margin-top:6px">Create account</button>
       <p style="text-align:center;font-size:13.5px;color:var(--muted);margin-top:18px" id="authSwitch"></p>
     </div>
@@ -1669,6 +1671,11 @@ const Atlas = (function(){
   // call the workers.dev URL cross-origin for testing. Same-origin needs no CORS + a SameSite=Lax cookie.
   var ATLAS_API=(/(^|\.)atlasrental\.io$/.test(location.hostname)) ? '' : 'https://atlas.prestigeblackcorp.workers.dev';
   var ATLAS_BACKEND=false;              // master switch (also Atlas.setBackend(true) at runtime for ops/testing)
+  // Honest capability gates. These stay FALSE until the matching Worker infrastructure is actually deployed,
+  // so the UI never tells an owner (or their customer) that an email was delivered or a card was charged when
+  // nothing moved. Flip to true ONLY in lockstep with the real backend going live (see GO-LIVE.md).
+  var EMAIL_LIVE=false;                 // true only when the Worker mailer (/api/email + verified Resend domain) is live
+  var PAYMENTS_LIVE=false;              // true only when Stripe endpoints + webhook + keys are live (real charges/holds)
   var _apiCsrf=null;
   function setBackend(on){ ATLAS_BACKEND=!!on; }
   function _api(path,opts){ opts=opts||{}; var h={'Content-Type':'application/json'};
@@ -1756,24 +1763,27 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.16';
+  var APP_VERSION='2026.7.17';
   var APP_CHANGELOG=[
+    'Go-live honesty pass: money, email, connect &amp; e-sign states now tell the truth until each backend is live',
+    'Onboarding no longer drops your first vehicle or business name; friendlier empty states everywhere',
+    'Signup now records your agreement to the Terms &amp; auto-renewal; reserved owner email + AI timeout + nightly cleanup',
     'Diamond owner tier + Owner Console (limitless, in-app upgrades)',
     'Live GPS map: 34 trackers, refresh, route via Apple/Google Maps, Total-vehicles KPI',
     'Branded itemized receipts + subtle Atlas branding everywhere',
     'Customer portal: fully owner-customizable + auto-generated perks',
     'Promo codes live on the customer site + auto apply box',
     'Email builder, lifecycle automations + Resend plans',
-    'E-signatures with delivery proof + IP on file (kept private)',
+    'E-signatures with delivery proof + device &amp; timestamp on file (kept private)',
     'Tax/report CSV downloads + timestamped activity log',
     'Dark mode, hamburger + iPad nav, mobile-optimized throughout'
   ];
   var OWNER_FLAGS=[
-    ['aiAutopilot','Atlas.io autopilot (auto-price + auto-fill suggestions)'],
+    ['aiAutopilot','Atlas.io autopilot (auto-price + auto-fill suggestions) (coming soon)'],
     ['advancedGeofence','Geofence entry/exit alerts on the live map'],
-    ['smartReceipts','Auto-email a receipt the moment a booking is paid'],
+    ['smartReceipts','Auto-email a receipt the moment a booking is paid (needs a connected mailer)'],
     ['betaForecast','Predictive utilization + revenue forecast'],
-    ['instantPatch','Apply owner hot-fixes without a reload']
+    ['instantPatch','Apply owner hot-fixes without a reload (coming soon)']
   ];
   function _flags(){ if(!S.flags)S.flags={}; return S.flags; }
   /* ---- Team roles & granular, enforced permissions ---- */
@@ -2098,7 +2108,7 @@ const Atlas = (function(){
     save(); if(f==='mode')renderSet(); }
   function toggleAuto(k,on){ if(!_canMod('settings'))return; _comms().autos[k].on=!!on; save(); toast((_comms().autos[k].on?'On':'Off')+': '+(AUTO_META.filter(function(m){return m[0]===k;})[0]||['','email'])[1]); }
   function setAutoDays(k,v){ if(!_canMod('settings'))return; var n=Math.max(0,parseInt(v,10)||0); _comms().autos[k].days=n; save(); }
-  function verifyResend(){ if(!_canMod('settings'))return; var cm=_comms(); if(!/^re_/.test((cm.resendKey||'').trim())){ toast('Paste your Resend key (starts with re_)'); return; } cm.resendVerified=true; save(); renderSet(); toast('Resend connected'); }
+  function verifyResend(){ if(!_canMod('settings'))return; var cm=_comms(); if(!/^re_/.test((cm.resendKey||'').trim())){ toast('Paste your Resend key (starts with re_)'); return; } cm.resendVerified=true; save(); renderSet(); toast(EMAIL_LIVE?'Resend connected \u2014 sending is live':'Resend key saved. Confirmation & receipt emails start sending once your Atlas backend mailer is live.'); }
   function openEmailPlans(){ var cm=_comms();
     var html='<div class="modal__head"><h3>Email plans</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<p style="color:var(--muted);font-size:13.5px;margin:0 0 14px">Every plan includes automated emails and the builder. Pick the monthly volume you need.</p>';
@@ -2131,7 +2141,7 @@ const Atlas = (function(){
       +'<option value="active">Active renters ('+_audienceCount('active')+')</option>'
       +'<option value="past">Past customers ('+_audienceCount('past')+')</option></select></div>'
       +'<div class="field"><label>Channel</label><select class="select" id="ebChannel" onchange="Atlas.previewEmail()"><option value="email">Email</option><option value="sms">SMS text</option><option value="both">Email + SMS</option></select></div></div>'
-      +'<div class="bk-lenhint" id="ebComplyHint" style="margin:0 0 12px">Every email includes one-tap unsubscribe and your business address (CAN-SPAM).</div>'; }
+      +'<div class="bk-lenhint" id="ebComplyHint" style="margin:0 0 12px">Once sending is live, every email carries a working one-tap unsubscribe and your business address (CAN-SPAM).</div>'; }
     left+='<div class="field"><label>Subject</label><input class="input" id="ebSubject" value="'+esc(subject)+'" oninput="Atlas.previewEmail()" placeholder="Your booking is confirmed"></div>'
       +'<div class="field" style="margin-bottom:6px"><label>Message</label><textarea class="input" id="ebBody" rows="9" style="resize:vertical;font-family:inherit" oninput="Atlas.previewEmail()">'+esc(body)+'</textarea></div>'
       +'<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Tap to insert:</div><div class="eb-tokens">'
@@ -2147,7 +2157,7 @@ const Atlas = (function(){
     var hint=document.getElementById('ebComplyHint'); if(hint){ var ch=val('ebChannel')||'email';
       hint.innerHTML = ch==='sms' ? 'SMS goes only to customers who opted in; every text ends with "Reply STOP to opt out" (TCPA).'
         : ch==='both' ? 'Email: one-tap unsubscribe + your address (CAN-SPAM). SMS: opted-in customers only, each ends with "Reply STOP" (TCPA).'
-        : 'Every email includes one-tap unsubscribe and your business address (CAN-SPAM).'; } }
+        : 'Once sending is live, every email carries a working one-tap unsubscribe and your business address (CAN-SPAM).'; } }
   // SMS eligibility = customers who gave explicit consent (captured + timestamped in their portal). Never text without it.
   function _smsConsentNames(){ var n={}; (DATA.bookings||[]).forEach(function(b){ if(b.commsPref&&b.commsPref.sms&&b.commsPref.smsConsentAt) n[b.cust]=1; }); return n; }
   function _smsEligible(aud){ var names=_smsConsentNames(), cs=DATA.customers||[], act={};
@@ -2183,7 +2193,7 @@ const Atlas = (function(){
   function sendTestEmail(mode){ if(!_canMod('settings'))return; var cm=_comms(); var to=(cm.replyTo||'').trim();
     if(!to){ toast('Add your inbox first (Messaging > Your inbox), then send a test'); goSettings('comms'); return; }
     var subj = (mode==='draft' && document.getElementById('ebSubject') && val('ebSubject').trim()) ? val('ebSubject').trim() : ((cm.fromName||S.brand.name)+' test email');
-    _logEvent('email','Test email "'+subj+'" sent to '+to,{test:true}); toast('Test email sent to '+to); }
+    _logEvent('email','Test email "'+subj+'" '+(EMAIL_LIVE?'sent':'previewed (not sent -- mailer not live)')+' to '+to,{test:true}); toast(EMAIL_LIVE?('Test email sent to '+to):('Preview only \u2014 email sending is not live yet, so nothing was sent to '+to)); }
   function fresh(){ return {brand:{name:'Your Company',color:'#1E6E4E',logo:null,initial:'Y',subdomain:'yourcompany'},
     fleet:FLEET_TYPES[0], money:defaultMoney(), integrations:{}, owner:'Owner', trialDays:7,
     plan:'trial', tier:'pro', trialStartedAt:Date.now(), subscribedAt:null, card:null, credits:null,
@@ -2302,7 +2312,7 @@ const Atlas = (function(){
   const FAQS=[
     ['Is it really my brand?','Yes. Your logo, colors, name and domain run across the whole dashboard, the customer member portal, contracts and emails. Your renters see your business &mdash; not Atlas.'],
     ['What can I rent on Atlas?','Anything. Cars, RVs, boats, aircraft, powersports, trailers, equipment &mdash; and well beyond vehicles: salon chairs and barber booths (booth &amp; chair rent), event &amp; party gear, storage units, tools, even a custom asset you name. The app relabels itself so it fits your business.'],
-    ['Can I connect the payment system I already use?','Yes &mdash; Stripe, Square, Clover, Toast, PayPal, Authorize.Net and more. Guided step-by-step setup connects your existing processor so bookings, portal payments and charges route straight to your account. You keep your money and your provider.'],
+    ['Can I connect the payment system I already use?','Yes &mdash; Stripe, Square, Clover, Toast, PayPal, Authorize.Net and more. Guided step-by-step setup connects your existing processor. Once connected at go-live, bookings, portal payments and charges route straight to your own account &mdash; you keep your money and your provider.'],
     ['What happens after the 7-day trial?','It becomes $49.99/month on Starter &mdash; step up any time as you grow (plans differ only by how many assets, locations and AI credits you need). No per-booking or per-seat fees, cancel anytime, and you keep your data and exports. Every plan includes the Atlas.io AI, which quietly learns your business, helps add and manage bookings, and keeps building your dashboard around how you actually work &mdash; it is the part rental owners fall for.'],
     ['What is Atlas.io?','Your built-in AI assistant. It learns your pricing, fleet and preferences, then helps run the business &mdash; adjusting settings, drafting messages, filling idle assets and explaining your numbers.']
   ];
@@ -2370,11 +2380,14 @@ const Atlas = (function(){
     document.getElementById('authSwitch').innerHTML = login
       ? 'New to Atlas? <a onclick="Atlas.goAuth(\'signup\')" style="color:var(--brand);font-weight:700;cursor:pointer">Create an account</a>'
       : 'Already have an account? <a onclick="Atlas.goAuth(\'login\')" style="color:var(--brand);font-weight:700;cursor:pointer">Sign in</a>';
+    var _cw=document.getElementById('authConsent'); if(_cw) _cw.style.display=login?'none':'block';   // consent shown only when creating an account
+    var _ag=document.getElementById('authAgree'); if(_ag) _ag.checked=false;
     _authErr('');
   }
   function _authErr(m){ var el=document.getElementById('authErr'); if(!el)return; if(m){ el.textContent=m; el.style.display='block'; } else { el.style.display='none'; } }
   async function authSubmit(){
     var email=(document.getElementById('authEmail')||{}).value||'', pass=(document.getElementById('authPass')||{}).value||'';
+    if(_authMode==='signup'){ var _ag=document.getElementById('authAgree'); if(_ag && !_ag.checked){ _authErr('Please agree to the Terms & Privacy Policy to create your account.'); return; } }
     var r;
     if(ATLAS_BACKEND){
       // Server owns identity: the Worker verifies + assigns tenant_id. We mirror a local session under that
@@ -2390,6 +2403,7 @@ const Atlas = (function(){
       if(r.err){ _authErr(r.err); return; }
     }
     S=load();
+    if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
     if(_authMode==='signup'){ startTrial(); return; }                        // new account -> guided onboarding
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }           // returning -> resume exactly where they were
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
@@ -2410,7 +2424,14 @@ const Atlas = (function(){
     document.getElementById('obCount').textContent = step===0?'Welcome':(step>=total?'All set':'Step '+step+' of '+(total-1));
     const c=document.getElementById('obCard'); c.innerHTML=OB[STEPS[step]](); applyBrand();
   }
-  function next(){ if(step<STEPS.length-1){step++; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
+  // Re-read the CURRENT step's inputs from the DOM before advancing. A pre-filled value="" fires no oninput event,
+  // so a click-through owner would otherwise land on an empty fleet / "Your Company" -- capture what is on screen.
+  function _captureOB(){ try{
+    var an=document.getElementById('obAssetName'); if(an){ S.firstAsset=S.firstAsset||{}; S.firstAsset.name=String(an.value||'').trim(); }
+    var ar=document.getElementById('obAssetRate'); if(ar){ S.firstAsset=S.firstAsset||{}; var rv=parseFloat(String(ar.value||'').replace(/[^0-9.]/g,'')); if(rv>0) S.firstAsset.rate=rv; }
+    var bn=document.getElementById('fName'); if(bn && String(bn.value||'').trim()){ S.brand.name=String(bn.value).trim(); S.brand.initial=(S.brand.name[0]||'A').toUpperCase(); }
+  }catch(e){} }
+  function next(){ _captureOB(); if(step<STEPS.length-1){step++; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
   function back(){ if(step>0){step--; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
   const OB={
     welcome:()=>`
@@ -2490,9 +2511,9 @@ const Atlas = (function(){
 
     asset:()=>`
       <h2>Add your first ${S.fleet.noun}</h2><p class="ob-card__lead">Just enough to go live. You can bulk-import the rest later.</p>
-      <div class="field"><label>${cap(S.fleet.noun)} name</label><input class="input" placeholder="e.g. ${S.fleet.sample[0]}" value="${esc(S.firstAsset.name||S.fleet.sample[0])}" oninput="Atlas.setField('firstAsset.name',this.value)"></div>
+      <div class="field"><label>${cap(S.fleet.noun)} name</label><input class="input" id="obAssetName" placeholder="e.g. ${S.fleet.sample[0]}" value="${esc(S.firstAsset.name||S.fleet.sample[0])}" oninput="Atlas.setField('firstAsset.name',this.value)"></div>
       <div class="row2">
-        <div class="field"><label>${({hour:'Hourly',week:'Weekly',month:'Monthly'})[S.money.rateModel]||'Daily'} rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="${S.firstAsset.rate||S.money.baseRate}" oninput="Atlas.setField('firstAsset.rate',this.value)"></div></div>
+        <div class="field"><label>${({hour:'Hourly',week:'Weekly',month:'Monthly'})[S.money.rateModel]||'Daily'} rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="obAssetRate" style="width:auto;flex:1;text-align:left" value="${S.firstAsset.rate||S.money.baseRate}" oninput="Atlas.setField('firstAsset.rate',this.value)"></div></div>
         <div class="field"><label>Status</label><select class="select" onchange="Atlas.setField('firstAsset.status',this.value)"><option ${S.firstAsset.status==='Maintenance'?'':'selected'}>Available</option><option ${S.firstAsset.status==='Maintenance'?'selected':''}>Maintenance</option></select></div>
       </div>
       <div class="field" style="margin-bottom:4px"><label>Photo</label>
@@ -2858,7 +2879,7 @@ const Atlas = (function(){
     seedData(); renderOverview(); renderFleet(); renderBookings(); renderCustomers(); renderAnalytics(); renderWebsite(); renderTeam(); buildSettings(); buildAio();
     // greet
     const h=new Date().getHours(); const g=h<12?'Good morning':h<18?'Good afternoon':'Good evening';
-    document.getElementById('greetLine').textContent=`${g}, ${firstWord((S.owner&&S.owner!=='Owner'&&S.owner!=='Your')?S.owner:S.brand.name)}`;
+    document.getElementById('greetLine').textContent=`${g}, ${_ownerName()}`;
     document.getElementById('greetSub').textContent=`Here's how your ${S.fleet.nouns} are doing today.`;
     document.getElementById('utilTitle').textContent=`${cap(S.fleet.nouns)} ${_fterm('util').toLowerCase()}`;
     document.getElementById('fleetH').textContent=`Your ${S.fleet.nouns}`;
@@ -3110,16 +3131,16 @@ const Atlas = (function(){
       <span class="kpi__ic"><svg viewBox="0 0 20 20" fill="none"><path d="${k[3]}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
       <div class="kpi__val tnum">${k[1]}</div><div class="kpi__hint">View breakdown &rarr;</div></div>`).join('');
     // util list
-    document.getElementById('utilList').innerHTML=DATA.assets.slice(0,5).map(a=>`<div class="util-row" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
+    document.getElementById('utilList').innerHTML=DATA.assets.length ? DATA.assets.slice(0,5).map(a=>`<div class="util-row" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
       <div class="util-row__t"><b>${esc(a.name)}</b><small>${esc(a.status)}</small><div class="bar"><i style="width:${a.util}%"></i></div></div>
-      <span class="util-row__pct tnum">${a.util}%</span></div>`).join('');
+      <span class="util-row__pct tnum">${a.util}%</span></div>`).join('') : `<div class="bk-lenhint" style="margin:0">No ${esc(S.fleet.nouns)} yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.go('fleet')">add your first ${esc(S.fleet.noun)}</span> to see utilization here.</div>`;
     // bookings table
     const _pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':(S.money.rateModel==='month'?'mo':'d'));
     const rows=b=>`<tr style="cursor:pointer" onclick="Atlas.openBooking('${b.id}')"><td><b>${b.id}</b></td><td><div class="cust"><span class="avatar">${esc((b.cust||'?')[0])}</span>${esc(b.cust)}</div></td>
       <td>${esc(b.asset)}</td><td class="tnum">${_fmtWhen(b.startTs,b.time)} &middot; ${b.periods}${_pu}</td>
       <td class="tnum"><b>${money(_bkTotal(b))}</b></td><td>${statusChip(b.status)}</td></tr>`;
     const head=`<thead><tr><th>Booking</th><th>Customer</th><th>${cap(S.fleet.noun)}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
-    document.getElementById('bookTbl').innerHTML=head+'<tbody>'+DATA.bookings.slice(0,5).map(rows).join('')+'</tbody>';
+    document.getElementById('bookTbl').innerHTML=head+'<tbody>'+(DATA.bookings.length?DATA.bookings.slice(0,5).map(rows).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px 8px">No bookings yet &mdash; new bookings show up here.</td></tr>')+'</tbody>';
     document.getElementById('bookTblFull').innerHTML=head+'<tbody>'+DATA.bookings.map(rows).join('')+'</tbody>';
     setTimeout(()=>drawRevChart(),30);
   }
@@ -3215,10 +3236,10 @@ const Atlas = (function(){
   /* ---- real-time e-signature: what the client sees, the pad, submit, view, download ---- every step timestamped ---- */
   var _sig={drawing:false,ink:false,ctx:null,canvas:null};
   function _stamp(ts){ if(!ts)return''; try{ return new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}); }catch(e){ return ''; } }
-  // Signing device IP. In production the worker records the real request IP; in this prototype we keep a stable
-  // per-device value. It is RECORDED on every signature for legal verification but NEVER shown in the UI.
-  function _signIp(){ var s=_lsGet('atlas_dev_ip',null); if(!s){ s=(10+Math.floor(Math.random()*245))+'.'+Math.floor(Math.random()*256)+'.'+Math.floor(Math.random()*256)+'.'+Math.floor(Math.random()*256); _lsSet('atlas_dev_ip',s); } return s; }
-  function _signDevice(){ return { ip:_signIp(), ua:(navigator&&navigator.userAgent)||'', at:Date.now() }; }
+  // Signing IP is stamped server-side (the Worker records the real CF-Connecting-IP) at go-live. The client does NOT
+  // fabricate an IP -- an invented address presented as legal evidence is worse than none. Device UA + timestamp are real.
+  function _signIp(){ return ''; }
+  function _signDevice(){ return { ip:'', ua:(navigator&&navigator.userAgent)||'', at:Date.now() }; }
   function _sigPadHtml(){ return '<div class="sig-wrap"><canvas id="sigCanvas" class="sig-pad"></canvas><div class="sig-hint">Draw your signature here</div></div>'
     +'<div class="sig-row"><input class="input" id="sigType" placeholder="or type your full name" oninput="Atlas._sigSync()"><button type="button" class="btn btn--ghost btn--sm" onclick="Atlas.sigClear()">Clear</button></div>'; }
   function _initSigPad(){ var c=document.getElementById('sigCanvas'); if(!c)return; var r=c.getBoundingClientRect(); var dpr=window.devicePixelRatio||1;
@@ -3271,7 +3292,7 @@ const Atlas = (function(){
     var sigHtml=''; if(ag.sig){ sigHtml=(ag.sig.type==='draw')?('<img src="'+ag.sig.data+'" alt="signature" style="max-height:72px">'):('<span class="sig-typed">'+esc(ag.sig.data)+'</span>'); }
     else if(ag.status==='uploaded') sigHtml='<span style="color:var(--muted);font-size:13px">Signed copy uploaded'+(ag.file?(': '+esc(ag.file)):'')+'</span>';
     var trail=[]; if(ag.sentAt)trail.push('Sent '+_stamp(ag.sentAt)); if(ag.deliveredAt)trail.push('Delivered to '+esc(ag.deliveredTo||'')+' '+_stamp(ag.deliveredAt)); if(ag.viewedAt)trail.push('Opened by renter '+_stamp(ag.viewedAt)); if(ag.signedAt)trail.push('Signed '+_stamp(ag.signedAt)); if(ag.uploadedAt)trail.push('Uploaded '+_stamp(ag.uploadedAt));
-    var priv=(ag.signDevice)?'<div style="font-size:11px;color:var(--faint);margin-top:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="M8 1l5 2v4c0 3-2 5-5 6-3-1-5-3-5-6V3l5-2z" stroke="currentColor" stroke-width="1.3"/></svg>Signing device and IP address recorded for legal verification (kept private).</div>':'';
+    var priv=(ag.signDevice)?'<div style="font-size:11px;color:var(--faint);margin-top:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="M8 1l5 2v4c0 3-2 5-5 6-3-1-5-3-5-6V3l5-2z" stroke="currentColor" stroke-width="1.3"/></svg>Signing device and timestamp recorded for your records (kept private). The signer&rsquo;s IP is added server-side once your backend is live.</div>':'';
     openModal('<div class="modal__head"><h3>'+esc(a.name)+' agreement</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="sign-parties"><span><b>Owner</b> '+esc(S.brand.name)+'</span><span><b>Renter</b> '+esc((a.tenant&&a.tenant.name)||ag.to||'-')+'</span></div>'
       +(ag.docText?('<div class="sign-doc">'+esc(ag.docText)+'</div>'):'<div class="bk-lenhint">Document on file.</div>')
@@ -3507,12 +3528,14 @@ const Atlas = (function(){
     if(c) return {type:'booking', reason:c.id+(c.cust?(' \u2014 '+c.cust):'')};
     return null; }
   function _bookingForm(existing){
-    var assets=(DATA.assets||[]).map(function(a){return a.name;}); if(!assets.length) assets=S.fleet.sample.slice();
+    var assets=(DATA.assets||[]).map(function(a){return a.name;}); var _noAssets=!assets.length; if(_noAssets && _isDemoTenant()) assets=S.fleet.sample.slice();   // real tenant with 0 assets: do NOT inject phantom sample vehicles (would save a booking against a car they don't own)
     var b=existing||{cust:'',custEmail:'',phone:'',asset:assets[0]||'',periods:3,extras:[],discount:{type:'none',value:0},notes:'',status:'Confirmed'};
     _bkDraft={ extras:(b.extras||[]).map(function(x){return {id:x.id,name:x.name,price:x.price,per:x.per,qty:x.qty||1,custom:x.custom,protection:x.protection,planId:x.planId};}) };   // keep protection+planId so editing a booking never drops/double-charges coverage
     _bkPromo=null;   // clear any promo left over from a previously-abandoned form; without this a code applied then cancelled would bleed onto the next New Booking (stamp promoCode + burn a cap slot with $0 discount). On edit, an existing booking keeps its stored promoCode/quote untouched.
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
-    var assetField='<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset">'+assets.map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';
+    var assetField=_noAssets
+      ? '<div class="field"><label>'+cap(S.fleet.noun)+'</label><div class="bk-lenhint" style="margin:0">No '+esc(S.fleet.nouns)+' yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.closeModal();Atlas.go(\'fleet\')">add your first '+esc(S.fleet.noun)+'</span> to take a booking.</div></div>'
+      : '<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset">'+assets.map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';
     var phoneField=cfg.fields.phone? '<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkPhone" value="'+esc(b.phone||'')+'" placeholder="(555) 555-1234"></div>' : '';
     var contactRow=cfg.fields.phone? ('<div class="row2">'+phoneField+assetField+'</div>') : assetField;
     var notesField=cfg.fields.notes? '<div class="field"><label>Notes <span style="color:var(--muted);font-weight:500">(internal)</span></label><textarea class="input" id="bkNotes" rows="2" placeholder="Anything to remember about this booking">'+esc(b.notes||'')+'</textarea></div>' : '';
@@ -3534,7 +3557,9 @@ const Atlas = (function(){
       +notesField
       +'<div class="field"><label>Status</label><select class="select" id="bkStatusF">'+BK_STATUSES.map(function(s){return '<option'+(s===(b.status||'Confirmed')?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>'
       +'<div class="mp" id="bkPreview" style="margin:2px 0 16px"></div>'
-      +'<button class="btn btn--primary btn--full btn--lg" data-tour="save" onclick="Atlas.createBooking('+(existing?("'"+existing.id+"'"):'null')+')">'+(existing?'Save changes':'Create booking')+'</button></div>');
+      +((_noAssets&&!existing)
+        ? '<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.closeModal();Atlas.go(\'fleet\')">Add your first '+esc(S.fleet.noun)+' first</button></div>'
+        : '<button class="btn btn--primary btn--full btn--lg" data-tour="save" onclick="Atlas.createBooking('+(existing?("'"+existing.id+"'"):'null')+')">'+(existing?'Save changes':'Create booking')+'</button></div>'));
     _bkInitWhen(b);
     _bkRenderExtras();
   }
@@ -3559,6 +3584,8 @@ const Atlas = (function(){
   function _nextBkId(){ var mx=4826; _bookings().forEach(function(b){ var n=parseInt(String(b.id||'').replace(/\D/g,''),10); if(!isNaN(n)&&n>mx)mx=n; }); return 'BK-'+(mx+1); }
   function createBooking(editId){
     if(!_guard('bookEdit','Saving bookings'))return;
+    // Guard: a real (non-demo) owner with 0 assets can't book a phantom vehicle onto real revenue. Add a vehicle first.
+    if(!editId && !(DATA.assets||[]).length && !_isDemoTenant()){ toast('Add a '+S.fleet.noun+' first, then take a booking'); closeModal(); go('fleet'); return; }
     var cust=(val('bkCust')||'').trim(); if(!cust){ toast('Enter a customer name'); return; }
     var w=_bkReadWhen();
     var disc=_bkReadDiscount(), extras=(_bkDraft?_bkDraft.extras:[]).slice();
@@ -4208,9 +4235,9 @@ const Atlas = (function(){
   function renderCustomers(){
     var _ct=document.getElementById('custTbl'); if(!_ct)return;   // fix: self-guard so booking mutators can call this safely (incl. website-preview context)
     _ct.innerHTML=`<thead><tr><th>Customer</th><th>Trips</th><th>Total spent</th><th>Last active</th><th></th></tr></thead><tbody>`+
-      DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email); return `<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
+      (DATA.customers.length ? DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email); return `<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
       <td class="tnum">${_cs.trips}</td><td class="tnum"><b>${money(_cs.spent)}</b></td><td class="tnum">${c.last} ago</td>
-      <td><button class="btn btn--ghost btn--sm" onclick="Atlas.viewCustomer(${i})">View</button></td></tr>`; }).join('')+`</tbody>`;
+      <td><button class="btn btn--ghost btn--sm" onclick="Atlas.viewCustomer(${i})">View</button></td></tr>`; }).join('') : `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:22px 8px">No customers yet &mdash; they appear here automatically after their first booking.</td></tr>`)+`</tbody>`;
     _renderWaitCard();
   }
   // ---- Waitlist: capture demand for booked-out assets, and auto-surface it when a booking cancels ----
@@ -4623,7 +4650,7 @@ const Atlas = (function(){
   function _permCount(p){ var mo=PERM_MODS.filter(function(m){return p.mods&&p.mods[m[0]];}).length, ca=PERM_CAPS.filter(function(c){return p.caps&&p.caps[c[0]];}).length; return {mo:mo,ca:ca}; }
   function _permSummary(p){ var c=_permCount(p); return c.mo+' of '+PERM_MODS.length+' areas &middot; '+(c.ca?(c.ca+' action'+(c.ca===1?'':'s')):'view-only'); }
   function renderTeam(){
-    var you='<tr><td><div class="cust"><span class="avatar">'+esc((S.owner||'Y')[0])+'</span><b>'+esc(firstWord((S.owner&&S.owner!=='Owner'&&S.owner!=='Your')?S.owner:S.brand.name))+' <span style="color:var(--muted);font-weight:500">(you)</span></b></div></td>'
+    var you='<tr><td><div class="cust"><span class="avatar">'+esc((S.owner||'Y')[0])+'</span><b>'+esc(_ownerName('You'))+' <span style="color:var(--muted);font-weight:500">(you)</span></b></div></td>'
       +'<td style="color:var(--muted)">'+esc(store.session()?store.session().email:'')+'</td><td><span class="chip chip--brand">Owner</span></td><td style="color:var(--muted)">Full access to everything</td><td></td></tr>';
     var rows=(S.team||[]).map(function(m){ var s=_permSummary(m.perms||_permsAll(false));
       return '<tr><td><div class="cust"><span class="avatar">'+esc((m.name||'?')[0])+'</span><b>'+esc(m.name)+'</b></div></td>'
@@ -4635,7 +4662,7 @@ const Atlas = (function(){
   }
   // ---- Staff scheduling / shifts: assign shifts across the week, weekly hours per person ----
   function _shifts(){ if(!S.shifts) S.shifts=[]; return S.shifts; }
-  function _shiftRoster(){ var out=[{id:'owner',name:firstWord((S.owner&&S.owner!=='Owner'&&S.owner!=='Your')?S.owner:S.brand.name)+' (you)'}]; (S.team||[]).forEach(function(m){ if(m.name) out.push({id:m.id,name:m.name}); }); return out; }
+  function _shiftRoster(){ var out=[{id:'owner',name:_ownerName('You')+' (you)'}]; (S.team||[]).forEach(function(m){ if(m.name) out.push({id:m.id,name:m.name}); }); return out; }
   function _shiftHours(sh){ try{ var s=String(sh.start||'').split(':'), e=String(sh.end||'').split(':'); var mins=(parseInt(e[0],10)*60+parseInt(e[1],10))-(parseInt(s[0],10)*60+parseInt(s[1],10)); if(mins<0) mins+=1440; return Math.round(mins/60*10)/10; }catch(err){ return 0; } }
   function _shiftDateLabel(d){ try{ var dt=new Date(d+'T12:00:00'); return dt.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+(d===_todayStr()?' (Today)':''); }catch(e){ return d; } }
   function _shiftsHtml(){ var today=_todayStr();
@@ -5150,10 +5177,10 @@ const Atlas = (function(){
       } else {
         html+='<div class="field" style="margin-top:14px"><label>Resend API key</label><input class="input mono" value="'+esc(cm.resendKey)+'" placeholder="re_..." onchange="Atlas.setCommsField(\'resendKey\',this.value)"></div>'
           +'<div class="field"><label>From name</label><input class="input" value="'+esc(cm.fromName||S.brand.name)+'" onchange="Atlas.setCommsField(\'fromName\',this.value)"></div>'
-          +'<div style="display:flex;gap:8px;align-items:center">'+(cm.resendVerified?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.verifyResend()">Verify key</button></div>'
+          +'<div style="display:flex;gap:8px;align-items:center">'+(cm.resendVerified?(EMAIL_LIVE?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted"><span class="dot"></span>Key saved &middot; not live yet</span>'):'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.verifyResend()">Verify key</button></div>'
           +'<div class="bk-lenhint" style="margin:10px 0 0">Billed by Resend directly &mdash; your volume, your account. Atlas just orchestrates.</div>';
       }
-      html+='</div><div class="set-block"><h3>Automated emails</h3><div class="desc">Configure them here &mdash; they send automatically once email delivery is enabled on your account (connect a sender below). Every one is editable.</div>'+(!_comms().resendVerified?'<div class="bk-lenhint" style="margin:0 0 10px;color:var(--warn,#b45309)">Sending is not live yet &mdash; connect an email sender below to turn these on. Until then this is setup only.</div>':'');
+      html+='</div><div class="set-block"><h3>Automated emails</h3><div class="desc">Configure them here &mdash; they send automatically once email delivery is live on your account. Every one is editable.</div>'+(!EMAIL_LIVE?'<div class="bk-lenhint" style="margin:0 0 10px;color:var(--warn,#b45309)">Sending is not live yet &mdash; these turn on when your Atlas backend mailer is deployed (see go-live steps). Until then this is setup only; nothing is emailed.</div>':'');
       html+=AUTO_META.map(function(m){ var a=cm.autos[m[0]]; var metaLine;
         if(m[3]){ metaLine='Sent <input class="mini-num tnum" type="number" min="0" value="'+(a.days||0)+'" onchange="Atlas.setAutoDays(\''+m[0]+'\',this.value)"> days '+(m[3]==='before'?'before the trip':'after the trip'); }
         else metaLine=m[2];
@@ -5165,10 +5192,10 @@ const Atlas = (function(){
         +'<label class="cfg-check"><input type="checkbox" '+(cm.sms.enabled?'checked':'')+' onchange="Atlas.setCommsField(\'sms.enabled\',this.checked)">Enable SMS texts</label>'
         +'<div class="row2" style="margin-top:12px"><div class="field"><label>Provider</label><select class="select" onchange="Atlas.setCommsField(\'sms.provider\',this.value)">'+['twilio|Twilio','telnyx|Telnyx','messagebird|MessageBird'].map(function(o){var x=o.split('|');return '<option value="'+x[0]+'"'+(cm.sms.provider===x[0]?' selected':'')+'>'+x[1]+'</option>';}).join('')+'</select></div>'
           +'<div class="field"><label>Your SMS number</label><input class="input" value="'+esc(cm.sms.fromNumber)+'" placeholder="+1 555 123 4567" onchange="Atlas.setCommsField(\'sms.fromNumber\',this.value)"></div></div>'
-        +'<div class="bk-lenhint" style="margin:10px 0 0"><b style="color:var(--ink)">Compliance built in (TCPA):</b> Atlas never texts a customer who has not opted in (they consent from their portal, time-stamped), every message identifies you and ends with &ldquo;Reply STOP to opt out&rdquo;, and STOP replies suppress future texts automatically.</div>';
+        +'<div class="bk-lenhint" style="margin:10px 0 0"><b style="color:var(--ink)">Compliance helpers (TCPA):</b> you can only text customers who opted in from their portal (time-stamped), and every template identifies you and ends with &ldquo;Reply STOP to opt out&rdquo;. Live delivery and automatic STOP-suppression turn on when you connect your SMS provider and its inbound webhook &mdash; you are responsible for honoring opt-outs.</div>';
       html+='</div><div class="set-block"><h3>Sender details</h3><div class="desc">Required so your emails are compliant and land in the inbox.</div>'
         +'<div class="field"><label>Business mailing address</label><input class="input" value="'+esc((cm.business&&cm.business.address)||'')+'" placeholder="123 Main St, Suite 4, Austin, TX 78701" onchange="Atlas.setCommsField(\'business.address\',this.value)"></div>'
-        +'<div class="bk-lenhint" style="margin:8px 0 0">US law (CAN-SPAM) requires a physical mailing address and a one-tap unsubscribe in every marketing email &mdash; Atlas adds both automatically.</div>';
+        +'<div class="bk-lenhint" style="margin:8px 0 0">US law (CAN-SPAM) requires a physical mailing address and a one-tap unsubscribe in every marketing email &mdash; add your address above; a working unsubscribe link turns on when you connect your email sender.</div>';
       html+='</div><div class="set-block"><h3>Email builder &amp; broadcasts</h3><div class="desc">Design a branded email or text and send it to any group of customers.</div>'
         +'<button class="btn btn--primary" onclick="Atlas.openEmailBuilder(null)">Compose message</button>';
       if(cm.campaigns.length){ html+='<div style="margin-top:14px">'+cm.campaigns.slice(0,5).map(function(c){ return '<div class="camp-row"><div style="min-width:0"><b style="color:var(--ink);font-size:13.5px">'+esc(c.subject)+'</b><div style="font-size:12px;color:var(--muted)">'+esc(c.audience)+' &middot; '+c.count+' sent</div></div><span class="chip chip--ok"><span class="dot"></span>Sent</span></div>'; }).join('')+'</div>'; }
@@ -5181,7 +5208,7 @@ const Atlas = (function(){
         ${_payProvider()?`<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>Active processor: ${esc(_payLabel())}</b> &mdash; portal payments, site checkout and charges run through it.</div>`:`<div class="bk-lenhint" style="margin:0 0 12px">No processor connected yet &mdash; pick yours below. Nothing charges until you connect one.</div>`}
         ${PAY_PROVIDERS.map(p=>{ var conn=!!S.integrations[p[0]], active=_payProvider()===p[0];
           return `<div class="conn-row"><div class="conn-row__ic">${p[1].charAt(0)}</div><div class="conn-row__t"><b>${p[1]}${active?' <span class="chip chip--brand" style="font-size:10px">Active</span>':''}</b><small>${p[2]}</small></div>
-            <div class="conn-act">${conn ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span> ${active?'':`<button class="btn btn--ghost btn--sm" onclick="Atlas.setActivePay('${p[0]}')">Make active</button>`}` : `<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${p[0]}','${p[1]}')">Connect</button>`}</div></div>`;
+            <div class="conn-act">${conn ? `<span class="chip ${PAYMENTS_LIVE?'chip--ok':'chip--muted'}"><span class="dot"></span>${PAYMENTS_LIVE?'Connected':'Saved'}</span> ${active?'':`<button class="btn btn--ghost btn--sm" onclick="Atlas.setActivePay('${p[0]}')">Make active</button>`}` : `<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${p[0]}','${p[1]}')">Connect</button>`}</div></div>`;
         }).join('')}
         <div class="bk-lenhint" style="margin:12px 0 0">You keep your processor and your money &mdash; Atlas just routes the charge. Real processing goes live with your backend; today it is a safe test flow.</div>
       </div>
@@ -5320,7 +5347,7 @@ const Atlas = (function(){
   function buildAio(){
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
     document.getElementById('aioBody').innerHTML='';
-    aioMsg('bot',`Hi ${firstWord((S.owner&&S.owner!=='Owner'&&S.owner!=='Your')?S.owner:S.brand.name)} \u{1F44B} I'm Atlas.io. I've learned your ${S.fleet.label.toLowerCase()} setup and your money rules. You have <b>${_credits().toLocaleString()}</b> credits this week \u2014 ask me anything, or tap a suggestion.`);
+    aioMsg('bot',`Hi ${_ownerName()} \u{1F44B} I'm Atlas.io. I've learned your ${S.fleet.label.toLowerCase()} setup and your money rules. You have <b>${_credits().toLocaleString()}</b> credits this week \u2014 ask me anything, or tap a suggestion.`);
     // Idle-time learning: open with the CURRENT researched finding for the owner's market (rotates over time).
     try{
       if(!_aioHasBiz() && !(S.setup&&S.setup.done)){
@@ -5754,13 +5781,13 @@ const Atlas = (function(){
 
   /* ============================== modals / connect ============================== */
   const GUIDES={
-    stripe:['Create or sign in to your <b>Stripe</b> account at <code>stripe.com</code>.','In Stripe, open <b>Developers &rarr; API keys</b>.','Copy your <b>Publishable key</b> and <b>Secret key</b>.','Paste them below &mdash; Atlas encrypts and stores them securely.','We run a $1 test authorization to confirm it works.'],
+    stripe:['Create or sign in to your <b>Stripe</b> account at <code>stripe.com</code>.','In Stripe, open <b>Developers &rarr; API keys</b>.','Copy your <b>Publishable key</b> and <b>Secret key</b>.','Paste them below. At go-live your keys are sent encrypted to your backend and used for real charges &mdash; nothing is charged until then.'],
     email:['Choose your provider (Resend, SendGrid or SMTP).','Create an API key in your provider\'s dashboard.','Add a verified sender address (e.g. <code>bookings@yourco.com</code>).','Paste the API key below.','Send yourself a test confirmation email.'],
     maps:['Create a <b>Mapbox</b> or Google Maps API key.','Enable Geocoding &amp; Directions for the key.','Paste the key below to power delivery &amp; addresses.'],
     web:['Copy your Atlas booking embed snippet.','Paste it into any page on your website.','Bookings flow straight into this dashboard, branded as you.'],
     sms:['Create a <b>Twilio</b> account and buy a number.','Copy your Account SID and Auth Token.','Paste them below to text customers automatically.'],
     qb:['Sign in to <b>QuickBooks Online</b>.','Authorize Atlas Rental.io in the connection popup.','Choose which accounts to sync bookings and payouts into.'],
-    square:['Sign in to <b>Square</b> at <code>squareup.com</code>.','Open <b>Developer Dashboard &rarr; Applications</b> and select (or create) an app.','Copy your <b>Access token</b> and your <b>Location ID</b>.','Paste them below &mdash; Atlas connects to Square Payments.','We run a $1 test so you can see a charge land in your Square account.'],
+    square:['Sign in to <b>Square</b> at <code>squareup.com</code>.','Open <b>Developer Dashboard &rarr; Applications</b> and select (or create) an app.','Copy your <b>Access token</b> and your <b>Location ID</b>.','Paste them below to save with your account. At go-live Atlas connects to Square Payments for real charges &mdash; nothing is charged until then.'],
     clover:['Sign in to the <b>Clover</b> Dashboard at <code>clover.com</code>.','Open <b>Setup &rarr; API Tokens</b> and create a token.','Copy your <b>API token</b> and <b>Merchant ID</b>.','Paste them below to route payments through Clover.'],
     toast:['In <b>Toast Web</b>, open <b>Integrations &rarr; API access</b>.','Request API credentials (Client ID + secret).','Paste them below to connect Toast.'],
     paypal:['Sign in at <code>developer.paypal.com</code>.','Under <b>Apps &amp; Credentials</b> (Live), create an app.','Copy your <b>Client ID</b> and <b>Secret</b>.','Paste them below to accept PayPal and cards.'],
@@ -5777,22 +5804,29 @@ const Atlas = (function(){
     const steps=GUIDES[id]||['Follow the guided steps to connect.'];
     openModal(`<div class="modal__head"><h3>Connect ${name}</h3><button class="icon-btn" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
       <div class="modal__body"><ol class="step-list">${steps.map(s=>`<li>${s}</li>`).join('')}</ol>
-      <div class="field"><label>Paste your key / token</label><input class="input" placeholder="sk_live_..." ></div>
-      <button class="btn btn--primary btn--full" onclick="Atlas.doConnect('${id}','${name}')">Connect ${name}</button>
-      <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">\u{1F512} Encrypted at rest. You can disconnect anytime.</p></div>`);
+      <div class="field"><label>Paste your key / token</label><input class="input" id="connKey" placeholder="sk_live_..." ></div>
+      <button class="btn btn--primary btn--full" onclick="Atlas.doConnect('${id}','${name}')">Save ${name}</button>
+      <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">\u{1F512} Your key is sent encrypted to your backend at go-live &mdash; never stored in the browser. Nothing charges until then. Disconnect anytime.</p></div>`);
   }
-  function doConnect(id,name){ S.integrations[id]=true;
+  function doConnect(id,name){
+    var key=String((document.getElementById('connKey')||{}).value||'').trim();   // read the pasted key (was silently discarded)
+    S.integrations[id]=true;
     var pf=PAY_PROVIDERS.filter(function(x){return x[0]===id;})[0];   // connecting a processor makes it active if none is yet
     if(pf){ if(!S.payments)S.payments={}; if(!S.payments.provider){ S.payments.provider=id; S.payments.label=pf[1]; } }
-    save(); closeModal(); toast(name+' connected');
-    const el=document.getElementById('conn-'+id); if(el)el.innerHTML=`<span class="chip chip--ok"><span class="dot"></span>Connected</span>`;
+    // Secrets never sit in plaintext localStorage. When the backend is live, mirror the key to the Worker's
+    // encrypted store (/api/integrations/connect, AES-GCM); until then we keep only the provider selection.
+    if(key && ATLAS_BACKEND && _apiCsrf){ _api('/api/integrations/connect',{method:'POST',body:{provider:id,secret:key}}).catch(function(){}); }
+    save(); closeModal();
+    var live=(PAYMENTS_LIVE && ATLAS_BACKEND);
+    toast(live?(name+' connected'):(name+' saved \u2014 live charging turns on at go-live'));
+    const el=document.getElementById('conn-'+id); if(el)el.innerHTML=live?`<span class="chip chip--ok"><span class="dot"></span>Connected</span>`:`<span class="chip chip--muted"><span class="dot"></span>Saved</span>`;
     if(document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet();
   }
   function openModal(html){ document.getElementById('modal').innerHTML=html; document.getElementById('modalScrim').classList.add('on'); }
   function closeModal(){ document.getElementById('modalScrim').classList.remove('on'); }
 
   /* ============================== misc ============================== */
-  function finish(){ S.onboarded=true; S.onboardStarted=false;
+  function finish(){ _captureOB(); S.onboarded=true; S.onboardStarted=false;
     // The "Invite your team" onboarding step actually creates the teammate now (was collected into S.invite then discarded).
     var iv=S.invite||{}, added='';
     if(iv.email && String(iv.email).indexOf('@')>0){ S.team=S.team||[];
@@ -5841,26 +5875,26 @@ const Atlas = (function(){
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Higher plans lift your caps + unlock premium features &middot; free weekly Atlas.io credits &middot; cancel anytime.</p></div>');
   }
   function subscribe(tierId){ var t=_tier(tierId); var sameTier=_isActive()&&!!S&&S.tier===t.id;   // fix: same active tier means this is a card-only update, not a plan change
-    var _cardEdit='<div id="subCardEdit" style="display:'+((!S.card||sameTier)?'block':'none')+'"><div class="field"><label>'+(S.card?'New card number':'Card number')+'</label><input class="input" id="subNum" inputmode="numeric" placeholder="1234 1234 1234 1234"></div><div class="row2"><div class="field"><label>Expiry</label><input class="input" id="subExp" placeholder="MM/YY"></div><div class="field"><label>CVC</label><input class="input" id="subCvc" inputmode="numeric" placeholder="123"></div></div></div>';
-    var _cardBlock=S.card?('<div style="background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;padding:12px;font-size:13.5px;color:var(--ink);margin-bottom:12px">Charging '+esc(S.card.brand)+' &bull;&bull;&bull;&bull; '+esc(S.card.last4)+(sameTier?'':' &middot; <a style="cursor:pointer;color:var(--brand);font-weight:600" onclick="this.style.display=\'none\';var e=document.getElementById(\'subCardEdit\');if(e)e.style.display=\'block\'">Use a different card</a>')+'</div>'+_cardEdit):_cardEdit;   // fix: render a reachable card input so a saved card can actually be changed
+    // No raw card number/CVC is ever collected in-app (that would put Atlas in PCI scope). Real card billing runs
+    // through Stripe hosted Checkout at go-live; until PAYMENTS_LIVE, activating a plan just sets it up with no charge.
+    var _cardBlock='<div class="bk-lenhint" style="margin:0 0 12px">Your plan activates now so you can set everything up. <b>No card is collected in-app and nothing is charged</b> \u2014 secure card billing turns on through Stripe hosted checkout at go-live (see GO-LIVE steps).</div>';
     openModal('<div class="modal__head"><h3>'+(sameTier?'Update your card':((_isActive()?'Switch to ':'Subscribe to ')+'Atlas Rental.io '+t.name))+'</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body"><div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:30px;font-weight:850;color:var(--ink)">$'+t.price+(t.id==='unlimited'?'+':'')+'</span><span style="color:var(--muted)">/month</span></div>'
       +'<div style="font-size:13px;color:var(--muted);margin:4px 0 18px">'+_tierCap(t)+' &middot; '+t.credits.toLocaleString()+' free Atlas.io credits/week</div>'
       +_cardBlock
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.confirmSubscribe(\''+t.id+'\')">'+(sameTier?'Save card':(_isActive()?'Switch plan':'Start subscription'))+'</button>'
-      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">&#128274; Secured by Stripe. Cancel anytime, keep your data.</p></div>');
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">&#128274; No card charged now &mdash; secure Stripe billing turns on at go-live. Cancel anytime, keep your data.</p></div>');
   }
   function confirmSubscribe(tierId){
     if(!_guard('billing','Managing billing'))return;
     var t=_tier(tierId);
-    var num=String((document.getElementById('subNum')||{}).value||'').replace(/\D/g,'');
-    if(!S.card){ if(num.length<12){ toast('Enter a valid card number'); return; } S.card={brand:_cardBrand(num),last4:num.slice(-4)}; }
-    else if(num.length>=12){ S.card={brand:_cardBrand(num),last4:num.slice(-4)}; }   // fix: update the saved card when a new number is entered
+    // Real charging happens via Stripe hosted Checkout at go-live (PAYMENTS_LIVE). No PAN is read here.
+    if(PAYMENTS_LIVE){ /* go-live: redirect to Stripe Checkout, then activate on the subscription webhook, not here */ }
     var planChange=!(S.plan==='active' && S.tier===t.id);   // fix: a card-only update on the same active tier must NOT reset the billing cycle or free credits
     S.plan='active'; S.tier=t.id;
     if(planChange){ S.subscribedAt=Date.now(); S.credits={free:t.credits, purchased:(S.credits&&S.credits.purchased)||0, weekStart:_weekStart()}; }
     save();
-    closeModal(); renderTrialBox(); renderSet(); buildAio(); toast(planChange?('You are on Atlas Rental.io '+t.name):'Card updated');
+    closeModal(); renderTrialBox(); renderSet(); buildAio(); toast(planChange?('Atlas Rental.io '+t.name+(PAYMENTS_LIVE?' \u2014 active':' \u2014 setup mode, no card charged')):'Plan updated');
   }
   function cancelPlan(){ if(!_guard('billing','Managing billing'))return; if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
   function openCredits(){
@@ -6184,23 +6218,65 @@ const Atlas = (function(){
     var p=_findPromo(code), res=_validatePromo(p,3,true);   // fix: anon=true -> personal loyalty coupons are rejected on the public site
     if(!res.ok){ _sitePromo=''; if(msg){ msg.style.color='#c0392b'; msg.textContent=res.msg; } return; }
     _sitePromo=p.code; if(msg){ msg.style.color='var(--brand)'; msg.textContent=(p.type==='pct'?(p.value+'% off applied'):(money(p.value)+' off applied')); } }
-  function webBookNow(assetName){
-    var asset=assetName || (DATA.assets[0]&&DATA.assets[0].name) || S.fleet.sample[0];
-    var code=(_sitePromo||val('sitePromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=null;
-    if(code){ promo=_findPromo(code); var r=_validatePromo(promo,3,true); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'), value:promo.value}; else { code=''; promo=null; } }   // fix: anon=true -> a personal loyalty coupon can't be redeemed by an anonymous website visitor
-    var mEff=_moneyFor(asset), per=3, q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc});
-    var _wst=Date.now()+2*86400000, _wen=_wst+per*_periodMs();
-    if(_availabilityConflict(asset, _wst, _wen)){ toast('Sorry \u2014 '+esc(asset)+' is not available for those dates. Please choose another.'); return; }   // website customers are hard-blocked from booking a blacked-out / already-taken asset
-    var b={ id:_nextBkId(), createdAt:Date.now(), cust:'Website Visitor', custEmail:'guest@'+_siteUrl(),
-      asset:asset, rate:mEff.baseRate, periods:per, startTs:_wst, endTs:_wen, time:false,
+  function webBookNow(assetName){   // public site: open a real self-service booking form so the CUSTOMER enters their details + dates (not a generic "Website Visitor" lead)
+    var assets=(DATA.assets||[]).filter(function(a){return a.status!=='Maintenance';});
+    var first=assetName||(assets[0]&&assets[0].name)||(S.fleet.sample&&S.fleet.sample[0])||'';
+    var noun=S.fleet.noun, unit=_perUnitOne(), cfg=_bookingCfg();
+    var opts=assets.length? assets.map(function(a){ return '<option value="'+esc(a.name)+'"'+(a.name===first?' selected':'')+'>'+esc(a.name)+' \u2014 '+money(a.rate!=null?a.rate:S.money.baseRate)+'/'+unit+'</option>'; }).join('') : '<option value="'+esc(first)+'">'+esc(first)+'</option>';
+    var d2=_ymd(new Date(Date.now()+2*86400000));
+    openModal('<div class="modal__head"><h3>Book '+esc(S.brand.name||'now')+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>'+cap(noun)+'</label><select class="select" id="wbAsset" onchange="Atlas._wbQuote()">'+opts+'</select></div>'
+      +'<div class="row2"><div class="field"><label>Your name</label><input class="input" id="wbName" placeholder="Full name"></div>'
+      +'<div class="field"><label>Email</label><input class="input" id="wbEmail" type="email" placeholder="you@email.com"></div></div>'
+      +'<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="wbPhone" placeholder="(555) 555-5555"></div>'
+      +'<div class="row2"><div class="field"><label>Start date</label><input class="input" id="wbStart" type="date" min="'+_todayStr()+'" value="'+d2+'" onchange="Atlas._wbQuote()"></div>'
+      +'<div class="field"><label>How many '+_perUnit()+'</label><input class="input tnum" id="wbPer" type="number" min="1" value="3" onchange="Atlas._wbQuote()"></div></div>'
+      +'<div class="field"><label>Promo code <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="wbPromo" value="'+esc(_sitePromo||'')+'" oninput="Atlas._wbQuote()" placeholder="Have a code?"></div>'
+      +'<div class="mp" id="wbQuote" style="margin:4px 0 12px"></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.webSubmitBooking()">Request booking</button>'
+      +'<div class="bk-lenhint" style="margin:8px 0 0;text-align:center">You will get a confirmation and a link to review, sign and pay. No charge yet.</div></div>');
+    _wbQuote();
+  }
+  function _wbQuote(){ var el=document.getElementById('wbQuote'); if(!el)return;
+    var asset=val('wbAsset')||'', per=Math.max(1,parseInt(val('wbPer'),10)||1);
+    var code=(val('wbPromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=_findPromo(code);
+    if(promo){ var r=_validatePromo(promo,per,true); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; }
+    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc});
+    var h='<div class="mp-row"><span>'+money(mEff.baseRate)+' &times; '+per+' '+_perUnit()+'</span><span class="tnum">'+money(q.gross)+'</span></div>';
+    if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount'+(code?(' ('+esc(code)+')'):'')+'</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>';
+    if(q.taxAmt) h+='<div class="mp-row"><span>Tax</span><span class="tnum">'+money(q.taxAmt)+'</span></div>';
+    h+='<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div>';
+    if(q.dueNow&&q.dueNow<q.total) h+='<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(q.dueNow)+'</span></div>';
+    el.innerHTML=h;
+  }
+  function webSubmitBooking(){
+    var asset=val('wbAsset')||'', name=(val('wbName')||'').trim(), email=(val('wbEmail')||'').trim(), phone=(val('wbPhone')||'').trim();
+    if(!asset){ toast('Pick a '+S.fleet.noun); return; }
+    if(!name){ toast('Enter your name'); return; }
+    if(!/.+@.+\..+/.test(email)){ toast('Enter a valid email'); return; }
+    var per=Math.max(1,parseInt(val('wbPer'),10)||1), cfg=_bookingCfg();
+    var sd=val('wbStart')||_ymd(new Date(Date.now()+2*86400000));
+    var _wst=new Date(sd+'T09:00:00').getTime(); if(!(_wst>0)) _wst=Date.now()+2*86400000;
+    var _wen=_wst+per*_periodMs();
+    if(_availabilityConflict(asset,_wst,_wen)){ toast('Sorry \u2014 '+esc(asset)+' is not available for those dates. Please pick another date or '+esc(S.fleet.noun)+'.'); return; }   // customers are hard-blocked from booking a taken/blacked-out asset
+    var code=(val('wbPromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=_findPromo(code);
+    if(code){ if(promo){ var r=_validatePromo(promo,per,true); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; else { toast('That promo is not valid'); code=''; promo=null; } } else { code=''; } }
+    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc});
+    var b={ id:_nextBkId(), createdAt:Date.now(), cust:name, custEmail:email, custPhone:phone,
+      asset:asset, rate:mEff.baseRate, periods:per, startTs:_wst, endTs:_wen, time:!!cfg.time,
       extras:[], discount:disc, addons:0, status:'Pending', quote:q, source:'website', promoCode:code };
     _upsertBooking(b);
     if(code&&promo){ promo.used=(promo.used||0)+1; _logEvent('promo','Promo '+code+' redeemed on your website ('+b.id+')',{code:code,booking:b.id}); }
-    _logEvent('booking','Booking '+b.id+' from your website: '+asset+(code?(' -- promo '+code):''),{booking:b.id,total:_r2(q.total)});
+    _logEvent('booking','Website booking '+b.id+': '+name+' / '+asset+(code?(' -- promo '+code):''),{booking:b.id,total:_r2(q.total)});
     _sitePromo='';
-    renderOverview(); renderBookings(); renderCustomers(); _bkBadge();   // fix: refresh Customers panel so a website visitor shows up live
-    toast('New booking from your website \u2014 '+esc(asset)+(code?(' \u00b7 '+code+' applied'):''));
-    go('bookings'); openBooking(b.id);
+    try{ renderOverview(); renderBookings(); renderCustomers(); _bkBadge(); }catch(e){}
+    openModal('<div class="modal__head"><h3>Booking requested</h3>'+_xBtn()+'</div><div class="modal__body" style="text-align:center">'
+      +'<div style="font-size:40px;margin:6px 0 4px">\u2705</div>'
+      +'<p style="color:var(--ink);font-weight:650;margin:0 0 4px">Thanks, '+esc(name.split(" ")[0])+'!</p>'
+      +'<p style="color:var(--muted);font-size:13.5px;margin:0 0 12px">Your request for <b>'+esc(asset)+'</b> ('+per+' '+_perUnit()+') is in. '+esc(S.brand.name||'We')+' will confirm shortly and send a link to review, sign and pay '+money(q.dueNow||q.total)+' to reserve.</p>'
+      +'<div class="mp" style="text-align:left;margin-bottom:12px"><div class="mp-row"><span>Reference</span><span class="tnum">'+esc(b.id)+'</span></div><div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div></div>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas.closeModal()">Done</button></div>');
+    toast('New website booking \u2014 '+esc(name)+' / '+esc(asset));
   }
   /* ============================================================ CUSTOMER MEMBER PORTAL ============================================================ */
   var _portalBk=null, _portalView='home';
@@ -6273,7 +6349,7 @@ const Atlas = (function(){
     _charges(b).push({id:_chId(), label:(w.title||'Payment'), amount:gross, taxable:!!w.taxable, at:Date.now(), paidAt:Date.now(), fromWidget:wid});
     _upsertBooking(b); save(); _logEvent('booking','Portal payment collected: '+(w.title||'Payment')+' '+money(gross)+' on '+b.id,{booking:b.id});
     _renderPortal(); try{ renderOverview(); renderBookings(); }catch(e){}   // collected income -> refresh the dashboard KPIs/charts live
-    toast('Payment received'); }
+    toast(PAYMENTS_LIVE?'Payment received':'Payment recorded (test \u2014 no card charged)'); }
   function _refreshWidgets(){ var el=document.getElementById('portalWidgets'); if(el) el.innerHTML=_portalWidgetsEditHtml(); }
   function _portalWidgetsEditHtml(){ var ws=_portalWidgets(); if(!ws.length) return '<div class="bk-lenhint" style="margin:0">No custom widgets yet. Add one to show anything you like &mdash; rules, an FAQ, care tips, an offer, a video.</div>';
     return ws.map(function(w,i){ var body='';
@@ -6419,9 +6495,10 @@ const Atlas = (function(){
     if(!sm && prev.sms){ cp.smsConsentAt=null; _logEvent('review',b.cust+' opted OUT of SMS ('+b.id+')',{booking:b.id}); }
     b.commsPref=cp; _upsertBooking(b); _portalView='home'; _renderPortal(); toast('Preferences saved'); }
   function portalPay(kind){ var b=_pBk(); if(!b)return; var p=_portal(b); var now=Date.now();
-    if(kind==='reserve'){ if(p.reservePaidAt)return; p.reservePaidAt=now; _logEvent('booking','Portal: deposit-to-reserve paid on '+b.id,{booking:b.id}); toast('Reserve payment received'); }
-    else if(kind==='balance'){ if(p.balancePaidAt)return; p.balancePaidAt=now; if(!p.reservePaidAt)p.reservePaidAt=now; _logEvent('booking','Portal: balance paid in full on '+b.id,{booking:b.id}); toast('Payment received'); }
-    else { if(p.depositPaidAt)return; p.depositPaidAt=now; _logEvent('booking','Portal: deposit hold authorized on '+b.id,{booking:b.id}); toast('Deposit hold authorized'); }
+    var _t=PAYMENTS_LIVE?'':' (test \u2014 no card charged)';
+    if(kind==='reserve'){ if(p.reservePaidAt)return; p.reservePaidAt=now; if(!PAYMENTS_LIVE)p.reserveTest=true; _logEvent('booking','Portal: deposit-to-reserve '+(PAYMENTS_LIVE?'paid':'marked (test)')+' on '+b.id,{booking:b.id}); toast('Reserve payment recorded'+_t); }
+    else if(kind==='balance'){ if(p.balancePaidAt)return; p.balancePaidAt=now; if(!p.reservePaidAt)p.reservePaidAt=now; if(!PAYMENTS_LIVE)p.balanceTest=true; _logEvent('booking','Portal: balance '+(PAYMENTS_LIVE?'paid in full':'marked paid (test)')+' on '+b.id,{booking:b.id}); toast('Payment recorded'+_t); }
+    else { if(p.depositPaidAt)return; p.depositPaidAt=now; if(!PAYMENTS_LIVE)p.depositTest=true; _logEvent('booking','Portal: deposit hold '+(PAYMENTS_LIVE?'authorized':'marked (test)')+' on '+b.id,{booking:b.id}); toast(PAYMENTS_LIVE?'Deposit hold authorized':'Deposit hold marked (test \u2014 no real authorization)'); }
     _upsertBooking(b); _renderPortal(); }
   function portalUpload(){ var b=_pBk(); if(!b)return; var inp=document.createElement('input'); inp.type='file'; inp.accept='.pdf,image/*,.doc,.docx';
     inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var p=_portal(b);
@@ -6633,9 +6710,9 @@ const Atlas = (function(){
       +'</div></body></html>';
   }
   function portalPayCharge(cid){ var b=_pBk(); if(!b)return; var c=_charges(b).filter(function(x){return x.id===cid;})[0]; if(!c||c.paidAt)return;
-    c.paidAt=Date.now(); _upsertBooking(b); save(); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(c.amount)+') on '+b.id,{booking:b.id}); _renderPortal(); try{ renderOverview(); renderBookings(); }catch(e){} toast('Payment received'); }
+    c.paidAt=Date.now(); if(!PAYMENTS_LIVE)c.test=true; _upsertBooking(b); save(); _logEvent('booking','Portal: charge '+(PAYMENTS_LIVE?'paid':'marked paid (test)')+' ('+c.label+' '+money(c.amount)+') on '+b.id,{booking:b.id}); _renderPortal(); try{ renderOverview(); renderBookings(); }catch(e){} toast(PAYMENTS_LIVE?'Payment received':'Payment recorded (test \u2014 no card charged)'); }
   function portalPayInstallment(idx){ var b=_pBk(); if(!b||!b.plan||!b.plan.installments)return; var x=b.plan.installments[idx]; if(!x||x.paidAt)return;   // fix: renter-payable installments (own schedule -- never touches b.charges/balance, so no double-count); mirrors owner bkPlanPaid so both sides agree
-    x.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Portal: installment paid ('+(x.label||'')+') on '+b.id,{booking:b.id}); save(); _renderPortal(); toast('Installment paid \u2014 thank you!'); }
+    x.paidAt=Date.now(); if(!PAYMENTS_LIVE)x.test=true; _upsertBooking(b); _logEvent('booking','Portal: installment '+(PAYMENTS_LIVE?'paid':'marked paid (test)')+' ('+(x.label||'')+') on '+b.id,{booking:b.id}); save(); _renderPortal(); toast(PAYMENTS_LIVE?'Installment paid \u2014 thank you!':'Installment recorded (test \u2014 no card charged)'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ if(!_portalCfg().sections.agreement){ toast('No signature is required for this booking'); return; } portalView('sign'); return; }   // fix: gate the sign route on the agreement section toggle
     var sigHtml=p.sig?(p.sig.type==='draw'?('<img src="'+p.sig.data+'" style="max-height:70px">'):('<span class="sig-typed">'+esc(p.sig.data)+'</span>')):'-';
     openModal('<div class="modal__head"><h3>Rental agreement</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -6643,7 +6720,7 @@ const Atlas = (function(){
       +'<div class="sign-doc">'+esc(_legal().agreement.text)+'</div>'
       +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:14px 0 8px">Signature</div><div class="sig-shown">'+sigHtml+'</div>'
       +'<div class="sign-trail"><div>&#8226; Signed '+_stamp(p.signedAt)+'</div></div>'
-      +'<div style="font-size:11px;color:var(--faint);margin-top:8px">Signing device and IP address recorded (kept private).</div>'
+      +'<div style="font-size:11px;color:var(--faint);margin-top:8px">Signing device and timestamp recorded (kept private). IP is added server-side once your backend is live.</div>'
       +'<button class="btn btn--ghost btn--full" style="margin-top:14px" onclick="Atlas.openPortal(\''+b.id+'\')">Back to portal</button></div>'); }
   /* ============================================================ BRANDED ITEMIZED RECEIPTS ============================================================ */
   function _receiptNo(b){ return 'R-'+String(b.id||'').replace(/[^0-9]/g,''); }
@@ -6688,7 +6765,7 @@ const Atlas = (function(){
     if(pm.hold) t+=_pad('+ Refundable deposit hold',32)+money(pm.hold)+'\n';
     t+='\n'+S.brand.name+' -- '+_siteUrl()+'\nManaged & securely processed through Atlas Rental.io -- atlasrental.io\n';
     try{ var blob=new Blob([t],{type:'text/plain'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='receipt-'+_receiptNo(b)+'.txt'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Receipt downloaded'); }catch(e){ toast('Download not available here'); } }
-  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; var to=b.custEmail||b.cust; _logEvent('booking','Receipt '+_receiptNo(b)+' sent to '+to,{booking:b.id}); toast('Receipt sent to '+esc(to)); }
+  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; var to=b.custEmail||b.cust; if(EMAIL_LIVE){ _logEvent('booking','Receipt '+_receiptNo(b)+' sent to '+to,{booking:b.id}); toast('Receipt sent to '+esc(to)); } else { _logEvent('booking','Receipt '+_receiptNo(b)+' previewed (not sent -- mailer not live) for '+to,{booking:b.id}); toast('Email sending is not live yet \u2014 copy this receipt to send it yourself, or connect a mailer to auto-send.'); } }
   /* --- domain manager --- */
   function _domainHtml(){ var w=_web(), d=w.domain, mode=w._ui||d.mode;
     var connected=(d.mode==='custom'&&d.custom);
@@ -6881,6 +6958,9 @@ const Atlas = (function(){
   function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
   function cap(s){return String(s||'').charAt(0).toUpperCase()+String(s||'').slice(1)}
   function firstWord(s){return String(s||'').trim().split(/\s+/)[0]||'there'}
+  // Owner's display first-name, skipping the un-personalized placeholders ('Owner'/'Your'/'Your Company') so the
+  // greeting never reads "Good evening, Your" when a click-through owner never typed a name.
+  function _ownerName(fb){ var o=S.owner; if(o&&o!=='Owner'&&o!=='Your') return firstWord(o); var b=S&&S.brand&&S.brand.name; if(b&&b!=='Your Company') return firstWord(b); return fb||'there'; }
 
   /* ---------- boot ---------- */
   /* ---- PWA: installable + offline app shell ---- */
@@ -6928,7 +7008,7 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,

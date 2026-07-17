@@ -220,52 +220,60 @@ const AIO_SAFETY_PROMPT =
 
 function _aioCtx(context) { return context ? ('\n\nContext the owner shared about their business:\n' + String(context).slice(0, 800)) : ''; }
 
+// fetch() with an AbortController timeout so ONE hung provider can't stall the whole /api/aio request (Promise.all
+// otherwise blocks to the platform's ~100s edge 524). A timed-out asker just returns '' and drops out of the council.
+function _fetchTimeout(url, opts, ms) {
+  const ac = new AbortController();
+  const t = setTimeout(function () { ac.abort(); }, ms || 12000);
+  return fetch(url, Object.assign({}, opts, { signal: ac.signal })).finally(function () { clearTimeout(t); });
+}
+
 // Each asker returns the model's plain text, or '' on any error (never throws).
 async function askClaude(key, q, context) {
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 700,
         system: AIO_SAFETY_PROMPT + _aioCtx(context), messages: [{ role: 'user', content: q }] })
-    });
+    }, 12000);
     const j = await r.json().catch(() => ({}));
     return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
   } catch (e) { return ''; }   // network/DNS reject -> empty, never throws
 }
 async function askClaudeSchedule(key, system, userMsg) {   // dedicated JSON-schedule call: own system prompt + a higher token budget than the advisory askClaude
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 2500, system: system, messages: [{ role: 'user', content: userMsg }] })
-    });
+    }, 15000);
     const j = await r.json().catch(() => ({}));
     return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
   } catch (e) { return ''; }
 }
 async function askGPT(key, q, context) {
   try {
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    const r = await _fetchTimeout('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'authorization': 'Bearer ' + key, 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'gpt-4o', max_tokens: 700,
         messages: [{ role: 'system', content: AIO_SAFETY_PROMPT + _aioCtx(context) }, { role: 'user', content: q }] })
-    });
+    }, 12000);
     const j = await r.json().catch(() => ({}));
     return (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ? j.choices[0].message.content.trim() : '';
   } catch (e) { return ''; }
 }
 async function askGemini(key, q, context) {
   try {
-    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
+    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ systemInstruction: { parts: [{ text: AIO_SAFETY_PROMPT + _aioCtx(context) }] },
         contents: [{ parts: [{ text: q }] }] })
-    });
+    }, 12000);
     const j = await r.json().catch(() => ({}));
-    return (j.candidates[0].content.parts[0].text || '').trim();
+    return ((((((j.candidates || [])[0] || {}).content || {}).parts || [])[0] || {}).text || '').trim();
   } catch (e) { return ''; }
 }
 
@@ -306,6 +314,12 @@ export default {
         if (!vStr(body.business, 120)) return err(400, 'Business name required.');
         const exists = await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(body.email.toLowerCase()).first();
         if (exists) return err(409, 'That email already has an account.');
+        // Reserve the platform-owner email: isOwner is granted by email match (see resolveSession), so a stranger who
+        // registers OWNER_EMAIL first would become platform admin. The real owner claims it with OWNER_SETUP_TOKEN
+        // (a Worker secret set at deploy); without a matching token, the reserved email cannot be signed up.
+        if (env.OWNER_EMAIL && body.email.toLowerCase() === String(env.OWNER_EMAIL).toLowerCase()) {
+          if (!env.OWNER_SETUP_TOKEN || body.setupToken !== env.OWNER_SETUP_TOKEN) return err(403, 'That email is reserved for the platform owner.');
+        }
         const now = Date.now();
         const tid = 't' + randId(12), uid = 'u' + randId(12);
         const { hash, salt } = await hashPassword(body.password);
@@ -528,6 +542,17 @@ export default {
     })();
     for (const k in cors) resp.headers.set(k, cors[k]);   // CORS on every response
     return resp;
+  },
+
+  // Cron GC: sessions, rate_limits and audit_log grow without bound (D1 bills rows + storage, caps at 10GB), so prune
+  // them daily. Wire a Cron Trigger in wrangler.toml ([triggers] crons = ["0 4 * * *"]) or the dashboard. Best-effort.
+  async scheduled(event, env, ctx) {
+    try {
+      const now = Date.now();
+      await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
+      await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
+      await env.DB.prepare('DELETE FROM audit_log WHERE at < ?').bind(now - 90 * 24 * 3600 * 1000).run();
+    } catch (e) { /* best-effort GC; a cron error must never surface */ }
   },
 };
 
