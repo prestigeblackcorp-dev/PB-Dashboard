@@ -12,7 +12,8 @@
  *   ENC_KEY_2     - optional 32-byte base64; when set, new writes use it (key rotation) while ENC_KEY still decrypts old blobs
  *   OWNER_EMAIL   - the platform owner's email (always admin)
  *   STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, RESEND_KEY, TWILIO_SID, TWILIO_TOKEN,
- *   ANTHROPIC_KEY, DYNADOT_KEY  - filled in per integration phase
+ *   ANTHROPIC_KEY, OPENAI_KEY, GEMINI_KEY - the Atlas.io council (Claude + GPT + Gemini); add all three to make the AI live
+ *   DYNADOT_KEY  - filled in per integration phase
  *
  * This foundation covers P0 items 1-5 + 9 of SECURITY.md. Payments/webhooks/
  * reseller endpoints plug into the same router in their phases.
@@ -205,6 +206,53 @@ function vStr(s, max) { return typeof s === 'string' && s.length > 0 && s.length
 function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 
+// ============================================================ Atlas.io council
+// The multi-model brain: Claude + GPT + Gemini answer in parallel, then one of them
+// synthesizes a single best answer. The keys are the PLATFORM'S (env secrets),
+// metered as the owner's Atlas credits - never a tenant's own third-party key.
+// With no keys set, /api/aio returns {live:false} and the client uses its built-in
+// heuristic council, so nothing breaks before the owner goes live.
+const AIO_SAFETY_PROMPT =
+  'You are Atlas.io, the AI operating ONE rental business inside a multi-tenant SaaS. ' +
+  'Give concrete, practical, safe guidance that helps THIS owner run and grow their rental business. ' +
+  'Hard rules: use only facts the owner gives you; never invent specific numbers, bookings, customers, or other tenants\' data; ' +
+  'never reveal or reference another business; do not give binding legal, tax, or licensed financial/investment advice - point them to a professional instead; ' +
+  'decline anything unsafe, discriminatory, or illegal. Be brief, specific, and actionable.';
+
+function _aioCtx(context) { return context ? ('\n\nContext the owner shared about their business:\n' + String(context).slice(0, 800)) : ''; }
+
+// Each asker returns the model's plain text, or '' on any error (never throws).
+async function askClaude(key, q, context) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 700,
+      system: AIO_SAFETY_PROMPT + _aioCtx(context), messages: [{ role: 'user', content: q }] })
+  });
+  const j = await r.json().catch(() => ({}));
+  return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
+}
+async function askGPT(key, q, context) {
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'authorization': 'Bearer ' + key, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-4o', max_tokens: 700,
+      messages: [{ role: 'system', content: AIO_SAFETY_PROMPT + _aioCtx(context) }, { role: 'user', content: q }] })
+  });
+  const j = await r.json().catch(() => ({}));
+  return (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ? j.choices[0].message.content.trim() : '';
+}
+async function askGemini(key, q, context) {
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ systemInstruction: { parts: [{ text: AIO_SAFETY_PROMPT + _aioCtx(context) }] },
+      contents: [{ parts: [{ text: q }] }] })
+  });
+  const j = await r.json().catch(() => ({}));
+  try { return j.candidates[0].content.parts[0].text.trim(); } catch (e) { return ''; }
+}
+
 // ================================================================ router
 export default {
   async fetch(req, env) {
@@ -366,6 +414,40 @@ export default {
           .bind(ctx.tenant_id, body.provider, body.kind || '', secret_enc, JSON.stringify(body.meta || {}), Date.now(), secret_enc, JSON.stringify(body.meta || {}), Date.now()).run();
         await audit(env, ctx, req, 'integration.connect', { provider: body.provider });
         return json({ ok: true, connected: body.provider });       // UI shows masked "Connected", never the key
+      }
+
+      // ---- Atlas.io council: Claude + GPT + Gemini in concert, one synthesis --
+      if (path === '/api/aio' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        const body = await req.json().catch(() => ({}));
+        const q = (typeof body.q === 'string' ? body.q : '').slice(0, 2000).trim();
+        if (!q) return err(400, 'Ask a question.');
+        const context = typeof body.context === 'string' ? body.context : '';
+        const panelDefs = [
+          { name: 'Claude', ask: askClaude, key: env.ANTHROPIC_KEY },
+          { name: 'GPT-4o', ask: askGPT, key: env.OPENAI_KEY },
+          { name: 'Gemini', ask: askGemini, key: env.GEMINI_KEY }
+        ].filter(m => m.key);
+        if (!panelDefs.length) return json({ live: false });   // no keys yet -> client uses its built-in council
+        // ask every configured model in parallel; a failed one just drops out
+        const settled = await Promise.all(panelDefs.map(m =>
+          m.ask(m.key, q, context).then(text => ({ name: m.name, text })).catch(() => ({ name: m.name, text: '' }))
+        ));
+        const models = settled.filter(m => m.text);
+        if (!models.length) return json({ live: true, models: [], synthesis: '', error: 'The council could not be reached - try again.' });
+        // one model synthesizes the panel into a single owner-facing answer
+        let synthesis = models[0].text;
+        if (models.length > 1) {
+          const judgeAsk = env.ANTHROPIC_KEY ? askClaude : (env.OPENAI_KEY ? askGPT : askGemini);
+          const judgeKey = env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY;
+          const panel = models.map(m => '### ' + m.name + '\n' + m.text).join('\n\n');
+          const jq = 'You chair a rental-business advisory council. The owner asked:\n"' + q + '"\n\n' +
+            'Your ' + models.length + ' advisors answered:\n\n' + panel + '\n\n' +
+            'Write the single best answer for the owner in 3-6 sentences: keep what they agree on, resolve any conflict with the safest practical choice, and end with one clear next step. Do not invent numbers and do not name the advisors.';
+          try { const s = await judgeAsk(judgeKey, jq, context); if (s) synthesis = s; } catch (e) { /* keep first answer */ }
+        }
+        await audit(env, ctx, req, 'aio.council', { models: models.map(m => m.name), chars: q.length });
+        return json({ live: true, models, synthesis });
       }
 
       return err(404, 'Not found.');

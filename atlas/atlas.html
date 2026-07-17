@@ -4469,17 +4469,44 @@ const Atlas = (function(){
     if(/idle|fill|slow|util/.test(s)) return {claude:'A short, time-boxed promo protects your rate better than a permanent price cut.', gpt:'Discount the specific idle units, notify past renters, and run a small local campaign.', gemini:'Weekday gaps are your softest demand &mdash; that\u2019s where a nudge pays off most.'};
     return {claude:'I\u2019d start with the lowest-risk, highest-certainty move.', gpt:'Here\u2019s the fastest practical path to a result.', gemini:'Cross-checked against your own numbers and market.'};
   }
+  // A compact, safe grounding of the owner's business for the live models (never other tenants' data).
+  function _aioBizContext(){
+    try{ var p=[];
+      if(S.brand&&S.brand.name) p.push('Business name: '+S.brand.name);
+      if(S.fleet&&S.fleet.label) p.push('Rents: '+S.fleet.label);
+      if(S.brand&&S.brand.city) p.push('City: '+S.brand.city);
+      if(S.setup&&S.setup.goal) p.push('Owner goal: '+S.setup.goal);
+      var na=(typeof DATA!=='undefined'&&DATA.assets)?DATA.assets.length:0, nb=(typeof DATA!=='undefined'&&DATA.bookings)?DATA.bookings.length:0;
+      p.push('Assets on file: '+na); p.push('Bookings on file: '+nb);
+      return p.join('. ');
+    }catch(e){ return ''; }
+  }
+  var _AIO_COLORS={ 'Claude':'#C96442','GPT-4o':'#10A37F','Gemini':'#4285F4' };
+  function _councilCardsHtml(models){
+    return '<div class="cx-grid">'+models.map(function(m){ return '<div class="cx-card"><div class="cx-card__h"><span class="cx-badge" style="background:'+m.c+'">'+esc(m.n[0])+'</span>'+esc(m.n)+'</div><div class="cx-card__b">'+m.a+'</div></div>'; }).join('')+'</div>';
+  }
+  // Built-in preview: single-answer heuristic + three canned perspectives (used until the backend + keys are live).
+  function _councilRenderPreview(q){
+    var base=aioReply(q), t=_councilTopic(String(q).toLowerCase());
+    var models=[{n:'Claude',c:_AIO_COLORS.Claude,a:t.claude},{n:'GPT-4o',c:_AIO_COLORS['GPT-4o'],a:t.gpt},{n:'Gemini',c:_AIO_COLORS.Gemini,a:t.gemini}];
+    var synth='<div class="cx-synth"><div class="cx-synth__h">The council\u2019s answer <span class="cx-agree">3 models weighed in</span></div>'+base+'</div>';
+    var note='<div class="cx-note">Preview of the council. Deploy the Atlas backend and add your Claude, GPT and Gemini keys to make every answer a live three-model synthesis.</div>';
+    aioMsg('bot', _councilCardsHtml(models)+synth+note); _aioArmFromText(base);
+  }
   function _aioCouncil(q){
     aioMsg('bot','<div class="cx-think"><span class="cx-dot"></span><span class="cx-dot"></span><span class="cx-dot"></span> Convening the council &mdash; Claude, GPT-4o and Gemini are weighing in\u2026</div>');
-    setTimeout(function(){
-      var base=aioReply(q), t=_councilTopic(String(q).toLowerCase());
-      var models=[{n:'Claude',c:'#C96442',a:t.claude},{n:'GPT-4o',c:'#10A37F',a:t.gpt},{n:'Gemini',c:'#4285F4',a:t.gemini}];
-      var cards='<div class="cx-grid">'+models.map(function(m){ return '<div class="cx-card"><div class="cx-card__h"><span class="cx-badge" style="background:'+m.c+'">'+esc(m.n[0])+'</span>'+esc(m.n)+'</div><div class="cx-card__b">'+m.a+'</div></div>'; }).join('')+'</div>';
-      var synth='<div class="cx-synth"><div class="cx-synth__h">The council\u2019s answer <span class="cx-agree">3 models weighed in</span></div>'+base+'</div>';
-      var live=!!(S.integrations&&S.integrations.anthropic&&S.integrations.openai&&S.integrations.gemini);
-      var note = live ? '' : '<div class="cx-note">Preview of the council. Add your Claude, GPT and Gemini keys in Settings &rarr; Integrations to make every answer a live three-model synthesis.</div>';
-      aioMsg('bot', cards+synth+note); _aioArmFromText(base);
-    }, 1200);
+    // Try the LIVE three-model council; on no-backend / no-keys / any error, fall back to the built-in preview.
+    _api('/api/aio',{method:'POST',body:{q:String(q),context:_aioBizContext()}}).then(function(res){
+      var j=res&&res.json;
+      if(res.status>=200 && res.status<300 && j && j.live && j.models && j.models.length){
+        var models=j.models.map(function(m){ return {n:m.name,c:_AIO_COLORS[m.name]||'#888',a:esc(String(m.text||'')).replace(/\n/g,'<br>')}; });
+        var synthTxt=esc(String(j.synthesis||'')).replace(/\n/g,'<br>')||models[0].a;
+        var synth='<div class="cx-synth"><div class="cx-synth__h">The council\u2019s answer <span class="cx-agree">'+models.length+' models weighed in</span></div>'+synthTxt+'</div>';
+        aioMsg('bot', _councilCardsHtml(models)+synth); _aioArmFromText(String(j.synthesis||''));
+        return;
+      }
+      _councilRenderPreview(q);
+    }).catch(function(){ _councilRenderPreview(q); });
   }
   function buildAio(){
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
