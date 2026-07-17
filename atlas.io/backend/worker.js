@@ -37,8 +37,7 @@ function securityHeaders(origin) {
 const ALLOWED_ORIGINS = [
   'https://atlasrental.io', 'https://www.atlasrental.io',
   'https://prestigeblackcorp-dev.github.io',
-  'http://localhost:4321', 'http://127.0.0.1:4321',
-];
+];   // production only. localhost was removed: with a SameSite=None session cookie, any page an owner loads on http://localhost:4321 could read their tenant data cross-origin. For local dev of the worker, temporarily add it back or set a DEV env gate.
 function corsHeaders(origin) {
   if (ALLOWED_ORIGINS.indexOf(origin) < 0) return {};
   return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Vary': 'Origin' };
@@ -138,7 +137,7 @@ async function decSecret(env, blob, aad) {
 // ---------------------------------------------------------------- cookies + sessions
 function parseCookies(req) {
   const out = {}; const h = req.headers.get('Cookie') || '';
-  h.split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); });
+  h.split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) { try { out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); } catch (e) { /* skip a malformed cookie pair instead of 500-ing */ } } });
   return out;
 }
 function sessionCookie(id) {
@@ -175,7 +174,7 @@ function csrfOk(req, ctx) {
   const tok = req.headers.get('X-CSRF-Token');
   if (!tok || !ctx || tok !== ctx.session.csrf) return false;
   const origin = req.headers.get('Origin');
-  if (origin) { try { if (new URL(origin).host !== new URL(req.url).host) return false; } catch (e) { return false; } }
+  if (origin && ALLOWED_ORIGINS.indexOf(origin) < 0) return false;   // was compared to req.url.host (the worker's own host) -> self-defeating cross-origin; validate against the allow-list
   return true;
 }
 
@@ -282,7 +281,7 @@ export default {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
           h.schema_loaded = h.user_tables >= 15;
-        } catch (e) { h.db_error = String(e && e.message || e).slice(0, 160); }
+        } catch (e) { h.db_ok = false; }   // don't leak DB internals to an unauthenticated caller
         h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;
         return json(h);
       }
@@ -426,7 +425,9 @@ export default {
       if (path === '/api/aio' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         // per-tenant daily cap: each call fans out to up to 4 paid LLM requests on the PLATFORM's keys -> stop one tenant draining the AI budget
-        if (!await rateLimit(env, 'aio:' + ctx.tenant_id + ':' + new Date().toISOString().slice(0, 10), 120, 86400000)) return err(429, 'Daily Atlas.io limit reached. It resets tomorrow.');
+        const _day = new Date().toISOString().slice(0, 10);
+        if (!await rateLimit(env, 'aio:' + ctx.tenant_id + ':' + _day, 120, 86400000)) return err(429, 'Daily Atlas.io limit reached. It resets tomorrow.');
+        if (!await rateLimit(env, 'aio:global:' + _day, 5000, 86400000)) return err(429, 'Atlas.io is temporarily at capacity. Please try again later.');   // platform-wide ceiling so no set of tenants can run the AI bill away
         const body = await req.json().catch(() => ({}));
         const q = (typeof body.q === 'string' ? body.q : '').slice(0, 2000).trim();
         if (!q) return err(400, 'Ask a question.');
