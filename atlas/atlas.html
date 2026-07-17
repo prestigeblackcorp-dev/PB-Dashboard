@@ -2025,7 +2025,7 @@ const Atlas = (function(){
   function _protSettingsHtml(){ var P=_protection();
     var rows=P.plans.map(function(p){ return '<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px">'
       +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input class="input" style="flex:1;font-weight:650" value="'+esc(p.name)+'" onchange="Atlas.protSetPlan(\''+p.id+'\',\'name\',this.value)"><button class="btn btn--sm" style="color:var(--danger)" onclick="Atlas.protRmPlan(\''+p.id+'\')" title="Remove">&times;</button></div>'
-      +'<div class="row2"><div class="field" style="margin:0"><label>Price</label><div class="rule-input" style="padding:0 12px"><span>'+_curSym()+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+p.price+'" onchange="Atlas.protSetPlan(\''+p.id+'\',\'price\',this.value)"><select class="select" style="border:0;background:transparent;width:auto;padding:0" onchange="Atlas.protSetPlan(\''+p.id+'\',\'per\',this.value)"><option value="day"'+(p.per==='day'?' selected':'')+'>/'+_perUnit()+'</option><option value="trip"'+(p.per!=='day'?' selected':'')+'>/trip</option></select></div></div>'
+      +'<div class="row2"><div class="field" style="margin:0"><label>Price</label><div class="rule-input" style="padding:0 12px"><span>'+_curSym()+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+p.price+'" onchange="Atlas.protSetPlan(\''+p.id+'\',\'price\',this.value)"><select class="select" style="border:0;background:transparent;width:auto;padding:0" onchange="Atlas.protSetPlan(\''+p.id+'\',\'per\',this.value)">'+[['day','Match rate ('+_perUnitOne()+')'],['hour','/hour'],['pday','/day'],['week','/week'],['pmonth','/month'],['trip','/trip']].map(function(o){return '<option value="'+o[0]+'"'+((p.per||'day')===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select></div></div>'
       +'<div class="field" style="margin:0"><label>Deductible</label><div class="rule-input" style="padding:0 12px"><span>'+_curSym()+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(p.deductible||0)+'" onchange="Atlas.protSetPlan(\''+p.id+'\',\'deductible\',this.value)"></div></div></div>'
       +'<div class="field" style="margin:8px 0 0"><label>What it covers</label><textarea class="input" rows="2" onchange="Atlas.protSetPlan(\''+p.id+'\',\'covers\',this.value)">'+esc(p.covers||'')+'</textarea></div>'
       +'<button class="btn btn--ghost btn--sm" style="margin-top:8px" onclick="Atlas.protectionDoc(\''+p.id+'\')">Preview coverage doc</button></div>'; }).join('');
@@ -2033,11 +2033,11 @@ const Atlas = (function(){
       +rows+'<button class="btn btn--ghost btn--sm" onclick="Atlas.protAddPlan()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a tier</button>'; }
   function _bkProtSel(){ if(!_bkDraft) return null; return _bkDraft.extras.filter(function(x){return x.protection;})[0]||null; }
   function bkSetProtection(planId){ if(!_bkDraft)return; _bkDraft.extras=_bkDraft.extras.filter(function(x){return !x.protection;});
-    var p=_protPlan(planId); if(p){ _bkDraft.extras.push({id:'prot',planId:p.id,name:'Damage protection ('+p.name+')',price:p.price,per:(p.per==='day'?'unit':'flat'),qty:1,protection:true}); }
+    var p=_protPlan(planId); if(p){ var _pp=(p.per||'day'), _ep=(_pp==='day'?'unit':(_pp==='trip'?'flat':_pp)); _bkDraft.extras.push({id:'prot',planId:p.id,name:'Damage protection ('+p.name+')',price:p.price,per:_ep,qty:1,protection:true}); }   // legacy day->per rate-model unit, trip->flat, explicit hour/pday/week/pmonth pass through to calcQuote
     _bkRenderExtras(); }
   function _bkProtHtml(){ var P=_protection(); if(!P.on||!P.plans.length) return ''; var cur=_bkProtSel(), curId=cur?cur.planId:'';
     return '<div class="field"><label>Damage protection</label><select class="select" onchange="Atlas.bkSetProtection(this.value)"><option value="">None</option>'
-      +P.plans.map(function(p){ return '<option value="'+esc(p.id)+'"'+(curId===p.id?' selected':'')+'>'+esc(p.name)+' - '+_curSym()+p.price+'/'+(p.per==='day'?_perUnitOne():'trip')+'</option>'; }).join('')
+      +P.plans.map(function(p){ return '<option value="'+esc(p.id)+'"'+(curId===p.id?' selected':'')+'>'+esc(p.name)+' - '+_curSym()+p.price+'/'+_protPerLabel(p.per)+'</option>'; }).join('')
       +'</select><div class="bk-lenhint" style="margin:5px 0 0">Optional coverage the customer can add &mdash; it rides the quote and shows in their portal with a coverage summary.</div></div>'; }
   function protectionDoc(planId, portal){ var p=_protPlan(planId);
     if(!p){ if(portal){ var nm=''; try{ var pb=_pBk(); var ex=pb?(pb.extras||[]).filter(function(x){return x.protection&&x.planId===planId;})[0]:null; nm=(ex&&ex.name)||''; }catch(e){} toast('Your '+(nm?esc(nm)+' ':'')+'protection is on file \u2014 contact us for a copy of the coverage summary.'); return; }   // fix: customer view no longer dead-ends on the owner-facing "Pick a tier first" when the tier was later removed
@@ -2055,9 +2055,9 @@ const Atlas = (function(){
       +'@media print{body{background:#fff;padding:0}.doc{border:0;border-radius:0}.noprint{display:none}}</style></head><body>'
       +'<div class="noprint"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>'
       +'<div class="doc"><div class="top"><div class="b">'+esc(biz)+'</div><div class="t">Damage protection &amp; waiver summary</div></div>'
-      +'<div class="tier"><h1>'+esc(p.name)+' protection</h1><div class="pr">'+_curSym()+p.price+' / '+(p.per==='day'?_perUnitOne():'trip')+'</div></div>'
+      +'<div class="tier"><h1>'+esc(p.name)+' protection</h1><div class="pr">'+_curSym()+p.price+' / '+_protPerLabel(p.per)+'</div></div>'
       +'<h2>What it covers</h2><p>'+esc(p.covers||'')+'</p>'
-      +'<h2>Key terms</h2><div class="grid"><div><b>Deductible</b>'+_curSym()+Number(p.deductible||0).toLocaleString()+'</div><div><b>Applies to</b>the rented '+esc(noun)+'</div><div><b>Price</b>'+_curSym()+p.price+' per '+(p.per==='day'?_perUnitOne():'trip')+'</div><div><b>Term</b>the rental period</div></div>'
+      +'<h2>Key terms</h2><div class="grid"><div><b>Deductible</b>'+_curSym()+Number(p.deductible||0).toLocaleString()+'</div><div><b>Applies to</b>the rented '+esc(noun)+'</div><div><b>Price</b>'+_curSym()+p.price+' per '+_protPerLabel(p.per)+'</div><div><b>Term</b>the rental period</div></div>'
       +'<h2>Damage waiver</h2><p>When this protection is purchased, '+esc(biz)+' waives its right to hold the renter responsible for accidental damage to the '+esc(noun)+' above the stated deductible, subject to the rental agreement. It does not cover intentional damage, use in violation of the agreement, unauthorized drivers, or loss of personal belongings.</p>'
       +'<p class="fine">This is a damage waiver offered by '+esc(biz)+', not an insurance policy, and is not a contract of insurance. Coverage is governed by your signed rental agreement. Review that agreement for the complete terms and any exclusions.</p>'
       +'</div></body></html>';
@@ -2202,7 +2202,12 @@ const Atlas = (function(){
     m=m||{};
     if(periods && typeof periods==='object'){ var o=periods; periods=o.periods; addons=o.addons; extras=o.extras; discount=o.discount; }
     periods=Math.max(1,periods||1); addons=addons||0; extras=extras||[];
-    var exLines=extras.map(function(x){ var each=(x.price||0)*(x.qty||1); return {name:x.name, amt:(x.per==='unit')? each*periods : each}; });
+    var _bkMs=periods*_periodMsOf((m&&m.rateModel)||(S.money&&S.money.rateModel)||'day');   // booking length in ms, from rate-model periods
+    var exLines=extras.map(function(x){ var each=(x.price||0)*(x.qty||1), amt;
+      if(x.per==='unit') amt=each*periods;                                                              // legacy: per rate-model period
+      else if(x.per==='hour'||x.per==='pday'||x.per==='week'||x.per==='pmonth') amt=each*Math.max(1,Math.ceil(_bkMs/_periodMsOf(x.per)));   // explicit period, billed off the booking's real duration
+      else amt=each;                                                                                    // flat / one-time / trip
+      return {name:x.name, amt:amt}; });
     var exTotal=exLines.reduce(function(s,l){return s+l.amt;},0);
     var gross=(m.baseRate||0)*periods + addons + exTotal, disc=0;
     var _wkP=(m.rateModel==='hour'?168:m.rateModel==='week'?2:m.rateModel==='month'?999999:7), _moP=(m.rateModel==='hour'?672:m.rateModel==='week'?4:m.rateModel==='month'?12:28);   // "weekly"/"monthly" thresholds in the CURRENT rate-model's periods. week model: the "weekly" discount is a MULTI-week discount at 2+ (was 1 -> it silently fired on every single-week booking); month model: weekly never fires, "monthly" disc = long-term at 12+ months
@@ -3664,6 +3669,8 @@ const Atlas = (function(){
     return Math.max(1, Math.ceil(ms/86400000)); }
   // ms in one period, for computing an end from a length (used to seed the End field / show a span).
   function _periodMs(){ var rm=S.money.rateModel; return rm==='hour'?3600000:(rm==='week'?7*86400000:(rm==='month'?30*86400000:86400000)); }
+  function _periodMsOf(u){ return u==='hour'?3600000:(u==='week'?604800000:((u==='month'||u==='pmonth')?2592000000:((u==='pday'||u==='day')?86400000:86400000))); }   // ms for an EXPLICIT period unit (used so protection/extras can bill per hour/day/week/month independent of the business rate model)
+  function _protPerLabel(per){ return per==='hour'?'hour':(per==='pday'?'day':(per==='week'?'week':(per==='pmonth'?'month':(per==='trip'?'trip':_perUnitOne())))); }   // 'day' (legacy) = adaptive "matches your rate"; explicit units render literally
   function _fmtWhen(ts, withTime){ if(!ts) return ''; try{ var d=new Date(ts); var s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
     if(withTime) s+=', '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}); return s; }catch(e){ return ''; } }
   // A booking's when-label: "Jul 16" | "Jul 16, 2:00 PM" | "Jul 16 -> Jul 20" | "Jul 16, 2 PM -> Jul 18, 10 AM"
