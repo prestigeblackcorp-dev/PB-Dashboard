@@ -60,7 +60,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 ## 3 · Full feature inventory (every feature, by area)
 
 ### Getting started
-- ✅ 7‑day free trial, no card · ✅ multi‑select asset types · ✅ per‑type rates · ✅ AI setup assistant · ✅ demo tenants · ✅ import/bulk‑add assets · ✅ **CSV importer** (paste or upload a spreadsheet → preview → bulk‑create; handles quotes, $/commas, headerless, per‑type mapping) · 💡 "clone last season's setup"
+- ✅ 7‑day free trial, no card · ✅ multi‑select asset types · ✅ per‑type rates · ✅ AI setup assistant · ✅ demo tenants · ✅ import/bulk‑add assets · ✅ **CSV importer** (paste or upload a spreadsheet → preview → bulk‑create; handles quotes, $/commas, headerless, per‑type mapping) · ✅ **snapshot &amp; restore setup** ("clone last season" &mdash; export money rules + extras + protection + loyalty + roster to a file, restore in one click)
 
 ### Assets
 - ✅ add/edit, bulk, status, location, tenant, **photo on card** · ✅ availability blocks · ✅ **maintenance/service log** (odometer‑aware) · ✅ **per‑asset document vault** (upload/download) · ✅ **condition photos at pickup + return** (before/after compare, feeds the damage claim)
@@ -106,10 +106,10 @@ The single source of truth for **what's done, what needs connecting, and every f
 Cross‑checked against the whole build so far. If it isn't ✅ above, it's here with a status + what unblocks it.
 
 ### A. Self‑contained (buildable now — no keys, no accounts)
-- 💡 **Staff scheduling / shifts**
-- 💡 **"Clone last season's setup"**
-- 💡 **Operator / delivery add‑ons as first‑class line items**
+- 💡 **Staff scheduling / shifts** — the one remaining self-contained build
 - 💡 **Live insurance quotes** — a real per‑trip insurance marketplace (needs a provider API; the damage‑waiver upsell above ships today)
+
+_Operator / delivery add‑ons already ship as extras (Delivery &amp; pickup, Additional driver in the extras catalog)._
 
 ### B. Owner‑key / account‑gated (built or modeled — flips on when you connect)
 - 🔌 **Stripe** — real charges, deposit/hold capture, your $49.99/mo subscription billing, per‑installment payment‑plan charges, B2B **net‑30** invoicing

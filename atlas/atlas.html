@@ -4491,6 +4491,9 @@ const Atlas = (function(){
       <div class="set-block"><h3>Live preview</h3><div class="desc">A sample 3-${m.rateModel} booking, priced by your rules right now &mdash; updates as you edit.</div>
         <div class="mp" id="moneyPreview">${moneyPreviewHtml()}</div>
         <div style="margin-top:16px"><button class="btn btn--primary btn--sm" onclick="Atlas.toast('Money rules saved')">Save rules</button></div>
+      </div>
+      <div class="set-block"><h3>Snapshot &amp; restore setup</h3><div class="desc">Save your whole setup &mdash; money rules, extras, protection, loyalty and your ${S.fleet.nouns} roster &mdash; to a file. Restore it next season or on another account in one click. Bookings and customers are never included.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.exportSetup()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 2v8M5 7l3 3 3-3M2.5 13h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Download setup</button><button class="btn btn--ghost btn--sm" onclick="Atlas.importSetup()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 10V2M5 5l3-3 3 3M2.5 13h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Restore from file</button></div>
       </div>`;
     else if(setCur==='bookings'){ var bc=_bookingCfg(); b.innerHTML=`
       <div class="set-block"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
@@ -5286,6 +5289,24 @@ const Atlas = (function(){
     mapped.forEach(function(m){ if(cap!==Infinity && DATA.assets.length>=cap) return; var tid=(m.type&&sel.indexOf(m.type)>=0)?m.type:sel[0];
       var a={ id:_assetId(), name:m.name, rate:(m.rate!=null?m.rate:_typeRate(tid)), status:m.status||'Available', util:0, tenant:null }; if(m.loc) a.loc=m.loc; if(multi) a.type=tid; DATA.assets.push(a); n++; });
     _saveAssets(); _logEvent('fleet','Imported '+n+' assets from CSV',{count:n}); _importRows=null; closeModal(); renderFleet(); renderOverview(); var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length; toast('Imported '+n+' asset'+(n===1?'':'s')); }
+  // ---- Snapshot / restore setup ("clone last season"): export config + roster to a file, restore later ----
+  function exportSetup(){ if(!_guard('settings','Exporting setup'))return;
+    var snap={ v:1, at:Date.now(), brand:{name:(S.brand&&S.brand.name)||'',city:(S.brand&&S.brand.city)||''}, fleet:{id:(S.fleet&&S.fleet.id)||'cars',also:(S.fleet&&S.fleet.also)||[]}, money:S.money||{}, assets:(DATA.assets||[]).map(function(a){ return {name:a.name,rate:a.rate,type:a.type||null,loc:a.loc||null,status:a.status||'Available'}; }) };
+    try{ var blob=new Blob([JSON.stringify(snap,null,2)],{type:'application/json'}); var url=URL.createObjectURL(blob); var el=document.createElement('a'); el.href=url; el.download='atlas-setup-'+_todayStr()+'.json'; el.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); _logEvent('owner','Downloaded a setup snapshot',{}); toast('Setup snapshot downloaded'); }catch(e){ toast('Export not available here'); } }
+  var _pendingSetup=null;
+  function importSetup(){ if(!_guard('settings','Restoring setup'))return; var inp=document.createElement('input'); inp.type='file'; inp.accept='application/json,.json';
+    inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ var snap; try{ snap=JSON.parse(String(e.target.result||'')); }catch(err){ toast('That is not a valid Atlas setup file'); return; } _confirmImportSetup(snap); }; r.readAsText(f); };
+    inp.click(); }
+  function _confirmImportSetup(snap){ if(!snap||snap.v!==1||!snap.money){ toast('Unrecognized setup file'); return; } _pendingSetup=snap; var n=(snap.assets||[]).length;
+    openModal('<div class="modal__head"><h3>Restore setup</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">This replaces your <b>money rules, extras, protection and loyalty settings</b> with the snapshot'+(n?(', and can add its <b>'+n+' '+(n===1?'asset':'assets')+'</b> to your fleet'):'')+'. Your bookings, customers and current assets are kept.</div>'
+      +(n?('<label style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><input type="checkbox" id="impAssetsChk" checked><span style="font-size:13.5px">Also add the '+n+' '+(n===1?'asset':'assets')+' from the snapshot</span></label>'):'')
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doImportSetup()">Restore setup</button></div>'); }
+  function doImportSetup(){ var snap=_pendingSetup; if(!snap){ closeModal(); return; }
+    var chk=document.getElementById('impAssetsChk'); var addAssets=!!(chk&&chk.checked);
+    if(snap.money && typeof snap.money==='object'){ S.money=S.money||{}; for(var k in snap.money){ S.money[k]=snap.money[k]; } }
+    var added=0; if(addAssets && snap.assets){ var cap=_vehCap(); snap.assets.forEach(function(a){ if(cap!==Infinity && DATA.assets.length>=cap) return; var na={ id:_assetId(), name:a.name, rate:a.rate, status:a.status||'Available', util:0, tenant:null }; if(a.type) na.type=a.type; if(a.loc) na.loc=a.loc; DATA.assets.push(na); added++; }); _saveAssets(); }
+    save(); _logEvent('owner','Restored a setup snapshot'+(added?(' + '+added+' assets'):''),{}); _pendingSetup=null; closeModal(); try{ buildApp(); go('settings'); }catch(e){} toast('Setup restored'+(added?(' &mdash; '+added+' assets added'):'')); }
   function _assetId(){ return 'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
   // --- Prorated upgrade: credit unused paid days this cycle, pay the difference ---
   function _cycleInfo(){ var cyc=30, start=(S&&S.subscribedAt)||Date.now();
@@ -6081,7 +6102,7 @@ const Atlas = (function(){
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
-    importAssets,_impFile,previewImport,doImportAssets,
+    importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webBookNow,webDomainMode,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
