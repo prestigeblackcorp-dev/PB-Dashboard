@@ -60,7 +60,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 ## 3 · Full feature inventory (every feature, by area)
 
 ### Getting started
-- ✅ 7‑day free trial, no card · ✅ multi‑select asset types · ✅ per‑type rates · ✅ AI setup assistant · ✅ demo tenants · ✅ import/bulk‑add assets · 💡 CSV/marketplace importer · 💡 "clone last season's setup"
+- ✅ 7‑day free trial, no card · ✅ multi‑select asset types · ✅ per‑type rates · ✅ AI setup assistant · ✅ demo tenants · ✅ import/bulk‑add assets · ✅ **CSV importer** (paste or upload a spreadsheet → preview → bulk‑create; handles quotes, $/commas, headerless, per‑type mapping) · 💡 "clone last season's setup"
 
 ### Assets
 - ✅ add/edit, bulk, status, location, tenant, **photo on card** · ✅ availability blocks · ✅ **maintenance/service log** (odometer‑aware) · ✅ **per‑asset document vault** (upload/download) · ✅ **condition photos at pickup + return** (before/after compare, feeds the damage claim)
@@ -108,7 +108,6 @@ Cross‑checked against the whole build so far. If it isn't ✅ above, it's here
 ### A. Self‑contained (buildable now — no keys, no accounts)
 - 💡 **Per‑user audit log view** — the timestamped event log exists globally; add a per‑staff filter
 - 💡 **Staff scheduling / shifts**
-- 💡 **CSV / marketplace importer** — bulk‑import assets, bookings, customers
 - 💡 **"Clone last season's setup"**
 - 💡 **True monthly rate tier** — long‑term / subscription rentals as a first‑class rate
 - 💡 **Operator / delivery add‑ons as first‑class line items**

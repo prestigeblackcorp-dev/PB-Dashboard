@@ -1419,7 +1419,10 @@ body.trk-fs-on .trk-fs-exit{display:grid}
         <section class="panel" data-panel="fleet">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
             <div><h2 style="font-size:22px" id="fleetH">Your fleet</h2><p style="color:var(--muted);font-size:14px" id="fleetSub">Every asset you rent, in one place.</p></div>
-            <button class="btn btn--primary" id="addAssetBtn" onclick="Atlas.addVehicle()"><svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span id="addAssetLbl">Add asset</span></button>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn btn--ghost" id="importAssetBtn" onclick="Atlas.importAssets()" title="Bulk-import from a spreadsheet"><svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M8 10V2M5 5l3-3 3 3M2.5 10v2.5a1 1 0 001 1h9a1 1 0 001-1V10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Import CSV</button>
+              <button class="btn btn--primary" id="addAssetBtn" onclick="Atlas.addVehicle()"><svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span id="addAssetLbl">Add asset</span></button>
+            </div>
           </div>
           <div id="fleetLocs"></div>
           <div class="asset-grid" id="assetGrid"></div>
@@ -5175,6 +5178,46 @@ const Atlas = (function(){
     var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length;
     toast(qty>1?(qty+' '+_typeNouns(tid)+' added'+(loc?(' to '+loc):'')):(names[0]+' added'));
   }
+  // ---- CSV importer: bulk-add assets from a spreadsheet (paste or upload) ----
+  var _importRows=null;
+  function importAssets(){ if(!_guard('fleetEdit','Importing assets'))return; _importRows=null;
+    openModal('<div class="modal__head"><h3>Import assets from CSV</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 10px">Paste a spreadsheet (CSV) or upload a .csv file. First row = column names. Recognized: <b>Name</b>, <b>Rate</b>, <b>Status</b>'+(_fleetSel().length>1?', <b>Type</b>':'')+', <b>Location</b>. Only Name is required &mdash; missing rates use your type default.</div>'
+      +'<input type="file" accept=".csv,text/csv" id="impFile" style="margin-bottom:10px" onchange="Atlas._impFile(this)">'
+      +'<div class="field"><label>or paste CSV</label><textarea class="input mono" id="impText" rows="6" placeholder="Name,Rate,Type,Status&#10;Corvette C8,299,cars,Available&#10;Sunset Villa,450,homes,Available"></textarea></div>'
+      +'<button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.previewImport()">Preview</button>'
+      +'<div id="impPreview" style="margin-top:12px"></div></div>'); }
+  function _impFile(inp){ var f=inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ var t=document.getElementById('impText'); if(t) t.value=String(e.target.result||''); previewImport(); }; r.readAsText(f); }
+  function _parseCsv(text){ text=String(text||'').replace(/\r\n?/g,'\n').replace(/^\uFEFF/,'').trim(); if(!text) return []; var rows=[], row=[], cur='', q=false;
+    for(var i=0;i<text.length;i++){ var c=text[i];
+      if(q){ if(c==='"'){ if(text[i+1]==='"'){ cur+='"'; i++; } else q=false; } else cur+=c; }
+      else { if(c==='"') q=true; else if(c===','){ row.push(cur); cur=''; } else if(c==='\n'){ row.push(cur); rows.push(row); row=[]; cur=''; } else cur+=c; } }
+    row.push(cur); rows.push(row); return rows.filter(function(r){ return r.some(function(x){ return String(x).trim()!==''; }); }); }
+  function _impMap(rows){ if(!rows.length) return []; var head=rows[0].map(function(h){ return String(h||'').trim().toLowerCase(); });
+    var idx=function(names){ for(var k=0;k<names.length;k++){ var p=head.indexOf(names[k]); if(p>=0) return p; } return -1; };
+    var iName=idx(['name','asset','vehicle','title']), iRate=idx(['rate','price','daily rate','day rate','cost']), iStatus=idx(['status']), iType=idx(['type','category']), iLoc=idx(['location','loc','site','branch']);
+    var hasHeader=(iName>=0||iRate>=0); var body=hasHeader?rows.slice(1):rows; if(!hasHeader){ iName=0; iRate=1; iType=2; iStatus=3; }
+    var out=[]; body.forEach(function(r){ var nm=String((iName>=0?r[iName]:r[0])||'').trim(); if(!nm) return;
+      var rate=parseFloat(String(iRate>=0?r[iRate]:'').replace(/[^0-9.]/g,'')); var stRaw=String(iStatus>=0?r[iStatus]:'').trim().toLowerCase();
+      var status=/maint/.test(stRaw)?'Maintenance':(/(on rent|rented|\bout\b)/.test(stRaw)?'On rent':'Available');
+      out.push({ name:nm.slice(0,60), rate:(rate>=0?Math.round(rate):null), status:status, type:String(iType>=0?r[iType]:'').trim().toLowerCase(), loc:String(iLoc>=0?r[iLoc]:'').trim().slice(0,40) }); });
+    return out; }
+  function previewImport(){ _importRows=_impMap(_parseCsv(val('impText'))); var el=document.getElementById('impPreview'); if(!el)return; var mapped=_importRows;
+    if(!mapped.length){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Nothing to import yet &mdash; paste rows above (first row = column names).</div>'; return; }
+    var sel=_fleetSel(), multi=sel.length>1, th='style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.4px"', td='style="padding:6px 8px;border-bottom:1px solid var(--line-2)"';
+    var body=mapped.slice(0,8).map(function(a){ var tid=(a.type&&sel.indexOf(a.type)>=0)?a.type:sel[0];
+      return '<tr><td '+td+'>'+esc(a.name)+'</td><td '+td+' class="tnum">'+(a.rate!=null?money(a.rate):('~'+money(_typeRate(tid))))+'</td>'+(multi?'<td '+td+'>'+esc(tid)+'</td>':'')+'<td '+td+'>'+esc(a.status)+'</td></tr>'; }).join('');
+    var cap=_vehCap(), room=(cap===Infinity)?mapped.length:Math.max(0,cap-DATA.assets.length), willImport=Math.min(mapped.length,room);
+    el.innerHTML='<div style="font-size:13px;font-weight:700;margin-bottom:6px">'+mapped.length+' asset'+(mapped.length>1?'s':'')+' found</div>'
+      +'<div style="overflow:auto;border:1px solid var(--line);border-radius:10px"><table style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr><th '+th+'>Name</th><th '+th+'>Rate</th>'+(multi?'<th '+th+'>Type</th>':'')+'<th '+th+'>Status</th></tr></thead><tbody>'+body+'</tbody></table></div>'
+      +(mapped.length>8?('<div style="font-size:11.5px;color:var(--muted);margin-top:4px">+ '+(mapped.length-8)+' more</div>'):'')
+      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:12px" onclick="Atlas.doImportAssets()"'+(willImport<=0?' disabled':'')+'>Import '+willImport+' asset'+(willImport===1?'':'s')+'</button>'
+      +(willImport<mapped.length?('<div class="bk-lenhint" style="margin:8px 0 0">Your plan caps assets at '+cap+' &mdash; upgrade to import the remaining '+(mapped.length-willImport)+'.</div>'):''); }
+  function doImportAssets(){ if(!_guard('fleetEdit'))return; var mapped=_importRows||[]; if(!mapped.length){ toast('Nothing to import'); return; }
+    var sel=_fleetSel(), multi=sel.length>1, cap=_vehCap(), n=0;
+    mapped.forEach(function(m){ if(cap!==Infinity && DATA.assets.length>=cap) return; var tid=(m.type&&sel.indexOf(m.type)>=0)?m.type:sel[0];
+      var a={ id:_assetId(), name:m.name, rate:(m.rate!=null?m.rate:_typeRate(tid)), status:m.status||'Available', util:0, tenant:null }; if(m.loc) a.loc=m.loc; if(multi) a.type=tid; DATA.assets.push(a); n++; });
+    _saveAssets(); _logEvent('fleet','Imported '+n+' assets from CSV',{count:n}); _importRows=null; closeModal(); renderFleet(); renderOverview(); var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length; toast('Imported '+n+' asset'+(n===1?'':'s')); }
   function _assetId(){ return 'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
   // --- Prorated upgrade: credit unused paid days this cycle, pay the difference ---
   function _cycleInfo(){ var cyc=30, start=(S&&S.subscribedAt)||Date.now();
@@ -5968,6 +6011,7 @@ const Atlas = (function(){
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
+    importAssets,_impFile,previewImport,doImportAssets,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webBookNow,webDomainMode,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
