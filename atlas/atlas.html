@@ -2407,7 +2407,7 @@ const Atlas = (function(){
     // First time a user opens Bookings, offer the guided walkthrough once (never nags again).
     if(nav==='bookings' && !_lsGet('atlas_tour_bk_seen',0) && !_lsGet('atlas_tour_bk_done',0)){
       _lsSet('atlas_tour_bk_seen',1); setTimeout(function(){ if(!_tour) bkTour(); }, 500);
-    }
+    } else { _maybeTabTour(nav); }   // every other tab gets its own in-depth walkthrough the first time it's opened
   }
 
   /* ---- global search: bookings, units, properties, tenants, customers -- anything on the dashboard ---- */
@@ -3333,6 +3333,62 @@ const Atlas = (function(){
     if(key){ if(complete){ _lsSet(key+'_done',1); _lsSet(key+'_i',0); } }
     _tour=null; if(complete) toast('That\'s the tour &mdash; you\'re all set');
   }
+  // ---- Per-tab first-visit walkthroughs ------------------------------------------------------------------
+  // Every tab runs its OWN in-depth guided tour the first time it is opened. Steps adapt to the business type
+  // (nouns) AND to what the owner already set up, so it acknowledges done work instead of re-explaining it.
+  function _tabTourSteps(nav){
+    var noun=esc(S.fleet.noun), nouns=esc(S.fleet.nouns);
+    var A=(DATA.assets||[]).length, B=(DATA.bookings||[]).length, C=(DATA.customers||[]).length, T=((S.team||[]).length);
+    if(nav==='overview') return [
+      {sel:'#kpiRow', title:'Your business, live', body: B? "These four numbers update the instant anything changes &mdash; revenue earned, what's on rent, utilization, and what's coming up." : ("Your revenue, active rentals, utilization and upcoming "+nouns+" appear here the moment you take your first "+esc(_fterm('book'))+".")},
+      {sel:'#kpiRow .kpi', click:true, title:'Tap any number', body:("Every KPI opens a full, reconciled breakdown of exactly what is behind it &mdash; down to the individual "+esc(_fterm('book'))+".")},
+      {sel:'[data-panel="overview"] .grid-2 .card', title:'Trends &amp; top performers', body:("See revenue and bookings over time, and which "+nouns+" earn you the most &mdash; so you always know your next move.")},
+      {sel:'.aio-btn', title:'Atlas.io never sleeps', body:"Your AI is one tap away &mdash; it prices, finds idle days, drafts messages and researches your market while you are away."}
+    ];
+    if(nav==='fleet') return [
+      {sel:'#addAssetBtn', click:true, title:(A?"Add another ":"Add your first ")+noun, body:("Give it a name, photo, rate and status. "+(A? ("You have "+A+" already &mdash; add as many as you like.") : ("This is where your whole "+nouns+" inventory lives.")))},
+      {sel:'#assetGrid', title:(A? ("Your "+nouns) : ("Your "+nouns+" show here")), body: A? "Each card shows status, utilization and who has it. Tap one to edit its rate, photo, availability or location." : ("Once you add "+nouns+", each appears here as a card you can tap to manage.")},
+      {sel:'#fleetLocs', title:'Locations &amp; availability', body:("Group "+nouns+" by location and block out dates something cannot be booked &mdash; Atlas keeps double-bookings out.")}
+    ];
+    if(nav==='customers') return [
+      {sel:'[data-panel="customers"] .card', title:'Your branded member portal', body:"Every renter gets a self-service portal under YOUR brand &mdash; they book, pay a deposit, e-sign and message you. No marketplace taking a cut."},
+      {sel:'[data-panel="customers"] button[onclick*="openPortal"]', click:true, title:'Preview it', body:"See exactly what your customers see. Copy the link to drop it on your site or in a text."},
+      {sel:'#custTbl', title:(C? "Your customers" : "Customers build themselves"), body: C? "Everyone who has booked, with spend and repeat status. Tap a row for their full history." : "As people book they show up here automatically, with spend and history &mdash; nothing to enter by hand."}
+    ];
+    if(nav==='analytics') return [
+      {sel:'#anaKpis', title:'The full picture', body:"Revenue, profit and utilization across your website, portal and bookings &mdash; reconciled to the exact same numbers as your Overview."},
+      {sel:'#ledgerBody', title:'Income &amp; expenses', body:"Log costs and extra income; tap any figure to drill into exactly what makes it up."},
+      {sel:'#repBody', title:'Reports &amp; tax documents', body:"Pick a period and download clean CSVs for your bookkeeper or taxes &mdash; bookings, income and activity."},
+      {sel:'#logBody', title:'Activity log', body:"A timestamped record of everything that happens in your account, exportable any time."}
+    ];
+    if(nav==='tracking') return [
+      {sel:'#trkBody', title:'Live map', body:("Every connected "+noun+" on one map, moving in real time with speed, fuel and location.")},
+      {sel:'#trkTopActions', title:'Full-screen &amp; route', body:("Go full-screen, refresh, and route straight to any "+noun+" &mdash; 3D turn-by-turn, updating live as it moves.")}
+    ];
+    if(nav==='website') return [
+      {sel:'#webBody', title:'Your website, AI-built', body:("Atlas generates a branded booking site from your "+nouns+", logo and prices &mdash; wired to this dashboard automatically. Edit any part, then publish.")}
+    ];
+    if(nav==='team') return [
+      {sel:'[data-panel="team"] button[data-cap="teamManage"]', click:true, title:'Invite your team', body:"Add employees and choose exactly what each person can see and do &mdash; front desk, manager, or accountant."},
+      {sel:'#teamTbl', title:(T? "Your team" : "Roles &amp; permissions"), body: T? "Everyone on your account and their role. Tap to change access or remove someone." : "Once you invite people, manage their roles here &mdash; granular, and enforced everywhere."}
+    ];
+    if(nav==='settings') return [
+      {sel:'#setTabs', title:'Everything, configurable', body:"Branding, money rules, contracts, messaging, integrations, your portal, team and billing &mdash; all here."},
+      {sel:'#setBody', title:'Make it yours', body:"Set rates and deposit rules, generate legal docs, connect Stripe and email, and shape your portal. Atlas remembers all of it."}
+    ];
+    return null;
+  }
+  function _maybeTabTour(nav){
+    if(_tour) return; if(_demo && _demo.on) return;         // never collide with an active tour or the guided demo
+    if(nav==='bookings') return;                            // Bookings has its own richer, form-driven tour (bkTour)
+    var key='atlas_tour_'+nav;
+    if(_lsGet(key+'_done',0) || _lsGet(key+'_seen',0)) return;
+    var steps=_tabTourSteps(nav); if(!steps||!steps.length) return;
+    _lsSet(key+'_seen',1);
+    setTimeout(function(){ if(_tour||(_demo&&_demo.on))return; try{ closeAio(); }catch(e){} startTour(steps,{key:key}); }, 620);
+  }
+  // Replay any tab's walkthrough on demand (used by the "How it works" affordance + Atlas.io "show me around").
+  function tabTour(nav){ nav=nav||'overview'; if(nav==='bookings'){ return bkTour(); } if(!(document.querySelector('.panel[data-panel="'+nav+'"]'))) return; try{ closeAio(); }catch(e){} go(nav); var steps=_tabTourSteps(nav); if(steps&&steps.length) setTimeout(function(){ startTour(steps,{key:'atlas_tour_'+nav}); }, 360); }
   function renderCustomers(){
     document.getElementById('custTbl').innerHTML=`<thead><tr><th>Customer</th><th>Trips</th><th>Total spent</th><th>Last active</th><th></th></tr></thead><tbody>`+
       DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email); return `<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
@@ -5158,7 +5214,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tourNext,tourBack,tourEnd,
+    bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,promptUpgrade,doUpgrade,openWebsite,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
