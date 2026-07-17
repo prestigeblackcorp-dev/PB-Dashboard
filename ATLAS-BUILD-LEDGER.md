@@ -84,7 +84,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ chat: pricing, idle, analytics, **"what did I make this month"**, deposits, cancellations, **damage/incident**, expansion, win‑back, Stripe, nav edits · ✅ follow‑through buttons everywhere · ✅ refuses to invent data on empty accounts · 🔌 **live model** &mdash; Claude + GPT + Gemini **council** via `/api/aio`, one synthesis, auto‑live when you add the 3 keys · ⬜ image understanding ("here's a photo of my asset") · ⬜ take real actions (apply a rule, send a campaign)
 
 ### Team & ops
-- ✅ roles/RBAC + preview‑as · 🔌 server‑side perm re‑check · 💡 audit log per user · 💡 staff scheduling / shifts
+- ✅ roles/RBAC + preview‑as · 🔌 server‑side perm re‑check · ✅ **per‑user audit log** (every event attributed to who did it + a team‑member filter + CSV "By" column) · 💡 staff scheduling / shifts
 
 ### Platform
 - ✅ PWA installable · ✅ dark mode · ✅ nav customization (+ by voice) · ✅ 30‑sec commercial + deep‑link · 🔌 push · ⬜ HTTPS via Cloudflare Pages · ⬜ app‑store listings · ✅ **QuickBooks/Xero export** (accounting CSV) · 💡 white‑label domains per tenant · 💡 Zapier/webhooks
@@ -106,7 +106,6 @@ The single source of truth for **what's done, what needs connecting, and every f
 Cross‑checked against the whole build so far. If it isn't ✅ above, it's here with a status + what unblocks it.
 
 ### A. Self‑contained (buildable now — no keys, no accounts)
-- 💡 **Per‑user audit log view** — the timestamped event log exists globally; add a per‑staff filter
 - 💡 **Staff scheduling / shifts**
 - 💡 **"Clone last season's setup"**
 - 💡 **Operator / delivery add‑ons as first‑class line items**

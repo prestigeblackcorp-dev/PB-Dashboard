@@ -1936,7 +1936,7 @@ const Atlas = (function(){
     try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener'); if(!w){ var a=document.createElement('a'); a.href=url; a.download='protection-'+p.id+'.html'; a.click(); } setTimeout(function(){URL.revokeObjectURL(url);},6000); }catch(e){ toast('Could not open the coverage doc here'); } }
   /* ---- timestamped event log (audit trail + tax/documentation) ---- */
   function _events(){ if(!S.events) S.events=[]; return S.events; }
-  function _logEvent(type,text,meta){ try{ var e=_events(); e.unshift({t:Date.now(),type:type,text:text,meta:meta||null}); if(e.length>800) e.length=800; save(); }catch(err){} }
+  function _logEvent(type,text,meta){ try{ var e=_events(); var a=(typeof _actor==='function')?_actor():null; e.unshift({t:Date.now(),type:type,text:text,meta:meta||null,by:(a&&a.name)?a.name:'Owner'}); if(e.length>800) e.length=800; save(); }catch(err){} }
   function setCommsMode(m){ if(!_canMod('settings'))return; _comms().mode=(m==='own'?'own':'managed'); save(); renderSet(); }
   function setCommsField(f,v){ if(!_canMod('settings'))return; var cm=_comms();
     if(f.indexOf('.')>0){ var p=f.split('.'); if(!cm[p[0]]||typeof cm[p[0]]!=='object') cm[p[0]]={}; cm[p[0]][p[1]]=v; }
@@ -3968,9 +3968,16 @@ const Atlas = (function(){
       +'<div class="mp-row mp-total"><span>Total collected</span><span class="tnum">'+money(Math.round(total))+'</span></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'bookings\')">Bookings CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'tax\')">Tax summary CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'events\')">Activity log CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'accounting\')">QuickBooks / Xero</button></div>'
       +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card, Bookings CSV and Tax CSV all tie to the same bookings.</div>'; }
-  function renderLog(){ var el=document.getElementById('logBody'); if(!el)return; var evs=_events();
-    if(!evs.length){ el.innerHTML='<div class="bk-lenhint" style="margin:0">No activity yet. Bookings, contracts, promos and emails appear here &mdash; each timestamped and exportable.</div>'; return; }
-    el.innerHTML=evs.slice(0,12).map(function(e,i){ return '<div class="log-row" style="cursor:pointer" onclick="Atlas.drillLog('+i+')"><span class="log-dot log-dot--'+esc(e.type)+'"></span><div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--ink)">'+esc(e.text)+'</div><div style="font-size:11.5px;color:var(--muted)">'+_stamp(e.t)+'</div></div></div>'; }).join('')
+  var _logFilterBy='';
+  function setLogFilter(v){ _logFilterBy=v||''; renderLog(); }
+  function renderLog(){ var el=document.getElementById('logBody'); if(!el)return; var all=_events();
+    if(!all.length){ el.innerHTML='<div class="bk-lenhint" style="margin:0">No activity yet. Bookings, contracts, promos and emails appear here &mdash; each timestamped, attributed to who did it, and exportable.</div>'; return; }
+    var people={}; all.forEach(function(e){ people[e.by||'Owner']=1; }); (S.team||[]).forEach(function(m){ if(m.name) people[m.name]=1; });
+    var names=Object.keys(people).sort();
+    var filter=(names.length>1)?('<div style="margin-bottom:12px"><select class="select" style="max-width:220px" onchange="Atlas.setLogFilter(this.value)"><option value="">All team members</option>'+names.map(function(n){ return '<option value="'+esc(n)+'"'+(_logFilterBy===n?' selected':'')+'>'+esc(n)+'</option>'; }).join('')+'</select></div>'):'';
+    var evs=_logFilterBy? all.filter(function(e){ return (e.by||'Owner')===_logFilterBy; }) : all;
+    if(!evs.length){ el.innerHTML=filter+'<div class="bk-lenhint" style="margin:0">No activity from '+esc(_logFilterBy)+' yet.</div>'; return; }
+    el.innerHTML=filter+evs.slice(0,12).map(function(e){ var gi=all.indexOf(e); return '<div class="log-row" style="cursor:pointer" onclick="Atlas.drillLog('+gi+')"><span class="log-dot log-dot--'+esc(e.type)+'"></span><div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--ink)">'+esc(e.text)+'</div><div style="font-size:11.5px;color:var(--muted)">'+_stamp(e.t)+' &middot; '+esc(e.by||'Owner')+'</div></div></div>'; }).join('')
       +(evs.length>12?'<div style="font-size:12px;color:var(--muted);margin-top:8px">Showing 12 of '+evs.length+'. Download the CSV for the full log.</div>':''); }
   function _csvDate(ts){ try{ return new Date(ts).toLocaleDateString('en-US'); }catch(e){ return ''; } }
   function _downloadCsv(rows,name){ var csv=rows.map(function(r){ return r.map(function(c){ c=String(c==null?'':c);
@@ -3990,7 +3997,7 @@ const Atlas = (function(){
       rows=[['ContactName','InvoiceNumber','InvoiceDate','Description','Quantity','UnitAmount','TaxAmount','LineTotal','AccountCode']];
       b3.forEach(function(b){ var q=b.quote||{}; var net=Math.round((q.subtotal||q.gross||q.total||0)-(q.disc||0)); rows.push([b.cust||'',b.id,_csvDate(b.startTs||b.createdAt),(b.asset||S.fleet.noun)+' rental',1,net,Math.round(q.taxAmt||0),Math.round(q.total||0),'200']); });
       name='accounting-quickbooks-xero'; }
-    else { rows=[['Timestamp','Type','Event']]; _events().forEach(function(e){ rows.push([_stamp(e.t),e.type,e.text]); }); name='activity-log'; }
+    else { rows=[['Timestamp','Type','Event','By']]; _events().forEach(function(e){ rows.push([_stamp(e.t),e.type,e.text,e.by||'Owner']); }); name='activity-log'; }
     _downloadCsv(rows,name); }
   /* ============================================================ LIVE GPS TRACKING ============================================================ */
   const TRACKERS=[
@@ -6084,7 +6091,7 @@ const Atlas = (function(){
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
-    applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,setLoyalty,custRedeem,renderReports,downloadReport,applySitePromo,replyReview,
+    applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,setLoyalty,custRedeem,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,
     renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalUpload,portalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
