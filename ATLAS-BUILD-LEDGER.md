@@ -63,7 +63,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ 7‑day free trial, no card · ✅ multi‑select asset types · ✅ per‑type rates · ✅ AI setup assistant · ✅ demo tenants · ✅ import/bulk‑add assets · 💡 CSV/marketplace importer · 💡 "clone last season's setup"
 
 ### Assets
-- ✅ add/edit, bulk, status, location, tenant, **photo on card** · ✅ availability blocks · ✅ **maintenance/service log** (odometer‑aware) · ✅ **per‑asset document vault** (upload/download) · 💡 condition‑report photos at pickup/return
+- ✅ add/edit, bulk, status, location, tenant, **photo on card** · ✅ availability blocks · ✅ **maintenance/service log** (odometer‑aware) · ✅ **per‑asset document vault** (upload/download) · ✅ **condition photos at pickup + return** (before/after compare, feeds the damage claim)
 
 ### Bookings
 - ✅ create/edit, statuses, filters, live price · ✅ drill‑downs · ✅ **calendar view** · ✅ **incident/damage record + charge** · ✅ **cancellation policy engine** (window‑aware fee) · ✅ **recurring/subscription rentals** · ✅ **waitlist + auto‑surface on cancellation** · ✅ **ID‑verification flag**
@@ -106,7 +106,6 @@ The single source of truth for **what's done, what needs connecting, and every f
 Cross‑checked against the whole build so far. If it isn't ✅ above, it's here with a status + what unblocks it.
 
 ### A. Self‑contained (buildable now — no keys, no accounts)
-- 💡 **Condition photos at RETURN + before/after compare** — pickup photos already exist; add the return set + a side‑by‑side (pairs with damage claims)
 - 💡 **Per‑user audit log view** — the timestamped event log exists globally; add a per‑staff filter
 - 💡 **Staff scheduling / shifts**
 - 💡 **CSV / marketplace importer** — bulk‑import assets, bookings, customers

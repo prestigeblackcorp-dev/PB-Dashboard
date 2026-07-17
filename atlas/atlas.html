@@ -3265,9 +3265,13 @@ const Atlas = (function(){
         return '<div class="mp-row mp-ok"><span>'+esc(p.label||'Payout')+'</span><span class="tnum">&minus;'+money(Math.round(amt))+'</span></div><div class="mp-row"><span style="font-weight:650;color:var(--ink)">Your net</span><span class="tnum" style="font-weight:750">'+money(Math.round(net))+'</span></div>'; })()
       +'</div>'
       +(b.notes?'<div class="field" style="margin-bottom:14px"><label>Notes</label><div style="font-size:13px;color:var(--body);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;white-space:pre-wrap">'+esc(b.notes)+'</div></div>':'')
-      +'<div class="cond-sec"><div class="cond-hd"><span>Pre-rental condition &mdash; photos &amp; video</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCondition(\''+b.id+'\')">+ Add photo / video</button></div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Condition at pickup &mdash; photos &amp; video</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCondition(\''+b.id+'\',\'pickup\')">+ Add pickup media</button></div>'
         +'<div class="cond-sub">Captured before pickup and time-stamped automatically. Shown to '+esc((b.cust||'the customer').split(' ')[0])+' in their portal &mdash; documents the condition for both sides, on every rental type.</div>'
-        +_condMediaHtml(b,{})+'</div>'
+        +_condMediaHtml(b,{phase:'pickup'})+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Condition at return &mdash; photos &amp; video</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCondition(\''+b.id+'\',\'return\')">+ Add return media</button></div>'
+        +'<div class="cond-sub">Capture the '+esc(S.fleet.noun)+' at drop-off &mdash; the before/after is your proof if anything changed, and it flows straight into a damage claim.</div>'
+        +_condMediaHtml(b,{phase:'return'})+'</div>'
+      +((_condMedia(b).some(function(m){return (m.phase||'pickup')==='pickup';}) && _condMedia(b).some(function(m){return m.phase==='return';}))?'<div style="margin:-4px 0 16px"><button class="btn btn--ghost btn--sm btn--full" onclick="Atlas.bkCompareCondition(\''+b.id+'\')"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M8 2v12M3 5l5-3 5 3M3 11l5 3 5-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Compare before / after</button></div>':'')
       +'<div class="cond-sec"><div class="cond-hd"><span>Charges to portal</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCharge(\''+b.id+'\')">+ Send a charge</button></div>'
         +'<div class="cond-sub">Bill '+esc((b.cust||'the customer').split(' ')[0])+' for extras, damage, cleaning, late fees or anything else &mdash; it appears in their portal to pay online.</div>'
         +_chargesOwnerHtml(b)+'</div>'
@@ -5422,7 +5426,8 @@ const Atlas = (function(){
     if(b.plan&&b.plan.installments&&b.plan.installments.length){ h+='<div class="portal__docs"><div class="portal__docs-hd">Payment schedule</div>'
       +b.plan.installments.map(function(x){ return '<div class="portal__doc"><span>'+esc(x.label)+' &middot; '+money(x.amount)+'</span><span>'+(x.paidAt?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs))) +'</span></div>'; }).join('')+'</div>'; }
     // Pre-rental condition media ALWAYS shows, on every rental type, so the customer sees the time-stamped condition.
-    h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at pickup &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true})+'<div class="cond-note">Each item shows the exact date and time it was captured, so the '+esc(S.fleet.noun)+' condition is clear for both sides.</div></div>';
+    h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at pickup &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'pickup'})+'<div class="cond-note">Each item shows the exact date and time it was captured, so the '+esc(S.fleet.noun)+' condition is clear for both sides.</div></div>';
+    if(_condMedia(b).some(function(m){return m.phase==='return';})){ h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at return &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'return'})+'</div>'; }
     if(sec.perks&&pc.perks.length){ h+='<div class="portal__perks"><div class="portal__docs-hd">Perks of booking with '+esc(S.brand.name)+'</div>'+pc.perks.map(function(x){ return '<div class="portal__perk"><span class="portal__perk-ic">&#10003;</span>'+esc(x)+'</div>'; }).join('')+'</div>'; }
     if(_loy().on){ h+='<div class="portal__perks"><div class="portal__docs-hd">'+esc(S.brand.name)+' rewards</div>'+_portalLoyaltyHtml(b)+'</div>'; }
     if(sec.documents){ h+='<div class="portal__docs"><div class="portal__docs-hd">Your documents</div>'
@@ -5491,23 +5496,46 @@ const Atlas = (function(){
   /* ---- Pre-rental condition media: time-stamped photos + video on every booking, shown to the customer in the portal (any rental type) ---- */
   function _condMedia(b){ if(!b.conditionMedia) b.conditionMedia=[]; return b.conditionMedia; }
   function _downscaleImg(dataUrl, max, q, cb){ try{ var img=new Image(); img.onload=function(){ var w=img.width,h=img.height,s=Math.min(1,max/Math.max(w,h)); var c=document.createElement('canvas'); c.width=Math.max(1,Math.round(w*s)); c.height=Math.max(1,Math.round(h*s)); c.getContext('2d').drawImage(img,0,0,c.width,c.height); try{ cb(c.toDataURL('image/jpeg',q||0.7)); }catch(e){ cb(dataUrl); } }; img.onerror=function(){ cb(dataUrl); }; img.src=dataUrl; }catch(e){ cb(dataUrl); } }
-  function _condAddFiles(b, files, done){ var arr=Array.prototype.slice.call(files||[]), cm=_condMedia(b), i=0;
+  function _condAddFiles(b, files, done, phase){ var arr=Array.prototype.slice.call(files||[]), cm=_condMedia(b), i=0;
     (function next(){ if(i>=arr.length){ done&&done(); return; } var f=arr[i++], isVid=/^video\//.test(f.type)||/\.(mp4|mov|webm|m4v|avi)$/i.test(f.name||'');
-      var item={ id:'cm'+Date.now()+'_'+i, kind:isVid?'video':'photo', name:f.name||(isVid?'video':'photo'), at:Date.now(), src:null };
+      var item={ id:'cm'+Date.now()+'_'+i, kind:isVid?'video':'photo', name:f.name||(isVid?'video':'photo'), at:Date.now(), src:null, phase:(phase==='return'?'return':'pickup') };
       if(!isVid){ var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result),1000,0.7,function(u){ item.src=u; cm.push(item); next(); }); }; r.onerror=function(){ cm.push(item); next(); }; r.readAsDataURL(f); }
       else if(f.size && f.size<=2600000){ var rv=new FileReader(); rv.onload=function(e){ item.src=String(e.target.result); cm.push(item); next(); }; rv.onerror=function(){ cm.push(item); next(); }; rv.readAsDataURL(f); }
       else { item.note='on file'; cm.push(item); next(); } })(); }   // large videos: keep the time-stamped record (real file lands in R2 in production)
   function _condMediaHtml(b, opts){ opts=opts||{}; var cm=_condMedia(b);
-    if(!cm.length) return '<div class="cond-empty">'+(opts.portal?'Your pickup photos and walk-around video will appear here \u2014 each with the exact date and time it was taken \u2014 before your rental begins.':'No pre-rental media yet. Add photos or a walk-around video so the condition is documented and time-stamped for both sides.')+'</div>';
+    if(opts.phase){ cm=cm.filter(function(m){ return (m.phase||'pickup')===opts.phase; }); }
+    if(!cm.length){ var isRet=opts.phase==='return';
+      return '<div class="cond-empty">'+(opts.portal
+        ? (isRet?'Your drop-off photos will appear here once your rental is returned.':'Your pickup photos and walk-around video will appear here \u2014 each with the exact date and time it was taken \u2014 before your rental begins.')
+        : (isRet?'No return media yet. Add photos at drop-off to document the condition after the rental \u2014 the before/after is your proof if anything changed.':'No pre-rental media yet. Add photos or a walk-around video so the condition is documented and time-stamped for both sides.'))+'</div>'; }
     return '<div class="cond-grid">'+cm.map(function(m){
       var media = m.kind==='video'
         ? (m.src? '<video src="'+m.src+'" controls playsinline class="cond-media"></video>' : '<div class="cond-media cond-media--ph">&#9654; Video<span>'+esc(m.name)+'</span></div>')
         : (m.src? '<img src="'+m.src+'" class="cond-media" alt="condition photo">' : '<div class="cond-media cond-media--ph">Photo<span>'+esc(m.name)+'</span></div>');
       return '<figure class="cond-item">'+media+'<figcaption><span class="cond-when">&#128337; '+_stamp(m.at)+'</span>'+(opts.portal?'':'<button class="cond-x" title="Remove" onclick="Atlas.bkRmCondition(\''+b.id+'\',\''+m.id+'\')">&times;</button>')+'</figcaption></figure>';
     }).join('')+'</div>'; }
-  function bkAddCondition(id){ var b=_getBooking(id); if(!b)return; var inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,video/*'; inp.multiple=true;
-    inp.onchange=function(){ if(!inp.files||!inp.files.length)return; _condAddFiles(b, inp.files, function(){ _upsertBooking(b); _logEvent('booking','Pre-rental condition media added on '+b.id+' ('+_condMedia(b).length+' on file)',{booking:b.id}); var sc=document.getElementById('modalScrim'); if(sc&&sc.classList.contains('on')) openBooking(id); toast('Condition media saved &mdash; time-stamped'); }); };
+  function bkAddCondition(id, phase){ var b=_getBooking(id); if(!b)return; phase=(phase==='return'?'return':'pickup'); var inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,video/*'; inp.multiple=true;
+    inp.onchange=function(){ if(!inp.files||!inp.files.length)return; _condAddFiles(b, inp.files, function(){ _upsertBooking(b); _logEvent('booking',(phase==='return'?'Return':'Pre-rental')+' condition media added on '+b.id+' ('+_condMedia(b).length+' on file)',{booking:b.id}); var sc=document.getElementById('modalScrim'); if(sc&&sc.classList.contains('on')) openBooking(id); toast((phase==='return'?'Return':'Pickup')+' media saved &mdash; time-stamped'); }, phase); };
     inp.click(); }
+  // Before/after: pickup vs return, side by side, printable
+  function bkCompareCondition(id){ var b=_getBooking(id); if(!b){ toast('Booking not found'); return; }
+    var cm=_condMedia(b), pick=cm.filter(function(m){return (m.phase||'pickup')==='pickup'&&m.kind!=='video'&&m.src;}), ret=cm.filter(function(m){return m.phase==='return'&&m.kind!=='video'&&m.src;});
+    if(!pick.length && !ret.length){ toast('Add pickup or return photos first'); return; }
+    var col=function(title,arr){ return '<div class="col"><h2>'+title+' <small>('+arr.length+')</small></h2>'+(arr.length?arr.map(function(m){ return '<figure><img src="'+m.src+'"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join(''):'<div class="empty">No photos</div>')+'</div>'; };
+    var biz=(S.brand&&S.brand.name)||'Atlas Rental.io';
+    var doc='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Before / After &mdash; '+esc(b.id)+'</title>'
+      +'<style>*{box-sizing:border-box}body{margin:0;padding:28px;background:#eef2ef;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#14201a}'
+      +'.hd{max-width:920px;margin:0 auto 16px;display:flex;justify-content:space-between;align-items:baseline;gap:12px}'
+      +'.hd h1{font-size:18px;margin:0}.hd .btn{background:#14201a;color:#fff;border:0;border-radius:9px;padding:9px 15px;font-weight:600;cursor:pointer}'
+      +'.cols{max-width:920px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:16px}'
+      +'.col{background:#fff;border:1px solid #dfe6e2;border-radius:12px;padding:16px}'
+      +'.col h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#2e7d5b;margin:0 0 12px}'
+      +'figure{margin:0 0 12px}img{width:100%;border-radius:8px;border:1px solid #dfe6e2;display:block}figcaption{font-size:11px;color:#8a978f;margin-top:4px}'
+      +'.empty{color:#8a978f;font-size:13px;padding:20px 0;text-align:center}'
+      +'@media print{body{background:#fff;padding:0}.hd .btn{display:none}}@media(max-width:640px){.cols{grid-template-columns:1fr}}'
+      +'</style></head><body><div class="hd"><h1>'+esc(biz)+' &mdash; Before / After &middot; '+esc(b.id)+'</h1><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>'
+      +'<div class="cols">'+col('At pickup',pick)+col('At return',ret)+'</div></body></html>';
+    try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener'); if(!w){ var a=document.createElement('a'); a.href=url; a.download='before-after-'+b.id+'.html'; a.click(); } setTimeout(function(){URL.revokeObjectURL(url);},6000); }catch(e){ toast('Could not open the comparison here'); } }
   function bkRmCondition(id, cid){ var b=_getBooking(id); if(!b)return; b.conditionMedia=_condMedia(b).filter(function(m){return m.id!==cid;}); _upsertBooking(b); openBooking(id); }
   /* ---- Charges to the client portal: operator bills the customer; they pay online in their portal ---- */
   function _charges(b){ if(!b.charges) b.charges=[]; return b.charges; }
@@ -5608,7 +5636,9 @@ const Atlas = (function(){
     catch(e){ toast('Could not open the packet here'); } }
   function _claimPacketHtml(b,cl){
     var q=b.quote||{}, biz=(S.brand&&S.brand.name)||'Your rental business', city=(S.brand&&S.brand.city)||'';
-    var rec=_claimRecovered(b), inc=_incidents(b), photos=_condMedia(b).filter(function(m){ return m.kind!=='video'&&m.src; });
+    var rec=_claimRecovered(b), inc=_incidents(b);
+    var _cphotos=function(ph){ return _condMedia(b).filter(function(m){ return m.kind!=='video'&&m.src&&((m.phase||'pickup')===ph); }); };
+    var pickPh=_cphotos('pickup'), retPh=_cphotos('return');
     var incRows=inc.length?inc.map(function(x,i){ return '<tr><td>'+(i+1)+'</td><td>'+esc(x.desc)+'</td><td class="r">'+_stamp(x.at)+'</td><td class="r">'+(x.cost?money(x.cost):'&mdash;')+'</td></tr>'; }).join('')
       : '<tr><td colspan="4" class="muted">No itemized incidents logged &mdash; see the estimate below.</td></tr>';
     var ins=cl.insurer||{};
@@ -5617,7 +5647,8 @@ const Atlas = (function(){
       +(rec.charged?('<tr><td>Recovered from renter charges (paid)</td><td class="r">'+money(Math.round(rec.charged))+'</td></tr>'):'')
       +(cl.settledAmount!=null?('<tr><td>Insurer settlement</td><td class="r">'+money(Math.round(cl.settledAmount))+'</td></tr>'):'')
       +'<tr class="tot"><td>Net still outstanding</td><td class="r">'+money(Math.max(0,Math.round((cl.estAmount||0)-rec.total-(cl.settledAmount||0))))+'</td></tr>';
-    var photoHtml=photos.length?('<h2>Pickup condition evidence ('+photos.length+')</h2><div class="ph">'+photos.map(function(m){ return '<figure><img src="'+m.src+'"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):'';
+    var _pgrid=function(t,arr){ return arr.length?('<h2>'+t+' ('+arr.length+')</h2><div class="ph">'+arr.map(function(m){ return '<figure><img src="'+m.src+'"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):''; };
+    var photoHtml=_pgrid('Condition evidence &mdash; at pickup',pickPh)+_pgrid('Condition evidence &mdash; at return',retPh);
     var verified=b.idVerified?('ID verified '+_stamp(b.idVerifiedAt)):'ID not verified';
     return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Damage Claim &mdash; '+esc(b.id)+'</title>'
       +'<style>'
@@ -5930,7 +5961,7 @@ const Atlas = (function(){
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,bkApplyGift,bkRemoveGift,
