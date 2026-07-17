@@ -264,6 +264,27 @@ img{max-width:100%}
 .price-list--grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0}
 @media(max-width:900px){.price-grid{grid-template-columns:repeat(2,1fr)}.price-list--grid{grid-template-columns:1fr}}
 @media(max-width:520px){.price-grid{grid-template-columns:1fr}}
+/* full plan comparison table (flush, sticky headers, scrolls on mobile) */
+.pc-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 auto;max-width:980px;border:1px solid var(--line);border-radius:16px;background:var(--surface);box-shadow:var(--shadow-lg,0 12px 30px -18px rgba(20,40,30,.22))}
+.pc-table{width:100%;border-collapse:collapse;min-width:720px;font-size:13.5px}
+.pc-table th,.pc-table td{padding:11px 14px;text-align:center;border-bottom:1px solid var(--line-2);vertical-align:middle}
+.pc-table thead th{position:sticky;top:0;z-index:3;background:var(--surface);border-bottom:1px solid var(--line);vertical-align:bottom}
+.pc-table tbody th{text-align:left;font-weight:600;color:var(--body);position:sticky;left:0;z-index:1;background:var(--surface);min-width:230px}
+.pc-corner{position:sticky;left:0;z-index:4;background:var(--surface)}
+.pc-th--feat{background:var(--brand-050)}
+.pc-th--feat .pc-name{color:var(--brand)}
+.pc-badge{display:inline-block;font-size:9.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#fff;background:var(--brand);border-radius:999px;padding:2px 8px;margin-bottom:5px}
+.pc-name{font-size:14px;font-weight:800;color:var(--ink)}
+.pc-price{font-size:21px;font-weight:850;color:var(--ink);letter-spacing:-.02em;margin:2px 0;white-space:nowrap}
+.pc-price sup{font-size:.5em;font-weight:800;vertical-align:top;margin-right:1px}.pc-price span{font-size:11px;color:var(--muted);font-weight:600}
+.pc-cr{font-size:11px;color:var(--brand);font-weight:750;margin-bottom:9px}
+.pc-th .btn{width:100%}
+.pc-grp th{background:var(--surface-2);text-align:left;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);position:sticky;left:0}
+.pc-ok{width:18px;height:18px;color:var(--brand)}
+.pc-no{color:var(--line);font-weight:800;font-size:15px}
+.pc-val{font-weight:750;color:var(--ink);font-variant-numeric:tabular-nums}
+.pc-table tbody tr:last-child td,.pc-table tbody tr:last-child th{border-bottom:none}
+.pc-hint{max-width:980px;margin:10px auto 0;text-align:center;font-size:12.5px;color:var(--muted)}
 
 .atlasio-spot{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:center}
 .atlasio-spot__vis{background:linear-gradient(160deg,#0E1420,#141C2B);border-radius:20px;padding:26px;box-shadow:var(--shadow-lg);border:1px solid rgba(255,255,255,.08)}
@@ -1286,14 +1307,9 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       <div class="section__head" style="margin:0 auto 34px;text-align:center">
         <span class="eyebrow">Simple, honest pricing</span>
         <h2>Plans that scale with you.</h2>
-        <p style="margin-left:auto;margin-right:auto">Start with a 7-day free trial &mdash; no card to begin. <b>Every plan includes every feature</b>; you only step up for more assets, locations and Atlas.io credits. No per-booking fees, no seat charges.</p>
+        <p style="margin-left:auto;margin-right:auto">Start with a 7-day free trial &mdash; no card to begin. <b>Every plan includes the full core</b> &mdash; bookings, contracts, the branded portal, analytics and Atlas.io. Step up for more assets, locations, credits and premium features. No per-booking fees, no seat charges.</p>
       </div>
-      <div class="price-grid" id="priceGrid"></div>
-      <div class="price-incl">
-        <div class="price-incl__hd">Every plan includes</div>
-        <ul class="price-list price-list--grid" id="priceList"></ul>
-        <p style="text-align:center;color:var(--muted);font-size:12.5px;margin:16px 0 0">7-day free trial &middot; cancel anytime &middot; keep your data &amp; exports</p>
-      </div>
+      <div id="priceGrid"></div>
     </div>
   </section>
 
@@ -1976,12 +1992,41 @@ const Atlas = (function(){
       +'<div class="tier__cr">'+t.credits.toLocaleString()+' Atlas.io credits / week</div>'
       +'<button class="btn '+(feat?'btn--primary':'btn--ghost')+' btn--full btn--sm" onclick="Atlas.goAuth(\'signup\')">Start free trial</button></div>';
   }).join(''); }
+  // Full, flush plan-comparison table: price + Atlas.io credits (tokens) + every feature, per tier, reflecting the real gates.
+  function _priceCompareHtml(){
+    var tiers=TIERS.filter(function(t){return !t.owner&&!t.comp;});
+    var rank={starter:0,pro:1,enterprise:2,business:3,unlimited:4};
+    var ok='<svg class="pc-ok" viewBox="0 0 20 20" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    var no='<span class="pc-no">&mdash;</span>';
+    var head='<thead><tr><th class="pc-corner"></th>'+tiers.map(function(t){ var feat=(t.id==='pro'); var pr=(t.price%1?t.price.toFixed(2):t.price);
+      return '<th class="pc-th'+(feat?' pc-th--feat':'')+'">'+(feat?'<div class="pc-badge">Most popular</div>':'')+'<div class="pc-name">'+t.name+'</div><div class="pc-price"><sup>$</sup>'+pr+'<span>/mo</span></div><div class="pc-cr">'+t.credits.toLocaleString()+' credits / wk</div><button class="btn btn--'+(feat?'primary':'ghost')+' btn--sm" onclick="Atlas.goAuth(\'signup\')">Start free</button></th>'; }).join('')+'</tr></thead>';
+    function grp(g){ return '<tr class="pc-grp"><th>'+g+'</th>'+tiers.map(function(){return '<td class="pc-grp"></td>';}).join('')+'</tr>'; }
+    function valRow(label, fn){ return '<tr><th>'+label+'</th>'+tiers.map(function(t){return '<td class="pc-val">'+fn(t)+'</td>';}).join('')+'</tr>'; }
+    function tickRow(label, minR){ return '<tr><th>'+label+'</th>'+tiers.map(function(t){return '<td>'+((rank[t.id]||0)>=minR?ok:no)+'</td>';}).join('')+'</tr>'; }
+    var core=['Online booking & scheduling','Calendar view','Quotes, tax, discounts & deposits','Contracts & e-signature','Refundable deposit holds','Branded customer portal','Itemized branded receipts','Analytics, reports & tax / QuickBooks exports','Incident & damage records','Cancellation-policy engine','Asset service log + document vault','Promo codes','Reviews & message preferences','Team & roles (permissions)','Dark mode + installable app','Atlas.io AI assistant + Council'];
+    var body='<tbody>'
+      +grp('Capacity &amp; Atlas.io')
+      +valRow('Assets', function(t){return t.vehicles===Infinity?'Unlimited':t.vehicles;})
+      +valRow('Locations', function(t){return t.locations===Infinity?'Unlimited':(t.locations>=90?'Multiple':String(t.locations));})
+      +valRow('Atlas.io credits / week', function(t){return t.credits.toLocaleString();})
+      +grp('Included on every plan')
+      +core.map(function(c){return tickRow(c,0);}).join('')
+      +grp('Premium features')
+      +tickRow('Live GPS tracking + 3D map nav',1)
+      +tickRow('AI website builder',2)
+      +tickRow('Multi-location management',2)
+      +tickRow('Priority support',3)
+      +tickRow('Dedicated onboarding & success',4)
+      +'</tbody>';
+    return '<div class="pc-wrap"><table class="pc-table">'+head+body+'</table></div>'
+      +'<div class="pc-hint">Need one premium feature on a smaller plan? Add it a-la-carte in-app &mdash; or step up a tier. 7-day free trial, cancel anytime.</div>';
+  }
   function buildLanding(){
     document.getElementById('featGrid').innerHTML=FEATURES.map(f=>`
       <div class="feat"><div class="feat__ic"><svg viewBox="0 0 20 20" fill="none"><path d="${f[3]}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       <h3>${f[1]}</h3><p>${f[2]}</p></div>`).join('');
-    document.getElementById('priceList').innerHTML=PRICE.map(p=>`<li><svg viewBox="0 0 20 20" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>${p}</li>`).join('');
-    var pg=document.getElementById('priceGrid'); if(pg) pg.innerHTML=_landingTiersHtml();
+    var _pl=document.getElementById('priceList'); if(_pl) _pl.innerHTML=PRICE.map(p=>`<li><svg viewBox="0 0 20 20" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>${p}</li>`).join('');
+    var pg=document.getElementById('priceGrid'); if(pg) pg.innerHTML=_priceCompareHtml();
     document.getElementById('faq').innerHTML=FAQS.map(f=>`<details class="faq__item"><summary class="faq__q">${f[0]}<svg viewBox="0 0 18 18" fill="none"><path d="M9 4v10M4 9h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></summary><div class="faq__a">${f[1]}</div></details>`).join('');
   }
 
