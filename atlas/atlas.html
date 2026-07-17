@@ -2173,7 +2173,7 @@ const Atlas = (function(){
     else if(m.weeklyDisc && periods>=_wkP) disc=gross*m.weeklyDisc/100;
     if(discount && discount.type && discount.type!=='none' && discount.value){
       disc += (discount.type==='percent')? gross*(discount.value||0)/100 : (discount.value||0); }
-    disc=Math.min(disc, gross);
+    disc=Math.max(0, Math.min(disc, gross));   // clamp both ways: never negative (a "-100" discount can't inflate the total above gross) and never past gross
     var subtotal=gross-disc, fees=[];
     (m.rules||[]).forEach(function(r){ if(!r.on) return;
       fees.push({name:r.name, amt:(r.kind==='percent'? subtotal*(r.value||0)/100 : (r.value||0)), taxable:!!r.taxable}); });
@@ -2425,7 +2425,7 @@ const Atlas = (function(){
     invite:()=>`
       <h2>Invite your team</h2><p class="ob-card__lead">Add employees now or skip &mdash; you can manage roles anytime.</p>
       <div class="field"><label>Teammate email</label><input class="input" placeholder="name@yourcompany.com" value="${esc(S.invite.email||'')}" oninput="Atlas.setField('invite.email',this.value)"></div>
-      <div class="field"><label>Role</label><select class="select" onchange="Atlas.setField('invite.role',this.value)"><option value="manager">Manager &mdash; full access except billing</option><option value="desk">Staff &mdash; bookings &amp; customers</option><option value="viewer">Viewer &mdash; read-only</option></select></div>
+      <div class="field"><label>Role</label><select class="select" onchange="Atlas.setField('invite.role',this.value)"><option value="manager"${S.invite.role==='manager'?' selected':''}>Manager &mdash; full access except billing</option><option value="desk"${(S.invite.role==='desk'||!S.invite.role)?' selected':''}>Staff &mdash; bookings &amp; customers</option><option value="viewer"${S.invite.role==='viewer'?' selected':''}>Viewer &mdash; read-only</option></select></div>${''/* the shown option now reflects S.invite.role and defaults to Staff -- matching the 'desk' fallback at finish() so the created teammate's role never silently differs from what was displayed */}
       <button class="btn btn--ghost btn--sm" onclick="Atlas.toast('Invitation queued')">+ Add another</button>
       ${obNav('Finish setup')}`,
 
@@ -3259,7 +3259,7 @@ const Atlas = (function(){
   // Per-customer trips + spend from real bookings (excludes cancelled), keyed by email then name (matches viewCustomer).
   function _custStats(name,email){
     var trips=0, spent=0, key=(email||'').toLowerCase(), nm=(name||'').toLowerCase();
-    (_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var m=key?((b.custEmail||'').toLowerCase()===key):(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });
+    (_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var m=(key&&(b.custEmail||'').toLowerCase()===key)||(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });   // email-OR-name union: matches the customer profile modal (viewCustomer) + loyalty basis (_loySpend) exactly, so the Customers row, the profile, and loyalty points never disagree on a customer whose bookings have mixed/blank emails
     return {trips:trips,spent:spent};
   }
   function _fmtDay(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
@@ -3317,6 +3317,7 @@ const Atlas = (function(){
     var assets=(DATA.assets||[]).map(function(a){return a.name;}); if(!assets.length) assets=S.fleet.sample.slice();
     var b=existing||{cust:'',custEmail:'',phone:'',asset:assets[0]||'',periods:3,extras:[],discount:{type:'none',value:0},notes:'',status:'Confirmed'};
     _bkDraft={ extras:(b.extras||[]).map(function(x){return {id:x.id,name:x.name,price:x.price,per:x.per,qty:x.qty||1,custom:x.custom,protection:x.protection,planId:x.planId};}) };   // keep protection+planId so editing a booking never drops/double-charges coverage
+    _bkPromo=null;   // clear any promo left over from a previously-abandoned form; without this a code applied then cancelled would bleed onto the next New Booking (stamp promoCode + burn a cap slot with $0 discount). On edit, an existing booking keeps its stored promoCode/quote untouched.
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
     var assetField='<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset">'+assets.map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';
     var phoneField=cfg.fields.phone? '<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkPhone" value="'+esc(b.phone||'')+'" placeholder="(555) 555-1234"></div>' : '';
@@ -3489,9 +3490,11 @@ const Atlas = (function(){
   function doRepeat(id){ var b=_getBooking(id); if(!b)return; var every=parseInt(val('rpEvery'))||30, count=parseInt(val('rpCount'))||3;
     var base=Number(b.startTs)||Date.now(), span=(Number(b.endTs)&&Number(b.endTs)>base)?(Number(b.endTs)-base):0, made=0;
     for(var i=1;i<=count;i++){ var nb={}; for(var k in b) nb[k]=b[k];
-      nb.id='BK-'+((Date.now()%100000)+i); nb.startTs=base+every*86400000*i; nb.endTs=span?(nb.startTs+span):0; nb.status='Confirmed'; nb.createdAt=Date.now(); nb.recurringOf=b.id;
+      nb.id=_nextBkId(); nb.startTs=base+every*86400000*i; nb.endTs=span?(nb.startTs+span):0; nb.status='Confirmed'; nb.createdAt=Date.now(); nb.recurringOf=b.id;   // _nextBkId() = max id + 1 over ALL current bookings (incl. clones already added this loop) -> collision-proof; the old Date.now()%100000 wrapped every 100s and could overwrite a real booking
+      nb.extras=b.extras?JSON.parse(JSON.stringify(b.extras)):[]; nb.discount=b.discount?JSON.parse(JSON.stringify(b.discount)):{type:'none',value:0};   // deep-clone so editing one occurrence never mutates the source or its siblings
       nb.quote=b.quote?JSON.parse(JSON.stringify(b.quote)):calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount});
       delete nb.charges; delete nb.incidents; delete nb.review; delete nb.cancelFee; delete nb.cancelledAt; delete nb.portal;
+      delete nb.promoCode; delete nb.referredByCode; delete nb.refAwarded;   // a recurring occurrence must not re-consume a promo cap slot or re-award a referral on each completion
       _upsertBooking(nb); made++; }
     _logEvent('booking','Created '+made+' recurring bookings from '+b.id,{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; toast(made+' recurring bookings created'); }
@@ -4091,12 +4094,16 @@ const Atlas = (function(){
       bks.forEach(function(b){ var q=b.quote||{}; rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',Math.round(q.gross||q.subtotal||q.total||0),Math.round(q.disc||0),Math.round(q.taxAmt||0),Math.round(q.total||0)]); });
       name='bookings'; }
     else if(kind==='tax'){ var r2=_repRange(); var b2=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r2.from;});
-      var g=0,d=0,t=0,tot=0; b2.forEach(function(b){ var q=b.quote||{}; g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); t+=(q.taxAmt||0); tot+=(q.total||0); });
-      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Tax collected','Total collected'],[r2.label,b2.length,Math.round(g),Math.round(d),Math.round(t),Math.round(tot)]]; name='tax-summary'; }
+      var g=0,d=0,fe=0,t=0,tot=0; b2.forEach(function(b){ var q=b.quote||{}; g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); fe+=(q.feeTotal||0); t+=(q.taxAmt||0); tot+=(q.total||0); });
+      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Fees','Tax collected','Total collected'],[r2.label,b2.length,Math.round(g),Math.round(d),Math.round(fe),Math.round(t),Math.round(tot)]]; name='tax-summary'; }   // Fees column added so Gross - Discounts + Fees + Tax == Total reconciles
     else if(kind==='accounting'){ var r3=_repRange(); var b3=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r3.from;});
       // Xero/QuickBooks-friendly sales rows (one invoice line per booking) -- import as sales invoices.
       rows=[['ContactName','InvoiceNumber','InvoiceDate','Description','Quantity','UnitAmount','TaxAmount','LineTotal','AccountCode']];
-      b3.forEach(function(b){ var q=b.quote||{}; var net=Math.round((q.subtotal||q.gross||q.total||0)-(q.disc||0)); rows.push([b.cust||'',b.id,_csvDate(b.startTs||b.createdAt),(b.asset||S.fleet.noun)+' rental',1,net,Math.round(q.taxAmt||0),Math.round(q.total||0),'200']); });
+      b3.forEach(function(b){ var q=b.quote||{}; var _dt=_csvDate(b.startTs||b.createdAt);
+        var sub=Math.round((q.subtotal!=null)?q.subtotal:((q.gross||q.total||0)-(q.disc||0)));   // subtotal is ALREADY gross-minus-discount; the old code subtracted the discount a 2nd time (invoice wouldn't balance; a big discount even produced a negative sale line)
+        var tax=Math.round(q.taxAmt||0), fee=Math.round(q.feeTotal||0);
+        rows.push([b.cust||'',b.id,_dt,(b.asset||S.fleet.noun)+' rental',1,sub,tax,sub+tax,'200']);   // per-line: UnitAmount + TaxAmount == LineTotal
+        if(fee>0) rows.push([b.cust||'',b.id,_dt,'Fees & surcharges',1,fee,0,fee,'200']); });   // fees as their own line on the same invoice so the whole invoice reconciles to Total collected
       name='accounting-quickbooks-xero'; }
     else { rows=[['Timestamp','Type','Event','By']]; _events().forEach(function(e){ rows.push([_stamp(e.t),e.type,e.text,e.by||'Owner']); }); name='activity-log'; }
     _downloadCsv(rows,name); }

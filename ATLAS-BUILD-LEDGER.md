@@ -127,6 +127,18 @@ Everything on this list is now built and live: gift cards, return‑condition ph
 - ⬜ **Damage‑claim → insurer auto‑submit** — the claim packet is done; auto‑filing needs an insurer integration
 - ⬜ **Dreaming: pull N real local contacts** (brokers/GCs) + **watch bid boards** — currently one templated draft per partner category
 
-## 6 · Add a feature
+## 6 · Turnkey audit — bugs found by the audit fleet, fixed + verified in‑browser (2026‑07‑17)
+The strict per‑module audit (owner + customer‑portal ends) reproduced these with runnable harnesses; each fix was then re‑proven in a real browser boot, not just on paper.
+- ✅ **Money never inflates** — a negative discount (e.g. "‑100" typed into the field) used to push a booking's total *above* its own price. Clamped: a discount can only ever reduce, never add. *(Verified: ‑$100 → $450, same as $0; a real $50 discount still → $400.)*
+- ✅ **Repeat/recurring can't clobber a real booking** — cloned occurrences used a time‑based ID that wrapped every 100 seconds and could silently overwrite an existing rental. Now every clone gets a guaranteed‑unique next ID; occurrences also stop re‑using a promo cap slot or re‑paying a referral. *(Verified: source booking intact, 4 clean sequential clones, zero duplicate IDs.)*
+- ✅ **QuickBooks / Xero export balances** — the discount was subtracted twice, so invoice lines didn't add up (a big discount even produced a negative sale line); fees were missing entirely. Now every line reconciles `UnitAmount + Tax = LineTotal`, with fees on their own line. *(Verified: every exported row balances.)*
+- ✅ **Tax summary reconciles** — added the missing Fees column so `Gross − Discounts + Fees + Tax = Total`. *(Verified against a live export.)*
+- ✅ **Promo codes don't bleed** — a code applied then abandoned no longer stamps itself onto the *next* booking (which burned a cap slot for a $0 discount). Cleared when a fresh booking form opens.
+- ✅ **Customer numbers agree everywhere** — the Customers table row now counts a customer exactly like their profile card and their loyalty points do (same email‑or‑name rule), so the three never disagree on messy/mixed‑email data.
+- ✅ **Team invite can't mislead** — the onboarding role picker now shows the same least‑privilege default (Staff) it actually creates, instead of showing "Manager" and silently creating Staff.
+- 🏗️ **Silent data‑loss root fixed earlier this pass** — big media (condition videos, asset docs) that used to overflow the browser's storage quota and be lost on reload now offload to IndexedDB (mirrors the proven Prestige Black shim).
+- 📝 *Noted, low‑risk, deferred:* a referral code derived only from a name can collide for two different no‑email customers who share a name — fixing it would rotate every existing customer's shared code, so left as‑is.
+
+## 7 · Add a feature
 Drop it below (or just tell Atlas.io / Claude and it gets slotted into the right area above with a status):
 - ⬜ _…_
