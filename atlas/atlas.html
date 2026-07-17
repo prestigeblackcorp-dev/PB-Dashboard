@@ -1784,10 +1784,11 @@ const Atlas = (function(){
   function _loy(){ if(!S.loyalty) S.loyalty={on:true, perDollar:1, rewardPts:500, rewardVal:50, refPts:250, members:{}}; if(!S.loyalty.members) S.loyalty.members={}; return S.loyalty; }
   function _loyKey(email){ return String(email||'').trim().toLowerCase(); }
   function _loyMember(email){ var L=_loy(), k=_loyKey(email); if(!k) return {bonus:0,redeemed:0}; if(!L.members[k]) L.members[k]={bonus:0,redeemed:0}; return L.members[k]; }
+  function _loyOff(email){ return !!_loyMember(email).off; }   // per-customer opt-out
   function _loySpend(email,name){ var key=_loyKey(email), nm=(name||'').toLowerCase();
     return (DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && ((b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm)); }).reduce(function(s,b){ return s+((b.quote&&b.quote.total)||0); },0); }
   function _loyEarned(email,name){ return Math.floor(_loySpend(email,name)*(_loy().perDollar||1)); }
-  function _loyPoints(email,name){ var m=_loyMember(email); return Math.max(0, _loyEarned(email,name)+(m.bonus||0)-(m.redeemed||0)); }
+  function _loyPoints(email,name){ var m=_loyMember(email); if(m.off) return 0; return Math.max(0, _loyEarned(email,name)+(m.bonus||0)-(m.redeemed||0)); }
   function _loyCode(email,name){ var base=String(name||email||'GUEST').replace(/[^a-z0-9]/gi,'').toUpperCase().slice(0,6)||'FRIEND'; var s=_loyKey(email)||String(name||''); var h=0; for(var i=0;i<s.length;i++){ h=(h*31+s.charCodeAt(i))>>>0; } return base+('00'+(h%1000)).slice(-3); }
   function _loyTier(pts){ return pts>=2000?'Platinum':pts>=1000?'Gold':pts>=400?'Silver':'Member'; }
   function setLoyalty(field,v){ if(!_canMod('settings'))return; var L=_loy();
@@ -1799,20 +1800,40 @@ const Atlas = (function(){
       +'<div class="field"><label>Referral bonus (points)</label><input class="input tnum" type="number" min="0" value="'+(L.refPts||250)+'" onchange="Atlas.setLoyalty(\'refPts\',this.value)"></div></div>'
       +'<div class="row2"><div class="field"><label>Reward: points needed</label><input class="input tnum" type="number" min="1" value="'+(L.rewardPts||500)+'" onchange="Atlas.setLoyalty(\'rewardPts\',this.value)"></div>'
       +'<div class="field"><label>Reward: credit ($)</label><input class="input tnum" type="number" min="1" value="'+(L.rewardVal||50)+'" onchange="Atlas.setLoyalty(\'rewardVal\',this.value)"></div></div>'
-      +'<div class="bk-lenhint" style="margin:2px 0 0">Points come from each customer\u2019s paid bookings automatically. <b>Redeem</b> turns '+(L.rewardPts||500)+' points into a '+money(L.rewardVal||50)+' coupon they use at checkout. Customers earn '+(L.refPts||250)+' points when a friend they referred completes a first rental.</div>'; }
-  function _custLoyaltyHtml(c,i){ var L=_loy(); var pts=_loyPoints(c.email,c.name), tier=_loyTier(pts), code=_loyCode(c.email,c.name);
+      +'<div class="bk-lenhint" style="margin:2px 0 8px">Points come from each customer\u2019s paid bookings automatically. <b>Redeem</b> turns '+(L.rewardPts||500)+' points into a '+money(L.rewardVal||50)+' coupon they use at checkout. Customers earn '+(L.refPts||250)+' points when a friend they referred completes a first rental. <b>Turn loyalty off, edit points or reset it for one customer</b> from that customer\u2019s profile &rarr; Manage.</div>'
+      +'<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.loyaltyResetAll()">Reset all customer points</button>'; }
+  function loyaltyResetAll(){ if(!_canMod('settings'))return; if(!confirm('Reset ALL customers\u2019 loyalty points and manual adjustments? Everyone is re-enrolled and balances return to what they earned from spend. This cannot be undone.'))return; _loy().members={}; save(); renderSet(); toast('All customer points reset'); }
+  function _custLoyaltyHtml(c,i){ var L=_loy();
+    if(_loyOff(c.email)){ return '<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Loyalty</div><div style="font-size:14px;font-weight:650;color:var(--ink)">Off for this customer</div></div><button class="btn btn--ghost btn--sm" onclick="Atlas.custLoyalty('+i+')">Manage</button></div>'; }
+    var pts=_loyPoints(c.email,c.name), tier=_loyTier(pts), code=_loyCode(c.email,c.name);
     var need=(L.rewardPts||500), canRedeem=pts>=need, prog=Math.min(100,Math.round(pts/need*100));
     return '<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:16px">'
       +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Loyalty &middot; '+esc(tier)+'</div><div style="font-size:22px;font-weight:800" class="tnum">'+pts.toLocaleString()+' <span style="font-size:12px;font-weight:600;color:var(--muted)">points</span></div></div>'
-      +'<button class="btn btn--sm '+(canRedeem?'btn--primary':'btn--ghost')+'" onclick="Atlas.custRedeem('+i+')">Redeem '+money(L.rewardVal||50)+'</button></div>'
+      +'<div style="display:flex;gap:6px;flex-shrink:0"><button class="btn btn--ghost btn--sm" onclick="Atlas.custLoyalty('+i+')">Manage</button><button class="btn btn--sm '+(canRedeem?'btn--primary':'btn--ghost')+'" onclick="Atlas.custRedeem('+i+')">Redeem '+money(L.rewardVal||50)+'</button></div></div>'
       +'<div style="height:6px;background:var(--line);border-radius:4px;margin:10px 0 6px;overflow:hidden"><div style="height:100%;width:'+prog+'%;background:var(--brand)"></div></div>'
       +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--muted)"><span>'+pts+' / '+need+' to a '+money(L.rewardVal||50)+' reward</span><span>Referral: <b class="mono" style="color:var(--ink)">'+esc(code)+'</b></span></div></div>'; }
+  function custLoyalty(i){ var c=(DATA.customers||[])[i]; if(!c)return; var m=_loyMember(c.email), earned=_loyEarned(c.email,c.name);
+    var eff=Math.max(0, earned+(m.bonus||0)-(m.redeemed||0));
+    openModal('<div class="modal__head"><h3>Loyalty &mdash; '+esc(c.name||c.email)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<label style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><label class="switch"><input type="checkbox" id="clEnrolled" '+(m.off?'':'checked')+'><span class="switch__t"></span></label><span style="font-size:13.5px;color:var(--ink)">Enrolled in loyalty</span></label>'
+      +'<div class="field"><label>Points balance</label><input class="input tnum" id="clPts" type="number" min="0" value="'+eff+'"><div class="bk-lenhint" style="margin:5px 0 0">Earned '+earned+' from paid bookings automatically. Set an exact balance to add or remove points &mdash; the manual adjustment is recorded.</div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveCustLoyalty('+i+')">Save</button>'
+      +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.custLoyaltyReset('+i+')">Reset &mdash; clear adjustments &amp; re-enroll</button></div>'); }
+  function saveCustLoyalty(i){ var c=(DATA.customers||[])[i]; if(!c)return; var m=_loyMember(c.email);
+    var enrolled=!!(document.getElementById('clEnrolled')&&document.getElementById('clEnrolled').checked);
+    m.off=!enrolled;
+    var target=Math.max(0, Math.round(parseFloat(val('clPts'))||0)), earned=_loyEarned(c.email,c.name);
+    m.bonus = target - earned + (m.redeemed||0);   // points = earned + bonus - redeemed = target
+    save(); _logEvent('loyalty','Loyalty updated for '+(c.name||c.email)+': '+(enrolled?('balance '+target+' pts'):'turned OFF'),{}); closeModal(); try{ viewCustomer(i); }catch(e){} toast('Loyalty updated'); }
+  function custLoyaltyReset(i){ var c=(DATA.customers||[])[i]; if(!c)return; if(!confirm('Reset this customer\u2019s loyalty? Manual adjustments are cleared, they are re-enrolled, and points return to what they earned from spend.'))return;
+    var L=_loy(), k=_loyKey(c.email); if(k) delete L.members[k]; save(); _logEvent('loyalty','Loyalty reset for '+(c.name||c.email),{}); closeModal(); try{ viewCustomer(i); }catch(e){} toast('Loyalty reset'); }
   function _portalLoyaltyHtml(b){ var L=_loy(); var pts=_loyPoints(b.custEmail,b.cust), code=_loyCode(b.custEmail,b.cust), tier=_loyTier(pts), need=(L.rewardPts||500);
     return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
       +'<div><div style="font-size:22px;font-weight:800" class="tnum">'+pts.toLocaleString()+' <span style="font-size:12px;font-weight:600;color:var(--muted)">points</span></div><div style="font-size:12px;color:var(--muted)">'+esc(tier)+' &middot; '+(pts>=need?('Ready to redeem '+money(L.rewardVal||50)+'!'):((need-pts)+' pts to a '+money(L.rewardVal||50)+' reward'))+'</div></div>'
       +'<div style="text-align:right"><div style="font-size:11px;color:var(--muted)">Share &amp; earn '+(L.refPts||250)+' pts</div><b class="mono" style="font-size:15px;color:var(--brand)">'+esc(code)+'</b></div></div>'; }
   function custRedeem(i){ var c=(DATA.customers||[])[i]; if(!c)return; var L=_loy();
     if(!L.on){ toast('Turn on loyalty in Settings > Money rules'); return; }
+    if(_loyOff(c.email)){ toast('Loyalty is off for this customer &mdash; turn it on via Manage'); return; }
     var pts=_loyPoints(c.email,c.name), need=(L.rewardPts||500);
     if(pts<need){ toast('Needs '+need+' points to redeem '+money(L.rewardVal||50)+' ('+pts+' so far)'); return; }
     if(!confirm('Redeem '+need+' points for a '+money(L.rewardVal||50)+' coupon for '+(c.name||c.email)+'?'))return;
@@ -1824,7 +1845,8 @@ const Atlas = (function(){
     var meKey=_loyKey(b.custEmail);
     var ref=(DATA.customers||[]).filter(function(c){ return _loyKey(c.email)!==meKey && _loyCode(c.email,c.name)===code; })[0];
     if(!ref) return;   // unknown or own code -> no bonus
-    var m=_loyMember(ref.email); m.bonus=(m.bonus||0)+(L.refPts||250); b.refAwarded=true;
+    var m=_loyMember(ref.email); if(m.off) return;   // referrer opted out
+    m.bonus=(m.bonus||0)+(L.refPts||250); b.refAwarded=true;
     _logEvent('loyalty','Referral bonus '+(L.refPts||250)+' pts to '+(ref.name||ref.email)+' (referred '+(b.cust||b.custEmail)+')',{}); save(); }
   /* ---- Gift cards: owner issues stored-value codes; redeeming draws the balance down as a credit on a booking ---- */
   function _giftcards(){ if(!S.giftcards) S.giftcards=[]; return S.giftcards; }
@@ -5595,7 +5617,7 @@ const Atlas = (function(){
     h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at pickup &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'pickup'})+'<div class="cond-note">Each item shows the exact date and time it was captured, so the '+esc(S.fleet.noun)+' condition is clear for both sides.</div></div>';
     if(_condMedia(b).some(function(m){return m.phase==='return';})){ h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at return &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'return'})+'</div>'; }
     if(sec.perks&&pc.perks.length){ h+='<div class="portal__perks"><div class="portal__docs-hd">Perks of booking with '+esc(S.brand.name)+'</div>'+pc.perks.map(function(x){ return '<div class="portal__perk"><span class="portal__perk-ic">&#10003;</span>'+esc(x)+'</div>'; }).join('')+'</div>'; }
-    if(_loy().on){ h+='<div class="portal__perks"><div class="portal__docs-hd">'+esc(S.brand.name)+' rewards</div>'+_portalLoyaltyHtml(b)+'</div>'; }
+    if(_loy().on && !_loyOff(b.custEmail)){ h+='<div class="portal__perks"><div class="portal__docs-hd">'+esc(S.brand.name)+' rewards</div>'+_portalLoyaltyHtml(b)+'</div>'; }
     var _pProt=(b.extras||[]).filter(function(x){return x.protection;})[0]; if(_pProt&&_pProt.planId){ h+='<div class="portal__perks"><div class="portal__docs-hd">Your protection</div><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span style="font-size:13px;color:var(--ink)">'+esc(_pProt.name)+'</span><button class="btn btn--ghost btn--sm" onclick="Atlas.protectionDoc(\''+esc(_pProt.planId)+'\')">View coverage</button></div></div>'; }
     if(sec.documents){ h+='<div class="portal__docs"><div class="portal__docs-hd">Your documents</div>'
       +'<div class="portal__doc" onclick="Atlas.portalDoc()"><span>Rental agreement</span><span>'+(signed?'Signed':'Pending signature')+'</span></div>'
@@ -6146,7 +6168,7 @@ const Atlas = (function(){
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
-    applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,setLoyalty,custRedeem,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,
+    applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,
     renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalUpload,portalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
