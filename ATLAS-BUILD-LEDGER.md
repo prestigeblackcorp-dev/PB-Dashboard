@@ -69,7 +69,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ create/edit, statuses, filters, live price · ✅ drill‑downs · ✅ **calendar view** · ✅ **incident/damage record + charge** · ✅ **cancellation policy engine** (window‑aware fee) · ✅ **recurring/subscription rentals** · ✅ **waitlist + auto‑surface on cancellation** · ✅ **ID‑verification flag**
 
 ### Money & payments
-- ✅ rate models (day/hour/week), tax, discounts (weekly/monthly), deposits, promos · 🔌 Stripe charge/hold/settle · ✅ **partial payments / payment plans** (half · 3 · 4) · ✅ **metered run‑hour billing** · ✅ **multi‑currency display** (14 currencies; symbol across the app + every customer doc) · 💡 true monthly tier · 💡 net‑30 accounts (B2B)
+- ✅ rate models (day/hour/week/**month**), tax, discounts (weekly/monthly), deposits, promos · 🔌 Stripe charge/hold/settle · ✅ **partial payments / payment plans** (half · 3 · 4) · ✅ **metered run‑hour billing** · ✅ **multi‑currency display** (14 currencies; symbol across the app + every customer doc) · ✅ **true monthly rate tier** (price by month + long‑term discount at 12+ months) · 💡 net‑30 accounts (B2B)
 
 ### Contracts, deposits & risk
 - ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · ✅ **refundable hold flow** (authorize → release / capture / charge‑difference) · ✅ **ID verification** · ✅ **damage‑claim workflow** (document → keep deposit / capture hold → itemized **claim packet** PDF for the insurer → track filed/settled + recovered) · ✅ **damage protection / waiver** (owner‑set tiers at checkout, rides the quote as revenue, printable coverage + waiver summary)
@@ -109,7 +109,6 @@ Cross‑checked against the whole build so far. If it isn't ✅ above, it's here
 - 💡 **Per‑user audit log view** — the timestamped event log exists globally; add a per‑staff filter
 - 💡 **Staff scheduling / shifts**
 - 💡 **"Clone last season's setup"**
-- 💡 **True monthly rate tier** — long‑term / subscription rentals as a first‑class rate
 - 💡 **Operator / delivery add‑ons as first‑class line items**
 - 💡 **Live insurance quotes** — a real per‑trip insurance marketplace (needs a provider API; the damage‑waiver upsell above ships today)
 

@@ -2075,7 +2075,7 @@ const Atlas = (function(){
     var exLines=extras.map(function(x){ var each=(x.price||0)*(x.qty||1); return {name:x.name, amt:(x.per==='unit')? each*periods : each}; });
     var exTotal=exLines.reduce(function(s,l){return s+l.amt;},0);
     var gross=(m.baseRate||0)*periods + addons + exTotal, disc=0;
-    var _wkP=(m.rateModel==='hour'?168:m.rateModel==='week'?1:7), _moP=(m.rateModel==='hour'?672:m.rateModel==='week'?4:28);   // "weekly"/"monthly" thresholds in the CURRENT rate-model's periods (was a fixed 7/28 -> a 7-hour rental wrongly got the weekly discount)
+    var _wkP=(m.rateModel==='hour'?168:m.rateModel==='week'?1:m.rateModel==='month'?999999:7), _moP=(m.rateModel==='hour'?672:m.rateModel==='week'?4:m.rateModel==='month'?12:28);   // "weekly"/"monthly" thresholds in the CURRENT rate-model's periods (month model: weekly never fires, "monthly" disc = long-term at 12+ months)
     if(m.monthlyDisc && periods>=_moP) disc=gross*m.monthlyDisc/100;
     else if(m.weeklyDisc && periods>=_wkP) disc=gross*m.weeklyDisc/100;
     if(discount && discount.type && discount.type!=='none' && discount.value){
@@ -2293,7 +2293,8 @@ const Atlas = (function(){
           <select class="select" onchange="Atlas.setMoney('rateModel',this.value);Atlas.obRefresh()">
             <option value="day" ${S.money.rateModel==='day'?'selected':''}>Per day</option>
             <option value="hour" ${S.money.rateModel==='hour'?'selected':''}>Per hour</option>
-            <option value="week" ${S.money.rateModel==='week'?'selected':''}>Per week</option></select></div>
+            <option value="week" ${S.money.rateModel==='week'?'selected':''}>Per week</option>
+            <option value="month" ${S.money.rateModel==='month'?'selected':''}>Per month</option></select></div>
         <div class="field"><label>Base rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="${S.money.baseRate}" oninput="Atlas.setMoney('baseRate',this.value)"><span>/ ${S.money.rateModel}</span></div></div>
       </div>
       <div class="field"><label>How much do guests pay to reserve?</label>
@@ -2877,7 +2878,7 @@ const Atlas = (function(){
       <div class="util-row__t"><b>${esc(a.name)}</b><small>${esc(a.status)}</small><div class="bar"><i style="width:${a.util}%"></i></div></div>
       <span class="util-row__pct tnum">${a.util}%</span></div>`).join('');
     // bookings table
-    const _pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':'d');
+    const _pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':(S.money.rateModel==='month'?'mo':'d'));
     const rows=b=>`<tr style="cursor:pointer" onclick="Atlas.openBooking('${b.id}')"><td><b>${b.id}</b></td><td><div class="cust"><span class="avatar">${esc((b.cust||'?')[0])}</span>${esc(b.cust)}</div></td>
       <td>${esc(b.asset)}</td><td class="tnum">${_fmtWhen(b.startTs,b.time)} &middot; ${b.periods}${_pu}</td>
       <td class="tnum"><b>${money(_bkTotal(b))}</b></td><td>${statusChip(b.status)}</td></tr>`;
@@ -3164,7 +3165,7 @@ const Atlas = (function(){
     return {trips:trips,spent:spent};
   }
   function _fmtDay(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
-  function _perUnit(){ return S.money.rateModel==='hour'?'hrs':(S.money.rateModel==='week'?'wks':'days'); }
+  function _perUnit(){ return S.money.rateModel==='hour'?'hrs':(S.money.rateModel==='week'?'wks':(S.money.rateModel==='month'?'mos':'days')); }
   function renderBookings(){
     DATA.bookings=_bookings();
     var el=document.getElementById('bookTblFull'), empty=document.getElementById('bkEmpty'), chips=document.getElementById('bkFilters'); if(!el) return;
@@ -3176,7 +3177,7 @@ const Atlas = (function(){
     var list=DATA.bookings.filter(function(b){ return _bkFilter==='all'||b.status===_bkFilter; });
     if(!list.length){ el.innerHTML=''; if(empty)empty.style.display='block'; return; }
     if(empty)empty.style.display='none';
-    var pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':'d');
+    var pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':(S.money.rateModel==='month'?'mo':'d'));
     el.innerHTML='<thead><tr><th>Booking</th><th>Customer</th><th>'+cap(S.fleet.noun)+'</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead><tbody>'
       +list.map(function(b){ return '<tr style="cursor:pointer" onclick="Atlas.openBooking(\''+b.id+'\')"><td><b>'+b.id+'</b></td><td><div class="cust"><span class="avatar">'+esc((b.cust||'?')[0])+'</span>'+esc(b.cust)+'</div></td><td>'+esc(b.asset)+'</td><td class="tnum">'+_fmtWhen(b.startTs,b.time)+' &middot; '+b.periods+pu+'</td><td class="tnum"><b>'+money(_bkTotal(b))+'</b></td><td>'+statusChip(b.status)+'</td></tr>'; }).join('')+'</tbody>';
   }
@@ -3448,7 +3449,7 @@ const Atlas = (function(){
     _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast('Captured '+money(cap)+' from the hold'); }
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
-  function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':'day'); }
+  function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':(S.money.rateModel==='month'?'month':'day')); }
   function _bkBadge(){ var el=document.getElementById('bookBadge'); if(el) el.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; }
   function _extrasCatalog(){ return (S.money && S.money.extras && S.money.extras.length) ? S.money.extras : DEFAULT_EXTRAS; }
   function _bkReadDiscount(){ var t=val('bkDiscType')||'none', v=parseFloat(val('bkDiscVal'))||0; return {type:t,value:v}; }
@@ -3470,9 +3471,10 @@ const Atlas = (function(){
   function _derivePeriods(startTs, endTs){ var ms=Math.max(0,(endTs||0)-(startTs||0)); var rm=S.money.rateModel;
     if(rm==='hour') return Math.max(1, Math.ceil(ms/3600000));
     if(rm==='week') return Math.max(1, Math.ceil(ms/(7*86400000)));
+    if(rm==='month') return Math.max(1, Math.ceil(ms/(30*86400000)));
     return Math.max(1, Math.ceil(ms/86400000)); }
   // ms in one period, for computing an end from a length (used to seed the End field / show a span).
-  function _periodMs(){ var rm=S.money.rateModel; return rm==='hour'?3600000:(rm==='week'?7*86400000:86400000); }
+  function _periodMs(){ var rm=S.money.rateModel; return rm==='hour'?3600000:(rm==='week'?7*86400000:(rm==='month'?30*86400000:86400000)); }
   function _fmtWhen(ts, withTime){ if(!ts) return ''; try{ var d=new Date(ts); var s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
     if(withTime) s+=', '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}); return s; }catch(e){ return ''; } }
   // A booking's when-label: "Jul 16" | "Jul 16, 2:00 PM" | "Jul 16 -> Jul 20" | "Jul 16, 2 PM -> Jul 18, 10 AM"
@@ -4418,7 +4420,7 @@ const Atlas = (function(){
       <div class="set-block"><h3>Base pricing</h3><div class="desc">Sensible defaults so revenue, gross and profit work from day one. All editable, and each ${S.fleet.noun} can override any of it.</div>
         <div class="row2">
           <div class="field"><label>Pricing model</label><select class="select" onchange="Atlas.setMoney('rateModel',this.value);Atlas.renderSetSoft()">
-            <option value="day" ${m.rateModel==='day'?'selected':''}>Per day</option><option value="hour" ${m.rateModel==='hour'?'selected':''}>Per hour</option><option value="week" ${m.rateModel==='week'?'selected':''}>Per week</option></select></div>
+            <option value="day" ${m.rateModel==='day'?'selected':''}>Per day</option><option value="hour" ${m.rateModel==='hour'?'selected':''}>Per hour</option><option value="week" ${m.rateModel==='week'?'selected':''}>Per week</option><option value="month" ${m.rateModel==='month'?'selected':''}>Per month</option></select></div>
           <div class="field"><label>Base rate</label><div class="rule-input" style="padding:0 12px"><span>${_curSym()}</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.baseRate}" oninput="Atlas.setMoney('baseRate',this.value)"><span>/ ${m.rateModel}</span></div></div>
         </div>
         <div class="row2">
@@ -4490,7 +4492,7 @@ const Atlas = (function(){
       <div class="set-block" data-bkb="dates"><h3>Dates &amp; length</h3><div class="desc">Decide how guests pick <b>when</b> and <b>how long</b>.</div>
         <div class="row2">
           <div class="field"><label>Priced by</label><select class="select" onchange="Atlas.setBookingCfg('rateModel',this.value)">
-            <option value="day" ${m.rateModel==='day'?'selected':''}>Day</option><option value="hour" ${m.rateModel==='hour'?'selected':''}>Hour</option><option value="week" ${m.rateModel==='week'?'selected':''}>Week</option></select></div>
+            <option value="day" ${m.rateModel==='day'?'selected':''}>Day</option><option value="hour" ${m.rateModel==='hour'?'selected':''}>Hour</option><option value="week" ${m.rateModel==='week'?'selected':''}>Week</option><option value="month" ${m.rateModel==='month'?'selected':''}>Month</option></select></div>
           <div class="field"><label>Collect times?</label><select class="select" onchange="Atlas.setBookingCfg('time',this.value)">
             <option value="0" ${!bc.time?'selected':''}>Dates only</option><option value="1" ${bc.time?'selected':''}>Dates + times</option></select></div>
         </div>
@@ -5026,7 +5028,7 @@ const Atlas = (function(){
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('settings')">Set a cancellation policy</button>`; }
   function _aioIncidentReply(s){ return `Deep breath &mdash; let's protect you. First <b>document it</b>: dated photos + the signed condition report. Then I can help you (1) note it on the ${esc(_fterm('book'))}, (2) <b>keep the security deposit</b> or charge the difference, and (3) draft the message to the renter and your insurer. Don't release the deposit until it's resolved.`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('bookings')">Open the ${esc(_fterm('book'))}</button>`; }
-  function _aioExpandReply(s){ var m=S.money, per=(m.rateModel==='day'?18:m.rateModel==='hour'?90:3);
+  function _aioExpandReply(s){ var m=S.money, per=(m.rateModel==='day'?18:m.rateModel==='hour'?90:m.rateModel==='month'?1:3);
     return `Love it &mdash; more ${esc(S.fleet.nouns)} = more revenue. At ${money(m.baseRate)}/${m.rateModel}, even ~60% booked a new ${esc(S.fleet.noun)} adds roughly <b>${money(Math.round(m.baseRate*per))}/mo</b>. Add it now and I'll price it and start marketing it for you.`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('fleet');try{Atlas.addVehicle()}catch(e){}">Add a ${esc(S.fleet.noun)}</button>`; }
   // Market/gap research \u2014 fleet-specific. This is the seam where the live Atlas.io AI (worker + ANTHROPIC_KEY)
