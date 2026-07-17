@@ -3134,9 +3134,11 @@ const Atlas = (function(){
       a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button>';
       a+='<button class="btn btn--sm btn--danger" onclick="Atlas.bkCancelFlow(\''+b.id+'\')">Cancel</button>';
     } else { a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button><button class="btn btn--sm btn--danger" onclick="Atlas.deleteBooking(\''+b.id+'\')">Delete</button>'; }
+    a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkRepeat(\''+b.id+'\')"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M3 8a5 5 0 019-3M13 8a5 5 0 01-9 3M11 2v3H8M5 14v-3h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Repeat</button>';
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
     openModal('<div class="modal__head"><h3>'+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar">'+esc((b.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(b.cust)+'</b><div style="font-size:12.5px;color:var(--muted)">'+contact+'</div></div>'+statusChip(b.status)+'</div>'
+      +(function(){ var v=b.idVerified; return '<div style="display:flex;align-items:center;gap:9px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-bottom:14px"><span class="chip '+(v?'chip--ok':'chip--warn')+'"><span class="dot"></span>'+(v?'ID verified':'ID not verified')+'</span><span style="flex:1;min-width:0;font-size:12px;color:var(--muted)">'+(v?('Verified '+_stamp(b.idVerifiedAt)):'Check the renter\u2019s license before pickup')+'</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkToggleVerify(\''+b.id+'\')">'+(v?'Undo':'Mark verified')+'</button></div>'; })()
       +'<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>'+cap(S.fleet.noun)+'</span><span style="color:var(--ink);font-weight:600">'+esc(b.asset)+'</span></div>'
       +'<div class="mp-row"><span>'+(b.endTs?'When':'Dates')+'</span><span class="tnum" style="text-align:right;max-width:62%">'+_bkWhen(b)+'</span></div>'
@@ -3192,6 +3194,25 @@ const Atlas = (function(){
     _upsertBooking(b); _logEvent('booking','Booking '+b.id+' cancelled'+(fee?(' -- kept '+money(fee)):' (full refund)'),{booking:b.id}); save(); closeModal();
     renderOverview(); renderBookings(); var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length;
     toast(fee?('Cancelled -- kept '+money(fee)+' fee'):'Cancelled -- full refund'); }
+  // ---- Recurring / subscription rentals: clone a booking into a future series ----
+  function bkRepeat(id){ if(!_guard('bookEdit','Creating bookings'))return; var b=_getBooking(id); if(!b)return;
+    openModal('<div class="modal__head"><h3>Repeat this booking</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Create a future series for '+esc(b.cust||'this customer')+' &mdash; same '+esc(S.fleet.noun)+', same length and price.</div>'
+      +'<div class="row2"><div class="field"><label>Repeat</label><select class="select" id="rpEvery"><option value="7">Every week</option><option value="14">Every 2 weeks</option><option value="30" selected>Every month</option></select></div>'
+      +'<div class="field"><label>How many</label><select class="select" id="rpCount">'+[2,3,4,5,6,8,10,12].map(function(n){return '<option value="'+n+'"'+(n===3?' selected':'')+'>'+n+' times</option>';}).join('')+'</select></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doRepeat(\''+id+'\')">Create series</button></div>'); }
+  function doRepeat(id){ var b=_getBooking(id); if(!b)return; var every=parseInt(val('rpEvery'))||30, count=parseInt(val('rpCount'))||3;
+    var base=Number(b.startTs)||Date.now(), span=(Number(b.endTs)&&Number(b.endTs)>base)?(Number(b.endTs)-base):0, made=0;
+    for(var i=1;i<=count;i++){ var nb={}; for(var k in b) nb[k]=b[k];
+      nb.id='BK-'+((Date.now()%100000)+i); nb.startTs=base+every*86400000*i; nb.endTs=span?(nb.startTs+span):0; nb.status='Confirmed'; nb.createdAt=Date.now(); nb.recurringOf=b.id;
+      nb.quote=b.quote?JSON.parse(JSON.stringify(b.quote)):calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount});
+      delete nb.charges; delete nb.incidents; delete nb.review; delete nb.cancelFee; delete nb.cancelledAt; delete nb.portal;
+      _upsertBooking(nb); made++; }
+    _logEvent('booking','Created '+made+' recurring bookings from '+b.id,{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
+    var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; toast(made+' recurring bookings created'); }
+  // ---- Booking-level ID verification ----
+  function bkToggleVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; if(b.idVerified){ b.idVerified=false; delete b.idVerifiedAt; } else { b.idVerified=true; b.idVerifiedAt=Date.now(); }
+    _upsertBooking(b); _logEvent('booking','ID '+(b.idVerified?'verified':'un-verified')+' for '+b.id,{booking:b.id}); save(); openBooking(id); toast(b.idVerified?'ID marked verified':'ID verification cleared'); }
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
   function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':'day'); }
@@ -5569,7 +5590,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
