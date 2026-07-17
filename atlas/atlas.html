@@ -1823,6 +1823,67 @@ const Atlas = (function(){
     if(!ref) return;   // unknown or own code -> no bonus
     var m=_loyMember(ref.email); m.bonus=(m.bonus||0)+(L.refPts||250); b.refAwarded=true;
     _logEvent('loyalty','Referral bonus '+(L.refPts||250)+' pts to '+(ref.name||ref.email)+' (referred '+(b.cust||b.custEmail)+')',{}); save(); }
+  /* ---- Gift cards: owner issues stored-value codes; redeeming draws the balance down as a credit on a booking ---- */
+  function _giftcards(){ if(!S.giftcards) S.giftcards=[]; return S.giftcards; }
+  function _findGift(code){ code=String(code||'').trim().toUpperCase(); return _giftcards().filter(function(g){ return (g.code||'').toUpperCase()===code; })[0]; }
+  function _giftListHtml(){ var gs=_giftcards(); if(!gs.length) return '<div class="bk-lenhint" style="margin:0">No gift cards yet. Issue one and share the code or the printable certificate.</div>';
+    return gs.slice().sort(function(a,b){return (b.createdAt||0)-(a.createdAt||0);}).map(function(g){ var bal=g.balance||0, spent=(g.initial||0)-bal;
+      return '<div class="promo-row"><div style="min-width:0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="mono" style="color:var(--ink);font-size:14px;letter-spacing:.03em">'+esc(g.code)+'</b><span class="chip '+(bal>0?'chip--ok':'chip--muted')+'"><span class="dot"></span>'+money(bal)+' left</span></div><div style="font-size:12px;color:var(--muted);margin-top:3px">'+money(g.initial||0)+' issued'+(g.to?(' &middot; to '+esc(g.to)):'')+(spent>0?(' &middot; '+money(spent)+' used'):'')+'</div></div>'
+        +'<div style="display:flex;gap:6px;align-items:center;flex:none"><button class="btn btn--ghost btn--sm" onclick="Atlas.giftCert(\''+g.id+'\')">Certificate</button><button class="btn btn--sm" style="color:var(--danger);padding:6px 8px" onclick="Atlas.deleteGift(\''+g.id+'\')" title="Delete">&times;</button></div></div>';
+    }).join(''); }
+  function issueGift(){ if(!_canMod('settings'))return;
+    openModal('<div class="modal__head"><h3>Issue a gift card</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="gfAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="100"></div></div>'
+      +'<div class="row2"><div class="field"><label>To (optional)</label><input class="input" id="gfTo" placeholder="Recipient"></div><div class="field"><label>From (optional)</label><input class="input" id="gfFrom" placeholder="Your name / business"></div></div>'
+      +'<div class="field"><label>Message (optional)</label><input class="input" id="gfMsg" placeholder="Happy birthday!"></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveGift()">Create gift card</button>'
+      +'<div class="bk-lenhint" style="margin:10px 0 0">Generates a unique code plus a printable certificate. Redeem it on any booking and it draws down the balance as a credit.</div></div>'); }
+  function saveGift(){ if(!_canMod('settings'))return; var amt=Math.round(Math.max(0,parseFloat(val('gfAmt'))||0)); if(amt<=0){ toast('Enter an amount'); return; }
+    var code='GIFT'+Date.now().toString(36).toUpperCase().slice(-6); while(_findGift(code)){ code='GIFT'+(Date.now()+Math.floor(Math.random()*9999)).toString(36).toUpperCase().slice(-6); }
+    var g={ id:'gc'+Date.now().toString(36), code:code, initial:amt, balance:amt, to:(val('gfTo')||'').trim(), from:(val('gfFrom')||'').trim(), msg:(val('gfMsg')||'').trim(), createdAt:Date.now(), redeemed:[] };
+    _giftcards().push(g); save(); _logEvent('gift','Gift card '+code+' issued ('+money(amt)+')',{code:code}); closeModal(); renderSet(); toast('Gift card '+code+' created ('+money(amt)+')'); giftCert(g.id); }
+  function deleteGift(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; if(!confirm('Delete gift card '+g.code+((g.initial||0)-(g.balance||0)>0?' (partly used)':'')+'?'))return; S.giftcards=_giftcards().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Gift card deleted'); }
+  function giftCert(id){ var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; var doc=_giftCertHtml(g);
+    try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener'); if(!w){ var a=document.createElement('a'); a.href=url; a.download='gift-card-'+g.code+'.html'; a.click(); } setTimeout(function(){URL.revokeObjectURL(url);},6000); }catch(e){ toast('Could not open the certificate here'); } }
+  function _giftApplied(b){ return (b.giftRedemptions||[]).reduce(function(s,r){ return s+(r.amt||0); },0); }
+  function _giftHtml(b){ var rs=b.giftRedemptions||[];
+    if(!rs.length) return '<div class="bk-lenhint" style="margin:0">No gift card applied. Redeem one and it credits toward what is due.</div>';
+    return rs.map(function(r,idx){ return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b class="mono" style="color:var(--ink);font-size:13px">'+esc(r.code)+'</b><div style="font-size:11.5px;color:var(--muted)">'+money(r.amt)+' applied &middot; '+_stamp(r.at)+'</div></div><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.bkRemoveGift(\''+b.id+'\','+idx+')"><svg viewBox="0 0 18 18" fill="none" width="15" height="15"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>'; }).join(''); }
+  function bkApplyGift(id){ var b=_getBooking(id); if(!b)return; var code=prompt('Gift card code:'); if(code===null)return; var g=_findGift(code);
+    if(!g){ toast('No gift card with that code'); return; }
+    if((g.balance||0)<=0){ toast('That gift card has no balance left'); return; }
+    var q=b.quote||{}; var netDue=Math.max(0, Math.round(q.dueNow||q.total||0) - _giftApplied(b));
+    var amt=Math.min(g.balance, netDue>0?netDue:g.balance); amt=Math.round(amt*100)/100;
+    if(amt<=0){ toast('Nothing left due on this booking'); return; }
+    g.balance=Math.round((g.balance-amt)*100)/100; g.redeemed=g.redeemed||[]; g.redeemed.push({bookingId:b.id,amt:amt,at:Date.now()});
+    b.giftRedemptions=b.giftRedemptions||[]; b.giftRedemptions.push({code:g.code,amt:amt,at:Date.now()});
+    _upsertBooking(b); save(); _logEvent('gift','Gift card '+g.code+' redeemed '+money(amt)+' on '+b.id,{booking:b.id,code:g.code}); openBooking(id); toast(money(amt)+' gift credit applied'); }
+  function bkRemoveGift(id,idx){ var b=_getBooking(id); if(!b||!b.giftRedemptions||!b.giftRedemptions[idx])return; var r=b.giftRedemptions[idx];
+    var g=_findGift(r.code); if(g){ g.balance=Math.round(((g.balance||0)+(r.amt||0))*100)/100; if(g.redeemed){ for(var i=g.redeemed.length-1;i>=0;i--){ if(g.redeemed[i].bookingId===b.id && g.redeemed[i].amt===r.amt){ g.redeemed.splice(i,1); break; } } } }
+    b.giftRedemptions.splice(idx,1); _upsertBooking(b); save(); _logEvent('gift','Gift redemption removed on '+b.id+' (refunded '+money(r.amt)+')',{booking:b.id}); openBooking(id); toast('Gift credit removed &mdash; '+money(r.amt)+' back on the card'); }
+  function _giftCertHtml(g){ var biz=(S.brand&&S.brand.name)||'Your rental business', city=(S.brand&&S.brand.city)||'';
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gift Card &mdash; '+esc(biz)+'</title>'
+      +'<style>*{box-sizing:border-box}body{margin:0;padding:30px;background:#eef2ef;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#14201a}'
+      +'.noprint{max-width:560px;margin:0 auto 14px}.btn{background:#14201a;color:#fff;border:0;border-radius:9px;padding:9px 16px;font-weight:600;cursor:pointer}'
+      +'.card{max-width:560px;margin:0 auto;background:linear-gradient(135deg,#14201a,#1f3a2c);color:#fff;border-radius:20px;padding:34px 34px 28px;box-shadow:0 14px 40px rgba(20,32,26,.28);position:relative;overflow:hidden}'
+      +'.card:after{content:"";position:absolute;right:-40px;top:-40px;width:180px;height:180px;border-radius:50%;background:rgba(255,255,255,.06)}'
+      +'.brand{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:rgba(255,255,255,.8);font-weight:700}'
+      +'.lbl{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.72);margin-top:22px}'
+      +'.amt{font-size:52px;font-weight:800;letter-spacing:-.02em;line-height:1;margin:4px 0 2px}'
+      +'.code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:22px;letter-spacing:.14em;background:rgba(255,255,255,.14);border:1px dashed rgba(255,255,255,.4);border-radius:10px;padding:12px 14px;margin:18px 0 10px;text-align:center}'
+      +'.meta{font-size:13px;color:rgba(255,255,255,.85);line-height:1.6}.msg{font-style:italic;color:#fff;margin-top:8px}'
+      +'.foot{margin-top:18px;font-size:11px;color:rgba(255,255,255,.6)}'
+      +'@media print{body{background:#fff;padding:0}.noprint{display:none}.card{box-shadow:none;border-radius:0;max-width:none}}'
+      +'</style></head><body>'
+      +'<div class="noprint"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>'
+      +'<div class="card"><div class="brand">'+esc(biz)+'</div>'
+      +'<div class="lbl">Gift Card</div><div class="amt">'+money(g.initial||0)+'</div>'
+      +(g.to?('<div class="meta">For: <b>'+esc(g.to)+'</b></div>'):'')+(g.from?('<div class="meta">From: '+esc(g.from)+'</div>'):'')
+      +(g.msg?('<div class="msg">&ldquo;'+esc(g.msg)+'&rdquo;</div>'):'')
+      +'<div class="code">'+esc(g.code)+'</div>'
+      +'<div class="meta">Redeemable toward any rental'+(city?(' in '+esc(city)):'')+'. Balance: '+money(g.balance||0)+'.</div>'
+      +'<div class="foot">Issued '+_stamp(g.createdAt)+' &middot; Present this code at checkout</div>'
+      +'</div></body></html>'; }
   /* ---- timestamped event log (audit trail + tax/documentation) ---- */
   function _events(){ if(!S.events) S.events=[]; return S.events; }
   function _logEvent(type,text,meta){ try{ var e=_events(); e.unshift({t:Date.now(),type:type,text:text,meta:meta||null}); if(e.length>800) e.length=800; save(); }catch(err){} }
@@ -3198,6 +3259,7 @@ const Atlas = (function(){
       +(q.taxAmt?'<div class="mp-row"><span>Tax</span><span class="tnum">'+money(Math.round(q.taxAmt))+'</span></div>':'')
       +'<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(Math.round(q.total))+'</span></div>'
       +'<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(Math.round(q.dueNow))+'</span></div>'
+      +(_giftApplied(b)?('<div class="mp-row mp-ok"><span>Gift card applied</span><span class="tnum">&minus;'+money(Math.round(_giftApplied(b)))+'</span></div><div class="mp-row mp-brand"><span>Net due to reserve</span><span class="tnum">'+money(Math.max(0,Math.round((q.dueNow||0)-_giftApplied(b))))+'</span></div>'):'')
       +(q.hold?'<div class="mp-row mp-muted"><span>+ Refundable hold</span><span class="tnum">'+money(Math.round(q.hold))+'</span></div>':'')
       +(function(){ var p=S.money.payout||{}; if(!p.enabled||!p.value) return ''; var base=(p.base==='total')?(q.total||0):(q.subtotal||q.total||0); var amt=(p.kind==='percent'?base*(p.value||0)/100:(p.value||0)); var net=Math.max(0,(q.total||0)-(q.taxAmt||0)-amt);
         return '<div class="mp-row mp-ok"><span>'+esc(p.label||'Payout')+'</span><span class="tnum">&minus;'+money(Math.round(amt))+'</span></div><div class="mp-row"><span style="font-weight:650;color:var(--ink)">Your net</span><span class="tnum" style="font-weight:750">'+money(Math.round(net))+'</span></div>'; })()
@@ -3209,6 +3271,9 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Charges to portal</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCharge(\''+b.id+'\')">+ Send a charge</button></div>'
         +'<div class="cond-sub">Bill '+esc((b.cust||'the customer').split(' ')[0])+' for extras, damage, cleaning, late fees or anything else &mdash; it appears in their portal to pay online.</div>'
         +_chargesOwnerHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Gift card</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkApplyGift(\''+b.id+'\')">+ Apply a gift card</button></div>'
+        +'<div class="cond-sub">Redeem a gift card toward what this customer owes &mdash; it draws down the card balance and credits the amount due.</div>'
+        +_giftHtml(b)+'</div>'
       +'<div class="cond-sec"><div class="cond-hd"><span>Incidents &amp; damage</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkLogIncident(\''+b.id+'\')">+ Log incident</button></div>'
         +'<div class="cond-sub">Record damage, late returns or policy issues &mdash; time-stamped, and bill any of them to the portal in one tap.</div>'
         +_incidentsHtml(b)+'</div>'
@@ -4343,6 +4408,10 @@ const Atlas = (function(){
       </div>
       <div class="set-block"><h3>Loyalty &amp; referrals</h3><div class="desc">Reward repeat customers with points on every dollar they spend, and give each one a referral code to bring you new business. Points, tier and code all show in their portal.</div>
         ${_loyaltySettingsHtml()}
+      </div>
+      <div class="set-block"><h3>Gift cards</h3><div class="desc">Issue stored-value gift cards customers redeem toward any booking &mdash; each with a unique code and a printable certificate. Balances draw down automatically as they are used.</div>
+        <div id="giftList">${_giftListHtml()}</div>
+        <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.issueGift()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Issue a gift card</button>
       </div>
       <div class="set-block"><h3>Live preview</h3><div class="desc">A sample 3-${m.rateModel} booking, priced by your rules right now &mdash; updates as you edit.</div>
         <div class="mp" id="moneyPreview">${moneyPreviewHtml()}</div>
@@ -5864,6 +5933,7 @@ const Atlas = (function(){
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
+    issueGift,saveGift,deleteGift,giftCert,bkApplyGift,bkRemoveGift,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,

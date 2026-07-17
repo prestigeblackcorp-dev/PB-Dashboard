@@ -75,7 +75,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · ✅ **refundable hold flow** (authorize → release / capture / charge‑difference) · ✅ **ID verification** · ✅ **damage‑claim workflow** (document → keep deposit / capture hold → itemized **claim packet** PDF for the insurer → track filed/settled + recovered) · 💡 insurance add‑on marketplace
 
 ### Customer‑facing
-- ✅ branded member portal · ✅ branded website + promo box · ✅ reviews · ✅ itemized receipts · ✅ **loyalty program** (points per $ spent, tiers, redeem → real coupon, shown in portal) · ✅ **referrals** (each customer gets a shareable code; referrer earns points when a referred first rental completes) · 💡 gift cards
+- ✅ branded member portal · ✅ branded website + promo box · ✅ reviews · ✅ itemized receipts · ✅ **loyalty program** (points per $ spent, tiers, redeem → real coupon, shown in portal) · ✅ **referrals** (each customer gets a shareable code; referrer earns points when a referred first rental completes) · ✅ **gift cards** (issue stored‑value codes + printable certificate; redeem on a booking, balance draws down as a credit)
 
 ### Growth — Dreaming (idle‑time engine)
 - ✅ gaps per asset type · ✅ FB/IG/Google campaign drafts (headline/audience/budget) · ✅ broker/partner outreach targets + drafts (per type) · ✅ "Dreaming is on since…" status · 🔌 Connect ad accounts to launch · ⬜ pull N *real* local contacts (brokers/GCs) · ⬜ watch bid boards for open jobs · ⬜ actually send (email/DM) on approval
@@ -106,7 +106,6 @@ The single source of truth for **what's done, what needs connecting, and every f
 Cross‑checked against the whole build so far. If it isn't ✅ above, it's here with a status + what unblocks it.
 
 ### A. Self‑contained (buildable now — no keys, no accounts)
-- 💡 **Gift cards** — sell + redeem stored‑value codes (reuses the promo/coupon engine)
 - 💡 **Condition photos at RETURN + before/after compare** — pickup photos already exist; add the return set + a side‑by‑side (pairs with damage claims)
 - 💡 **Per‑user audit log view** — the timestamped event log exists globally; add a per‑staff filter
 - 💡 **Staff scheduling / shifts**
