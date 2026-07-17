@@ -1538,6 +1538,56 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 /* ============================================================
    ATLAS FLEET - app logic (prototype: localStorage-backed)
    ============================================================ */
+/* BIG-DATA STORAGE -> IndexedDB (removes the ~5MB localStorage cap so large condition videos / asset
+   documents no longer overflow the quota and SILENTLY vanish). Mirrors the proven Prestige Black shim:
+   the 3 per-tenant big keys (atlas_bookings_/atlas_assets_/atlas_tenant_) are served from a synchronous
+   in-memory mirror backed by IndexedDB (gigabytes, no quota). Override Storage.PROTOTYPE (the instance is
+   exotic; an own property becomes a storage ENTRY, not a method). If IDB is unavailable for ANY reason we
+   never flip _bigReady -> passthrough = today's exact behavior. init() waits on window.__atlasStoreReady
+   so the app reads the migrated data, never an empty store. */
+(function(){
+  var _ls,_lsProto,_natGet,_natSet,_natRemove;
+  try{ _ls=window.localStorage; _lsProto=Object.getPrototypeOf(_ls); _natGet=_lsProto.getItem; _natSet=_lsProto.setItem; _natRemove=_lsProto.removeItem; }
+  catch(e){ window.__atlasStoreReady=Promise.resolve(); return; }
+  var _bigCache={}, _bigReady=false, _idbDB=null;
+  var _PFX=['atlas_bookings_','atlas_assets_','atlas_tenant_'];
+  function _isBig(k){ k=String(k); for(var i=0;i<_PFX.length;i++){ if(k.indexOf(_PFX[i])===0) return true; } return false; }
+  function _rGet(k){ return _natGet.call(_ls,k); }
+  function _rRemove(k){ return _natRemove.call(_ls,k); }
+  function _idbPut(k,v){ return new Promise(function(res,rej){ try{ var tx=_idbDB.transaction('kv','readwrite'); tx.objectStore('kv').put({k:k,v:v}); tx.oncomplete=function(){res();}; tx.onerror=function(){rej(tx.error);}; tx.onabort=function(){rej(tx.error);}; }catch(e){ rej(e); } }); }
+  function _idbAll(){ return new Promise(function(res,rej){ try{ var r=_idbDB.transaction('kv','readonly').objectStore('kv').getAll(); r.onsuccess=function(){ res(r.result||[]); }; r.onerror=function(){ rej(r.error); }; }catch(e){ rej(e); } }); }
+  function _idbDel(k){ return new Promise(function(res){ try{ var tx=_idbDB.transaction('kv','readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete=function(){res();}; tx.onerror=function(){res();}; }catch(e){ res(); } }); }
+  window.__atlasStoreReady=new Promise(function(resolve){
+    try{
+      if(!window.indexedDB){ resolve(); return; }
+      var op=indexedDB.open('atlas_store',1);
+      op.onupgradeneeded=function(e){ var db=e.target.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv',{keyPath:'k'}); };
+      op.onerror=function(){ resolve(); };          // IDB blocked/unavailable -> passthrough (today's behavior)
+      op.onblocked=function(){ resolve(); };
+      op.onsuccess=function(e){
+        _idbDB=e.target.result;
+        _idbAll().then(function(recs){
+          for(var i=0;i<recs.length;i++){ if(recs[i]&&recs[i].k!=null) _bigCache[recs[i].k]=recs[i].v; }   // hydrate cache from IDB
+          var lsKeys=[]; try{ for(var j=0;j<_ls.length;j++){ var kk=_ls.key(j); if(_isBig(kk)) lsKeys.push(kk); } }catch(e){}
+          var pend=[];
+          lsKeys.forEach(function(k){
+            if(k in _bigCache){ try{ _rRemove(k); }catch(e){} return; }        // already in IDB -> drop stale localStorage copy
+            var v=null; try{ v=_rGet(k); }catch(e){}
+            if(v==null) return;
+            _bigCache[k]=v;                                                     // serve immediately
+            pend.push(_idbPut(k,v).then(function(){ try{ _rRemove(k); }catch(e){} }).catch(function(){}));   // copy -> verify(commit) -> free localStorage; on IDB fail keep the ls copy
+          });
+          Promise.all(pend).then(function(){ _bigReady=true; resolve(); });
+        }).catch(function(){ _bigReady=true; resolve(); });
+      };
+    }catch(e){ resolve(); }
+  });
+  try{
+    _lsProto.getItem=function(k){ if(this===_ls && _bigReady && _isBig(k)) return (k in _bigCache)?_bigCache[k]:null; return _natGet.call(this,k); };
+    _lsProto.setItem=function(k,v){ if(this===_ls && _bigReady && _isBig(k)){ v=String(v); _bigCache[k]=v; _idbPut(k,v).catch(function(){ try{ _natSet.call(_ls,k,v); }catch(e){} }); return; } return _natSet.call(this,k,v); };
+    _lsProto.removeItem=function(k){ if(this===_ls && _bigReady && _isBig(k)){ delete _bigCache[k]; _idbDel(k); return; } return _natRemove.call(this,k); };
+  }catch(e){ /* can't override Storage.prototype -> native localStorage, exactly as before */ }
+})();
 const Atlas = (function(){
   const AK='atlas_accounts_v1', SK='atlas_session_v1';
   function _lsGet(k,d){ try{ var v=JSON.parse(localStorage.getItem(k)); return (v==null)?d:v; }catch(e){ return d; } }
@@ -6174,7 +6224,7 @@ const Atlas = (function(){
     // Deep-link: ?film / ?watch / #watch auto-plays the 30-second commercial (a shareable "watch it" link).
     try{ if(/[?&](film|watch|commercial|tour)\b/i.test(location.search) || /#(watch|film|commercial|tour)/i.test(location.hash)){ setTimeout(function(){ try{ playFilm(); }catch(e){} }, 450); } }catch(e){}
   }
-  document.addEventListener('DOMContentLoaded',init);
+  document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
   return {startTrial,demo,demoStart,demoSkip,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
