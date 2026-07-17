@@ -127,6 +127,23 @@ img{max-width:100%}
 .chip--brand{background:var(--brand-100);color:var(--brand-700)} .chip--danger{background:var(--danger-bg);color:var(--danger)}
 .bk-chip{border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:650;cursor:pointer;font-family:inherit}
 .bk-chip:hover{border-color:var(--brand);color:var(--brand)} .bk-chip.active{background:var(--brand);border-color:var(--brand);color:#fff}
+/* bookings calendar view */
+.bk-viewtog{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:2px;flex:none}
+.bk-viewtog button{border:0;background:none;font-family:inherit;font-size:12.5px;font-weight:650;color:var(--muted);padding:5px 13px;border-radius:7px;cursor:pointer}
+.bk-viewtog button.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.07)}
+.bkcal__hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.bkcal__hd b{font-size:16px;color:var(--ink)}
+.bkcal__nav{display:flex;gap:6px}
+.bkcal__nav button{height:32px;min-width:32px;padding:0 8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-family:inherit;font-weight:650;font-size:13px;cursor:pointer}
+.bkcal__grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.bkcal__dow{font-size:10.5px;font-weight:700;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:.04em;padding-bottom:2px}
+.bkcal__day{min-height:76px;border:1px solid var(--line);border-radius:9px;padding:5px 6px;background:var(--surface);display:flex;flex-direction:column;gap:3px;overflow:hidden}
+.bkcal__day.out{opacity:.35}
+.bkcal__day.today{border-color:var(--brand);box-shadow:inset 0 0 0 1px var(--brand)}
+.bkcal__dn{font-size:11px;font-weight:700;color:var(--muted)}
+.bkcal__ev{font-size:9.5px;font-weight:700;color:#fff;border-radius:5px;padding:2px 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.bkcal__more{font-size:9px;color:var(--muted);font-weight:600}
+@media(max-width:640px){ .bkcal__day{min-height:54px;padding:3px 4px} .bkcal__ev{font-size:8px;padding:1px 4px} .bkcal__dn{font-size:9.5px} }
 .dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
 
 .field{display:block;margin-bottom:14px}
@@ -2823,6 +2840,24 @@ const Atlas = (function(){
   /* ---- Bookings module (persisted per-tenant collection, priced by the money engine) ---- */
   const BK_STATUSES=['Pending','Confirmed','On rent','Completed','Cancelled'];
   var _bkFilter='all';
+  var _bkView='list', _bkCalOff=0;
+  function bkSetView(m){ _bkView=(m==='calendar'?'calendar':'list'); renderBookings(); }
+  function bkCalNav(d){ if(d===0)_bkCalOff=0; else _bkCalOff+=d; _renderBkCal(); }
+  var _bkStColor={'Pending':'#B57912','Confirmed':'#2A6F97','On rent':'#1E6E4E','Completed':'#6B7660','Cancelled':'#B0342A'};
+  function _renderBkCal(){ var tbl=document.getElementById('bookTblFull'); var card=tbl&&tbl.closest('.card'); if(!card)return;
+    var cal=document.getElementById('bkCal'); if(!cal){ cal=document.createElement('div'); cal.id='bkCal'; cal.className='bkcal'; card.appendChild(cal); }
+    cal.style.display='';
+    var base=new Date(); base=new Date(base.getFullYear(), base.getMonth()+_bkCalOff, 1);
+    var y=base.getFullYear(), m=base.getMonth(), startDow=new Date(y,m,1).getDay(), dim=new Date(y,m+1,0).getDate();
+    var byDay={}; (DATA.bookings||[]).forEach(function(b){ var s=Number(b.startTs)||Number(b.createdAt); if(!s)return; var d=new Date(s); (byDay[d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate()]=byDay[d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate()]||[]).push(b); });
+    var now=new Date(), todayK=now.getFullYear()+'-'+now.getMonth()+'-'+now.getDate();
+    var cells=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(function(d){return '<div class="bkcal__dow">'+d+'</div>';}).join('');
+    var i; for(i=0;i<startDow;i++) cells+='<div class="bkcal__day out"></div>';
+    for(var day=1;day<=dim;day++){ var k=y+'-'+m+'-'+day, evs=byDay[k]||[];
+      var ev=evs.slice(0,3).map(function(b){ return '<div class="bkcal__ev" style="background:'+(_bkStColor[b.status]||'#6B7660')+'" onclick="Atlas.openBooking(\''+b.id+'\')" title="'+esc((b.cust||'')+' - '+(b.asset||''))+'">'+esc((b.cust||b.id).split(' ')[0])+'</div>'; }).join('');
+      if(evs.length>3) ev+='<div class="bkcal__more">+'+(evs.length-3)+' more</div>';
+      cells+='<div class="bkcal__day'+(k===todayK?' today':'')+'"><div class="bkcal__dn">'+day+'</div>'+ev+'</div>'; }
+    cal.innerHTML='<div class="bkcal__hd"><b>'+base.toLocaleDateString(undefined,{month:'long',year:'numeric'})+'</b><div class="bkcal__nav"><button onclick="Atlas.bkCalNav(-1)" aria-label="Previous month">&#8249;</button><button onclick="Atlas.bkCalNav(0)">Today</button><button onclick="Atlas.bkCalNav(1)" aria-label="Next month">&#8250;</button></div></div><div class="bkcal__grid">'+cells+'</div>'; }
   function _bookings(){ return store.bookings(); }
   function _saveBookings(a){ store.saveBookings(a); DATA.bookings=a; }
   function _getBooking(id){ return _bookings().filter(function(b){return b.id===id;})[0]||null; }
@@ -2879,8 +2914,11 @@ const Atlas = (function(){
   function renderBookings(){
     DATA.bookings=_bookings();
     var el=document.getElementById('bookTblFull'), empty=document.getElementById('bkEmpty'), chips=document.getElementById('bkFilters'); if(!el) return;
-    if(chips) chips.innerHTML=['all'].concat(BK_STATUSES).map(function(s){ var n=s==='all'?DATA.bookings.length:DATA.bookings.filter(function(b){return b.status===s;}).length;
-      return '<button class="bk-chip'+(_bkFilter===s?' active':'')+'" onclick="Atlas.bkFilter(\''+s+'\')">'+(s==='all'?'All':s)+' '+n+'</button>'; }).join('');
+    var tog='<div class="bk-viewtog"><button class="'+(_bkView!=='calendar'?'on':'')+'" onclick="Atlas.bkSetView(\'list\')">List</button><button class="'+(_bkView==='calendar'?'on':'')+'" onclick="Atlas.bkSetView(\'calendar\')">Calendar</button></div>';
+    if(chips) chips.innerHTML=tog+(_bkView==='calendar'?'':['all'].concat(BK_STATUSES).map(function(s){ var n=s==='all'?DATA.bookings.length:DATA.bookings.filter(function(b){return b.status===s;}).length;
+      return '<button class="bk-chip'+(_bkFilter===s?' active':'')+'" onclick="Atlas.bkFilter(\''+s+'\')">'+(s==='all'?'All':s)+' '+n+'</button>'; }).join(''));
+    if(_bkView==='calendar'){ el.style.display='none'; if(empty)empty.style.display='none'; _renderBkCal(); return; }
+    var _cal=document.getElementById('bkCal'); if(_cal)_cal.style.display='none'; el.style.display='';
     var list=DATA.bookings.filter(function(b){ return _bkFilter==='all'||b.status===_bkFilter; });
     if(!list.length){ el.innerHTML=''; if(empty)empty.style.display='block'; return; }
     if(empty)empty.style.display='none';
@@ -3028,6 +3066,9 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Charges to portal</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCharge(\''+b.id+'\')">+ Send a charge</button></div>'
         +'<div class="cond-sub">Bill '+esc((b.cust||'the customer').split(' ')[0])+' for extras, damage, cleaning, late fees or anything else &mdash; it appears in their portal to pay online.</div>'
         +_chargesOwnerHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Incidents &amp; damage</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkLogIncident(\''+b.id+'\')">+ Log incident</button></div>'
+        +'<div class="cond-sub">Record damage, late returns or policy issues &mdash; time-stamped, and bill any of them to the portal in one tap.</div>'
+        +_incidentsHtml(b)+'</div>'
       +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+a+'</div>'
       +'<div style="display:flex;gap:10px;margin-top:10px"><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openPortal(\''+b.id+'\')">Customer portal</button></div></div>');
   }
@@ -5081,6 +5122,29 @@ const Atlas = (function(){
     _logEvent('booking','Charge sent to portal: '+label+' '+money(Math.round(amt))+' on '+b.id,{booking:b.id});
     closeModal(); openBooking(id); toast('Charge sent to the customer portal'); }
   function bkRmCharge(id,cid){ var b=_getBooking(id); if(!b)return; b.charges=_charges(b).filter(function(c){return c.id!==cid;}); _upsertBooking(b); openBooking(id); }
+  // ---- Incident / damage record on a booking (log it, then bill it to the portal in one tap) ----
+  function _incidents(b){ if(!b.incidents) b.incidents=[]; return b.incidents; }
+  function _incidentsHtml(b){ var inc=_incidents(b); if(!inc.length) return '<div class="bk-lenhint" style="margin:0">No incidents logged &mdash; clean rental so far.</div>';
+    return inc.map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.desc)+'</b><div style="font-size:11.5px;color:var(--muted)">'+_stamp(x.at)+(x.cost?(' &middot; '+money(x.cost)):'')+(x.charged?' &middot; billed to portal':'')+'</div></div>'
+      +(x.cost&&!x.charged?'<button class="btn btn--primary btn--sm" onclick="Atlas.bkIncidentCharge(\''+b.id+'\',\''+x.id+'\')">Bill it</button>':'')
+      +'<button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.bkRmIncident(\''+b.id+'\',\''+x.id+'\')"><svg viewBox="0 0 18 18" fill="none" width="15" height="15"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>'; }).join(''); }
+  function bkLogIncident(id){ if(!_guard('bookEdit','Logging an incident'))return; var b=_getBooking(id); if(!b)return;
+    openModal('<div class="modal__head"><h3>Log incident / damage</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>What happened</label><textarea class="input" id="incDesc" rows="3" placeholder="e.g. Scratch on rear bumper, returned 2 hours late, extra cleaning needed"></textarea></div>'
+      +'<div class="field"><label>Charge for it (optional)</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="incCost" inputmode="decimal" style="width:auto;flex:1;text-align:left" placeholder="0"></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveIncident(\''+id+'\')">Log it</button>'
+      +'<div class="bk-lenhint" style="margin:10px 0 0">Time-stamped on the booking. Add a cost and you can bill it to '+esc((b.cust||'the customer').split(' ')[0])+'\u2019s portal.</div></div>'); }
+  function saveIncident(id){ var b=_getBooking(id); if(!b)return; var desc=(val('incDesc')||'').trim(); if(!desc){ toast('Describe what happened'); return; }
+    var cost=Math.round(Math.max(0, parseFloat(val('incCost'))||0));
+    var inc={id:'inc'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), at:Date.now(), desc:desc, cost:cost, charged:false};
+    _incidents(b).push(inc); _upsertBooking(b); _logEvent('booking','Incident logged on '+b.id+(cost?(' ('+money(cost)+')'):''),{booking:b.id}); save(); closeModal();
+    if(cost>0 && confirm('Bill '+((b.cust||'the customer').split(' ')[0])+' '+money(cost)+' for this? It appears in their portal to pay online.')) _incidentToCharge(b,inc);
+    else toast('Incident logged');
+    openBooking(id); }
+  function bkIncidentCharge(id,incId){ var b=_getBooking(id); if(!b)return; var inc=_incidents(b).filter(function(x){return x.id===incId;})[0]; if(inc){ _incidentToCharge(b,inc); } openBooking(id); }
+  function _incidentToCharge(b,inc){ _charges(b).push({id:'ch'+Date.now(), label:('Incident: '+inc.desc).slice(0,58), amount:inc.cost, at:Date.now(), paidAt:null});
+    inc.charged=true; _upsertBooking(b); _logEvent('booking','Billed '+money(inc.cost)+' incident on '+b.id,{booking:b.id}); save(); toast('Charge sent to the portal ('+money(inc.cost)+')'); }
+  function bkRmIncident(id,incId){ var b=_getBooking(id); if(!b)return; b.incidents=_incidents(b).filter(function(x){return x.id!==incId;}); _upsertBooking(b); save(); openBooking(id); toast('Incident removed'); }
   function portalPayCharge(cid){ var b=_pBk(); if(!b)return; var c=_charges(b).filter(function(x){return x.id===cid;})[0]; if(!c||c.paidAt)return;
     c.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(Math.round(c.amount))+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Payment received (demo)'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ portalView('sign'); return; }
@@ -5357,7 +5421,8 @@ const Atlas = (function(){
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,promptUpgrade,doUpgrade,openWebsite,
