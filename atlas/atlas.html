@@ -1962,7 +1962,7 @@ const Atlas = (function(){
     if(!g){ toast('No gift card with that code'); return; }
     if(g.disabled){ toast('That gift card is turned off'); return; }
     if((g.balance||0)<=0){ toast('That gift card has no balance left'); return; }
-    var q=b.quote||{}; var netDue=Math.max(0, Math.round(q.dueNow||q.total||0) - _giftApplied(b));
+    var q=b.quote||{}; var netDue=Math.max(0, _r2(q.dueNow||q.total||0) - _giftApplied(b));
     var amt=Math.round(Math.min(g.balance, netDue)*100)/100;   // apply only up to what is still due (netDue is already clamped >=0); never drain the card when nothing is owed
     if(amt<=0){ toast('Nothing left due on this booking'); return; }
     g.balance=Math.round((g.balance-amt)*100)/100; g.redeemed=g.redeemed||[]; g.redeemed.push({bookingId:b.id,amt:amt,at:Date.now()});
@@ -2037,7 +2037,7 @@ const Atlas = (function(){
     _bkRenderExtras(); }
   function _bkProtHtml(){ var P=_protection(); if(!P.on||!P.plans.length) return ''; var cur=_bkProtSel(), curId=cur?cur.planId:'';
     return '<div class="field"><label>Damage protection</label><select class="select" onchange="Atlas.bkSetProtection(this.value)"><option value="">None</option>'
-      +P.plans.map(function(p){ return '<option value="'+esc(p.id)+'"'+(curId===p.id?' selected':'')+'>'+esc(p.name)+' - '+_curSym()+p.price+'/'+_protPerLabel(p.per)+'</option>'; }).join('')
+      +P.plans.map(function(p){ return '<option value="'+esc(p.id)+'"'+(curId===p.id?' selected':'')+'>'+esc(p.name)+' - '+money(p.price)+'/'+_protPerLabel(p.per)+'</option>'; }).join('')
       +'</select><div class="bk-lenhint" style="margin:5px 0 0">Optional coverage the customer can add &mdash; it rides the quote and shows in their portal with a coverage summary.</div></div>'; }
   function protectionDoc(planId, portal){ var p=_protPlan(planId);
     if(!p){ if(portal){ var nm=''; try{ var pb=_pBk(); var ex=pb?(pb.extras||[]).filter(function(x){return x.protection&&x.planId===planId;})[0]:null; nm=(ex&&ex.name)||''; }catch(e){} toast('Your '+(nm?esc(nm)+' ':'')+'protection is on file \u2014 contact us for a copy of the coverage summary.'); return; }   // fix: customer view no longer dead-ends on the owner-facing "Pick a tier first" when the tier was later removed
@@ -2055,9 +2055,9 @@ const Atlas = (function(){
       +'@media print{body{background:#fff;padding:0}.doc{border:0;border-radius:0}.noprint{display:none}}</style></head><body>'
       +'<div class="noprint"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>'
       +'<div class="doc"><div class="top"><div class="b">'+esc(biz)+'</div><div class="t">Damage protection &amp; waiver summary</div></div>'
-      +'<div class="tier"><h1>'+esc(p.name)+' protection</h1><div class="pr">'+_curSym()+p.price+' / '+_protPerLabel(p.per)+'</div></div>'
+      +'<div class="tier"><h1>'+esc(p.name)+' protection</h1><div class="pr">'+money(p.price)+' / '+_protPerLabel(p.per)+'</div></div>'
       +'<h2>What it covers</h2><p>'+esc(p.covers||'')+'</p>'
-      +'<h2>Key terms</h2><div class="grid"><div><b>Deductible</b>'+_curSym()+Number(p.deductible||0).toLocaleString()+'</div><div><b>Applies to</b>the rented '+esc(noun)+'</div><div><b>Price</b>'+_curSym()+p.price+' per '+_protPerLabel(p.per)+'</div><div><b>Term</b>the rental period</div></div>'
+      +'<h2>Key terms</h2><div class="grid"><div><b>Deductible</b>'+money(p.deductible||0)+'</div><div><b>Applies to</b>the rented '+esc(noun)+'</div><div><b>Price</b>'+money(p.price)+' per '+_protPerLabel(p.per)+'</div><div><b>Term</b>the rental period</div></div>'
       +'<h2>Damage waiver</h2><p>When this protection is purchased, '+esc(biz)+' waives its right to hold the renter responsible for accidental damage to the '+esc(noun)+' above the stated deductible, subject to the rental agreement. It does not cover intentional damage, use in violation of the agreement, unauthorized drivers, or loss of personal belongings.</p>'
       +'<p class="fine">This is a damage waiver offered by '+esc(biz)+', not an insurance policy, and is not a contract of insurance. Coverage is governed by your signed rental agreement. Review that agreement for the complete terms and any exclusions.</p>'
       +'</div></body></html>';
@@ -2715,15 +2715,15 @@ const Atlas = (function(){
     var m=S.money, q=calcQuote(m,3,0), per=m.rateModel;
     function row(l,v,cls){ return '<div class="mp-row '+(cls||'')+'"><span>'+l+'</span><span class="tnum">'+v+'</span></div>'; }
     var out=row(money(m.baseRate)+' &times; 3 '+per+'s', money(m.baseRate*3));
-    if(q.disc) out+=row('Discount', '-'+money(Math.round(q.disc)), 'mp-ok');
-    q.fees.forEach(function(f){ out+=row(esc(f.name), money(Math.round(f.amt))); });
-    if(q.taxAmt) out+=row('Tax ('+m.tax+'%)', money(Math.round(q.taxAmt)));
-    out+=row('Booking total', money(Math.round(q.total)), 'mp-total');
-    out+=row('Deposit to reserve (now)', money(Math.round(q.dueNow)), 'mp-brand');
-    out+=row('Balance at pickup', money(Math.round(q.balance)));
-    if(q.hold) out+=row('+ Refundable hold', money(Math.round(q.hold)), 'mp-muted');
-    if(q.payoutAmt) out+=row(esc((m.payout&&m.payout.label)||'Payout'), '-'+money(Math.round(q.payoutAmt)), 'mp-ok');
-    if(q.payoutAmt) out+=row('Your net (take-home)', money(Math.round(q.netToYou)), 'mp-total');
+    if(q.disc) out+=row('Discount', '-'+money(q.disc), 'mp-ok');
+    q.fees.forEach(function(f){ out+=row(esc(f.name), money(f.amt)); });
+    if(q.taxAmt) out+=row('Tax ('+m.tax+'%)', money(q.taxAmt));
+    out+=row('Booking total', money(q.total), 'mp-total');
+    out+=row('Deposit to reserve (now)', money(q.dueNow), 'mp-brand');
+    out+=row('Balance at pickup', money(q.balance));
+    if(q.hold) out+=row('+ Refundable hold', money(q.hold), 'mp-muted');
+    if(q.payoutAmt) out+=row(esc((m.payout&&m.payout.label)||'Payout'), '-'+money(q.payoutAmt), 'mp-ok');
+    if(q.payoutAmt) out+=row('Your net (take-home)', money(q.netToYou), 'mp-total');
     return out;
   }
   function _updMoneyPrev(){ var el=document.getElementById('moneyPreview'); if(el) el.innerHTML=moneyPreviewHtml(); }
@@ -2923,7 +2923,9 @@ const Atlas = (function(){
   function _curSym(code){ var c=code||(S&&S.money&&S.money.currency)||'USD';
     return ({USD:'$',EUR:'\u20AC',GBP:'\u00A3',CAD:'CA$',AUD:'A$',NZD:'NZ$',AED:'AED ',MXN:'MX$',JPY:'\u00A5',INR:'\u20B9',BRL:'R$',ZAR:'R',CHF:'CHF ',SGD:'S$'})[c]||'$'; }
   const CURRENCIES=['USD','EUR','GBP','CAD','AUD','NZD','AED','MXN','JPY','INR','BRL','ZAR','CHF','SGD'];
-  const money=n=>_curSym()+Number(n).toLocaleString();
+  const _r2=n=>Math.round((Number(n)||0)*100)/100;                                   // round money to the cent (kills float drift)
+  const _c2=n=>(Number(n)||0).toFixed(2);                                            // 2-decimal string for CSV cells
+  const money=n=>_curSym()+_r2(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   // Per-type term for the current fleet (KPIs/labels reconfigure to what the client rents).
   function _fterm(k){ var t=FLEET_TERMS[S.fleet&&S.fleet.id]||FLEET_TERMS.custom; return (t&&t[k])||FLEET_TERMS.cars[k]; }
   // A plan's cap, described in the client's OWN asset noun (packages gate any asset type).
@@ -2941,11 +2943,11 @@ const Atlas = (function(){
     var tot = (opts.total!=null) ? opts.total : rows.reduce(function(s,r){return s+(typeof r.amt==='number'?r.amt:0);},0);
     var body = rows.length ? rows.map(function(r){ var click=r.onClick?(' onclick="'+r.onClick+'" style="cursor:pointer"'):'';
       return '<div class="mp-row"'+click+'><span style="min-width:0">'+r.label+(r.sub?' <span style="font-size:11.5px;color:var(--muted)">'+r.sub+'</span>':'')+'</span>'
-        +'<span style="display:flex;gap:8px;align-items:center;flex:none">'+(r.chip||'')+(r.amt!=null?('<b class="tnum"'+(r.neg?' style="color:var(--danger)"':'')+'>'+(r.neg?'&minus;':'')+money(Math.round(Math.abs(r.amt)))+'</b>'):'')+'</span></div>';
+        +'<span style="display:flex;gap:8px;align-items:center;flex:none">'+(r.chip||'')+(r.amt!=null?('<b class="tnum"'+(r.neg?' style="color:var(--danger)"':'')+'>'+(r.neg?'&minus;':'')+money(Math.abs(r.amt))+'</b>'):'')+'</span></div>';
     }).join('') : '<div class="bk-lenhint" style="margin:0">'+(opts.empty||'Nothing to show yet.')+'</div>';
     openModal('<div class="modal__head"><h3>'+title+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +(sub?'<div style="font-size:13px;color:var(--muted);margin-bottom:12px">'+sub+'</div>':'')
-      +'<div class="mp">'+body+((opts.showTotal!==false && rows.length)?('<div class="mp-row mp-total"><span>'+(opts.totalLabel||'Total')+'</span><b class="tnum">'+money(Math.round(tot))+'</b></div>'):'')+'</div>'
+      +'<div class="mp">'+body+((opts.showTotal!==false && rows.length)?('<div class="mp-row mp-total"><span>'+(opts.totalLabel||'Total')+'</span><b class="tnum">'+money(tot)+'</b></div>'):'')+'</div>'
       +(opts.foot||'')+'</div>'); }
   function _bkList(fn, opts){ opts=opts||{}; return (DATA.bookings||[]).filter(fn).map(function(b){ return {
     label:'<b>'+esc(b.cust||b.id)+'</b>', sub:esc(b.asset)+' &middot; '+b.id, chip:(opts.chip?statusChip(b.status):''),
@@ -2981,17 +2983,17 @@ const Atlas = (function(){
     var d=val('ldDate'), ts=d?new Date(d+'T12:00:00').getTime():Date.now();
     var rec={id:kind.charAt(0)+Date.now(), label:label, amount:amt, date:ts}; if(kind==='expense') rec.category=(val('ldCat')||'').trim();
     _ledger()[kind==='income'?'incomes':'expenses'].unshift(rec); save();
-    _logEvent(kind==='income'?'income':'expense', (kind==='income'?'Income logged: ':'Expense logged: ')+label+' '+money(Math.round(amt)),{amount:amt});
+    _logEvent(kind==='income'?'income':'expense', (kind==='income'?'Income logged: ':'Expense logged: ')+label+' '+money(amt),{amount:amt});
     closeModal(); if(document.getElementById('anaKpis')) renderAnalytics(); toast((kind==='income'?'Income':'Expense')+' logged'); }
   function rmLedger(kind,id){ var arr=_ledger()[kind==='income'?'incomes':'expenses']; var i=arr.map(function(x){return x.id;}).indexOf(id); if(i>=0){ arr.splice(i,1); save(); if(document.getElementById('anaKpis')) renderAnalytics(); drillLedger(kind); } }
   function logIncome(){ logLedger('income'); }
   function logExpense(){ logLedger('expense'); }
   function _ledgerCardHtml(){ var inc=_otherIncome(), exp=_totalExpenses(), rev=_bookingRevenue();
     return '<div class="mp" style="margin-bottom:14px">'
-      +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'rev\')"><span>Booking revenue</span><b class="tnum">'+money(Math.round(rev))+'</b></div>'
-      +'<div class="mp-row mp-ok" style="cursor:pointer" onclick="Atlas.drillLedger(\'income\')"><span>+ Other income</span><b class="tnum">'+money(Math.round(inc))+'</b></div>'
-      +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillLedger(\'expense\')"><span>&minus; Expenses</span><b class="tnum" style="color:var(--danger)">'+money(Math.round(exp))+'</b></div>'
-      +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'net\')"><span>Net profit</span><b class="tnum">'+money(Math.round(_netProfit()))+'</b></div></div>'
+      +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'rev\')"><span>Booking revenue</span><b class="tnum">'+money(rev)+'</b></div>'
+      +'<div class="mp-row mp-ok" style="cursor:pointer" onclick="Atlas.drillLedger(\'income\')"><span>+ Other income</span><b class="tnum">'+money(inc)+'</b></div>'
+      +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillLedger(\'expense\')"><span>&minus; Expenses</span><b class="tnum" style="color:var(--danger)">'+money(exp)+'</b></div>'
+      +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'net\')"><span>Net profit</span><b class="tnum">'+money(_netProfit())+'</b></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.logIncome()">+ Log income</button><button class="btn btn--ghost btn--sm" onclick="Atlas.logExpense()">+ Log expense</button></div>'; }
   /* ---- Blocked / unavailable days per asset ---- */
   function _blackouts(a){ if(!a.blackouts) a.blackouts=[]; return a.blackouts; }
@@ -3277,7 +3279,7 @@ const Atlas = (function(){
   // Add-on charges the customer actually PAID through the portal (cleaning, damage, extra day). These are real income on top
   // of the rental. Refundable deposit HOLDS are NOT charges (separate authorize), so they never leak in here. Unpaid charges
   // are not counted (cash-collected basis for add-ons). Owner picked "count everywhere" -> folded into _bkEarned below.
-  function _collectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+(c&&c.paidAt?Math.round(c.amount||0):0); },0); }
+  function _collectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+(c&&c.paidAt?_r2(c.amount||0):0); },0); }
   // Tax embedded in a gross taxable collected charge (charge.amount is tax-inclusive so it shares the revenue basis). Threads
   // payment-widget + owner charge tax into the tax CSV, accounting CSV + reports, so a payment widget moves EVERY number.
   function _chargeTax(c){ var t=(S.money.tax||0)/100; if(!c||!c.paidAt||!c.taxable||t<=0)return 0; return Math.round((c.amount||0)*t/(1+t)); }
@@ -3434,14 +3436,14 @@ const Atlas = (function(){
     var mEff=_moneyFor(val('bkAsset')), rate=mEff.baseRate;
     var q=calcQuote(mEff,{periods:per,addons:0,extras:(_bkDraft?_bkDraft.extras:[]),discount:_bkReadDiscount()});
     var el=document.getElementById('bkPreview'); if(!el)return;
-    var h='<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+'</span><span class="tnum">'+money(Math.round(rate*per))+'</span></div>';
-    (q.extrasLines||[]).forEach(function(l){ h+='<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(Math.round(l.amt))+'</span></div>'; });
-    if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(Math.round(q.disc))+'</span></div>';
-    q.fees.forEach(function(f){ h+='<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(Math.round(f.amt))+'</span></div>'; });
-    if(q.taxAmt) h+='<div class="mp-row"><span>Tax</span><span class="tnum">'+money(Math.round(q.taxAmt))+'</span></div>';
-    h+='<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(Math.round(q.total))+'</span></div>';
-    h+='<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(Math.round(q.dueNow))+'</span></div>';
-    if(q.hold) h+='<div class="mp-row mp-muted"><span>+ Refundable hold</span><span class="tnum">'+money(Math.round(q.hold))+'</span></div>';
+    var h='<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+'</span><span class="tnum">'+money(rate*per)+'</span></div>';
+    (q.extrasLines||[]).forEach(function(l){ h+='<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>'; });
+    if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>';
+    q.fees.forEach(function(f){ h+='<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>'; });
+    if(q.taxAmt) h+='<div class="mp-row"><span>Tax</span><span class="tnum">'+money(q.taxAmt)+'</span></div>';
+    h+='<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div>';
+    h+='<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(q.dueNow)+'</span></div>';
+    if(q.hold) h+='<div class="mp-row mp-muted"><span>+ Refundable hold</span><span class="tnum">'+money(q.hold)+'</span></div>';
     el.innerHTML=h;
   }
   // Booking IDs from max-existing+1 (NOT array length -> deleting then re-adding could reuse an id and silently overwrite).
@@ -3472,11 +3474,11 @@ const Atlas = (function(){
     if(_waitConvertId){ S.waitlist=_waitlist().filter(function(w){return w.id!==_waitConvertId;}); _waitConvertId=null; }   // fix: booking now exists -> safe to drop the source waitlist entry (single save persists both)
     save();   // save() persists S too (promo.used counters live in S.promos, not DATA) so a single-use code stays used after reload
     if(editId) _logEvent('booking','Booking '+b.id+' updated ('+b.cust+')',{booking:b.id});
-    else _logEvent('booking','Booking '+b.id+' created: '+b.cust+' / '+b.asset+' / '+money(Math.round(q.total)),{booking:b.id,total:Math.round(q.total)});
+    else _logEvent('booking','Booking '+b.id+' created: '+b.cust+' / '+b.asset+' / '+money(q.total),{booking:b.id,total:_r2(q.total)});
     if(_newRedeem) _logEvent('promo','Promo '+_bkPromo.code+' redeemed on '+b.id,{code:_bkPromo.code,booking:b.id});
     _bkPromo=null;
     closeModal(); renderOverview(); renderBookings(); renderCustomers(); _bkBadge();   // fix: refresh Customers panel so new customers / Trips / Spent update live
-    toast(editId?'Booking updated':'Booking created &mdash; '+money(Math.round(q.total)));
+    toast(editId?'Booking updated':'Booking created &mdash; '+money(q.total));
   }
   function openBooking(id){ var b=_getBooking(id); if(!b) return;
     var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var a='';
@@ -3495,17 +3497,17 @@ const Atlas = (function(){
       +'<div class="mp-row"><span>'+cap(S.fleet.noun)+'</span><span style="color:var(--ink);font-weight:600">'+esc(b.asset)+'</span></div>'
       +'<div class="mp-row"><span>'+(b.endTs?'When':'Dates')+'</span><span class="tnum" style="text-align:right;max-width:62%">'+_bkWhen(b)+'</span></div>'
       +'<div class="mp-row"><span>Length</span><span class="tnum">'+b.periods+' '+_perUnit()+'</span></div>'
-      +'<div class="mp-row"><span>'+money(b.rate!=null?b.rate:S.money.baseRate)+' &times; '+b.periods+' '+_perUnit()+'</span><span class="tnum">'+money(Math.round((b.rate!=null?b.rate:S.money.baseRate)*b.periods))+'</span></div>'
-      +(q.extrasLines||[]).map(function(l){return '<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(Math.round(l.amt))+'</span></div>';}).join('')
-      +(q.disc?'<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(Math.round(q.disc))+'</span></div>':'')
-      +q.fees.map(function(f){return '<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(Math.round(f.amt))+'</span></div>';}).join('')
-      +(q.taxAmt?'<div class="mp-row"><span>Tax</span><span class="tnum">'+money(Math.round(q.taxAmt))+'</span></div>':'')
-      +'<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(Math.round(q.total))+'</span></div>'
-      +'<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(Math.round(q.dueNow))+'</span></div>'
-      +(_giftApplied(b)?('<div class="mp-row mp-ok"><span>Gift card applied</span><span class="tnum">&minus;'+money(Math.round(_giftApplied(b)))+'</span></div><div class="mp-row mp-brand"><span>Net due to reserve</span><span class="tnum">'+money(Math.max(0,Math.round((q.dueNow||0)-_giftApplied(b))))+'</span></div>'):'')
-      +(q.hold?'<div class="mp-row mp-muted"><span>+ Refundable hold</span><span class="tnum">'+money(Math.round(q.hold))+'</span></div>':'')
+      +'<div class="mp-row"><span>'+money(b.rate!=null?b.rate:S.money.baseRate)+' &times; '+b.periods+' '+_perUnit()+'</span><span class="tnum">'+money((b.rate!=null?b.rate:S.money.baseRate)*b.periods)+'</span></div>'
+      +(q.extrasLines||[]).map(function(l){return '<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>';}).join('')
+      +(q.disc?'<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>':'')
+      +q.fees.map(function(f){return '<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>';}).join('')
+      +(q.taxAmt?'<div class="mp-row"><span>Tax</span><span class="tnum">'+money(q.taxAmt)+'</span></div>':'')
+      +'<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div>'
+      +'<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(q.dueNow)+'</span></div>'
+      +(_giftApplied(b)?('<div class="mp-row mp-ok"><span>Gift card applied</span><span class="tnum">&minus;'+money(_giftApplied(b))+'</span></div><div class="mp-row mp-brand"><span>Net due to reserve</span><span class="tnum">'+money(Math.max(0,Math.round((q.dueNow||0)-_giftApplied(b))))+'</span></div>'):'')
+      +(q.hold?'<div class="mp-row mp-muted"><span>+ Refundable hold</span><span class="tnum">'+money(q.hold)+'</span></div>':'')
       +(function(){ var p=S.money.payout||{}; if(!p.enabled||!p.value) return ''; var base=(p.base==='total')?(q.total||0):(q.subtotal||q.total||0); var amt=(p.kind==='percent'?base*(p.value||0)/100:(p.value||0)); var net=Math.max(0,(q.total||0)-(q.taxAmt||0)-amt);
-        return '<div class="mp-row mp-ok"><span>'+esc(p.label||'Payout')+'</span><span class="tnum">&minus;'+money(Math.round(amt))+'</span></div><div class="mp-row"><span style="font-weight:650;color:var(--ink)">Your net</span><span class="tnum" style="font-weight:750">'+money(Math.round(net))+'</span></div>'; })()
+        return '<div class="mp-row mp-ok"><span>'+esc(p.label||'Payout')+'</span><span class="tnum">&minus;'+money(amt)+'</span></div><div class="mp-row"><span style="font-weight:650;color:var(--ink)">Your net</span><span class="tnum" style="font-weight:750">'+money(net)+'</span></div>'; })()
       +'</div>'
       +(b.notes?'<div class="field" style="margin-bottom:14px"><label>Notes</label><div style="font-size:13px;color:var(--body);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;white-space:pre-wrap">'+esc(b.notes)+'</div></div>':'')
       +'<div class="cond-sec"><div class="cond-hd"><span>Condition at pickup &mdash; photos &amp; video</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCondition(\''+b.id+'\',\'pickup\')">+ Add pickup media</button></div>'
@@ -3546,7 +3548,7 @@ const Atlas = (function(){
   function _cxWindow(){ return (S.money&&S.money.cancelWindowHrs!=null)?S.money.cancelWindowHrs:48; }
   function bkCancelFlow(id){ if(!_guard('bookEdit','Cancelling bookings'))return; var b=_getBooking(id); if(!b)return;
     var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount});
-    var dep=Math.round(q.dueNow||0), half=Math.round((q.total||0)*0.5), win=_cxWindow();
+    var dep=_r2(q.dueNow||0), half=_r2((q.total||0)*0.5), win=_cxWindow();
     var hrs=b.startTs?Math.round((Number(b.startTs)-Date.now())/3600000):null, late=(hrs!=null&&hrs<win);
     var note=late?('This is within '+win+'h of the '+esc(_fterm('book'))+' &mdash; your policy suggests keeping a fee.'):('Plenty of notice &mdash; a full refund is typical.');
     var rr=function(v,lbl,ck){ return '<label style="display:flex;align-items:center;gap:9px;padding:9px 0;font-size:13.5px;color:var(--ink);border-top:1px solid var(--line-2)"><input type="radio" name="cxfee" value="'+v+'"'+(ck?' checked':'')+'> '+lbl+'</label>'; };
@@ -3592,20 +3594,20 @@ const Atlas = (function(){
   function _planHtml(b){ var p=b.plan; if(!p||!p.installments||!p.installments.length) return '<div class="bk-lenhint" style="margin:0">Paid in full. Split it into installments if the customer prefers.</div>';
     var paidN=p.installments.filter(function(x){return x.paidAt;}).length;
     return '<div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">'+paidN+' of '+p.installments.length+' paid</div>'+p.installments.map(function(x){ var paid=!!x.paidAt; return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.label)+' &middot; '+money(x.amount)+'</b><div style="font-size:11.5px;color:var(--muted)">'+(paid?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)))+'</div></div>'+(paid?'<span class="chip chip--ok"><span class="dot"></span>Paid</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkPlanPaid(\''+b.id+'\',\''+x.id+'\')">Mark paid</button>')+'</div>'; }).join(''); }
-  function bkPaymentPlan(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=Math.round(q.total||0);
+  function bkPaymentPlan(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=_r2(q.total||0);
     openModal('<div class="modal__head"><h3>Payment plan</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 12px">Split '+money(total)+' into a schedule for '+esc(b.cust||'this customer')+'. They pay each part in their portal (or you mark it paid).</div>'
       +'<div class="field"><label>Plan</label><select class="select" id="ppType"><option value="none">Pay in full (no plan)</option><option value="half">50% now &middot; 50% before pickup</option><option value="3">3 monthly installments</option><option value="4">4 monthly installments</option></select></div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.savePlan(\''+id+'\')">Save plan</button></div>'); }
-  function savePlan(id){ var b=_getBooking(id); if(!b)return; var t=val('ppType'); var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=Math.round(q.total||0), start=Number(b.startTs)||Date.now(), mo=30*86400000;
+  function savePlan(id){ var b=_getBooking(id); if(!b)return; var t=val('ppType'); var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=_r2(q.total||0), start=Number(b.startTs)||Date.now(), mo=30*86400000;
     if(t==='none'){ delete b.plan; }
-    else if(t==='half'){ var half=Math.round(total*0.5); b.plan={type:'half',installments:[{id:'pi1',label:'Deposit (50%)',amount:half,dueTs:Date.now(),paidAt:0},{id:'pi2',label:'Balance (50%)',amount:total-half,dueTs:start,paidAt:0}]}; }
-    else { var n=parseInt(t)||3, each=Math.round(total/n), ins=[]; for(var i=0;i<n;i++){ ins.push({id:'pi'+(i+1),label:'Installment '+(i+1)+' of '+n,amount:(i===n-1?(total-each*(n-1)):each),dueTs:Date.now()+i*mo,paidAt:0}); } b.plan={type:t,installments:ins}; }
+    else if(t==='half'){ var half=_r2(total*0.5); b.plan={type:'half',installments:[{id:'pi1',label:'Deposit (50%)',amount:half,dueTs:Date.now(),paidAt:0},{id:'pi2',label:'Balance (50%)',amount:total-half,dueTs:start,paidAt:0}]}; }
+    else { var n=parseInt(t)||3, each=_r2(total/n), ins=[]; for(var i=0;i<n;i++){ ins.push({id:'pi'+(i+1),label:'Installment '+(i+1)+' of '+n,amount:(i===n-1?_r2(total-each*(n-1)):each),dueTs:Date.now()+i*mo,paidAt:0}); } b.plan={type:t,installments:ins}; }
     _upsertBooking(b); _logEvent('booking','Payment plan '+(t==='none'?'cleared':'set ('+t+')')+' on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast(t==='none'?'Plan cleared':'Payment plan saved'); }
   function bkPlanPaid(id,pid){ var b=_getBooking(id); if(!b||!b.plan)return; var x=(b.plan.installments||[]).filter(function(y){return y.id===pid;})[0]; if(x)x.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Plan installment paid on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Marked paid'); }
   // ---- Metered / run-hour billing: bill exact hours or miles used at return ----
   function _meterHtml(b){ var m=b.meter; if(!m) return '<div class="bk-lenhint" style="margin:0">For usage-based assets (generators, tools, hourly gear) &mdash; bill the exact hours or miles used.</div>';
-    var amt=Math.round(m.units*m.rate); return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+m.units+' '+esc(m.unit)+' &times; '+money(m.rate)+'</b><div style="font-size:11.5px;color:var(--muted)">'+_stamp(m.at)+(m.charged?(' &middot; billed'):'')+'</div></div>'+(m.charged?'<span class="chip chip--ok"><span class="dot"></span>Billed '+money(amt)+'</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkMeterBill(\''+b.id+'\')">Bill '+money(amt)+'</button>')+'</div>'; }
+    var amt=_r2(m.units*m.rate); return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+m.units+' '+esc(m.unit)+' &times; '+money(m.rate)+'</b><div style="font-size:11.5px;color:var(--muted)">'+_stamp(m.at)+(m.charged?(' &middot; billed'):'')+'</div></div>'+(m.charged?'<span class="chip chip--ok"><span class="dot"></span>Billed '+money(amt)+'</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkMeterBill(\''+b.id+'\')">Bill '+money(amt)+'</button>')+'</div>'; }
   function bkMeter(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return;
     openModal('<div class="modal__head"><h3>Usage / metered billing</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="row2"><div class="field"><label>Units used</label><input class="input tnum" id="mtUnits" inputmode="decimal" placeholder="e.g. 18" oninput="Atlas._mtHint&&Atlas._mtHint()"></div>'
@@ -3613,22 +3615,22 @@ const Atlas = (function(){
       +'<div class="field"><label>Rate per unit</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="mtRate" inputmode="decimal" style="width:auto;flex:1;text-align:left" placeholder="0" oninput="Atlas._mtHint&&Atlas._mtHint()"></div></div>'
       +'<div class="bk-lenhint" id="mtHint" style="margin:0 0 12px"></div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveMeter(\''+id+'\')">Record usage</button></div>'); }
-  function _mtHint(){ var u=parseFloat(val('mtUnits'))||0, r=parseFloat(val('mtRate'))||0, h=document.getElementById('mtHint'); if(h) h.innerHTML=(u&&r)?('Bills <b>'+money(Math.round(u*r))+'</b> to the portal.'):''; }
+  function _mtHint(){ var u=parseFloat(val('mtUnits'))||0, r=parseFloat(val('mtRate'))||0, h=document.getElementById('mtHint'); if(h) h.innerHTML=(u&&r)?('Bills <b>'+money(u*r)+'</b> to the portal.'):''; }
   function saveMeter(id){ var b=_getBooking(id); if(!b)return; var u=parseFloat(val('mtUnits'))||0, r=parseFloat(val('mtRate'))||0, unit=val('mtUnit')||'hours'; if(u<=0||r<=0){ toast('Enter units and a rate'); return; }
     b.meter={units:u, unit:unit, rate:Math.round(r*100)/100, at:Date.now(), charged:false}; _upsertBooking(b); _logEvent('asset','Usage recorded on '+b.id+' ('+u+' '+unit+')',{booking:b.id}); save(); closeModal(); openBooking(id); toast('Usage recorded -- tap Bill to charge it'); }
-  function bkMeterBill(id){ var b=_getBooking(id); if(!b||!b.meter)return; var amt=Math.round(b.meter.units*b.meter.rate);
+  function bkMeterBill(id){ var b=_getBooking(id); if(!b||!b.meter)return; var amt=_r2(b.meter.units*b.meter.rate);
     var _isMtr=function(c){ return c.kind==='meter'||/^Usage:/.test(String(c.label||'')); };   // fix: identify metered charges (kind flag or legacy "Usage:" label)
     if(_charges(b).some(function(c){ return _isMtr(c)&&c.paidAt&&c.amount===amt; })){ openBooking(id); toast('This usage was already billed and paid'); return; }   // fix: never double-charge a reading that was already billed AND paid
     b.charges=_charges(b).filter(function(c){ return !(_isMtr(c)&&!c.paidAt); });   // fix: drop any prior UNPAID meter charge so an edited reading re-bills instead of stacking duplicates
     b.charges.push({id:_chId(), kind:'meter', label:'Usage: '+b.meter.units+' '+b.meter.unit, amount:amt, at:Date.now(), paidAt:null}); b.meter.charged=true; _upsertBooking(b); _logEvent('booking','Billed '+money(amt)+' usage on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Usage billed ('+money(amt)+')'); }
   // ---- Refundable deposit hold: authorize -> capture (damage) or release (clean) ----
-  function _holdHtml(b){ var h=b.hold, q=b.quote||{}, sug=Math.round(q.hold||0);
+  function _holdHtml(b){ var h=b.hold, q=b.quote||{}, sug=_r2(q.hold||0);
     if(!h||!h.status||h.status==='none'){ return '<div class="bk-lenhint" style="margin:0 0 8px">'+(sug?('Suggested hold: <b>'+money(sug)+'</b> (from your money rules).'):'Authorize a refundable hold to cover damage or fuel.')+'</div><button class="btn btn--ghost btn--sm" onclick="Atlas.holdAuth(\''+b.id+'\')">Authorize hold</button>'; }
     var st=h.status, lbl=st==='authorized'?('Holding '+money(h.amount)):st==='captured'?('Kept '+money(h.captured||h.amount)+' of '+money(h.amount)):('Released '+money(h.amount));
     var chip='<span class="chip '+(st==='authorized'?'chip--warn':st==='captured'?'chip--danger':'chip--ok')+'"><span class="dot"></span>'+lbl+'</span>';
     return '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">'+chip+'<span style="flex:1;min-width:60px;font-size:11.5px;color:var(--muted)">'+_stamp(h.at)+'</span>'
       +(st==='authorized'?'<button class="btn btn--ghost btn--sm" style="color:var(--brand)" onclick="Atlas.holdRelease(\''+b.id+'\')">Release (clean)</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.holdCapture(\''+b.id+'\')">Capture (damage)</button>':'')+'</div>'; }
-  function holdAuth(id){ var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var amt=Math.round(q.hold||0);
+  function holdAuth(id){ var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var amt=_r2(q.hold||0);
     if(amt<=0){ toast('Set a deposit hold in Settings > Money rules first'); return; }
     b.hold={amount:amt, status:'authorized', at:Date.now()}; _upsertBooking(b); _logEvent('booking','Authorized '+money(amt)+' refundable hold on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Hold authorized ('+money(amt)+') -- $0 in fees until you capture'); }
   function holdRelease(id){ var b=_getBooking(id); if(!b||!b.hold)return; b.hold.status='released'; b.hold.releasedAt=Date.now(); _upsertBooking(b); _logEvent('booking','Released the hold on '+b.id+' -- clean return',{booking:b.id}); save(); openBooking(id); toast('Hold released -- nothing charged'); }
@@ -4101,12 +4103,12 @@ const Atlas = (function(){
       return '<button class="cust-bk" onclick="Atlas.closeModal();Atlas.openBooking(\''+b.id+'\')">'
         +'<div style="flex:1;min-width:0;text-align:left"><div style="font-weight:650;font-size:13.5px">'+esc(b.asset||'-')+'</div>'
         +'<div style="font-size:12px;color:var(--muted)">'+_csvDate(b.startTs)+' &middot; '+esc(b.id)+(b.promoCode?(' &middot; '+esc(b.promoCode)):'')+'</div></div>'
-        +statusChip(b.status)+'<div class="tnum" style="font-weight:700;margin-left:10px">'+money(Math.round(q.total||0))+'</div></button>';
+        +statusChip(b.status)+'<div class="tnum" style="font-weight:700;margin-left:10px">'+money(q.total||0)+'</div></button>';
     }).join('')||'<div class="bk-lenhint" style="margin:0">No bookings on file yet &mdash; create one and it shows up here.</div>';
     var stat=function(l,v){ return '<div style="flex:1;text-align:center"><div style="font-size:20px;font-weight:800" class="tnum">'+v+'</div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">'+l+'</div></div>'; };
     openModal('<div class="modal__head"><h3>'+esc(c.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar" style="width:44px;height:44px;font-size:18px">'+esc((c.name||'?')[0])+'</span><div style="min-width:0"><div style="font-size:13px;color:var(--muted)">'+esc(c.email||'')+'</div>'+(c.phone?('<div style="font-size:13px;color:var(--muted)">'+esc(c.phone)+'</div>'):'')+'</div></div>'
-      +'<div style="display:flex;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin-bottom:16px">'+stat('Trips',trips)+stat('Spent',money(Math.round(spent)))+stat('Codes',String(Object.keys(codes).length))+'</div>'
+      +'<div style="display:flex;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin-bottom:16px">'+stat('Trips',trips)+stat('Spent',money(spent))+stat('Codes',String(Object.keys(codes).length))+'</div>'
       +(_loy().on?_custLoyaltyHtml(c,i):'')
       +_custGiftHtml(c)
       +'<div style="font-size:13px;font-weight:750;margin:0 0 8px">Booking history</div>'
@@ -4118,10 +4120,10 @@ const Atlas = (function(){
     if(!document.getElementById('anaKpis')) return;   // only when the Analytics panel is mounted
     // All derived from real bookings + your ledger -- reconciles with Overview + Reports (no hardcoded figures).
     var _nc=(DATA.bookings||[]).filter(_isCommitted);   // earned bookings -- revenue, count + avg all share this basis so they reconcile
-    var _rev=_nc.reduce((s,b)=>s+((b.quote&&b.quote.total)||0),0), _cnt=_nc.length, _avg=_cnt?Math.round(_rev/_cnt):0;
+    var _rev=_nc.reduce((s,b)=>s+((b.quote&&b.quote.total)||0),0), _cnt=_nc.length, _avg=_cnt?_r2(_rev/_cnt):0;
     var _byCust={}; _nc.forEach(b=>{ _byCust[b.cust]=(_byCust[b.cust]||0)+1; });
     var _cu=Object.keys(_byCust), _rep=_cu.filter(c=>_byCust[c]>=2).length, _repPct=_cu.length?Math.round(_rep/_cu.length*100):0;
-    const k=[['Total revenue',money(Math.round(_rev)),'anaRev'],[cap(_fterm('books')),_cnt.toLocaleString(),'count'],['Avg. '+_fterm('book'),money(_avg),'avg'],['Repeat customers',_repPct+'%','repeat'],['Net profit',money(Math.round(_netProfit())),'net']];
+    const k=[['Total revenue',money(_rev),'anaRev'],[cap(_fterm('books')),_cnt.toLocaleString(),'count'],['Avg. '+_fterm('book'),money(_avg),'avg'],['Repeat customers',_repPct+'%','repeat'],['Net profit',money(_netProfit()),'net']];
     document.getElementById('anaKpis').innerHTML=k.map(x=>`<div class="kpi kpi--clk" onclick="Atlas.drillKpi('${x[2]}')"><div class="kpi__top"><span class="kpi__label">${x[0]}</span></div>
       <div class="kpi__val tnum">${x[1]}</div><div class="kpi__hint">View breakdown &rarr;</div></div>`).join('');
     var _perAsset={}; _nc.forEach(b=>{ _perAsset[b.asset]=(_perAsset[b.asset]||0)+((b.quote&&b.quote.total)||0); });
@@ -4160,11 +4162,11 @@ const Atlas = (function(){
     var gross=0,disc=0,fees=0,tax=0,total=0; bks.forEach(function(b){ var q=b.quote||{}; gross+=(q.gross||q.subtotal||q.total||0); disc+=(q.disc||0); fees+=(q.feeTotal||0); tax+=(q.taxAmt||0); total+=(q.total||0); });
     el.innerHTML='<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>Bookings</span><span class="tnum">'+bks.length+'</span></div>'
-      +'<div class="mp-row"><span>Gross revenue (pre-tax)</span><span class="tnum">'+money(Math.round(gross))+'</span></div>'
-      +'<div class="mp-row mp-ok"><span>Discounts given</span><span class="tnum">&minus;'+money(Math.round(disc))+'</span></div>'
-      +(fees?'<div class="mp-row"><span>Fees</span><span class="tnum">'+money(Math.round(fees))+'</span></div>':'')
-      +'<div class="mp-row"><span>Tax collected</span><span class="tnum">'+money(Math.round(tax))+'</span></div>'
-      +'<div class="mp-row mp-total"><span>Total collected</span><span class="tnum">'+money(Math.round(total))+'</span></div></div>'
+      +'<div class="mp-row"><span>Gross revenue (pre-tax)</span><span class="tnum">'+money(gross)+'</span></div>'
+      +'<div class="mp-row mp-ok"><span>Discounts given</span><span class="tnum">&minus;'+money(disc)+'</span></div>'
+      +(fees?'<div class="mp-row"><span>Fees</span><span class="tnum">'+money(fees)+'</span></div>':'')
+      +'<div class="mp-row"><span>Tax collected</span><span class="tnum">'+money(tax)+'</span></div>'
+      +'<div class="mp-row mp-total"><span>Total collected</span><span class="tnum">'+money(total)+'</span></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'bookings\')">Bookings CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'tax\')">Tax summary CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'events\')">Activity log CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'accounting\')">QuickBooks / Xero</button></div>'
       +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card, Bookings CSV and Tax CSV all tie to the same bookings.</div>'; }
   var _logFilterBy='';
@@ -4186,20 +4188,20 @@ const Atlas = (function(){
   function downloadReport(kind){ var rows,name;
     if(kind==='bookings'){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r.from;});   // earned rows -- reconciles 1:1 with the report card + tax CSV (pending + cancelled shown in the Bookings tab)
       rows=[['Booking ID','Customer','Email','Asset','Start','Periods','Status','Promo','Gross','Discount','Tax','Total']];
-      bks.forEach(function(b){ var q=b.quote||{}; rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',Math.round(q.gross||q.subtotal||q.total||0),Math.round(q.disc||0),Math.round(q.taxAmt||0),Math.round(q.total||0)]); });
+      bks.forEach(function(b){ var q=b.quote||{}; rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',_c2(q.gross||q.subtotal||q.total||0),_c2(q.disc||0),_c2(q.taxAmt||0),_c2(q.total||0)]); });
       name='bookings'; }
     else if(kind==='tax'){ var r2=_repRange(); var b2=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r2.from;});
       var g=0,d=0,fe=0,t=0,ch=0,tot=0; b2.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b); g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); fe+=(q.feeTotal||0); t+=(q.taxAmt||0)+_collectedChargeTax(b); ch+=cc; tot+=(q.total||0)+cc; });   // Tax collected includes the tax embedded in taxable payment-widget/owner charges
-      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Fees','Tax collected','Add-on charges collected','Total collected'],[r2.label,b2.length,Math.round(g),Math.round(d),Math.round(fe),Math.round(t),Math.round(ch),Math.round(tot)]]; name='tax-summary'; }   // Gross - Discounts + Fees + Tax + Add-on charges == Total reconciles
+      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Fees','Tax collected','Add-on charges collected','Total collected'],[r2.label,b2.length,_c2(g),_c2(d),_c2(fe),_c2(t),_c2(ch),_c2(tot)]]; name='tax-summary'; }   // Gross - Discounts + Fees + Tax + Add-on charges == Total reconciles
     else if(kind==='accounting'){ var r3=_repRange(); var b3=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r3.from;});
       // Xero/QuickBooks-friendly sales rows (one invoice line per booking) -- import as sales invoices.
       rows=[['ContactName','InvoiceNumber','InvoiceDate','Description','Quantity','UnitAmount','TaxAmount','LineTotal','AccountCode']];
       b3.forEach(function(b){ var q=b.quote||{}; var _dt=_csvDate(b.startTs||b.createdAt);
-        var sub=Math.round((q.subtotal!=null)?q.subtotal:((q.gross||q.total||0)-(q.disc||0)));   // subtotal is ALREADY gross-minus-discount; the old code subtracted the discount a 2nd time (invoice wouldn't balance; a big discount even produced a negative sale line)
-        var tax=Math.round(q.taxAmt||0), fee=Math.round(q.feeTotal||0);
-        rows.push([b.cust||'',b.id,_dt,(b.asset||S.fleet.noun)+' rental',1,sub,tax,sub+tax,'200']);   // per-line: UnitAmount + TaxAmount == LineTotal
-        if(fee>0) rows.push([b.cust||'',b.id,_dt,'Fees & surcharges',1,fee,0,fee,'200']);
-        (b.charges||[]).forEach(function(c){ if(c.paidAt){ var ca=Math.round(c.amount||0), ctx=_chargeTax(c); rows.push([b.cust||'',b.id,_csvDate(c.paidAt),(c.label||'Add-on charge'),1,ca-ctx,ctx,ca,'200']); } }); });   // each collected charge = its own balancing invoice line (UnitAmount+Tax=LineTotal), taxable ones split out the tax
+        var sub=_r2((q.subtotal!=null)?q.subtotal:((q.gross||q.total||0)-(q.disc||0)));   // subtotal is ALREADY gross-minus-discount; the old code subtracted the discount a 2nd time (invoice wouldn't balance; a big discount even produced a negative sale line)
+        var tax=_r2(q.taxAmt||0), fee=_r2(q.feeTotal||0);
+        rows.push([b.cust||'',b.id,_dt,(b.asset||S.fleet.noun)+' rental',1,_c2(sub),_c2(tax),_c2(sub+tax),'200']);   // per-line: UnitAmount + TaxAmount == LineTotal
+        if(fee>0) rows.push([b.cust||'',b.id,_dt,'Fees & surcharges',1,_c2(fee),0,_c2(fee),'200']);
+        (b.charges||[]).forEach(function(c){ if(c.paidAt){ var ca=_r2(c.amount||0), ctx=_r2(_chargeTax(c)); rows.push([b.cust||'',b.id,_csvDate(c.paidAt),(c.label||'Add-on charge'),1,_c2(ca-ctx),_c2(ctx),_c2(ca),'200']); } }); });   // each collected charge = its own balancing invoice line (UnitAmount+Tax=LineTotal), taxable ones split out the tax
       name='accounting-quickbooks-xero'; }
     else { rows=[['Timestamp','Type','Event','By']]; _events().forEach(function(e){ rows.push([_stamp(e.t),e.type,e.text,e.by||'Owner']); }); name='activity-log'; }
     _downloadCsv(rows,name); }
@@ -4533,7 +4535,7 @@ const Atlas = (function(){
     const cols=[brand,shade(brand,-18),tint(brand,.4),tint(brand,.7),tint(brand,.85)];
     segs.forEach((s,i)=>{const ang=(s[1]||0)/100*Math.PI*2;ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,a,a+ang);ctx.closePath();ctx.fillStyle=cols[i%cols.length];ctx.fill();a+=ang;});
     ctx.beginPath();ctx.arc(cx,cy,ir,0,7);ctx.fillStyle=surf;ctx.fill();
-    ctx.fillStyle=ink;ctx.font='700 15px -apple-system';ctx.textAlign='center';ctx.fillText(money(Math.round(_sb.total)),cx,cy+2);ctx.fillStyle=muted;ctx.font='10px -apple-system';ctx.fillText('total',cx,cy+15);
+    ctx.fillStyle=ink;ctx.font='700 15px -apple-system';ctx.textAlign='center';ctx.fillText(money(_sb.total),cx,cy+2);ctx.fillStyle=muted;ctx.font='10px -apple-system';ctx.fillText('total',cx,cy+15);
     segs.slice(0,4).forEach((s,i)=>{const y=h/2-30+i*20;ctx.fillStyle=cols[i%cols.length];roundRect(ctx,w*0.62,y-8,11,11,3);ctx.fill();ctx.fillStyle=body;ctx.font='12px -apple-system';ctx.textAlign='left';ctx.fillText(`${s[0]}  ${s[1]}%`,w*0.62+18,y+1);});
   }
   function roundRect(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
@@ -4555,7 +4557,7 @@ const Atlas = (function(){
     var rev=nc.reduce(function(s,b){return s+((b.quote&&b.quote.total)||0);},0);
     var signed=(DATA.assets||[]).filter(function(a){return a.agreement&&(a.agreement.status==='signed'||a.agreement.status==='uploaded');}).length;
     var emails=_events().filter(function(e){return e.type==='email';}).length;
-    return [['Bookings',bks.length.toLocaleString()],['Gross revenue',money(Math.round(rev))],[cap(S.fleet.nouns),(DATA.assets||[]).length.toLocaleString()],['Customers',(DATA.customers||[]).length.toLocaleString()],['Signed contracts',signed],['Emails sent',emails]]; }
+    return [['Bookings',bks.length.toLocaleString()],['Gross revenue',money(rev)],[cap(S.fleet.nouns),(DATA.assets||[]).length.toLocaleString()],['Customers',(DATA.customers||[]).length.toLocaleString()],['Signed contracts',signed],['Emails sent',emails]]; }
   function openLiveDashboard(){ _logEvent('owner','Opened live Prestige Black dashboard'); try{ window.open('../index.html','_blank','noopener'); }catch(e){} toast('Opening your live dashboard'); }
   function checkUpdates(){ _logEvent('owner','Checked for updates'); toast('You are on the latest version (v'+APP_VERSION+')'); }
   function viewChangelog(){ openModal('<div class="modal__head"><h3>What is new &middot; v'+APP_VERSION+'</h3>'+_xBtn()+'</div><div class="modal__body"><div class="portal__docs" style="border:none;padding:0">'+APP_CHANGELOG.map(function(c){return '<div class="portal__doc" style="cursor:default"><span>&#10003; '+esc(c)+'</span></div>';}).join('')+'</div></div>'); }
@@ -4598,15 +4600,15 @@ const Atlas = (function(){
     }).join(''); }
   function domainSell(name,tld){ if(!_isOwnerAcct())return; var d=_dbiz(), cost=_tldCost(tld), price=_domainPrice(cost,d.markupPct);
     d.sold.unshift({name:name+'.'+tld, cost:cost, price:price, at:Date.now(), renews:true}); _dbizSave(d);
-    _logEvent('owner','Domain sold: '+name+'.'+tld+' (+'+money(Math.round(price-cost))+' margin)',{}); var p=document.getElementById('dbizPortfolio'); if(p) p.innerHTML=_dbizPortfolioHtml();
-    toast(name+'.'+tld+' sold (demo) &mdash; +'+money(Math.round(price-cost))+' margin'); }
+    _logEvent('owner','Domain sold: '+name+'.'+tld+' (+'+money(price-cost)+' margin)',{}); var p=document.getElementById('dbizPortfolio'); if(p) p.innerHTML=_dbizPortfolioHtml();
+    toast(name+'.'+tld+' sold (demo) &mdash; +'+money(price-cost)+' margin'); }
   function _dbizPortfolioHtml(){ var d=_dbiz(), n=d.sold.length;
     var oneTime=d.sold.reduce(function(s,x){return s+(x.price-x.cost);},0);
     var renewAnnual=d.sold.filter(function(x){return x.renews;}).reduce(function(s,x){return s+(x.price-x.cost);},0)*0.75;
     var perMo=renewAnnual/12;
     var kpi=function(l,v){ return '<div style="flex:1;min-width:88px;text-align:center"><div style="font-size:20px;font-weight:800" class="tnum">'+v+'</div><div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">'+l+'</div></div>'; };
-    var h='<div style="display:flex;gap:8px;flex-wrap:wrap;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin:12px 0">'+kpi('Domains',String(n))+kpi('Margin booked',money(Math.round(oneTime)))+kpi('Renewal / yr',money(Math.round(renewAnnual)))+kpi('Passive / mo',money(Math.round(perMo)))+'</div>';
-    if(n) h+='<div style="display:flex;flex-direction:column;gap:6px">'+d.sold.slice(0,6).map(function(x){ return '<div class="mp-row"><span class="mono" style="font-size:13px">'+esc(x.name)+'</span><span style="font-size:12px;color:var(--muted)">'+money(x.cost)+' &rarr; '+money(x.price)+' <b style="color:var(--ok)">+'+money(Math.round(x.price-x.cost))+'/yr</b></span></div>'; }).join('')+'</div>';
+    var h='<div style="display:flex;gap:8px;flex-wrap:wrap;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin:12px 0">'+kpi('Domains',String(n))+kpi('Margin booked',money(oneTime))+kpi('Renewal / yr',money(renewAnnual))+kpi('Passive / mo',money(perMo))+'</div>';
+    if(n) h+='<div style="display:flex;flex-direction:column;gap:6px">'+d.sold.slice(0,6).map(function(x){ return '<div class="mp-row"><span class="mono" style="font-size:13px">'+esc(x.name)+'</span><span style="font-size:12px;color:var(--muted)">'+money(x.cost)+' &rarr; '+money(x.price)+' <b style="color:var(--ok)">+'+money(x.price-x.cost)+'/yr</b></span></div>'; }).join('')+'</div>';
     else h+='<div class="bk-lenhint" style="margin:0">No domains sold yet. Search above and list one to start the margin stack.</div>';
     return h; }
   function _ownerDomainsHtml(){ var d=_dbiz();
@@ -5294,7 +5296,7 @@ const Atlas = (function(){
   function _aioIncidentReply(s){ return `Deep breath &mdash; let's protect you. First <b>document it</b>: dated photos + the signed condition report. Then I can help you (1) note it on the ${esc(_fterm('book'))}, (2) <b>keep the security deposit</b> or charge the difference, and (3) draft the message to the renter and your insurer. Don't release the deposit until it's resolved.`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('bookings')">Open the ${esc(_fterm('book'))}</button>`; }
   function _aioExpandReply(s){ var m=S.money, per=(m.rateModel==='day'?18:m.rateModel==='hour'?90:m.rateModel==='month'?1:3);
-    return `Love it &mdash; more ${esc(S.fleet.nouns)} = more revenue. At ${money(m.baseRate)}/${m.rateModel}, even ~60% booked a new ${esc(S.fleet.noun)} adds roughly <b>${money(Math.round(m.baseRate*per))}/mo</b>. Add it now and I'll price it and start marketing it for you.`
+    return `Love it &mdash; more ${esc(S.fleet.nouns)} = more revenue. At ${money(m.baseRate)}/${m.rateModel}, even ~60% booked a new ${esc(S.fleet.noun)} adds roughly <b>${money(m.baseRate*per)}/mo</b>. Add it now and I'll price it and start marketing it for you.`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('fleet');try{Atlas.addVehicle()}catch(e){}">Add a ${esc(S.fleet.noun)}</button>`; }
   // Market/gap research \u2014 fleet-specific. This is the seam where the live Atlas.io AI (worker + ANTHROPIC_KEY)
   // will run REAL market research on the owner's asset type + location on slow days; canned + personalized for now.
@@ -5533,7 +5535,7 @@ const Atlas = (function(){
     var out=[]; body.forEach(function(r){ var nm=String((iName>=0?r[iName]:r[0])||'').trim(); if(!nm) return;
       var rate=parseFloat(String(iRate>=0?r[iRate]:'').replace(/[^0-9.]/g,'')); var stRaw=String(iStatus>=0?r[iStatus]:'').trim().toLowerCase();
       var status=/maint/.test(stRaw)?'Maintenance':(/(on rent|rented|\bout\b)/.test(stRaw)?'On rent':'Available');
-      out.push({ name:nm.slice(0,60), rate:(rate>=0?Math.round(rate):null), status:status, type:String(iType>=0?r[iType]:'').trim().toLowerCase(), loc:String(iLoc>=0?r[iLoc]:'').trim().slice(0,40) }); });
+      out.push({ name:nm.slice(0,60), rate:(rate>=0?_r2(rate):null), status:status, type:String(iType>=0?r[iType]:'').trim().toLowerCase(), loc:String(iLoc>=0?r[iLoc]:'').trim().slice(0,40) }); });
     return out; }
   function previewImport(){ _importRows=_impMap(_parseCsv(val('impText'))); var el=document.getElementById('impPreview'); if(!el)return; var mapped=_importRows;
     if(!mapped.length){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Nothing to import yet &mdash; paste rows above (first row = column names).</div>'; return; }
@@ -5759,7 +5761,7 @@ const Atlas = (function(){
       extras:[], discount:disc, addons:0, status:'Pending', quote:q, source:'website', promoCode:code };
     _upsertBooking(b);
     if(code&&promo){ promo.used=(promo.used||0)+1; _logEvent('promo','Promo '+code+' redeemed on your website ('+b.id+')',{code:code,booking:b.id}); }
-    _logEvent('booking','Booking '+b.id+' from your website: '+asset+(code?(' -- promo '+code):''),{booking:b.id,total:Math.round(q.total)});
+    _logEvent('booking','Booking '+b.id+' from your website: '+asset+(code?(' -- promo '+code):''),{booking:b.id,total:_r2(q.total)});
     _sitePromo='';
     renderOverview(); renderBookings(); renderCustomers(); _bkBadge();   // fix: refresh Customers panel so a website visitor shows up live
     toast('New booking from your website \u2014 '+esc(asset)+(code?(' \u00b7 '+code+' applied'):''));
@@ -5872,21 +5874,21 @@ const Atlas = (function(){
   // to book, then the remaining balance. Gift credit reduces the rental owed. Add-on charges are billed + paid separately.
   // The refundable deposit HOLD is an authorization, never counted as paid revenue.
   function _portalMoney(b){ var q=b.quote||{}, p=b.portal||{};
-    var total=Math.round(q.total||0), gift=Math.round(_giftApplied(b));
+    var total=_r2(q.total||0), gift=Math.round(_giftApplied(b));
     var netTotal=Math.max(0, total-gift);                        // rental owed after gift credit
-    var reserve=Math.min(netTotal, Math.max(0, Math.round(q.dueNow||0)));   // deposit-to-reserve (capped at net)
+    var reserve=Math.min(netTotal, Math.max(0, _r2(q.dueNow||0)));   // deposit-to-reserve (capped at net)
     var reservePaid=!!p.reservePaidAt, balancePaid=!!p.balancePaidAt;
     var rentalPaid = balancePaid? netTotal : (reservePaid? reserve : 0);    // balancePaid settles the whole rental
     var rentalDue = Math.max(0, netTotal - rentalPaid);
     var chg=(b.charges||[]);
-    var chTotal=chg.reduce(function(s,c){return s+Math.round(c.amount||0);},0);
-    var chPaid=chg.reduce(function(s,c){return s+(c.paidAt?Math.round(c.amount||0):0);},0);
+    var chTotal=chg.reduce(function(s,c){return s+_r2(c.amount||0);},0);
+    var chPaid=chg.reduce(function(s,c){return s+(c.paidAt?_r2(c.amount||0):0);},0);
     var chDue=Math.max(0, chTotal-chPaid);
     var twoStep = reserve>0 && reserve<netTotal;                 // owner uses a partial deposit -> reserve then balance
     return { total:total, gift:gift, netTotal:netTotal, reserve:reserve, reservePaid:reservePaid, balancePaid:balancePaid,
-      rentalPaid:rentalPaid, rentalDue:rentalDue, chTotal:chTotal, chPaid:chPaid, chDue:chDue, hold:Math.round(q.hold||0),
+      rentalPaid:rentalPaid, rentalDue:rentalDue, chTotal:chTotal, chPaid:chPaid, chDue:chDue, hold:_r2(q.hold||0),
       collected:rentalPaid+chPaid, totalDue:rentalDue+chDue, twoStep:twoStep, paidInFull:(rentalDue===0) }; }
-  function _portalHomeHtml(b,p){ var pc=_portalCfg(), sec=pc.sections; var q=b.quote||{}; var total=Math.round(q.total||0), due=Math.round(q.dueNow||total), hold=Math.round(q.hold||0);
+  function _portalHomeHtml(b,p){ var pc=_portalCfg(), sec=pc.sections; var q=b.quote||{}; var total=_r2(q.total||0), due=_r2(q.dueNow||total), hold=_r2(q.hold||0);
     var signed=!!p.signedAt, paid=!!p.balancePaidAt, dep=!!p.depositPaidAt;
     var h='<div class="portal__body">'+(pc.welcome?'<div class="portal__welcome">'+esc(pc.welcome)+'</div>':'')
       +'<div class="portal__hi">Hi '+esc((b.cust||'there').split(' ')[0])+' \u{1F44B}</div>'
@@ -5894,7 +5896,7 @@ const Atlas = (function(){
       +'<div class="portal__row"><span>When</span><b>'+_bkWhen(b)+'</b></div>'
       +'<div class="portal__row"><span>Status</span>'+statusChip(b.status)+'</div>'
       +'<div class="portal__row"><span>Total</span><b>'+money(total)+'</b></div>'
-      +(_giftApplied(b)?('<div class="portal__row"><span>Gift credit</span><b>&minus;'+money(Math.round(_giftApplied(b)))+'</b></div><div class="portal__row"><span>Net total</span><b>'+money(Math.max(0,total-Math.round(_giftApplied(b))))+'</b></div>'):'')
+      +(_giftApplied(b)?('<div class="portal__row"><span>Gift credit</span><b>&minus;'+money(_giftApplied(b))+'</b></div><div class="portal__row"><span>Net total</span><b>'+money(Math.max(0,total-Math.round(_giftApplied(b))))+'</b></div>'):'')
       +(hold?'<div class="portal__row"><span>Refundable hold</span><b>'+money(hold)+'</b></div>':'')+'</div>';
     var acts='';
     if(sec.agreement) acts+=_pAct('Sign rental agreement', signed?('Signed '+_stamp(p.signedAt)):'Required before pickup', signed, 'Atlas.portalView(\'sign\')', signed?'View':'Sign');
@@ -5907,7 +5909,7 @@ const Atlas = (function(){
         acts+=_pAct('Pay balance', pm.balancePaid?('Paid '+_stamp(p.balancePaidAt)):('Due '+money(pm.rentalDue)), pm.balancePaid, 'Atlas.portalPay(\'balance\')', pm.balancePaid?'Paid':('Pay '+money(pm.rentalDue)));
       } }
     if(sec.deposit&&hold) acts+=_pAct('Refundable deposit hold', dep?('Authorized '+_stamp(p.depositPaidAt)):('Hold '+money(hold)), dep, 'Atlas.portalPay(\'deposit\')', dep?'Done':'Authorize');
-    _charges(b).forEach(function(c){ acts+=_pAct(esc(c.label), c.paidAt?('Paid '+_stamp(c.paidAt)):('Charge from '+esc(S.brand.name)), !!c.paidAt, 'Atlas.portalPayCharge(\''+c.id+'\')', c.paidAt?'Paid':('Pay '+money(Math.round(c.amount)))); });
+    _charges(b).forEach(function(c){ acts+=_pAct(esc(c.label), c.paidAt?('Paid '+_stamp(c.paidAt)):('Charge from '+esc(S.brand.name)), !!c.paidAt, 'Atlas.portalPayCharge(\''+c.id+'\')', c.paidAt?'Paid':('Pay '+money(c.amount))); });
     if(sec.upload) acts+=_pAct('Upload ID &amp; documents', p.docs.length?(p.docs.length+' on file'):'License, insurance, etc.', p.docs.length>0, 'Atlas.portalUpload()', 'Upload');
     var _rv=b.review, _cp=b.commsPref||{};
     if(b.status==='Completed'||_rv) acts+=_pAct('Leave a review', _rv?('You rated '+_rv.rating+'/5 &mdash; thank you!'):'Tell '+esc(S.brand.name)+' how it went', !!_rv, 'Atlas.portalView(\'review\')', _rv?'View':'Review');   // only solicit a review once the rental is complete (or show it if already left)
@@ -6050,7 +6052,7 @@ const Atlas = (function(){
   function _chargesOwnerHtml(b){ var cs=_charges(b); if(!cs.length) return '<div class="bk-lenhint" style="margin:0">No charges yet &mdash; add one and it shows up in the customer portal to pay.</div>';
     return '<div style="display:flex;flex-direction:column;gap:6px">'+cs.map(function(c){
       return '<div class="mp-row"><span style="min-width:0"><b style="color:var(--ink)">'+esc(c.label)+'</b> <span style="font-size:11px;color:var(--muted)">'+(c.paidAt?('paid '+_stamp(c.paidAt)):('sent '+_stamp(c.at)))+'</span></span>'
-        +'<span style="display:flex;gap:8px;align-items:center;flex:none"><b class="tnum">'+money(Math.round(c.amount))+'</b>'+(c.paidAt?'<span class="chip chip--ok" style="font-size:11px"><span class="dot"></span>Paid</span>':'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:4px 8px" onclick="Atlas.bkRmCharge(\''+b.id+'\',\''+c.id+'\')">Remove</button>')+'</span></div>';
+        +'<span style="display:flex;gap:8px;align-items:center;flex:none"><b class="tnum">'+money(c.amount)+'</b>'+(c.paidAt?'<span class="chip chip--ok" style="font-size:11px"><span class="dot"></span>Paid</span>':'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:4px 8px" onclick="Atlas.bkRmCharge(\''+b.id+'\',\''+c.id+'\')">Remove</button>')+'</span></div>';
     }).join('')+'</div>'; }
   function bkAddCharge(id){ var b=_getBooking(id); if(!b)return;
     openModal('<div class="modal__head"><h3>Send a charge</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -6061,7 +6063,7 @@ const Atlas = (function(){
   function sendCharge(id){ var b=_getBooking(id); if(!b)return; var label=(val('chLabel')||'').trim(), amt=parseFloat(val('chAmt'))||0;
     if(!label){ toast('Add a description'); return; } if(amt<=0){ toast('Enter an amount'); return; }
     _charges(b).push({id:_chId(), label:label, amount:amt, at:Date.now(), paidAt:null}); _upsertBooking(b);
-    _logEvent('booking','Charge sent to portal: '+label+' '+money(Math.round(amt))+' on '+b.id,{booking:b.id});
+    _logEvent('booking','Charge sent to portal: '+label+' '+money(amt)+' on '+b.id,{booking:b.id});
     closeModal(); openBooking(id); toast('Charge sent to the customer portal'); }
   function bkRmCharge(id,cid){ var b=_getBooking(id); if(!b)return; b.charges=_charges(b).filter(function(c){return c.id!==cid;}); _upsertBooking(b); openBooking(id); }
   // ---- Incident / damage record on a booking (log it, then bill it to the portal in one tap) ----
@@ -6103,9 +6105,9 @@ const Atlas = (function(){
     var chip='<span class="chip '+(st==='settled'?'chip--ok':st==='filed'?'chip--warn':'chip--danger')+'"><span class="dot"></span>'+(st==='settled'?'Settled':st==='filed'?'Filed with insurer':'Draft')+'</span>';
     var rec=_claimRecovered(b);
     var rows='<div class="mp" style="margin:10px 0">'
-      +'<div class="mp-row"><span>Estimated damage</span><span class="tnum">'+money(Math.round(cl.estAmount||0))+'</span></div>'
-      +(rec.total?'<div class="mp-row mp-ok"><span>Recovered (deposit + charges)</span><span class="tnum">'+money(Math.round(rec.total))+'</span></div>':'')
-      +(cl.settledAmount!=null?'<div class="mp-row mp-total"><span>Insurer settlement</span><span class="tnum">'+money(Math.round(cl.settledAmount))+'</span></div>':'')
+      +'<div class="mp-row"><span>Estimated damage</span><span class="tnum">'+money(cl.estAmount||0)+'</span></div>'
+      +(rec.total?'<div class="mp-row mp-ok"><span>Recovered (deposit + charges)</span><span class="tnum">'+money(rec.total)+'</span></div>':'')
+      +(cl.settledAmount!=null?'<div class="mp-row mp-total"><span>Insurer settlement</span><span class="tnum">'+money(cl.settledAmount)+'</span></div>':'')
       +((cl.insurer&&cl.insurer.name)?'<div class="mp-row"><span>Insurer</span><span style="color:var(--ink);text-align:right;max-width:62%">'+esc(cl.insurer.name)+((cl.insurer.claimNo)?(' &middot; #'+esc(cl.insurer.claimNo)):'')+'</span></div>':'')+'</div>';
     var btns='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClaimEdit(\''+b.id+'\')">Edit</button>'
@@ -6150,10 +6152,10 @@ const Atlas = (function(){
     var incRows=inc.length?inc.map(function(x,i){ return '<tr><td>'+(i+1)+'</td><td>'+esc(x.desc)+'</td><td class="r">'+_stamp(x.at)+'</td><td class="r">'+(x.cost?money(x.cost):'&mdash;')+'</td></tr>'; }).join('')
       : '<tr><td colspan="4" class="muted">No itemized incidents logged &mdash; see the estimate below.</td></tr>';
     var ins=cl.insurer||{};
-    var rowsFin='<tr><td>Estimated damage</td><td class="r">'+money(Math.round(cl.estAmount||0))+'</td></tr>'
-      +(rec.deposit?('<tr><td>Recovered from deposit / hold</td><td class="r">'+money(Math.round(rec.deposit))+'</td></tr>'):'')
-      +(rec.charged?('<tr><td>Recovered from renter charges (paid)</td><td class="r">'+money(Math.round(rec.charged))+'</td></tr>'):'')
-      +(cl.settledAmount!=null?('<tr><td>Insurer settlement</td><td class="r">'+money(Math.round(cl.settledAmount))+'</td></tr>'):'')
+    var rowsFin='<tr><td>Estimated damage</td><td class="r">'+money(cl.estAmount||0)+'</td></tr>'
+      +(rec.deposit?('<tr><td>Recovered from deposit / hold</td><td class="r">'+money(rec.deposit)+'</td></tr>'):'')
+      +(rec.charged?('<tr><td>Recovered from renter charges (paid)</td><td class="r">'+money(rec.charged)+'</td></tr>'):'')
+      +(cl.settledAmount!=null?('<tr><td>Insurer settlement</td><td class="r">'+money(cl.settledAmount)+'</td></tr>'):'')
       +'<tr class="tot"><td>Net still outstanding</td><td class="r">'+money(Math.max(0,Math.round((cl.estAmount||0)-rec.total-(cl.settledAmount||0))))+'</td></tr>';
     var _pgrid=function(t,arr){ return arr.length?('<h2>'+t+' ('+arr.length+')</h2><div class="ph">'+arr.map(function(m){ return '<figure><img src="'+m.src+'"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):''; };
     var photoHtml=_pgrid('Condition evidence &mdash; at pickup',pickPh)+_pgrid('Condition evidence &mdash; at return',retPh);
@@ -6181,7 +6183,7 @@ const Atlas = (function(){
       +'<h2>Parties &amp; rental</h2><div class="grid">'
         +'<div><b>Renter</b>'+esc(b.cust||'&mdash;')+'</div><div><b>'+esc(cap(S.fleet.noun))+'</b>'+esc(b.asset||'&mdash;')+'</div>'
         +'<div><b>Email</b>'+esc(b.custEmail||'&mdash;')+'</div><div><b>Rental dates</b>'+_bkWhen(b)+'</div>'
-        +'<div><b>Phone</b>'+esc(b.phone||'&mdash;')+'</div><div><b>Booking total</b>'+money(Math.round(q.total||0))+'</div>'
+        +'<div><b>Phone</b>'+esc(b.phone||'&mdash;')+'</div><div><b>Booking total</b>'+money(q.total||0)+'</div>'
         +'<div><b>Identity</b>'+esc(verified)+'</div><div><b>Status</b>'+(cl.status==='settled'?'Settled':cl.status==='filed'?'Filed with insurer':'Draft')+'</div>'
       +'</div>'
       +'<h2>Itemized damage / incidents</h2><table><thead><tr><th>#</th><th>Description</th><th class="r">Logged</th><th class="r">Est. cost</th></tr></thead><tbody>'+incRows+'</tbody></table>'
@@ -6194,7 +6196,7 @@ const Atlas = (function(){
       +'</div></body></html>';
   }
   function portalPayCharge(cid){ var b=_pBk(); if(!b)return; var c=_charges(b).filter(function(x){return x.id===cid;})[0]; if(!c||c.paidAt)return;
-    c.paidAt=Date.now(); _upsertBooking(b); save(); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(Math.round(c.amount))+') on '+b.id,{booking:b.id}); _renderPortal(); try{ renderOverview(); renderBookings(); }catch(e){} toast('Payment received'); }
+    c.paidAt=Date.now(); _upsertBooking(b); save(); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(c.amount)+') on '+b.id,{booking:b.id}); _renderPortal(); try{ renderOverview(); renderBookings(); }catch(e){} toast('Payment received'); }
   function portalPayInstallment(idx){ var b=_pBk(); if(!b||!b.plan||!b.plan.installments)return; var x=b.plan.installments[idx]; if(!x||x.paidAt)return;   // fix: renter-payable installments (own schedule -- never touches b.charges/balance, so no double-count); mirrors owner bkPlanPaid so both sides agree
     x.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Portal: installment paid ('+(x.label||'')+') on '+b.id,{booking:b.id}); save(); _renderPortal(); toast('Installment paid \u2014 thank you!'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ if(!_portalCfg().sections.agreement){ toast('No signature is required for this booking'); return; } portalView('sign'); return; }   // fix: gate the sign route on the agreement section toggle
@@ -6209,18 +6211,18 @@ const Atlas = (function(){
   /* ============================================================ BRANDED ITEMIZED RECEIPTS ============================================================ */
   function _receiptNo(b){ return 'R-'+String(b.id||'').replace(/[^0-9]/g,''); }
   function _receiptItems(b){ var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons||0,extras:b.extras||[],discount:b.discount||{type:'none'}});
-    var m=S.money, rt=(b.rate!=null?b.rate:(m.baseRate||0)), base=Math.round(rt*(b.periods||1)); var items=[];
+    var m=S.money, rt=(b.rate!=null?b.rate:(m.baseRate||0)), base=_r2(rt*(b.periods||1)); var items=[];
     items.push({label:money(rt)+' x '+(b.periods||1)+' '+_perUnit(), amt:base});
     (q.extrasLines||[]).forEach(function(l){ items.push({label:l.name, amt:Math.round(l.amt)}); });
-    if(q.disc) items.push({label:'Discount'+(b.promoCode?(' ('+b.promoCode+')'):''), amt:-Math.round(q.disc), disc:true});
+    if(q.disc) items.push({label:'Discount'+(b.promoCode?(' ('+b.promoCode+')'):''), amt:-_r2(q.disc), disc:true});
     (q.fees||[]).forEach(function(f){ items.push({label:f.name, amt:Math.round(f.amt)}); });
-    if(q.taxAmt) items.push({label:'Tax'+(m.tax?(' ('+m.tax+'%)'):''), amt:Math.round(q.taxAmt)});
+    if(q.taxAmt) items.push({label:'Tax'+(m.tax?(' ('+m.tax+'%)'):''), amt:_r2(q.taxAmt)});
     return {q:q, items:items}; }
   function _receiptHtml(b){ var r=_receiptItems(b), q=r.q, pm=_portalMoney(b);
     var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" style="height:36px;border-radius:8px">'):('<div class="rcpt-logo" style="background:'+S.brand.color+'">'+esc(S.brand.initial)+'</div>');
     var rows=r.items.map(function(it){ return '<div class="rcpt-line'+(it.disc?' rcpt-disc':'')+'"><span>'+esc(it.label)+'</span><span class="tnum">'+(it.amt<0?'-'+money(-it.amt):money(it.amt))+'</span></div>'; }).join('');
     var extra=pm.gift||pm.chTotal;   // when there is a gift or add-on charges, "Total" becomes "Rental total" and we show the breakdown
-    var chLines=(b.charges||[]).map(function(c){ return '<div class="rcpt-line"><span>'+esc(c.label)+' <span class="rcpt-mut">'+(c.paidAt?'paid':'due')+'</span></span><span class="tnum">'+money(Math.round(c.amount||0))+'</span></div>'; }).join('');
+    var chLines=(b.charges||[]).map(function(c){ return '<div class="rcpt-line"><span>'+esc(c.label)+' <span class="rcpt-mut">'+(c.paidAt?'paid':'due')+'</span></span><span class="tnum">'+money(c.amount||0)+'</span></div>'; }).join('');
     return '<div class="rcpt"><div class="rcpt-hd">'+logo+'<div style="flex:1;min-width:0"><b>'+esc(S.brand.name)+'</b><div class="rcpt-sub">Receipt '+_receiptNo(b)+'</div></div><div class="rcpt-date">'+_stamp(b.createdAt||Date.now())+'</div></div>'
       +'<div class="rcpt-parties"><div><div class="rcpt-lbl">Billed to</div>'+esc(b.cust||'-')+(b.custEmail?('<br><span class="rcpt-mut">'+esc(b.custEmail)+'</span>'):'')+'</div>'
         +'<div style="text-align:right"><div class="rcpt-lbl">Booking</div>'+esc(b.id)+'<br><span class="rcpt-mut">'+esc(b.asset)+' &middot; '+_bkWhen(b)+'</span></div></div>'
@@ -6244,7 +6246,7 @@ const Atlas = (function(){
     r.items.forEach(function(it){ t+=_pad(it.label,32)+(it.amt<0?'-'+money(-it.amt):money(it.amt))+'\n'; });
     t+='\n'+_pad(extra?'Rental total':'Total',32)+money(pm.total)+'\n';
     if(pm.gift) t+=_pad('Gift credit',32)+'-'+money(pm.gift)+'\n';
-    (b.charges||[]).forEach(function(c){ t+=_pad(c.label+' ('+(c.paidAt?'paid':'due')+')',32)+money(Math.round(c.amount||0))+'\n'; });
+    (b.charges||[]).forEach(function(c){ t+=_pad(c.label+' ('+(c.paidAt?'paid':'due')+')',32)+money(c.amount||0)+'\n'; });
     t+=_pad('Amount paid',32)+money(pm.collected)+'\n'+_pad('Balance due',32)+money(pm.totalDue)+'\n';
     if(pm.hold) t+=_pad('+ Refundable deposit hold',32)+money(pm.hold)+'\n';
     t+='\n'+S.brand.name+' -- '+_siteUrl()+'\nManaged & securely processed through Atlas Rental.io -- atlasrental.io\n';
