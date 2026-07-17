@@ -546,6 +546,30 @@ table.tbl{width:100%;border-collapse:collapse}
 .demo-exit.on{display:flex}
 .demo-exit b{color:#8FE3C6;font-weight:700}
 .demo-exit button{background:#2FA576;border:0;color:#fff;font-weight:750;font-size:12px;border-radius:999px;padding:5px 12px;font-family:inherit}
+/* full-screen live map */
+.trk-map-wrap.trk-fs{position:fixed;inset:0;z-index:8600;margin:0;border-radius:0;height:100vh;width:100vw;max-width:none}
+.trk-map-wrap.trk-fs #trkMap{height:100vh;width:100vw}
+.trk-fs-exit{position:fixed;top:calc(12px + env(safe-area-inset-top));right:12px;z-index:8700;display:none;width:40px;height:40px;border-radius:50%;background:#0E1C15;color:#fff;border:0;place-items:center;box-shadow:0 10px 26px -8px rgba(0,0,0,.5)}
+body.trk-fs-on .trk-fs-exit{display:grid}
+.trk-fs-exit svg{width:15px;height:15px}
+/* 3D turn-by-turn navigation to a moving asset */
+.nav3d{position:fixed;inset:0;z-index:9400;display:none;background:linear-gradient(#0a1712 0%,#0d2019 40%,#0f261d 100%);overflow:hidden}
+.nav3d.on{display:block}
+.n3d-view{position:absolute;inset:0;overflow:hidden;perspective:900px}
+#n3dMap{position:absolute;left:-20%;top:-8%;width:140%;height:122%;transform:rotateX(56deg);transform-origin:50% 64%}
+.n3d-route{fill:none;stroke:#39d98a;stroke-width:9;stroke-linecap:round;stroke-linejoin:round;opacity:.96}
+.n3d-drv{fill:#fff;stroke:#1E6E4E;stroke-width:1.4}
+.n3d-dest__r{fill:rgba(47,165,118,.28)} .n3d-dest__d{fill:#2FA576;stroke:#fff;stroke-width:1.6}
+.n3d-base{fill:#9AA0AA}
+.n3d-top{position:absolute;top:calc(12px + env(safe-area-inset-top));left:12px;right:64px;z-index:2;background:#0E1C15;color:#fff;border-radius:14px;padding:13px 16px;box-shadow:0 14px 34px -10px rgba(0,0,0,.6)}
+.n3d-top__d{font-size:17px;font-weight:750;letter-spacing:-.01em}
+.n3d-top__s{font-size:12.5px;color:rgba(255,255,255,.66);margin-top:2px}
+.n3d-card{position:absolute;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:2;background:#fff;border-radius:16px;padding:12px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 16px 40px -12px rgba(0,0,0,.5)}
+.n3d-card__l{flex:1;min-width:0;display:flex;flex-direction:column}
+.n3d-card__l b{color:#15201A;font-size:15px}
+.n3d-card__l span{color:#7C867F;font-size:12.5px}
+.n3d-x{position:absolute;top:calc(12px + env(safe-area-inset-top));right:12px;z-index:3;width:40px;height:40px;border-radius:50%;background:#0E1C15;color:#fff;border:0;display:grid;place-items:center;box-shadow:0 10px 26px -8px rgba(0,0,0,.5)}
+.n3d-x svg{width:15px;height:15px}
 .aio-input{padding:14px 16px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--line-2);display:flex;gap:9px;background:var(--surface)}
 .aio-input input{flex:1;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:13.5px;font-family:inherit}
 .aio-input input:focus{outline:none;border-color:var(--brand)}
@@ -3534,13 +3558,14 @@ const Atlas = (function(){
       v.lastPing=Date.now();
     });
     _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); if(_trkSel) _trkRenderDetail();
+    if(_n3d && !_n3d.arrived) _n3dReroute();   // 3D nav: the route follows the asset live as it moves
     _trkSaveTick++; if(_trkSaveTick%12===0) save(); }
   function _trkStart(){ _trkStop(); if(_trackers().connected) _trkTimer=setInterval(_trkTick,2200); }
   function _trkStop(){ if(_trkTimer){ clearInterval(_trkTimer); _trkTimer=null; } }
   function trkRefresh(){ if(!_trackers().connected)return; Object.keys(_trackers().vehicles).forEach(function(id){ _trackers().vehicles[id].lastPing=Date.now(); }); _trkTick(); _trkStart(); toast('Live positions refreshed'); }
   function renderTracking(){ var body=document.getElementById('trkBody'), top=document.getElementById('trkTopActions'); if(!body)return; var t=_trackers();
     if(!t.connected){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_trkConnectHtml(); return; }
-    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center"><span class="trk-live"><i></i>Live</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
+    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="trk-live"><i></i>Live</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkFullscreen()"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Full screen</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
     body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
@@ -3635,7 +3660,8 @@ const Atlas = (function(){
       +_telCell('Speed', (v.status==='moving'?Math.round(v.speed):0)+' mph')+_telCell('Heading', _compass(v.heading))+_telCell('Miles today', Math.round(v.milesToday))
       +_telCell('Near', v.street)+_telCell('From base', de.mi.toFixed(1)+' mi')+_telCell('ETA', de.eta+' min')
       +_telCell('Last ping','just now')+_telCell('On trip', bk?(bk.id+' \u00b7 '+bk.cust):'Not on a trip')
-      +'</div><div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><button class="btn '+(routing?'btn--ghost':'btn--primary')+' btn--sm" onclick="Atlas.trkRoute(\''+_trkSel+'\')">'+(routing?'Clear route':'Route on map')+'</button>'
+      +'</div><div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><button class="btn btn--primary btn--sm" onclick="Atlas.trkNav3d(\''+_trkSel+'\')"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M8 1.5l6 3.2-6 9.8-6-9.8 6-3.2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg> 3D Navigate</button>'
+      +'<button class="btn '+(routing?'btn--ghost':'btn--ghost')+' btn--sm" onclick="Atlas.trkRoute(\''+_trkSel+'\')">'+(routing?'Clear route':'Route on map')+'</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkNavApp(\'apple\')"><svg viewBox="0 0 20 20" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M10 2a5 5 0 015 5c0 3.8-5 11-5 11S5 10.8 5 7a5 5 0 015-5z" stroke="currentColor" stroke-width="1.5"/></svg> Apple Maps</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkNavApp(\'google\')"><svg viewBox="0 0 20 20" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M10 2a5 5 0 015 5c0 3.8-5 11-5 11S5 10.8 5 7a5 5 0 015-5z" stroke="currentColor" stroke-width="1.5"/></svg> Google Maps</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkSelect(\''+_trkSel+'\')">Close</button></div></div></div>'; }
@@ -3646,6 +3672,55 @@ const Atlas = (function(){
     _logEvent('tracker','Navigated to '+(a.name||'vehicle')+' via '+(kind==='apple'?'Apple':'Google')+' Maps',{asset:_trkSel});
     toast('Opening '+(kind==='apple'?'Apple':'Google')+' Maps directions'); }
   function _telCell(l,v){ return '<div class="trk-tel__c"><div class="trk-tel__l">'+l+'</div><div class="trk-tel__v">'+esc(String(v))+'</div></div>'; }
+  // ---- Full-screen map + 3D turn-by-turn navigation to a live-moving asset --------------------------------
+  var _trkFS=false;
+  function trkFullscreen(){ var w=document.querySelector('.trk-map-wrap'); if(!w)return; _trkFS=!_trkFS; w.classList.toggle('trk-fs',_trkFS); document.body.classList.toggle('trk-fs-on',_trkFS);
+    if(_trkFS && !document.getElementById('trkFsExit')){ var b=document.createElement('button'); b.id='trkFsExit'; b.className='trk-fs-exit'; b.setAttribute('aria-label','Exit full screen'); b.onclick=trkFullscreen; b.innerHTML='<svg viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'; document.body.appendChild(b); } }
+  var _n3d=null;
+  function trkNav3d(id){ id=id||_trkSel; if(!id)return; var v=_trackers().vehicles[id]; if(!v)return;
+    var b=_trkProject(TRK_BASE.lat,TRK_BASE.lng), p=_trkProject(v.lat,v.lng);
+    _ensureN3dDom();
+    _n3d={ id:id, drv:{x:b.x,y:b.y}, path:_n3dRoute(b.x,b.y,p.x,p.y), seg:0, t:0, steps:[], stepI:0, arrived:false, bearing:0, lastDest:{x:p.x,y:p.y} };
+    _n3dMakeSteps();
+    document.getElementById('nav3d').classList.add('on'); document.documentElement.style.overflow='hidden';
+    var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]||{}; _logEvent('tracker','3D navigation started to '+(a.name||'asset'),{asset:id});
+    clearInterval(_n3d.timer); _n3d.timer=setInterval(_n3dLoop, 70); _n3dDraw(); }
+  function _n3dRoute(bx,by,px,py){ var midx=bx+(px-bx)*0.5;   // Manhattan-ish route along the grid: over, then down, then in
+    return [{x:bx,y:by},{x:midx,y:by},{x:midx,y:py},{x:px,y:py}].filter(function(pt,i,arr){ return i===0 || Math.hypot(pt.x-arr[i-1].x,pt.y-arr[i-1].y)>4; }); }
+  function _n3dCompass(deg){ var d=['east','southeast','south','southwest','west','northwest','north','northeast']; return d[((Math.round(deg/45)%8)+8)%8]; }
+  function _n3dTurn(prev,cur){ var d=((cur-prev+540)%360)-180; return d>25?'Turn right':(d<-25?'Turn left':'Continue'); }
+  function _n3dMakeSteps(){ var P=_n3d.path, steps=[]; for(var i=1;i<P.length;i++){ var a=P[i-1], b=P[i]; var ang=Math.atan2(b.y-a.y,b.x-a.x)*180/Math.PI; var st=_trkStreet();
+      steps.push({ang:ang, txt:(i===1?('Head '+_n3dCompass(ang)+' on '+st):(_n3dTurn(steps.length?steps[steps.length-1].ang:0,ang)+' onto '+st))}); }
+    steps.push({ang:steps.length?steps[steps.length-1].ang:0, txt:'Arrive at your '+esc(S.fleet.noun), arrive:true}); _n3d.steps=steps; _n3d.stepI=0; }
+  function _n3dLoop(){ if(!_n3d)return; var P=_n3d.path; if(_n3d.seg>=P.length-1){ return _n3dArrive(); }
+    var a=P[_n3d.seg], b=P[_n3d.seg+1]; var segLen=Math.hypot(b.x-a.x,b.y-a.y)||1; _n3d.t+=3.6/segLen;
+    if(_n3d.t>=1){ _n3d.t=0; _n3d.seg++; if(_n3d.stepI<_n3d.steps.length-1)_n3d.stepI++; if(_n3d.seg>=P.length-1){ return _n3dArrive(); } a=P[_n3d.seg]; b=P[_n3d.seg+1]; }
+    _n3d.drv.x=a.x+(b.x-a.x)*_n3d.t; _n3d.drv.y=a.y+(b.y-a.y)*_n3d.t; _n3d.bearing=Math.atan2(b.y-a.y,b.x-a.x)*180/Math.PI; _n3dDraw(); }
+  function _n3dArrive(){ if(!_n3d||_n3d.arrived)return; _n3d.arrived=true; clearInterval(_n3d.timer);
+    var top=document.getElementById('n3dTop'); if(top) top.innerHTML='<div class="n3d-top__d">You have arrived</div><div class="n3d-top__s">Reached your '+esc(S.fleet.noun)+'</div>'; _n3dDraw(); }
+  function _n3dReroute(){ if(!_n3d||_n3d.arrived)return; var v=_trackers().vehicles[_n3d.id]; if(!v)return; var p=_trkProject(v.lat,v.lng);
+    if(Math.hypot(p.x-_n3d.lastDest.x,p.y-_n3d.lastDest.y)<22) return;   // only re-route when the asset actually moved
+    _n3d.lastDest={x:p.x,y:p.y}; _n3d.path=_n3dRoute(_n3d.drv.x,_n3d.drv.y,p.x,p.y); _n3d.seg=0; _n3d.t=0; _n3dMakeSteps(); }
+  function _n3dDraw(){ if(!_n3d)return; var svg=document.getElementById('n3dMap'); if(!svg)return;
+    var v=_trackers().vehicles[_n3d.id]; var dest=v?_trkProject(v.lat,v.lng):_n3d.path[_n3d.path.length-1];
+    var vw=380, vh=250; svg.setAttribute('viewBox',(_n3d.drv.x-vw/2).toFixed(1)+' '+(_n3d.drv.y-vh*0.6).toFixed(1)+' '+vw+' '+vh);
+    var base=_trkProject(TRK_BASE.lat,TRK_BASE.lng);
+    var d='M'+_n3d.path.map(function(pt){return pt.x.toFixed(1)+','+pt.y.toFixed(1);}).join(' L');
+    svg.innerHTML=_trkMapBg()
+      +'<path d="'+d+'" class="n3d-route"/>'
+      +'<circle cx="'+base.x.toFixed(1)+'" cy="'+base.y.toFixed(1)+'" r="5" class="n3d-base"/>'
+      +'<g transform="translate('+dest.x.toFixed(1)+','+dest.y.toFixed(1)+')"><circle r="9" class="n3d-dest__r"/><circle r="5" class="n3d-dest__d"/></g>'
+      +'<g transform="translate('+_n3d.drv.x.toFixed(1)+','+_n3d.drv.y.toFixed(1)+') rotate('+(_n3d.bearing+90).toFixed(0)+')"><path d="M0,-10 L6.5,8 L0,3.5 L-6.5,8 Z" class="n3d-drv"/></g>';
+    if(!_n3d.arrived){ var s=_n3d.steps[_n3d.stepI]||{}, nx=_n3d.steps[_n3d.stepI+1]; var top=document.getElementById('n3dTop');
+      if(top) top.innerHTML='<div class="n3d-top__d">'+esc(s.txt||'')+'</div>'+((nx&&!s.arrive)?('<div class="n3d-top__s">Then '+esc(nx.txt)+'</div>'):''); }
+    var de=v?_trkDistETA(v):{mi:0,eta:0}, a=(DATA.assets||[]).filter(function(x){return x.id===_n3d.id;})[0]||{};
+    var card=document.getElementById('n3dCard'); if(card) card.innerHTML='<div class="n3d-card__l"><b>'+esc(a.name||'Asset')+'</b><span>'+(_n3d.arrived?'Arrived':(de.eta+' min &middot; '+de.mi.toFixed(1)+' mi away'))+'</span></div><button class="btn btn--primary btn--sm" onclick="Atlas.trkNavApp(\'apple\')">Open in Maps</button>'; }
+  function exitNav3d(){ if(_n3d){ clearInterval(_n3d.timer); } _n3d=null; var el=document.getElementById('nav3d'); if(el)el.classList.remove('on'); document.documentElement.style.overflow=''; }
+  function _ensureN3dDom(){ if(document.getElementById('nav3d'))return; var d=document.createElement('div'); d.id='nav3d'; d.className='nav3d';
+    d.innerHTML='<div class="n3d-view"><svg id="n3dMap" viewBox="0 0 380 250" preserveAspectRatio="xMidYMid slice"></svg></div>'
+      +'<div class="n3d-top" id="n3dTop"></div>'
+      +'<button class="n3d-x" onclick="Atlas.exitNav3d()" aria-label="Exit navigation"><svg viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>'
+      +'<div class="n3d-card" id="n3dCard"></div>'; document.body.appendChild(d); }
   function _permCount(p){ var mo=PERM_MODS.filter(function(m){return p.mods&&p.mods[m[0]];}).length, ca=PERM_CAPS.filter(function(c){return p.caps&&p.caps[c[0]];}).length; return {mo:mo,ca:ca}; }
   function _permSummary(p){ var c=_permCount(p); return c.mo+' of '+PERM_MODS.length+' areas &middot; '+(c.ca?(c.ca+' action'+(c.ca===1?'':'s')):'view-only'); }
   function renderTeam(){
@@ -5227,7 +5302,7 @@ const Atlas = (function(){
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,togglePromo,deletePromo,renderReports,downloadReport,applySitePromo,replyReview,
-    renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,
+    renderTracking,openTrackerConnect,connectTracker,disconnectTracker,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalUpload,portalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
