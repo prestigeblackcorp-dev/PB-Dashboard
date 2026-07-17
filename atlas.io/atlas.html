@@ -2680,7 +2680,9 @@ const Atlas = (function(){
       +'<div class="field"><label>Email</label><input class="input" id="aTenEmail" value="'+esc(t.email||'')+'" placeholder="'+rl+'@email.com"'+dis+'></div>'
       +_agreementRow(id,ro)
       +(ro?'':'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:16px 0 8px">Blocked / unavailable days</div>'+_blackoutHtml(a)+'<button class="btn btn--ghost btn--sm" style="margin-top:10px" onclick="Atlas.assetBlock(\''+id+'\')">+ Block days</button>')
-      +(ro? '<div class="bk-lenhint" style="margin:0">Read-only &mdash; you don\'t have edit access.</div>'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 6px"><span style="font-size:13px;font-weight:750;color:var(--ink)">Service &amp; mileage log</span>'+(ro?'':'<button class="btn btn--ghost btn--sm" onclick="Atlas.assetLogService(\''+id+'\')">+ Log service</button>')+'</div>'+_maintHtml(a)
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 6px"><span style="font-size:13px;font-weight:750;color:var(--ink)">Documents</span>'+(ro?'':'<button class="btn btn--ghost btn--sm" onclick="Atlas.assetAddDoc(\''+id+'\')">+ Add document</button>')+'</div>'+_docVaultHtml(a)
+      +(ro? '<div class="bk-lenhint" style="margin:14px 0 0">Read-only &mdash; you don\'t have edit access.</div>'
           : '<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveAsset(\''+id+'\')">Save</button><button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.delAsset(\''+id+'\')">Remove this '+esc(S.fleet.noun)+'</button>')
       +'</div>');
   }
@@ -2692,6 +2694,33 @@ const Atlas = (function(){
     _saveAssets(); closeModal(); renderFleet(); renderOverview(); toast(esc(a.name)+' saved');
   }
   function delAsset(id){ if(!_guard('fleetEdit'))return; if(!confirm('Remove this '+S.fleet.noun+'?'))return; DATA.assets=DATA.assets.filter(function(x){return x.id!==id;}); _saveAssets(); closeModal(); renderFleet(); renderOverview(); var fb=document.getElementById('fleetBadge'); if(fb)fb.textContent=DATA.assets.length; toast('Removed'); }
+  // ---- Asset service/mileage log + per-asset document vault ----
+  function _asMaint(a){ if(!a.maint)a.maint=[]; return a.maint; }
+  function _rmSvg(){ return '<svg viewBox="0 0 18 18" fill="none" width="14" height="14"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'; }
+  function _maintHtml(a){ var m=_asMaint(a); if(!m.length) return '<div class="bk-lenhint" style="margin:0">No service logged yet.</div>';
+    return m.slice().reverse().map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.type)+(x.note?(' &middot; '+esc(x.note)):'')+'</b><div style="font-size:11.5px;color:var(--muted)">'+_fmtWhen(x.at)+(x.odo?(' &middot; '+Number(x.odo).toLocaleString()+' mi/hr'):'')+(x.cost?(' &middot; '+money(x.cost)):'')+'</div></div><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.assetRmService(\''+a.id+'\',\''+x.id+'\')">'+_rmSvg()+'</button></div>'; }).join(''); }
+  function assetLogService(id){ if(!_guard('fleetEdit'))return; var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
+    openModal('<div class="modal__head"><h3>Log service</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Type</label><select class="select" id="msType">'+['Routine service','Oil change','Tires','Inspection','Repair','Detailing / cleaning','Other'].map(function(t){return '<option>'+t+'</option>';}).join('')+'</select></div>'
+      +'<div class="field"><label>Note</label><input class="input" id="msNote" placeholder="e.g. Replaced brake pads"></div>'
+      +'<div class="row2"><div class="field"><label>Odometer / hours</label><input class="input tnum" id="msOdo" inputmode="numeric" placeholder="optional"></div>'
+      +'<div class="field"><label>Cost</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="msCost" inputmode="decimal" style="width:auto;flex:1;text-align:left" placeholder="0"></div></div></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveService(\''+id+'\')">Log it</button></div>'); }
+  function saveService(id){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
+    _asMaint(a).push({id:'ms'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), at:Date.now(), type:val('msType')||'Service', note:(val('msNote')||'').trim(), odo:Math.round(parseFloat(val('msOdo'))||0), cost:Math.round(parseFloat(val('msCost'))||0)});
+    if(_asMaint(a).slice(-1)[0].odo) a.odometer=_asMaint(a).slice(-1)[0].odo;
+    _saveAssets(); _logEvent('asset','Service logged on '+a.name,{asset:id}); save(); closeModal(); openAsset(id); toast('Service logged'); }
+  function assetRmService(id,mid){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; a.maint=_asMaint(a).filter(function(x){return x.id!==mid;}); _saveAssets(); save(); openAsset(id); }
+  function _asVault(a){ if(!a.vault)a.vault=[]; return a.vault; }
+  function _docVaultHtml(a){ var d=_asVault(a); if(!d.length) return '<div class="bk-lenhint" style="margin:0">No documents. Store the title, insurance, registration or manuals here.</div>';
+    return d.map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.name)+'</b><div style="font-size:11.5px;color:var(--muted)">'+_fmtWhen(x.at)+(x.size?(' &middot; '+Math.round(x.size/1024)+' KB'):'')+'</div></div>'+(x.data?'<button class="btn btn--ghost btn--sm" onclick="Atlas.assetDocOpen(\''+a.id+'\',\''+x.id+'\')">Download</button>':'')+'<button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.assetRmDoc(\''+a.id+'\',\''+x.id+'\')">'+_rmSvg()+'</button></div>'; }).join(''); }
+  function assetAddDoc(id){ if(!_guard('fleetEdit'))return; var inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,application/pdf,.pdf,.doc,.docx';
+    inp.onchange=function(){ var f=inp.files[0]; if(!f)return; if(f.size>4*1024*1024){ toast('File too large (max 4 MB)'); return; }
+      var r=new FileReader(); r.onload=function(e){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; _asVault(a).push({id:'dv'+Date.now().toString(36), name:f.name, at:Date.now(), size:f.size, type:f.type, data:e.target.result}); _saveAssets(); _logEvent('asset','Document added to '+a.name+': '+f.name,{asset:id}); save(); openAsset(id); toast('Document added'); }; r.readAsDataURL(f); };
+    inp.click(); }
+  function assetDocOpen(id,did){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; var d=_asVault(a).filter(function(x){return x.id===did;})[0]; if(!d||!d.data)return;
+    try{ var link=document.createElement('a'); link.href=d.data; link.download=d.name||'document'; document.body.appendChild(link); link.click(); document.body.removeChild(link); }catch(e){ toast('Could not open'); } }
+  function assetRmDoc(id,did){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; a.vault=_asVault(a).filter(function(x){return x.id!==did;}); _saveAssets(); save(); openAsset(id); }
   // Send the rental agreement to this tenant/renter for e-signature, or upload an already-signed one -- documented on the unit.
   function sendAgreement(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
     var tn=(val('aTenName')||(a.tenant&&a.tenant.name)||'').trim(); if(!tn){ toast('Add the '+((_fterm('book')==='reservation')?'tenant':'renter')+' first'); return; }
@@ -5449,7 +5478,7 @@ const Atlas = (function(){
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
-    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,promptUpgrade,doUpgrade,openWebsite,
+    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webBookNow,webDomainMode,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
