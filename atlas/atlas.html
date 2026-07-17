@@ -3164,6 +3164,9 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Incidents &amp; damage</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkLogIncident(\''+b.id+'\')">+ Log incident</button></div>'
         +'<div class="cond-sub">Record damage, late returns or policy issues &mdash; time-stamped, and bill any of them to the portal in one tap.</div>'
         +_incidentsHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Damage claim</span>'+(_claim(b)?'':'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClaimOpen(\''+b.id+'\')">+ Start a claim</button>')+'</div>'
+        +'<div class="cond-sub">Roll the logged damage into one itemized packet &mdash; with the pickup photos &mdash; to keep on file or send to your insurer, and track what you recover.</div>'
+        +_claimHtml(b)+'</div>'
       +'<div class="cond-sec"><div class="cond-hd"><span>Payment plan</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkPaymentPlan(\''+b.id+'\')">'+(b.plan?'Change':'Set a plan')+'</button></div>'
         +'<div class="cond-sub">Let '+esc((b.cust||'the customer').split(' ')[0])+' pay in installments &mdash; the schedule shows in their portal and here.</div>'
         +_planHtml(b)+'</div>'
@@ -5426,6 +5429,109 @@ const Atlas = (function(){
   function _incidentToCharge(b,inc){ _charges(b).push({id:'ch'+Date.now(), label:('Incident: '+inc.desc).slice(0,58), amount:inc.cost, at:Date.now(), paidAt:null});
     inc.charged=true; _upsertBooking(b); _logEvent('booking','Billed '+money(inc.cost)+' incident on '+b.id,{booking:b.id}); save(); toast('Charge sent to the portal ('+money(inc.cost)+')'); }
   function bkRmIncident(id,incId){ var b=_getBooking(id); if(!b)return; b.incidents=_incidents(b).filter(function(x){return x.id!==incId;}); _upsertBooking(b); save(); openBooking(id); toast('Incident removed'); }
+  // ---- Damage-claim workflow: document -> resolve (deposit/charge) -> insurer-ready claim packet ----
+  function _claim(b){ return (b&&b.claim)?b.claim:null; }
+  function _claimEstimate(b){ return _incidents(b).reduce(function(s,x){ return s+(x.cost||0); },0); }
+  function _claimRecovered(b){
+    var dep=(b.hold&&b.hold.status==='captured')?(b.hold.captured||b.hold.amount||0):0;
+    var chg=_charges(b).filter(function(c){ return c.paidAt && /incident|damage|deposit captured|cleaning|fuel/i.test(c.label||''); }).reduce(function(s,c){ return s+(c.amount||0); },0);
+    return { deposit:dep, charged:chg, total:dep+chg };
+  }
+  function _claimHtml(b){
+    var cl=_claim(b);
+    if(!cl){ var est=_claimEstimate(b);
+      return '<div class="bk-lenhint" style="margin:0">'+(_incidents(b).length?('Logged damage'+(est?(' (~'+money(est)+')'):'')+' is ready &mdash; start a claim to build the packet.'):'Log the damage above first, then start a claim to build an insurer-ready packet.')+'</div>'; }
+    var st=cl.status||'draft';
+    var chip='<span class="chip '+(st==='settled'?'chip--ok':st==='filed'?'chip--warn':'chip--danger')+'"><span class="dot"></span>'+(st==='settled'?'Settled':st==='filed'?'Filed with insurer':'Draft')+'</span>';
+    var rec=_claimRecovered(b);
+    var rows='<div class="mp" style="margin:10px 0">'
+      +'<div class="mp-row"><span>Estimated damage</span><span class="tnum">'+money(Math.round(cl.estAmount||0))+'</span></div>'
+      +(rec.total?'<div class="mp-row mp-ok"><span>Recovered (deposit + charges)</span><span class="tnum">'+money(Math.round(rec.total))+'</span></div>':'')
+      +(cl.settledAmount!=null?'<div class="mp-row mp-total"><span>Insurer settlement</span><span class="tnum">'+money(Math.round(cl.settledAmount))+'</span></div>':'')
+      +((cl.insurer&&cl.insurer.name)?'<div class="mp-row"><span>Insurer</span><span style="color:var(--ink);text-align:right;max-width:62%">'+esc(cl.insurer.name)+((cl.insurer.claimNo)?(' &middot; #'+esc(cl.insurer.claimNo)):'')+'</span></div>':'')+'</div>';
+    var btns='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
+      +'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClaimEdit(\''+b.id+'\')">Edit</button>'
+      +'<button class="btn btn--primary btn--sm" onclick="Atlas.bkClaimPacket(\''+b.id+'\')">Claim packet</button>'
+      +(st==='draft'?'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClaimStatus(\''+b.id+'\',\'filed\')">Mark filed</button>':'')
+      +(st==='filed'?'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClaimStatus(\''+b.id+'\',\'settled\')">Mark settled</button>':'')
+      +'<button class="icon-btn" style="color:var(--danger)" title="Remove claim" onclick="Atlas.bkClaimRemove(\''+b.id+'\')"><svg viewBox="0 0 18 18" fill="none" width="15" height="15"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>';
+    return '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">'+chip+'<span style="flex:1;min-width:60px;font-size:11.5px;color:var(--muted)">Opened '+_stamp(cl.openedAt)+((cl.filedAt)?(' &middot; filed '+_stamp(cl.filedAt)):'')+'</span></div>'+rows
+      +((cl.notes)?'<div style="font-size:12px;color:var(--body);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:6px;white-space:pre-wrap">'+esc(cl.notes)+'</div>':'')+btns;
+  }
+  function bkClaimOpen(id){ if(!_guard('bookEdit','Starting a claim'))return; var b=_getBooking(id); if(!b)return;
+    b.claim={ status:'draft', openedAt:Date.now(), estAmount:_claimEstimate(b), insurer:{name:'',policy:'',claimNo:''}, notes:'' };
+    _upsertBooking(b); _logEvent('booking','Damage claim opened on '+b.id,{booking:b.id}); save(); bkClaimEdit(id); }
+  function bkClaimEdit(id){ var b=_getBooking(id); var cl=_claim(b); if(!b||!cl)return; var ins=cl.insurer||{};
+    openModal('<div class="modal__head"><h3>Damage claim</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Estimated damage</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="clAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+(cl.estAmount||0)+'"></div></div>'
+      +'<div class="field"><label>Insurer (optional)</label><input class="input" id="clIns" placeholder="e.g. your fleet / commercial insurer" value="'+esc(ins.name||'')+'"></div>'
+      +'<div style="display:flex;gap:10px"><div class="field" style="flex:1"><label>Policy #</label><input class="input" id="clPol" value="'+esc(ins.policy||'')+'"></div><div class="field" style="flex:1"><label>Claim #</label><input class="input" id="clNo" value="'+esc(ins.claimNo||'')+'"></div></div>'
+      +'<div class="field"><label>Notes for the file</label><textarea class="input" id="clNotes" rows="3" placeholder="What happened, who you spoke to, next steps...">'+esc(cl.notes||'')+'</textarea></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveClaim(\''+id+'\')">Save claim</button>'
+      +'<div class="bk-lenhint" style="margin:10px 0 0">Pulls in your logged incidents and pickup photos automatically. Generate the packet to keep on file or send to your insurer.</div></div>'); }
+  function saveClaim(id){ var b=_getBooking(id); var cl=_claim(b); if(!b||!cl)return;
+    cl.estAmount=Math.round(Math.max(0,parseFloat(val('clAmt'))||0));
+    cl.insurer={ name:(val('clIns')||'').trim(), policy:(val('clPol')||'').trim(), claimNo:(val('clNo')||'').trim() };
+    cl.notes=(val('clNotes')||'').trim();
+    _upsertBooking(b); _logEvent('booking','Damage claim updated on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast('Claim saved'); }
+  function bkClaimStatus(id,status){ var b=_getBooking(id); var cl=_claim(b); if(!b||!cl)return;
+    if(status==='filed'){ cl.status='filed'; cl.filedAt=Date.now(); _upsertBooking(b); _logEvent('booking','Damage claim filed on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Marked filed'+((cl.insurer&&cl.insurer.name)?(' with '+cl.insurer.name):'')); return; }
+    if(status==='settled'){ var amt=prompt('Settlement amount recovered from the insurer ($):', String(cl.estAmount||0)); if(amt===null)return; cl.status='settled'; cl.settledAt=Date.now(); cl.settledAmount=Math.round(Math.max(0,parseFloat(amt)||0)); _upsertBooking(b); _logEvent('booking','Damage claim settled on '+b.id+' ('+money(cl.settledAmount)+')',{booking:b.id}); save(); openBooking(id); toast('Claim settled &mdash; '+money(cl.settledAmount)+' recovered'); return; } }
+  function bkClaimRemove(id){ var b=_getBooking(id); if(!b||!b.claim)return; if(!confirm('Remove this damage claim? The incidents and photos stay on the booking.'))return; delete b.claim; _upsertBooking(b); save(); openBooking(id); toast('Claim removed'); }
+  function bkClaimPacket(id){ var b=_getBooking(id); var cl=_claim(b); if(!b||!cl){ toast('Start a claim first'); return; }
+    var doc=_claimPacketHtml(b,cl);
+    try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener');
+      if(!w){ var a=document.createElement('a'); a.href=url; a.download='damage-claim-'+b.id+'.html'; a.click(); }
+      setTimeout(function(){URL.revokeObjectURL(url);},6000); _logEvent('booking','Generated damage-claim packet for '+b.id,{booking:b.id}); toast('Claim packet ready'); }
+    catch(e){ toast('Could not open the packet here'); } }
+  function _claimPacketHtml(b,cl){
+    var q=b.quote||{}, biz=(S.brand&&S.brand.name)||'Your rental business', city=(S.brand&&S.brand.city)||'';
+    var rec=_claimRecovered(b), inc=_incidents(b), photos=_condMedia(b).filter(function(m){ return m.kind!=='video'&&m.src; });
+    var incRows=inc.length?inc.map(function(x,i){ return '<tr><td>'+(i+1)+'</td><td>'+esc(x.desc)+'</td><td class="r">'+_stamp(x.at)+'</td><td class="r">'+(x.cost?money(x.cost):'&mdash;')+'</td></tr>'; }).join('')
+      : '<tr><td colspan="4" class="muted">No itemized incidents logged &mdash; see the estimate below.</td></tr>';
+    var ins=cl.insurer||{};
+    var rowsFin='<tr><td>Estimated damage</td><td class="r">'+money(Math.round(cl.estAmount||0))+'</td></tr>'
+      +(rec.deposit?('<tr><td>Recovered from deposit / hold</td><td class="r">'+money(Math.round(rec.deposit))+'</td></tr>'):'')
+      +(rec.charged?('<tr><td>Recovered from renter charges (paid)</td><td class="r">'+money(Math.round(rec.charged))+'</td></tr>'):'')
+      +(cl.settledAmount!=null?('<tr><td>Insurer settlement</td><td class="r">'+money(Math.round(cl.settledAmount))+'</td></tr>'):'')
+      +'<tr class="tot"><td>Net still outstanding</td><td class="r">'+money(Math.max(0,Math.round((cl.estAmount||0)-rec.total-(cl.settledAmount||0))))+'</td></tr>';
+    var photoHtml=photos.length?('<h2>Pickup condition evidence ('+photos.length+')</h2><div class="ph">'+photos.map(function(m){ return '<figure><img src="'+m.src+'"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):'';
+    var verified=b.idVerified?('ID verified '+_stamp(b.idVerifiedAt)):'ID not verified';
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Damage Claim &mdash; '+esc(b.id)+'</title>'
+      +'<style>'
+      +'*{box-sizing:border-box}body{font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#14201a;margin:0;padding:32px;background:#f4f6f5}'
+      +'.doc{max-width:820px;margin:0 auto;background:#fff;border:1px solid #dfe6e2;border-radius:14px;padding:34px 38px}'
+      +'.top{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;border-bottom:2px solid #14201a;padding-bottom:16px;margin-bottom:20px}'
+      +'.brand{font-size:20px;font-weight:800;letter-spacing:-.2px}.brand small{display:block;font-weight:500;color:#6b7c74;font-size:12px;letter-spacing:0}'
+      +'.title{text-align:right}.title h1{margin:0;font-size:17px;letter-spacing:.4px;text-transform:uppercase}.title small{color:#6b7c74}'
+      +'h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#2e7d5b;margin:22px 0 8px}'
+      +'.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 24px}.grid div{padding:3px 0;border-bottom:1px solid #eef2f0}.grid b{color:#6b7c74;font-weight:600;margin-right:8px;display:inline-block;min-width:104px}'
+      +'table{width:100%;border-collapse:collapse;margin-top:4px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #eef2f0;font-size:13px}th{background:#f3f7f5;color:#6b7c74;text-transform:uppercase;font-size:10.5px;letter-spacing:.5px}td.r,th.r{text-align:right}tr.tot td{font-weight:800;border-top:2px solid #14201a;border-bottom:none}.muted{color:#8a978f}'
+      +'.ph{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.ph figure{margin:0}.ph img{width:100%;height:120px;object-fit:cover;border-radius:8px;border:1px solid #dfe6e2}.ph figcaption{font-size:10.5px;color:#8a978f;margin-top:3px}'
+      +'.sign{display:flex;gap:40px;margin-top:34px}.sign div{flex:1}.line{border-top:1px solid #14201a;margin-top:34px;padding-top:5px;font-size:11.5px;color:#6b7c74}'
+      +'.foot{margin-top:26px;padding-top:14px;border-top:1px solid #eef2f0;font-size:11px;color:#8a978f;display:flex;justify-content:space-between}'
+      +'.noprint{margin:0 auto 14px;max-width:820px}.btn{background:#14201a;color:#fff;border:0;border-radius:9px;padding:9px 16px;font-weight:600;cursor:pointer}'
+      +'@media print{body{background:#fff;padding:0}.doc{border:0;border-radius:0}.noprint{display:none}}'
+      +'</style></head><body>'
+      +'<div class="noprint"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>'
+      +'<div class="doc">'
+      +'<div class="top"><div class="brand">'+esc(biz)+'<small>'+(city?esc(city)+' &middot; ':'')+'Rental damage claim</small></div>'
+        +'<div class="title"><h1>Damage Claim</h1><small>Claim ref '+esc(b.id)+'<br>'+_stamp(cl.openedAt)+'</small></div></div>'
+      +'<h2>Parties &amp; rental</h2><div class="grid">'
+        +'<div><b>Renter</b>'+esc(b.cust||'&mdash;')+'</div><div><b>'+esc(cap(S.fleet.noun))+'</b>'+esc(b.asset||'&mdash;')+'</div>'
+        +'<div><b>Email</b>'+esc(b.custEmail||'&mdash;')+'</div><div><b>Rental dates</b>'+_bkWhen(b)+'</div>'
+        +'<div><b>Phone</b>'+esc(b.phone||'&mdash;')+'</div><div><b>Booking total</b>'+money(Math.round(q.total||0))+'</div>'
+        +'<div><b>Identity</b>'+esc(verified)+'</div><div><b>Status</b>'+(cl.status==='settled'?'Settled':cl.status==='filed'?'Filed with insurer':'Draft')+'</div>'
+      +'</div>'
+      +'<h2>Itemized damage / incidents</h2><table><thead><tr><th>#</th><th>Description</th><th class="r">Logged</th><th class="r">Est. cost</th></tr></thead><tbody>'+incRows+'</tbody></table>'
+      +'<h2>Financial resolution</h2><table><tbody>'+rowsFin+'</tbody></table>'
+      +((ins.name||ins.policy||ins.claimNo)?('<h2>Insurer</h2><div class="grid"><div><b>Insurer</b>'+esc(ins.name||'&mdash;')+'</div><div><b>Policy #</b>'+esc(ins.policy||'&mdash;')+'</div><div><b>Claim #</b>'+esc(ins.claimNo||'&mdash;')+'</div><div></div></div>'):'')
+      +((cl.notes)?('<h2>Notes</h2><div style="white-space:pre-wrap;background:#f7faf8;border:1px solid #eef2f0;border-radius:8px;padding:12px">'+esc(cl.notes)+'</div>'):'')
+      +photoHtml
+      +'<div class="sign"><div><div class="line">Owner / authorized representative &mdash; '+esc(biz)+'</div></div><div><div class="line">Date</div></div></div>'
+      +'<div class="foot"><span>Prepared by '+esc(biz)+'</span><span>Generated by Atlas Rental.io &middot; '+_stamp(Date.now())+'</span></div>'
+      +'</div></body></html>';
+  }
   function portalPayCharge(cid){ var b=_pBk(); if(!b)return; var c=_charges(b).filter(function(x){return x.id===cid;})[0]; if(!c||c.paidAt)return;
     c.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Portal: charge paid ('+c.label+' '+money(Math.round(c.amount))+') on '+b.id,{booking:b.id}); _renderPortal(); toast('Payment received (demo)'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ portalView('sign'); return; }
@@ -5704,6 +5810,7 @@ const Atlas = (function(){
     goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkPaymentPlan,savePlan,bkPlanPaid,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
+    bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,

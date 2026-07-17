@@ -72,7 +72,7 @@ The single source of truth for **what's done, what needs connecting, and every f
 - ✅ rate models (day/hour/week), tax, discounts (weekly/monthly), deposits, promos · 🔌 Stripe charge/hold/settle · ✅ **partial payments / payment plans** (half · 3 · 4) · ✅ **metered run‑hour billing** · 💡 true monthly tier · 💡 net‑30 accounts (B2B) · 💡 multi‑currency
 
 ### Contracts, deposits & risk
-- ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · ✅ **refundable hold flow** (authorize → release / capture / charge‑difference) · ✅ **ID verification** · ⬜ damage‑claim workflow (document → keep deposit → draft claim → insurer) · 💡 insurance add‑on marketplace
+- ✅ e‑sign agreement + ToS + privacy, cumulative extension contracts, delivery proof/IP · ✅ **refundable hold flow** (authorize → release / capture / charge‑difference) · ✅ **ID verification** · ✅ **damage‑claim workflow** (document → keep deposit / capture hold → itemized **claim packet** PDF for the insurer → track filed/settled + recovered) · 💡 insurance add‑on marketplace
 
 ### Customer‑facing
 - ✅ branded member portal · ✅ branded website + promo box · ✅ reviews · ✅ itemized receipts · 💡 loyalty / referral program · 💡 gift cards
