@@ -4647,7 +4647,7 @@ const Atlas = (function(){
     var byDate={}; up.forEach(function(x){ (byDate[x.date]=byDate[x.date]||[]).push(x); });
     var body=Object.keys(byDate).sort().slice(0,10).map(function(d){
       return '<div style="margin-bottom:10px"><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">'+_shiftDateLabel(d)+'</div>'
-        +byDate[d].map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--line-2)"><span class="avatar" style="width:26px;height:26px;font-size:11px">'+esc((x.memberName||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.memberName)+'</b><div style="font-size:11.5px;color:var(--muted)">'+esc(x.start)+' - '+esc(x.end)+' &middot; '+_shiftHours(x)+'h'+(x.note?(' &middot; '+esc(x.note)):'')+'</div></div><button class="icon-btn" style="color:var(--danger)" onclick="Atlas.rmShift(\''+x.id+'\')" title="Remove">'+_rmSvg()+'</button></div>'; }).join('')+'</div>';
+        +byDate[d].map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--line-2)"><span class="avatar" style="width:26px;height:26px;font-size:11px">'+esc((x.memberName||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.memberName)+'</b>'+(x.source==='ai'?' <span class="chip chip--brand" style="font-size:9.5px;padding:1px 6px;vertical-align:1px">Atlas.io</span>':'')+'<div style="font-size:11.5px;color:var(--muted)">'+esc(x.start)+' - '+esc(x.end)+' &middot; '+_shiftHours(x)+'h'+(x.role?(' &middot; '+esc(x.role)):'')+(x.note?(' &middot; '+esc(x.note)):'')+'</div></div><button class="icon-btn" onclick="Atlas.editShift(\''+x.id+'\')" title="Edit"><svg viewBox="0 0 18 18" fill="none"><path d="M12.4 3.1l2.5 2.5L7 13.5l-3.2.7.7-3.2 7.9-7.9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button><button class="icon-btn" style="color:var(--danger)" onclick="Atlas.rmShift(\''+x.id+'\')" title="Remove">'+_rmSvg()+'</button></div>'; }).join('')+'</div>';
     }).join('');
     return sum+body; }
   function addShift(){ if(!_guard('teamManage','Scheduling shifts'))return; var roster=_shiftRoster();
@@ -4663,6 +4663,142 @@ const Atlas = (function(){
     _shifts().push({ id:'sh'+Date.now().toString(36), memberId:who, memberName:nm, date:date, start:start, end:end, note:(val('shNote')||'').trim() });
     save(); _logEvent('team','Shift added: '+nm+' '+date+' '+start+'-'+end,{}); closeModal(); renderSet(); toast('Shift added &mdash; '+_shiftHours({start:start,end:end})+'h'); }
   function rmShift(id){ if(!_guard('teamManage'))return; S.shifts=_shifts().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Shift removed'); }
+  // ---- Atlas.io AI schedule builder: plain-English -> editable weekly shifts. Worker /api/schedule (Claude) when deployed; heuristic parser + code solver as a zero-backend fallback. Same graceful-fallback pattern as the AIO council. ----
+  var SCHED_EXAMPLE="Alice can't work Mon-Wed and only 6pm-close on the days she's available; Bob works Mon-Fri 9-5; I need 2 on the counter Sat 10-6";
+  var _schedLastNL='';                 // remembers the owner's last prompt so a re-render keeps their words (not the example)
+  var SCHED_CLOSE='21:00';             // default "close" time when the owner says "6pm-close"
+  var _SCHED_DAYS=['MO','TU','WE','TH','FR','SA','SU'];
+  function _schedWeekStart(){ var d=new Date(); var off=(8-d.getDay())%7; d.setDate(d.getDate()+off);   // upcoming Monday (today if it is Monday) -> every generated date is today-or-later, so all 7 render
+    return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+  function _schedDateFor(weekStart,code){ var off={MO:0,TU:1,WE:2,TH:3,FR:4,SA:5,SU:6}[code]||0; var d=new Date(weekStart+'T12:00:00'); d.setDate(d.getDate()+off);
+    return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+  function _schedT(hhmm){ var p=String(hhmm||'0:0').split(':'); return (parseInt(p[0],10)||0)*60+(parseInt(p[1],10)||0); }
+  function _schedEsc(s){ return String(s||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+  function _schedTitle(s){ return String(s||'').trim().toLowerCase().replace(/\b[a-z]/g,function(c){ return c.toUpperCase(); }); }
+  function _schedPositions(){ var f=(S.fleet&&S.fleet.id)||'cars';   // lightweight fleet-aware role list (payload hint + role labels); NL still captures any role the owner names
+    if(f==='property'||f==='units') return ['Front desk','Maintenance','Cleaner','Manager'];
+    if(f==='salon') return ['Front desk','Stylist','Manager'];
+    return ['Counter','Driver','Detailer','Manager']; }
+  function _schedDayCode(tok){ tok=String(tok||'').toLowerCase().slice(0,3); return ({mon:'MO',tue:'TU',wed:'WE',thu:'TH',fri:'FR',sat:'SA',sun:'SU'})[tok]||''; }
+  function _schedParseDays(seg){ seg=' '+String(seg||'').toLowerCase()+' '; var out=[], m;
+    if(/\bweekend/.test(seg)) out.push('SA','SU');
+    if(/\bweekday|\bweeknight/.test(seg)) out.push('MO','TU','WE','TH','FR');
+    if(/\bevery ?day\b|\bdaily\b|\ball week\b|\bany day\b|\b7 ?days\b/.test(seg)) _SCHED_DAYS.forEach(function(d){ out.push(d); });
+    var re=/\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\s*(?:-|\bto\b|\bthrough\b|\bthru\b|\u2013|\u2014)\s*(mon|tue|wed|thu|fri|sat|sun)[a-z]*/g;
+    while((m=re.exec(seg))){ var a=_schedDayCode(m[1]), b=_schedDayCode(m[2]), ia=_SCHED_DAYS.indexOf(a), ib=_SCHED_DAYS.indexOf(b);
+      if(ia>=0&&ib>=0){ if(ib<ia) ib+=7; for(var i=ia;i<=ib;i++) out.push(_SCHED_DAYS[i%7]); } }
+    var re2=/\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*/g; while((m=re2.exec(seg))){ var c=_schedDayCode(m[1]); if(c) out.push(c); }
+    var seen={}, res=[]; out.forEach(function(d){ if(!seen[d]){ seen[d]=1; res.push(d); } }); return res; }
+  function _schedParseTime(tok){ tok=String(tok||'').toLowerCase().trim();
+    if(/close|closing|\bend\b/.test(tok)) return SCHED_CLOSE;
+    if(/^open|opening/.test(tok)) return '09:00';
+    var m=tok.match(/(\d{1,2})(?::(\d{2}))?\s*(a|p)/), m2=tok.match(/(\d{1,2})(?::(\d{2}))?/), h, mm;
+    if(m){ h=parseInt(m[1],10); mm=m[2]?parseInt(m[2],10):0; if(m[3]==='p'){ if(h<12) h+=12; } else if(h===12){ h=0; } }
+    else if(m2){ h=parseInt(m2[1],10); mm=m2[2]?parseInt(m2[2],10):0; } else return '';
+    if(h>23) h=23; if(mm>59) mm=59; return ('0'+h).slice(-2)+':'+('0'+mm).slice(-2); }
+  function _schedParseWindow(seg){ var low=String(seg||'').toLowerCase();
+    var m=low.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|\bto\b|\buntil\b|\btill?\b|\u2013|\u2014)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|close|closing|end)/);
+    if(m){ var aRaw=m[1].trim(), bRaw=m[2].trim();
+      var aAP=/am|pm/.test(aRaw), bAP=/am|pm|close|closing|end/.test(bRaw);
+      var start=_schedParseTime(aRaw), end=_schedParseTime(bRaw);
+      var sh=parseInt(start.split(':')[0],10)||0, eh=parseInt(end.split(':')[0],10)||0;
+      if(!aAP && sh>=1 && sh<=6){ sh+=12; start=('0'+sh).slice(-2)+':'+start.split(':')[1]; }   // bare small start hour -> evening (PM)
+      if(!bAP && eh<=sh){ eh+=12; end=('0'+eh).slice(-2)+':'+end.split(':')[1]; }                 // bare end at/before start -> PM ("9-5"=>17:00, "10-6"=>18:00)
+      return {start:start, end:end}; }
+    var s1=low.match(/\b(?:only|at|from|after|starting)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/);
+    if(s1) return {start:_schedParseTime(s1[1]), end:SCHED_CLOSE};   // "only 6pm" (no end) -> runs to close
+    return null; }
+  function _schedRoleIn(cl){ var low=String(cl||'').toLowerCase();
+    var m=low.match(/\bon\s+(?:the\s+)?([a-z][a-z ]*?)\s+(?:mon|tue|wed|thu|fri|sat|sun|weekend|weekday|every|daily|from|at|\d)/);
+    if(m) return _schedTitle(m[1].replace(/\s+/g,' ').trim());
+    var pos=_schedPositions(); for(var i=0;i<pos.length;i++){ if(low.indexOf(pos[i].toLowerCase())>=0) return pos[i]; }
+    return ''; }
+  function _schedNameIn(cl, roster){ roster=roster||[];
+    for(var i=0;i<roster.length;i++){ var full=String(roster[i].name||'').replace(' (you)',''), first=full.split(/\s+/)[0];
+      if(first && new RegExp('\\b'+_schedEsc(first)+'\\b','i').test(cl)) return {id:roster[i].id, name:full}; }
+    var m=cl.match(/\b([A-Z][a-z]+)\b/);   // no roster hit -> treat a leading proper name as a new person ("Alice ...", "Bob ...")
+    if(m && !/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|I|The|We|On|Need|Only|And|Every|Daily|Weekend|Weekends|Weekday|Weekdays)$/.test(m[1])) return {id:'ai_'+m[1].toLowerCase(), name:m[1]};
+    return null; }
+  function _schedClauses(text){ var t=String(text||'').replace(/\r/g,''); var parts=t.split(/[;\n]+|\.(?:\s|$)/), out=[];
+    parts.forEach(function(seg){ seg=seg.trim(); if(!seg) return;   // then split "... and Name works ..." (a new subject) but keep "... and only 6pm-close" (one person, two facts) whole
+      seg.split(/\s+and\s+(?=[A-Z][a-z]+\s+(?:works?|can'?t|cannot|is|are|only|off|available))/).forEach(function(pc){ pc=pc.trim(); if(pc) out.push(pc); }); });
+    return out; }
+  // Heuristic parse: free text -> {people:[{id,name,unavail[],avail[]|null,window|null,role}], coverage:[{role,days[],start,end,min}]}. Zero backend; handles the patterns the owner named.
+  function _parseSchedNL(text, roster){ roster=roster||_shiftRoster(); var people={}, order=[], coverage=[];
+    _schedClauses(text).forEach(function(cl){ cl=cl.trim(); if(!cl) return; var low=cl.toLowerCase();
+      var cov=low.match(/\bneed\s+(\d+)\b/);
+      if(cov){ var win0=_schedParseWindow(cl), days0=_schedParseDays(cl);
+        coverage.push({role:_schedRoleIn(cl)||'', days:(days0.length?days0:_SCHED_DAYS.slice()), start:win0?win0.start:'09:00', end:win0?win0.end:'17:00', min:parseInt(cov[1],10)||1}); return; }
+      var nm=_schedNameIn(cl, roster); if(!nm) return;
+      var key=nm.id+'|'+nm.name, p=people[key]; if(!p){ p={id:nm.id, name:nm.name, unavail:[], avail:null, window:null, role:_schedRoleIn(cl)||''}; people[key]=p; order.push(key); }
+      var neg=/\bcan'?t\b|\bcannot\b|\bcan not\b|\bnot available\b|\bunavailable\b|\boff\b/.test(low);
+      var days=_schedParseDays(cl), win=_schedParseWindow(cl);
+      if(win) p.window=win;
+      if(neg){ days.forEach(function(d){ if(p.unavail.indexOf(d)<0) p.unavail.push(d); }); }
+      else if(days.length){ p.avail=p.avail||[]; days.forEach(function(d){ if(p.avail.indexOf(d)<0) p.avail.push(d); }); } });
+    return {people:order.map(function(k){ return people[k]; }), coverage:coverage}; }
+  function _schedUid(){ return 'sh'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+  function _schedMkShift(id,name,day,start,end,role,weekStart){ return {id:_schedUid(), memberId:id||'ai', memberName:name||'Team', date:_schedDateFor(weekStart,day), start:start, end:end, note:'', role:role||'', source:'ai'}; }
+  function _schedOpenShift(day,start,end,role,weekStart){ return {id:_schedUid(), memberId:'open', memberName:'Open', date:_schedDateFor(weekStart,day), start:start, end:end, note:(role?(cap(role)+' \u2014 needs coverage'):'Needs coverage'), role:role||'', source:'ai'}; }
+  // Code solver (never trusts LLM math): 1) a shift per available day for anyone with a stated window; 2) fill coverage from available+qualified people, leftover slots become open shifts.
+  function _schedSolve(parsed, weekStart){ var shifts=[], open=0;
+    (parsed.people||[]).forEach(function(p){ if(!p.window) return;
+      var days=(p.avail&&p.avail.length)?p.avail.slice():_SCHED_DAYS.slice();
+      days=days.filter(function(d){ return (p.unavail||[]).indexOf(d)<0; });
+      days.forEach(function(d){ shifts.push(_schedMkShift(p.id,p.name,d,p.window.start,p.window.end,p.role,weekStart)); }); });
+    (parsed.coverage||[]).forEach(function(c){ (c.days||[]).forEach(function(d){ var need=c.min||1, assigned=0, dt=_schedDateFor(weekStart,d);
+      (parsed.people||[]).forEach(function(p){ if(assigned>=need) return;
+        var pdays=(p.avail&&p.avail.length)?p.avail:_SCHED_DAYS;
+        if(pdays.indexOf(d)<0 || (p.unavail||[]).indexOf(d)>=0) return;                                   // not working that day
+        if(p.window && !(_schedT(p.window.start)<=_schedT(c.start) && _schedT(p.window.end)>=_schedT(c.end))) return;   // window must cover the slot
+        if(p.role && c.role && p.role.toLowerCase()!==c.role.toLowerCase()) return;                       // qualified for the role, if one is stated
+        if(shifts.some(function(s){ return s.memberId===p.id && s.date===dt && _schedT(s.start)<_schedT(c.end) && _schedT(s.end)>_schedT(c.start); })) return;   // no double-booking
+        shifts.push(_schedMkShift(p.id,p.name,d,c.start,c.end,c.role,weekStart)); assigned++; });
+      for(var k=assigned;k<need;k++){ shifts.push(_schedOpenShift(d,c.start,c.end,c.role,weekStart)); open++; } }); });
+    return {shifts:shifts, open:open}; }
+  // Normalize a worker /api/schedule result (empRef/role/day/start/end) into our shift shape; map names to the roster, unknowns become new people or open slots.
+  function _schedFromWorker(result, weekStart){ var shifts=[], open=0, roster=_shiftRoster();
+    (result.shifts||[]).forEach(function(w){ var day=_schedDayCode(w.day); if(!day){ var u=String(w.day||'').toUpperCase().slice(0,2); if(_SCHED_DAYS.indexOf(u)>=0) day=u; }
+      if(!day) return; var start=w.start||'09:00', end=(/close/i.test(String(w.end||''))?SCHED_CLOSE:(w.end||'17:00')), ref=String(w.empRef||w.name||'').trim();
+      if(!ref || /^(open|unfilled|tbd)$/i.test(ref)){ shifts.push(_schedOpenShift(day,start,end,w.role||'',weekStart)); open++; return; }
+      var match=null; for(var i=0;i<roster.length;i++){ var full=roster[i].name.replace(' (you)','');
+        if(full.toLowerCase()===ref.toLowerCase() || full.split(/\s+/)[0].toLowerCase()===ref.toLowerCase()){ match={id:roster[i].id, name:full}; break; } }
+      var pid=match?match.id:('ai_'+ref.toLowerCase().replace(/[^a-z0-9]/g,'')), pnm=match?match.name:_schedTitle(ref);
+      shifts.push(_schedMkShift(pid,pnm,day,start,end,w.role||'',weekStart)); });
+    return {shifts:shifts, open:open}; }
+  function _schedApply(res, weekStart){ var wkEnd=_schedDateFor(weekStart,'SU');
+    S.shifts=_shifts().filter(function(x){ return !(x.source==='ai' && x.date>=weekStart && x.date<=wkEnd); });   // idempotent regenerate: clear THIS week's Atlas-built shifts (manual ones stay)
+    (res.shifts||[]).forEach(function(sh){ _shifts().push(sh); });
+    save(); var filled=(res.shifts||[]).filter(function(s){ return s.memberId!=='open'; }).length;
+    _logEvent('team','Atlas.io built a schedule \u2014 '+filled+' shift'+(filled===1?'':'s')+(res.open?(', '+res.open+' open'):''),{});
+    renderSet(); toast('Built '+filled+' shift'+(filled===1?'':'s')+(res.open?(' \u2014 '+res.open+' open'):'')); }
+  function schedBuildAI(){ if(!_guard('teamManage','Building a schedule'))return;
+    var txt=(val('schedNL')||'').trim(); if(!txt){ toast('Tell Atlas.io who works when'); return; }
+    _schedLastNL=txt; var weekStart=_schedWeekStart(), rosterNames=_shiftRoster().map(function(r){ return r.name.replace(' (you)',''); });
+    toast('Atlas.io is building your week\u2026');
+    var fb=function(){ _schedApply(_schedSolve(_parseSchedNL(txt,_shiftRoster()), weekStart), weekStart); };   // heuristic parser + code solver; works with zero backend
+    try{ _api('/api/schedule',{method:'POST',body:{freeText:txt, roster:rosterNames, positions:_schedPositions(), weekStart:weekStart}}).then(function(r){ var j=r&&r.json;
+        if(r.status>=200 && r.status<300 && j && j.live && j.ok && j.result && j.result.shifts) _schedApply(_schedFromWorker(j.result, weekStart), weekStart);
+        else fb(); }).catch(fb); }catch(e){ fb(); } }
+  // Every shift is fully editable (mirrors addShift/saveShift; handles Atlas-built people not on the roster + open slots).
+  function editShift(id){ if(!_guard('teamManage','Editing shifts'))return; var sh=_shifts().filter(function(x){ return x.id===id; })[0]; if(!sh){ toast('Shift not found'); return; }
+    var roster=_shiftRoster(), onRoster=roster.filter(function(r){ return r.id===sh.memberId; }).length;
+    openModal('<div class="modal__head"><h3>Edit shift</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Team member</label><select class="select" id="shWho">'
+        +'<option value="open"'+(sh.memberId==='open'?' selected':'')+'>Open (unfilled)</option>'
+        +roster.map(function(r){ return '<option value="'+esc(r.id)+'"'+(r.id===sh.memberId?' selected':'')+'>'+esc(r.name)+'</option>'; }).join('')
+        +((sh.memberId!=='open'&&!onRoster)?('<option value="'+esc(sh.memberId)+'" selected>'+esc(sh.memberName)+'</option>'):'')+'</select></div>'
+      +'<div class="field"><label>Role (optional)</label><input class="input" id="shRole" value="'+esc(sh.role||'')+'" placeholder="Counter, Driver, Front desk..."></div>'
+      +'<div class="field"><label>Date</label><input class="input" id="shDate" type="date" value="'+esc(sh.date)+'"></div>'
+      +'<div class="row2"><div class="field"><label>Start</label><input class="input" id="shStart" type="time" value="'+esc(sh.start)+'"></div><div class="field"><label>End</label><input class="input" id="shEnd" type="time" value="'+esc(sh.end)+'"></div></div>'
+      +'<div class="field"><label>Note (optional)</label><input class="input" id="shNote" value="'+esc(sh.note||'')+'" placeholder="Front desk, deliveries, on-call..."></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveShiftEdit(\''+sh.id+'\')">Save changes</button>'
+      +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.closeModal();Atlas.rmShift(\''+sh.id+'\')">Remove shift</button></div>'); }
+  function saveShiftEdit(id){ if(!_guard('teamManage'))return; var sh=_shifts().filter(function(x){ return x.id===id; })[0]; if(!sh){ toast('Shift not found'); return; }
+    var who=val('shWho'), date=val('shDate'), start=val('shStart')||sh.start, end=val('shEnd')||sh.end; if(!date){ toast('Pick a date'); return; }
+    var nm; if(who==='open'){ nm='Open'; } else { var r=_shiftRoster().filter(function(x){ return x.id===who; })[0]; nm=r?r.name.replace(' (you)',''):((who===sh.memberId)?sh.memberName:'Team'); }
+    sh.memberId=who; sh.memberName=nm; sh.date=date; sh.start=start; sh.end=end; sh.role=(val('shRole')||'').trim(); sh.note=(val('shNote')||'').trim();
+    save(); _logEvent('team','Shift edited: '+nm+' '+date+' '+start+'-'+end,{}); closeModal(); renderSet(); toast('Shift updated \u2014 '+_shiftHours({start:start,end:end})+'h'); }
   function _member(id){ return (S.team||[]).filter(function(x){return x.id===id;})[0]; }
   function openPerm(id){ if(!_guard('teamManage','Managing team &amp; access'))return; var m=_member(id); if(!m)return; var p=m.perms||_permsAll(false); m.perms=p;
     openModal('<div class="modal__head"><h3>Access &mdash; '+esc(m.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -5085,6 +5221,12 @@ const Atlas = (function(){
         <p style="font-size:12.5px;color:var(--muted);margin-top:12px">Roles: <b>Owner</b> (everything), <b>Manager</b> (all but billing), <b>Staff</b> (bookings &amp; customers), <b>Viewer</b> (read-only). Fully customizable per person.</p>
       </div>
       <div class="set-block"><h3>Shifts &amp; scheduling</h3><div class="desc">Assign shifts across the week so everyone knows who's on &mdash; with weekly hours per person, ready when you add payroll.</div>
+        <div style="border:1px solid var(--brand);background:var(--brand-050);border-radius:12px;padding:14px 15px;margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b style="color:var(--ink);font-size:14px">Build my week with Atlas.io</b><span class="chip chip--brand" style="font-size:10px;padding:2px 7px">AI</span></div>
+          <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">Tell Atlas.io who works when, in plain English &mdash; it drafts an editable week below that you can tweak, add to, or remove.</div>
+          <textarea class="input" id="schedNL" rows="3" style="resize:vertical;font-family:inherit;font-size:13px">${esc(_schedLastNL||SCHED_EXAMPLE)}</textarea>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap"><button class="btn btn--primary btn--sm" onclick="Atlas.schedBuildAI()">Build schedule</button><span style="font-size:11.5px;color:var(--muted)">Regenerates the upcoming week &mdash; clears the last Atlas-built shifts.</span></div>
+        </div>
         ${_shiftsHtml()}
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addShift()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a shift</button>
       </div>`;
@@ -6788,7 +6930,7 @@ const Atlas = (function(){
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
-    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,
+    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,

@@ -233,6 +233,17 @@ async function askClaude(key, q, context) {
     return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
   } catch (e) { return ''; }   // network/DNS reject -> empty, never throws
 }
+async function askClaudeSchedule(key, system, userMsg) {   // dedicated JSON-schedule call: own system prompt + a higher token budget than the advisory askClaude
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 2500, system: system, messages: [{ role: 'user', content: userMsg }] })
+    });
+    const j = await r.json().catch(() => ({}));
+    return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
+  } catch (e) { return ''; }
+}
 async function askGPT(key, q, context) {
   try {
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -477,6 +488,37 @@ export default {
         }
         await audit(env, ctx, req, 'aio.council', { models: models.map(m => m.name), chars: q.length });
         return json({ live: true, models, synthesis });
+      }
+
+      // ---- AI schedule builder: plain-language staff constraints -> structured weekly schedule (single strong model, JSON only) --
+      if (path === '/api/schedule' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        const _sday = new Date().toISOString().slice(0, 10);
+        if (!await rateLimit(env, 'sched:' + ctx.tenant_id + ':' + _sday, 60, 86400000)) return err(429, 'Daily schedule-AI limit reached. It resets tomorrow.');
+        if (!env.ANTHROPIC_KEY) return json({ live: false });   // no key -> client falls back to its built-in parser + solver
+        const sbody = await req.json().catch(() => ({}));
+        const freeText = (typeof sbody.freeText === 'string' ? sbody.freeText : '').slice(0, 4000).trim();
+        if (!freeText) return err(400, 'Describe the schedule you want.');
+        const roster = Array.isArray(sbody.roster) ? sbody.roster.slice(0, 60) : [];
+        const positions = Array.isArray(sbody.positions) ? sbody.positions.slice(0, 30) : [];
+        const weekStart = (typeof sbody.weekStart === 'string' ? sbody.weekStart : '').slice(0, 10);
+        const sys = 'You build staff schedules for a rental business. Output STRICT JSON ONLY - no prose, no markdown fences. '
+          + 'Roster (only these people can be scheduled): ' + JSON.stringify(roster).slice(0, 3000) + '. '
+          + 'Positions: ' + JSON.stringify(positions).slice(0, 1000) + '. Week starts ' + (weekStart || 'the upcoming Monday') + ' (day codes MO TU WE TH FR SA SU). '
+          + 'Return exactly: {"shifts":[{"empRef":"<roster name>","role":"<position>","day":"MO","start":"HH:MM","end":"HH:MM"}],'
+          + '"openShifts":[{"role":"","day":"","start":"","end":"","reason":""}],"clarifications":["..."]}. '
+          + 'Use 24h times. Only assign a person to hours that fit their stated availability and to a role they hold. '
+          + 'If a required slot cannot be filled by an available qualified person, put it in openShifts instead of forcing it. Match names to roster entries; if a name is unknown, add a clarification and do not schedule them.';
+        try {
+          let raw = await askClaudeSchedule(env.ANTHROPIC_KEY, sys, freeText);
+          raw = String(raw || '').replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+          let parsed = null; try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+          if (!parsed || typeof parsed !== 'object') return json({ live: true, ok: false, error: 'Could not read a schedule from that - try rephrasing.' });
+          await audit(env, ctx, req, 'schedule.ai', { chars: freeText.length });
+          return json({ live: true, ok: true, result: parsed });
+        } catch (e) {
+          return json({ live: true, ok: false, error: 'The scheduler could not be reached - built locally instead.' });
+        }
       }
 
       return err(404, 'Not found.');
