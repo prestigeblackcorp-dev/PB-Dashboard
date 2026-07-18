@@ -1201,7 +1201,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 /* domain manager */
 .dom-opt{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:10px;cursor:pointer;transition:border-color .15s,background .15s}
 .dom-opt:hover{border-color:var(--brand)}
-.dom-opt.on{border-color:var(--brand);background:var(--brand-050)}
+.dom-opt.on{border-color:var(--brand);background:var(--brand-100);box-shadow:inset 0 0 0 1px var(--brand)}
 .dom-opt b{color:var(--ink);font-size:14px}.dom-opt small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
 .dns-row{display:grid;grid-template-columns:56px 1fr auto;gap:8px;align-items:center;font-size:12px;font-family:ui-monospace,monospace;background:var(--surface-2);border:1px solid var(--line-2);border-radius:8px;padding:8px 10px;margin-bottom:6px}
 .dns-row .k{font-weight:700;color:var(--brand-700)}
@@ -1670,7 +1670,7 @@ const Atlas = (function(){
   // so the login cookie is first-party and works on Safari. Anywhere else (localhost / github.io) we
   // call the workers.dev URL cross-origin for testing. Same-origin needs no CORS + a SameSite=Lax cookie.
   var ATLAS_API=(/(^|\.)atlasrental\.io$/.test(location.hostname)) ? '' : 'https://atlas.prestigeblackcorp.workers.dev';
-  var ATLAS_BACKEND=false;              // master switch (also Atlas.setBackend(true) at runtime for ops/testing)
+  var ATLAS_BACKEND=true;               // LIVE 2026-07-17: worker wired at atlasrental.io/api via Cloudflare route (health 200). Runtime kill-switch: Atlas.setBackend(false).
   // Honest capability gates. These stay FALSE until the matching Worker infrastructure is actually deployed,
   // so the UI never tells an owner (or their customer) that an email was delivered or a card was charged when
   // nothing moved. Flip to true ONLY in lockstep with the real backend going live (see GO-LIVE.md).
@@ -1774,11 +1774,11 @@ const Atlas = (function(){
   const SWATCHES=['#1E6E4E','#2563EB','#7C3AED','#DB2777','#DC2626','#EA580C','#CA8A04','#0891B2','#4F46E5','#059669','#1E293B','#B45309'];
   // Subscription tiers (monthly, low prices). vehicles/locations = caps; credits = FREE Atlas.io credits per week.
   const TIERS=[
-    {id:'starter',   name:'Starter',              price:49.99,vehicles:10,       locations:1,        credits:100,  blurb:'Up to 10 vehicles'},
-    {id:'pro',       name:'Pro',                  price:199,  vehicles:50,       locations:3,        credits:500,  blurb:'Up to 50 vehicles'},
-    {id:'enterprise',name:'Enterprise',           price:499,  vehicles:150,      locations:99,       credits:1500, blurb:'Up to 150 vehicles, multiple locations'},
-    {id:'business',  name:'Business',             price:799,  vehicles:500,      locations:99,       credits:3000, blurb:'Up to 500 vehicles, multiple locations'},
-    {id:'unlimited', name:'Enterprise Unlimited', price:1499, vehicles:Infinity, locations:Infinity, credits:8000, blurb:'Unlimited vehicles + locations'},
+    {id:'starter',   name:'Starter',              price:49.99,vehicles:10,       locations:1,        credits:100,  blurb:'Up to 10 assets'},
+    {id:'pro',       name:'Pro',                  price:199,  vehicles:50,       locations:3,        credits:500,  blurb:'Up to 50 assets'},
+    {id:'enterprise',name:'Enterprise',           price:499,  vehicles:150,      locations:99,       credits:1500, blurb:'Up to 150 assets, multiple locations'},
+    {id:'business',  name:'Business',             price:799,  vehicles:500,      locations:99,       credits:3000, blurb:'Up to 500 assets, multiple locations'},
+    {id:'unlimited', name:'Enterprise Unlimited', price:1499, vehicles:Infinity, locations:Infinity, credits:8000, blurb:'Unlimited assets + locations'},
     {id:'diamond',   name:'Diamond',              price:0,    vehicles:Infinity, locations:Infinity, credits:Infinity, blurb:'Owner / Admin \u2014 limitless', owner:true},
     {id:'gold',      name:'Gold',                 price:0,    vehicles:Infinity, locations:Infinity, credits:3000, blurb:'Complimentary \u2014 all features', comp:true},
     {id:'freecomp',  name:'Free access',          price:0,    vehicles:Infinity, locations:Infinity, credits:1000, blurb:'Free \u2014 full access', comp:true}
@@ -3058,7 +3058,7 @@ const Atlas = (function(){
   // Per-type term for the current fleet (KPIs/labels reconfigure to what the client rents).
   function _fterm(k){ var t=FLEET_TERMS[S.fleet&&S.fleet.id]||FLEET_TERMS.custom; return (t&&t[k])||FLEET_TERMS.cars[k]; }
   // A plan's cap, described in the client's OWN asset noun (packages gate any asset type).
-  function _tierCap(t){ var n=(S.fleet&&S.fleet.nouns)||'assets';
+  function _tierCap(t){ var n='assets';   // pricing is platform-level -> neutral "assets" for every rental type
     if(t.vehicles===Infinity) return 'Unlimited '+n+' + locations';
     return 'Up to '+t.vehicles+' '+n+(t.locations>=90?', multiple locations':''); }
   /* ============ Interactive drill-downs + income/expense ledger + blocked days ============ */
@@ -5889,17 +5889,30 @@ const Atlas = (function(){
   function _payProvider(){ return (S.payments&&S.payments.provider)||''; }
   function _payLabel(){ var p=_payProvider(); var f=PAY_PROVIDERS.filter(function(x){return x[0]===p;})[0]; return f?f[1]:''; }
   function setActivePay(id){ if(!_canMod('settings'))return; var f=PAY_PROVIDERS.filter(function(x){return x[0]===id;})[0]; if(!f)return; if(!S.payments)S.payments={}; S.payments.provider=id; S.payments.label=f[1]; save(); renderSet(); toast(f[1]+' is now your active processor'); }
+  var CONN_FIELDS={   // providers needing >1 credential get LABELED fields (was one unlabeled box). Stored together, encrypted at go-live.
+    stripe:[{label:'Publishable key',ph:'pk_live_...'},{label:'Secret key',ph:'sk_live_...'}],
+    square:[{label:'Access token',ph:'EAAA...'},{label:'Location ID',ph:'L...'}],
+    clover:[{label:'API token',ph:'API token'},{label:'Merchant ID',ph:'Merchant ID'}],
+    paypal:[{label:'Client ID',ph:'A...'},{label:'Secret',ph:'E...'}],
+    authnet:[{label:'API Login ID',ph:'API Login ID'},{label:'Transaction Key',ph:'Transaction Key'}],
+    toast:[{label:'Client ID',ph:'Client ID'},{label:'Client secret',ph:'Client secret'}]
+  };
   function modalConnect(id,name){
     if(id==='web'){ return _modalEmbed(); }   // booking-embed connect shows a real, copyable snippet -- there is no key to paste
     const steps=GUIDES[id]||['Follow the guided steps to connect.'];
+    var _cf=CONN_FIELDS[id];
+    var fieldsHtml=_cf ? _cf.map(function(f,i){ return '<div class="field"><label>'+f.label+'</label><input class="input" id="connKey'+i+'" placeholder="'+f.ph+'"></div>'; }).join('')
+                       : '<div class="field"><label>Paste your key / token</label><input class="input" id="connKey" placeholder="paste your key here"></div>';
     openModal(`<div class="modal__head"><h3>Connect ${name}</h3><button class="icon-btn" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
       <div class="modal__body"><ol class="step-list">${steps.map(s=>`<li>${s}</li>`).join('')}</ol>
-      <div class="field"><label>Paste your key / token</label><input class="input" id="connKey" placeholder="sk_live_..." ></div>
+      ${fieldsHtml}
       <button class="btn btn--primary btn--full" onclick="Atlas.doConnect('${id}','${name}')">Save ${name}</button>
       <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">\u{1F512} Your key is sent encrypted to your backend at go-live &mdash; never stored in the browser. Nothing charges until then. Disconnect anytime.</p></div>`);
   }
   function doConnect(id,name){
-    var key=String((document.getElementById('connKey')||{}).value||'').trim();   // read the pasted key (was silently discarded)
+    var _cf=CONN_FIELDS[id], key='';
+    if(_cf){ var o={},any=false; _cf.forEach(function(f,i){ var v=String((document.getElementById('connKey'+i)||{}).value||'').trim(); if(v)any=true; o[f.label]=v; }); key=any?JSON.stringify(o):''; }   // multi-credential providers: all labeled keys stored together
+    else { key=String((document.getElementById('connKey')||{}).value||'').trim(); }   // read the pasted key (was silently discarded)
     S.integrations[id]=true;
     var pf=PAY_PROVIDERS.filter(function(x){return x[0]===id;})[0];   // connecting a processor makes it active if none is yet
     if(pf){ if(!S.payments)S.payments={}; if(!S.payments.provider){ S.payments.provider=id; S.payments.label=pf[1]; } }
