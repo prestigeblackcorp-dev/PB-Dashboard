@@ -445,6 +445,14 @@ const PLAN_PRICE_CENTS = { starter: 4999, pro: 19900, enterprise: 49900, busines
 const CREDIT_PACK_CENTS = { '500': 2500, '2000': 8000, '5000': 17500 };
 const WEBSITE_ADDON_CENTS = { once: 19900, mo: 1900 };
 function _planLabel(t) { return ({ starter: 'Starter', pro: 'Pro', enterprise: 'Enterprise', business: 'Business', unlimited: 'Enterprise Unlimited' })[t] || String(t || ''); }
+// DNS-over-HTTPS CNAME lookup (Cloudflare 1.1.1.1 JSON API) -> a REAL check that a tenant pointed their domain at us (not a cosmetic flag).
+async function _dohCname(name) {
+  try {
+    const r = await _fetchTimeout('https://cloudflare-dns.com/dns-query?type=CNAME&name=' + encodeURIComponent(name), { headers: { 'Accept': 'application/dns-json' } }, 8000);
+    const j = await r.json().catch(function () { return {}; });
+    return (j.Answer || []).map(function (a) { return String(a.data || '').replace(/\.$/, '').toLowerCase(); });
+  } catch (e) { return []; }
+}
 
 // ---- Atlas HQ (owner master dashboard): platform tables self-heal so the whole thing is a PASTE-ONLY deploy (no separate migration).
 // CREATE ... IF NOT EXISTS + additive ALTER (swallowed if the column already exists) are idempotent + safe to re-run.
@@ -463,6 +471,8 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_customer TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain_status TEXT").run(); } catch (e) { /* already exists */ }
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -517,6 +527,7 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const path = url.pathname;
+    const host = (url.hostname || '').toLowerCase();
     const method = req.method;
     const cors = corsHeaders(req.headers.get('Origin') || '');
 
@@ -527,6 +538,19 @@ export default {
 
     const resp = await (async () => {
     try {
+      // ---- custom-domain FRONT DOOR: a tenant's OWN connected domain (verified live) serves THEIR booking site at the root ----
+      if (method === 'GET' && path === '/' && host && host !== 'atlasrental.io' && host !== 'www.atlasrental.io' && host.indexOf('.workers.dev') < 0 && host !== 'localhost' && host !== '127.0.0.1') {
+        try {
+          await ensurePlatformSchema(env);
+          const cd = await env.DB.prepare("SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(host).first();
+          if (cd && cd.subdomain) {
+            const pr = tenantProfile(cd);
+            const liveSite = pr.settings.publicSite && pr.settings.publicSite.published;
+            const color = (pr.brand && pr.brand.color) || '#1E6E4E';
+            if (liveSite) return new Response(_bookPageHtml(cd.subdomain, color), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+          }
+        } catch (e) { /* fall through to normal routing */ }
+      }
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
@@ -951,6 +975,50 @@ export default {
       }
 
       // ---- tenant profile: publish brand/money/settings (+ public booking site) to the server ----
+      // ---- custom domain: connect -> verify (real DNS check) -> disconnect. Owner/manager only. ----
+      if (path === '/api/domain/connect' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        const dom = String(b.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+        if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(dom) || dom.length > 100) return err(400, 'Enter a domain like yoursite.com.');
+        const clash = await env.DB.prepare('SELECT id FROM tenants WHERE custom_domain=? AND id<>?').bind(dom, ctx.tenant_id).first();
+        if (clash) return err(409, 'That domain is already connected to another account.');
+        await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=?").bind(dom, Date.now(), ctx.tenant_id).run();
+        await audit(env, ctx, req, 'domain.connect', { domain: dom });
+        const target = env.SAAS_TARGET || 'saas.atlasrental.io';
+        return json({ ok: true, domain: dom, target: target, records: [
+          { type: 'CNAME', host: 'www', value: target },
+          { type: 'CNAME', host: '@ (root)', value: target, note: 'If your registrar will not CNAME the root, use its CNAME-flattening / ANAME / forwarding to ' + target + ', or just connect www.' + dom + '.' }
+        ] });
+      }
+      if (path === '/api/domain/verify' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
+        await ensurePlatformSchema(env);
+        const row = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const dom = row && row.custom_domain;
+        if (!dom) return err(400, 'Connect a domain first.');
+        const target = (env.SAAS_TARGET || 'saas.atlasrental.io').toLowerCase();
+        const seen = (await _dohCname(dom)).concat(await _dohCname('www.' + dom));
+        const ok = seen.some(function (v) { return v === target || v.indexOf(target) >= 0 || v.indexOf('atlasrental') >= 0; });
+        if (ok) {
+          await env.DB.prepare("UPDATE tenants SET custom_domain_status='live', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
+          await audit(env, ctx, req, 'domain.verified', { domain: dom });
+          return json({ ok: true, live: true, domain: dom });
+        }
+        return json({ ok: true, live: false, domain: dom, hint: 'We do not see the DNS record yet. It can take a few minutes to a few hours to update. Make sure www.' + dom + ' points (CNAME) to ' + target + ', then try again.' });
+      }
+      if (path === '/api/domain/disconnect' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
+        await ensurePlatformSchema(env);
+        await env.DB.prepare("UPDATE tenants SET custom_domain=NULL, custom_domain_status=NULL, updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
+        await audit(env, ctx, req, 'domain.disconnect', {});
+        return json({ ok: true });
+      }
+
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
           const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();

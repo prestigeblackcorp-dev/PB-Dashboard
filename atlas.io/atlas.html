@@ -7070,18 +7070,26 @@ const Atlas = (function(){
     return head+opts+body;
   }
   function webDomainMode(mode){ var w=_web(); w._ui=mode; var el=document.getElementById('domBlock'); if(el) el.innerHTML='<h3>Domain</h3><div class="desc">Swap your web address anytime.</div>'+_domainHtml(); }
-  function webRevertDomain(){ var w=_web(); w.domain.mode='sub'; w.domain.custom=''; w.domain.status='live'; w.domain._pending=''; w._ui='sub'; save(); renderWebsite(); toast('Reverted to your free Atlas subdomain'); }   // fix: actually disconnect the custom domain and go back to the free subdomain (mirrors the ungated connect/verify flow)
-  function webConnectDomain(){ var w=_web(); var v=(val('domIn')||'').trim().toLowerCase().replace(/^https?:\/\//,'').replace(/\/.*$/,''); if(!v||v.indexOf('.')<1){ toast('Enter a domain like mysite.com'); return; }
-    w.domain._pending=v; save();
-    document.getElementById('domSteps').innerHTML='<div style="margin-top:14px"><div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">In your domain registrar, add these two records:</div>'
-      +'<div class="dns-row"><span class="k">A</span><span>@ &rarr; 76.76.21.21</span><span></span></div>'
-      +'<div class="dns-row"><span class="k">CNAME</span><span>www &rarr; cname.atlasrental.site</span><span></span></div>'
-      +'<div style="font-size:11.5px;color:var(--muted);margin:8px 0 12px">DNS can take a few minutes to propagate. We keep your ownership &mdash; you can disconnect anytime.</div>'
-      +'<button class="btn btn--primary btn--sm btn--full" onclick="Atlas.webVerifyDomain()">I\'ve added them &mdash; verify &amp; connect</button></div>';
+  function webRevertDomain(){ if(ATLAS_BACKEND && _apiCsrf){ _api('/api/domain/disconnect',{method:'POST',body:{}}).catch(function(){}); } var w=_web(); w.domain.mode='sub'; w.domain.custom=''; w.domain.status='live'; w.domain._pending=''; w._ui='sub'; save(); renderWebsite(); toast('Reverted to your free Atlas subdomain'); }   // disconnect server-side + go back to the free subdomain
+  function webConnectDomain(){ var w=_web(); var v=(val('domIn')||'').trim().toLowerCase().replace(/^https?:\/\//,'').replace(/\/.*$/,'').replace(/^www\./,''); if(!v||v.indexOf('.')<1){ toast('Enter a domain like mysite.com'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in and go online to connect a domain'); return; }
+    var st=document.getElementById('domSteps'); if(st) st.innerHTML='<div style="margin-top:14px;color:var(--muted);font-size:12.5px">Preparing your steps...</div>';
+    _api('/api/domain/connect',{method:'POST',body:{domain:v}}).then(function(res){
+      if(!(res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not start - try again'); return; }
+      w.domain.mode='custom'; w.domain.custom=res.json.domain; w.domain.status='pending'; w.domain._pending=res.json.domain; save();
+      var recs=res.json.records||[];
+      document.getElementById('domSteps').innerHTML='<div style="margin-top:14px"><div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">At your domain registrar (GoDaddy, Namecheap, Cloudflare, etc.), add this DNS record:</div>'
+        +recs.map(function(r){ return '<div class="dns-row"><span class="k">'+esc(r.type)+'</span><span>'+esc(r.host)+' &rarr; '+esc(r.value)+'</span><span></span></div>'; }).join('')
+        +'<div style="font-size:11.5px;color:var(--muted);margin:8px 0 12px">DNS can take a few minutes to a few hours. Your SSL certificate is issued automatically. You keep ownership &mdash; disconnect anytime.</div>'
+        +'<button class="btn btn--primary btn--sm btn--full" onclick="Atlas.webVerifyDomain()">I added it &mdash; verify &amp; connect</button><div id="domVerifyMsg"></div></div>';
+    }).catch(function(){ toast('Network error'); });
   }
-  function webVerifyDomain(){ var w=_web(); var v=w.domain._pending; if(!v) return;
-    w.domain.mode='custom'; w.domain.custom=v; w.domain.status='connected'; w._ui='sub'; save();
-    renderWebsite(); toast(v+' connected to your site');
+  function webVerifyDomain(){ if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to verify'); return; }
+    var m=document.getElementById('domVerifyMsg'); if(m) m.innerHTML='<div style="margin-top:10px;color:var(--muted);font-size:12.5px">Checking your DNS...</div>';
+    _api('/api/domain/verify',{method:'POST',body:{}}).then(function(res){ var w=_web();
+      if(res.json&&res.json.ok&&res.json.live){ w.domain.mode='custom'; w.domain.status='live'; w._ui='sub'; save(); renderWebsite(); toast((res.json.domain||'Your domain')+' is connected and live'); }
+      else { w.domain.status='pending'; save(); if(m) m.innerHTML='<div style="margin-top:10px;color:var(--muted);font-size:12.5px">'+esc((res.json&&res.json.hint)||'Not visible yet - DNS may still be updating. Try again in a few minutes.')+'</div>'; }
+    }).catch(function(){ toast('Network error'); });
   }
   function _domainBase(domain){ var tld=(String(domain).split('.').pop()||'com').toLowerCase();
     var map={com:12,net:14,org:13,io:39,co:28,app:16,shop:32,site:10,online:8,car:18,cars:20,rental:30,rentals:30,auto:22}; return map[tld]||16; }
@@ -7097,13 +7105,11 @@ const Atlas = (function(){
       +'<div style="text-align:right"><div style="font-size:19px;font-weight:850;color:var(--ink)" class="tnum">'+money(yr)+'</div><div style="font-size:11px;color:var(--muted)">/year</div></div></div>'
       +'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.webBuyDomain(\''+esc(v).replace(/'/g,"\\'")+'\','+yr+')">Buy &amp; auto-connect &mdash; '+money(yr)+'/yr</button></div>';
   }
-  function webBuyDomain(domain,yr){ if(!_guard('billing','Managing billing'))return; if(!S.card){ toast('Add a plan/card first to buy a domain'); openPlans(); return; }   // fix: billing RBAC guard
-    var steps=['Payment confirmed ('+money(yr)+'/yr to '+S.card.brand+' ..'+S.card.last4+')','Registering '+domain+' in your name','Transferring ownership to you','Pointing DNS to your Atlas site','Live and connected'];
-    openModal('<div class="modal__head"><h3>Setting up '+esc(domain)+'</h3></div><div class="modal__body"><div id="buySteps">'
-      +steps.map(function(s,i){ return '<div class="mp-row" style="border:none;padding:7px 0" data-step="'+i+'"><span style="display:flex;align-items:center;gap:9px"><span class="buy-tick" style="width:18px;height:18px;border-radius:50%;border:2px solid var(--line);flex:none"></span>'+esc(s)+'</span></div>'; }).join('')
-      +'</div><button class="btn btn--primary btn--full btn--lg" id="buyDone" style="margin-top:8px;display:none" onclick="Atlas.closeModal();Atlas.renderWebsite()">Done</button></div>');
-    _buyStep(0,domain);
-  }
+  function webBuyDomain(domain,yr){ if(!_guard('billing','Managing billing'))return;   // honest: buying a brand-new domain in-app needs the registrar integration (roadmap). No fake "purchase".
+    openModal('<div class="modal__head"><h3>Buy '+esc(domain)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Buying a brand-new domain right inside Atlas is coming soon (we are finishing the registrar integration). For now it is quick to do yourself:</div>'
+      +'<ol style="margin:0 0 14px;padding-left:18px;font-size:13px;color:var(--ink);line-height:1.8"><li>Register <b>'+esc(domain)+'</b> at any registrar (Namecheap, GoDaddy, Cloudflare &mdash; about '+money(yr)+'/yr).</li><li>Come back to <b>Connect a domain you own</b> and point it here in two clicks.</li></ol>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas.closeModal();Atlas.webDomainMode(\'connect\')">Connect a domain I own</button></div>'); }
   function _buyStep(i,domain){ var rows=document.querySelectorAll('#buySteps [data-step]'); if(!rows||i>=rows.length){
       var w=_web(); w.domain.mode='custom'; w.domain.custom=domain; w.domain.status='owned'; w._ui='sub'; save();
       var db=document.getElementById('buyDone'); if(db) db.style.display='block'; return; }
