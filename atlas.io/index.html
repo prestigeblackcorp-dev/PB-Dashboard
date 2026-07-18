@@ -3582,7 +3582,7 @@ const Atlas = (function(){
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
     var assetField=_noAssets
       ? '<div class="field"><label>'+cap(S.fleet.noun)+'</label><div class="bk-lenhint" style="margin:0">No '+esc(S.fleet.nouns)+' yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.closeModal();Atlas.go(\'fleet\')">add your first '+esc(S.fleet.noun)+'</span> to take a booking.</div></div>'
-      : '<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset">'+assets.map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';
+      : '<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset">'+assets.slice().sort(function(x,y){return String(x).localeCompare(String(y));}).map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';
     var phoneField=cfg.fields.phone? '<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkPhone" value="'+esc(b.phone||'')+'" placeholder="(555) 555-1234"></div>' : '';
     var contactRow=cfg.fields.phone? ('<div class="row2">'+phoneField+assetField+'</div>') : assetField;
     var notesField=cfg.fields.notes? '<div class="field"><label>Notes <span style="color:var(--muted);font-weight:500">(internal)</span></label><textarea class="input" id="bkNotes" rows="2" placeholder="Anything to remember about this booking">'+esc(b.notes||'')+'</textarea></div>' : '';
@@ -4581,12 +4581,12 @@ const Atlas = (function(){
     flespi:{need:'flespi token',steps:['Sign in to flespi.io','Open the Tokens section','Create a token with read access to your devices','Paste the token above']}
   };
   function _trackerGuide(id,name){ var g=TRACKER_GUIDES[id]; if(g) return g;
-    return {need:'API key', steps:['Log in to your '+name+' account','Open Settings / Admin > API or Integrations','Generate a read-only API key or access token','Paste it above and connect']}; }
+    return {need:'API key', steps:['Log in to your '+name+' account on their website (use the web dashboard, not the phone app)','Open Settings / Admin > API or Integrations','Generate a read-only API key or access token','Paste it above and connect']}; }
   function _trkGuideHtml(id){ var t=TRACKERS.filter(function(x){return x.id===id;})[0]||{name:id}; var g=_trackerGuide(id,t.name);
     return '<div class="trk-guide"><div class="trk-guide__hd">How to connect '+esc(t.name)+' <span>You will need: '+esc(g.need)+'</span></div><ol class="trk-guide__steps">'+g.steps.map(function(s){return '<li>'+esc(s)+'</li>';}).join('')+'</ol></div>'; }
   function trkGuideUpdate(){ var el=document.getElementById('trkGuide'); if(el) el.innerHTML=_trkGuideHtml(val('trkProv')); }
   function openTrackerConnect(){ openModal('<div class="modal__head"><h3>Connect a tracker</h3>'+_xBtn()+'</div><div class="modal__body">'
-    +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+'</option>';}).join('')+'</select></div>'
+    +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+'</option>';}).join('')+'</select></div>'
     +'<div id="trkGuide">'+_trkGuideHtml(TRACKERS[0].id)+'</div>'
     +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" placeholder="Paste your API key or access token"></div>'
     +'<div class="bk-lenhint" style="margin:0 0 14px">Read-only access to pull live location for the vehicles on your account. Your key is stored securely and never shared.</div>'
@@ -5900,6 +5900,12 @@ const Atlas = (function(){
     authnet:[{label:'API Login ID',ph:'API Login ID'},{label:'Transaction Key',ph:'Transaction Key'}],
     toast:[{label:'Client ID',ph:'Client ID'},{label:'Client secret',ph:'Client secret'}]
   };
+  var GUIDE_LINKS={   // deep links straight to where each key lives, so owners connect faster (no hunting)
+    stripe:'https://dashboard.stripe.com/apikeys', square:'https://developer.squareup.com/apps', clover:'https://www.clover.com/dashboard',
+    toast:'https://pos.toasttab.com', paypal:'https://developer.paypal.com/dashboard/applications', authnet:'https://account.authorize.net',
+    helcim:'https://hub.helcim.com', email:'https://resend.com/api-keys', sms:'https://console.twilio.com',
+    maps:'https://console.mapbox.com/account/access-tokens', qb:'https://quickbooks.intuit.com/app/homepage'
+  };
   function modalConnect(id,name){
     if(id==='web'){ return _modalEmbed(); }   // booking-embed connect shows a real, copyable snippet -- there is no key to paste
     const steps=GUIDES[id]||['Follow the guided steps to connect.'];
@@ -5908,6 +5914,7 @@ const Atlas = (function(){
                        : '<div class="field"><label>Paste your key / token</label><input class="input" id="connKey" placeholder="paste your key here"></div>';
     openModal(`<div class="modal__head"><h3>Connect ${name}</h3><button class="icon-btn" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
       <div class="modal__body"><ol class="step-list">${steps.map(s=>`<li>${s}</li>`).join('')}</ol>
+      ${GUIDE_LINKS[id]?`<a class="btn btn--ghost btn--sm" href="${GUIDE_LINKS[id]}" target="_blank" rel="noopener" style="margin:0 0 12px;text-decoration:none">Open ${name} to get your key &#8599;</a>`:''}
       ${fieldsHtml}
       <button class="btn btn--primary btn--full" onclick="Atlas.doConnect('${id}','${name}')">Save ${name}</button>
       <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">\u{1F512} Your key is sent encrypted to your backend at go-live &mdash; never stored in the browser. Nothing charges until then. Disconnect anytime.</p></div>`);
