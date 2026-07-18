@@ -55,6 +55,8 @@ function b64(buf) { return btoa(String.fromCharCode.apply(null, new Uint8Array(b
 function unb64(s) { const b = atob(s); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
 function randId(bytes) { const u = new Uint8Array(bytes || 32); crypto.getRandomValues(u); return b64(u).replace(/[+/=]/g, '').slice(0, (bytes || 32)); }
 function enc(str) { return new TextEncoder().encode(str); }
+// SHA-256 hex of a string (used to fingerprint a signed document -> tamper-evident legal trail).
+async function _sha256Hex(s) { try { var b = await crypto.subtle.digest('SHA-256', enc(String(s))); return Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join(''); } catch (e) { return ''; } }
 
 // Password hashing. Cloudflare caps a SINGLE native PBKDF2 call at 100k iterations, so we CHAIN 6 rounds
 // (each round's 256-bit output feeds the next as key material) for 600k effective iterations -- OWASP's
@@ -674,6 +676,8 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_installs (id TEXT PRIMARY KEY, tenant_id TEXT, platform TEXT, created_at INTEGER)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS domains_sold (id TEXT PRIMARY KEY, tenant_id TEXT, domain TEXT, buyer_email TEXT, paid_cents INTEGER, status TEXT DEFAULT 'registered', created_at INTEGER)").run();
     try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }   // the yearly domain subscription id (for renewals)
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, tenant_id TEXT, booking_id TEXT, doc_hash TEXT, signer_name TEXT, sig TEXT, ip TEXT, ua TEXT, signed_at INTEGER)").run();   // #205 e-signature legal trail
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_sig_booking ON signatures(tenant_id, booking_id)").run();
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -1163,18 +1167,21 @@ export default {
         if (!live) return new Response(_pageDoc('Not available', color, '<div class="card"><h2>Not available yet</h2><p class="muted">This booking site has not been published.</p></div>', ''), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
         return new Response(_bookPageHtml(bp[1], color), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
-      const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay))?$/);
+      const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign))?$/);
       if (ptp) {
         const token = ptp[1], psub = ptp[2];
         const brow = await env.DB.prepare('SELECT * FROM bookings WHERE portal_token=? LIMIT 1').bind(token).first();
         if (!brow) { if (psub) return err(404, 'Booking not found.'); return new Response(_pageDoc('Not found', '#1E6E4E', '<div class="card"><h2>Booking not found</h2><p class="muted">This link may have expired.</p></div>', ''), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } }); }
-        const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(brow.tenant_id).first();
+        const tr = await env.DB.prepare('SELECT name,brand,settings,money FROM tenants WHERE id=?').bind(brow.tenant_id).first();
         const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
         const d = jparse(brow.data, {});
+        const _agrText = (pr.settings && pr.settings.legal && pr.settings.legal.agreement && pr.settings.legal.agreement.text) ||
+          (pr.name + ' - Rental Agreement.\n\nBy signing below, the renter agrees to rent the item in this booking; to return it on time and in the same condition; to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage; and to the owner\'s posted cancellation policy. The renter is responsible for the item during the rental and represents they carry valid, applicable coverage. This agreement is governed by the laws of the owner\'s jurisdiction.');
         if (psub === 'data' && method === 'GET') {
           return json({ ok: true, business: pr.name, brand: { color: pr.brand.color || '', logo: pr.brand.logo || '' },
             ref: brow.id, status: brow.status, asset: d.asset || '', periods: d.periods || 1,
-            quote: d.quote || null, paid: d.paid || {}, cust: d.cust || '' });
+            quote: d.quote || null, paid: d.paid || {}, cust: d.cust || '',
+            agreement: _agrText, signed: !!(d.portal && d.portal.signedAt), signerName: (d.portal && d.portal.signerName) || '', signedAt: (d.portal && d.portal.signedAt) || 0 });
         }
         if (psub === 'pay' && method === 'POST') {
           const sk = await tenantStripeKey(env, brow.tenant_id);
@@ -1187,6 +1194,31 @@ export default {
             successUrl: url.origin + '/api/portal/' + token + '?paid=1', cancelUrl: url.origin + '/api/portal/' + token,
             metadata: { booking: brow.id, tenant: brow.tenant_id, kind: kind } });
           return co.ok ? json({ ok: true, payUrl: co.url }) : json({ ok: false, reason: co.reason, message: 'Could not start checkout.' });
+        }
+        // #205 remote e-signature with a server-captured legal trail: real IP (CF-Connecting-IP) + user-agent + server timestamp +
+        // a SHA-256 fingerprint of the exact agreement text signed. None of these can be spoofed by the client, so it's defensible.
+        if (psub === 'sign' && method === 'POST') {
+          if (!await rateLimit(env, 'psign:' + token, 12, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
+          const body = await req.json().catch(function () { return {}; });
+          const name = String(body.name || '').trim().slice(0, 120);
+          const sig = String(body.sig || '').slice(0, 200000);   // typed legal name, or a drawn-signature data URL
+          if (name.length < 2) return err(400, 'Please type your full legal name.');
+          if (!body.agree) return err(400, 'Please check the box to agree.');
+          const at = Date.now();
+          const ip = req.headers.get('CF-Connecting-IP') || '';
+          const ua = String(req.headers.get('User-Agent') || '').slice(0, 300);
+          const docHash = await _sha256Hex(_agrText + '|' + name + '|' + at);
+          const sigId = 'sg' + at.toString(36) + Math.random().toString(36).slice(2, 7);
+          await ensurePlatformSchema(env);
+          try { await env.DB.prepare('INSERT INTO signatures (id,tenant_id,booking_id,doc_hash,signer_name,sig,ip,ua,signed_at) VALUES (?,?,?,?,?,?,?,?,?)').bind(sigId, brow.tenant_id, brow.id, docHash, name, sig || name, ip, ua, at).run(); } catch (e) {}
+          d.portal = d.portal || {}; d.portal.signedAt = at; d.portal.signerName = name; if (sig) d.portal.sig = sig;
+          d.sigTrail = { signedAt: at, ip: ip, ua: ua, docHash: docHash, sigId: sigId, signer: name };   // surfaced in the dashboard booking view
+          try { await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(d), at, brow.id).run(); } catch (e) {}
+          await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.signed', { booking: brow.id });
+          try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first();
+            if (ow) await sendEmail(env, { to: ow.email, fromName: 'Atlas Rental.io', subject: 'Agreement signed: ' + name + ' - ' + brow.id,
+              html: _emailShell(pr, '<h2>Rental agreement signed</h2><p><b>' + esc(name) + '</b> signed the agreement for booking <b>' + esc(brow.id) + '</b>.</p><p style="color:#666;font-size:13px">Recorded ' + new Date(at).toISOString() + ' &middot; IP ' + esc(ip || 'n/a') + ' &middot; document fingerprint <span style="font-family:monospace">' + esc(docHash.slice(0, 16)) + '...</span></p>') }); } catch (e) {}
+          return json({ ok: true, signedAt: at, docHash: docHash });
         }
         return new Response(_portalPageHtml(token, pr.brand.color || '#1E6E4E'), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
@@ -1868,7 +1900,8 @@ function el(i){return document.getElementById(i)}
 function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function pay(kind){fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}alert(j.message||'Payment is not available right now.')}).catch(function(){alert('Network error')})}
-fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>'}else{pays='<p class=muted>All settled. Thank you!</p>'}el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div><div class=card>'+pays+'</div>'}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
+function sign(){var nm=(el('sgName')?el('sgName').value:'').trim();var ag=el('sgAgree')&&el('sgAgree').checked;if(nm.length<2){alert('Please type your full legal name');return}if(!ag){alert('Please check the box to agree to the rental agreement');return}var b=el('sgBtn');if(b){b.disabled=true;b.textContent='Signing...'}fetch('/api/portal/'+T+'/sign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,sig:nm,agree:true})}).then(function(r){return r.json()}).then(function(j){if(j.ok){location.reload()}else{alert(j.error||'Could not sign');if(b){b.disabled=false;b.textContent='Agree & sign'}}}).catch(function(){alert('Network error');if(b){b.disabled=false;b.textContent='Agree & sign'}})}
+fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>'}else{pays='<p class=muted>All settled. Thank you!</p>'}var agree='';if(j.agreement){if(j.signed){agree='<div class=card><h2>Rental agreement</h2><p class=muted>Signed'+(j.signerName?(' by '+esc(j.signerName)):'')+' &mdash; thank you.</p></div>'}else{agree='<div class=card><h2>Rental agreement</h2><div style="max-height:170px;overflow:auto;font-size:12px;white-space:pre-wrap;border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:10px;margin:8px 0;line-height:1.5">'+esc(j.agreement)+'</div><label style="font-size:12.5px;display:flex;gap:7px;align-items:flex-start;margin:8px 0"><input type=checkbox id=sgAgree style="margin-top:2px"> <span>I have read and agree to this rental agreement.</span></label><input id=sgName placeholder="Type your full legal name" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:2px 0 8px;font-size:14px"><button class=btn id=sgBtn onclick=sign()>Agree & sign</button><p class=muted style="font-size:11px;margin-top:8px">Your typed name is your electronic signature. Your name, the date and time, your IP address and a document fingerprint are recorded (E-SIGN / UETA).</p></div>'}}el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div>'+agree+'<div class=card>'+pays+'</div>'}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
 `;
   return _pageDoc('Your booking', color, body, js);
 }
