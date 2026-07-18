@@ -439,6 +439,15 @@ async function _registrarRegister(env, domain, years) {
     var v = _ddOk(j, 'Register'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || ('code_' + v.code)) };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
+// Renew an existing domain for another year (called on the yearly Stripe renewal so "auto-renews yearly" is real, not a one-time charge).
+async function _registrarRenew(env, domain, years) {
+  if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
+  try {
+    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'renew', domain: domain, duration: String(years || 1), currency: 'USD' }), {}, 25000);
+    var j = await r.json().catch(function () { return {}; });
+    var v = _ddOk(j, 'Renew'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || ('code_' + v.code)) };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
 async function _registrarSetNs(env, domain, nsList) {
   if (!env.DYNADOT_KEY || !nsList || !nsList.length) return { ok: false, reason: 'no_ns' };
   try {
@@ -664,6 +673,7 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_pfb_status ON platform_feedback(status, created_at)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_installs (id TEXT PRIMARY KEY, tenant_id TEXT, platform TEXT, created_at INTEGER)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS domains_sold (id TEXT PRIMARY KEY, tenant_id TEXT, domain TEXT, buyer_email TEXT, paid_cents INTEGER, status TEXT DEFAULT 'registered', created_at INTEGER)").run();
+    try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }   // the yearly domain subscription id (for renewals)
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -979,7 +989,7 @@ export default {
             if (md.domain && env.DYNADOT_KEY) _reg = await _registrarRegister(env, md.domain, 1);
             if (_reg.ok) {
               try { const _ns = String(env.DOMAIN_NS || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean); if (_ns.length) await _registrarSetNs(env, md.domain, _ns); } catch (e) {}
-              try { await ensurePlatformSchema(env); await env.DB.prepare("INSERT INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,created_at) VALUES (?,?,?,?,?,?,?)").bind('dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), md.tenant, md.domain, md.email || '', _tt, 'registered', Date.now()).run(); } catch (e) {}
+              try { await ensurePlatformSchema(env); await env.DB.prepare("INSERT INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind('dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), md.tenant, md.domain, md.email || '', _tt, 'registered', obj.subscription || null, Date.now()).run(); } catch (e) {}
               await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain, amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
               await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
             } else if (md.domain && env.DYNADOT_KEY) {
@@ -1000,10 +1010,21 @@ export default {
             } else if (im.tenant && im.billing === 'website') {
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
+            } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle') {
+              // YEARLY DOMAIN RENEWAL only (the initial year is registered + recorded by checkout.session.completed). Renew at the registrar so "auto-renews yearly" is real, then record the recurring revenue.
+              if (im.domain && env.DYNADOT_KEY) {
+                const rn = await _registrarRenew(env, im.domain, 1);
+                await audit(env, { tenant_id: im.tenant }, req, rn.ok ? 'domain.renewed' : 'domain.renew_failed', { domain: im.domain, reason: rn.reason });
+                try { await ensurePlatformSchema(env); await env.DB.prepare("UPDATE domains_sold SET status=? WHERE domain=? AND tenant_id=?").bind(rn.ok ? 'registered' : 'renew_failed', im.domain, im.tenant).run(); } catch (e) {}
+              }
+              await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'domain', pack: im.domain || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain renewal' + (im.domain ? (' - ' + im.domain) : '') + ' (1 year)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             }
           } else if (T === 'customer.subscription.created' || T === 'customer.subscription.updated') {
             // captures upgrades AND downgrades (new metadata.tier), plus start/cancel; store the sub id so change-plan/cancel work.
-            if (md.tenant) {
+            // GATE on billing type: only the tenant's PLAN/TRIAL sub controls tenants.plan/tier/stripe_sub. A domain or website-monthly
+            // subscription (same customer, different metadata.billing) must NEVER flip the plan or clobber the plan's stripe_sub.
+            if (md.tenant && (md.billing === 'plan' || md.billing === 'trial')) {
               const st = String(obj.status || '');
               if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
               else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
@@ -1494,7 +1515,9 @@ export default {
         } else if (kind === 'domain') {
           const dcents = Math.round(Number(body.amountCents) || 0);
           if (dcents < 100 || dcents > 500000) return err(400, 'Invalid domain price.');   // quote-based (registrar cost + markup); clamped $1-$5000
-          amountCents = dcents; name = 'Domain registration' + (body.domain ? (' - ' + String(body.domain).slice(0, 60)) : '');
+          // domains renew EVERY YEAR -> bill as a yearly subscription (never a one-time "lifetime" charge); the registrar is renewed on each Stripe renewal.
+          amountCents = dcents; name = 'Domain' + (body.domain ? (' - ' + String(body.domain).slice(0, 60)) : '') + ' (billed yearly)';
+          mode = 'subscription'; interval = 'year';
           meta.billing = 'domain'; meta.domain = String(body.domain || '').slice(0, 80);
         } else { return err(400, 'Unknown purchase kind.'); }
         const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
