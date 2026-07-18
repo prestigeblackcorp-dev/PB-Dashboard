@@ -1733,6 +1733,7 @@ const Atlas = (function(){
       _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items);
       _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items);
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
+      if(r[2].json && typeof r[2].json.credits==='number'){ try{ var _cb=_lsGet('atlas_tenant_'+tid,null); if(_cb){ if(!_cb.credits)_cb.credits={}; _cb.credits.bal=r[2].json.credits; _lsSet('atlas_tenant_'+tid,_cb); if(typeof S!=='undefined'&&S){ if(!S.credits)S.credits={}; S.credits.bal=r[2].json.credits; } } }catch(e){} }   // adopt server-authoritative credit balance on hydrate
       if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
     }).catch(function(){}); }
   function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
@@ -5496,6 +5497,8 @@ const Atlas = (function(){
     // Try the LIVE three-model council; on no-backend / no-keys / any error, fall back to the built-in preview.
     _api('/api/aio',{method:'POST',body:{q:String(q),context:_aioBizContext()}}).then(function(res){
       var j=res&&res.json;
+      if(j && typeof j.credits==='number'){ try{ if(!S.credits)S.credits={}; S.credits.bal=j.credits; save(); var _cc=document.getElementById('aioCreditCount'); if(_cc)_cc.textContent=j.credits.toLocaleString(); }catch(e){} }   // adopt the server-authoritative credit balance
+      if(j && j.error==='out_of_credits'){ _aioDropThink(); aioMsg('bot','You are out of Atlas.io credits for this week. Your free '+_curTier().credits.toLocaleString()+' refill Monday &mdash; or grab more now.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openCredits()">Buy credits</button>'); return; }
       if(res.status>=200 && res.status<300 && j && j.live && j.models && j.models.length){
         var models=j.models.map(function(m){ return {n:m.name,c:_AIO_COLORS[m.name]||'#888',a:esc(String(m.text||'')).replace(/\n/g,'<br>')}; });
         var synthTxt=esc(String(j.synthesis||'')).replace(/\n/g,'<br>')||models[0].a;
@@ -5546,7 +5549,8 @@ const Atlas = (function(){
       return;
     }
     _aioPending=null;   // any fresh (non-affirmative) message supersedes a stale offer
-    if(!_spendCredit(1)){
+    var _srvEnforced=(ATLAS_BACKEND && _apiCsrf && _aioCouncilOn);   // the live council spends + enforces credits SERVER-side and returns the balance
+    if(!_srvEnforced && !_spendCredit(1)){
       setTimeout(function(){ aioMsg('bot','You are out of Atlas.io credits for this week. Your free '+_curTier().credits.toLocaleString()+' refill Monday &mdash; or grab more now.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openCredits()">Buy credits</button>'); }, 300);
       return;
     }
@@ -6070,9 +6074,9 @@ const Atlas = (function(){
   function _weekStart(){ var d=new Date(); var day=(d.getDay()+6)%7; d.setHours(0,0,0,0); d.setDate(d.getDate()-day); return d.getTime(); }
   function _ensureCredits(){ if(!S) return; if(!S.credits) S.credits={free:_curTier().credits, purchased:0, weekStart:_weekStart()};
     if(S.credits.weekStart!==_weekStart()){ S.credits.free=_curTier().credits; S.credits.weekStart=_weekStart(); save(); } }
-  function _credits(){ _ensureCredits(); return (S.credits.free||0)+(S.credits.purchased||0); }
+  function _credits(){ _ensureCredits(); if(ATLAS_BACKEND && S.credits && typeof S.credits.bal==='number') return S.credits.bal; return (S.credits.free||0)+(S.credits.purchased||0); }   // server balance is authoritative when live
   function _spendCredit(n){ n=n||1; _ensureCredits(); if(_credits()<n) return false; var f=Math.min(S.credits.free,n); S.credits.free-=f; S.credits.purchased-=(n-f); save(); return true; }
-  function _addCredits(n){ _ensureCredits(); S.credits.purchased=(S.credits.purchased||0)+n; save(); }
+  function _addCredits(n){ _ensureCredits(); S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); }
   function renderTrialBox(){ var el=document.getElementById('trialBox'); if(!el) return; var t=_curTier(), c=_credits();
     if(t.id==='diamond'){ el.innerHTML='<b>&#9670; Diamond &middot; Owner</b><small>Limitless &middot; every feature unlocked</small><button class="btn btn--ghost btn--sm btn--full" style="margin-top:10px" onclick="Atlas.goSettings(\'owner\')">Owner console</button>'; return; }
     if(t.comp){ el.innerHTML='<b>'+(t.id==='gold'?'&#9733; Gold':'Free access')+'</b><small>Comped &middot; all features &middot; '+c.toLocaleString()+' credits</small>'; return; }
@@ -6097,7 +6101,7 @@ const Atlas = (function(){
   function _billingReturn(){ try{ var q=new URLSearchParams(location.search); var b=q.get('billing'); if(!b) return;
     if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack');
       if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
-      else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; save(); } }
+      else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); } }
       else if(kind==='website'){ S.websitePaid=true; save(); }
       else if(kind==='trial'){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }
       try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){}

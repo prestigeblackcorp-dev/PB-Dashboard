@@ -496,6 +496,30 @@ async function _sendAtlasReceipt(env, o) {
 }
 function _rcptDate() { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } }
 
+// ---- Atlas.io CREDITS, server-authoritative. Weekly free allotment per tier + persistent purchased packs; spent 1 per live AI council call. ----
+const TIER_CREDITS = { starter: 100, pro: 500, enterprise: 1500, business: 3000, unlimited: 8000 };   // must match the client TIERS credits
+function _creditWeek() { return Math.floor((Date.now() / 86400000 + 4) / 7); }   // Monday-aligned 7-day bucket
+async function _creditOp(env, tid, tierHint, spend) {
+  try {
+    await ensurePlatformSchema(env);
+    const row = await env.DB.prepare('SELECT tier, credits_purchased, credits_free, credits_week FROM tenants WHERE id=?').bind(tid).first();
+    if (!row) return { ok: true, balance: 0 };
+    const wk = _creditWeek();
+    const weekly = TIER_CREDITS[row.tier || tierHint || 'pro'] || 500;   // trial defaults to pro-level, matching the client
+    let free = Number(row.credits_free || 0), purchased = Number(row.credits_purchased || 0);
+    if (Number(row.credits_week || 0) !== wk) free = weekly;   // new week -> refill the free allotment
+    if (spend > 0) {
+      if (free + purchased < spend) { if (Number(row.credits_week || 0) !== wk) await env.DB.prepare('UPDATE tenants SET credits_free=?, credits_week=? WHERE id=?').bind(free, wk, tid).run(); return { ok: false, balance: free + purchased, weekly: weekly }; }
+      const uf = Math.min(free, spend); free -= uf; purchased -= (spend - uf);
+    }
+    await env.DB.prepare('UPDATE tenants SET credits_free=?, credits_purchased=?, credits_week=? WHERE id=?').bind(free, purchased, wk, tid).run();
+    return { ok: true, balance: free + purchased, free: free, purchased: purchased, weekly: weekly };
+  } catch (e) { return { ok: true, balance: 999999 }; }   // never block the AI on a credit-store error (credits are UX, not security)
+}
+async function _creditAdd(env, tid, n) {
+  try { await ensurePlatformSchema(env); await env.DB.prepare('UPDATE tenants SET credits_purchased = COALESCE(credits_purchased,0) + ? WHERE id=?').bind(Math.max(0, Math.round(Number(n) || 0)), tid).run(); } catch (e) {}
+}
+
 // ---- Atlas HQ (owner master dashboard): platform tables self-heal so the whole thing is a PASTE-ONLY deploy (no separate migration).
 // CREATE ... IF NOT EXISTS + additive ALTER (swallowed if the column already exists) are idempotent + safe to re-run.
 let _pReady = false;
@@ -515,6 +539,9 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain_status TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_purchased INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_free INTEGER").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_week INTEGER").run(); } catch (e) { /* already exists */ }
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -794,6 +821,7 @@ export default {
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'credits', pack: md.pack });
             { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: (md.pack || '') + ' Atlas.io credits', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
+            await _creditAdd(env, md.tenant, parseInt(md.pack, 10) || 0);   // grant the purchased credits into the server-authoritative balance
           } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
             if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
@@ -1072,7 +1100,7 @@ export default {
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
           const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
-          return json({ ok: true, profile: t ? tenantProfile(t) : null });
+          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null });
         }
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -1398,6 +1426,8 @@ export default {
           { name: 'Gemini', ask: askGemini, key: env.GEMINI_KEY }
         ].filter(m => m.key);
         if (!panelDefs.length) return json({ live: false });   // no keys yet -> client uses its built-in council
+        const _cr = await _creditOp(env, ctx.tenant_id, null, 1);   // server-authoritative: spend 1 credit for a live council call
+        if (!_cr.ok) return json({ live: true, models: [], synthesis: '', error: 'out_of_credits', credits: 0 });
         // ask every configured model in parallel; a failed one just drops out
         const settled = await Promise.all(panelDefs.map(m =>
           m.ask(m.key, q, context).then(text => ({ name: m.name, text })).catch(() => ({ name: m.name, text: '' }))
@@ -1416,7 +1446,7 @@ export default {
           try { const s = await judgeAsk(judgeKey, jq, context); if (s) synthesis = s; } catch (e) { /* keep first answer */ }
         }
         await audit(env, ctx, req, 'aio.council', { models: models.map(m => m.name), chars: q.length });
-        return json({ live: true, models, synthesis });
+        return json({ live: true, models, synthesis, credits: _cr.balance });
       }
 
       // ---- AI schedule builder: plain-language staff constraints -> structured weekly schedule (single strong model, JSON only) --
