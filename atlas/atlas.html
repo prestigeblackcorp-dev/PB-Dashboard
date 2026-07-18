@@ -998,7 +998,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 @keyframes tourPulse{0%{transform:scale(1);opacity:.85}100%{transform:scale(1.05);opacity:0}}
 @media(prefers-reduced-motion:reduce){.tour-spot::after{animation:none;opacity:.6}}
 .tour-pop{position:fixed;z-index:6001;width:min(322px,calc(100vw - 28px));background:var(--surface);border:1px solid var(--line);border-radius:14px;
-  padding:16px 16px 14px;box-shadow:0 18px 50px rgba(9,17,14,.30);display:none}
+  padding:16px 16px 14px;box-shadow:0 18px 50px rgba(9,17,14,.30),inset 0 3px 0 var(--brand);display:none}
 .tour-pop.on,.tour-spot.on{display:block}
 .tour-pop__step{font-size:10.5px;font-weight:750;letter-spacing:.05em;text-transform:uppercase;color:var(--brand-700)}
 .tour-pop h4{font-size:16px;margin:5px 0 6px;color:var(--ink)}
@@ -2631,6 +2631,7 @@ const Atlas = (function(){
     return (S.money&&S.money.baseRate)||0; }
   function _moneyFor(name){ var m=S.money||{}, r=_assetRate(name); if(r===(m.baseRate||0)) return m; var mm={}; for(var k in m) mm[k]=m[k]; mm.baseRate=r; return mm; }   // shallow copy with the asset's rate as baseRate (calcQuote only reads the rest)
   function _setTypeRate(id,rate){ S.money.byType=S.money.byType||{}; S.money.byType[id]=Math.max(0,Number(rate)||0); }
+  function setTypeRate(id,val){ if(!_canMod('settings'))return; S.money.byType=S.money.byType||{}; var v=String(val==null?'':val).replace(/[^0-9.]/g,''); if(v==='') delete S.money.byType[id]; else S.money.byType[id]=Math.max(0,Number(v)||0); save(); }   // per-type base rate (blank = fall back to global base)
   function _typeNoun(id){ var t=_typeById(id); return (t&&t.noun)||S.fleet.noun; }
   function _typeNouns(id){ var t=_typeById(id); return (t&&t.nouns)||S.fleet.nouns; }
   // True only while the fleet still holds default demo/sample data (never matches a name the operator typed).
@@ -5126,6 +5127,7 @@ const Atlas = (function(){
             <option value="day" ${m.rateModel==='day'?'selected':''}>Per day</option><option value="hour" ${m.rateModel==='hour'?'selected':''}>Per hour</option><option value="week" ${m.rateModel==='week'?'selected':''}>Per week</option><option value="month" ${m.rateModel==='month'?'selected':''}>Per month</option></select></div>
           <div class="field"><label>Base rate</label><div class="rule-input" style="padding:0 12px"><span>${_curSym()}</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.baseRate}" oninput="Atlas.setMoney('baseRate',this.value)"><span>/ ${m.rateModel}</span></div></div>
         </div>
+        ${_fleetSel().length>1?('<div class="field" style="margin-top:2px"><label>Rate per type</label><div class="desc" style="margin:2px 0 8px">You rent '+_fleetSel().length+' types &mdash; give each its own base rate. Blank uses your base rate above; any single '+esc(S.fleet.noun)+' can still override it.</div>'+_fleetSel().map(function(id){ var t=FLEET_TYPES.filter(function(x){return x.id===id;})[0]||{label:id,emoji:''}; var bt=(m.byType||{})[id]; return '<div class="rule-input" style="padding:0 12px;margin-bottom:8px"><span style="min-width:132px;white-space:nowrap">'+(t.emoji?t.emoji+' ':'')+esc(t.label)+'</span><span>'+_curSym()+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(bt!=null?bt:'')+'" placeholder="'+esc(String(m.baseRate))+'" oninput="Atlas.setTypeRate(\''+id+'\',this.value)"><span>/ '+m.rateModel+'</span></div>'; }).join('')+'</div>'):''}
         <div class="row2">
           <div class="field"><label>Currency <span style="color:var(--muted);font-weight:400;font-size:12px">(display)</span></label><select class="select" onchange="Atlas.setMoney('currency',this.value);Atlas.renderSet()">${CURRENCIES.map(function(c){ return '<option value="'+c+'"'+(((m.currency||'USD')===c)?' selected':'')+'>'+c+' '+_curSym(c)+'</option>'; }).join('')}</select></div>
           <div class="field" style="display:flex;align-items:flex-end"><div class="bk-lenhint" style="margin:0">Sets the symbol shown across the app + customer docs. Amounts are not converted &mdash; enter your rates in this currency.</div></div>
@@ -5301,7 +5303,7 @@ const Atlas = (function(){
         <div class="bk-lenhint" style="margin:12px 0 0">You keep your processor and your money &mdash; Atlas just routes the charge. Real processing goes live with your backend; today it is a safe test flow.</div>
       </div>
       <div class="set-block"><h3>Connections</h3><div class="desc">Bring your own accounts. Each has a step-by-step guide.</div>
-        ${[['S','Stripe','Payments &amp; deposits','stripe'],['@','Email (Resend / SMTP)','Confirmations &amp; reminders','email'],['#','SMS (Twilio)','Text your customers','sms'],['M','Maps','Delivery &amp; addresses','maps'],['Q','QuickBooks','Sync accounting','qb'],['W','Website embed','Booking widget for your site','web']].map(c=>`
+        ${[['@','Email (Resend / SMTP)','Confirmations &amp; reminders','email'],['#','SMS (Twilio)','Text your customers','sms'],['M','Maps','Delivery &amp; addresses','maps'],['Q','QuickBooks','Sync accounting','qb'],['W','Website embed','Booking widget for your site','web']].map(c=>`
           <div class="conn-row"><div class="conn-row__ic">${c[0]}</div><div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
           <div class="conn-act">${S.integrations[c[3]]?`<span class="chip chip--ok"><span class="dot"></span>Connected</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Manage</button>`:`<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Connect</button>`}</div></div>`).join('')}
       </div>`;
@@ -5891,6 +5893,7 @@ const Atlas = (function(){
   function setActivePay(id){ if(!_canMod('settings'))return; var f=PAY_PROVIDERS.filter(function(x){return x[0]===id;})[0]; if(!f)return; if(!S.payments)S.payments={}; S.payments.provider=id; S.payments.label=f[1]; save(); renderSet(); toast(f[1]+' is now your active processor'); }
   var CONN_FIELDS={   // providers needing >1 credential get LABELED fields (was one unlabeled box). Stored together, encrypted at go-live.
     stripe:[{label:'Publishable key',ph:'pk_live_...'},{label:'Secret key',ph:'sk_live_...'}],
+    sms:[{label:'Account SID',ph:'AC...'},{label:'Auth Token',ph:'Auth Token'}],
     square:[{label:'Access token',ph:'EAAA...'},{label:'Location ID',ph:'L...'}],
     clover:[{label:'API token',ph:'API token'},{label:'Merchant ID',ph:'Merchant ID'}],
     paypal:[{label:'Client ID',ph:'A...'},{label:'Secret',ph:'E...'}],
@@ -7137,7 +7140,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setCancelPolicy,connect,doConnect,setActivePay,
+  return {startTrial,demo,demoStart,demoSkip,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
