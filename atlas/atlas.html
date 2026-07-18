@@ -1680,6 +1680,16 @@ const Atlas = (function(){
   // nothing moved. Flip to true ONLY in lockstep with the real backend going live (see GO-LIVE.md).
   var EMAIL_LIVE=true;                  // LIVE 2026-07-18: Resend domain verified + API key (full access) + MAIL_FROM=hello@ on the worker; confirm delivery via Settings > Email > Send test
   var PAYMENTS_LIVE=true;               // LIVE 2026-07-18: PLATFORM_STRIPE_KEY + STRIPE_WEBHOOK_SECRET set (health platform_payments:true); owner chose go-live. REAL charges/holds. Revert = set false + redeploy.
+  // APP-STORE COMPLIANCE: the store-packaged app (PWABuilder) launches with ?atlas_app=ios|android in its start URL; we persist it so
+  // DIGITAL purchases (plan/credits/domain/website) route to the WEB instead of in-app Stripe (Apple 3.1.1 / Google Play Billing).
+  // Customer RENTAL payments (deposits/balances) are physical services -> Stripe is allowed and untouched.
+  var NATIVE_STORE=(function(){ try{ var p=new URLSearchParams(location.search).get('atlas_app'); if(p&&/^(ios|android)$/.test(p)) localStorage.setItem('atlas_native_app',p); return localStorage.getItem('atlas_native_app')||''; }catch(e){ return ''; } })();
+  function _isNativeApp(){ return !!NATIVE_STORE; }
+  function _openWeb(path){ var u='https://atlasrental.io'+(path||''); try{ window.open(u,'_blank','noopener'); }catch(e){ try{ location.href=u; }catch(e2){} } }
+  function _manageOnWeb(kind){ var what=(kind==='plan'||kind==='trial')?'Plans':(kind==='credits'?'Atlas.io credits':(kind==='domain'?'Domains':(kind==='website'?'The website add-on':'Plans &amp; add-ons')));
+    openModal('<div class="modal__head"><h3>Managed on the web</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 14px">'+what+' are managed on your Atlas website so the app stays free of app-store fees. Open atlasrental.io to make changes &mdash; same account, and everything syncs right back here.</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.closeModal();Atlas._openWeb(\'/?manage=1\')">Open atlasrental.io</button></div>'); }
   var _apiCsrf=null;
   function setBackend(on){ ATLAS_BACKEND=!!on; }
   function _api(path,opts){ opts=opts||{}; var h={'Content-Type':'application/json'};
@@ -6154,7 +6164,8 @@ const Atlas = (function(){
   }
   function _xBtn(){ return '<button class="icon-btn" aria-label="Close" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>'; }   // fix: a11y name on the modal close X (used ~48x)
   // ---- Atlas PLATFORM billing: send the owner to Stripe hosted Checkout on ATLAS's account (so Atlas gets paid). Live only. ----
-  function _billingCheckout(kind,params){ var body={kind:kind}; for(var k in (params||{})) body[k]=params[k];
+  function _billingCheckout(kind,params){ if(_isNativeApp()){ _manageOnWeb(kind); return; }   // app-store compliance: digital purchases happen on the web, never via in-app Stripe
+    var body={kind:kind}; for(var k in (params||{})) body[k]=params[k];
     toast('Opening secure checkout...');
     _api('/api/billing/checkout',{method:'POST',body:body}).then(function(res){
       if(res.status>=200&&res.status<300&&res.json&&res.json.url){ window.location.href=res.json.url; }
@@ -6172,7 +6183,8 @@ const Atlas = (function(){
     }
     try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
   }catch(e){} }
-  function _billingChangePlan(tier){ toast('Updating your plan...');   // upgrade/downgrade -> worker modifies the existing subscription in place (proration), no duplicate
+  function _billingChangePlan(tier){ if(_isNativeApp()){ _manageOnWeb('plan'); return; }   // app-store compliance: plan changes happen on the web
+    toast('Updating your plan...');   // upgrade/downgrade -> worker modifies the existing subscription in place (proration), no duplicate
     _api('/api/billing/change-plan',{method:'POST',body:{tier:tier}}).then(function(res){
       if(res.json&&res.json.url){ window.location.href=res.json.url; return; }   // no live subscription yet -> hosted checkout
       if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var t=_tier(res.json.tier||tier); if(t){ S.plan='active'; S.tier=t.id; save(); } try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} toast('Plan changed to Atlas Rental.io '+((t&&t.name)||tier)); }
@@ -6220,6 +6232,7 @@ const Atlas = (function(){
   }
   // #212: open Stripe's hosted Billing Portal to update the card / view invoices. Falls back to starting a plan if there's no Stripe customer yet.
   function billingPortal(tierId){ if(!_guard('billing','Managing billing'))return;
+    if(_isNativeApp()){ _manageOnWeb('plan'); return; }   // app-store compliance: billing management happens on the web
     if(!(PAYMENTS_LIVE && ATLAS_BACKEND && _apiCsrf && !_isDemoTenant())){ return subscribe(tierId); }
     toast('Opening billing...');
     _api('/api/billing/portal',{method:'POST'}).then(function(res){
@@ -7407,7 +7420,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
+    goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
