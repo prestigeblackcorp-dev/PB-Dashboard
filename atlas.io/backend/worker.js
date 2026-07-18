@@ -315,14 +315,56 @@ async function sendEmail(env, msg) {
   if (!env.RESEND_KEY) return { sent: false, reason: 'no_mailer' };
   if (!msg || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(msg.to || ''))) return { sent: false, reason: 'bad_recipient' };
   try {
+    var to = String(msg.to).toLowerCase();
+    // marketing sends respect the unsubscribe list; transactional (booking confirm / receipt) always go through
+    if (msg.tenant && !msg.transactional && await isSuppressed(env, msg.tenant, to)) return { sent: false, reason: 'suppressed' };
     var fromAddr = env.MAIL_FROM || 'bookings@atlasrental.io';
     var from = (msg.fromName ? (String(msg.fromName).replace(/[<>"\r\n]/g, '') + ' ') : '') + '<' + fromAddr + '>';
+    var html = msg.html || ''; var xHeaders;
+    if (msg.tenant) {   // real one-tap unsubscribe (CAN-SPAM): a working link + List-Unsubscribe header
+      var origin = env.APP_ORIGIN || 'https://atlasrental.io';
+      var link = origin + '/api/unsub?t=' + encodeURIComponent(msg.tenant) + '&e=' + encodeURIComponent(to) + '&s=' + (await _unsubSig(env, msg.tenant, to));
+      html += '<div style="margin-top:14px;color:#9a9a9a;font-size:11px;text-align:center">Don\'t want these emails? <a href="' + link + '" style="color:#9a9a9a">Unsubscribe</a>.</div>';
+      xHeaders = { 'List-Unsubscribe': '<' + link + '>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' };
+    }
     var r = await _fetchTimeout('https://api.resend.com/emails', {
       method: 'POST', headers: { 'Authorization': 'Bearer ' + env.RESEND_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: from, to: [msg.to], subject: String(msg.subject || '').slice(0, 240), html: msg.html, reply_to: msg.replyTo || undefined })
+      body: JSON.stringify({ from: from, to: [msg.to], subject: String(msg.subject || '').slice(0, 240), html: html, reply_to: msg.replyTo || undefined, headers: xHeaders })
     }, 10000);
     var j = await r.json().catch(function () { return {}; });
     return { sent: !!r.ok, reason: r.ok ? 'ok' : (j.message || ('http_' + r.status)), id: j.id };
+  } catch (e) { return { sent: false, reason: 'error' }; }
+}
+// ---- suppression list (unsubscribe / SMS STOP) so the "compliance built in" copy is REAL, not vaporware ----
+async function _unsubSig(env, tenant, contact) {
+  try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY || 'k'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    var s = await crypto.subtle.sign('HMAC', key, enc(String(tenant) + '|' + String(contact)));
+    return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 32);
+  } catch (e) { return ''; }
+}
+async function isSuppressed(env, tenant, contact) {
+  try { var row = await env.DB.prepare('SELECT contact FROM suppressions WHERE tenant_id=? AND contact=?').bind(tenant, String(contact).toLowerCase()).first(); return !!row; } catch (e) { return false; }
+}
+async function suppress(env, tenant, contact, kind, reason) {
+  try { await env.DB.prepare('INSERT INTO suppressions (tenant_id,contact,kind,reason,at) VALUES (?,?,?,?,?) ON CONFLICT(tenant_id,contact) DO UPDATE SET kind=?,reason=?,at=?')
+    .bind(tenant, String(contact).toLowerCase(), kind, reason, Date.now(), kind, reason, Date.now()).run(); } catch (e) {}
+}
+async function unsuppress(env, tenant, contact) {
+  try { await env.DB.prepare('DELETE FROM suppressions WHERE tenant_id=? AND contact=?').bind(tenant, String(contact).toLowerCase()).run(); } catch (e) {}
+}
+// Twilio SMS. HONEST: no creds -> {sent:false,reason:'no_sms'}. Respects the suppression list (a STOP reply).
+async function sendSms(env, tenant, msg) {
+  var sid = env.TWILIO_SID, tok = env.TWILIO_TOKEN, from = (msg && msg.from) || env.TWILIO_FROM;
+  if (!sid || !tok || !from) return { sent: false, reason: 'no_sms' };
+  if (!msg || !msg.to) return { sent: false, reason: 'bad_recipient' };
+  if (tenant && await isSuppressed(env, tenant, String(msg.to).toLowerCase())) return { sent: false, reason: 'suppressed' };
+  try {
+    var body = 'To=' + encodeURIComponent(msg.to) + '&From=' + encodeURIComponent(from) + '&Body=' + encodeURIComponent(String(msg.body || '').slice(0, 1500));
+    var r = await _fetchTimeout('https://api.twilio.com/2010-04-01/Accounts/' + encodeURIComponent(sid) + '/Messages.json', {
+      method: 'POST', headers: { 'Authorization': 'Basic ' + btoa(sid + ':' + tok), 'Content-Type': 'application/x-www-form-urlencoded' }, body: body
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    return { sent: !!r.ok, reason: r.ok ? 'ok' : (j.message || ('http_' + r.status)), id: j.sid };
   } catch (e) { return { sent: false, reason: 'error' }; }
 }
 
@@ -520,7 +562,7 @@ export default {
           const comms = prof.settings.comms || {};
           const vars = { name: String(b.name).split(' ')[0], business: prof.name, asset: assetName, periods: periods, unit: cfg.unit || 'day', total: money2(q.totalCents), deposit: money2(q.depositCents), ref: bref };
           const cTpl = (comms.autos && comms.autos.confirm) || {};
-          const custMail = await sendEmail(env, { to: b.email, fromName: comms.fromName || prof.name, replyTo: comms.replyTo,
+          const custMail = await sendEmail(env, { to: b.email, tenant: prof.id, transactional: true, fromName: comms.fromName || prof.name, replyTo: comms.replyTo,
             subject: renderTpl(cTpl.subject || 'Your booking with {business} is received', vars),
             html: _emailShell(prof, '<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p>' + (cfg.terms ? ('<p style="color:#666;font-size:13px"><b>Cancellation policy:</b> ' + esc(cfg.terms) + '</p>') : '') + '<p>' + esc(prof.name) + ' will confirm with you shortly.</p>') });
           const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
@@ -611,6 +653,33 @@ export default {
         return new Response(_portalPageHtml(token, pr.brand.color || '#1E6E4E'), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
 
+      // ---- one-tap email unsubscribe (public; signature-verified so it can't be forged for another address) ----
+      if (path === '/api/unsub') {
+        const t = url.searchParams.get('t') || '', e = (url.searchParams.get('e') || '').toLowerCase(), s = url.searchParams.get('s') || '';
+        const okSig = t && e && s && _ctEq(s, await _unsubSig(env, t, e));
+        if (okSig) { await suppress(env, t, e, 'email', 'unsubscribe'); }
+        const tr = okSig ? await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(t).first() : null;
+        const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
+        const body = okSig ? ('<div class="card"><h2>You\'re unsubscribed</h2><p class="muted">' + esc(e) + ' will no longer receive marketing emails from ' + esc(pr.name) + '. Booking confirmations and receipts still send.</p></div>')
+          : '<div class="card"><h2>Link expired</h2><p class="muted">This unsubscribe link is invalid or has expired.</p></div>';
+        return new Response(_pageDoc('Unsubscribe', pr.brand.color || '#1E6E4E', body, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+
+      // ---- Twilio inbound SMS webhook (public): STOP/UNSUBSCRIBE -> suppress; START/UNSTOP -> re-subscribe ----
+      if (path === '/api/sms/inbound' && method === 'POST') {
+        const raw = await req.text(); const p = new URLSearchParams(raw);
+        const fromPhone = (p.get('From') || '').toLowerCase(); const bodyTxt = (p.get('Body') || '').trim().toUpperCase(); const toPhone = p.get('To') || '';
+        if (fromPhone && toPhone) {
+          let tid = null;
+          try { const tr = await env.DB.prepare("SELECT id FROM tenants WHERE json_extract(settings,'$.comms.sms.fromNumber')=?").bind(toPhone).first(); tid = tr ? tr.id : null; } catch (e) {}
+          if (tid) {
+            if (/^(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT)\b/.test(bodyTxt)) await suppress(env, tid, fromPhone, 'sms', 'stop');
+            else if (/^(START|UNSTOP|YES)\b/.test(bodyTxt)) await unsuppress(env, tid, fromPhone);
+          }
+        }
+        return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' } });
+      }
+
       // ---- everything below requires a valid session ------------------------
       const ctx = await resolveSession(env, req);
 
@@ -666,6 +735,18 @@ export default {
         const pr = tenantProfile(t || { name: 'Atlas Rental.io' });
         const r = await sendEmail(env, { to: to, fromName: pr.name, subject: (pr.name || 'Atlas Rental.io') + ' - test email',
           html: _emailShell(pr, '<h2>It works.</h2><p>This is a live test from your Atlas Rental.io mailer. If you can read this, your customers will get booking confirmations and receipts automatically.</p>') });
+        return json({ ok: r.sent, sent: r.sent, reason: r.reason, to: to });
+      }
+
+      // ---- SMS: send a REAL test text (HONEST: sent:false + reason when no Twilio creds) ----
+      if (path === '/api/sms/test' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        const body = await req.json().catch(function () { return {}; });
+        const t = await env.DB.prepare('SELECT name,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const pr = tenantProfile(t || { name: 'Atlas Rental.io' });
+        const to = vStr(body.to, 24) ? body.to : ((pr.settings.comms && pr.settings.comms.sms && pr.settings.comms.sms.fromNumber) || '');
+        if (!to) return json({ ok: false, sent: false, reason: 'no_recipient' });
+        const r = await sendSms(env, ctx.tenant_id, { to: to, body: (pr.name || 'Atlas Rental.io') + ': test message. Reply STOP to opt out.' });
         return json({ ok: r.sent, sent: r.sent, reason: r.reason, to: to });
       }
 
@@ -903,9 +984,9 @@ async function _runLifecycleEmails(env, now) {
     const comms = (pr.settings && pr.settings.comms) || {}; const autos = comms.autos || {}; const sent = d.autoSent || {};
     const vars = { name: String(d.cust || 'there').split(' ')[0], business: pr.name, asset: d.asset || '', ref: b.id };
     const fromName = comms.fromName || pr.name; const reply = comms.replyTo; let changed = false;
-    const send = function (a, subjD, inner) { return sendEmail(env, { to: d.custEmail, fromName: fromName, replyTo: reply, subject: renderTpl((a && a.subject) || subjD, vars), html: _emailShell(pr, inner) }); };
+    const send = function (a, subjD, inner, transactional) { return sendEmail(env, { to: d.custEmail, tenant: b.tenant_id, transactional: !!transactional, fromName: fromName, replyTo: reply, subject: renderTpl((a && a.subject) || subjD, vars), html: _emailShell(pr, inner) }); };
     if (autos.reminder && autos.reminder.on && b.starts && !sent.reminder && now >= b.starts - ((autos.reminder.days || 1) * DAY) && now < b.starts) {
-      await send(autos.reminder, 'Your booking with {business} is coming up', '<h2>See you soon, ' + esc(vars.name) + '</h2><p>A reminder about your booking <b>' + esc(d.asset || '') + '</b> (ref ' + esc(b.id) + ').</p>'); sent.reminder = now; changed = true;
+      await send(autos.reminder, 'Your booking with {business} is coming up', '<h2>See you soon, ' + esc(vars.name) + '</h2><p>A reminder about your booking <b>' + esc(d.asset || '') + '</b> (ref ' + esc(b.id) + ').</p>', true); sent.reminder = now; changed = true;
     }
     if (autos.thankyou && autos.thankyou.on && b.ends && b.ends < now && !sent.thankyou && now >= b.ends + ((autos.thankyou.days || 0) * DAY)) {
       await send(autos.thankyou, 'Thanks for renting with {business}', '<h2>Thank you, ' + esc(vars.name) + '!</h2><p>We hope you enjoyed your ' + esc(d.asset || 'rental') + '. We would love to see you again.</p>'); sent.thankyou = now; changed = true;

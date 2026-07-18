@@ -152,6 +152,14 @@ CREATE TABLE IF NOT EXISTS integrations (
   connected_at  INTEGER,
   PRIMARY KEY (tenant_id, provider)
 );
+CREATE TABLE IF NOT EXISTS suppressions (
+  tenant_id     TEXT NOT NULL,
+  contact       TEXT NOT NULL,
+  kind          TEXT,
+  reason        TEXT,
+  at            INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, contact)
+);
 CREATE TABLE IF NOT EXISTS ai_credits (
   tenant_id     TEXT PRIMARY KEY,
   balance       INTEGER DEFAULT 0,

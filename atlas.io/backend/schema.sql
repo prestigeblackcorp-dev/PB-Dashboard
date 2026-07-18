@@ -183,6 +183,16 @@ CREATE TABLE IF NOT EXISTS integrations (
   PRIMARY KEY (tenant_id, provider)
 );
 
+-- ---- Suppression list: emails/phones that unsubscribed or texted STOP (CAN-SPAM / TCPA) ----
+CREATE TABLE IF NOT EXISTS suppressions (
+  tenant_id     TEXT NOT NULL,
+  contact       TEXT NOT NULL,               -- lowercased email OR E.164-ish phone
+  kind          TEXT,                        -- email|sms
+  reason        TEXT,                        -- unsubscribe|stop
+  at            INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, contact)
+);
+
 -- ---- Atlas.io AI credits (server-decremented, per tenant) --------------------
 CREATE TABLE IF NOT EXISTS ai_credits (
   tenant_id     TEXT PRIMARY KEY,
