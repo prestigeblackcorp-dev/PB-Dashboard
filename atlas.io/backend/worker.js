@@ -371,6 +371,18 @@ async function tenantStripeKey(env, tenantId) {
     return await decSecret(env, row.secret_enc, tenantId + '|stripe');
   } catch (e) { return ''; }
 }
+// Generic form-encoded Stripe POST (capture / cancel a hold / refund). HONEST: no key -> {ok:false,reason:'no_stripe'}.
+async function stripePost(secretKey, path, params) {
+  if (!secretKey) return { ok: false, reason: 'no_stripe' };
+  try {
+    var form = []; for (var k in (params || {})) if (params[k] != null) form.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    var r = await _fetchTimeout('https://api.stripe.com/v1' + path, {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + secretKey, 'Content-Type': 'application/x-www-form-urlencoded' }, body: form.join('&')
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    return r.ok ? { ok: true, obj: j } : { ok: false, reason: (j.error && j.error.message) || ('http_' + r.status) };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
 
 // ================================================================ router
 export default {
@@ -546,7 +558,8 @@ export default {
             const row = await env.DB.prepare('SELECT id,data,revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
             if (row) {
               const d = jparse(row.data, {}); const amt = Math.round(Number(obj.amount_total || obj.amount || 0));
-              d.paid = d.paid || {}; d.paid[md.kind || 'payment'] = { at: Date.now(), amountCents: amt, stripe: obj.id || '' };
+              const pi = obj.payment_intent || (obj.object === 'payment_intent' ? obj.id : '');   // needed for capture/release/refund
+              d.paid = d.paid || {}; d.paid[md.kind || 'payment'] = { at: Date.now(), amountCents: amt, stripe: obj.id || '', pi: pi, hold: (md.kind === 'deposit' && obj.status === 'requires_capture') };
               const rev = (md.kind === 'deposit') ? (Number(row.revenue_cents) || 0) : amt;
               await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?')
                 .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant).run();
@@ -654,6 +667,37 @@ export default {
         const r = await sendEmail(env, { to: to, fromName: pr.name, subject: (pr.name || 'Atlas Rental.io') + ' - test email',
           html: _emailShell(pr, '<h2>It works.</h2><p>This is a live test from your Atlas Rental.io mailer. If you can read this, your customers will get booking confirmations and receipts automatically.</p>') });
         return json({ ok: r.sent, sent: r.sent, reason: r.reason, to: to });
+      }
+
+      // ---- payment operations on a booking's Stripe PaymentIntent: capture a deposit hold (for damage), release it, or refund ----
+      const pym = path.match(/^\/api\/pay\/(capture|release|refund)$/);
+      if (pym && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
+        const op = pym[1];
+        const body = await req.json().catch(function () { return {}; });
+        if (!vStr(body.booking, 40)) return err(400, 'Booking id required.');
+        const row = await env.DB.prepare('SELECT id,data FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking, ctx.tenant_id).first();
+        if (!row) return err(404, 'Booking not found.');
+        const sk = await tenantStripeKey(env, ctx.tenant_id);
+        if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Connect Stripe to capture, release or refund payments.' });
+        const d = jparse(row.data, {});
+        const kind = (op === 'refund') ? (vStr(body.kind, 20) ? body.kind : 'balance') : 'deposit';
+        const p = (d.paid && d.paid[kind]) || null;
+        if (!p || !p.pi) return json({ ok: false, reason: 'no_payment', message: 'No ' + kind + ' payment on file to ' + op + '.' });
+        let r2;
+        if (op === 'capture') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/capture', (vInt(body.amountCents) && body.amountCents > 0) ? { amount_to_capture: body.amountCents } : {}); if (r2.ok) { p.captured = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; delete p.hold; } }
+        else if (op === 'release') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/cancel', {}); if (r2.ok) { p.released = { at: Date.now() }; delete p.hold; } }
+        else { const rp = { payment_intent: p.pi }; if (vInt(body.amountCents) && body.amountCents > 0) rp.amount = body.amountCents; r2 = await stripePost(sk, '/refunds', rp); if (r2.ok) { p.refunded = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; } }
+        if (!r2.ok) return json({ ok: false, reason: r2.reason });
+        await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), Date.now(), body.booking, ctx.tenant_id).run();
+        await audit(env, ctx, req, 'pay.' + op, { booking: body.booking, kind: kind });
+        if ((op === 'refund' || op === 'release') && d.custEmail) {
+          const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
+          await sendEmail(env, { to: d.custEmail, fromName: pr.name, subject: (op === 'refund' ? 'Refund issued' : 'Deposit hold released') + ' - ' + pr.name,
+            html: _emailShell(pr, '<h2>' + (op === 'refund' ? 'Refund issued' : 'Your deposit hold was released') + '</h2><p>Booking <b>' + esc(body.booking) + '</b>' + (op === 'refund' ? (' &mdash; ' + money2(body.amountCents || p.amountCents) + ' refunded to your card.') : ' &mdash; the authorization hold has been released.') + '</p>') });
+        }
+        return json({ ok: true, op: op });
       }
 
       // ---- generic tenant-scoped collection CRUD (the store seam) -----------
@@ -840,8 +884,38 @@ export default {
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM audit_log WHERE at < ?').bind(now - 90 * 24 * 3600 * 1000).run();
     } catch (e) { /* best-effort GC; a cron error must never surface */ }
+    try { await _runLifecycleEmails(env, Date.now()); } catch (e) { /* lifecycle emails are best-effort */ }
   },
 };
+
+// Time-based lifecycle emails (reminder / thank-you / win-back) fired from each tenant's settings.comms.autos.
+// Dedup via a per-booking data.autoSent marker. Bounded (LIMIT 500) + honest: no RESEND_KEY -> nothing sends.
+async function _runLifecycleEmails(env, now) {
+  if (!env.RESEND_KEY) return;
+  const DAY = 86400000;
+  const rows = await env.DB.prepare('SELECT id,tenant_id,data,starts,ends FROM bookings WHERE (starts BETWEEN ? AND ?) OR (ends BETWEEN ? AND ?) LIMIT 500')
+    .bind(now, now + 7 * DAY, now - 40 * DAY, now).all();
+  const list = (rows && rows.results) || []; const tcache = {};
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i]; const d = jparse(b.data, {}); if (!d.custEmail) continue;
+    if (tcache[b.tenant_id] === undefined) { const tr = await env.DB.prepare('SELECT name,brand,settings FROM tenants WHERE id=?').bind(b.tenant_id).first(); tcache[b.tenant_id] = tr ? tenantProfile(tr) : null; }
+    const pr = tcache[b.tenant_id]; if (!pr) continue;
+    const comms = (pr.settings && pr.settings.comms) || {}; const autos = comms.autos || {}; const sent = d.autoSent || {};
+    const vars = { name: String(d.cust || 'there').split(' ')[0], business: pr.name, asset: d.asset || '', ref: b.id };
+    const fromName = comms.fromName || pr.name; const reply = comms.replyTo; let changed = false;
+    const send = function (a, subjD, inner) { return sendEmail(env, { to: d.custEmail, fromName: fromName, replyTo: reply, subject: renderTpl((a && a.subject) || subjD, vars), html: _emailShell(pr, inner) }); };
+    if (autos.reminder && autos.reminder.on && b.starts && !sent.reminder && now >= b.starts - ((autos.reminder.days || 1) * DAY) && now < b.starts) {
+      await send(autos.reminder, 'Your booking with {business} is coming up', '<h2>See you soon, ' + esc(vars.name) + '</h2><p>A reminder about your booking <b>' + esc(d.asset || '') + '</b> (ref ' + esc(b.id) + ').</p>'); sent.reminder = now; changed = true;
+    }
+    if (autos.thankyou && autos.thankyou.on && b.ends && b.ends < now && !sent.thankyou && now >= b.ends + ((autos.thankyou.days || 0) * DAY)) {
+      await send(autos.thankyou, 'Thanks for renting with {business}', '<h2>Thank you, ' + esc(vars.name) + '!</h2><p>We hope you enjoyed your ' + esc(d.asset || 'rental') + '. We would love to see you again.</p>'); sent.thankyou = now; changed = true;
+    }
+    if (autos.winback && autos.winback.on && b.ends && !sent.winback && now >= b.ends + ((autos.winback.days || 30) * DAY)) {
+      await send(autos.winback, 'We miss you at {business}', '<h2>Come back, ' + esc(vars.name) + '</h2><p>It has been a while &mdash; ready for another ' + esc(d.asset || 'rental') + '?</p>'); sent.winback = now; changed = true;
+    }
+    if (changed) { d.autoSent = sent; await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), now, b.id, b.tenant_id).run(); }
+  }
+}
 
 // Branded HTML email body (inline styles; renders in any inbox).
 function _emailShell(prof, inner) {
