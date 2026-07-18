@@ -2217,6 +2217,11 @@ const Atlas = (function(){
   function _emailEligible(aud){ var opt=_emailOptOut(), cs=DATA.customers||[], act={};
     (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
     return cs.filter(function(c){ if(opt[c.name])return false; if(aud==='active')return !!act[c.name]; if(aud==='past')return !act[c.name]; return true; }).length; }   // email audience minus opt-outs (honors the one-tap unsubscribe)
+  // Same filter as _emailEligible, but returns the actual [{email,name}] recipients (drops anyone with no email on file) so a live send matches the counted number.
+  function _emailAudienceList(aud){ var opt=_emailOptOut(), cs=DATA.customers||[], act={};
+    (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
+    return cs.filter(function(c){ if(opt[c.name]||!c.email)return false; if(aud==='active')return !!act[c.name]; if(aud==='past')return !act[c.name]; return true; })
+      .map(function(c){ return { email:c.email, name:c.name }; }); }
   function saveEmailTemplate(kind){ if(!_canMod('settings'))return; var cm=_comms(); cm.autos[kind].subject=val('ebSubject'); cm.autos[kind].body=val('ebBody'); save(); closeModal(); renderSet(); toast('Template saved'); }
   function _audienceCount(aud){ var cs=DATA.customers||[]; if(aud==='all')return cs.length;
     var activeNames={}; (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') activeNames[b.cust]=1; });
@@ -2242,7 +2247,18 @@ const Atlas = (function(){
     if(!parts.length){ toast('Nothing to send'); return; }
     cm.campaigns.unshift({ subject:subject||('Text: '+body.slice(0,40)), audience:audLabel, count:emailN+smsN, channel:channel, at:Date.now() });
     _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via '+channel+' to '+parts.join(' + ')+' ('+audLabel+')',{count:emailN+smsN,channel:channel}); save(); closeModal(); renderSet();
-    toast('Sent '+parts.join(' + ')+' (demo)'); }
+    // LIVE: actually send the email to the eligible audience via the worker (suppression + one-tap unsubscribe applied server-side).
+    // SMS is platform-level and not wired to broadcast here, so it stays a preview -- we never claim a text went out.
+    var _live=(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf);
+    var _list=(channel==='sms')?[]:_emailAudienceList(aud);
+    if(_live && emailN && _list.length){
+      toast('Sending '+_list.length+' email'+(_list.length===1?'':'s')+'...');
+      _api('/api/outreach/send',{method:'POST',body:{subject:subject,body:body,recipients:_list}}).then(function(res){
+        if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var n=res.json.sent||0, sk=res.json.skipped||0;
+          toast('Sent '+n+' email'+(n===1?'':'s')+(sk?(' ('+sk+' skipped -- unsubscribed or invalid)'):'')); }
+        else { toast((res.json&&res.json.error)?('Could not send: '+res.json.error):'Could not send the campaign'); }
+      }).catch(function(){ toast('Could not reach the mail server -- try again'); });
+    } else { toast('Sent '+parts.join(' + ')+' (demo)'); } }
   // Send a test copy to the owner's own inbox so they can see exactly what customers receive.
   function sendTestEmail(mode){ if(!_canMod('settings'))return; var cm=_comms(); var to=(cm.replyTo||'').trim();
     if(!to){ toast('Add your inbox first (Messaging > Your inbox), then send a test'); goSettings('comms'); return; }
@@ -7058,7 +7074,15 @@ const Atlas = (function(){
     if(pm.hold) t+=_pad('+ Refundable deposit hold',32)+money(pm.hold)+'\n';
     t+='\n'+S.brand.name+' -- '+_siteUrl()+'\nManaged & securely processed through Atlas Rental.io -- atlasrental.io\n';
     try{ var blob=new Blob([t],{type:'text/plain'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='receipt-'+_receiptNo(b)+'.txt'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Receipt downloaded'); }catch(e){ toast('Download not available here'); } }
-  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; var to=b.custEmail||b.cust; if(EMAIL_LIVE){ _logEvent('booking','Receipt '+_receiptNo(b)+' sent to '+to,{booking:b.id}); toast('Receipt sent to '+esc(to)); } else { _logEvent('booking','Receipt '+_receiptNo(b)+' previewed (not sent -- mailer not live) for '+to,{booking:b.id}); toast('Email sending is not live yet \u2014 copy this receipt to send it yourself, or connect a mailer to auto-send.'); } }
+  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; var to=b.custEmail||b.cust;
+    // LIVE: email the itemized receipt to the customer through the worker (server verifies the recipient from the booking, so it can't be redirected).
+    if(EMAIL_LIVE && typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf){
+      toast('Sending receipt to '+esc(to)+'...');
+      _api('/api/receipt/send',{method:'POST',body:{booking:b.id,html:_receiptHtml(b),subject:'Your receipt '+_receiptNo(b)+' from '+((S&&S.brand&&S.brand.name)||'us')}}).then(function(res){
+        if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ _logEvent('booking','Receipt '+_receiptNo(b)+' emailed to '+(res.json.to||to),{booking:b.id}); save(); toast('Receipt sent to '+esc(res.json.to||to)); }
+        else { toast((res.json&&res.json.error)?('Could not send: '+res.json.error):'Could not send the receipt'); }
+      }).catch(function(){ toast('Could not reach the mail server -- try again'); });
+    } else { _logEvent('booking','Receipt '+_receiptNo(b)+' previewed (not sent -- mailer not live) for '+to,{booking:b.id}); toast('Email sending is not live yet \u2014 copy this receipt to send it yourself, or connect a mailer to auto-send.'); } }
   /* --- domain manager --- */
   function _domainHtml(){ var w=_web(), d=w.domain, mode=w._ui||d.mode;
     var connected=(d.mode==='custom'&&d.custom);

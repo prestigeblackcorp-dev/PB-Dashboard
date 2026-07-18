@@ -384,6 +384,22 @@ async function suppress(env, tenant, contact, kind, reason) {
 async function unsuppress(env, tenant, contact) {
   try { await env.DB.prepare('DELETE FROM suppressions WHERE tenant_id=? AND contact=?').bind(tenant, String(contact).toLowerCase()).run(); } catch (e) {}
 }
+// ---- marketing broadcast helpers (real /api/outreach/send): per-recipient personalization + concurrency-limited send ----
+function _fillTokens(s, r, prof) {
+  var nm = String((r && r.name) || 'there').trim() || 'there';
+  return String(s == null ? '' : s)
+    .replace(/\{\s*name\s*\}/gi, nm)
+    .replace(/\{\s*first(?:name)?\s*\}/gi, (nm.split(/\s+/)[0] || nm))
+    .replace(/\{\s*business\s*\}/gi, String((prof && prof.name) || ''));
+}
+// send in chunks so a large list stays inside the Worker subrequest/CPU budget (never one giant Promise.all)
+async function _sendChunked(items, size, fn) {
+  var out = [];
+  for (var i = 0; i < items.length; i += size) {
+    out = out.concat(await Promise.all(items.slice(i, i + size).map(fn)));
+  }
+  return out;
+}
 // Twilio SMS. HONEST: no creds -> {sent:false,reason:'no_sms'}. Respects the suppression list (a STOP reply).
 async function sendSms(env, tenant, msg) {
   var sid = env.TWILIO_SID, tok = env.TWILIO_TOKEN, from = (msg && msg.from) || env.TWILIO_FROM;
@@ -454,9 +470,21 @@ async function _dohCname(name) {
   } catch (e) { return []; }
 }
 // ---- Cloudflare for SaaS automation: add each tenant's domain as a Custom Hostname so SSL issues + routing happen with NO manual step. Needs CF_API_TOKEN + CF_ZONE_ID. ----
+let _cfZone = null;
+async function _cfZoneId(env) {   // auto-resolve the zone id from the token (needs Zone:Read) so the owner never has to hunt for it in the dashboard
+  if (env.CF_ZONE_ID) return env.CF_ZONE_ID;
+  if (_cfZone) return _cfZone;
+  try {
+    const r = await _fetchTimeout('https://api.cloudflare.com/client/v4/zones?name=' + encodeURIComponent(env.APP_ZONE || 'atlasrental.io'), { headers: { 'Authorization': 'Bearer ' + (env.CF_API_TOKEN || '') } }, 10000);
+    const j = await r.json().catch(function () { return {}; });
+    _cfZone = (j.result && j.result[0] && j.result[0].id) || null;
+    return _cfZone;
+  } catch (e) { return null; }
+}
 async function _cfApi(env, method, apiPath, body) {
   try {
-    const r = await _fetchTimeout('https://api.cloudflare.com/client/v4/zones/' + (env.CF_ZONE_ID || '') + apiPath, {
+    const zid = await _cfZoneId(env); if (!zid) return {};
+    const r = await _fetchTimeout('https://api.cloudflare.com/client/v4/zones/' + zid + apiPath, {
       method: method, headers: { 'Authorization': 'Bearer ' + (env.CF_API_TOKEN || ''), 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined
     }, 10000);
@@ -464,11 +492,11 @@ async function _cfApi(env, method, apiPath, body) {
   } catch (e) { return {}; }
 }
 async function _cfAddHostname(env, hostname) {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return;
+  if (!env.CF_API_TOKEN) return;
   await _cfApi(env, 'POST', '/custom_hostnames', { hostname: hostname, ssl: { method: 'http', type: 'dv', settings: { min_tls_version: '1.0' } } });   // HTTP validation -> auto-issues once the tenant's CNAME points here; no extra TXT for them
 }
 async function _cfHostnameActive(env, hostname) {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return false;
+  if (!env.CF_API_TOKEN) return false;
   const j = await _cfApi(env, 'GET', '/custom_hostnames?hostname=' + encodeURIComponent(hostname), null);
   const r = (j.result || [])[0];
   return !!(r && r.status === 'active' && r.ssl && r.ssl.status === 'active');
@@ -624,7 +652,7 @@ export default {
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
-          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!(env.CF_API_TOKEN && env.CF_ZONE_ID) };
+          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!env.CF_API_TOKEN };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
@@ -1062,7 +1090,7 @@ export default {
         const clash = await env.DB.prepare('SELECT id FROM tenants WHERE custom_domain=? AND id<>?').bind(dom, ctx.tenant_id).first();
         if (clash) return err(409, 'That domain is already connected to another account.');
         await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=?").bind(dom, Date.now(), ctx.tenant_id).run();
-        if (env.CF_API_TOKEN && env.CF_ZONE_ID) { try { await _cfAddHostname(env, dom); await _cfAddHostname(env, 'www.' + dom); } catch (e) {} }   // auto-provision the Cloudflare custom hostname (SSL + routing) -> no manual dashboard step
+        if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, dom); await _cfAddHostname(env, 'www.' + dom); } catch (e) {} }   // auto-provision the Cloudflare custom hostname (SSL + routing) -> no manual dashboard step
         await audit(env, ctx, req, 'domain.connect', { domain: dom });
         const target = env.SAAS_TARGET || 'saas.atlasrental.io';
         return json({ ok: true, domain: dom, target: target, records: [
@@ -1079,7 +1107,7 @@ export default {
         if (!dom) return err(400, 'Connect a domain first.');
         const target = (env.SAAS_TARGET || 'saas.atlasrental.io').toLowerCase();
         let ok = false;
-        if (env.CF_API_TOKEN && env.CF_ZONE_ID) { ok = (await _cfHostnameActive(env, 'www.' + dom)) || (await _cfHostnameActive(env, dom)); }   // most accurate: the SSL cert is actually issued + active
+        if (env.CF_API_TOKEN) { ok = (await _cfHostnameActive(env, 'www.' + dom)) || (await _cfHostnameActive(env, dom)); }   // most accurate: the SSL cert is actually issued + active
         if (!ok) { const seen = (await _dohCname(dom)).concat(await _dohCname('www.' + dom)); ok = seen.some(function (v) { return v === target || v.indexOf(target) >= 0 || v.indexOf('atlasrental') >= 0; }); }
         if (ok) {
           await env.DB.prepare("UPDATE tenants SET custom_domain_status='live', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
@@ -1367,6 +1395,64 @@ export default {
         await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
         await audit(env, ctx, req, 'billing.cancel', { when: 'now' });
         return json({ ok: true, canceled: true, when: 'now' });
+      }
+
+      // ---- #203 real marketing broadcast: email the tenant's OWN customers. Honors the suppression list + injects a
+      //      one-tap unsubscribe (CAN-SPAM) via sendEmail(tenant set). Owner/manager only; deduped, validated, capped. ----
+      if (path === '/api/outreach/send' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'settings')) return err(403, 'Marketing permission required.');
+        if (!env.RESEND_KEY) return err(503, 'Email sending is not set up yet.');
+        if (!await rateLimit(env, 'outreach:' + ctx.tenant_id, 12, 3600000)) return err(429, 'You have sent a lot of campaigns this hour - please wait a bit.');
+        const b = await req.json().catch(() => ({}));
+        const subject = String(b.subject || '').slice(0, 240).trim();
+        const bodyTxt = String(b.body || '').slice(0, 20000);
+        if (!subject) return err(400, 'Add a subject.');
+        if (!bodyTxt.trim()) return err(400, 'Write a message.');
+        const seen = {}, clean = [];
+        for (const r of (Array.isArray(b.recipients) ? b.recipients : [])) {
+          const em = String((r && r.email) || '').toLowerCase().trim();
+          if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em) || seen[em]) continue;
+          seen[em] = 1; clean.push({ email: em, name: String((r && r.name) || '').slice(0, 80) });
+          if (clean.length >= 500) break;                        // hard cap per send (deliverability + subrequest budget)
+        }
+        if (!clean.length) return err(400, 'No valid recipients in that group.');
+        const trow = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const prof = tenantProfile(trow || { id: ctx.tenant_id });
+        const results = await _sendChunked(clean, 20, (r) => {
+          const html = _emailShell(prof, esc(_fillTokens(bodyTxt, r, prof)).replace(/\n/g, '<br>'));
+          return sendEmail(env, { to: r.email, fromName: prof.name, subject: _fillTokens(subject, r, prof), html: html, tenant: ctx.tenant_id });
+        });
+        let sent = 0, skipped = 0;
+        for (const x of results) { if (x && x.sent) sent++; else skipped++; }
+        await audit(env, ctx, req, 'outreach.send', { total: clean.length, sent: sent, skipped: skipped });
+        return json({ ok: true, sent: sent, skipped: skipped, total: clean.length });
+      }
+
+      // ---- #198 email a booking receipt to the customer. The server reads the REAL recipient from the booking row
+      //      (tenant-scoped), so a client can never redirect a receipt to an arbitrary address. Transactional (always delivered). ----
+      if (path === '/api/receipt/send' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'bookEdit')) return err(403, 'Booking permission required.');
+        if (!env.RESEND_KEY) return err(503, 'Email sending is not set up yet.');
+        if (!await rateLimit(env, 'rcpt:' + ctx.tenant_id, 120, 3600000)) return err(429, 'Too many receipts right now - please wait a moment.');
+        const b = await req.json().catch(() => ({}));
+        const bid = String(b.booking || '').slice(0, 80);
+        const inner = String(b.html || '');
+        if (!bid) return err(400, 'Missing booking.');
+        if (inner.length < 10) return err(400, 'Nothing to send.');
+        const row = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(bid, ctx.tenant_id).first();
+        if (!row) return err(404, 'Booking not found.');
+        let d = {}; try { d = JSON.parse(row.data || '{}'); } catch (e) {}
+        const to = String(d.custEmail || d.email || '').toLowerCase().trim();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return err(400, 'That booking has no valid customer email on file.');
+        const trow = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const prof = tenantProfile(trow || { id: ctx.tenant_id });
+        const subject = String(b.subject || ('Your receipt from ' + prof.name)).slice(0, 240);
+        const res = await sendEmail(env, { to: to, fromName: prof.name, subject: subject, html: _emailShell(prof, inner.slice(0, 60000)), transactional: true });
+        await audit(env, ctx, req, 'receipt.send', { booking: bid, sent: !!res.sent, reason: res.reason });
+        if (!res.sent) return err(502, 'Could not send the receipt (' + (res.reason || 'unknown') + ').');
+        return json({ ok: true, to: to });
       }
 
       // ---- tenant -> Atlas HQ: bug reports & optimization ideas (any signed-in user), land in the owner's master-dashboard inbox ----
