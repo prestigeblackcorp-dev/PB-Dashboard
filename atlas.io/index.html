@@ -583,7 +583,8 @@ table.tbl{width:100%;border-collapse:collapse}
 .demo-exit{position:fixed;top:calc(9px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:9100;background:rgba(14,28,21,.94);color:#fff;border:1px solid rgba(255,255,255,.16);border-radius:999px;padding:7px 8px 7px 14px;font-size:12.5px;font-weight:600;display:none;align-items:center;gap:9px;box-shadow:0 8px 24px -8px rgba(0,0,0,.5)}
 .demo-exit.on{display:flex}
 .demo-exit b{color:#8FE3C6;font-weight:700}
-.demo-exit button{background:#2FA576;border:0;color:#fff;font-weight:750;font-size:12px;border-radius:999px;padding:5px 12px;font-family:inherit}
+.demo-exit button{background:#2FA576;border:0;color:#fff;font-weight:750;font-size:12px;border-radius:999px;padding:5px 12px;font-family:inherit;cursor:pointer}
+.demo-exit .demo-exit__back{background:transparent;border:1px solid rgba(255,255,255,.28);color:#fff;font-weight:650}
 /* full-screen live map */
 .trk-map-wrap.trk-fs{position:fixed;inset:0;z-index:8600;margin:0;border-radius:0;height:100vh;width:100vw;max-width:none}
 .trk-map-wrap.trk-fs #trkMap{height:100vh;width:100vw}
@@ -7060,7 +7061,7 @@ const Atlas = (function(){
     _lsSet(SK,{email:'demo@atlasrental.io',tenantId:'demo'});
     var t=fresh(); t.brand={name:'Summit Exotics',color:'#1E6E4E',logo:null,initial:'S',subdomain:'summit'}; t.fleet=FLEET_TYPES[0]; t.owner='Alex'; t.onboarded=true;
     _lsSet('atlas_tenant_demo', t); S=load();
-    applyBrand(); buildApp(); show('app'); setTimeout(()=>{openAio();},500);
+    applyBrand(); buildApp(); show('app'); _demoFinish();
   }
   // Big property-management account: 300 units across 6 properties on Business. Shows Atlas at scale + multi-location.
   function demoBig(){
@@ -7086,7 +7087,7 @@ const Atlas = (function(){
       bookings.push({ id:'BK-'+(5200+i), createdAt:Date.now()-i*3600000, cust:custs[i%custs.length], custEmail:custs[i%custs.length].toLowerCase().replace(' ','.')+'@email.com',
         asset:a.name, periods:per2, startTs:Date.now()+((i%14)-4)*86400000, endTs:0, time:false, extras:[], discount:{type:'none',value:0}, addons:0, status:sts[i%sts.length], quote:q }); }
     _lsSet('atlas_bookings_demobig', bookings);
-    S=load(); applyBrand(); buildApp(); show('app'); setTimeout(function(){ openAio(); }, 400);
+    S=load(); applyBrand(); buildApp(); show('app'); _demoFinish();
   }
   function _fleetOf(id){ var t=FLEET_TYPES.find(function(x){return x.id===id;})||FLEET_TYPES[0]; return {id:t.id,emoji:t.emoji,label:t.label,noun:t.noun,nouns:t.nouns,sample:t.sample.slice()}; }
   /* ---- Guided live demo: loads a filled account, walks the whole product ~30s, then returns to sign-up. One-time guided; a persistent exit chip always routes back to purchase. ---- */
@@ -7098,14 +7099,13 @@ const Atlas = (function(){
     {nav:'analytics',b:'Analytics', t:'Know exactly what you earn', d:'Reports, tax exports and trends \u2014 always up to date.'},
     {act:'aio',      b:'Atlas.io', t:'Your AI works alongside you', d:'Ask it to price, fill idle days or draft a win-back \u2014 and it acts.'}
   ];
-  function demoStart(){
+  function demoStart(){ try{ demo(); }catch(e){} }   // demo() now runs _demoFinish (exit chip + one-time guided tour) for EVERY entry path
+  // Runs after any demo loads (Start-demo button OR the picker): always shows the persistent exit chip (purchase + back-to-site), and runs the guided tour once -- so a prospect can never get stuck with no way forward or back.
+  function _demoFinish(){
+    _demoExitOn();
     var seen=_lsGet('atlas_demo_guided',0);
-    try{ demo(); }catch(e){}                 // load the filled Summit Exotics demo + open the app
-    try{ closeAio(); }catch(e){}
-    _demoExitOn();                            // always give a way back to sign up
-    if(seen){ toast('You are exploring the live demo \u2014 tap Start free trial when ready'); return; }
-    _lsSet('atlas_demo_guided',1);
-    setTimeout(_demoRun, 550);
+    if(!seen){ _lsSet('atlas_demo_guided',1); try{ closeAio(); }catch(e){} clearTimeout(_demo.timer); setTimeout(_demoRun, 550); }
+    else { setTimeout(function(){ try{ openAio(); }catch(e){} }, 420); toast('You are exploring the live demo \u2014 tap Start free trial, or Back to site, any time'); }
   }
   function _demoRun(){ _ensureDcoach(); _demo.on=true; _demo.i=-1; _demo.n=DEMO_STEPS.length; _demoNext(); }
   function _demoNext(){
@@ -7131,7 +7131,8 @@ const Atlas = (function(){
       +'<h3 style="font-size:20px;margin-bottom:6px">That\u2019s Atlas Rental.io</h3>'
       +'<p style="font-size:14px;color:var(--muted);margin-bottom:18px">Everything you just saw becomes yours in minutes \u2014 your brand, your assets, your website and your customer portal.</p>'
       +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.closeModal();Atlas.goAuth(\'signup\')">Start your 7-day free trial</button>'
-      +'<button class="btn btn--ghost btn--full" style="margin-top:9px" onclick="Atlas.closeModal()">Keep exploring the demo</button></div>');
+      +'<button class="btn btn--ghost btn--full" style="margin-top:9px" onclick="Atlas.closeModal()">Keep exploring the demo</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:9px" onclick="Atlas.exitDemo()">Back to the website</button></div>');
   }
   function _ensureDcoach(){ if(document.getElementById('dcoach'))return;
     var d=document.createElement('div'); d.id='dcoach'; d.className='dcoach';
@@ -7144,8 +7145,9 @@ const Atlas = (function(){
   }
   function demoSkip(){ _demoEnd(); }
   function _demoExitOn(){ var e=document.getElementById('demoExit'); if(!e){ e=document.createElement('div'); e.id='demoExit'; e.className='demo-exit';
-      e.innerHTML='<span><b>Live demo</b> \u2014 make it yours</span><button onclick="Atlas.goAuth(\'signup\')">Start free trial</button>'; document.body.appendChild(e); }
+      e.innerHTML='<span><b>Live demo</b> \u2014 make it yours</span><button class="demo-exit__cta" onclick="Atlas.goAuth(\'signup\')">Start free trial</button><button class="demo-exit__back" onclick="Atlas.exitDemo()">Back to site</button>'; document.body.appendChild(e); }
     e.classList.add('on'); }
+  function exitDemo(){ try{ _demoTeardown(); }catch(e){} try{ closeModal(); }catch(e){} try{ closeAio(); }catch(e){} try{ store.logout(); }catch(e){} show('landing'); }   // leave the demo -> back to the marketing site (never a dead-end)
   function demoPick(){
     openModal('<div class="modal__head"><h3>See a live demo</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<p style="font-size:13.5px;color:var(--muted);margin-bottom:16px">Atlas Rental.io shapes itself around whatever you rent. Pick a filled example:</p>'
@@ -7199,7 +7201,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
