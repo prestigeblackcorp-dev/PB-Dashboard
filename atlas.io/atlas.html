@@ -4159,6 +4159,13 @@ const Atlas = (function(){
     var p=document.createElement('div'); p.id='tourPop'; p.className='tour-pop';
     document.body.appendChild(s); document.body.appendChild(p);
     window.addEventListener('resize',function(){ if(_tour) _tourPlace(); });
+    document.addEventListener('click',_tourGuardClick,true);   // during a tour, lock out every click except the spotlighted element + tour buttons
+  }
+  // While a tour runs, block every click except the spotlighted element (when it advances on click) and the tour popup (Next/Back/Skip).
+  function _tourGuardClick(e){ if(!_tour) return;
+    var pop=document.getElementById('tourPop'); if(pop && pop.contains(e.target)) return;   // tour controls always work
+    var hi=_tour._hiEl; if(hi && _tour._hiClickable && hi.contains(e.target)) return;        // the highlighted element works when the step is click-to-advance
+    try{ e.preventDefault(); }catch(_){ } e.stopPropagation();                               // everything else is inert until the tour ends
   }
   function _tourStep(){ if(!_tour)return; var st=_tour.steps[_tour.i]; if(!st){ tourEnd(true); return; }
     if(_tour.key) _lsSet(_tour.key+'_i',_tour.i);
@@ -4174,6 +4181,7 @@ const Atlas = (function(){
   function _tourPlace(){ if(!_tour)return; var st=_tour.steps[_tour.i]; if(!st)return;
     var spot=document.getElementById('tourSpot'), pop=document.getElementById('tourPop'); if(!spot||!pop)return;
     var el = typeof st.sel==='function'? st.sel() : (st.sel? document.querySelector(st.sel):null);
+    _tour._hiEl=el; _tour._hiClickable=!!st.click;   // click-guard: only this element (when click-to-advance) stays live during a tour
     if(el && el.scrollIntoView){ try{ el.scrollIntoView({block:'center',inline:'nearest'}); }catch(e){} }
     setTimeout(function(){ if(!_tour)return;
       var pad=(st.pad==null?8:st.pad);
@@ -4285,7 +4293,7 @@ const Atlas = (function(){
       {sel:'#trkTopActions', title:'Full-screen &amp; route', body:("Go full-screen, refresh, and route straight to any "+noun+" &mdash; 3D turn-by-turn, updating live as it moves.")}
     ];
     if(nav==='website') return [
-      {sel:'#webBody', title:'Your website, AI-built', body:("Atlas generates a branded booking site from your "+nouns+", logo and prices &mdash; wired to this dashboard automatically. Edit any part, then publish.")}
+      {sel:'#webBody', title:'Your website, AI-built', body:("Atlas generates a branded booking site from your assets, logo and prices &mdash; wired to this dashboard automatically. Edit any part, then publish.")}
     ];
     if(nav==='team') return [
       {sel:'[data-panel="team"] button[data-cap="teamManage"]', click:true, title:'Invite your team', body:"Add employees and choose exactly what each person can see and do &mdash; front desk, manager, or accountant."},
@@ -5882,6 +5890,7 @@ const Atlas = (function(){
   function _payLabel(){ var p=_payProvider(); var f=PAY_PROVIDERS.filter(function(x){return x[0]===p;})[0]; return f?f[1]:''; }
   function setActivePay(id){ if(!_canMod('settings'))return; var f=PAY_PROVIDERS.filter(function(x){return x[0]===id;})[0]; if(!f)return; if(!S.payments)S.payments={}; S.payments.provider=id; S.payments.label=f[1]; save(); renderSet(); toast(f[1]+' is now your active processor'); }
   function modalConnect(id,name){
+    if(id==='web'){ return _modalEmbed(); }   // booking-embed connect shows a real, copyable snippet -- there is no key to paste
     const steps=GUIDES[id]||['Follow the guided steps to connect.'];
     openModal(`<div class="modal__head"><h3>Connect ${name}</h3><button class="icon-btn" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>
       <div class="modal__body"><ol class="step-list">${steps.map(s=>`<li>${s}</li>`).join('')}</ol>
@@ -5903,6 +5912,20 @@ const Atlas = (function(){
     const el=document.getElementById('conn-'+id); if(el)el.innerHTML=live?`<span class="chip chip--ok"><span class="dot"></span>Connected</span>`:`<span class="chip chip--muted"><span class="dot"></span>Saved</span>`;
     if(document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet();
   }
+  // Booking-embed connect: show the owner their REAL, personalized snippet (points at their published site) + one-tap copy.
+  function _modalEmbed(){
+    var url=_bookingLink(), pub=(typeof _bookingSitePublished==='function' ? _bookingSitePublished() : false);
+    var snip='<iframe src="'+url+'" title="Book with us" loading="lazy" style="width:100%;min-height:820px;border:0;border-radius:16px"></iframe>';
+    var body = pub
+      ? ('<p style="font-size:13px;color:var(--muted);margin:0 0 12px">Paste this into any page of your existing website. It embeds your live Atlas booking site &mdash; bookings flow straight into this dashboard, branded as you.</p>'
+         +'<div class="field"><label>Your booking embed snippet</label><textarea class="input mono" id="embedCode" readonly rows="4" style="resize:vertical;font-size:12px;line-height:1.5" onclick="this.select()">'+esc(snip)+'</textarea></div>'
+         +'<button class="btn btn--primary btn--full" onclick="Atlas.copyEmbed()">Copy snippet</button>'
+         +'<p style="font-size:12px;color:var(--muted);margin-top:10px">Prefer a link? Point any button at <a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(url)+'</a></p>')
+      : ('<p style="font-size:13px;color:var(--muted);margin:0 0 14px">Publish your booking site first &mdash; then your personal embed snippet appears here, ready to copy.</p>'
+         +'<button class="btn btn--primary btn--full" onclick="Atlas.closeModal();Atlas.go(\'website\')">Go to Website &amp; publish</button>');
+    openModal('<div class="modal__head"><h3>Embed your booking site</h3>'+_xBtn()+'</div><div class="modal__body">'+body+'</div>');
+  }
+  function copyEmbed(){ var t=document.getElementById('embedCode'); if(t){ try{ t.select(); navigator.clipboard.writeText(t.value); }catch(e){} } toast('Embed snippet copied'); }
   function openModal(html){ document.getElementById('modal').innerHTML=html; document.getElementById('modalScrim').classList.add('on'); }
   function closeModal(){ document.getElementById('modalScrim').classList.remove('on'); }
 
@@ -6154,7 +6177,7 @@ const Atlas = (function(){
   function _featTier(key){ var f=GATED_FEATURES[key]; return f?_tier(f.minTier):null; }
   function _featMeta(key){ var n=(S.fleet&&S.fleet.nouns)||'assets', noun=(S.fleet&&S.fleet.noun)||'asset';
     if(key==='tracking') return { title:'Live GPS tracking &amp; 3D navigation', desc:'Track every '+esc(noun)+' on a live map in real time, with full-screen 3D turn-by-turn navigation straight to any '+esc(noun)+'.' };
-    if(key==='website')  return { title:'AI website builder', desc:'A beautiful branded booking site, generated from your '+esc(n)+' and wired to this dashboard.' };
+    if(key==='website')  return { title:'AI website builder', desc:'A beautiful branded booking site, generated from your assets and wired to this dashboard.' };
     return { title:'Premium feature', desc:'' }; }
   function _lockOverlay(key){ var f=GATED_FEATURES[key], t=_featTier(key), m=_featMeta(key); if(!f||!t) return '';
     var addBtn=''; if(f.addon){ if(f.addon.mo) addBtn='<button class="btn btn--outline btn--full" style="margin-top:9px" onclick="Atlas.buyAddon(\''+key+'\',\'mo\')">Or add just this for $'+f.addon.mo+'/mo</button>';
@@ -7117,7 +7140,7 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
