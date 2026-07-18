@@ -522,7 +522,7 @@ export default {
           const cTpl = (comms.autos && comms.autos.confirm) || {};
           const custMail = await sendEmail(env, { to: b.email, fromName: comms.fromName || prof.name, replyTo: comms.replyTo,
             subject: renderTpl(cTpl.subject || 'Your booking with {business} is received', vars),
-            html: _emailShell(prof, '<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p><p>' + esc(prof.name) + ' will confirm with you shortly.</p>') });
+            html: _emailShell(prof, '<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p>' + (cfg.terms ? ('<p style="color:#666;font-size:13px"><b>Cancellation policy:</b> ' + esc(cfg.terms) + '</p>') : '') + '<p>' + esc(prof.name) + ' will confirm with you shortly.</p>') });
           const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
           if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
             subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
