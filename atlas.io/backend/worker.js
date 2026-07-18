@@ -465,9 +465,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }
   _pReady = true;
 }
-// Constant-time-ish string compare so the admin key check does not leak length/position via timing.
-function _ctEq(a, b) { a = String(a || ''); b = String(b || ''); if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i); return r === 0; }
-// Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session). Fail-closed when unset.
+// Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
 function adminOk(req, env) { const t = env.ADMIN_TOKEN || ''; if (!t) return false; return _ctEq(req.headers.get('X-Admin-Token') || '', t); }
 // Record one platform (Atlas-revenue) transaction, deduped on the Stripe object id so webhook replays never double-count.
 async function recordTxn(env, o) {
