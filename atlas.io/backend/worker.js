@@ -453,6 +453,26 @@ async function _dohCname(name) {
     return (j.Answer || []).map(function (a) { return String(a.data || '').replace(/\.$/, '').toLowerCase(); });
   } catch (e) { return []; }
 }
+// ---- Cloudflare for SaaS automation: add each tenant's domain as a Custom Hostname so SSL issues + routing happen with NO manual step. Needs CF_API_TOKEN + CF_ZONE_ID. ----
+async function _cfApi(env, method, apiPath, body) {
+  try {
+    const r = await _fetchTimeout('https://api.cloudflare.com/client/v4/zones/' + (env.CF_ZONE_ID || '') + apiPath, {
+      method: method, headers: { 'Authorization': 'Bearer ' + (env.CF_API_TOKEN || ''), 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined
+    }, 10000);
+    return await r.json().catch(function () { return {}; });
+  } catch (e) { return {}; }
+}
+async function _cfAddHostname(env, hostname) {
+  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return;
+  await _cfApi(env, 'POST', '/custom_hostnames', { hostname: hostname, ssl: { method: 'http', type: 'dv', settings: { min_tls_version: '1.0' } } });   // HTTP validation -> auto-issues once the tenant's CNAME points here; no extra TXT for them
+}
+async function _cfHostnameActive(env, hostname) {
+  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return false;
+  const j = await _cfApi(env, 'GET', '/custom_hostnames?hostname=' + encodeURIComponent(hostname), null);
+  const r = (j.result || [])[0];
+  return !!(r && r.status === 'active' && r.ssl && r.ssl.status === 'active');
+}
 
 // ---- Atlas HQ (owner master dashboard): platform tables self-heal so the whole thing is a PASTE-ONLY deploy (no separate migration).
 // CREATE ... IF NOT EXISTS + additive ALTER (swallowed if the column already exists) are idempotent + safe to re-run.
@@ -542,7 +562,8 @@ export default {
       if (method === 'GET' && path === '/' && host && host !== 'atlasrental.io' && host !== 'www.atlasrental.io' && host.indexOf('.workers.dev') < 0 && host !== 'localhost' && host !== '127.0.0.1') {
         try {
           await ensurePlatformSchema(env);
-          const cd = await env.DB.prepare("SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(host).first();
+          const hostBase = host.replace(/^www\./, '');   // www.theirsite.com and theirsite.com both route to the tenant
+          const cd = await env.DB.prepare("SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(hostBase).first();
           if (cd && cd.subdomain) {
             const pr = tenantProfile(cd);
             const liveSite = pr.settings.publicSite && pr.settings.publicSite.published;
@@ -554,7 +575,7 @@ export default {
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
-          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY) };
+          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!(env.CF_API_TOKEN && env.CF_ZONE_ID) };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
@@ -986,6 +1007,7 @@ export default {
         const clash = await env.DB.prepare('SELECT id FROM tenants WHERE custom_domain=? AND id<>?').bind(dom, ctx.tenant_id).first();
         if (clash) return err(409, 'That domain is already connected to another account.');
         await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=?").bind(dom, Date.now(), ctx.tenant_id).run();
+        if (env.CF_API_TOKEN && env.CF_ZONE_ID) { try { await _cfAddHostname(env, dom); await _cfAddHostname(env, 'www.' + dom); } catch (e) {} }   // auto-provision the Cloudflare custom hostname (SSL + routing) -> no manual dashboard step
         await audit(env, ctx, req, 'domain.connect', { domain: dom });
         const target = env.SAAS_TARGET || 'saas.atlasrental.io';
         return json({ ok: true, domain: dom, target: target, records: [
@@ -1001,8 +1023,9 @@ export default {
         const dom = row && row.custom_domain;
         if (!dom) return err(400, 'Connect a domain first.');
         const target = (env.SAAS_TARGET || 'saas.atlasrental.io').toLowerCase();
-        const seen = (await _dohCname(dom)).concat(await _dohCname('www.' + dom));
-        const ok = seen.some(function (v) { return v === target || v.indexOf(target) >= 0 || v.indexOf('atlasrental') >= 0; });
+        let ok = false;
+        if (env.CF_API_TOKEN && env.CF_ZONE_ID) { ok = (await _cfHostnameActive(env, 'www.' + dom)) || (await _cfHostnameActive(env, dom)); }   // most accurate: the SSL cert is actually issued + active
+        if (!ok) { const seen = (await _dohCname(dom)).concat(await _dohCname('www.' + dom)); ok = seen.some(function (v) { return v === target || v.indexOf(target) >= 0 || v.indexOf('atlasrental') >= 0; }); }
         if (ok) {
           await env.DB.prepare("UPDATE tenants SET custom_domain_status='live', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
           await audit(env, ctx, req, 'domain.verified', { domain: dom });
