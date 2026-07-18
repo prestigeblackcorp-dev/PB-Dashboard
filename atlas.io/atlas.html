@@ -2977,10 +2977,8 @@ const Atlas = (function(){
     if(nav==='analytics') renderAnalytics();   // reports + activity log stay live as data changes
     if(nav==='tracking' && typeof renderTracking==='function') renderTracking();   // live map + telemetry refresh on entry
     else if(typeof _trkStop==='function') _trkStop();   // stop the GPS sim when you leave the map (no wasted work)
-    // First time a user opens Bookings, offer the guided walkthrough once (never nags again).
-    if(nav==='bookings' && !_lsGet('atlas_tour_bk_seen',0) && !_lsGet('atlas_tour_bk_done',0)){
-      _lsSet('atlas_tour_bk_seen',1); setTimeout(function(){ if(!_tour) bkTour(); }, 500);
-    } else { _maybeTabTour(nav); }   // every other tab gets its own in-depth walkthrough the first time it's opened
+    // Guided help is now ONE continuous live tour (Overview -> every tab -> Website), started once at first entry
+    // (see liveTour). Per-tab auto-walkthroughs are retired so tabs never nag; bkTour()/tabTour() remain for replay.
   }
 
   /* ---- global search: bookings, units, properties, tenants, customers -- anything on the dashboard ---- */
@@ -4065,7 +4063,7 @@ const Atlas = (function(){
   function playFilm(){ _ensureFilmDom(); var f=document.getElementById('film'); f.classList.remove('end','paused');
     [].forEach.call(document.querySelectorAll('.film-seg'),function(s){ s.classList.remove('done'); var b=s.querySelector('.film-seg__f'); b.style.transition='none'; b.style.width='0'; });
     f.classList.add('on'); document.documentElement.style.overflow='hidden';
-    try{ if(window.speechSynthesis){ speechSynthesis.cancel(); if(!speechSynthesis.getVoices().length){ speechSynthesis.onvoiceschanged=function(){ speechSynthesis.onvoiceschanged=null; if(_film.playing&&_film.i===0&&_film.vo&&!_film.muted) _filmSpeak(_film.vo); }; } } }catch(e){}
+    try{ if(window.speechSynthesis){ speechSynthesis.cancel(); if(!speechSynthesis.getVoices().length){ speechSynthesis.onvoiceschanged=function(){ speechSynthesis.onvoiceschanged=null; if(_film.playing&&_film.i===0&&_film.vo&&!_film.muted&&!FILM_AUDIO[_film.i]) _filmSpeak(_film.vo); }; } } }catch(e){}
     _filmGo(0); }
   function _filmGo(i){ var f=document.getElementById('film'); if(!f)return; clearTimeout(_film.timer);
     if(i>=FILM.length){ _filmEnd(); return; } if(i<0)i=0; _film.i=i; f.classList.remove('end','paused');
@@ -4155,7 +4153,7 @@ const Atlas = (function(){
     if(!fromForm){ closeModal(); go('bookings'); }  // start on a clean Bookings screen (form tour keeps its modal open)
     startTour(_bkTourSteps(), {start:start, key:'atlas_tour_bk'});
   }
-  function startTour(steps,opt){ opt=opt||{}; _tour={steps:steps,i:Math.min(Math.max(0,opt.start||0),steps.length-1),key:opt.key||''}; _ensureTourDom(); _tourStep(); }
+  function startTour(steps,opt){ opt=opt||{}; _tour={steps:steps,i:Math.min(Math.max(0,opt.start||0),steps.length-1),key:opt.key||'',_onDone:opt.onDone||null,_live:!!opt.live}; _ensureTourDom(); _tourStep(); }
   function _ensureTourDom(){ if(document.getElementById('tourSpot'))return;
     var s=document.createElement('div'); s.id='tourSpot'; s.className='tour-spot';
     var p=document.createElement('div'); p.id='tourPop'; p.className='tour-pop';
@@ -4218,12 +4216,42 @@ const Atlas = (function(){
   }
   function tourNext(){ if(!_tour)return; _tour.i++; if(_tour.i>=_tour.steps.length){ tourEnd(true); return; } _tourStep(); }
   function tourBack(){ if(!_tour)return; _tour.i=Math.max(0,_tour.i-1); _tourStep(); }
-  function tourEnd(complete){ var key=_tour&&_tour.key; var spot=document.getElementById('tourSpot'), pop=document.getElementById('tourPop');
-    if(_tour && _tour._advEl && _tour._advFn){ try{ _tour._advEl.removeEventListener('click',_tour._advFn,true); }catch(e){} }
+  function tourEnd(complete){ var t=_tour, key=t&&t.key, onDone=t&&t._onDone, live=t&&t._live; var spot=document.getElementById('tourSpot'), pop=document.getElementById('tourPop');
+    if(t && t._advEl && t._advFn){ try{ t._advEl.removeEventListener('click',t._advFn,true); }catch(e){} }
     if(spot)spot.classList.remove('on'); if(pop)pop.classList.remove('on');
     if(key){ if(complete){ _lsSet(key+'_done',1); _lsSet(key+'_i',0); } }
-    _tour=null; if(complete) toast('That\'s the tour &mdash; you\'re all set');
+    _tour=null;
+    if(live){ if(complete && onDone){ onDone(); return; }         // live tour leg done -> advance to the next tab silently
+      _lsSet('atlas_tour_live_done',1); try{ toast('Tour ended &mdash; replay it anytime with the Tour button'); }catch(e){} return; }   // skipped: never auto-runs again
+    if(complete) toast('That\'s the tour &mdash; you\'re all set');
   }
+  // ---- ONE-TIME LIVE TOUR: Overview -> down every tab -> ends on the Website tab. Runs once, ever. ----
+  var LIVE_TOUR_TABS=['overview','fleet','bookings','customers','analytics','tracking','team','settings','website'];
+  function _liveBkSteps(){ var noun=esc(S.fleet.noun);
+    return [
+      {sel:'[data-tour="new"]', title:'Create a '+esc(_fterm('book')), body:'Start any '+esc(_fterm('book'))+' here &mdash; pick the customer, the '+noun+', dates and extras, and the price builds itself. Deposit + e-sign are built in.'},
+      {sel:'#bkFilters', title:'Every '+esc(_fterm('book'))+', in one place', body:'All your '+esc(_fterm('books'))+' live here, filterable by status. Tap any one to edit it, move it along, or collect the balance.'}
+    ];
+  }
+  function liveTour(force){
+    if(_tour||(_demo&&_demo.on))return;                       // never collide with a running tour or the guided demo
+    if(_isDemoTenant())return;                                // demo accounts have their own guided demo
+    if(!force && _lsGet('atlas_tour_live_done',0))return;     // only ever once
+    _liveTourAt(0);
+  }
+  function _liveTourAt(idx){
+    if(idx>=LIVE_TOUR_TABS.length){ _lsSet('atlas_tour_live_done',1); try{ go('website'); }catch(e){} try{ toast('That\'s Atlas end to end &mdash; publish your site to go live'); }catch(e){} return; }
+    var nav=LIVE_TOUR_TABS[idx];
+    if(!_canMod(nav)){ _liveTourAt(idx+1); return; }           // skip any tab this user cannot access
+    try{ closeAio(); }catch(e){}
+    try{ go(nav); }catch(e){}
+    setTimeout(function(){
+      var steps=(nav==='bookings')? _liveBkSteps() : _tabTourSteps(nav);
+      if(!steps||!steps.length){ _liveTourAt(idx+1); return; }
+      startTour(steps,{ live:true, onDone:function(){ _liveTourAt(idx+1); } });
+    }, 480);
+  }
+  function _kickLiveTour(){ setTimeout(function(){ try{ liveTour(); }catch(e){} }, 1100); }
   // ---- Per-tab first-visit walkthroughs ------------------------------------------------------------------
   // Every tab runs its OWN in-depth guided tour the first time it is opened. Steps adapt to the business type
   // (nouns) AND to what the owner already set up, so it acknowledges done work instead of re-explaining it.
@@ -5713,6 +5741,7 @@ const Atlas = (function(){
     save(); try{_logEvent('ai','Setup assistant: city='+(city||'-')+', goal='+_suGoalV+(nm?(', added '+nm):''));}catch(e){}
     _suPhotoData=''; closeModal(); try{ buildApp(); go('overview'); }catch(e){}
     try{ openAio(); aioMsg('bot','Done - your dashboard is tuned for <b>'+esc(S.fleet.nouns)+'</b>'+(city?(' in <b>'+esc(city)+'</b>'):'')+', aimed at <b>'+esc(_suGoalV.toLowerCase())+'</b>'+(nm?(', and I added <b>'+esc(nm)+'</b>'):'')+'. I will start dreaming up local campaigns and partners for you.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See what I dreamed up</button>'); }catch(e){}
+    _kickLiveTour();   // one-time guided live tour: Overview -> every tab -> ends on Website
     toast('Dashboard tailored to you'+(city?(' - researching '+city):'')); }
   function _aioHasBiz(){ return (((typeof DATA!=='undefined'&&DATA.assets)||[]).length>0) || (((typeof DATA!=='undefined'&&DATA.bookings)||[]).length>0); }
   function aioReply(q){
@@ -7062,7 +7091,7 @@ const Atlas = (function(){
         S.money.rateModel=old.rateModel||'day'; S.money.baseRate=old.baseRate||150; S.money.tax=old.tax||0;
         save();
       }
-      if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
+      if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _kickLiveTour(); }
       else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }  // resume setup exactly where they left off
       else if(S){ applyBrand(); startTrial(); }
       else { store.logout(); show('landing'); }   // dangling session, no tenant
@@ -7083,7 +7112,7 @@ const Atlas = (function(){
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
-    bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,tourNext,tourBack,tourEnd,
+    bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
