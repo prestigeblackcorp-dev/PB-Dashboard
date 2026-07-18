@@ -1247,9 +1247,12 @@ export default {
         if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, dom); await _cfAddHostname(env, 'www.' + dom); } catch (e) {} }   // auto-provision the Cloudflare custom hostname (SSL + routing) -> no manual dashboard step
         await audit(env, ctx, req, 'domain.connect', { domain: dom });
         const target = env.SAAS_TARGET || 'saas.atlasrental.io';
+        // www is a plain CNAME (works at EVERY registrar). The bare root can't take a CNAME at most registrars, so guide the
+        // non-technical path: turn on the registrar's free "forwarding/redirect" root -> www (no apex-proxying needed).
         return json({ ok: true, domain: dom, target: target, records: [
-          { type: 'CNAME', host: 'www', value: target },
-          { type: 'CNAME', host: '@ (root)', value: target, note: 'If your registrar will not CNAME the root, use its CNAME-flattening / ANAME / forwarding to ' + target + ', or just connect www.' + dom + '.' }
+          { type: 'CNAME', host: 'www', value: target, label: 'Point www.' + dom + ' at your site', primary: true },
+          { type: 'Forward', host: dom, value: 'www.' + dom, label: 'Send the bare ' + dom + ' to www', optional: true,
+            note: 'Most sites only need the www record above. To also make ' + dom + ' (without www) work, turn on "Domain forwarding / redirect" at your registrar, pointing ' + dom + ' to www.' + dom + ' - it is free at GoDaddy, Namecheap, etc. (If your DNS host supports CNAME-flattening / ANAME, you can instead flatten ' + dom + ' straight to ' + target + '.)' }
         ] });
       }
       if (path === '/api/domain/verify' && method === 'POST') {
