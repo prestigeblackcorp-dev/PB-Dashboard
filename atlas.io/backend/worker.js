@@ -302,6 +302,13 @@ function tenantProfile(t) {
 // Server-authoritative price (in cents). Mirrors the client's BASE quote (per-asset rate x periods + tax + deposit) so
 // what the customer sees on the booking page and what the server charges a deposit on are the same number. Extras /
 // protection / promos stay owner-confirmed in the dashboard; this is the honest estimate + deposit the customer pays.
+// Deposit the customer pays to reserve. Understands the client's {mode:'full'|'percent'|'none', pct} shape
+// AND legacy numeric (money.deposit dollars / money.depositPct). Was reading Number({...})=NaN -> $0 on every live booking.
+function depositFor(money, total) {
+  var d = money && money.deposit;
+  if (d && typeof d === 'object') return d.mode === 'full' ? total : (d.mode === 'percent' ? total * (Number(d.pct) || 0) / 100 : 0);
+  return Number(d) > 0 ? Number(d) : (Number(money && money.depositPct) > 0 ? total * Number(money.depositPct) / 100 : 0);
+}
 function priceQuote(money, publishedAssets, assetName, periods) {
   var p = Math.max(1, Math.min(3650, parseInt(periods, 10) || 1));
   var a = (publishedAssets || []).filter(function (x) { return x && x.name === assetName; })[0];
@@ -310,8 +317,7 @@ function priceQuote(money, publishedAssets, assetName, periods) {
   var taxPct = Number(money.tax) || 0;
   var tax = subtotal * taxPct / 100;
   var total = subtotal + tax;
-  var deposit = Number(money.deposit) > 0 ? Number(money.deposit)
-    : (Number(money.depositPct) > 0 ? total * Number(money.depositPct) / 100 : 0);
+  var deposit = depositFor(money, total);
   var c = function (x) { return Math.round((Number(x) || 0) * 100); };
   return { rateCents: c(rate), periods: p, subtotalCents: c(subtotal), taxPct: taxPct, taxCents: c(tax), totalCents: c(total), depositCents: c(deposit) };
 }
@@ -530,8 +536,8 @@ export default {
             brand: { color: prof.brand.color || '', logo: prof.brand.logo || '', initial: prof.brand.initial || (prof.name || 'A')[0] },
             headline: pubSite.headline || '', about: pubSite.about || '',
             unit: cfg.unit || 'day', noun: cfg.noun || 'item',
-            assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '' }; }),
-            config: { tax: Number(prof.money.tax) || 0, hasDeposit: !!(Number(prof.money.deposit) || Number(prof.money.depositPct)), currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false },
+            assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '', minLen: Number(a.minLen) || 0, maxLen: Number(a.maxLen) || 0 }; }),
+            config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false },
             capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } });
         }
 
@@ -547,10 +553,22 @@ export default {
           if (!assetName) return err(400, 'Please choose an available option.');
           const periods = Math.max(1, Math.min(3650, parseInt(b.periods, 10) || 1));
           const startTs = vInt(b.start) ? b.start : (Date.parse(String(b.start || '')) || Date.now());
-          const q = priceQuote(prof.money, pubAssets, assetName, periods);
           const unitMs = ({ hour: 3600000, day: 86400000, week: 604800000, month: 2592000000 })[cfg.unit || 'day'] || 86400000;
           const endTs = startTs + periods * unitMs;
           const now = Date.now();
+          // --- server-authoritative guard rails: the public site is the ONLY path a real customer uses, so these must live here (not just the dashboard) ---
+          const _unit = cfg.unit || 'day';
+          if (startTs < now - 86400000) return err(400, 'Please choose a start date that is not in the past.');
+          const _pa = pubAssets.filter(function (a) { return a && a.name === assetName; })[0] || {};
+          if (Number(_pa.minLen) > 0 && periods < Number(_pa.minLen)) return err(400, 'This option needs at least ' + _pa.minLen + ' ' + _unit + (Number(_pa.minLen) > 1 ? 's' : '') + '.');
+          if (Number(_pa.maxLen) > 0 && periods > Number(_pa.maxLen)) return err(400, 'This option allows at most ' + _pa.maxLen + ' ' + _unit + (Number(_pa.maxLen) > 1 ? 's' : '') + '.');
+          if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : Date.parse((bl && (bl.start || bl.from)) || '')); var e = Number(bl && bl.endTs != null ? bl.endTs : Date.parse((bl && (bl.end || bl.to)) || '')); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return err(409, 'Those dates are unavailable for this option. Please choose different dates.');
+          try {   // double-booking guard: overlap vs this tenant's active bookings (match asset name in data; asset_id column is null for dashboard-synced rows)
+            const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed')").bind(prof.id).all();
+            const _clash = (_act.results || []).some(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return d && d.asset === assetName && Number(r.starts) < endTs && Number(r.ends) > startTs; });
+            if (_clash) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
+          } catch (e) {}
+          const q = priceQuote(prof.money, pubAssets, assetName, periods);
           let custId = 'C-' + randId(10);
           try {
             const ex = await env.DB.prepare('SELECT id FROM customers WHERE tenant_id=? AND email=? LIMIT 1').bind(prof.id, b.email.toLowerCase()).first();
@@ -875,6 +893,7 @@ export default {
       // ---- integrations: store a tenant key (encrypted; never returned) ------
       if (path === '/api/integrations/connect' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!ctx.user || ctx.user.role !== 'owner') return err(403, 'Only the account owner can connect payment integrations.');   // guards the tenant's Stripe secret from any non-owner session
         const body = await req.json().catch(() => ({}));
         if (!vStr(body.provider, 40) || !vStr(body.secret, 400)) return err(400, 'Provider and key required.');
         const secret_enc = await encSecret(env, body.secret, ctx.tenant_id + '|' + body.provider);   // AAD binds this ciphertext to this tenant+provider
@@ -887,6 +906,7 @@ export default {
       // ---- Atlas.io council: Claude + GPT + Gemini in concert, one synthesis --
       if (path === '/api/aio' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
         // per-tenant daily cap: each call fans out to up to 4 paid LLM requests on the PLATFORM's keys -> stop one tenant draining the AI budget
         const _day = new Date().toISOString().slice(0, 10);
         if (!await rateLimit(env, 'aio:' + ctx.tenant_id + ':' + _day, 120, 86400000)) return err(429, 'Daily Atlas.io limit reached. It resets tomorrow.');
@@ -925,6 +945,7 @@ export default {
       // ---- AI schedule builder: plain-language staff constraints -> structured weekly schedule (single strong model, JSON only) --
       if (path === '/api/schedule' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
         const _sday = new Date().toISOString().slice(0, 10);
         if (!await rateLimit(env, 'sched:' + ctx.tenant_id + ':' + _sday, 60, 86400000)) return err(429, 'Daily schedule-AI limit reached. It resets tomorrow.');
         if (!env.ANTHROPIC_KEY) return json({ live: false });   // no key -> client falls back to its built-in parser + solver
