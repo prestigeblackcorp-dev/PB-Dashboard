@@ -205,6 +205,26 @@ function vStr(s, max) { return typeof s === 'string' && s.length > 0 && s.length
 function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 
+// ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
+// Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
+function _roleCaps(role) {
+  switch (role) {
+    case 'owner': return null;                                                              // null = all capabilities
+    case 'manager': return { fleetEdit: 1, bookEdit: 1, pricing: 1, webEdit: 1, customers: 1, settings: 1, analytics: 1 };
+    case 'ops': case 'operations': return { fleetEdit: 1, bookEdit: 1, customers: 1, analytics: 1 };
+    case 'desk': case 'frontdesk': return { bookEdit: 1, customers: 1 };
+    case 'viewer': return {};
+    default: return {};
+  }
+}
+function _can(ctx, cap) {
+  if (!ctx || !ctx.user) return false;
+  if (ctx.isOwner || ctx.user.role === 'owner') return true;
+  let stored = null; try { stored = ctx.user.caps ? JSON.parse(ctx.user.caps) : null; } catch (e) {}
+  if (stored && (stored.caps || stored.mods)) { const flat = {}; ['caps', 'mods'].forEach(g => { const o = stored[g] || {}; Object.keys(o).forEach(k => { if (o[k]) flat[k] = 1; }); }); return !!flat[cap]; }
+  const rc = _roleCaps(ctx.user.role); if (rc === null) return true; return !!rc[cap];
+}
+
 // ============================================================ Atlas.io council
 // The multi-model brain: Claude + GPT + Gemini answer in parallel, then one of them
 // synthesizes a single best answer. The keys are the PLATFORM'S (env secrets),
@@ -727,6 +747,7 @@ export default {
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
           if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
+          if (!_can(ctx, 'pricing') && !_can(ctx, 'webEdit') && !_can(ctx, 'settings')) return err(403, 'You do not have permission to edit money rules, the website, or settings.');
           const body = await req.json().catch(function () { return {}; });
           const sets = [], vals = [];
           if (body.brand && typeof body.brand === 'object') { sets.push('brand=?'); vals.push(JSON.stringify(body.brand)); }
@@ -779,6 +800,7 @@ export default {
       if (pym && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
+        if (pym[1] === 'refund' ? !_can(ctx, 'billing') : !_can(ctx, 'bookEdit')) return err(403, 'You do not have permission for this payment operation.');
         const op = pym[1];
         const body = await req.json().catch(function () { return {}; });
         if (!vStr(body.booking, 40)) return err(400, 'Booking id required.');
@@ -824,6 +846,7 @@ export default {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         // server-side RBAC floor: a read-only member can never mutate tenant data, even with a valid session + CSRF
         if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
+        { const _needW = ({ assets: 'fleetEdit', bookings: 'bookEdit', charges: 'bookEdit', customers: 'customers', promos: 'pricing', ledger: 'pricing' })[coll]; if (_needW && !_can(ctx, _needW)) return err(403, 'You do not have permission to modify ' + coll + '.'); }
 
         const hasUpd = (coll === 'assets' || coll === 'bookings');
         if (method === 'POST') {
