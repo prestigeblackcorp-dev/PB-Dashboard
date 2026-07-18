@@ -2971,6 +2971,7 @@ const Atlas = (function(){
       +'<nav class="drawer__nav"><div class="drawer__sec">Operations</div>'+shown.map(item).join('')
       +'<div class="drawer__sec">Quick actions</div>'
       +'<button class="nav-item" onclick="Atlas.closeMenu();Atlas.openAio()"><svg viewBox="0 0 20 20" fill="none"><path d="M10 2l1.6 4.4L16 8l-4.4 1.6L10 14l-1.6-4.4L4 8l4.4-1.6L10 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>Ask Atlas.io</button>'
+      +'<button class="nav-item" onclick="Atlas.closeMenu();Atlas.reportBug()"><svg viewBox="0 0 20 20" fill="none"><path d="M10 3.2l6.8 11.6H3.2L10 3.2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M10 8v3.6M10 13.6v.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Report a bug</button>'
       +(_canDark()?('<button class="nav-item" onclick="Atlas.setTheme(\''+(dark?'light':'dark')+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="M16 11A6 6 0 019 4a6 6 0 108 8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>'+(dark?'Light mode':'Dark mode')+'</button>'):'')
       +'<button class="nav-item" onclick="Atlas.closeMenu();Atlas.navToggleBar()"><svg viewBox="0 0 20 20" fill="none"><rect x="3" y="13.5" width="14" height="3.5" rx="1.2" stroke="currentColor" stroke-width="1.4"/><path d="M6.2 15.2h.01M9.5 15.2h.01M12.8 15.2h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'+(_navCfg().off?'Show bottom tab bar':'Hide bottom tab bar')+'</button></nav>'
       +'<div class="drawer__foot"><button class="nav-item" onclick="Atlas.closeMenu();Atlas.logout()"><svg viewBox="0 0 20 20" fill="none"><path d="M8 17H4a1 1 0 01-1-1V4a1 1 0 011-1h4M13 13l3-3-3-3M16 10H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Sign out</button></div>';
@@ -5422,6 +5423,25 @@ const Atlas = (function(){
       if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ if(el) el.value=''; toast(type==='idea'?'Idea sent - thank you!':'Bug report sent - thank you!'); }
       else { toast((res.json&&res.json.error)||'Could not send - please try again'); }
     }).catch(function(){ toast('Network error - please try again'); }); }
+  // One-tap bug/idea reporter, reachable anywhere from the menu drawer (not just Settings).
+  var _fbKind='bug';
+  function reportBug(){ _fbKind='bug';
+    openModal('<div class="modal__head"><h3>Report a bug or idea</h3>'+_xBtn()+'</div>'
+      +'<div class="modal__body">'
+      +'<div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn btn--primary btn--sm" id="fbKbug" onclick="Atlas._fbSet(\'bug\')" style="flex:1">Bug</button><button class="btn btn--ghost btn--sm" id="fbKidea" onclick="Atlas._fbSet(\'idea\')" style="flex:1">Idea</button></div>'
+      +'<textarea id="fbQuick" class="input" rows="4" placeholder="What happened, and where? Or what would make Atlas better?"></textarea>'
+      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:12px" onclick="Atlas.sendQuickFeedback()">Send to the Atlas team</button>'
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px">Goes straight to the people who build Atlas.</p></div>');
+    setTimeout(function(){ var el=document.getElementById('fbQuick'); if(el) el.focus(); },80); }
+  function _fbSet(k){ _fbKind=(k==='idea')?'idea':'bug'; var b=document.getElementById('fbKbug'), i=document.getElementById('fbKidea');
+    if(b) b.className='btn btn--sm '+(_fbKind==='bug'?'btn--primary':'btn--ghost'); if(i) i.className='btn btn--sm '+(_fbKind==='idea'?'btn--primary':'btn--ghost'); }
+  function sendQuickFeedback(){ var el=document.getElementById('fbQuick'); var msg=el?(el.value||'').trim():'';
+    if(msg.length<3){ toast('Add a little detail first.'); if(el) el.focus(); return; }
+    if(!ATLAS_BACKEND){ closeModal(); toast('Thanks - your note was recorded.'); return; }
+    _api('/api/feedback',{method:'POST',body:{type:_fbKind,message:msg,page:(location.hash||'app').slice(0,60)}}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ closeModal(); toast(_fbKind==='idea'?'Idea sent - thank you!':'Bug report sent - thank you!'); }
+      else { toast((res.json&&res.json.error)||'Could not send - please try again'); }
+    }).catch(function(){ toast('Network error - please try again'); }); }
 
   /* ============================== ATLASIO ============================== */
   function _aioQuicks(){ return ['What did you dream up?','Set up my pricing','Which '+S.fleet.nouns+' are idle?','Explain my analytics','Draft a win-back text','How do I connect Stripe?']; }
@@ -6085,6 +6105,17 @@ const Atlas = (function(){
     }
     try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
   }catch(e){} }
+  function _billingChangePlan(tier){ toast('Updating your plan...');   // upgrade/downgrade -> worker modifies the existing subscription in place (proration), no duplicate
+    _api('/api/billing/change-plan',{method:'POST',body:{tier:tier}}).then(function(res){
+      if(res.json&&res.json.url){ window.location.href=res.json.url; return; }   // no live subscription yet -> hosted checkout
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var t=_tier(res.json.tier||tier); if(t){ S.plan='active'; S.tier=t.id; save(); } try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} toast('Plan changed to Atlas Rental.io '+((t&&t.name)||tier)); }
+      else { toast((res.json&&res.json.error)||'Could not change your plan - please try again'); }
+    }).catch(function(){ toast('Network error changing plan'); }); }
+  function _billingCancel(){ toast('Cancelling...');
+    _api('/api/billing/cancel',{method:'POST',body:{}}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ if(res.json.when==='period_end'){ try{ renderTrialBox(); renderSet(); }catch(e){} toast('Your plan cancels at period end - you keep access until then.'); } else { S.plan='trial'; save(); try{ renderTrialBox(); renderSet(); }catch(e){} toast('Plan cancelled - you keep your data.'); } }
+      else { toast((res.json&&res.json.error)||'Could not cancel - please try again'); }
+    }).catch(function(){ toast('Network error cancelling'); }); }
   function openPlans(){
     openModal('<div class="modal__head"><h3>Choose your plan</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body" style="padding-top:10px">'+TIERS.filter(function(t){return !t.owner && !t.comp;}).map(function(t){ var cur=_isActive()&&S.tier===t.id;
@@ -6110,14 +6141,20 @@ const Atlas = (function(){
     if(!_guard('billing','Managing billing'))return;
     var t=_tier(tierId);
     // Real charging happens via Stripe hosted Checkout on Atlas's own account. No PAN is read here.
-    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('plan',{tier:t.id}); return; }   // live: money flows to Atlas; plan activates on the webhook + on the success return
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal();
+      if(_isActive() && S && S.tier && S.tier!==t.id){ _billingChangePlan(t.id); }   // switch tiers = modify the EXISTING subscription (proration), never a duplicate charge
+      else if(_isActive()){ toast('You are already on Atlas Rental.io '+t.name+'.'); }   // same active tier: nothing to charge
+      else { _billingCheckout('plan',{tier:t.id}); }   // brand-new subscription -> hosted checkout
+      return; }
     var planChange=!(S.plan==='active' && S.tier===t.id);   // fix: a card-only update on the same active tier must NOT reset the billing cycle or free credits
     S.plan='active'; S.tier=t.id;
     if(planChange){ S.subscribedAt=Date.now(); S.credits={free:t.credits, purchased:(S.credits&&S.credits.purchased)||0, weekStart:_weekStart()}; }
     save();
     closeModal(); renderTrialBox(); renderSet(); buildAio(); toast(planChange?('Atlas Rental.io '+t.name+(PAYMENTS_LIVE?' \u2014 active':' \u2014 setup mode, no card charged')):'Plan updated');
   }
-  function cancelPlan(){ if(!_guard('billing','Managing billing'))return; if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
+  function cancelPlan(){ if(!_guard('billing','Managing billing'))return;
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel at the end of this billing period? You keep full access and all your data until then.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
+    if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
   function openCredits(){
     openModal('<div class="modal__head"><h3>Atlas.io credits</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body"><div style="text-align:center"><div style="font-size:32px;font-weight:850;color:var(--ink)" class="tnum">'+_credits().toLocaleString()+'</div><div style="font-size:13px;color:var(--muted)">credits available &middot; '+_curTier().credits.toLocaleString()+' free every week</div></div>'
@@ -7282,7 +7319,7 @@ const Atlas = (function(){
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
 </script>

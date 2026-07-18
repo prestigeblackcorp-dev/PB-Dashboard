@@ -428,6 +428,17 @@ async function stripeCheckout(secretKey, opts) {
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 
+// Minimal Stripe REST helper (read/update/cancel a subscription for upgrades, downgrades, cancellation). Returns {ok,status,j}.
+async function stripeApi(secretKey, method, path, form) {
+  try {
+    const opts = { method: method, headers: { 'Authorization': 'Bearer ' + secretKey } };
+    if (form) { opts.headers['Content-Type'] = 'application/x-www-form-urlencoded'; opts.body = form; }
+    const r = await _fetchTimeout('https://api.stripe.com/v1/' + path, opts, 12000);
+    const j = await r.json().catch(function () { return {}; });
+    return { ok: r.ok, status: r.status, j: j };
+  } catch (e) { return { ok: false, status: 0, j: {} }; }
+}
+
 // ---- Atlas PLATFORM billing (Atlas gets paid): server-authoritative prices for the SaaS subscription + one-time purchases,
 // charged on the platform's OWN Stripe account (env.PLATFORM_STRIPE_KEY), separate from each tenant's connected Stripe. ----
 const PLAN_PRICE_CENTS = { starter: 4999, pro: 19900, enterprise: 49900, business: 79900, unlimited: 149900 };
@@ -450,6 +461,8 @@ async function ensurePlatformSchema(env) {
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_customer TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }
   _pReady = true;
 }
 // Constant-time-ish string compare so the admin key check does not leak length/position via timing.
@@ -518,7 +531,7 @@ export default {
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
-          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN };
+          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY) };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
@@ -703,12 +716,12 @@ export default {
           await ensurePlatformSchema(env);
           const T = evt.type, sid = obj.id || evt.id || '';
           if (T === 'checkout.session.completed' && md.billing === 'plan' && md.tenant) {
-            // subscription started -> unlock + record card on file. Revenue itself is booked on invoice.paid (the money event) to avoid double-counting.
-            await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, card_on_file=1, updated_at=? WHERE id=?').bind('active', md.tier || null, Date.now(), md.tenant).run();
+            // subscription started -> unlock + card on file + remember the Stripe customer/subscription so we can change/cancel it later. Revenue books on invoice.paid to avoid double-counting.
+            await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind('active', md.tier || null, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.subscribed', { tier: md.tier });
           } else if (T === 'checkout.session.completed' && md.billing === 'trial' && md.tenant) {
             // free trial with a card on file: no charge today, first invoice fires at trial end.
-            await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, updated_at=? WHERE id=?').bind(md.tier || null, Date.now() + 7 * 24 * 3600 * 1000, Date.now(), md.tenant).run();
+            await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind(md.tier || null, Date.now() + 7 * 24 * 3600 * 1000, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.trial_card', { tier: md.tier });
           } else if (T === 'checkout.session.completed' && md.billing === 'credits' && md.tenant) {
@@ -717,6 +730,9 @@ export default {
           } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
             if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
+          } else if (T === 'checkout.session.completed' && md.billing === 'domain' && md.tenant) {
+            await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'domain', pack: md.domain || '', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
           } else if (T === 'invoice.paid') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
             if (im.tenant && (im.billing === 'plan' || im.billing === 'trial')) {
@@ -725,13 +741,31 @@ export default {
             } else if (im.tenant && im.billing === 'website') {
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
             }
-          } else if (T === 'customer.subscription.updated' && md.tenant) {
-            const st = String(obj.status || '');
-            if (st === 'active') await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', md.tier || null, Date.now(), md.tenant).run();
-            else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare('UPDATE tenants SET plan=?, updated_at=? WHERE id=?').bind('trial', Date.now(), md.tenant).run();
+          } else if (T === 'customer.subscription.created' || T === 'customer.subscription.updated') {
+            // captures upgrades AND downgrades (new metadata.tier), plus start/cancel; store the sub id so change-plan/cancel work.
+            if (md.tenant) {
+              const st = String(obj.status || '');
+              if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
+              else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
+              else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
+            }
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
-            await env.DB.prepare('UPDATE tenants SET plan=?, updated_at=? WHERE id=?').bind('trial', Date.now(), md.tenant).run();
+            await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
+          } else if (T === 'customer.subscription.trial_will_end') {
+            const im = obj.metadata || {};
+            if (im.tenant && im.email && env.RESEND_KEY) { try { await sendEmail(env, { to: im.email, fromName: 'Atlas Rental.io',
+              subject: 'Your Atlas free trial ends in 3 days',
+              html: '<h2>Your trial ends soon</h2><p>Your Atlas Rental.io free trial ends in about 3 days, and your ' + esc(_planLabel(im.tier || 'pro')) + ' plan will begin on the card you saved &mdash; nothing to do to keep going. Prefer to stop? Cancel anytime under Settings &gt; Plan &amp; billing and you keep all your data.</p>' }); } catch (e) {} }
+            if (im.tenant) await audit(env, { tenant_id: im.tenant }, req, 'billing.trial_will_end', {});
+          } else if (T === 'charge.refunded') {
+            // log refunds as NEGATIVE transactions so master-dashboard revenue is always net-of-refunds, to the cent.
+            const rf = (obj.refunds && obj.refunds.data && obj.refunds.data[0]) || null;
+            let tid = md.tenant || '';
+            if (!tid && obj.customer) { const pr = await env.DB.prepare('SELECT id FROM tenants WHERE stripe_customer=?').bind(obj.customer).first(); if (pr) tid = pr.id; }
+            const amt = rf ? Number(rf.amount) : Number(obj.amount_refunded || 0);
+            if (amt > 0) await recordTxn(env, { tenant: tid || null, email: md.email || (obj.billing_details && obj.billing_details.email) || '', kind: 'refund', amount_cents: -Math.abs(amt), stripe_id: 'refund:' + (rf ? rf.id : sid) });
+            if (tid) await audit(env, { tenant_id: tid }, req, 'billing.refunded', { cents: amt });
           } else if (T === 'invoice.payment_failed') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || {};
             if (im.tenant) await audit(env, { tenant_id: im.tenant }, req, 'billing.payment_failed', {});
@@ -1121,6 +1155,11 @@ export default {
           const tier = String(body.tier || 'pro'); amountCents = PLAN_PRICE_CENTS[tier] || PLAN_PRICE_CENTS.pro;
           name = 'Atlas Rental.io ' + _planLabel(tier) + ' plan (7-day free trial)'; mode = 'subscription'; interval = 'month';
           meta.billing = 'trial'; meta.tier = tier;
+        } else if (kind === 'domain') {
+          const dcents = Math.round(Number(body.amountCents) || 0);
+          if (dcents < 100 || dcents > 500000) return err(400, 'Invalid domain price.');   // quote-based (registrar cost + markup); clamped $1-$5000
+          amountCents = dcents; name = 'Domain registration' + (body.domain ? (' - ' + String(body.domain).slice(0, 60)) : '');
+          meta.billing = 'domain'; meta.domain = String(body.domain || '').slice(0, 80);
         } else { return err(400, 'Unknown purchase kind.'); }
         const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
           successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : ''),
@@ -1128,6 +1167,59 @@ export default {
         if (!co.ok) return err(502, 'Could not start checkout: ' + co.reason);
         await audit(env, ctx, req, 'billing.checkout', { kind: kind, tier: body.tier, pack: body.pack });
         return json({ ok: true, url: co.url });
+      }
+
+      // ---- upgrade / downgrade an EXISTING subscription IN PLACE (proration) so a plan change never creates a duplicate subscription ----
+      if (path === '/api/billing/change-plan' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        const pk = env.PLATFORM_STRIPE_KEY || ''; if (!pk) return err(400, 'Platform billing is not configured yet.');
+        await ensurePlatformSchema(env);
+        const cb = await req.json().catch(() => ({}));
+        const tier = String(cb.tier || ''); const cents = PLAN_PRICE_CENTS[tier]; if (!cents) return err(400, 'Unknown plan.');
+        const trow = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const sub = trow && trow.stripe_sub;
+        const origin = env.APP_ORIGIN || 'https://atlasrental.io';
+        if (!sub) {   // no live subscription yet -> just start one via checkout
+          const co = await stripeCheckout(pk, { amountCents: cents, name: 'Atlas Rental.io ' + _planLabel(tier) + ' plan', email: ctx.user.email, mode: 'subscription', interval: 'month',
+            successUrl: origin + '/?billing=success&kind=plan&tier=' + encodeURIComponent(tier), cancelUrl: origin + '/?billing=cancel', metadata: { tenant: ctx.tenant_id, email: ctx.user.email, billing: 'plan', tier: tier } });
+          if (!co.ok) return err(502, 'Could not start checkout: ' + co.reason);
+          return json({ ok: true, url: co.url });
+        }
+        const gi = await stripeApi(pk, 'GET', 'subscriptions/' + encodeURIComponent(sub), null);
+        const itemId = gi.ok && gi.j.items && gi.j.items.data && gi.j.items.data[0] && gi.j.items.data[0].id;
+        if (!itemId) return err(502, 'Could not read your current subscription. Please try again.');
+        const form = ['items[0][id]=' + encodeURIComponent(itemId),
+          'items[0][price_data][currency]=usd',
+          'items[0][price_data][product_data][name]=' + encodeURIComponent('Atlas Rental.io ' + _planLabel(tier) + ' plan'),
+          'items[0][price_data][unit_amount]=' + cents,
+          'items[0][price_data][recurring][interval]=month',
+          'proration_behavior=create_prorations',
+          'metadata[tenant]=' + encodeURIComponent(ctx.tenant_id), 'metadata[email]=' + encodeURIComponent(ctx.user.email),
+          'metadata[billing]=plan', 'metadata[tier]=' + encodeURIComponent(tier)].join('&');
+        const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), form);
+        if (!up.ok) return err(502, 'Could not change your plan: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
+        await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?").bind(tier, Date.now(), ctx.tenant_id).run();
+        await audit(env, ctx, req, 'billing.change_plan', { tier: tier });
+        return json({ ok: true, changed: true, tier: tier });
+      }
+
+      // ---- cancel at period end (owner keeps access + data through what they already paid for; webhook flips plan on subscription.deleted) ----
+      if (path === '/api/billing/cancel' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        await ensurePlatformSchema(env);
+        const trow = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const sub = trow && trow.stripe_sub; const pk = env.PLATFORM_STRIPE_KEY || '';
+        if (sub && pk) {
+          const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), 'cancel_at_period_end=true');
+          if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
+          await audit(env, ctx, req, 'billing.cancel', { when: 'period_end' });
+          return json({ ok: true, canceled: true, when: 'period_end' });
+        }
+        await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
+        await audit(env, ctx, req, 'billing.cancel', { when: 'now' });
+        return json({ ok: true, canceled: true, when: 'now' });
       }
 
       // ---- tenant -> Atlas HQ: bug reports & optimization ideas (any signed-in user), land in the owner's master-dashboard inbox ----
