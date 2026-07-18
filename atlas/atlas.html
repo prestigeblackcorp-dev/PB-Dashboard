@@ -6142,9 +6142,8 @@ const Atlas = (function(){
     var t=_tier(tierId);
     // Real charging happens via Stripe hosted Checkout on Atlas's own account. No PAN is read here.
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal();
-      if(_isActive() && S && S.tier && S.tier!==t.id){ _billingChangePlan(t.id); }   // switch tiers = modify the EXISTING subscription (proration), never a duplicate charge
-      else if(_isActive()){ toast('You are already on Atlas Rental.io '+t.name+'.'); }   // same active tier: nothing to charge
-      else { _billingCheckout('plan',{tier:t.id}); }   // brand-new subscription -> hosted checkout
+      if(_isActive() && S && S.tier===t.id){ toast('You are already on Atlas Rental.io '+t.name+'.'); return; }   // same active tier: nothing to charge
+      _billingChangePlan(t.id);   // ALWAYS: handles an existing subscription (incl. a TRIAL sub) -> change in place with proration; none yet -> hosted checkout. Never opens a duplicate subscription (was the trial->subscribe double-charge bug).
       return; }
     var planChange=!(S.plan==='active' && S.tier===t.id);   // fix: a card-only update on the same active tier must NOT reset the billing cycle or free credits
     S.plan='active'; S.tier=t.id;
@@ -7264,7 +7263,7 @@ const Atlas = (function(){
     window.addEventListener('appinstalled', function(){ _pingInstall(); });
     try{ if((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone) _pingInstall(); }catch(e){} }
   // Count this device's PWA install once (server dedups per tenant+platform). Needs a session; no-ops otherwise.
-  function _pingInstall(){ if(_pingInstall._done || !ATLAS_BACKEND || !store.session()) return; _pingInstall._done=true;
+  function _pingInstall(){ if(_pingInstall._done || !ATLAS_BACKEND || !_apiCsrf || !store.session()) return; _pingInstall._done=true;   // needs a CSRF token (post-login) -> the install endpoint now enforces CSRF
     var plat=/iphone|ipad|ipod/i.test(navigator.userAgent)?'ios':(/android/i.test(navigator.userAgent)?'android':'desktop');
     try{ _api('/api/telemetry/install',{method:'POST',body:{platform:plat}}).catch(function(){}); }catch(e){} }
   function installApp(){ if(_deferredInstall){ _deferredInstall.prompt(); try{ _deferredInstall.userChoice.then(function(){ _deferredInstall=null; }); }catch(e){} }
