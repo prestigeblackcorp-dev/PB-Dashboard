@@ -2205,6 +2205,10 @@ const Atlas = (function(){
   function _smsEligible(aud){ var names=_smsConsentNames(), cs=DATA.customers||[], act={};
     (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
     return cs.filter(function(c){ if(!names[c.name])return false; if(aud==='active')return !!act[c.name]; if(aud==='past')return !act[c.name]; return true; }).length; }
+  function _emailOptOut(){ var n={}, t={}; (DATA.bookings||[]).forEach(function(b){ if(b.commsPref && typeof b.commsPref.email==='boolean'){ var w=b.updatedAt||b.createdAt||0; if(w>=(t[b.cust]||0)){ t[b.cust]=w; n[b.cust]=(b.commsPref.email===false); } } }); return n; }   // #3: customers who turned email OFF (latest pref per customer wins)
+  function _emailEligible(aud){ var opt=_emailOptOut(), cs=DATA.customers||[], act={};
+    (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
+    return cs.filter(function(c){ if(opt[c.name])return false; if(aud==='active')return !!act[c.name]; if(aud==='past')return !act[c.name]; return true; }).length; }   // email audience minus opt-outs (honors the one-tap unsubscribe)
   function saveEmailTemplate(kind){ if(!_canMod('settings'))return; var cm=_comms(); cm.autos[kind].subject=val('ebSubject'); cm.autos[kind].body=val('ebBody'); save(); closeModal(); renderSet(); toast('Template saved'); }
   function _audienceCount(aud){ var cs=DATA.customers||[]; if(aud==='all')return cs.length;
     var activeNames={}; (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') activeNames[b.cust]=1; });
@@ -2214,7 +2218,7 @@ const Atlas = (function(){
     var subject=val('ebSubject').trim(), body=val('ebBody').trim();
     if(channel!=='sms' && !subject){ toast('Add a subject'); return; } if(!body){ toast('Write a message'); return; }
     if(!_audienceCount(aud)){ toast('No customers in that group yet'); return; }
-    var emailN = (channel==='sms')?0:_audienceCount(aud);
+    var emailN = (channel==='sms')?0:_emailEligible(aud);   // #3: exclude customers who opted out of email (one-tap unsubscribe)
     var smsN   = (channel==='email')?0:_smsEligible(aud);
     if(channel!=='email'){
       if(!cm.sms.enabled || !cm.sms.fromNumber){ toast('Set up text messaging first (Messaging > Text messaging / SMS)'); closeModal(); goSettings('comms'); return; }
