@@ -400,6 +400,109 @@ async function _sendChunked(items, size, fn) {
   }
   return out;
 }
+
+// ===================== #201 Domain registrar (Dynadot API v3) =====================
+// HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
+// The envelope is inconsistent across commands (success is "ResponseCode" OR "SuccessCode", sometimes under a {Cmd}Header child),
+// so _ddOk() checks every known shape + the Status string. Auth is a ?key= query param (no header/signature) drawing on prepaid balance.
+function _dynadotUrl(env, params) {
+  var base = (env.DYNADOT_SANDBOX ? 'https://api-sandbox.dynadot.com' : 'https://api.dynadot.com') + '/api3.json';
+  var q = 'key=' + encodeURIComponent(env.DYNADOT_KEY || '');
+  for (var k in params) { if (params[k] != null) q += '&' + k + '=' + encodeURIComponent(params[k]); }
+  return base + '?' + q;
+}
+function _ddOk(resp, cmd) {
+  try {
+    var r = resp[cmd + 'Response'] || resp; var hdr = r[cmd + 'Header'] || r;
+    var code = (hdr.ResponseCode != null ? hdr.ResponseCode : (hdr.SuccessCode != null ? hdr.SuccessCode : (r.ResponseCode != null ? r.ResponseCode : r.SuccessCode)));
+    var status = String(hdr.Status || r.Status || '').toLowerCase();
+    return { ok: (String(code) === '0') || status === 'success', code: code, status: status, error: hdr.Error || r.Error || '', r: r };
+  } catch (e) { return { ok: false, error: 'parse' }; }
+}
+async function _registrarSearch(env, domain) {
+  if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
+  try {
+    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'search', domain0: domain, show_price: '1', currency: 'USD' }), {}, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    var sr = (j.SearchResponse && j.SearchResponse.SearchResults) || j.SearchResults || [];
+    var row = Array.isArray(sr) ? sr[0] : sr; if (!row) return { ok: false, reason: 'no_result' };
+    var avail = String(row.Available || '').toLowerCase() === 'yes';
+    var m = String(row.Price || '').match(/([0-9]+(?:\.[0-9]+)?)/); var cost = m ? Math.round(parseFloat(m[1]) * 100) : 0;
+    return { ok: true, available: avail, costCents: cost, domain: domain };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+async function _registrarRegister(env, domain, years) {
+  if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
+  try {
+    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'register', domain: domain, duration: String(years || 1), currency: 'USD' }), {}, 25000);
+    var j = await r.json().catch(function () { return {}; });
+    var v = _ddOk(j, 'Register'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || ('code_' + v.code)) };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+async function _registrarSetNs(env, domain, nsList) {
+  if (!env.DYNADOT_KEY || !nsList || !nsList.length) return { ok: false, reason: 'no_ns' };
+  try {
+    var params = { command: 'set_ns', domain: domain }; nsList.slice(0, 13).forEach(function (ns, i) { params['ns' + i] = ns; });
+    var r = await _fetchTimeout(_dynadotUrl(env, params), {}, 15000); var j = await r.json().catch(function () { return {}; });
+    var v = _ddOk(j, 'SetNs'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || 'ns_fail') };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// ===================== #202 Live GPS providers (server-side; creds never touch the browser) =====================
+// Returns { ok, positions:[{deviceId,label,vin,lat,lng,heading,speed(mph),ts,address,moving}] }. Bouncie's API header is the RAW
+// token (NOT "Bearer"); Traccar speed is knots -> mph. Bouncie cred is a JSON bundle {client_id,client_secret,code,redirect_uri}.
+async function _bounceToken(env, cfg) {
+  try {
+    var body = 'client_id=' + encodeURIComponent(cfg.client_id || '') + '&client_secret=' + encodeURIComponent(cfg.client_secret || '') +
+      '&grant_type=authorization_code&code=' + encodeURIComponent(cfg.code || '') + '&redirect_uri=' + encodeURIComponent(cfg.redirect_uri || '');
+    var r = await _fetchTimeout('https://auth.bouncie.com/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body }, 12000);
+    var j = await r.json().catch(function () { return {}; }); return j.access_token || '';
+  } catch (e) { return ''; }
+}
+async function _trackerFetch(env, provider, cred, meta) {
+  try {
+    if (provider === 'bouncie') {
+      var cfg; try { cfg = JSON.parse(cred); } catch (e) { cfg = {}; }
+      var tok = await _bounceToken(env, cfg); if (!tok) return { ok: false, reason: 'auth' };
+      var r = await _fetchTimeout('https://api.bouncie.dev/v1/vehicles', { headers: { 'Authorization': tok } }, 12000);
+      var arr = await r.json().catch(function () { return []; }); if (!Array.isArray(arr)) return { ok: false, reason: 'shape' };
+      return { ok: true, positions: arr.map(function (v) { var s = v.stats || {}, loc = s.location || {}; return { deviceId: String(v.imei || v.vin || v.nickName || ''), label: v.nickName || (v.model && ((v.model.make || '') + ' ' + (v.model.name || '')).trim()) || '', vin: v.vin || '', lat: Number(loc.lat), lng: Number(loc.lon), heading: Number(loc.heading) || 0, speed: Number(s.speed) || 0, ts: s.lastUpdated || '', address: loc.address || '', moving: !!s.isRunning }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    if (provider === 'samsara') {
+      var r2 = await _fetchTimeout('https://api.samsara.com/fleet/vehicles/stats?types=gps', { headers: { 'Authorization': 'Bearer ' + cred } }, 12000);
+      var j2 = await r2.json().catch(function () { return {}; }); var d = (j2 && j2.data) || [];
+      return { ok: true, positions: d.map(function (v) { var g = v.gps || {}; return { deviceId: String(v.id || ''), label: v.name || '', vin: v.vin || '', lat: Number(g.latitude), lng: Number(g.longitude), heading: Number(g.headingDegrees) || 0, speed: Number(g.speedMilesPerHour) || 0, ts: g.time || '', address: (g.reverseGeo && g.reverseGeo.formattedLocation) || '', moving: (Number(g.speedMilesPerHour) || 0) > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    if (provider === 'traccar') {
+      var host = String((meta && meta.host) || '').replace(/\/+$/, ''); if (!host) return { ok: false, reason: 'no_host' };
+      var auth = (meta && meta.user) ? ('Basic ' + btoa(meta.user + ':' + cred)) : ('Bearer ' + cred);
+      var rp = await _fetchTimeout(host + '/api/positions', { headers: { 'Authorization': auth } }, 12000);
+      var pos = await rp.json().catch(function () { return []; }); if (!Array.isArray(pos)) return { ok: false, reason: 'shape' };
+      return { ok: true, positions: pos.map(function (p) { return { deviceId: String(p.deviceId || ''), label: '', vin: '', lat: Number(p.latitude), lng: Number(p.longitude), heading: Number(p.course) || 0, speed: (Number(p.speed) || 0) * 1.15078, ts: p.fixTime || p.deviceTime || '', address: '', moving: (Number(p.speed) || 0) > 0.5 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    return { ok: false, reason: 'unknown_provider' };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// #206 validate + price a promo code at the PUBLIC customer checkout (server-authoritative, from the owner's published promos).
+// Mirrors the dashboard's _validatePromo rules; anonymous visitors can never redeem a personal/loyalty coupon.
+function _promoApply(prof, code, periods, totalCents) {
+  try {
+    code = String(code || '').trim().toUpperCase(); if (!code) return { ok: false };
+    var list = (prof.settings && prof.settings.promos) || [];
+    var p = list.filter(function (x) { return String(x.code || '').toUpperCase() === code; })[0];
+    if (!p) return { ok: false, reason: 'not_found' };
+    if (p.personal || p.customer || p.cust) return { ok: false, reason: 'personal' };
+    if (p.active === false) return { ok: false, reason: 'off' };
+    var today = new Date().toISOString().slice(0, 10);
+    if (p.expiry && today > p.expiry) return { ok: false, reason: 'expired' };
+    if (p.cap && (p.used || 0) >= p.cap) return { ok: false, reason: 'capped' };
+    if (p.minDays && (periods || 0) < p.minDays) return { ok: false, reason: 'min' };
+    var val = Number(p.value) || 0; var disc = (p.type === 'pct') ? Math.round(totalCents * val / 100) : Math.round(val * 100);
+    disc = Math.max(0, Math.min(totalCents, disc));
+    return { ok: true, code: p.code, discountCents: disc, label: (p.type === 'pct' ? (val + '% off') : (money2(Math.round(val * 100)) + ' off')) };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
 // Twilio SMS. HONEST: no creds -> {sent:false,reason:'no_sms'}. Respects the suppression list (a STOP reply).
 async function sendSms(env, tenant, msg) {
   var sid = env.TWILIO_SID, tok = env.TWILIO_TOKEN, from = (msg && msg.from) || env.TWILIO_FROM;
@@ -560,6 +663,7 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_feedback (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, type TEXT, message TEXT, page TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_pfb_status ON platform_feedback(status, created_at)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_installs (id TEXT PRIMARY KEY, tenant_id TEXT, platform TEXT, created_at INTEGER)").run();
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS domains_sold (id TEXT PRIMARY KEY, tenant_id TEXT, domain TEXT, buyer_email TEXT, paid_cents INTEGER, status TEXT DEFAULT 'registered', created_at INTEGER)").run();
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -734,6 +838,7 @@ export default {
             unit: cfg.unit || 'day', noun: cfg.noun || 'item',
             assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '', minLen: Number(a.minLen) || 0, maxLen: Number(a.maxLen) || 0 }; }),
             config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false },
+            promos: (function () { var _t = new Date().toISOString().slice(0, 10); return ((prof.settings && prof.settings.promos) || []).filter(function (p) { return p && p.active !== false && !p.personal && !p.customer && !p.cust && !(p.expiry && _t > p.expiry) && !(p.cap && (p.used || 0) >= p.cap); }).map(function (p) { return { code: String(p.code || '').toUpperCase(), type: p.type === 'pct' ? 'pct' : 'amt', value: Number(p.value) || 0, minDays: Number(p.minDays) || 0 }; }); })(),
             capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } });
         }
 
@@ -765,6 +870,17 @@ export default {
             if (_clash) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
           } catch (e) {}
           const q = priceQuote(prof.money, pubAssets, assetName, periods);
+          // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount comes off the pre-tax subtotal, deposit excluded).
+          let promoCode = '';
+          if (vStr(b.promo, 40)) {
+            const pv = _promoApply(prof, b.promo, periods, q.subtotalCents);
+            if (pv.ok && pv.discountCents > 0) {
+              promoCode = pv.code; q.discountCents = pv.discountCents;
+              q.subtotalCents = Math.max(0, q.subtotalCents - pv.discountCents);
+              q.taxCents = Math.round(q.subtotalCents * (Number(q.taxPct) || 0) / 100);
+              q.totalCents = q.subtotalCents + q.taxCents;
+            }
+          }
           let custId = 'C-' + randId(10);
           try {
             const ex = await env.DB.prepare('SELECT id FROM customers WHERE tenant_id=? AND email=? LIMIT 1').bind(prof.id, b.email.toLowerCase()).first();
@@ -774,7 +890,7 @@ export default {
           } catch (e) {}
           const token = randId(24), bref = 'BK-' + randId(8);
           const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
-            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), quote: q, portalToken: token, status: 'Pending' };
+            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined };
           try {
             await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
@@ -857,7 +973,24 @@ export default {
           } else if (T === 'checkout.session.completed' && md.billing === 'domain' && md.tenant) {
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'domain', pack: md.domain || '', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
-            { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
+            const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0), _pi = obj.payment_intent || '';
+            // #201: actually REGISTER the paid domain through the registrar; auto-refund if it fails so we never charge for a name we couldn't secure.
+            let _reg = { ok: false, reason: 'no_registrar' };
+            if (md.domain && env.DYNADOT_KEY) _reg = await _registrarRegister(env, md.domain, 1);
+            if (_reg.ok) {
+              try { const _ns = String(env.DOMAIN_NS || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean); if (_ns.length) await _registrarSetNs(env, md.domain, _ns); } catch (e) {}
+              try { await ensurePlatformSchema(env); await env.DB.prepare("INSERT INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,created_at) VALUES (?,?,?,?,?,?,?)").bind('dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), md.tenant, md.domain, md.email || '', _tt, 'registered', Date.now()).run(); } catch (e) {}
+              await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain, amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
+            } else if (md.domain && env.DYNADOT_KEY) {
+              const _pk = env.PLATFORM_STRIPE_KEY || '';
+              if (_pk && _pi) { try { await stripePost(_pk, '/refunds', { payment_intent: _pi }); } catch (e) {} }
+              if (md.email) await sendEmail(env, { to: md.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain could not be registered - refunded', html: '<h2>We refunded your domain purchase</h2><p>Unfortunately <b>' + esc(md.domain) + '</b> could not be registered (' + esc(_reg.reason || 'registrar error') + '), so we refunded your payment in full - no charge will remain. Please try a different name.</p>' });
+              await audit(env, { tenant_id: md.tenant }, req, 'domain.register_failed_refunded', { domain: md.domain, reason: _reg.reason });
+            } else {
+              // no registrar connected: the payment stands and the owner registers the name manually (still honest - receipt + audit trail).
+              await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+            }
           } else if (T === 'invoice.paid') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
             if (im.tenant && (im.billing === 'plan' || im.billing === 'trial')) {
@@ -1123,6 +1256,35 @@ export default {
         await env.DB.prepare("UPDATE tenants SET custom_domain=NULL, custom_domain_status=NULL, updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
         await audit(env, ctx, req, 'domain.disconnect', {});
         return json({ ok: true });
+      }
+
+      // ---- #201 real domain availability + wholesale price (registrar). HONEST: no registrar key -> {live:false} so the client shows an estimate, never a fake "available". ----
+      if (path === '/api/domain/quote' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
+        if (!env.DYNADOT_KEY) return json({ ok: true, live: false });
+        if (!await rateLimit(env, 'dquote:' + ctx.tenant_id, 60, 3600000)) return err(429, 'Too many lookups right now - please slow down a moment.');
+        const bq = await req.json().catch(() => ({}));
+        const dom = String(bq.domain || '').toLowerCase().replace(/[^a-z0-9.-]/g, '').slice(0, 80);
+        if (!dom || dom.indexOf('.') < 1) return err(400, 'Enter a domain like name.com');
+        const s = await _registrarSearch(env, dom);
+        if (!s.ok) return json({ ok: true, live: true, available: false, reason: s.reason });
+        await audit(env, ctx, req, 'domain.quote', { domain: dom, available: s.available });
+        return json({ ok: true, live: true, available: s.available, costCents: s.costCents, domain: dom });
+      }
+
+      // ---- #202 real GPS positions from the tenant's connected provider (Bouncie / Samsara / Traccar). HONEST: no provider -> {live:false} so the client stays in labeled preview. ----
+      if (path === '/api/trackers/positions' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'analytics')) return err(403, 'You do not have permission to view tracking.');
+        if (!await rateLimit(env, 'trk:' + ctx.tenant_id, 300, 3600000)) return err(429, 'Refreshing too fast - please wait a moment.');
+        const row = await env.DB.prepare("SELECT provider, secret_enc, meta FROM integrations WHERE tenant_id=? AND provider IN ('bouncie','samsara','traccar') LIMIT 1").bind(ctx.tenant_id).first();
+        if (!row) return json({ ok: true, live: false });
+        let cred = ''; try { cred = await decSecret(env, row.secret_enc, ctx.tenant_id + '|' + row.provider); } catch (e) {}
+        let meta = {}; try { meta = JSON.parse(row.meta || '{}'); } catch (e) {}
+        const res = await _trackerFetch(env, row.provider, cred, meta);
+        if (!res.ok) return json({ ok: true, live: true, provider: row.provider, positions: [], error: res.reason });
+        return json({ ok: true, live: true, provider: row.provider, positions: res.positions });
       }
 
       if (path === '/api/tenant/profile') {
@@ -1486,7 +1648,7 @@ export default {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!ctx.user || ctx.user.role !== 'owner') return err(403, 'Only the account owner can connect payment integrations.');   // guards the tenant's Stripe secret from any non-owner session
         const body = await req.json().catch(() => ({}));
-        if (!vStr(body.provider, 40) || !vStr(body.secret, 400)) return err(400, 'Provider and key required.');
+        if (!vStr(body.provider, 40) || !vStr(body.secret, 800)) return err(400, 'Provider and key required.');   // 800: room for a multi-field GPS-provider credential bundle (e.g. Bouncie client_id+secret+code+redirect)
         const secret_enc = await encSecret(env, body.secret, ctx.tenant_id + '|' + body.provider);   // AAD binds this ciphertext to this tenant+provider
         await env.DB.prepare('INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,provider) DO UPDATE SET secret_enc=?,meta=?,connected_at=?')
           .bind(ctx.tenant_id, body.provider, (typeof body.kind === 'string' ? body.kind : ''), secret_enc, JSON.stringify(body.meta || {}), Date.now(), secret_enc, JSON.stringify(body.meta || {}), Date.now()).run();
@@ -1647,9 +1809,11 @@ var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
 function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var p=Math.max(1,parseInt(el('per').value,10)||1);var s=(a.rate||0)*p;var t=s*(D.config.tax||0)/100;el('rate').textContent=a.rate?('At '+money(a.rate*100)+' / '+D.unit):'';el('qz').innerHTML='<div class=row><span>'+p+' '+esc(D.unit)+(p>1?'s':'')+'</span><span>'+money(s*100)+'</span></div>'+(D.config.tax?('<div class=row><span>Tax '+D.config.tax+'%</span><span>'+money(t*100)+'</span></div>'):'')+'<div class=tot><span>Estimated total</span><span>'+money((s+t)*100)+'</span></div>'}
-function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
-fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><select id=asset onchange=qt()>'+(j.assets||[]).map(function(a){return '<option>'+esc(a.name)+'</option>'}).join('')+'</select><div id=rate class=muted style="margin-top:5px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput=qt()><label>Start date</label><input id=st type=date><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
+var _promo=null;
+function applyPromo(){var c=(el('promo')?el('promo').value:'').trim().toUpperCase();var m=el('promsg');var per=Math.max(1,parseInt(el('per').value,10)||1);if(!c){_promo=null;if(m)m.textContent='';return qt()}var p=(D.promos||[]).filter(function(x){return x.code===c})[0];if(!p){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Code not found'}return qt()}if(p.minDays&&per<p.minDays){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Needs at least '+p.minDays+' '+esc(D.unit)+(p.minDays>1?'s':'')}return qt()}_promo=p;if(m){m.style.color='#0a0';m.textContent=(p.type==='pct'?(p.value+'% off'):('$'+p.value+' off'))+' applied'}qt()}
+function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var p=Math.max(1,parseInt(el('per').value,10)||1);var s=(a.rate||0)*p;var d=0;if(_promo&&!(_promo.minDays&&p<_promo.minDays)){d=_promo.type==='pct'?s*_promo.value/100:_promo.value;d=Math.max(0,Math.min(s,d))}var sd=s-d;var t=sd*(D.config.tax||0)/100;el('rate').textContent=a.rate?('At '+money(a.rate*100)+' / '+D.unit):'';el('qz').innerHTML='<div class=row><span>'+p+' '+esc(D.unit)+(p>1?'s':'')+'</span><span>'+money(s*100)+'</span></div>'+(d>0?('<div class=row><span>Discount</span><span>-'+money(d*100)+'</span></div>'):'')+(D.config.tax?('<div class=row><span>Tax '+D.config.tax+'%</span><span>'+money(t*100)+'</span></div>'):'')+'<div class=tot><span>Estimated total</span><span>'+money((sd+t)*100)+'</span></div>'}
+function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value,promo:el('promo')?el('promo').value:''};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
+fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><select id=asset onchange=qt()>'+(j.assets||[]).map(function(a){return '<option>'+esc(a.name)+'</option>'}).join('')+'</select><div id=rate class=muted style="margin-top:5px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput=qt()><label>Start date</label><input id=st type=date><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+((j.promos&&j.promos.length)?'<label>Promo code</label><div style="display:flex;gap:6px"><input id=promo style="flex:1;text-transform:uppercase" placeholder="Optional"><button type=button class=btn style="width:auto;padding:0 14px" onclick=applyPromo()>Apply</button></div><div id=promsg style="font-size:12px;margin-top:4px"></div>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
 `;
   return _pageDoc('Book', color, body, js);
 }

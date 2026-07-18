@@ -4551,7 +4551,8 @@ const Atlas = (function(){
   var TRK_STREETS=['Congress Ave','S Lamar Blvd','E 6th St','Guadalupe St','Riverside Dr','Cesar Chavez St','Burnet Rd','Manor Rd','Airport Blvd','Barton Springs Rd','MoPac Expy','I-35 Frontage'];
   var _trkTimer=null, _trkSaveTick=0, _trkSel=null;
   function _trackers(){ if(!S.trackers) S.trackers={provider:null,connected:false,apiKey:'',vehicles:{}}; if(!S.trackers.vehicles) S.trackers.vehicles={}; return S.trackers; }
-  function _trkProject(lat,lng){ var x=(lng-TRK_BOX.minLng)/(TRK_BOX.maxLng-TRK_BOX.minLng)*1000; var y=(TRK_BOX.maxLat-lat)/(TRK_BOX.maxLat-TRK_BOX.minLat)*620; return {x:Math.max(14,Math.min(986,x)),y:Math.max(14,Math.min(606,y))}; }
+  var _trkLiveBox=null;   // when a real provider is connected, the map box auto-fits to the real coordinates (set in _trkFetchLive)
+  function _trkProject(lat,lng){ var B=(_trackers().live&&_trkLiveBox)?_trkLiveBox:TRK_BOX; var x=(lng-B.minLng)/((B.maxLng-B.minLng)||1)*1000; var y=(B.maxLat-lat)/((B.maxLat-B.minLat)||1)*620; return {x:Math.max(14,Math.min(986,x)),y:Math.max(14,Math.min(606,y))}; }
   var TRK_BASE={lat:(TRK_BOX.minLat+TRK_BOX.maxLat)/2, lng:(TRK_BOX.minLng+TRK_BOX.maxLng)/2};
   function _haversine(a,b,c,d){ var R=3959, dLat=(c-a)*Math.PI/180, dLng=(d-b)*Math.PI/180, x=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.sin(dLng/2)*Math.sin(dLng/2)*Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180); return 2*R*Math.asin(Math.sqrt(x)); }
   function _trkDistETA(v){ var mi=_haversine(TRK_BASE.lat,TRK_BASE.lng,v.lat,v.lng)*1.3; var min=Math.max(1,Math.round(mi/28*60)); return {mi:mi, eta:min}; }
@@ -4572,6 +4573,7 @@ const Atlas = (function(){
     Object.keys(have).forEach(function(id){ if(!live[id]){ delete have[id]; changed=true; } });
     if(changed) save(); }
   function _trkTick(){ if(!S||!_trackers().connected) return; var t=_trackers();   // sim runs only while the map page is open (go() stops it on leave)
+    if(t.live){ _trkFetchLive(false); return; }   // real provider connected -> pull authoritative positions from the worker, never simulate
     Object.keys(t.vehicles).forEach(function(id){ var v=t.vehicles[id]; if(v.status==='offline'){ if(Math.random()<0.02){ v.status='parked'; v.online=true; } return; }
       if(v.status==='moving'){ v.speed=Math.max(8,Math.min(78, v.speed+(Math.random()*10-5))); v.heading=(v.heading+(Math.random()*40-20)+360)%360;
         var dist=v.speed*0.000036, rad=v.heading*Math.PI/180; v.lat+=Math.cos(rad)*dist; v.lng+=Math.sin(rad)*dist;
@@ -4584,9 +4586,22 @@ const Atlas = (function(){
     _gfCheck(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); if(_trkSel) _trkRenderDetail();
     if(_n3d && !_n3d.arrived) _n3dReroute();   // 3D nav: the route follows the asset live as it moves
     _trkSaveTick++; if(_trkSaveTick%12===0) save(); }
-  function _trkStart(){ _trkStop(); if(_trackers().connected) _trkTimer=setInterval(_trkTick,2200); }
+  function _trkStart(){ _trkStop(); var t=_trackers(); if(t.connected) _trkTimer=setInterval(_trkTick, t.live?30000:2200); }   // real providers rate-limit -> poll every 30s; the sim animates at 2.2s
   function _trkStop(){ if(_trkTimer){ clearInterval(_trkTimer); _trkTimer=null; } }
-  function trkRefresh(){ if(!_trackers().connected)return; Object.keys(_trackers().vehicles).forEach(function(id){ _trackers().vehicles[id].lastPing=Date.now(); }); _trkTick(); _trkStart(); toast('Live positions refreshed'); }
+  function trkRefresh(){ var t=_trackers(); if(!t.connected)return; if(t.live){ _trkFetchLive(true); toast('Refreshing live positions...'); return; } Object.keys(t.vehicles).forEach(function(id){ t.vehicles[id].lastPing=Date.now(); }); _trkTick(); _trkStart(); toast('Live positions refreshed'); }
+  // #202: pull REAL positions from the worker (which holds the provider creds) and map each device to a fleet asset by VIN, then name.
+  function _trkFetchLive(first){ if(!(ATLAS_BACKEND && _apiCsrf)) return; var t=_trackers(); if(!t.live) return;
+    _api('/api/trackers/positions',{method:'POST'}).then(function(res){ var j=(res&&res.json)||{}; if(!(j&&j.ok)) return;
+      if(!j.live){ t.live=false; save(); return; }   // provider was disconnected server-side -> fall back to preview state
+      if(j.error && first){ toast('Connected, but the provider returned no data ('+esc(j.error)+'). Check the key.'); }
+      var ps=j.positions||[]; if(!ps.length){ if(first) toast('Connected -- positions appear once a device reports in.'); return; }
+      var assets=DATA.assets||[], byVin={}, byName={}; assets.forEach(function(a){ if(a.vin)byVin[String(a.vin).toUpperCase()]=a; byName[String(a.name).toLowerCase()]=a; });
+      var lats=ps.map(function(p){return p.lat;}), lngs=ps.map(function(p){return p.lng;}), pad=0.01;
+      _trkLiveBox={ minLat:Math.min.apply(null,lats)-pad, maxLat:Math.max.apply(null,lats)+pad, minLng:Math.min.apply(null,lngs)-pad, maxLng:Math.max.apply(null,lngs)+pad };
+      var nv={}; ps.forEach(function(p){ var a=(p.vin&&byVin[String(p.vin).toUpperCase()])||(p.label&&byName[String(p.label).toLowerCase()])||null; var id=a?a.id:('dev:'+p.deviceId);
+        var prev=t.vehicles[id]||{}; nv[id]={ lat:p.lat, lng:p.lng, heading:p.heading||0, speed:Math.round(p.speed||0), status:(p.moving?'moving':'parked'), online:true, street:p.address||prev.street||'', milesToday:prev.milesToday||0, lastPing:Date.now(), deviceId:p.deviceId, label:p.label||'', real:true }; });
+      t.vehicles=nv; save(); try{ _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); if(_trkSel)_trkRenderDetail(); }catch(e){}
+    }).catch(function(){}); }
   function renderTracking(){ var body=document.getElementById('trkBody'), top=document.getElementById('trkTopActions'); if(!body)return; var t=_trackers();
     if(!_featOk('tracking')){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_lockOverlay('tracking'); return; }   // premium feature: locked below Pro
     if(!t.connected){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_trkConnectHtml(); return; }
@@ -4641,11 +4656,41 @@ const Atlas = (function(){
     return '<div class="trk-guide"><div class="trk-guide__hd">How to connect '+esc(t.name)+' <span>You will need: '+esc(g.need)+'</span></div><ol class="trk-guide__steps">'+g.steps.map(function(s){return '<li>'+esc(s)+'</li>';}).join('')+'</ol></div>'; }
   function trkGuideUpdate(){ var el=document.getElementById('trkGuide'); if(el) el.innerHTML=_trkGuideHtml(val('trkProv')); }
   function openTrackerConnect(){ openModal('<div class="modal__head"><h3>Connect a tracker</h3>'+_xBtn()+'</div><div class="modal__body">'
-    +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+'</option>';}).join('')+'</select></div>'
-    +'<div id="trkGuide">'+_trkGuideHtml(TRACKERS[0].id)+'</div>'
-    +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" placeholder="Paste your API key or access token"></div>'
-    +'<div class="bk-lenhint" style="margin:0 0 14px"><b>Preview / demo:</b> this shows the live-map experience with simulated positions so you can see the layout. Direct provider integration is on the way &mdash; please do not paste a real production API key yet.</div>'
-    +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.connectTracker()">Preview the live map</button></div>'); }
+    +'<div style="display:flex;gap:6px;margin:0 0 14px"><button class="btn btn--primary btn--sm" id="trkTabLive" onclick="Atlas.trkConnTab(\'live\')" style="flex:1">Live data</button><button class="btn btn--ghost btn--sm" id="trkTabPrev" onclick="Atlas.trkConnTab(\'prev\')" style="flex:1">Preview</button></div>'
+    +'<div id="trkLivePane">'
+      +'<div class="field"><label>Provider</label><select class="select" id="trkLiveProv" onchange="Atlas.trkLiveFieldsUpdate()"><option value="bouncie">Bouncie (OBD dongles)</option><option value="samsara">Samsara</option><option value="traccar">Traccar (self-hosted)</option></select></div>'
+      +'<div id="trkLiveFields">'+_trkLiveFields('bouncie')+'</div>'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Your keys are stored <b>encrypted on the server</b> (never in the browser). Positions refresh automatically every 30 seconds.</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.connectTrackerLive()">Connect live tracking</button>'
+    +'</div>'
+    +'<div id="trkPrevPane" style="display:none">'
+      +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+'</option>';}).join('')+'</select></div>'
+      +'<div id="trkGuide">'+_trkGuideHtml(TRACKERS[0].id)+'</div>'
+      +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" placeholder="Paste your API key or access token"></div>'
+      +'<div class="bk-lenhint" style="margin:0 0 14px"><b>Preview:</b> shows the live-map layout with simulated positions so you can explore before wiring a real device.</div>'
+      +'<button class="btn btn--ghost btn--full btn--lg" onclick="Atlas.connectTracker()">Preview the live map</button>'
+    +'</div></div>'); }
+  function trkConnTab(which){ var lp=document.getElementById('trkLivePane'), pp=document.getElementById('trkPrevPane'), lt=document.getElementById('trkTabLive'), pt=document.getElementById('trkTabPrev'); if(!lp||!pp)return; var live=which!=='prev'; lp.style.display=live?'':'none'; pp.style.display=live?'none':''; if(lt)lt.className='btn btn--sm '+(live?'btn--primary':'btn--ghost'); if(pt)pt.className='btn btn--sm '+(live?'btn--ghost':'btn--primary'); }
+  function trkLiveFieldsUpdate(){ var el=document.getElementById('trkLiveFields'); if(el) el.innerHTML=_trkLiveFields(val('trkLiveProv')); }
+  function _trkLiveFields(prov){
+    if(prov==='samsara') return '<div class="field"><label>API Token</label><input class="input mono" id="smTok" placeholder="Settings &gt; API Tokens (read Vehicle Stats)"></div>';
+    if(prov==='traccar') return '<div class="field"><label>Server URL</label><input class="input mono" id="tcHost" placeholder="https://your-traccar-host:8082"></div>'
+      +'<div class="field"><label>Username (optional)</label><input class="input mono" id="tcUser" placeholder="email -- leave blank if using a token"></div>'
+      +'<div class="field"><label>Token or password</label><input class="input mono" id="tcPass" placeholder="API token, or your account password"></div>';
+    return '<div class="field"><label>Client ID</label><input class="input mono" id="bnCid" placeholder="from bouncie.dev"></div>'
+      +'<div class="field"><label>Client Secret</label><input class="input mono" id="bnSec" placeholder="from bouncie.dev"></div>'
+      +'<div class="field"><label>Authorization Code</label><input class="input mono" id="bnCode" placeholder="Users &amp; Devices &gt; Expand your account"></div>'
+      +'<div class="field"><label>Redirect URL</label><input class="input mono" id="bnRedir" placeholder="the redirect URL you set on the app"></div>'; }
+  function connectTrackerLive(){ if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to connect live tracking'); return; }
+    var prov=val('trkLiveProv'), secret='', meta={};
+    if(prov==='samsara'){ secret=(val('smTok')||'').trim(); if(!secret){ toast('Paste your Samsara API token'); return; } }
+    else if(prov==='traccar'){ var h=(val('tcHost')||'').trim(), u=(val('tcUser')||'').trim(); secret=(val('tcPass')||'').trim(); if(!h||!secret){ toast('Enter your server URL and token/password'); return; } meta={host:h}; if(u)meta.user=u; }
+    else { var ci=(val('bnCid')||'').trim(), cs=(val('bnSec')||'').trim(), cd=(val('bnCode')||'').trim(), rd=(val('bnRedir')||'').trim(); if(!ci||!cs||!cd){ toast('Fill in Client ID, Secret and Authorization Code'); return; } secret=JSON.stringify({client_id:ci,client_secret:cs,code:cd,redirect_uri:rd}); }
+    toast('Connecting '+esc(prov)+'...');
+    _api('/api/integrations/connect',{method:'POST',body:{provider:prov,secret:secret,kind:'tracker',meta:meta}}).then(function(res){
+      if(!(res.status>=200&&res.status<300&&res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not save the connection'); return; }
+      var t=_trackers(); t.provider=prov; t.connected=true; t.live=true; delete t.apiKey; _logEvent('tracker','Connected live GPS provider ('+prov+')',{provider:prov}); save(); closeModal(); renderTracking(); _trkFetchLive(true); _trkStart();
+    }).catch(function(){ toast('Network error connecting'); }); }
   function connectTracker(){ var prov=val('trkProv'), key=(val('trkKey')||'').trim(); if(!key){ toast('Enter anything to start the preview'); return; }
     var t=_trackers(); t.provider=prov; t.connected=true; var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;   // do NOT store the pasted key: real provider polling is not wired yet, so keeping a key would be collecting an unused credential
     _trkSeed(); _logEvent('tracker','Live-map preview started ('+nm+') -- '+(DATA.assets||[]).length+' '+S.fleet.nouns+' shown with simulated positions',{provider:prov}); save(); closeModal(); renderTracking(); toast('Preview ready -- showing simulated positions'); }
@@ -4659,7 +4704,7 @@ const Atlas = (function(){
   function saveTrackerConn(){ var prov=val('trkProv'), key=(val('trkKey')||'').trim(); if(!key){ toast('Paste your API key or login'); return; }
     var t=_trackers(), nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name; t.provider=prov; t.apiKey=key;   // in-place update; t.vehicles + live session preserved
     save(); _logEvent('tracker','Tracker connection updated ('+nm+')',{provider:prov}); closeModal(); renderTracking(); toast('Tracker connection updated'); }
-  function disconnectTracker(){ if(!confirm('Disconnect the tracker? Live location will stop.'))return; var t=_trackers(); t.connected=false; t.vehicles={}; _trkSel=null; _trkRoute=null; _trkStop(); _logEvent('tracker','Tracker disconnected'); save(); renderTracking(); toast('Tracker disconnected'); }
+  function disconnectTracker(){ if(!confirm('Disconnect the tracker? Live location will stop.'))return; var t=_trackers(); t.connected=false; t.live=false; t.vehicles={}; _trkLiveBox=null; _trkSel=null; _trkRoute=null; _trkStop(); _logEvent('tracker','Tracker disconnected'); save(); renderTracking(); toast('Tracker disconnected'); }
   /* ---- Geofences: owner-defined zone per asset (center + radius). Real entry/exit indicator vs the tracker's live position; in-app
          entry/exit alerts fire when the Owner Console "Geofence entry/exit alerts" flag is on. [FLAG: true push-when-app-closed needs a backend.] ---- */
   function _geofences(){ var t=_trackers(); if(!t.geofences) t.geofences=[]; return t.geofences; }
@@ -7133,9 +7178,24 @@ const Atlas = (function(){
       +'<div style="text-align:right"><div style="font-size:19px;font-weight:850;color:var(--ink)" class="tnum">'+money(yr)+'</div><div style="font-size:11px;color:var(--muted)">/year</div></div></div>'
       +'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.webBuyDomain(\''+esc(v).replace(/'/g,"\\'")+'\','+yr+')">Buy &amp; auto-connect &mdash; '+money(yr)+'/yr</button></div>';
   }
-  function webBuyDomain(domain,yr){ if(!_guard('billing','Managing billing'))return;   // honest: buying a brand-new domain in-app needs the registrar integration (roadmap). No fake "purchase".
-    openModal('<div class="modal__head"><h3>Buy '+esc(domain)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="bk-lenhint" style="margin:0 0 12px">Buying a brand-new domain right inside Atlas is coming soon (we are finishing the registrar integration). For now it is quick to do yourself:</div>'
+  var _pendingDomainBuy=null;
+  // #201: real one-step domain purchase when a registrar is connected (worker /api/domain/quote returns live:true); otherwise the honest DIY + connect path.
+  function webBuyDomain(domain,yr){ if(!_guard('billing','Managing billing'))return;
+    if(!(ATLAS_BACKEND && _apiCsrf)) return _webBuyDomainManual(domain,yr);
+    toast('Checking '+esc(domain)+'...');
+    _api('/api/domain/quote',{method:'POST',body:{domain:domain}}).then(function(res){ var j=(res&&res.json)||{};
+      if(!(res.status>=200&&res.status<300&&j.ok&&j.live)) return _webBuyDomainManual(domain,yr);
+      if(!j.available){ toast('"'+esc(domain)+'" is taken -- try another name'); return; }
+      var cost=(j.costCents||0)/100, price=_domainPrice(cost,_dbiz().markupPct||0); _pendingDomainBuy={domain:domain, cents:Math.round(price*100)};
+      openModal('<div class="modal__head"><h3>Buy '+esc(domain)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+        +'<div class="bk-lenhint" style="margin:0 0 12px"><b>'+esc(domain)+'</b> is available. We register it, point it at your Atlas site automatically, and email your receipt.</div>'
+        +'<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:750;margin:0 0 14px"><span>1 year</span><span>'+money(price)+'</span></div>'
+        +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.confirmDomainBuy()">Buy &amp; connect '+esc(domain)+'</button>'
+        +'<div style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px">Secure Stripe checkout. If it can\'t be registered you are refunded in full, automatically.</div></div>');
+    }).catch(function(){ _webBuyDomainManual(domain,yr); }); }
+  function confirmDomainBuy(){ if(!_pendingDomainBuy)return; var d=_pendingDomainBuy; _pendingDomainBuy=null; closeModal(); _billingCheckout('domain',{domain:d.domain, amountCents:d.cents}); }
+  function _webBuyDomainManual(domain,yr){ openModal('<div class="modal__head"><h3>Buy '+esc(domain)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">To buy a brand-new domain in one step, connect a registrar first (Settings &gt; Website). For now it is quick to do yourself:</div>'
       +'<ol style="margin:0 0 14px;padding-left:18px;font-size:13px;color:var(--ink);line-height:1.8"><li>Register <b>'+esc(domain)+'</b> at any registrar (Namecheap, GoDaddy, Cloudflare &mdash; about '+money(yr)+'/yr).</li><li>Come back to <b>Connect a domain you own</b> and point it here in two clicks.</li></ol>'
       +'<button class="btn btn--primary btn--full" onclick="Atlas.closeModal();Atlas.webDomainMode(\'connect\')">Connect a domain I own</button></div>'); }
   function _buyStep(i,domain){ var rows=document.querySelectorAll('#buySteps [data-step]'); if(!rows||i>=rows.length){
@@ -7341,7 +7401,7 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,setOvRange,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
@@ -7350,7 +7410,7 @@ const Atlas = (function(){
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
-    renderTracking,openTrackerConnect,connectTracker,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
+    renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
