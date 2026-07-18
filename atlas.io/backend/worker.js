@@ -351,13 +351,23 @@ function priceQuote(money, publishedAssets, assetName, periods) {
   if (money.monthlyDisc && p >= moP) disc = gross * money.monthlyDisc / 100;
   else if (money.weeklyDisc && p >= wkP) disc = gross * money.weeklyDisc / 100;
   disc = Math.max(0, Math.min(disc, gross));
-  var subtotal = gross - disc;
-  var taxPct = Number(money.tax) || 0;
-  var tax = subtotal * taxPct / 100;
-  var total = subtotal + tax;
-  var deposit = depositFor(money, total);
   var c = function (x) { return Math.round((Number(x) || 0) * 100); };
-  return { rateCents: c(rate), periods: p, grossCents: c(gross), subtotalCents: c(subtotal), taxPct: taxPct, taxCents: c(tax), totalCents: c(total), depositCents: c(deposit), discountCents: c(disc) };
+  var q = { rateCents: c(rate), periods: p, grossCents: c(gross), subtotalCents: c(gross - disc), taxPct: Number(money.tax) || 0, discountCents: c(disc) };
+  return _reprice(money, q);
+}
+// Recompute FEES (owner money-rules: card %, delivery, cleaning), tax + total + deposit from the current subtotal. Mirrors the
+// dashboard's calcQuote so the live site quotes the same, and stays correct after a promo further reduces the subtotal.
+function _reprice(money, q) {
+  var sub = (q.subtotalCents || 0) / 100;
+  var fees = 0, taxableFees = 0;
+  (money.rules || []).forEach(function (r) { if (!r || !r.on) return; var amt = (r.kind === 'percent') ? sub * (Number(r.value) || 0) / 100 : (Number(r.value) || 0); fees += amt; if (r.taxable) taxableFees += amt; });
+  var taxPct = Number(q.taxPct != null ? q.taxPct : money.tax) || 0;
+  var tax = (sub + taxableFees) * taxPct / 100;
+  var total = sub + fees + tax;
+  var c = function (x) { return Math.round((Number(x) || 0) * 100); };
+  q.feeCents = c(fees); q.taxCents = c(tax); q.totalCents = c(total);
+  q.depositCents = Math.min(q.totalCents, c(depositFor(money, total)));
+  return q;
 }
 // The dashboard/analytics/receipts/tax-export read DOLLAR-named fields (total/subtotal/disc/taxAmt/dueNow/gross/hold); the worker
 // quote is cents-shaped. Populate the dollar fields on the stored quote so a real website booking isn't recorded as $0 everywhere.
@@ -367,6 +377,7 @@ function _quoteDollars(q) {
   q.subtotal = (q.subtotalCents || 0) / 100;
   q.taxAmt = (q.taxCents || 0) / 100;
   q.total = (q.totalCents || 0) / 100;
+  q.feeTotal = (q.feeCents || 0) / 100;
   q.dueNow = (q.depositCents || 0) / 100;
   q.deposit = (q.depositCents || 0) / 100;
   q.balance = Math.max(0, q.total - q.dueNow);
@@ -982,9 +993,7 @@ export default {
               if (_capOk) {
                 promoCode = pv.code; q.discountCents = (q.discountCents || 0) + pv.discountCents;   // ADD to the auto discount, don't overwrite it
                 q.subtotalCents = Math.max(0, q.subtotalCents - pv.discountCents);
-                q.taxCents = Math.round(q.subtotalCents * (Number(q.taxPct) || 0) / 100);
-                q.totalCents = q.subtotalCents + q.taxCents;
-                q.depositCents = Math.min(q.totalCents, Math.round(depositFor(prof.money, q.totalCents / 100) * 100));   // deposit must track the DISCOUNTED total (fixes full-prepay charging the pre-promo price)
+                _reprice(prof.money, q);   // recompute fees + tax + total + deposit on the discounted subtotal (fees track the promo, deposit tracks the discounted total)
                 if (_cap) _bumpPromo = pv.code;   // record the redemption AFTER the booking row is saved (so a failed insert doesn't burn a cap slot)
               }
             }
