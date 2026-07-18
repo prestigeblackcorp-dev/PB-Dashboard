@@ -1426,6 +1426,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
         <!-- OVERVIEW -->
         <section class="panel active" data-panel="overview">
           <div class="greet"><h2 id="greetLine">Welcome back</h2><p id="greetSub">Here's how your fleet is doing today.</p></div>
+          <div id="ovRangeBar" style="display:flex;justify-content:flex-end;margin-bottom:10px"></div>
           <div class="kpi-row" id="kpiRow"></div>
           <div class="grid-2">
             <div class="card">
@@ -3085,7 +3086,7 @@ const Atlas = (function(){
     label:'<b>'+esc(b.cust||b.id)+'</b>', sub:esc(b.asset)+' &middot; '+b.id, chip:(opts.chip?statusChip(b.status):''),
     amt:opts.noAmt?null:(opts.earned?_bkEarned(b):_bkTotal(b)), onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')" }; }); }
   function drillKpi(which){ var nc=_isCommitted;   // realized bookings only (excludes pending pipeline + cancelled) -- ties to every revenue surface
-    if(which==='rev'||which==='anaRev'){ _drill('Revenue', 'Every '+_fterm('book')+' behind your revenue (rental + collected add-on charges) &mdash; tap one to open it', _bkList(nc,{earned:true}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total revenue'}); }
+    if(which==='rev'||which==='anaRev'){ _drill('Revenue', 'Every '+_fterm('book')+' behind your revenue (rental + collected add-on charges) &mdash; tap one to open it', _bkList(function(b){return nc(b)&&(which==='anaRev'||_inOvRange(b));},{earned:true}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total revenue'}); }
     else if(which==='active'){ _drill(cap(_fterm('active')), 'Out on rent or confirmed right now', _bkList(function(b){return b.status==='On rent'||b.status==='Confirmed';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing active right now.'}); }
     else if(which==='util'){ _drill(cap(_fterm('util')), 'Utilization per '+esc(S.fleet.noun), (DATA.assets||[]).slice().sort(function(a,b){return b.util-a.util;}).map(function(a){return {label:'<b>'+esc(a.name)+'</b>',sub:esc(a.status),chip:'<b class="tnum">'+a.util+'%</b>',onClick:"Atlas.closeModal();Atlas.openAsset('"+a.id+"')"};}), {showTotal:false}); }
     else if(which==='upcoming'){ _drill('Upcoming', 'Confirmed and pending '+_fterm('books'), _bkList(function(b){return b.status==='Confirmed'||b.status==='Pending';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing upcoming.'}); }
@@ -3163,17 +3164,28 @@ const Atlas = (function(){
     _logEvent('booking','Blocked days on '+a.name+' ('+_csvDate(from)+' - '+_csvDate(to)+')',{asset:a.id});
     closeModal(); openAsset(id); toast('Days blocked'); }
   function assetUnblock(id,bid){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; a.blackouts=_blackouts(a).filter(function(x){return x.id!==bid;}); _saveAssets(); openAsset(id); }
+  var _ovRange='all';
+  var OV_RANGES=[['all','All time'],['today','Today'],['yesterday','Yesterday'],['7','Last 7 days'],['14','Last 14 days'],['30','Last 30 days'],['60','Last 60 days'],['90','Last 90 days'],['365','Last year']];
+  function _ovRangeBounds(k){ var now=Date.now(), d=86400000, ds=new Date(); ds.setHours(0,0,0,0); var t0=ds.getTime();
+    if(k==='today') return {from:t0,to:now,short:'today'};
+    if(k==='yesterday') return {from:t0-d,to:t0-1,short:'yesterday'};
+    var days={'7':7,'14':14,'30':30,'60':60,'90':90,'365':365}[k];
+    if(days) return {from:now-days*d,to:now,short:(k==='365'?'1yr':k+'d')};
+    return {from:0,to:Infinity,short:'all'}; }
+  function _inOvRange(b){ var B=_ovRangeBounds(_ovRange), t=(b.startTs||b.createdAt||0); return t>=B.from && t<=B.to; }   // KPI date-range filter: attribute revenue by rental start, else booked date
+  function setOvRange(v){ _ovRange=v; try{ renderOverview(); }catch(e){} }
   function renderOverview(){
     DATA.bookings=_bookings();
     _recomputeUtil();   // real per-asset utilization from bookings -> KPI, charts + AI all agree
     const _bk=DATA.bookings.filter(b=>b.status!=='Cancelled');
-    const rev=_bk.filter(_isCommitted).reduce((s,b)=>s+_bkEarned(b),0);   // earned only (rental + collected add-on charges) -- pending stays in Upcoming, not Revenue
+    const rev=_bk.filter(_isCommitted).filter(_inOvRange).reduce((s,b)=>s+_bkEarned(b),0);   // earned only, within the selected KPI date range (all = every time)
     const active=_bk.filter(b=>b.status==='On rent').length;   // On rent only -- Confirmed belongs to Upcoming (was double-counted in both KPIs)
     const util=Math.round(DATA.assets.reduce((s,a)=>s+a.util,0)/Math.max(1,DATA.assets.length));
-    const kpis=[['Revenue',money(rev),'rev','M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7'],
+    const kpis=[['Revenue'+(_ovRange!=='all'?(' \u00b7 '+_ovRangeBounds(_ovRange).short):''),money(rev),'rev','M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7'],
       [_fterm('active'),active,'active','M4 4h12v12H4zM4 8h12'],
       [_fterm('util'),util+'%','util','M4 16V8M9 16V4M14 16v-6'],
       ['Upcoming',_bk.filter(b=>b.status==='Confirmed'||b.status==='Pending').length,'upcoming','M10 3a7 7 0 100 14 7 7 0 000-14zM10 6v4l3 2']];
+    var _rb=document.getElementById('ovRangeBar'); if(_rb) _rb.innerHTML='<select class="select" style="width:auto;font-size:13px" onchange="Atlas.setOvRange(this.value)" title="Revenue date range">'+OV_RANGES.map(function(r){return '<option value="'+r[0]+'"'+(_ovRange===r[0]?' selected':'')+'>'+r[1]+'</option>';}).join('')+'</select>';
     document.getElementById('kpiRow').innerHTML=kpis.map(k=>`<div class="kpi kpi--clk" onclick="Atlas.drillKpi('${k[2]}')"><div class="kpi__top"><span class="kpi__label">${k[0]}</span>
       <span class="kpi__ic"><svg viewBox="0 0 20 20" fill="none"><path d="${k[3]}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
       <div class="kpi__val tnum">${k[1]}</div><div class="kpi__hint">View breakdown &rarr;</div></div>`).join('');
@@ -7169,7 +7181,7 @@ const Atlas = (function(){
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
-    drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
+    drillKpi,setOvRange,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
