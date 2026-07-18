@@ -1559,6 +1559,22 @@ export default {
         return json({ ok: true, canceled: true, when: 'now' });
       }
 
+      // ---- #212 Stripe Billing Portal: the tenant updates their card / views invoices / manages the subscription on Stripe's hosted page ----
+      if (path === '/api/billing/portal' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        const pk = env.PLATFORM_STRIPE_KEY || ''; if (!pk) return err(400, 'Platform billing is not configured yet.');
+        await ensurePlatformSchema(env);
+        const trow = await env.DB.prepare('SELECT stripe_customer FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const cust = trow && trow.stripe_customer;
+        if (!cust) return err(400, 'No billing account yet - start a plan or trial first.');
+        const origin = env.APP_ORIGIN || 'https://atlasrental.io';
+        const ps = await stripeApi(pk, 'POST', 'billing_portal/sessions', 'customer=' + encodeURIComponent(cust) + '&return_url=' + encodeURIComponent(origin + '/?billing=portal'));
+        if (!ps.ok || !ps.j || !ps.j.url) return err(502, 'Could not open the billing portal: ' + ((ps.j && ps.j.error && ps.j.error.message) || ('http_' + ps.status)));
+        await audit(env, ctx, req, 'billing.portal', {});
+        return json({ ok: true, url: ps.j.url });
+      }
+
       // ---- #203 real marketing broadcast: email the tenant's OWN customers. Honors the suppression list + injects a
       //      one-tap unsubscribe (CAN-SPAM) via sendEmail(tenant set). Owner/manager only; deduped, validated, capped. ----
       if (path === '/api/outreach/send' && method === 'POST') {

@@ -5453,7 +5453,7 @@ const Atlas = (function(){
           <div style="flex:1;min-width:200px"><b style="color:var(--ink);font-size:16px">Atlas Rental.io ${esc(_t.name)} <span class="chip chip--ok" style="margin-left:6px"><span class="dot"></span>Active</span></b>
             <div style="font-size:13px;color:var(--muted)">${_tierCap(_t)}${S.card?(' &middot; '+esc(S.card.brand)+' &bull;&bull;&bull;&bull; '+esc(S.card.last4)):''}${S.subscribedAt?(' &middot; renews '+_fmtDate(S.subscribedAt+2592000000)):''}</div></div>
           <div style="font-size:28px;font-weight:850;color:var(--ink)" class="tnum">$${_t.price}<span style="font-size:14px;color:var(--muted);font-weight:600">/mo</span></div></div>
-        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn btn--primary btn--sm" onclick="Atlas.openPlans()">Change plan</button><button class="btn btn--ghost btn--sm" onclick="Atlas.subscribe('${_t.id}')">Update card</button><button class="btn btn--sm btn--danger" onclick="Atlas.cancelPlan()">Cancel plan</button></div>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="btn btn--primary btn--sm" onclick="Atlas.openPlans()">Change plan</button><button class="btn btn--ghost btn--sm" onclick="Atlas.billingPortal('${_t.id}')">Update card</button><button class="btn btn--sm btn--danger" onclick="Atlas.cancelPlan()">Cancel plan</button></div>
         <p style="font-size:12.5px;color:var(--muted);margin-top:12px">Cancel anytime and keep all your data.</p>
       </div>` : `
       <div class="set-block"><h3>Plan &amp; billing</h3><div class="desc">${_trialDaysLeft()>0?('Free trial &mdash; '+_trialDaysLeft()+' day'+(_trialDaysLeft()===1?'':'s')+' left, with '+esc(_t.name)+'-level access.'):'Your free trial has ended.'}</div>
@@ -6216,6 +6216,15 @@ const Atlas = (function(){
     save();
     closeModal(); renderTrialBox(); renderSet(); buildAio(); toast(planChange?('Atlas Rental.io '+t.name+(PAYMENTS_LIVE?' \u2014 active':' \u2014 setup mode, no card charged')):'Plan updated');
   }
+  // #212: open Stripe's hosted Billing Portal to update the card / view invoices. Falls back to starting a plan if there's no Stripe customer yet.
+  function billingPortal(tierId){ if(!_guard('billing','Managing billing'))return;
+    if(!(PAYMENTS_LIVE && ATLAS_BACKEND && _apiCsrf && !_isDemoTenant())){ return subscribe(tierId); }
+    toast('Opening billing...');
+    _api('/api/billing/portal',{method:'POST'}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.url){ window.location.href=res.json.url; return; }
+      if(res.json && /No billing account/i.test(res.json.error||'')) return subscribe(tierId);
+      toast((res.json&&res.json.error)||'Could not open the billing portal');
+    }).catch(function(){ toast('Network error opening billing'); }); }
   function cancelPlan(){ if(!_guard('billing','Managing billing'))return;
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel at the end of this billing period? You keep full access and all your data until then.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
     if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
@@ -7390,7 +7399,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
+    goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
