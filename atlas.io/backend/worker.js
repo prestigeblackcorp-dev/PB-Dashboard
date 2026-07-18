@@ -57,6 +57,14 @@ function randId(bytes) { const u = new Uint8Array(bytes || 32); crypto.getRandom
 function enc(str) { return new TextEncoder().encode(str); }
 // SHA-256 hex of a string (used to fingerprint a signed document -> tamper-evident legal trail).
 async function _sha256Hex(s) { try { var b = await crypto.subtle.digest('SHA-256', enc(String(s))); return Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join(''); } catch (e) { return ''; } }
+// Strip active/exec content from owner-supplied receipt HTML before we relay it from our SHARED sending domain (anti-phishing).
+function _sanitizeEmailHtml(h) {
+  return String(h || '')
+    .replace(/<\s*script[\s\S]*?<\s*\/\s*script\s*>/gi, '')
+    .replace(/<\s*(script|iframe|object|embed|form|meta|link|style|base)\b[^>]*>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*("\s*javascript:[^"]*"|'\s*javascript:[^']*'|javascript:[^\s>]+)/gi, '$1="#"');
+}
 
 // Password hashing. Cloudflare caps a SINGLE native PBKDF2 call at 100k iterations, so we CHAIN 6 rounds
 // (each round's 256-bit output feeds the next as key material) for 600k effective iterations -- OWASP's
@@ -450,6 +458,28 @@ async function _registrarRenew(env, domain, years) {
     var v = _ddOk(j, 'Renew'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || ('code_' + v.code)) };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
+// Point a bought domain's www subdomain at our SaaS fallback via the registrar's DNS (set_dns2), so it serves the tenant's site with
+// no customer DNS step. The apex is covered by Cloudflare-for-SaaS + www. Best-effort; needs a live test against the account like the rest.
+async function _registrarSetDns(env, domain, target) {
+  if (!env.DYNADOT_KEY || !target) return { ok: false, reason: 'no_registrar' };
+  try {
+    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'set_dns2', domain: domain, subdomain0: 'www', sub_record_type0: 'cname', sub_record0: target }), {}, 15000);
+    var j = await r.json().catch(function () { return {}; });
+    var v = _ddOk(j, 'SetDns'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || 'dns_fail') };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+// A domain checkout is a SUBSCRIPTION (session.payment_intent is null), so a failure refund must pull the charge off the first invoice
+// and cancel the yearly sub. Without this, the earlier "refund on failure" path silently did nothing + kept re-billing every year.
+async function _domainFailRefund(env, pk, subId) {
+  if (!pk || !subId) return;
+  try {
+    var s = await stripeApi(pk, 'GET', 'subscriptions/' + encodeURIComponent(subId) + '?expand[]=latest_invoice');
+    var inv = s.j && s.j.latest_invoice;
+    var pi = inv && (typeof inv.payment_intent === 'string' ? inv.payment_intent : (inv.payment_intent && inv.payment_intent.id));
+    if (pi) await stripePost(pk, '/refunds', { payment_intent: pi });
+    await stripeApi(pk, 'DELETE', 'subscriptions/' + encodeURIComponent(subId));   // stop all future yearly charges
+  } catch (e) {}
+}
 async function _registrarSetNs(env, domain, nsList) {
   if (!env.DYNADOT_KEY || !nsList || !nsList.length) return { ok: false, reason: 'no_ns' };
   try {
@@ -485,7 +515,13 @@ async function _trackerFetch(env, provider, cred, meta) {
       return { ok: true, positions: d.map(function (v) { var g = v.gps || {}; return { deviceId: String(v.id || ''), label: v.name || '', vin: v.vin || '', lat: Number(g.latitude), lng: Number(g.longitude), heading: Number(g.headingDegrees) || 0, speed: Number(g.speedMilesPerHour) || 0, ts: g.time || '', address: (g.reverseGeo && g.reverseGeo.formattedLocation) || '', moving: (Number(g.speedMilesPerHour) || 0) > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
     }
     if (provider === 'traccar') {
-      var host = String((meta && meta.host) || '').replace(/\/+$/, ''); if (!host) return { ok: false, reason: 'no_host' };
+      // SSRF guard: require an https URL, use ONLY its origin (no attacker-chosen path via #/?), and block private/link-local/metadata hosts.
+      var _u; try { _u = new URL(String((meta && meta.host) || '').trim()); } catch (e) { return { ok: false, reason: 'bad_host' }; }
+      if (_u.protocol !== 'https:') return { ok: false, reason: 'https_required' };
+      var _hn = _u.hostname.toLowerCase();
+      if (_hn === 'localhost' || _hn === '::1' || _hn.indexOf('.') < 0 || _hn.indexOf('metadata') >= 0 ||
+        /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(_hn) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(_hn)) return { ok: false, reason: 'blocked_host' };
+      var host = _u.origin;
       var auth = (meta && meta.user) ? ('Basic ' + btoa(meta.user + ':' + cred)) : ('Bearer ' + cred);
       var rp = await _fetchTimeout(host + '/api/positions', { headers: { 'Authorization': auth } }, 12000);
       var pos = await rp.json().catch(function () { return []; }); if (!Array.isArray(pos)) return { ok: false, reason: 'shape' };
@@ -513,6 +549,14 @@ function _promoApply(prof, code, periods, totalCents) {
     disc = Math.max(0, Math.min(totalCents, disc));
     return { ok: true, code: p.code, discountCents: disc, label: (p.type === 'pct' ? (val + '% off') : (money2(Math.round(val * 100)) + ' off')) };
   } catch (e) { return { ok: false, reason: 'error' }; }
+}
+// Server-authoritative PUBLIC promo redemption counter. The client-synced `used` misses public bookings, so a capped code was
+// unlimited on the live site; this counts real public redemptions so the cap actually holds.
+async function _promoServerUses(env, tenant, code) {
+  try { var r = await env.DB.prepare('SELECT n FROM promo_uses WHERE tenant_id=? AND code=?').bind(tenant, String(code).toUpperCase()).first(); return (r && r.n) || 0; } catch (e) { return 0; }
+}
+async function _promoBump(env, tenant, code) {
+  try { await env.DB.prepare("INSERT INTO promo_uses (tenant_id,code,n) VALUES (?,?,1) ON CONFLICT(tenant_id,code) DO UPDATE SET n=n+1").bind(tenant, String(code).toUpperCase()).run(); } catch (e) {}
 }
 // Twilio SMS. HONEST: no creds -> {sent:false,reason:'no_sms'}. Respects the suppression list (a STOP reply).
 async function sendSms(env, tenant, msg) {
@@ -615,6 +659,15 @@ async function _cfHostnameActive(env, hostname) {
   const r = (j.result || [])[0];
   return !!(r && r.status === 'active' && r.ssl && r.ssl.status === 'active');
 }
+// Remove a custom hostname on disconnect so a tenant can't leave orphans / exhaust the shared Cloudflare-for-SaaS hostname quota.
+async function _cfDeleteHostname(env, hostname) {
+  if (!env.CF_API_TOKEN) return;
+  try {
+    const j = await _cfApi(env, 'GET', '/custom_hostnames?hostname=' + encodeURIComponent(hostname), null);
+    const id = ((j.result || [])[0] || {}).id;
+    if (id) await _cfApi(env, 'DELETE', '/custom_hostnames/' + id, null);
+  } catch (e) {}
+}
 
 // ---- ATLAS-branded itemized receipt emailed to the USER (tenant) when they pay ATLAS for a subscription / credits / website / domain. ----
 function _atlasReceiptHtml(o) {
@@ -678,6 +731,7 @@ async function ensurePlatformSchema(env) {
     try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }   // the yearly domain subscription id (for renewals)
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, tenant_id TEXT, booking_id TEXT, doc_hash TEXT, signer_name TEXT, sig TEXT, ip TEXT, ua TEXT, signed_at INTEGER)").run();   // #205 e-signature legal trail
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_sig_booking ON signatures(tenant_id, booking_id)").run();
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS promo_uses (tenant_id TEXT, code TEXT, n INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, code))").run();   // server-authoritative public promo redemption count (cap enforcement)
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -697,9 +751,10 @@ async function recordTxn(env, o) {
   try {
     await ensurePlatformSchema(env);
     const id = 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    await env.DB.prepare("INSERT OR IGNORE INTO platform_transactions (id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    const _r = await env.DB.prepare("INSERT OR IGNORE INTO platform_transactions (id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
       .bind(id, o.tenant || null, o.email || null, o.kind || '', o.tier || null, o.pack || null, Math.round(Number(o.amount_cents) || 0), o.currency || 'usd', o.stripe_id || id, Date.now()).run();
-  } catch (e) { /* revenue logging must never break the webhook */ }
+    return { new: !!(_r && _r.meta && _r.meta.changes) };   // false when a replayed webhook hit the OR IGNORE -> callers use this to avoid double-granting credits
+  } catch (e) { return { new: false }; }   // revenue logging must never break the webhook
 }
 
 // Verify a Stripe webhook signature (header "t=<ts>,v1=<hmac>") with HMAC-SHA256 so a forged "paid" event is rejected.
@@ -884,15 +939,23 @@ export default {
             if (_clash) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
           } catch (e) {}
           const q = priceQuote(prof.money, pubAssets, assetName, periods);
-          // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount comes off the pre-tax subtotal, deposit excluded).
+          // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount off the pre-tax subtotal).
           let promoCode = '';
           if (vStr(b.promo, 40)) {
             const pv = _promoApply(prof, b.promo, periods, q.subtotalCents);
             if (pv.ok && pv.discountCents > 0) {
-              promoCode = pv.code; q.discountCents = pv.discountCents;
-              q.subtotalCents = Math.max(0, q.subtotalCents - pv.discountCents);
-              q.taxCents = Math.round(q.subtotalCents * (Number(q.taxPct) || 0) / 100);
-              q.totalCents = q.subtotalCents + q.taxCents;
+              // enforce the redemption cap counting PUBLIC redemptions (the client-synced `used` misses public traffic).
+              const _pRow = ((prof.settings && prof.settings.promos) || []).filter(function (x) { return String(x.code || '').toUpperCase() === String(pv.code).toUpperCase(); })[0] || {};
+              const _cap = Number(_pRow.cap) || 0; let _capOk = true;
+              if (_cap) { await ensurePlatformSchema(env); if ((Number(_pRow.used) || 0) + (await _promoServerUses(env, prof.id, pv.code)) >= _cap) _capOk = false; }
+              if (_capOk) {
+                promoCode = pv.code; q.discountCents = pv.discountCents;
+                q.subtotalCents = Math.max(0, q.subtotalCents - pv.discountCents);
+                q.taxCents = Math.round(q.subtotalCents * (Number(q.taxPct) || 0) / 100);
+                q.totalCents = q.subtotalCents + q.taxCents;
+                q.depositCents = Math.min(q.totalCents, Math.round(depositFor(prof.money, q.totalCents / 100) * 100));   // deposit must track the DISCOUNTED total (fixes full-prepay charging the pre-promo price)
+                if (_cap) await _promoBump(env, prof.id, pv.code);
+              }
             }
           }
           let custId = 'C-' + randId(10);
@@ -976,10 +1039,12 @@ export default {
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.trial_card', { tier: md.tier });
           } else if (T === 'checkout.session.completed' && md.billing === 'credits' && md.tenant) {
-            await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
+            const _ctxn = await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'credits', pack: md.pack });
-            { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: (md.pack || '') + ' Atlas.io credits', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
-            await _creditAdd(env, md.tenant, parseInt(md.pack, 10) || 0);   // grant the purchased credits into the server-authoritative balance
+            if (_ctxn.new) {   // only grant + receipt on the FIRST delivery of this event (a Stripe replay must not re-grant free credits)
+              const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: (md.pack || '') + ' Atlas.io credits', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              await _creditAdd(env, md.tenant, parseInt(md.pack, 10) || 0);
+            }
           } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
             if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
@@ -987,19 +1052,28 @@ export default {
           } else if (T === 'checkout.session.completed' && md.billing === 'domain' && md.tenant) {
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'domain', pack: md.domain || '', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
-            const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0), _pi = obj.payment_intent || '';
-            // #201: actually REGISTER the paid domain through the registrar; auto-refund if it fails so we never charge for a name we couldn't secure.
-            let _reg = { ok: false, reason: 'no_registrar' };
-            if (md.domain && env.DYNADOT_KEY) _reg = await _registrarRegister(env, md.domain, 1);
-            if (_reg.ok) {
-              try { const _ns = String(env.DOMAIN_NS || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean); if (_ns.length) await _registrarSetNs(env, md.domain, _ns); } catch (e) {}
-              try { await ensurePlatformSchema(env); await env.DB.prepare("INSERT INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind('dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), md.tenant, md.domain, md.email || '', _tt, 'registered', obj.subscription || null, Date.now()).run(); } catch (e) {}
-              await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain, amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+            const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0);
+            await ensurePlatformSchema(env);
+            // IDEMPOTENCY: if this domain was already registered (Stripe re-delivered the event), don't re-register or send a bogus "refunded" email.
+            const _already = md.domain ? await env.DB.prepare("SELECT id FROM domains_sold WHERE tenant_id=? AND domain=? AND status='registered' LIMIT 1").bind(md.tenant, md.domain).first() : null;
+            let _reg = _already ? { ok: true, reason: 'already' } : { ok: false, reason: 'no_registrar' };
+            if (!_already && md.domain && env.DYNADOT_KEY) _reg = await _registrarRegister(env, md.domain, 1);
+            if (_reg.ok && !_already) {
+              // #201 AUTO-CONNECT the bought name to the tenant's site (same mechanism as "connect existing": associate + provision the
+              // Cloudflare custom hostname + point DNS at our fallback). NOT nameserver delegation - that doesn't fit Cloudflare-for-SaaS.
+              const _tgt = env.SAAS_TARGET || 'saas.atlasrental.io';
+              try { await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=?").bind(md.domain, Date.now(), md.tenant).run(); } catch (e) {}
+              if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, md.domain); await _cfAddHostname(env, 'www.' + md.domain); } catch (e) {} }
+              try { await _registrarSetDns(env, md.domain, _tgt); } catch (e) {}
+              try { await env.DB.prepare("INSERT INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind('dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), md.tenant, md.domain, md.email || '', _tt, 'registered', obj.subscription || null, Date.now()).run(); } catch (e) {}
+              await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain + ' (yearly)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
               await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
+            } else if (_reg.ok && _already) {
+              await audit(env, { tenant_id: md.tenant }, req, 'domain.register_dedup', { domain: md.domain });   // replayed event; name already ours - no side effects
             } else if (md.domain && env.DYNADOT_KEY) {
-              const _pk = env.PLATFORM_STRIPE_KEY || '';
-              if (_pk && _pi) { try { await stripePost(_pk, '/refunds', { payment_intent: _pi }); } catch (e) {} }
-              if (md.email) await sendEmail(env, { to: md.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain could not be registered - refunded', html: '<h2>We refunded your domain purchase</h2><p>Unfortunately <b>' + esc(md.domain) + '</b> could not be registered (' + esc(_reg.reason || 'registrar error') + '), so we refunded your payment in full - no charge will remain. Please try a different name.</p>' });
+              // registration genuinely failed -> REAL refund (subscription mode: pull the charge off the first invoice) + cancel the yearly sub.
+              await _domainFailRefund(env, env.PLATFORM_STRIPE_KEY || '', obj.subscription || '');
+              if (md.email) await sendEmail(env, { to: md.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain could not be registered - refunded', html: '<h2>We refunded your domain purchase</h2><p>Unfortunately <b>' + esc(md.domain) + '</b> could not be registered (' + esc(_reg.reason || 'registrar error') + '), so we refunded your payment in full and cancelled the yearly billing - no charge will remain. Please try a different name.</p>' });
               await audit(env, { tenant_id: md.tenant }, req, 'domain.register_failed_refunded', { domain: md.domain, reason: _reg.reason });
             } else {
               // no registrar connected: the payment stands and the owner registers the name manually (still honest - receipt + audit trail).
@@ -1015,14 +1089,20 @@ export default {
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle') {
-              // YEARLY DOMAIN RENEWAL only (the initial year is registered + recorded by checkout.session.completed). Renew at the registrar so "auto-renews yearly" is real, then record the recurring revenue.
-              if (im.domain && env.DYNADOT_KEY) {
-                const rn = await _registrarRenew(env, im.domain, 1);
+              // YEARLY DOMAIN RENEWAL only (the initial year is registered + recorded by checkout.session.completed).
+              let _rnOk = true, _rnReason = 'no_registrar';
+              if (im.domain && env.DYNADOT_KEY) { const rn = await _registrarRenew(env, im.domain, 1); _rnOk = rn.ok; _rnReason = rn.reason;
                 await audit(env, { tenant_id: im.tenant }, req, rn.ok ? 'domain.renewed' : 'domain.renew_failed', { domain: im.domain, reason: rn.reason });
-                try { await ensurePlatformSchema(env); await env.DB.prepare("UPDATE domains_sold SET status=? WHERE domain=? AND tenant_id=?").bind(rn.ok ? 'registered' : 'renew_failed', im.domain, im.tenant).run(); } catch (e) {}
+                try { await ensurePlatformSchema(env); await env.DB.prepare("UPDATE domains_sold SET status=? WHERE domain=? AND tenant_id=?").bind(rn.ok ? 'registered' : 'renew_failed', im.domain, im.tenant).run(); } catch (e) {} }
+              if (_rnOk) {   // only book revenue + a receipt when the domain actually renewed
+                await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'domain', pack: im.domain || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+                const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain renewal' + (im.domain ? (' - ' + im.domain) : '') + ' (1 year)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              } else {   // renewal failed at the registrar -> refund this year's charge + cancel the sub so we never charge again for a lapsed name
+                const _pk = env.PLATFORM_STRIPE_KEY || ''; const _rpi = obj.payment_intent || '';
+                if (_pk && _rpi) { try { await stripePost(_pk, '/refunds', { payment_intent: _rpi }); } catch (e) {} }
+                if (_pk && obj.subscription) { try { await stripeApi(_pk, 'DELETE', 'subscriptions/' + encodeURIComponent(obj.subscription)); } catch (e) {} }
+                if (im.email) await sendEmail(env, { to: im.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain renewal issue - refunded', html: '<h2>Your domain renewal was refunded</h2><p>We could not renew <b>' + esc(im.domain || '') + '</b> this year (' + esc(_rnReason || 'registrar error') + '), so we refunded this year\'s charge and stopped the yearly billing. Please contact us to re-secure the name if you still want it.</p>' });
               }
-              await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'domain', pack: im.domain || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
-              { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain renewal' + (im.domain ? (' - ' + im.domain) : '') + ' (1 year)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             }
           } else if (T === 'customer.subscription.created' || T === 'customer.subscription.updated') {
             // captures upgrades AND downgrades (new metadata.tier), plus start/cancel; store the sub id so change-plan/cancel work.
@@ -1269,6 +1349,7 @@ export default {
       if (path === '/api/domain/connect' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
+        if (!await rateLimit(env, 'domconn:' + ctx.tenant_id, 20, 3600000)) return err(429, 'Too many domain attempts right now - please wait a bit.');   // bound custom-hostname creation (quota protection)
         await ensurePlatformSchema(env);
         const b = await req.json().catch(() => ({}));
         const dom = String(b.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
@@ -1290,6 +1371,7 @@ export default {
       if (path === '/api/domain/verify' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
+        if (!await rateLimit(env, 'domverify:' + ctx.tenant_id, 60, 3600000)) return err(429, 'Please wait a moment before checking again.');
         await ensurePlatformSchema(env);
         const row = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         const dom = row && row.custom_domain;
@@ -1297,7 +1379,7 @@ export default {
         const target = (env.SAAS_TARGET || 'saas.atlasrental.io').toLowerCase();
         let ok = false;
         if (env.CF_API_TOKEN) { ok = (await _cfHostnameActive(env, 'www.' + dom)) || (await _cfHostnameActive(env, dom)); }   // most accurate: the SSL cert is actually issued + active
-        if (!ok) { const seen = (await _dohCname(dom)).concat(await _dohCname('www.' + dom)); ok = seen.some(function (v) { return v === target || v.indexOf(target) >= 0 || v.indexOf('atlasrental') >= 0; }); }
+        if (!ok) { const seen = (await _dohCname(dom)).concat(await _dohCname('www.' + dom)); ok = seen.some(function (v) { return v === target || v === target + '.' || v.indexOf(target) >= 0; }); }   // must point at the real SaaS target (dropped the loose "atlasrental" substring match)
         if (ok) {
           await env.DB.prepare("UPDATE tenants SET custom_domain_status='live', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
           await audit(env, ctx, req, 'domain.verified', { domain: dom });
@@ -1309,7 +1391,10 @@ export default {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
         await ensurePlatformSchema(env);
+        const _drow = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const _dold = _drow && _drow.custom_domain;
         await env.DB.prepare("UPDATE tenants SET custom_domain=NULL, custom_domain_status=NULL, updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
+        if (_dold && env.CF_API_TOKEN) { try { await _cfDeleteHostname(env, _dold); await _cfDeleteHostname(env, 'www.' + _dold); } catch (e) {} }   // free the custom hostnames so they don't orphan / exhaust the quota
         await audit(env, ctx, req, 'domain.disconnect', {});
         return json({ ok: true });
       }
@@ -1548,12 +1633,21 @@ export default {
           name = 'Atlas Rental.io ' + _planLabel(tier) + ' plan (7-day free trial)'; mode = 'subscription'; interval = 'month';
           meta.billing = 'trial'; meta.tier = tier;
         } else if (kind === 'domain') {
-          const dcents = Math.round(Number(body.amountCents) || 0);
-          if (dcents < 100 || dcents > 500000) return err(400, 'Invalid domain price.');   // quote-based (registrar cost + markup); clamped $1-$5000
-          // domains renew EVERY YEAR -> bill as a yearly subscription (never a one-time "lifetime" charge); the registrar is renewed on each Stripe renewal.
-          amountCents = dcents; name = 'Domain' + (body.domain ? (' - ' + String(body.domain).slice(0, 60)) : '') + ' (billed yearly)';
-          mode = 'subscription'; interval = 'year';
-          meta.billing = 'domain'; meta.domain = String(body.domain || '').slice(0, 80);
+          const _dom = String(body.domain || '').toLowerCase().replace(/[^a-z0-9.-]/g, '').slice(0, 80);
+          if (!_dom || _dom.indexOf('.') < 1) return err(400, 'Enter a valid domain.');
+          let dcents = Math.round(Number(body.amountCents) || 0);
+          if (env.DYNADOT_KEY) {   // SECURITY: never trust the browser's price. Re-quote server-side + floor at cost+markup so a $1 checkout can't register a $70 name against our balance.
+            const _s = await _registrarSearch(env, _dom);
+            if (!_s.ok) return err(502, 'Could not price that domain right now - please try again.');
+            if (!_s.available) return err(409, 'That domain is no longer available.');
+            const _mk = Math.max(0, Math.min(500, Number(env.DOMAIN_MARKUP_PCT) || 65));
+            const _floor = Math.max(Math.ceil((_s.costCents || 0) * (1 + _mk / 100)), (_s.costCents || 0) + 100);   // cost+markup, never below wholesale+$1
+            dcents = Math.max(dcents, _floor);
+          }
+          if (dcents < 100 || dcents > 500000) return err(400, 'Invalid domain price.');
+          amountCents = dcents; name = 'Domain - ' + _dom + ' (billed yearly)';
+          mode = 'subscription'; interval = 'year';   // domains renew EVERY YEAR -> yearly subscription (never one-time "lifetime")
+          meta.billing = 'domain'; meta.domain = _dom;
         } else { return err(400, 'Unknown purchase kind.'); }
         const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
           successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : ''),
@@ -1621,6 +1715,7 @@ export default {
       if (path === '/api/billing/portal' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'bportal:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before trying again.');
         const pk = env.PLATFORM_STRIPE_KEY || ''; if (!pk) return err(400, 'Platform billing is not configured yet.');
         await ensurePlatformSchema(env);
         const trow = await env.DB.prepare('SELECT stripe_customer FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
@@ -1645,14 +1740,18 @@ export default {
         const bodyTxt = String(b.body || '').slice(0, 20000);
         if (!subject) return err(400, 'Add a subject.');
         if (!bodyTxt.trim()) return err(400, 'Write a message.');
+        // SECURITY: only email addresses that are actually THIS tenant's customers (a broadcast can't be turned into a spam cannon for a harvested list).
+        let _custSet = null;
+        try { const _cr = await env.DB.prepare('SELECT email FROM customers WHERE tenant_id=?').bind(ctx.tenant_id).all(); _custSet = {}; (_cr.results || []).forEach(function (x) { if (x && x.email) _custSet[String(x.email).toLowerCase().trim()] = 1; }); } catch (e) { _custSet = null; }
         const seen = {}, clean = [];
         for (const r of (Array.isArray(b.recipients) ? b.recipients : [])) {
           const em = String((r && r.email) || '').toLowerCase().trim();
           if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em) || seen[em]) continue;
+          if (_custSet && !_custSet[em]) continue;                // must be a real customer of this tenant
           seen[em] = 1; clean.push({ email: em, name: String((r && r.name) || '').slice(0, 80) });
           if (clean.length >= 500) break;                        // hard cap per send (deliverability + subrequest budget)
         }
-        if (!clean.length) return err(400, 'No valid recipients in that group.');
+        if (!clean.length) return err(400, _custSet ? 'No matching customers to send to.' : 'No valid recipients in that group.');
         const trow = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         const prof = tenantProfile(trow || { id: ctx.tenant_id });
         const results = await _sendChunked(clean, 20, (r) => {
@@ -1671,7 +1770,7 @@ export default {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'bookEdit')) return err(403, 'Booking permission required.');
         if (!env.RESEND_KEY) return err(503, 'Email sending is not set up yet.');
-        if (!await rateLimit(env, 'rcpt:' + ctx.tenant_id, 120, 3600000)) return err(429, 'Too many receipts right now - please wait a moment.');
+        if (!await rateLimit(env, 'rcpt:' + ctx.tenant_id, 60, 3600000)) return err(429, 'Too many receipts right now - please wait a moment.');
         const b = await req.json().catch(() => ({}));
         const bid = String(b.booking || '').slice(0, 80);
         const inner = String(b.html || '');
@@ -1685,7 +1784,7 @@ export default {
         const trow = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         const prof = tenantProfile(trow || { id: ctx.tenant_id });
         const subject = String(b.subject || ('Your receipt from ' + prof.name)).slice(0, 240);
-        const res = await sendEmail(env, { to: to, fromName: prof.name, subject: subject, html: _emailShell(prof, inner.slice(0, 60000)), transactional: true });
+        const res = await sendEmail(env, { to: to, fromName: prof.name, subject: subject, html: _emailShell(prof, _sanitizeEmailHtml(inner.slice(0, 60000))), transactional: true });
         await audit(env, ctx, req, 'receipt.send', { booking: bid, sent: !!res.sent, reason: res.reason });
         if (!res.sent) return err(502, 'Could not send the receipt (' + (res.reason || 'unknown') + ').');
         return json({ ok: true, to: to });
@@ -1721,6 +1820,7 @@ export default {
       if (path === '/api/integrations/connect' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!ctx.user || ctx.user.role !== 'owner') return err(403, 'Only the account owner can connect payment integrations.');   // guards the tenant's Stripe secret from any non-owner session
+        if (!await rateLimit(env, 'intconn:' + ctx.tenant_id, 40, 3600000)) return err(429, 'Please wait a moment before trying again.');
         const body = await req.json().catch(() => ({}));
         if (!vStr(body.provider, 40) || !vStr(body.secret, 800)) return err(400, 'Provider and key required.');   // 800: room for a multi-field GPS-provider credential bundle (e.g. Bouncie client_id+secret+code+redirect)
         const secret_enc = await encSecret(env, body.secret, ctx.tenant_id + '|' + body.provider);   // AAD binds this ciphertext to this tenant+provider

@@ -4567,7 +4567,8 @@ const Atlas = (function(){
     var status=r<0.6?'moving':r<0.8?'idle':r<0.95?'parked':'offline';
     t.vehicles[a.id]={ lat:TRK_BOX.minLat+Math.random()*(TRK_BOX.maxLat-TRK_BOX.minLat), lng:TRK_BOX.minLng+Math.random()*(TRK_BOX.maxLng-TRK_BOX.minLng),
       heading:Math.random()*360, speed:status==='moving'?(18+Math.round(Math.random()*45)):0, status:status, online:status!=='offline', milesToday:Math.round(Math.random()*90), lastPing:Date.now(), street:_trkStreet() }; }); save(); }
-  function _trkReconcile(){ var t=_trackers(), have=t.vehicles||(t.vehicles={}), live={}, changed=false;   // fix: keep tracker entries in sync with the real fleet -- add newly-created assets, drop deleted ones (no phantom counts / missing markers)
+  function _trkReconcile(){ var t=_trackers(); if(t.live) return;   // LIVE: positions come ONLY from the provider (_trkFetchLive) -- never fabricate/delete, so a "Live" map never shows an invented location
+    var have=t.vehicles||(t.vehicles={}), live={}, changed=false;   // PREVIEW only: keep sim entries in sync with the real fleet
     (DATA.assets||[]).forEach(function(a){ live[a.id]=1; if(!have[a.id]){ var r=Math.random(), status=r<0.6?'moving':r<0.8?'idle':r<0.95?'parked':'offline';
       have[a.id]={ lat:TRK_BOX.minLat+Math.random()*(TRK_BOX.maxLat-TRK_BOX.minLat), lng:TRK_BOX.minLng+Math.random()*(TRK_BOX.maxLng-TRK_BOX.minLng), heading:Math.random()*360, speed:status==='moving'?(18+Math.round(Math.random()*45)):0, status:status, online:status!=='offline', milesToday:Math.round(Math.random()*90), lastPing:Date.now(), street:_trkStreet() }; changed=true; } });
     Object.keys(have).forEach(function(id){ if(!live[id]){ delete have[id]; changed=true; } });
@@ -4606,9 +4607,9 @@ const Atlas = (function(){
     if(!_featOk('tracking')){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_lockOverlay('tracking'); return; }   // premium feature: locked below Pro
     if(!t.connected){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_trkConnectHtml(); return; }
     _trkReconcile();   // fix: reconcile trackers with the current fleet (add new assets, drop deleted) before rendering KPIs/map/list
-    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="trk-live"><i></i>Live</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkFullscreen()"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Full screen</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editTrackerConnect()">Edit connection</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
+    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="trk-live"><i></i>'+(t.live?"Live":"Preview")+'</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkFullscreen()"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Full screen</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editTrackerConnect()">Edit connection</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
-    body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); }
+    body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); if(t.live) _trkFetchLive(true); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
     +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers and track every '+esc(S.fleet.noun)+' in real time &mdash; location, trips, mileage, geofences and alerts.</p>'
     +'<button class="btn btn--primary" onclick="Atlas.openTrackerConnect()">Connect a tracker</button>'
@@ -5159,7 +5160,8 @@ const Atlas = (function(){
     var renewAnnual=d.sold.filter(function(x){return x.renews;}).reduce(function(s,x){return s+(x.price-x.cost);},0)*0.75;
     var perMo=renewAnnual/12;
     var kpi=function(l,v){ return '<div style="flex:1;min-width:88px;text-align:center"><div style="font-size:20px;font-weight:800" class="tnum">'+v+'</div><div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">'+l+'</div></div>'; };
-    var h='<div style="display:flex;gap:8px;flex-wrap:wrap;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin:12px 0">'+kpi('Domains',String(n))+kpi('Margin booked',money(oneTime))+kpi('Renewal / yr',money(renewAnnual))+kpi('Passive / mo',money(perMo))+'</div>';
+    var h=(n?'<div style="display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#b26a00;background:rgba(255,176,32,.14);border:1px solid rgba(255,176,32,.35);border-radius:6px;padding:2px 8px;margin:6px 0 2px">Projection &middot; not live sales</div>':'')
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin:8px 0 12px">'+kpi('Domains',String(n))+kpi('Est. margin',money(oneTime))+kpi('Renewal / yr',money(renewAnnual))+kpi('Passive / mo',money(perMo))+'</div>';
     if(n) h+='<div style="display:flex;flex-direction:column;gap:6px">'+d.sold.slice(0,6).map(function(x){ return '<div class="mp-row"><span class="mono" style="font-size:13px">'+esc(x.name)+'</span><span style="font-size:12px;color:var(--muted)">'+money(x.cost)+' &rarr; '+money(x.price)+' <b style="color:var(--ok)">+'+money(x.price-x.cost)+'/yr</b></span></div>'; }).join('')+'</div>';
     else h+='<div class="bk-lenhint" style="margin:0">No domains sold yet. Search above and list one to start the margin stack.</div>';
     return h; }
@@ -7187,7 +7189,7 @@ const Atlas = (function(){
     var res=document.getElementById('domResult'); if(!res) return;
     if(taken){ res.innerHTML='<div style="margin-top:12px;font-size:13px;color:var(--danger)"><b>'+esc(v)+'</b> is taken. Try another name.</div>'; return; }
     res.innerHTML='<div style="margin-top:12px;border:1px solid var(--brand);border-radius:12px;padding:14px">'
-      +'<div style="display:flex;justify-content:space-between;align-items:center"><div><b style="color:var(--ink);font-size:15px">'+esc(v)+'</b> <span class="chip chip--ok" style="margin-left:4px"><span class="dot"></span>Available</span><div style="font-size:12px;color:var(--muted);margin-top:2px">Registered in your name &middot; auto-renews yearly</div></div>'
+      +'<div style="display:flex;justify-content:space-between;align-items:center"><div><b style="color:var(--ink);font-size:15px">'+esc(v)+'</b> <span class="chip chip--ok" style="margin-left:4px"><span class="dot"></span>Available</span><div style="font-size:12px;color:var(--muted);margin-top:2px">Registered &amp; managed for you through Atlas &middot; auto-renews yearly</div></div>'
       +'<div style="text-align:right"><div style="font-size:19px;font-weight:850;color:var(--ink)" class="tnum">'+money(yr)+'</div><div style="font-size:11px;color:var(--muted)">/year</div></div></div>'
       +'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.webBuyDomain(\''+esc(v).replace(/'/g,"\\'")+'\','+yr+')">Buy &amp; auto-connect &mdash; '+money(yr)+'/yr</button></div>';
   }
