@@ -3074,7 +3074,8 @@ const Atlas = (function(){
   function _payoutLabel(){ return (S.money&&S.money.payout&&S.money.payout.label)||'Partner payout'; }
   function _totalPayouts(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+((b.quote&&b.quote.payoutAmt)||0); },0); }   // commission/split that leaves the owner on each booking -- a real deduction from take-home
   function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarned(b);},0); }   // rental + collected add-on charges (owner chose: count charges as income everywhere)
-  function _netProfit(){ return _bookingRevenue() + _otherIncome() - _totalExpenses() - _totalPayouts(); }   // take-home now subtracts partner payouts (the settings copy promises net "in analytics")
+  function _cancelledFeeIncome(){ return (DATA.bookings||[]).filter(function(b){ return b&&b.status==='Cancelled'; }).reduce(function(s,b){ return s+_collectedCharges(b); },0); }   // kept cancellation fees, recognized when actually COLLECTED (cash basis); committed-basis rollups exclude cancelled bookings, so their paid charges are real income counted only here
+  function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts(); }   // take-home now subtracts partner payouts (the settings copy promises net "in analytics")
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
     var tot = (opts.total!=null) ? opts.total : rows.reduce(function(s,r){return s+(typeof r.amt==='number'?r.amt:0);},0);
@@ -3448,7 +3449,7 @@ const Atlas = (function(){
   function _getBooking(id){ return _bookings().filter(function(b){return b.id===id;})[0]||null; }
   function _upsertBooking(b){ var a=_bookings(); var i=a.map(function(x){return x.id;}).indexOf(b.id); if(i>=0)a[i]=b; else a.unshift(b); _saveBookings(a); }
   function _delBooking(id){ _saveBookings(_bookings().filter(function(b){return b.id!==id;})); }
-  function _bkTotal(b){ return Math.round((b&&b.quote&&b.quote.total)||(b&&b.total)||0); }
+  function _bkTotal(b){ return _r2((b&&b.quote&&b.quote.total)||(b&&b.total)||0); }
   // Add-on charges the customer actually PAID through the portal (cleaning, damage, extra day). These are real income on top
   // of the rental. Refundable deposit HOLDS are NOT charges (separate authorize), so they never leak in here. Unpaid charges
   // are not counted (cash-collected basis for add-ons). Owner picked "count everywhere" -> folded into _bkEarned below.
@@ -3776,7 +3777,7 @@ const Atlas = (function(){
       +'<button class="btn btn--danger btn--full btn--lg" style="margin-top:16px" onclick="Atlas.doCancel(\''+id+'\')">Cancel booking</button></div>');
     setTimeout(function(){ [].forEach.call(document.getElementsByName('cxfee'),function(r){ r.addEventListener('change',function(){ var c=document.querySelector('input[name=cxfee]:checked'); document.getElementById('cxCustomWrap').style.display=(c&&c.value==='custom')?'flex':'none'; }); }); },30); }
   function doCancel(id){ var b=_getBooking(id); if(!b)return; var sel=document.querySelector('input[name=cxfee]:checked'), v=sel?sel.value:'0';
-    var fee=(v==='custom')?Math.round(Math.max(0,parseFloat(val('cxCustom'))||0)):Math.round(parseFloat(v)||0);
+    var fee=(v==='custom')?_r2(Math.max(0,parseFloat(val('cxCustom'))||0)):_r2(parseFloat(v)||0);
     b.status='Cancelled'; b.cancelledAt=Date.now(); b.cancelFee=fee;
     if(fee>0) _charges(b).push({id:_chId(), label:'Cancellation fee', amount:fee, at:Date.now(), paidAt:null});
     _upsertBooking(b); _logEvent('booking','Booking '+b.id+' cancelled'+(fee?(' -- kept '+money(fee)):' (full refund)'),{booking:b.id}); save(); closeModal();
@@ -3880,7 +3881,7 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" style="margin:0 0 12px">Keep part or all of the '+money(max)+' hold for damage, fuel or cleaning. The rest is released.</div>'
       +'<div class="field"><label>Amount to keep</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="hcAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+max+'"></div></div>'
       +'<button class="btn btn--danger btn--full btn--lg" onclick="Atlas.doCapture(\''+id+'\')">Capture</button></div>'); }
-  function doCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var cap=Math.min(b.hold.amount, Math.round(parseFloat(val('hcAmt'))||0)); if(cap<=0){ closeModal(); return holdRelease(id); }
+  function doCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var cap=Math.min(b.hold.amount, _r2(parseFloat(val('hcAmt'))||0)); if(cap<=0){ closeModal(); return holdRelease(id); }
     b.hold.status='captured'; b.hold.captured=cap; b.hold.capturedAt=Date.now();
     _charges(b).push({id:_chId(), label:'Deposit captured (damage/fuel)', amount:cap, at:Date.now(), paidAt:Date.now()});
     _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); closeModal(); try{ renderOverview(); renderBookings(); }catch(e){} openBooking(id); toast('Captured '+money(cap)+' from the hold'); }
@@ -4411,7 +4412,7 @@ const Atlas = (function(){
     if(!document.getElementById('anaKpis')) return;   // only when the Analytics panel is mounted
     // All derived from real bookings + your ledger -- reconciles with Overview + Reports (no hardcoded figures).
     var _nc=(DATA.bookings||[]).filter(_isCommitted);   // earned bookings -- revenue, count + avg all share this basis so they reconcile
-    var _rev=_nc.reduce((s,b)=>s+((b.quote&&b.quote.total)||0),0), _cnt=_nc.length, _avg=_cnt?_r2(_rev/_cnt):0;
+    var _rev=_nc.reduce((s,b)=>s+_bkEarned(b),0), _cnt=_nc.length, _avg=_cnt?_r2(_rev/_cnt):0;
     var _byCust={}; _nc.forEach(b=>{ _byCust[b.cust]=(_byCust[b.cust]||0)+1; });
     var _cu=Object.keys(_byCust), _rep=_cu.filter(c=>_byCust[c]>=2).length, _repPct=_cu.length?Math.round(_rep/_cu.length*100):0;
     const k=[['Total revenue',money(_rev),'anaRev'],[cap(_fterm('books')),_cnt.toLocaleString(),'count'],['Avg. '+_fterm('book'),money(_avg),'avg'],['Repeat customers',_repPct+'%','repeat'],['Net profit',money(_netProfit()),'net']];
@@ -4454,7 +4455,7 @@ const Atlas = (function(){
     return {from:from,label:label,value:v}; }
   function renderReports(){ var el=document.getElementById('repBody'); if(!el)return; var r=_repRange();
     var bks=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && (b.createdAt||b.startTs||0)>=r.from; });
-    var gross=0,disc=0,fees=0,tax=0,total=0; bks.forEach(function(b){ var q=b.quote||{}; gross+=(q.gross||q.subtotal||q.total||0); disc+=(q.disc||0); fees+=(q.feeTotal||0); tax+=(q.taxAmt||0); total+=(q.total||0); });
+    var gross=0,disc=0,fees=0,tax=0,total=0; bks.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b), cct=_collectedChargeTax(b); gross+=(q.gross||q.subtotal||q.total||0)+(cc-cct); disc+=(q.disc||0); fees+=(q.feeTotal||0); tax+=(q.taxAmt||0)+cct; total+=(q.total||0)+cc; });   // include collected add-on charges so the card ties to the Tax CSV + Overview (earned basis)
     el.innerHTML='<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>Bookings</span><span class="tnum">'+bks.length+'</span></div>'
       +'<div class="mp-row"><span>Gross revenue (pre-tax)</span><span class="tnum">'+money(gross)+'</span></div>'
@@ -6543,7 +6544,7 @@ const Atlas = (function(){
   // a payment widget genuinely moves every number on the dashboard.
   function portalPayWidget(wid){ var b=_pBk(); if(!b)return; var w=_portalWidgets().filter(function(x){return x.id===wid;})[0]; if(!w||w.type!=='payment')return;
     if((b.charges||[]).some(function(c){return c.fromWidget===wid&&c.paidAt;}))return;   // already paid on this booking
-    var t=(S.money.tax||0)/100, amt=Math.max(0,Number(w.amount)||0), base=(w.mode==='pct')?Math.round((b.quote&&b.quote.total||0)*amt/100):amt, gross=Math.round(w.taxable?base*(1+t):base);
+    var t=(S.money.tax||0)/100, amt=Math.max(0,Number(w.amount)||0), base=(w.mode==='pct')?_r2((b.quote&&b.quote.total||0)*amt/100):amt, gross=_r2(w.taxable?base*(1+t):base);
     if(gross<=0){ toast('This payment has no amount set'); return; }
     _charges(b).push({id:_chId(), label:(w.title||'Payment'), amount:gross, taxable:!!w.taxable, at:Date.now(), paidAt:Date.now(), fromWidget:wid});
     _upsertBooking(b); save(); _logEvent('booking','Portal payment collected: '+(w.title||'Payment')+' '+money(gross)+' on '+b.id,{booking:b.id});

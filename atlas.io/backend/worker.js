@@ -324,7 +324,7 @@ async function sendEmail(env, msg) {
     var to = String(msg.to).toLowerCase();
     // marketing sends respect the unsubscribe list; transactional (booking confirm / receipt) always go through
     if (msg.tenant && !msg.transactional && await isSuppressed(env, msg.tenant, to)) return { sent: false, reason: 'suppressed' };
-    var fromAddr = env.MAIL_FROM || 'bookings@atlasrental.io';
+    var fromAddr = env.MAIL_FROM || 'hello@atlasrental.io';
     var from = (msg.fromName ? (String(msg.fromName).replace(/[<>"\r\n]/g, '') + ' ') : '') + '<' + fromAddr + '>';
     var html = msg.html || ''; var xHeaders;
     if (msg.tenant) {   // real one-tap unsubscribe (CAN-SPAM): a working link + List-Unsubscribe header
