@@ -1654,14 +1654,14 @@ const Atlas = (function(){
       _lsSet(SK,{email:k,tenantId:a.tenantId}); return {ok:true}; },
     logout(){ try{ localStorage.removeItem(SK); }catch(e){} },
     loadTenant(){ var s=store.session(); return s? _lsGet('atlas_tenant_'+s.tenantId,null) : null; },
-    saveTenant(t){ var s=store.session(); if(s) _lsSet('atlas_tenant_'+s.tenantId,t); },
+    saveTenant(t){ var s=store.session(); if(s) _lsSet('atlas_tenant_'+s.tenantId,t); _srvSyncSoon(); },
     // Bookings live in their OWN per-tenant collection -> maps to a D1 `bookings` table with targeted,
     // paginated queries (WHERE tenant_id=?), never a whole-node read. Kept out of the tenant profile blob.
     bookings(){ var s=store.session(); return s? _lsGet('atlas_bookings_'+s.tenantId,[]) : []; },
-    saveBookings(arr){ var s=store.session(); if(s) _lsSet('atlas_bookings_'+s.tenantId, arr||[]); },
+    saveBookings(arr){ var s=store.session(); if(s) _lsSet('atlas_bookings_'+s.tenantId, arr||[]); _srvSyncSoon(); },
     // Vehicles/assets get their own per-tenant collection too (D1 `assets` table later) -- the count gates the plan.
     assets(){ var s=store.session(); return s? _lsGet('atlas_assets_'+s.tenantId,[]) : []; },
-    saveAssets(arr){ var s=store.session(); if(s) _lsSet('atlas_assets_'+s.tenantId, arr||[]); }
+    saveAssets(arr){ var s=store.session(); if(s) _lsSet('atlas_assets_'+s.tenantId, arr||[]); _srvSyncSoon(); }
   };
   // ---- Backend bridge (flag-gated). OFF = pure local, byte-for-byte today's behavior. ON = the live
   //      Cloudflare Worker is authoritative for identity (per SECURITY.md); data stays local-first for an
@@ -1690,15 +1690,53 @@ const Atlas = (function(){
       if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; return {ok:true,tenant_id:res.json.tenant_id}; }
       return {err:(res.json&&res.json.error)||'Could not sign in.'}; })
     .catch(function(){ return {err:'Network error \u2014 check your connection.'}; }); }
-  // Pull the tenant's server rows into the local cache (keyed by the SERVER tenant id) so the sync UI just works.
-  function _srvHydrate(tid){ return Promise.all([_api('/api/data/bookings'),_api('/api/data/assets')]).then(function(r){
-    if(r[0].json&&r[0].json.items) _lsSet('atlas_bookings_'+tid, r[0].json.items);
-    if(r[1].json&&r[1].json.items) _lsSet('atlas_assets_'+tid, r[1].json.items); }).catch(function(){}); }
-  // Best-effort background mirror of a local write to D1 (upsert one row; never blocks the UI).
-  function _srvMirror(kind,item){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return;
-    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:item}).then(function(res){
-      if(res.status===404){ var b={}; for(var k in item) b[k]=item[k]; b.id=item.id; _api('/api/data/'+kind,{method:'POST',body:b}).catch(function(){}); } }).catch(function(){}); }
-  function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
+  // ===== dashboard cross-device sync (flag-gated OFF; LOSSLESS via each collection's data/info blob) =====
+  // The owner's OWN bookings + assets + profile mirror to D1 so a second device / cache-clear never loses the business.
+  // Local-first stays the instant render; the server MERGES newest-wins per record on login (never blind-overwrite,
+  // never drops a local-only or newer local record). Customers are derived from bookings, so they ride along for free.
+  var _pushedHash={}; var _syncTimer=null;
+  function _srvSyncSoon(){ if(!ATLAS_BACKEND||!_apiCsrf||_syncTimer) return; _syncTimer=setTimeout(function(){ _syncTimer=null; try{ _srvSyncPush(); }catch(e){} }, 1500); }
+  // Shape a rich client object into the worker's row (full fidelity in the JSON blob: bookings/customers->data, assets->info).
+  function _srvShape(kind,item){
+    if(kind==='assets') return { id:item.id, name:item.name||('Item '+item.id), type:item.type||undefined, status:item.status||undefined, day_rate_cents:(Math.round((Number(item.rate)||0)*100))||undefined, info:item };
+    return { id:item.id, status:String(item.status||'pending'), starts:(Number.isFinite(item.startTs)?Math.round(item.startTs):undefined), ends:(Number.isFinite(item.endTs)?Math.round(item.endTs):undefined), data:item };
+  }
+  function _srvUnshape(kind,row){ try{
+    if(kind==='assets'){ var i=row.info; var o=i?(typeof i==='string'?JSON.parse(i):i):null; return o||{id:row.id,name:row.name,type:row.type,status:row.status,rate:(row.day_rate_cents||0)/100}; }
+    var d=row.data; var b=d?(typeof d==='string'?JSON.parse(d):d):null; return b||{id:row.id,status:row.status};
+  }catch(e){ return {id:row.id}; } }
+  function _srvMirror(kind,item){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
+    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ if(res.status===404) _api('/api/data/'+kind,{method:'POST',body:body}).catch(function(){}); }).catch(function(){}); }
+  function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
+  function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
+    _api('/api/tenant/profile',{method:'PUT',body:{name:(S.brand&&S.brand.name)||'',brand:S.brand,money:S.money,settings:settings}}).catch(function(){}); }
+  // Diff current local state vs last-mirrored -> PUT the changed (stamp _t), DELETE the removed, PUT the profile if changed.
+  function _srvSyncPush(){ if(!ATLAS_BACKEND||!_apiCsrf) return;
+    var cols={ bookings:(typeof _bookings==='function'?_bookings():[]), assets:(typeof DATA!=='undefined'&&DATA.assets)||[] };
+    var seen={};
+    Object.keys(cols).forEach(function(kind){ (cols[kind]||[]).forEach(function(it){ if(!it||!it.id) return; var key=kind+':'+it.id; seen[key]=1;
+      if(_pushedHash[key]!==JSON.stringify(it)){ it._t=Date.now(); _pushedHash[key]=JSON.stringify(it); _srvMirror(kind,it); } }); });
+    Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); var kind=key.slice(0,p); if(cols[kind]) _srvDelete(kind,key.slice(p+1)); });
+    var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; } var ph=JSON.stringify({b:S.brand,m:S.money,s:settings});
+    if(_pushedHash['__profile']!==ph){ S._t=Date.now(); settings._t=S._t; _pushedHash['__profile']=JSON.stringify({b:S.brand,m:S.money,s:settings}); _srvMirrorProfile(); }
+  }
+  // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
+  function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
+    return Promise.all([_api('/api/data/bookings'),_api('/api/data/assets'),_api('/api/tenant/profile')]).then(function(r){
+      _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items);
+      _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items);
+      var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
+    }).catch(function(){}); }
+  function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
+    local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); } });
+    rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; var loc=byId[srv.id];
+      if(!loc){ byId[srv.id]=srv; order.push(srv.id); } else if((srv._t||0)>(loc._t||0)){ byId[srv.id]=srv; }
+      _pushedHash[kind+':'+srv.id]=JSON.stringify(byId[srv.id]); });
+    _lsSet(lsKey, order.map(function(id){ return byId[id]; })); }
+  function _srvMergeProfile(tid,prof){ var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var srvT=(prof.settings&&prof.settings._t)||0; var locT=(loc&&loc._t)||0;
+    if(!(srvT>locT || !loc.onboarded)) return;                       // keep local if it is newer / already set up
+    var merged={}; var s=prof.settings||{}; for(var k in s) merged[k]=s[k]; if(prof.brand)merged.brand=prof.brand; if(prof.money)merged.money=prof.money;
+    _lsSet('atlas_tenant_'+tid, merged); _pushedHash['__profile']=JSON.stringify({b:merged.brand,m:merged.money,s:s}); }
   const FLEET_TYPES=[
     {id:'cars',emoji:'\u{1F697}',label:'Cars & Exotics',noun:'vehicle',nouns:'vehicles',sample:['2023 Corvette C8','BMW M3 Competition','Porsche Macan','Range Rover Sport','Tesla Model S','Mercedes G-Wagon']},
     {id:'property',emoji:'\u{1F3E0}',label:'Rental Properties',noun:'property',nouns:'properties',sample:['Beachfront Villa','Downtown Loft','Mountain Cabin','Lakeside Cottage','City Penthouse','Desert Retreat']},
@@ -1765,6 +1803,7 @@ const Atlas = (function(){
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
   var APP_VERSION='2026.7.17';
   var APP_CHANGELOG=[
+    'Cross-device sync: your bookings, fleet &amp; settings back up to your account and merge across devices (turns on with your backend) &mdash; no more one-browser-only',
     'Public booking site: a real customer-reachable page + branded portal, deposits via Stripe, confirmation emails (turns on when you connect your backend + keys)',
     'Go-live honesty pass: money, email, connect &amp; e-sign states now tell the truth until each backend is live',
     'Onboarding no longer drops your first vehicle or business name; friendlier empty states everywhere',

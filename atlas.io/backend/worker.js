@@ -682,18 +682,19 @@ export default {
           const { cols, vals } = patchFields(coll, body);       // whitelisted domain fields
           for (const c of (REQUIRED[coll] || [])) if (cols.indexOf(c) < 0) return err(400, 'Missing required field: ' + c);
           const now = Date.now();
-          let rid = (coll === 'bookings' && vStr(body.id, 40)) ? body.id : (coll.slice(0, 2).toUpperCase() + '-' + randId(10));
-          // The client picks booking ids (BK-<n>) but the PK is global -> guard the collision instead of letting the INSERT 500:
-          if (coll === 'bookings') {
-            const clash = await env.DB.prepare('SELECT tenant_id FROM bookings WHERE id=?').bind(rid).first();
+          // Preserve a client-provided id for ANY collection so a mirror (PUT-then-POST-on-404) is idempotent and never
+          // creates duplicate assets/customers. Guard the global-PK collision instead of letting the INSERT 500.
+          let rid = vStr(body.id, 40) ? body.id : (coll.slice(0, 2).toUpperCase() + '-' + randId(10));
+          if (vStr(body.id, 40)) {
+            const clash = await env.DB.prepare(`SELECT tenant_id FROM ${coll} WHERE id=?`).bind(rid).first();
             if (clash) {
               if (clash.tenant_id === ctx.tenant_id) {   // same tenant re-POSTing the same id -> UPDATE, don't duplicate or 500
-                const uCols = cols.slice(), uVals = vals.slice(); uCols.push('updated_at'); uVals.push(now);
-                await env.DB.prepare(`UPDATE bookings SET ${uCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...uVals, rid, ctx.tenant_id).run();
-                await audit(env, ctx, req, 'bookings.update', { id: rid });
+                const uCols = cols.slice(), uVals = vals.slice(); if (hasUpd) { uCols.push('updated_at'); uVals.push(now); }   // customers has no updated_at column
+                if (uCols.length) await env.DB.prepare(`UPDATE ${coll} SET ${uCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...uVals, rid, ctx.tenant_id).run();
+                await audit(env, ctx, req, coll + '.update', { id: rid });
                 return json({ ok: true, id: rid, updated: true });
               }
-              rid = 'BK-' + randId(10);   // id taken by ANOTHER tenant on the global PK -> mint a fresh server id so this booking is never lost
+              rid = coll.slice(0, 2).toUpperCase() + '-' + randId(10);   // id taken by ANOTHER tenant on the global PK -> mint a fresh server id so nothing is lost
             }
           }
           // ONE atomic insert: base columns + all provided fields (respects NOT NULL constraints)

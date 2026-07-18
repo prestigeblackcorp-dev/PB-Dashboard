@@ -17,8 +17,8 @@ The customer-facing server product now exists in `atlas.io/backend/worker.js` (a
 - **Mailer (Resend)** — booking confirmation to the customer + alert to you + payment receipt; no `RESEND_KEY` → returns "not sent" instead of faking it.
 - **Publish flow (dashboard)** — Website → **Publish booking site** mirrors your brand/pricing/assets to the server (`PUT /api/tenant/profile`) and shows your real link. Everything is editable and re-publishes on demand.
 
-## The one remaining architectural item + how to switch everything on
-1. **Durable backend / cross-device** — still flip `ATLAS_BACKEND=true` (client) only after the Worker+D1 is live, and wire the local→D1 write seam (`_srvMirror`/`_srvDelete` + full `_srvHydrate`) so the owner's own dashboard data syncs across devices. (The public booking pipeline already writes straight to D1 server-side; this item is specifically the owner's local-first dashboard sync.)
+## Cross-device dashboard sync — now BUILT + tested (was the last architectural gap)
+The owner's own dashboard is no longer one-browser-only. On every save, bookings/assets/the profile **mirror to D1** (debounced, lossless — full fidelity in each row's `data`/`info` blob, config in the tenant `settings`), and on login `_srvHydrate` **merges newest-wins** (never blind-overwrite, never drops a local-only or newer-local record). Tested: the real client's save→mirror→D1 round-trips losslessly, mirrors are idempotent (no duplicate rows), and the merge keeps the right record on conflict. It is **inert until `ATLAS_BACKEND=true`** — so it changes nothing until you turn the backend on. To switch on: deploy the worker+D1, then set `ATLAS_BACKEND=true` in the client copies (`atlas/atlas.html`, `atlas.io/atlas.html`, `atlas.io/index.html`) and do the smoke test below (book on device A → confirm it appears on device B).
 
 ### Owner steps to light up the built systems
 - Deploy `worker.js` + D1 with the schema (see step 4). **If your D1 already exists**, run the migration: `ALTER TABLE bookings ADD COLUMN portal_token TEXT; CREATE INDEX IF NOT EXISTS idx_bookings_portal ON bookings(portal_token);` (fresh installs get it automatically).
