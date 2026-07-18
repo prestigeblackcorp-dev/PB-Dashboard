@@ -3204,6 +3204,8 @@ const Atlas = (function(){
       +'<div class="field"><label>'+esc(locL)+'</label><input class="input" id="aLoc" list="vLocList2" value="'+esc(a.loc||'')+'"'+dis+'><datalist id="vLocList2">'+(function(){var ls=[];DATA.assets.forEach(function(x){if(x.loc&&ls.indexOf(x.loc)<0)ls.push(x.loc);});return ls.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('');})()+'</datalist></div></div>'
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aRate" style="width:auto;flex:1;text-align:left" value="'+a.rate+'"'+dis+'><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="aStatus"'+dis+'>'+['Available','On rent','Maintenance'].map(function(s){return '<option'+(a.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'
+      +'<div class="row2"><div class="field"><label>Min booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMinLen" value="'+((a.minLen>0)?a.minLen:'')+'" placeholder="no minimum"'+dis+'></div>'
+      +'<div class="field"><label>Max booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMaxLen" value="'+((a.maxLen>0)?a.maxLen:'')+'" placeholder="no maximum"'+dis+'></div></div>'
       +((_fleetSel().length>1)?('<div class="field"><label>Type</label><select class="select" id="aType"'+dis+'>'+_fleetSel().map(function(tid){ var ft=_typeById(tid)||{}; return '<option value="'+esc(tid)+'"'+(((a.type||_fleetSel()[0])===tid)?' selected':'')+'>'+esc((ft.emoji?ft.emoji+' ':'')+(ft.label||tid))+'</option>'; }).join('')+'</select></div>'):'')   // fix: multi-type fleets can re-tag a mis-categorized asset in place
       +(ro?'':'<div class="field"><label>Photo</label><div style="display:flex;align-items:center;gap:12px">'+(a.photo?('<img src="'+a.photo+'" style="width:56px;height:42px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">'):'<div style="width:56px;height:42px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">None</div>')+'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">'+(a.photo?'Replace photo':'Add photo')+'<input type="file" accept="image/*" style="display:none" onchange="Atlas.assetPhotoPick(\''+id+'\',this)"></label>'+(a.photo?('<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.assetPhotoRemove(\''+id+'\')">Remove photo</button>'):'')+'</div></div>')   // fix: assets created via add/CSV/bulk can now get a photo (a.photo, downscaled); and it can now be removed, not only replaced
       +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:14px 0 8px">Current '+rl+' <span style="color:var(--muted);font-weight:500">'+(t.name?('&middot; since '+_fmtWhen(t.since)):'&middot; vacant')+'</span></div>'
@@ -3221,6 +3223,7 @@ const Atlas = (function(){
   function saveAsset(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
     a.name=(val('aName')||a.name).trim(); var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
     var _r=parseFloat(val('aRate')); a.rate=(_r>=0?_r:a.rate); a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
+    var _mn=parseInt(val('aMinLen'),10); a.minLen=(_mn>0?_mn:0); var _mx=parseInt(val('aMaxLen'),10); a.maxLen=(_mx>0?_mx:0);   // per-asset min/max booking length rules
     if(_fleetSel().length>1){ var _at=val('aType'); if(_at&&_fleetSel().indexOf(_at)>=0) a.type=_at; }   // fix: persist the owner's per-asset type/category change (used by rate + filters)
     var tn=(val('aTenName')||'').trim();
     a.tenant = tn? { name:tn, phone:val('aTenPhone'), email:val('aTenEmail'), since:(a.tenant&&a.tenant.since)||Date.now() } : null;
@@ -3637,6 +3640,10 @@ const Atlas = (function(){
     var w=_bkReadWhen();
     var disc=_bkReadDiscount(), extras=(_bkDraft?_bkDraft.extras:[]).slice();
     var asset=val('bkAsset'), mEff=_moneyFor(asset);
+    var _ao=(DATA.assets||[]).filter(function(x){return x.name===asset;})[0];   // per-asset booking-length rules
+    if(_ao){ var _u=S.money.rateModel;
+      if(_ao.minLen>0 && w.periods<_ao.minLen && !confirm(esc(asset)+' has a '+_ao.minLen+'-'+_u+' minimum. Book '+w.periods+' anyway?')) return;
+      if(_ao.maxLen>0 && w.periods>_ao.maxLen && !confirm(esc(asset)+' has a '+_ao.maxLen+'-'+_u+' maximum. Book '+w.periods+' anyway?')) return; }
     var _cf=_availabilityConflict(asset, w.startTs, w.endTs, editId);   // warn on double-book / blackout; owner can knowingly override
     if(_cf && !confirm(esc(asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates ('+_cf.reason+')'):(_cf.type==='maintenance'?('marked out of service ('+_cf.reason+')'):('already booked for those dates ('+_cf.reason+')')))+'.\n\nBook it anyway?')) return;
     var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc});
