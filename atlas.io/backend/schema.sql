@@ -87,12 +87,14 @@ CREATE TABLE IF NOT EXISTS bookings (
   status        TEXT DEFAULT 'pending',
   revenue_cents INTEGER DEFAULT 0,           -- server-recomputed from money-rules
   data          TEXT DEFAULT '{}',           -- JSON: quote, extras, charges, signatures refs
+  portal_token  TEXT,                        -- random token for the customer's public /portal/<token> link
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 );
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant ON bookings(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant_status ON bookings(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_bookings_portal ON bookings(portal_token);
 
 -- ---- Customers ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS customers (

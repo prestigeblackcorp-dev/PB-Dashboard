@@ -69,12 +69,14 @@ CREATE TABLE IF NOT EXISTS bookings (
   status        TEXT DEFAULT 'pending',
   revenue_cents INTEGER DEFAULT 0,
   data          TEXT DEFAULT '{}',
+  portal_token  TEXT,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 );
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant ON bookings(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant_status ON bookings(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_bookings_portal ON bookings(portal_token);
 CREATE TABLE IF NOT EXISTS customers (
   id            TEXT PRIMARY KEY,
   tenant_id     TEXT NOT NULL,

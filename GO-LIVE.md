@@ -1,6 +1,6 @@
 # Atlas Rental.io — Go-Live Runbook (owner steps to be fully turnkey for real users)
 
-Status (2026-07-17, SW v17): the **front end is polished and honest** — but a 36-finding go-live audit found that the three systems a rental SaaS cannot launch without are **not yet wired at runtime**: a durable multi-tenant backend, real payment rails, and a customer-reachable booking/portal. **Atlas is not ready for real paying users until those are stood up** (mostly owner infrastructure below). Do not put real customers on it yet; keep it a labeled demo / waitlist.
+Status (2026-07-17, SW v18): the front end is polished + honest, and **the server-side of the two missing systems — real payments and a customer-reachable booking site/portal — is now BUILT into the worker and tested (41/41 automated worker tests pass)**. It is **key-gated and honest**: with no keys it degrades gracefully (returns `{emailed:false}` / `{payUrl:null}`, never a fake success). What remains is **owner infrastructure** (deploy the worker + D1, add keys, turn `ATLAS_BACKEND=true`) — do those and it's live. Until then, keep Atlas a labeled demo / waitlist.
 
 ## What the go-live audit already fixed in code (shipped v17, verified)
 - **Stopped the app from lying.** Every "Payment received / Deposit hold authorized / Connected / Secured by Stripe / IP recorded / compliance built-in / email sent" now tells the truth: payments show "test — no card charged", email actions say "not sent — mailer not live", the fabricated e-sign IP is gone (device + timestamp are real; real IP is stamped server-side at go-live), and Stripe/SMS "connect" states say "saved — live at go-live". New `EMAIL_LIVE` / `PAYMENTS_LIVE` flags gate all of it (both false until the matching backend is deployed).
@@ -9,11 +9,21 @@ Status (2026-07-17, SW v17): the **front end is polished and honest** — but a 
 - **Legal:** signup now requires agreeing to Terms & Privacy + discloses the $49.99/mo auto-renewal, and records the acceptance; footer has Terms/Privacy links (host the docs — step 5).
 - **Worker hardening:** per-provider AI timeout (a hung model can't stall a request), nightly cron GC of sessions/rate_limits/audit_log, and the platform-owner email is reserved (claim it with `OWNER_SETUP_TOKEN`).
 
-## The 3 blockers that still need the backend build (NOT a config flip)
-These are the bulk of the remaining server product; the front end is ready and waiting on them:
-1. **Durable backend** — flip `ATLAS_BACKEND=true` only after the Worker+D1 is live, then wire the local→D1 write seam (`_srvMirror`/`_srvDelete` + full `_srvHydrate` + a tenant-profile route). Until then a business lives in one browser and a cache-clear/second-device loses it.
-2. **Real payments** — Worker `/checkout` + `/stripe/webhook` (+ deposit hold/capture/refund), and the client's paid-stamps must flip only on a verified webhook. Then `PAYMENTS_LIVE=true`.
-3. **Served customer surface** — a per-tenant public booking site + `/portal/{token}` served by the Worker/Pages, and a public `POST /api/public/book` intake. Today the "website" is a preview inside the owner's own dashboard.
+## What the go-live BUILD added to the worker (shipped + tested, key-gated)
+The customer-facing server product now exists in `atlas.io/backend/worker.js` (all additive, all honest-when-unconfigured):
+- **Public booking site** — `GET /api/book/<slug>` serves a branded, self-contained booking page; `GET /api/public/<slug>` returns the published assets/prices/branding; `POST /api/public/<slug>/book` validates + **prices server-side** + writes a real pending booking to your tenant + emails you and the customer. Reachable through the existing `/api/*` route (no extra DNS needed).
+- **Customer portal** — `GET /api/portal/<token>` serves the customer their booking + a Pay-deposit/balance button; `/data` + `/pay` back it.
+- **Payments (Stripe)** — deposits/balances use **hosted Stripe Checkout** (card entry stays on Stripe → you stay PCI SAQ-A); `POST /api/stripe/webhook` **verifies the signature** and is the ONLY thing that flips a booking to paid + fires the receipt. No key → no charge, honestly.
+- **Mailer (Resend)** — booking confirmation to the customer + alert to you + payment receipt; no `RESEND_KEY` → returns "not sent" instead of faking it.
+- **Publish flow (dashboard)** — Website → **Publish booking site** mirrors your brand/pricing/assets to the server (`PUT /api/tenant/profile`) and shows your real link. Everything is editable and re-publishes on demand.
+
+## The one remaining architectural item + how to switch everything on
+1. **Durable backend / cross-device** — still flip `ATLAS_BACKEND=true` (client) only after the Worker+D1 is live, and wire the local→D1 write seam (`_srvMirror`/`_srvDelete` + full `_srvHydrate`) so the owner's own dashboard data syncs across devices. (The public booking pipeline already writes straight to D1 server-side; this item is specifically the owner's local-first dashboard sync.)
+
+### Owner steps to light up the built systems
+- Deploy `worker.js` + D1 with the schema (see step 4). **If your D1 already exists**, run the migration: `ALTER TABLE bookings ADD COLUMN portal_token TEXT; CREATE INDEX IF NOT EXISTS idx_bookings_portal ON bookings(portal_token);` (fresh installs get it automatically).
+- Add worker secrets: `RESEND_KEY` (+ `MAIL_FROM`, e.g. `bookings@atlasrental.io`) for email; connect **Stripe** per-tenant via the app's Connections (stored encrypted) and set `STRIPE_WEBHOOK_SECRET` for the webhook. Register the webhook in Stripe at `https://atlasrental.io/api/stripe/webhook` (events: `checkout.session.completed`, `payment_intent.succeeded`).
+- In the dashboard: open **Website → Publish booking site**, then share the link (`https://atlasrental.io/api/book/<your-slug>`).
 
 ---
 This runbook is the **owner-only** steps to switch the above on.
@@ -25,17 +35,17 @@ In the Cloudflare dashboard → Workers → your Atlas worker → **Settings →
 Without these the app still works — it uses the built-in fallbacks (a local council + the client-side schedule parser). Adding them makes the AI fully live. **Redeploy the worker after adding.**
 
 ## 2. Take REAL customer payments  — the main gate
-Today the booking/portal "pay" flow records payments and moves the money math (deposits, holds, balances, charges) but does **not** yet capture a real card — it is safe/demo until you connect Stripe. To go live:
-1. Create a **Stripe** account; get your **live** publishable + secret keys (test first with test keys).
-2. Set the Stripe secret in the worker env (`STRIPE_SECRET`), publishable in the app's connections.
-3. Confirm the checkout + deposit-hold + refund/release paths against a real test charge before flipping to live keys.
-Do NOT enter card numbers into the app yourself — Stripe Checkout / Elements handles cards so you stay out of PCI scope. (Claude will not flip live-payment keys for you — that's an owner action.)
+The Stripe **hosted-Checkout** flow (deposits at booking + pay-deposit/balance in the portal) and the signature-verified `/api/stripe/webhook` are **built + tested**. To go live:
+1. Create a **Stripe** account; get your keys (test first with test keys).
+2. In the dashboard **Connections**, connect Stripe (the secret is stored encrypted in the worker per tenant, never in the browser). Set `STRIPE_WEBHOOK_SECRET` in the worker env and register the webhook at `https://atlasrental.io/api/stripe/webhook`.
+3. Do a real test booking → pay the deposit → confirm the webhook flips it to paid, before switching to live keys.
+Do NOT enter card numbers into the app yourself — hosted Stripe Checkout handles cards so you stay in PCI SAQ-A scope. (Claude will not flip live-payment keys for you — that's an owner action.)
 
-## 3. Send REAL customer notifications (confirmation / reminder / receipt)  — email
-The Atlas worker has **no email sender yet**, so automated emails are honestly gated in the UI ("connect an email sender"). To make them real:
+## 3. Send REAL customer notifications (confirmation / receipt)  — email
+The worker's `sendEmail()` (Resend) + the booking-confirm / owner-alert / payment-receipt triggers are **built**. With no `RESEND_KEY` they honestly return "not sent". To make them real:
 1. Create a **Resend** account + domain (SPF/DKIM verified) + API key.
-2. Add `RESEND_KEY` to the worker env and (Claude task) wire a `/api/email` send + the booking/receipt triggers.
-Until then, the owner is notified in-app (owner alerts) and can message customers manually; customers see their branded portal.
+2. Add `RESEND_KEY` (+ `MAIL_FROM`) to the worker env. Test it from **Settings → Messaging → Send myself a test email** (it calls `/api/email/test` and reports the true result).
+SMS (reminders/win-back) is the same pattern once Twilio is wired.
 
 ## 3b. SMS (optional) — Twilio/etc. key + wire, same pattern as email. TCPA opt-in is already collected in the portal.
 

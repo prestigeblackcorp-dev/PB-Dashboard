@@ -1765,6 +1765,7 @@ const Atlas = (function(){
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
   var APP_VERSION='2026.7.17';
   var APP_CHANGELOG=[
+    'Public booking site: a real customer-reachable page + branded portal, deposits via Stripe, confirmation emails (turns on when you connect your backend + keys)',
     'Go-live honesty pass: money, email, connect &amp; e-sign states now tell the truth until each backend is live',
     'Onboarding no longer drops your first vehicle or business name; friendlier empty states everywhere',
     'Signup now records your agreement to the Terms &amp; auto-renewal; reserved owner email + AI timeout + nightly cleanup',
@@ -2193,7 +2194,13 @@ const Atlas = (function(){
   function sendTestEmail(mode){ if(!_canMod('settings'))return; var cm=_comms(); var to=(cm.replyTo||'').trim();
     if(!to){ toast('Add your inbox first (Messaging > Your inbox), then send a test'); goSettings('comms'); return; }
     var subj = (mode==='draft' && document.getElementById('ebSubject') && val('ebSubject').trim()) ? val('ebSubject').trim() : ((cm.fromName||S.brand.name)+' test email');
-    _logEvent('email','Test email "'+subj+'" '+(EMAIL_LIVE?'sent':'previewed (not sent -- mailer not live)')+' to '+to,{test:true}); toast(EMAIL_LIVE?('Test email sent to '+to):('Preview only \u2014 email sending is not live yet, so nothing was sent to '+to)); }
+    // Real send when the backend mailer is connected; otherwise an honest preview (never a fake "sent").
+    if(ATLAS_BACKEND && _apiCsrf){ toast('Sending test to '+to+'\u2026');
+      _api('/api/email/test',{method:'POST',body:{to:to}}).then(function(res){ var j=res.json||{};
+        _logEvent('email','Test email to '+to+' -> '+(j.sent?'sent':('not sent ('+(j.reason||'error')+')')),{test:true});
+        toast(j.sent?('Test email sent to '+to):('Not sent \u2014 '+(j.reason==='no_mailer'?'connect a mailer (RESEND_KEY) on your backend first':(j.reason||'error')))); }).catch(function(){ toast('Network error sending the test'); });
+      return; }
+    _logEvent('email','Test email "'+subj+'" previewed (not sent -- mailer not live) to '+to,{test:true}); toast('Preview only \u2014 email sending is not live yet, so nothing was sent to '+to); }
   function fresh(){ return {brand:{name:'Your Company',color:'#1E6E4E',logo:null,initial:'Y',subdomain:'yourcompany'},
     fleet:FLEET_TYPES[0], money:defaultMoney(), integrations:{}, owner:'Owner', trialDays:7,
     plan:'trial', tier:'pro', trialStartedAt:Date.now(), subscribedAt:null, card:null, credits:null,
@@ -6111,6 +6118,27 @@ const Atlas = (function(){
     if(!S.website.domain) S.website.domain={mode:'sub',custom:'',status:'live'}; return S.website; }
   function _subUrl(){ return (S.brand.subdomain||'yoursite').replace(/[^a-z0-9]/g,'')+'.atlasrental.site'; }
   function _siteUrl(){ var w=_web(); return (w.domain.mode==='custom'&&w.domain.custom)? w.domain.custom : _subUrl(); }
+  // ---- Public booking site: publish the profile to the worker so a REAL customer-reachable page exists ----
+  function _bookingSlug(){ return String(S.brand.subdomain||S.brand.name||'yoursite').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,63)||'yoursite'; }
+  function _bookingLink(){ return 'https://atlasrental.io/api/book/'+_bookingSlug(); }   // served by the worker via the existing /api/* route (no extra DNS needed)
+  function _publicSiteAssets(){ return (DATA.assets||[]).filter(function(a){return (a.status||'')!=='Maintenance';}).map(function(a){
+    var m=(typeof _moneyFor==='function')?_moneyFor(a.name):null; var rate=(m&&m.baseRate)||a.rate||S.money.baseRate;
+    return { name:a.name, rate:Number(rate)||0, type:a.type||'', photo:a.photo||'', desc:a.desc||'' }; }); }
+  function _publicSiteConfig(){ return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
+    collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| '') }; }
+  function copyBookingLink(){ try{ navigator.clipboard.writeText(_bookingLink()); }catch(e){} toast('Booking link copied'); }
+  function publishBookingSite(){ if(!_guard('webEdit','Publishing your site'))return;
+    if(!ATLAS_BACKEND || !_apiCsrf){ toast('Your site is a preview. Publishing to a real link goes live once your Atlas backend is connected (see go-live steps).'); return; }
+    var slug=_bookingSlug();
+    var payload={ subdomain:slug, name:S.brand.name,
+      brand:{ color:S.brand.color, logo:S.brand.logo, initial:S.brand.initial, name:S.brand.name },
+      money:{ baseRate:S.money.baseRate, tax:S.money.tax, deposit:S.money.deposit, depositPct:S.money.depositPct, rateModel:S.money.rateModel, currency:S.money.currency },
+      settings:{ comms:_comms(), publicSite:{ published:true, headline:_web().headline||('Rent with '+S.brand.name), about:_web().about||'', assets:_publicSiteAssets(), config:_publicSiteConfig() } } };
+    toast('Publishing\u2026');
+    _api('/api/tenant/profile',{method:'PUT',body:payload}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var w=_web(); w.published=true; w.publishedSlug=res.json.subdomain||slug; save(); renderWebsite(); toast('Booking site published \u2014 your link is live'); }
+      else toast((res.json&&res.json.error)||'Could not publish \u2014 please try again'); }).catch(function(){ toast('Network error while publishing'); }); }
+  function _bookingSitePublished(){ return !!(ATLAS_BACKEND && _web().published); }
   function renderWebsite(){ var el=document.getElementById('webBody'); if(!el||!S) return; var w=_web();
     if(!_canBuildSite() && !w.built){ el.innerHTML=_webGateHtml(); return; }
     if(!w.built){ el.innerHTML=_webStartHtml(); return; }
@@ -6149,7 +6177,7 @@ const Atlas = (function(){
   function _webRefreshPreview(){ var p=document.getElementById('webPrev'); if(p) p.innerHTML=_webPreviewHtml(); }
   function _webBuilderHtml(w){
     var side='<div class="web-side">'
-      +'<div class="web-live"><span class="dot"></span><div>Live at <b>'+esc(_siteUrl())+'</b></div></div>'
+      +'<div class="web-live"><span class="dot"></span><div>'+(_bookingSitePublished()?('Live at <b>'+esc(_bookingLink())+'</b>'):'Preview &mdash; <b>publish below</b> to go live')+'</div></div>'
       +'<div class="set-block"><h3>Content</h3><div class="desc">Atlas.io drafted this. Edit anything.</div>'
         +'<div class="field"><label>Headline</label><input class="input" value="'+esc(w.headline)+'" oninput="Atlas.setWebField(\'headline\',this.value)"></div>'
         +'<div class="field"><label>Tagline</label><input class="input" value="'+esc(w.tagline)+'" oninput="Atlas.setWebField(\'tagline\',this.value)"></div>'
@@ -6161,15 +6189,22 @@ const Atlas = (function(){
         +'<label class="cfg-check"><input type="checkbox" '+(w.showContact?'checked':'')+' onchange="Atlas.toggleWebSection(\'showContact\',this.checked)">Contact &amp; booking</label>'
         +'<label class="cfg-check" style="margin-bottom:0"><input type="checkbox" '+(w.showReviews!==false?'checked':'')+' onchange="Atlas.toggleWebSection(\'showReviews\',this.checked)">Customer reviews'+(_allReviews().length?(' ('+_allReviews().length+')'):'')+'</label>'
       +'</div>'
+      +'<div class="set-block"><h3>Public booking site</h3><div class="desc">A branded page where customers book '+esc(S.fleet.nouns)+' directly &mdash; everything above is editable and updates when you re-publish.</div>'
+        +(ATLAS_BACKEND
+          ? ('<div class="field"><label>Your booking link</label><div style="display:flex;gap:8px"><input class="input mono" readonly value="'+esc(_bookingLink())+'"><button class="btn btn--ghost btn--sm" onclick="Atlas.copyBookingLink()">Copy</button></div></div>'
+             +'<button class="btn btn--primary" onclick="Atlas.publishBookingSite()">'+(_web().published?'Re-publish changes':'Publish booking site')+'</button>'
+             +(_web().published?'<div class="bk-lenhint" style="margin:8px 0 0;border-color:var(--brand);color:var(--ink)"><b>Live</b> &mdash; customers can book at your link now.</div>':''))
+          : '<div class="bk-lenhint" style="margin:0">This is a <b>preview</b>. Your public booking site and shareable link go live once your Atlas backend is connected (see go-live steps) &mdash; then Publish here. Nothing is served publicly until then.</div>')
+      +'</div>'
       +'<div class="set-block" id="domBlock"><h3>Domain</h3><div class="desc">Swap your web address anytime.</div>'+_domainHtml()+'</div>'
       +'<div class="set-block" id="webLegalBlock"><h3>Legal pages</h3><div class="desc">Every public site needs these. We build them compliant to your country/state.</div>'+_webLegalHtml()+'</div>'
       +'<div class="set-block"><h3>Connections &amp; API keys</h3><div class="desc">Save your integration keys here &mdash; stored securely on your account, never shared. Add, edit or remove them anytime.</div>'+_webKeysHtml()+'</div>'
       +'</div>';
     var prev='<div class="web-prev"><div class="browser"><div class="browser__bar"><div class="browser__dots"><i></i><i></i><i></i></div><div class="browser__url">'+esc(_siteUrl())+'</div></div>'
       +'<div class="browser__view" id="webPrev">'+_webPreviewHtml()+'</div></div>'
-      +'<div style="text-align:center;font-size:12px;color:var(--muted);margin-top:10px">This is your real site &mdash; the <b>Book</b> buttons create bookings in your dashboard.</div></div>';
-    return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><div><h2 style="font-size:22px">Website</h2><p style="color:var(--muted);font-size:14px">Your branded site, live and taking bookings.</p></div>'
-      +'<a class="btn btn--ghost" href="javascript:void 0" onclick="Atlas.toast(\'Opening '+esc(_siteUrl())+'\')">Visit site</a></div>'
+      +'<div style="text-align:center;font-size:12px;color:var(--muted);margin-top:10px">'+(_bookingSitePublished()?'This is your live site &mdash; the <b>Book</b> buttons create real bookings in your dashboard.':'Live preview &mdash; <b>Publish</b> (left) to put it online. The <b>Book</b> buttons create real bookings in your dashboard.')+'</div></div>';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><div><h2 style="font-size:22px">Website</h2><p style="color:var(--muted);font-size:14px">Your branded site '+(_bookingSitePublished()?'is live and taking bookings.':'&mdash; a preview until you publish.')+'</p></div>'
+      +(_bookingSitePublished()?('<a class="btn btn--ghost" href="'+esc(_bookingLink())+'" target="_blank" rel="noopener">Visit site</a>'):('<button class="btn btn--ghost" onclick="Atlas.publishBookingSite()">Publish to go live</button>'))+'</div>'
       +'<div class="web-grid">'+side+prev+'</div>';
   }
   function _webPreviewHtml(){ var w=_web(), rm=S.money.rateModel[0];
@@ -7008,7 +7043,7 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,

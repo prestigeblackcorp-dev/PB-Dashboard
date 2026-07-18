@@ -277,6 +277,101 @@ async function askGemini(key, q, context) {
   } catch (e) { return ''; }
 }
 
+// ================================================================ go-live systems (public booking + mailer + Stripe)
+// Everything here is ADDITIVE and KEY-GATED: with no RESEND_KEY / no connected Stripe key it degrades gracefully and
+// HONESTLY -- it returns {emailed:false,reason:'no_mailer'} / {paid:false,reason:'no_stripe'} and never fakes success.
+// Adding the key lights the same path up for real. The booking pipeline itself works on D1 alone (no keys needed).
+function jparse(s, fb) { try { return (typeof s === 'string' && s) ? JSON.parse(s) : (s && typeof s === 'object' ? s : fb); } catch (e) { return fb; } }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
+function money2(cents) { return '$' + (Math.round(Number(cents) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function renderTpl(str, vars) { return String(str || '').replace(/\{(\w+)\}/g, function (m, k) { return vars[k] != null ? String(vars[k]) : ''; }); }
+function slugify(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63); }
+
+// Normalize a tenant DB row's JSON columns into a usable profile object.
+function tenantProfile(t) {
+  return { id: t.id, name: t.name, subdomain: t.subdomain || '', fleet_type: t.fleet_type, plan: t.plan,
+    brand: jparse(t.brand, {}), money: jparse(t.money, {}), settings: jparse(t.settings, {}) };
+}
+
+// Server-authoritative price (in cents). Mirrors the client's BASE quote (per-asset rate x periods + tax + deposit) so
+// what the customer sees on the booking page and what the server charges a deposit on are the same number. Extras /
+// protection / promos stay owner-confirmed in the dashboard; this is the honest estimate + deposit the customer pays.
+function priceQuote(money, publishedAssets, assetName, periods) {
+  var p = Math.max(1, Math.min(3650, parseInt(periods, 10) || 1));
+  var a = (publishedAssets || []).filter(function (x) { return x && x.name === assetName; })[0];
+  var rate = (a && Number(a.rate) > 0) ? Number(a.rate) : (Number(money.baseRate) || 0);
+  var subtotal = rate * p;
+  var taxPct = Number(money.tax) || 0;
+  var tax = subtotal * taxPct / 100;
+  var total = subtotal + tax;
+  var deposit = Number(money.deposit) > 0 ? Number(money.deposit)
+    : (Number(money.depositPct) > 0 ? total * Number(money.depositPct) / 100 : 0);
+  var c = function (x) { return Math.round((Number(x) || 0) * 100); };
+  return { rateCents: c(rate), periods: p, subtotalCents: c(subtotal), taxPct: taxPct, taxCents: c(tax), totalCents: c(total), depositCents: c(deposit) };
+}
+
+// Resend mailer. HONEST: no RESEND_KEY -> {sent:false,reason:'no_mailer'} so a caller records "not sent", never "delivered".
+async function sendEmail(env, msg) {
+  if (!env.RESEND_KEY) return { sent: false, reason: 'no_mailer' };
+  if (!msg || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(msg.to || ''))) return { sent: false, reason: 'bad_recipient' };
+  try {
+    var fromAddr = env.MAIL_FROM || 'bookings@atlasrental.io';
+    var from = (msg.fromName ? (String(msg.fromName).replace(/[<>"\r\n]/g, '') + ' ') : '') + '<' + fromAddr + '>';
+    var r = await _fetchTimeout('https://api.resend.com/emails', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + env.RESEND_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: from, to: [msg.to], subject: String(msg.subject || '').slice(0, 240), html: msg.html, reply_to: msg.replyTo || undefined })
+    }, 10000);
+    var j = await r.json().catch(function () { return {}; });
+    return { sent: !!r.ok, reason: r.ok ? 'ok' : (j.message || ('http_' + r.status)), id: j.id };
+  } catch (e) { return { sent: false, reason: 'error' }; }
+}
+
+// Stripe hosted Checkout Session (form-encoded API; card entry stays on Stripe -> Atlas never touches a PAN -> SAQ-A).
+// HONEST: no key -> {ok:false,reason:'no_stripe'}. capture:'manual' places a refundable HOLD (deposits).
+async function stripeCheckout(secretKey, opts) {
+  if (!secretKey) return { ok: false, reason: 'no_stripe' };
+  try {
+    var form = []; var add = function (k, v) { form.push(encodeURIComponent(k) + '=' + encodeURIComponent(v)); };
+    add('mode', 'payment'); add('success_url', opts.successUrl); add('cancel_url', opts.cancelUrl);
+    add('line_items[0][quantity]', '1');
+    add('line_items[0][price_data][currency]', opts.currency || 'usd');
+    add('line_items[0][price_data][unit_amount]', String(Math.max(50, Math.round(opts.amountCents || 0))));
+    add('line_items[0][price_data][product_data][name]', String(opts.name || 'Booking').slice(0, 120));
+    if (opts.capture === 'manual') add('payment_intent_data[capture_method]', 'manual');
+    if (opts.email) add('customer_email', opts.email);
+    var md = opts.metadata || {}; for (var k in md) add('metadata[' + k + ']', String(md[k]));
+    var r = await _fetchTimeout('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + secretKey, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.join('&')
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    if (r.ok && j.url) return { ok: true, url: j.url, id: j.id };
+    return { ok: false, reason: (j.error && j.error.message) || ('http_' + r.status) };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// Verify a Stripe webhook signature (header "t=<ts>,v1=<hmac>") with HMAC-SHA256 so a forged "paid" event is rejected.
+async function stripeVerify(rawBody, sigHeader, secret) {
+  try {
+    if (!secret || !sigHeader) return false;
+    var parts = {}; String(sigHeader).split(',').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) parts[kv.slice(0, i)] = kv.slice(i + 1); });
+    if (!parts.t || !parts.v1) return false;
+    var key = await crypto.subtle.importKey('raw', enc(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    var sigBuf = await crypto.subtle.sign('HMAC', key, enc(parts.t + '.' + rawBody));
+    var hex = Array.prototype.map.call(new Uint8Array(sigBuf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+    return _ctEq(hex, parts.v1);
+  } catch (e) { return false; }
+}
+
+// A tenant's connected Stripe secret (decrypted from the integrations table), or '' if none connected.
+async function tenantStripeKey(env, tenantId) {
+  try {
+    var row = await env.DB.prepare('SELECT secret_enc FROM integrations WHERE tenant_id=? AND provider=?').bind(tenantId, 'stripe').first();
+    if (!row || !row.secret_enc) return '';
+    return await decSecret(env, row.secret_enc, tenantId + '|stripe');
+  } catch (e) { return ''; }
+}
+
 // ================================================================ router
 export default {
   async fetch(req, env) {
@@ -356,6 +451,153 @@ export default {
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
+      // ---- PUBLIC booking site + intake (no login; rate-limited; tenant resolved by its published subdomain slug) ----
+      // Works on D1 alone. Email + Stripe are progressive: absent keys -> honest {emailed:false}/{payUrl:null}, never faked.
+      const pm = path.match(/^\/api\/public\/([a-z0-9-]{1,63})(?:\/(book))?$/);
+      if (pm) {
+        const slug = pm[1], sub = pm[2];
+        const trow = await env.DB.prepare('SELECT * FROM tenants WHERE subdomain=?').bind(slug).first();
+        if (!trow) return err(404, 'No booking site at that address.');
+        const prof = tenantProfile(trow);
+        const pubSite = (prof.settings && prof.settings.publicSite) || {};
+        const published = !!pubSite.published;
+        const pubAssets = pubSite.assets || [];
+        const cfg = pubSite.config || {};
+
+        if (method === 'GET' && !sub) {
+          if (!published) return err(404, 'This booking site is not published yet.');
+          return json({ ok: true, business: prof.name, subdomain: slug,
+            brand: { color: prof.brand.color || '', logo: prof.brand.logo || '', initial: prof.brand.initial || (prof.name || 'A')[0] },
+            headline: pubSite.headline || '', about: pubSite.about || '',
+            unit: cfg.unit || 'day', noun: cfg.noun || 'item',
+            assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '' }; }),
+            config: { tax: Number(prof.money.tax) || 0, hasDeposit: !!(Number(prof.money.deposit) || Number(prof.money.depositPct)), currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false },
+            capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } });
+        }
+
+        if (method === 'POST' && sub === 'book') {
+          if (!published) return err(403, 'This booking site is not accepting bookings yet.');
+          const ip = req.headers.get('CF-Connecting-IP') || 'x';
+          if (!await rateLimit(env, 'pubbook:' + ip, 8, 3600000)) return err(429, 'Too many booking attempts. Please try again later.');
+          if (!await rateLimit(env, 'pubbookT:' + prof.id, 120, 3600000)) return err(429, 'This site is busy. Please try again shortly.');
+          const b = await req.json().catch(function () { return {}; });
+          if (!vStr(b.name, 120)) return err(400, 'Your name is required.');
+          if (!vEmail(b.email)) return err(400, 'A valid email is required.');
+          const assetName = (vStr(b.asset, 160) && pubAssets.some(function (a) { return a.name === b.asset; })) ? b.asset : (pubAssets[0] && pubAssets[0].name);
+          if (!assetName) return err(400, 'Please choose an available option.');
+          const periods = Math.max(1, Math.min(3650, parseInt(b.periods, 10) || 1));
+          const startTs = vInt(b.start) ? b.start : (Date.parse(String(b.start || '')) || Date.now());
+          const q = priceQuote(prof.money, pubAssets, assetName, periods);
+          const unitMs = ({ hour: 3600000, day: 86400000, week: 604800000, month: 2592000000 })[cfg.unit || 'day'] || 86400000;
+          const endTs = startTs + periods * unitMs;
+          const now = Date.now();
+          let custId = 'C-' + randId(10);
+          try {
+            const ex = await env.DB.prepare('SELECT id FROM customers WHERE tenant_id=? AND email=? LIMIT 1').bind(prof.id, b.email.toLowerCase()).first();
+            if (ex) custId = ex.id;
+            else await env.DB.prepare('INSERT INTO customers (id,tenant_id,name,email,phone,data,created_at) VALUES (?,?,?,?,?,?,?)')
+              .bind(custId, prof.id, String(b.name).slice(0, 120), b.email.toLowerCase(), String(b.phone || '').slice(0, 40), '{}', now).run();
+          } catch (e) {}
+          const token = randId(24), bref = 'BK-' + randId(8);
+          const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
+            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), quote: q, portalToken: token, status: 'Pending' };
+          try {
+            await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+              .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
+          } catch (e) { return err(500, 'Could not save your booking. Please try again.'); }
+          const comms = prof.settings.comms || {};
+          const vars = { name: String(b.name).split(' ')[0], business: prof.name, asset: assetName, periods: periods, unit: cfg.unit || 'day', total: money2(q.totalCents), deposit: money2(q.depositCents), ref: bref };
+          const cTpl = (comms.autos && comms.autos.confirm) || {};
+          const custMail = await sendEmail(env, { to: b.email, fromName: comms.fromName || prof.name, replyTo: comms.replyTo,
+            subject: renderTpl(cTpl.subject || 'Your booking with {business} is received', vars),
+            html: _emailShell(prof, '<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p><p>' + esc(prof.name) + ' will confirm with you shortly.</p>') });
+          const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
+          if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
+            subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
+            html: _emailShell(prof, '<h2>New website booking</h2><p><b>' + esc(String(b.name)) + '</b> (' + esc(b.email) + (b.phone ? ', ' + esc(String(b.phone)) : '') + ') requested <b>' + esc(assetName) + '</b> for ' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + '.</p><p>Estimated <b>' + money2(q.totalCents) + '</b>. Reference <b>' + esc(bref) + '</b>. Open Atlas to confirm.</p>') });
+          await audit(env, { tenant_id: prof.id }, req, 'public.book', { ref: bref, asset: assetName });
+          let payUrl = null;
+          if (q.depositCents > 0) {
+            const sk = await tenantStripeKey(env, prof.id);
+            if (sk) {
+              const co = await stripeCheckout(sk, { amountCents: q.depositCents, name: prof.name + ' deposit - ' + assetName, email: b.email,
+                successUrl: url.origin + '/api/portal/' + token + '?paid=1', cancelUrl: url.origin + '/api/portal/' + token,
+                capture: (cfg.depositHold ? 'manual' : 'automatic'), metadata: { booking: bref, tenant: prof.id, kind: 'deposit' } });
+              if (co.ok) payUrl = co.url;
+            }
+          }
+          return json({ ok: true, ref: bref, portal: url.origin + '/api/portal/' + token, emailed: custMail.sent, payUrl: payUrl,
+            message: 'Booking request received' + (custMail.sent ? ' - a confirmation email is on the way.' : (env.RESEND_KEY ? '.' : ' (email confirmations turn on once the owner connects a mailer).')) });
+        }
+      }
+
+      // ---- STRIPE webhook (public, signature-verified): the ONLY place a booking/charge flips to paid ----
+      if (path === '/api/stripe/webhook' && method === 'POST') {
+        const raw = await req.text();
+        const sig = req.headers.get('Stripe-Signature') || '';
+        const secret = env.STRIPE_WEBHOOK_SECRET || '';
+        if (!secret) return json({ ok: false, reason: 'no_webhook_secret' }, 200);   // not configured -> accept silently, do nothing
+        if (!await stripeVerify(raw, sig, secret)) return err(400, 'Invalid signature.');
+        let evt = {}; try { evt = JSON.parse(raw); } catch (e) { return err(400, 'Bad payload.'); }
+        const obj = (evt.data && evt.data.object) || {};
+        const md = obj.metadata || {};
+        if ((evt.type === 'checkout.session.completed' || evt.type === 'payment_intent.succeeded') && md.booking && md.tenant) {
+          try {
+            const row = await env.DB.prepare('SELECT id,data,revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
+            if (row) {
+              const d = jparse(row.data, {}); const amt = Math.round(Number(obj.amount_total || obj.amount || 0));
+              d.paid = d.paid || {}; d.paid[md.kind || 'payment'] = { at: Date.now(), amountCents: amt, stripe: obj.id || '' };
+              const rev = (md.kind === 'deposit') ? (Number(row.revenue_cents) || 0) : amt;
+              await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?')
+                .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant).run();
+              const tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(md.tenant).first();
+              if (tr && d.custEmail) { const pr = tenantProfile(tr); await sendEmail(env, { to: d.custEmail, fromName: pr.name,
+                subject: 'Payment received - ' + pr.name, html: _emailShell(pr, '<h2>Payment received</h2><p>Thanks! We received ' + money2(amt) + ' for booking <b>' + esc(md.booking) + '</b> (' + esc(d.asset || '') + ').</p>') }); }
+              await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid', { booking: md.booking, kind: md.kind, cents: amt });
+            }
+          } catch (e) {}
+        }
+        return json({ ok: true, received: true });
+      }
+
+      // ---- served customer pages (branded, self-contained; reachable via the existing /api/* route) ----
+      const bp = path.match(/^\/api\/book\/([a-z0-9-]{1,63})$/);
+      if (bp && method === 'GET') {
+        const tr = await env.DB.prepare('SELECT name,brand,settings FROM tenants WHERE subdomain=?').bind(bp[1]).first();
+        const pr = tr ? tenantProfile(tr) : null;
+        const live = pr && pr.settings.publicSite && pr.settings.publicSite.published;
+        const color = (pr && pr.brand && pr.brand.color) || '#1E6E4E';
+        if (!live) return new Response(_pageDoc('Not available', color, '<div class="card"><h2>Not available yet</h2><p class="muted">This booking site has not been published.</p></div>', ''), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        return new Response(_bookPageHtml(bp[1], color), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay))?$/);
+      if (ptp) {
+        const token = ptp[1], psub = ptp[2];
+        const brow = await env.DB.prepare('SELECT * FROM bookings WHERE portal_token=? LIMIT 1').bind(token).first();
+        if (!brow) { if (psub) return err(404, 'Booking not found.'); return new Response(_pageDoc('Not found', '#1E6E4E', '<div class="card"><h2>Booking not found</h2><p class="muted">This link may have expired.</p></div>', ''), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } }); }
+        const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(brow.tenant_id).first();
+        const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
+        const d = jparse(brow.data, {});
+        if (psub === 'data' && method === 'GET') {
+          return json({ ok: true, business: pr.name, brand: { color: pr.brand.color || '', logo: pr.brand.logo || '' },
+            ref: brow.id, status: brow.status, asset: d.asset || '', periods: d.periods || 1,
+            quote: d.quote || null, paid: d.paid || {}, cust: d.cust || '' });
+        }
+        if (psub === 'pay' && method === 'POST') {
+          const sk = await tenantStripeKey(env, brow.tenant_id);
+          if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Online payment is not enabled yet - the owner will arrange payment with you.' });
+          const q = d.quote || {}; const body = await req.json().catch(function () { return {}; });
+          const kind = body.kind === 'balance' ? 'balance' : 'deposit';
+          const amt = kind === 'balance' ? Math.max(0, (Number(q.totalCents) || 0) - (Number(q.depositCents) || 0)) : (Number(q.depositCents) || Number(q.totalCents) || 0);
+          if (amt < 50) return json({ ok: false, reason: 'nothing_due', message: 'Nothing is due online right now.' });
+          const co = await stripeCheckout(sk, { amountCents: amt, name: pr.name + ' - ' + kind + ' - ' + (d.asset || ''), email: d.custEmail,
+            successUrl: url.origin + '/api/portal/' + token + '?paid=1', cancelUrl: url.origin + '/api/portal/' + token,
+            metadata: { booking: brow.id, tenant: brow.tenant_id, kind: kind } });
+          return co.ok ? json({ ok: true, payUrl: co.url }) : json({ ok: false, reason: co.reason, message: 'Could not start checkout.' });
+        }
+        return new Response(_portalPageHtml(token, pr.brand.color || '#1E6E4E'), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+
       // ---- everything below requires a valid session ------------------------
       const ctx = await resolveSession(env, req);
 
@@ -368,6 +610,50 @@ export default {
       if (path === '/api/auth/me' && method === 'GET') {
         const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf });
+      }
+
+      // ---- tenant profile: publish brand/money/settings (+ public booking site) to the server ----
+      if (path === '/api/tenant/profile') {
+        if (method === 'GET') {
+          const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          return json({ ok: true, profile: t ? tenantProfile(t) : null });
+        }
+        if (method === 'PUT') {
+          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
+          const body = await req.json().catch(function () { return {}; });
+          const sets = [], vals = [];
+          if (body.brand && typeof body.brand === 'object') { sets.push('brand=?'); vals.push(JSON.stringify(body.brand)); }
+          if (body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }
+          if (body.settings && typeof body.settings === 'object') { sets.push('settings=?'); vals.push(JSON.stringify(body.settings)); }
+          if (vStr(body.name, 120)) { sets.push('name=?'); vals.push(body.name.slice(0, 120)); }
+          if (typeof body.subdomain === 'string') {
+            const sd = slugify(body.subdomain);
+            if (sd) {
+              const clash = await env.DB.prepare('SELECT id FROM tenants WHERE subdomain=? AND id<>?').bind(sd, ctx.tenant_id).first();
+              if (clash) return err(409, 'That booking-site address is taken - try another.');
+              sets.push('subdomain=?'); vals.push(sd);
+            }
+          }
+          if (!sets.length) return json({ ok: true, unchanged: true });
+          sets.push('updated_at=?'); vals.push(Date.now());
+          await env.DB.prepare('UPDATE tenants SET ' + sets.join(',') + ' WHERE id=?').bind(...vals, ctx.tenant_id).run();
+          await audit(env, ctx, req, 'tenant.profile', { fields: sets.length });
+          const t2 = await env.DB.prepare('SELECT subdomain FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          return json({ ok: true, subdomain: t2 ? t2.subdomain : '' });
+        }
+      }
+
+      // ---- email: send a REAL test to the owner (HONEST: sent:false + reason when no mailer is connected) ----
+      if (path === '/api/email/test' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        const body = await req.json().catch(function () { return {}; });
+        const to = vEmail(body.to) ? body.to : ctx.user.email;
+        const t = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const pr = tenantProfile(t || { name: 'Atlas Rental.io' });
+        const r = await sendEmail(env, { to: to, fromName: pr.name, subject: (pr.name || 'Atlas Rental.io') + ' - test email',
+          html: _emailShell(pr, '<h2>It works.</h2><p>This is a live test from your Atlas Rental.io mailer. If you can read this, your customers will get booking confirmations and receipts automatically.</p>') });
+        return json({ ok: r.sent, sent: r.sent, reason: r.reason, to: to });
       }
 
       // ---- generic tenant-scoped collection CRUD (the store seam) -----------
@@ -555,6 +841,55 @@ export default {
     } catch (e) { /* best-effort GC; a cron error must never surface */ }
   },
 };
+
+// Branded HTML email body (inline styles; renders in any inbox).
+function _emailShell(prof, inner) {
+  var color = (prof && prof.brand && /^#[0-9a-fA-F]{3,8}$/.test(prof.brand.color || '')) ? prof.brand.color : '#1E6E4E';
+  var name = (prof && prof.name) || 'Atlas Rental.io';
+  return '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;color:#141414">'
+    + '<div style="background:' + esc(color) + ';color:#fff;padding:18px 22px;border-radius:12px 12px 0 0;font-weight:700;font-size:18px">' + esc(name) + '</div>'
+    + '<div style="border:1px solid #eee;border-top:0;border-radius:0 0 12px 12px;padding:22px">' + inner
+    + '<p style="color:#888;font-size:12px;margin-top:22px">Sent by ' + esc(name) + ' &middot; powered by Atlas Rental.io</p></div></div>';
+}
+// Self-contained branded HTML document for the served customer pages (no external requests -> works anywhere).
+function _pageDoc(title, brandColor, bodyHtml, scriptJs) {
+  var brand = /^#[0-9a-fA-F]{3,8}$/.test(brandColor || '') ? brandColor : '#1E6E4E';
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title><style>'
+    + ':root{--brand:' + brand + '}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#f6f7f9;color:#141414;line-height:1.5}'
+    + '.wrap{max-width:620px;margin:0 auto;padding:20px 16px 60px}.hd{background:var(--brand);color:#fff;padding:20px 18px;border-radius:14px;font-weight:800;font-size:20px;display:flex;align-items:center;gap:10px}'
+    + '.card{background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:18px;margin-top:14px}label{display:block;font-size:13px;font-weight:600;margin:12px 0 5px}'
+    + 'input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d7d7d7;border-radius:9px;font-size:15px;font-family:inherit;background:#fff}'
+    + '.btn{display:block;width:100%;background:var(--brand);color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;cursor:pointer;margin-top:16px}.btn:disabled{opacity:.5}'
+    + '.muted{color:#777;font-size:13px}.row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid #eee}.tot{display:flex;justify-content:space-between;font-weight:700;margin-top:6px;font-size:16px}.err{color:#b42318;font-size:13px;margin-top:8px}h2{margin:0 0 8px}</style></head><body><div class="wrap">' + bodyHtml + '</div><scr' + 'ipt>' + scriptJs + '</scr' + 'ipt></body></html>';
+}
+
+// Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
+function _bookPageHtml(slug, color) {
+  var body = '<div id="app" class="card">Loading&hellip;</div>';
+  var js = `
+var S=${JSON.stringify(slug)};var D=null;
+function el(i){return document.getElementById(i)}
+function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var p=Math.max(1,parseInt(el('per').value,10)||1);var s=(a.rate||0)*p;var t=s*(D.config.tax||0)/100;el('rate').textContent=a.rate?('At '+money(a.rate*100)+' / '+D.unit):'';el('qz').innerHTML='<div class=row><span>'+p+' '+esc(D.unit)+(p>1?'s':'')+'</span><span>'+money(s*100)+'</span></div>'+(D.config.tax?('<div class=row><span>Tax '+D.config.tax+'%</span><span>'+money(t*100)+'</span></div>'):'')+'<div class=tot><span>Estimated total</span><span>'+money((s+t)*100)+'</span></div>'}
+function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
+fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><select id=asset onchange=qt()>'+(j.assets||[]).map(function(a){return '<option>'+esc(a.name)+'</option>'}).join('')+'</select><div id=rate class=muted style="margin-top:5px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput=qt()><label>Start date</label><input id=st type=date><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
+`;
+  return _pageDoc('Book', color, body, js);
+}
+// Served customer portal: loads the booking by its token, shows status + pay-deposit/balance (if Stripe connected).
+function _portalPageHtml(token, color) {
+  var body = '<div id="app" class="card">Loading&hellip;</div>';
+  var js = `
+var T=${JSON.stringify(token)};
+function el(i){return document.getElementById(i)}
+function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function pay(kind){fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}alert(j.message||'Payment is not available right now.')}).catch(function(){alert('Network error')})}
+fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>'}else{pays='<p class=muted>All settled. Thank you!</p>'}el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div><div class=card>'+pays+'</div>'}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
+`;
+  return _pageDoc('Your booking', color, body, js);
+}
 
 // NOT NULL columns that must be present on create (else a clean 400, not a DB 500).
 const REQUIRED = { assets: ['name'], charges: ['amount_cents'], ledger: ['kind'], promos: ['code'] };
