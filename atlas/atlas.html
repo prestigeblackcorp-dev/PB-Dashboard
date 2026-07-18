@@ -1733,6 +1733,7 @@ const Atlas = (function(){
       _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items);
       _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items);
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
+      if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
     }).catch(function(){}); }
   function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
     local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); } });
@@ -6048,6 +6049,24 @@ const Atlas = (function(){
     }
   }
   function _xBtn(){ return '<button class="icon-btn" aria-label="Close" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>'; }   // fix: a11y name on the modal close X (used ~48x)
+  // ---- Atlas PLATFORM billing: send the owner to Stripe hosted Checkout on ATLAS's account (so Atlas gets paid). Live only. ----
+  function _billingCheckout(kind,params){ var body={kind:kind}; for(var k in (params||{})) body[k]=params[k];
+    toast('Opening secure checkout...');
+    _api('/api/billing/checkout',{method:'POST',body:body}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.url){ window.location.href=res.json.url; }
+      else { toast((res.json&&res.json.error)||'Could not start checkout - please try again'); }
+    }).catch(function(){ toast('Network error starting checkout'); }); }
+  // On return from Stripe Checkout (Stripe only redirects here AFTER a completed payment), reflect the purchase locally; the webhook is the server-authoritative record.
+  function _billingReturn(){ try{ var q=new URLSearchParams(location.search); var b=q.get('billing'); if(!b) return;
+    if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack');
+      if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
+      else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; save(); } }
+      else if(kind==='website'){ S.websitePaid=true; save(); }
+      try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){}
+      setTimeout(function(){ toast('Payment received - thank you! You are all set.'); }, 500);
+    }
+    try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
+  }catch(e){} }
   function openPlans(){
     openModal('<div class="modal__head"><h3>Choose your plan</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body" style="padding-top:10px">'+TIERS.filter(function(t){return !t.owner && !t.comp;}).map(function(t){ var cur=_isActive()&&S.tier===t.id;
@@ -6072,8 +6091,8 @@ const Atlas = (function(){
   function confirmSubscribe(tierId){
     if(!_guard('billing','Managing billing'))return;
     var t=_tier(tierId);
-    // Real charging happens via Stripe hosted Checkout at go-live (PAYMENTS_LIVE). No PAN is read here.
-    if(PAYMENTS_LIVE){ /* go-live: redirect to Stripe Checkout, then activate on the subscription webhook, not here */ }
+    // Real charging happens via Stripe hosted Checkout on Atlas's own account. No PAN is read here.
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('plan',{tier:t.id}); return; }   // live: money flows to Atlas; plan activates on the webhook + on the success return
     var planChange=!(S.plan==='active' && S.tier===t.id);   // fix: a card-only update on the same active tier must NOT reset the billing cycle or free credits
     S.plan='active'; S.tier=t.id;
     if(planChange){ S.subscribedAt=Date.now(); S.credits={free:t.credits, purchased:(S.credits&&S.credits.purchased)||0, weekStart:_weekStart()}; }
@@ -6089,6 +6108,7 @@ const Atlas = (function(){
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">A credit = one Atlas.io action. Purchased credits never expire.</p></div>');
   }
   function buyCredits(i){ if(!_guard('billing','Managing billing'))return; var p=CREDIT_PACKS[i]; if(!p) return;
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('credits',{pack:String(p.credits)}); return; }
     if(!S.card){ toast('Choose a plan first to save a card'); openPlans(); return; }
     _addCredits(p.credits); closeModal(); renderTrialBox(); buildAio(); if(setCur==='billing')renderSet(); toast('+'+p.credits.toLocaleString()+' credits ($'+p.price+' to '+S.card.brand+' ..'+S.card.last4+')'); }
   /* ---- PLAN GUARDRAILS: vehicle cap + prorated upgrades + paid-feature gating (Phase 2) ---- */
@@ -7043,7 +7063,9 @@ const Atlas = (function(){
       +'<div class="dom-opt" onclick="Atlas.confirmWebsiteAddon(\'monthly\')"><div style="display:flex;justify-content:space-between;align-items:center"><div><b>Monthly</b><small>Lower upfront, cancel anytime</small></div><b style="font-size:17px;color:var(--ink)">$19<span style="font-size:12px;color:var(--muted);font-weight:600">/mo</span></b></div></div>'
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px">Or it is included free on Enterprise and up.</p></div>');
   }
-  function confirmWebsiteAddon(mode){ if(!_guard('billing','Managing billing'))return; if(!S.card){ closeModal(); toast('Choose a plan first to save a card'); openPlans(); return; }   // fix: billing RBAC guard
+  function confirmWebsiteAddon(mode){ if(!_guard('billing','Managing billing'))return;
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('website',{plan:(mode==='once'?'once':'mo')}); return; }
+    if(!S.card){ closeModal(); toast('Choose a plan first to save a card'); openPlans(); return; }   // fix: billing RBAC guard
     S.websitePaid=true; S.websitePlan=mode; save(); closeModal(); renderWebsite();
     toast('Website unlocked '+(mode==='once'?'($199 one-time)':'($19/mo)')+' &mdash; now build it');
   }
@@ -7199,7 +7221,7 @@ const Atlas = (function(){
         S.money.rateModel=old.rateModel||'day'; S.money.baseRate=old.baseRate||150; S.money.tax=old.tax||0;
         save();
       }
-      if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _kickLiveTour(); }
+      if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _billingReturn(); _kickLiveTour(); }
       else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }  // resume setup exactly where they left off
       else if(S){ applyBrand(); startTrial(); }
       else { store.logout(); show('landing'); }   // dangling session, no tenant

@@ -406,14 +406,17 @@ async function stripeCheckout(secretKey, opts) {
   if (!secretKey) return { ok: false, reason: 'no_stripe' };
   try {
     var form = []; var add = function (k, v) { form.push(encodeURIComponent(k) + '=' + encodeURIComponent(v)); };
-    add('mode', 'payment'); add('success_url', opts.successUrl); add('cancel_url', opts.cancelUrl);
+    var mode = opts.mode === 'subscription' ? 'subscription' : 'payment';
+    add('mode', mode); add('success_url', opts.successUrl); add('cancel_url', opts.cancelUrl);
     add('line_items[0][quantity]', '1');
     add('line_items[0][price_data][currency]', opts.currency || 'usd');
     add('line_items[0][price_data][unit_amount]', String(Math.max(50, Math.round(opts.amountCents || 0))));
-    add('line_items[0][price_data][product_data][name]', String(opts.name || 'Booking').slice(0, 120));
-    if (opts.capture === 'manual') add('payment_intent_data[capture_method]', 'manual');
+    add('line_items[0][price_data][product_data][name]', String(opts.name || 'Atlas Rental.io').slice(0, 120));
+    if (mode === 'subscription') add('line_items[0][price_data][recurring][interval]', opts.interval || 'month');   // recurring price built inline -> no pre-made Stripe Product/Price needed
+    if (opts.capture === 'manual' && mode === 'payment') add('payment_intent_data[capture_method]', 'manual');
     if (opts.email) add('customer_email', opts.email);
     var md = opts.metadata || {}; for (var k in md) add('metadata[' + k + ']', String(md[k]));
+    if (mode === 'subscription') { for (var sk in md) add('subscription_data[metadata][' + sk + ']', String(md[sk])); }   // propagate to the subscription so renewal/cancel events carry the tenant + tier
     var r = await _fetchTimeout('https://api.stripe.com/v1/checkout/sessions', {
       method: 'POST', headers: { 'Authorization': 'Bearer ' + secretKey, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form.join('&')
@@ -423,6 +426,13 @@ async function stripeCheckout(secretKey, opts) {
     return { ok: false, reason: (j.error && j.error.message) || ('http_' + r.status) };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
+
+// ---- Atlas PLATFORM billing (Atlas gets paid): server-authoritative prices for the SaaS subscription + one-time purchases,
+// charged on the platform's OWN Stripe account (env.PLATFORM_STRIPE_KEY), separate from each tenant's connected Stripe. ----
+const PLAN_PRICE_CENTS = { starter: 4999, pro: 19900, enterprise: 49900, business: 79900, unlimited: 149900 };
+const CREDIT_PACK_CENTS = { '500': 2500, '2000': 8000, '5000': 17500 };
+const WEBSITE_ADDON_CENTS = { once: 19900, mo: 1900 };
+function _planLabel(t) { return ({ starter: 'Starter', pro: 'Pro', enterprise: 'Enterprise', business: 'Business', unlimited: 'Enterprise Unlimited' })[t] || String(t || ''); }
 
 // Verify a Stripe webhook signature (header "t=<ts>,v1=<hmac>") with HMAC-SHA256 so a forged "paid" event is rejected.
 async function stripeVerify(rawBody, sigHeader, secret) {
@@ -476,7 +486,7 @@ export default {
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
-          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY };
+          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET) };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
@@ -656,6 +666,21 @@ export default {
             }
           } catch (e) {}
         }
+        // ---- PLATFORM billing (Atlas's own subscription revenue): flip the tenant's plan COLUMN, which the client cannot write, so it is server-authoritative ----
+        try {
+          if (evt.type === 'checkout.session.completed' && md.billing === 'plan' && md.tenant) {
+            await env.DB.prepare('UPDATE tenants SET plan=?, updated_at=? WHERE id=?').bind('active', Date.now(), md.tenant).run();
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.subscribed', { tier: md.tier });
+          } else if (evt.type === 'customer.subscription.deleted' && md.billing === 'plan' && md.tenant) {
+            await env.DB.prepare('UPDATE tenants SET plan=?, updated_at=? WHERE id=?').bind('trial', Date.now(), md.tenant).run();
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
+          } else if (evt.type === 'checkout.session.completed' && (md.billing === 'credits' || md.billing === 'website') && md.tenant) {
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: md.billing, pack: md.pack, plan: md.plan });
+          } else if (evt.type === 'invoice.payment_failed') {
+            const _im = (obj.subscription_details && obj.subscription_details.metadata) || {};
+            if (_im.tenant) await audit(env, { tenant_id: _im.tenant }, req, 'billing.payment_failed', {});
+          }
+        } catch (e) {}
         return json({ ok: true, received: true });
       }
 
@@ -914,6 +939,39 @@ export default {
       }
 
       // ---- integrations: store a tenant key (encrypted; never returned) ------
+      // ---- PLATFORM billing: start a Stripe Checkout on Atlas's OWN account so ATLAS gets paid (subscriptions + one-time) ----
+      if (path === '/api/billing/checkout' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        const pk = env.PLATFORM_STRIPE_KEY || '';
+        if (!pk) return err(400, 'Platform billing is not configured yet.');
+        const body = await req.json().catch(() => ({}));
+        const origin = env.APP_ORIGIN || 'https://atlasrental.io';
+        const kind = String(body.kind || '');
+        let name, amountCents, mode = 'payment', interval, meta = { tenant: ctx.tenant_id, email: ctx.user.email };
+        if (kind === 'plan') {
+          const tier = String(body.tier || ''); amountCents = PLAN_PRICE_CENTS[tier];
+          if (!amountCents) return err(400, 'Unknown plan.');
+          name = 'Atlas Rental.io ' + _planLabel(tier) + ' plan'; mode = 'subscription'; interval = 'month';
+          meta.billing = 'plan'; meta.tier = tier;
+        } else if (kind === 'credits') {
+          const pack = String(body.pack || ''); amountCents = CREDIT_PACK_CENTS[pack];
+          if (!amountCents) return err(400, 'Unknown credit pack.');
+          name = pack + ' Atlas.io credits'; meta.billing = 'credits'; meta.pack = pack;
+        } else if (kind === 'website') {
+          const plan = body.plan === 'mo' ? 'mo' : 'once'; amountCents = WEBSITE_ADDON_CENTS[plan];
+          name = 'Atlas Rental.io hosted website' + (plan === 'mo' ? ' (monthly)' : ' (one-time)');
+          if (plan === 'mo') { mode = 'subscription'; interval = 'month'; }
+          meta.billing = 'website'; meta.plan = plan;
+        } else { return err(400, 'Unknown purchase kind.'); }
+        const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval,
+          successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : ''),
+          cancelUrl: origin + '/?billing=cancel', metadata: meta });
+        if (!co.ok) return err(502, 'Could not start checkout: ' + co.reason);
+        await audit(env, ctx, req, 'billing.checkout', { kind: kind, tier: body.tier, pack: body.pack });
+        return json({ ok: true, url: co.url });
+      }
+
       if (path === '/api/integrations/connect' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!ctx.user || ctx.user.role !== 'owner') return err(403, 'Only the account owner can connect payment integrations.');   // guards the tenant's Stripe secret from any non-owner session
