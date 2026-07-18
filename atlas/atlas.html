@@ -1675,7 +1675,7 @@ const Atlas = (function(){
   // Honest capability gates. These stay FALSE until the matching Worker infrastructure is actually deployed,
   // so the UI never tells an owner (or their customer) that an email was delivered or a card was charged when
   // nothing moved. Flip to true ONLY in lockstep with the real backend going live (see GO-LIVE.md).
-  var EMAIL_LIVE=false;                 // true only when the Worker mailer (/api/email + verified Resend domain) is live
+  var EMAIL_LIVE=true;                  // LIVE 2026-07-18: Resend domain verified + API key (full access) + MAIL_FROM=hello@ on the worker; confirm delivery via Settings > Email > Send test
   var PAYMENTS_LIVE=false;              // true only when Stripe endpoints + webhook + keys are live (real charges/holds)
   var _apiCsrf=null;
   function setBackend(on){ ATLAS_BACKEND=!!on; }
@@ -1710,6 +1710,9 @@ const Atlas = (function(){
     _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ if(res.status===404) _api('/api/data/'+kind,{method:'POST',body:body}).catch(function(){}); }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
   function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
+    // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
+    if(settings.trackers){ var _tk={}; for(var _a in settings.trackers) _tk[_a]=settings.trackers[_a]; delete _tk.apiKey; settings.trackers=_tk; }
+    if(settings.comms){ var _cm={}; for(var _b in settings.comms) _cm[_b]=settings.comms[_b]; delete _cm.resendKey; settings.comms=_cm; }
     _api('/api/tenant/profile',{method:'PUT',body:{name:(S.brand&&S.brand.name)||'',brand:S.brand,money:S.money,settings:settings}}).catch(function(){}); }
   // Diff current local state vs last-mirrored -> PUT the changed (stamp _t), DELETE the removed, PUT the profile if changed.
   function _srvSyncPush(){ if(!ATLAS_BACKEND||!_apiCsrf) return;
@@ -3399,7 +3402,7 @@ const Atlas = (function(){
     return '<div class="set-block"><h3>Signed documents &amp; activity</h3><div class="desc">Every agreement you send is tracked here &mdash; sent, opened and signed, each timestamped, saved and downloadable.</div>'+body+'</div>'; }
   function _assetCard(a){ var ten=a.tenant&&a.tenant.name;
     return `<div class="asset" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
-      <div class="asset__img"${a.photo?` style="background-image:url('${a.photo}');background-size:cover;background-position:center"`:''}>${a.photo?'':`<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`}
+      <div class="asset__img"${a.photo?` style="background-image:url('${_cssUrl(a.photo)}');background-size:cover;background-position:center"`:''}>${a.photo?'':`<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`}
       <span class="chip chip--${a.status==='Available'?'ok':a.status==='Maintenance'?'warn':'info'}" style="position:absolute;top:10px;left:10px"><span class="dot"></span>${a.status}</span></div>
       <div class="asset__body"><b>${esc(a.name)}</b>${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(_fterm('book')==='reservation'?'Tenant':'Renter')}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div></div>`; }
   function renderFleet(){
@@ -3787,21 +3790,24 @@ const Atlas = (function(){
   function bkRepeat(id){ if(!_guard('bookEdit','Creating bookings'))return; var b=_getBooking(id); if(!b)return;
     openModal('<div class="modal__head"><h3>Repeat this booking</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 12px">Create a future series for '+esc(b.cust||'this customer')+' &mdash; same '+esc(S.fleet.noun)+', same length and price.</div>'
-      +'<div class="row2"><div class="field"><label>Repeat</label><select class="select" id="rpEvery"><option value="7">Every week</option><option value="14">Every 2 weeks</option><option value="30" selected>Every month</option></select></div>'
+      +'<div class="row2"><div class="field"><label>Repeat</label><select class="select" id="rpEvery"><option value="7">Every week</option><option value="14">Every 2 weeks</option><option value="month" selected>Every month</option></select></div>'
       +'<div class="field"><label>How many</label><select class="select" id="rpCount">'+[2,3,4,5,6,8,10,12].map(function(n){return '<option value="'+n+'"'+(n===3?' selected':'')+'>'+n+' times</option>';}).join('')+'</select></div></div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doRepeat(\''+id+'\')">Create series</button></div>'); }
-  function doRepeat(id){ var b=_getBooking(id); if(!b)return; var every=parseInt(val('rpEvery'))||30, count=parseInt(val('rpCount'))||3;
-    var base=Number(b.startTs)||Date.now(), span=(Number(b.endTs)&&Number(b.endTs)>base)?(Number(b.endTs)-base):0, made=0;
-    for(var i=1;i<=count;i++){ var nb={}; for(var k in b) nb[k]=b[k];
-      nb.id=_nextBkId(); nb.startTs=base+every*86400000*i; nb.endTs=span?(nb.startTs+span):0; nb.status='Confirmed'; nb.createdAt=Date.now(); nb.recurringOf=b.id;   // _nextBkId() = max id + 1 over ALL current bookings (incl. clones already added this loop) -> collision-proof; the old Date.now()%100000 wrapped every 100s and could overwrite a real booking
+  function doRepeat(id){ var b=_getBooking(id); if(!b)return; var everyRaw=val('rpEvery')||'month', count=parseInt(val('rpCount'))||3;
+    var base=Number(b.startTs)||Date.now(), span=(Number(b.endTs)&&Number(b.endTs)>base)?(Number(b.endTs)-base):0, made=0, skipped=0;
+    var _adv=function(n){ if(everyRaw==='month'){ var d=new Date(base); d.setMonth(d.getMonth()+n); return d.getTime(); } return base+(parseInt(everyRaw,10)||7)*86400000*n; };   // real calendar month for the monthly cadence (was a flat 30 days that drifted off-calendar); day-math for weekly/biweekly
+    for(var i=1;i<=count;i++){ var _st=_adv(i), _en=span?(_st+span):0;
+      if(span && typeof _availabilityConflict==='function' && _availabilityConflict(b.asset, _st, _en, null)){ skipped++; continue; }   // never silently stack an overlapping / blacked-out occurrence (the one recurring path that skipped the availability check)
+      var nb={}; for(var k in b) nb[k]=b[k];
+      nb.id=_nextBkId(); nb.startTs=_st; nb.endTs=_en; nb.status='Confirmed'; nb.createdAt=Date.now(); nb.recurringOf=b.id;   // _nextBkId() = max id + 1 over ALL current bookings -> collision-proof
       nb.extras=b.extras?JSON.parse(JSON.stringify(b.extras)):[]; nb.discount=b.discount?JSON.parse(JSON.stringify(b.discount)):{type:'none',value:0};   // deep-clone so editing one occurrence never mutates the source or its siblings
       nb.quote=b.quote?JSON.parse(JSON.stringify(b.quote)):calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount});
       delete nb.charges; delete nb.incidents; delete nb.review; delete nb.cancelFee; delete nb.cancelledAt; delete nb.portal;
       delete nb.promoCode; delete nb.referredByCode; delete nb.refAwarded;   // a recurring occurrence must not re-consume a promo cap slot or re-award a referral on each completion
       delete nb.conditionMedia; delete nb.claim; delete nb.hold; delete nb.meter; delete nb.plan; delete nb.giftRedemptions; delete nb.idVerified; delete nb.idVerifiedAt; delete nb.idRejected; delete nb.idRejectedAt;   // fix: a clone must not inherit the prior rental's photos/claim/hold/meter/plan/gift/ID-verification
       _upsertBooking(nb); made++; }
-    _logEvent('booking','Created '+made+' recurring bookings from '+b.id,{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
-    var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; toast(made+' recurring bookings created'); }
+    _logEvent('booking','Created '+made+' recurring bookings from '+b.id+(skipped?(' ('+skipped+' skipped -- dates unavailable)'):''),{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
+    var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; toast(made+' recurring bookings created'+(skipped?(' \u2014 '+skipped+' skipped (dates unavailable)'):'')); }
   // ---- Booking-level ID verification ----
   function bkToggleVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=true; b.idVerifiedAt=Date.now(); b.idRejected=false; delete b.idRejectedAt;
     _upsertBooking(b); _logEvent('booking','ID verified for '+b.id,{booking:b.id}); save(); openBooking(id); toast('ID marked verified'); }
@@ -6378,7 +6384,7 @@ const Atlas = (function(){
       +'<h1>'+esc(w.headline||S.brand.name)+'</h1><p>'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
       +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>';
     if(w.showFleet){ var _bookable=(DATA.assets||[]).filter(function(a){return a.status!=='Maintenance';});
-      var _card=function(a){ return '<div class="site__car"><div class="site__car__img"'+(a.photo?(' style="background-image:url(\''+a.photo+'\');background-size:cover;background-position:center"'):'')+'>'+(a.photo?'':'<svg viewBox="0 0 24 24" fill="none" style="width:34px;height:34px"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>')+'</div>'
+      var _card=function(a){ return '<div class="site__car"><div class="site__car__img"'+(a.photo?(' style="background-image:url(\''+_cssUrl(a.photo)+'\');background-size:cover;background-position:center"'):'')+'>'+(a.photo?'':'<svg viewBox="0 0 24 24" fill="none" style="width:34px;height:34px"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>')+'</div>'
         +'<div class="site__car__b"><b>'+esc(a.name)+'</b><div class="row"><span class="price">'+money(a.rate)+'/'+rm+'</span><button class="site__car__book" onclick="Atlas.webBookNow(\''+esc(a.name).replace(/'/g,"\\'")+'\')">Book</button></div></div></div>'; };
       var _sel=(typeof _fleetSel==='function'?_fleetSel():[(S.fleet&&S.fleet.id)]);
       if(_sel.length>1){   // multi-type: one titled product section per asset type the owner rents (offer every product line from one site)
@@ -6601,7 +6607,7 @@ const Atlas = (function(){
       collected:rentalPaid+chPaid, totalDue:rentalDue+chDue, twoStep:twoStep, paidInFull:(rentalDue===0) }; }
   function _portalHomeHtml(b,p){ var pc=_portalCfg(), sec=pc.sections; var q=b.quote||{}; var total=_r2(q.total||0), due=_r2(q.dueNow||total), hold=_r2(q.hold||0);
     var signed=!!p.signedAt, paid=!!p.balancePaidAt, dep=!!p.depositPaidAt;
-    var _pa=(DATA.assets||[]).filter(function(x){return x.name===b.asset;})[0], _paImg=(_pa&&_pa.photo)?('<div style="height:150px;border-radius:12px;background-image:url(\''+_pa.photo+'\');background-size:cover;background-position:center;margin:0 0 12px;border:1px solid var(--line)"></div>'):'';   // show the booked asset's photo to the customer (the "shown on your portal" promise)
+    var _pa=(DATA.assets||[]).filter(function(x){return x.name===b.asset;})[0], _paImg=(_pa&&_pa.photo)?('<div style="height:150px;border-radius:12px;background-image:url(\''+_cssUrl(_pa.photo)+'\');background-size:cover;background-position:center;margin:0 0 12px;border:1px solid var(--line)"></div>'):'';   // show the booked asset's photo to the customer (the "shown on your portal" promise)
     var h='<div class="portal__body">'+(pc.welcome?'<div class="portal__welcome">'+esc(pc.welcome)+'</div>':'')
       +'<div class="portal__hi">Hi '+esc((b.cust||'there').split(' ')[0])+' \u{1F44B}</div>'
       +_paImg
@@ -6713,7 +6719,7 @@ const Atlas = (function(){
   function _viewPortalDoc(id, idx){ var b=_getBooking(id)||_pBk(); if(!b)return; var d=(_portal(b).docs||[])[idx]; if(!d){ toast('Document not found'); return; }
     if(!d.src){ toast(esc(d.name)+' \u2014 on file (no preview)'); return; }
     if(d.kind==='image'){ openModal('<div class="modal__head"><h3>'+esc(d.name)+'</h3>'+_xBtn()+'</div><div class="modal__body" style="text-align:center"><img src="'+d.src+'" alt="'+esc(d.name)+'" style="max-width:100%;border-radius:10px;border:1px solid var(--line)"></div>'); return; }
-    try{ var w=window.open(); if(w){ w.document.write('<iframe src="'+d.src+'" style="border:0;width:100%;height:100%;position:absolute;inset:0"></iframe>'); } else { var a=document.createElement('a'); a.href=d.src; a.download=d.name||'document'; a.click(); } }catch(e){ toast('Could not open here'); } }
+    try{ var w=window.open(); if(w){ w.document.write('<iframe src="'+String(d.src||'').replace(/["<>]/g,'')+'" style="border:0;width:100%;height:100%;position:absolute;inset:0"></iframe>'); } else { var a=document.createElement('a'); a.href=d.src; a.download=d.name||'document'; a.click(); } }catch(e){ toast('Could not open here'); } }
   function _portalDocsOwnerHtml(b){ var ds=(_portal(b).docs||[]); if(!ds.length) return '<div class="bk-lenhint" style="margin:0">Nothing uploaded yet &mdash; the customer adds their ID and documents from their portal.</div>';
     return '<div style="display:flex;flex-direction:column;gap:6px">'+ds.map(function(d,i){ var open=d.src?(' onclick="Atlas._viewPortalDoc(\''+b.id+'\','+i+')" style="cursor:pointer"'):''; return '<div class="mp-row"'+open+'><span style="min-width:0"><b style="color:var(--ink)">'+esc(d.name)+'</b> <span style="font-size:11px;color:var(--muted)">'+_stamp(d.at)+(d.note?(' &middot; '+esc(d.note)):'')+'</span></span>'+(d.src?'<span class="link" style="font-size:12px">View</span>':'<span style="font-size:11px;color:var(--muted)">on file</span>')+'</div>'; }).join('')+'</div>'; }
   /* ---- Pre-rental condition media: time-stamped photos + video on every booking, shown to the customer in the portal (any rental type) ---- */
@@ -7156,6 +7162,7 @@ const Atlas = (function(){
   function setLogo(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{S.brand.logo=e.target.result;save();buildApp();renderSet();toast('Logo updated');};r.readAsDataURL(f);}
 
   function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+  function _cssUrl(s){ return String(s==null?'':s).replace(/['"()\\\r\n<>]/g,''); }   // safe to interpolate into a CSS url('...') context (owner-uploaded photos are data:/https URLs; these chars only appear as a breakout attempt)
   function cap(s){return String(s||'').charAt(0).toUpperCase()+String(s||'').slice(1)}
   function firstWord(s){return String(s||'').trim().split(/\s+/)[0]||'there'}
   // Owner's display first-name, skipping the un-personalized placeholders ('Owner'/'Your'/'Your Company') so the
