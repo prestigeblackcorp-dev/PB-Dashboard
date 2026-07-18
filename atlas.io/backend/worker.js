@@ -474,6 +474,28 @@ async function _cfHostnameActive(env, hostname) {
   return !!(r && r.status === 'active' && r.ssl && r.ssl.status === 'active');
 }
 
+// ---- ATLAS-branded itemized receipt emailed to the USER (tenant) when they pay ATLAS for a subscription / credits / website / domain. ----
+function _atlasReceiptHtml(o) {
+  const row = function (a, b, strong) { return '<tr><td style="padding:9px 0;color:' + (strong ? '#0b1a12;font-weight:800' : '#33443c') + ';font-size:14px' + (strong ? ';border-top:1px solid #e4ebe7' : '') + '">' + a + '</td><td style="padding:9px 0;text-align:right;font-variant-numeric:tabular-nums;color:' + (strong ? '#0b1a12;font-weight:800' : '#0b1a12') + ';font-size:14px' + (strong ? ';border-top:1px solid #e4ebe7' : '') + '">' + b + '</td></tr>'; };
+  return '<div style="max-width:520px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0b1a12">'
+    + '<div style="display:flex;align-items:center;gap:11px;padding:2px 0 14px;border-bottom:2px solid #1E6E4E">'
+    + '<div style="width:36px;height:36px;border-radius:9px;background:#1E6E4E;display:flex;align-items:center;justify-content:center;flex:none"><svg viewBox="0 0 24 24" width="21" height="21" fill="none"><path d="M12 3 3 20h4l5-10 5 10h4L12 3Z" fill="#eafff4"/></svg></div>'
+    + '<div style="flex:1"><div style="font-size:16px;font-weight:800;letter-spacing:.2px">Atlas Rental.io</div><div style="font-size:12px;color:#5c6f66">Receipt ' + esc(o.ref || '') + '</div></div>'
+    + '<div style="font-size:12px;color:#5c6f66">' + esc(o.dateStr || '') + '</div></div>'
+    + '<div style="padding:14px 0;font-size:13px;color:#33443c">Billed to <b>' + esc(o.to || '') + '</b>' + (o.business ? (' &middot; ' + esc(o.business)) : '') + '</div>'
+    + '<table style="width:100%;border-collapse:collapse">'
+    + row(esc(o.lineLabel || 'Atlas Rental.io'), esc(o.amountStr || ''))
+    + (o.taxStr ? row('Sales tax', esc(o.taxStr)) : '')
+    + row('Total paid', esc(o.totalStr || o.amountStr || ''), true)
+    + '</table>'
+    + '<div style="margin-top:16px;padding:11px 13px;background:#eef6f1;border-radius:9px;font-size:12.5px;color:#2d4438"><b>Paid</b> &middot; thank you for building on Atlas Rental.io.' + (o.note ? (' ' + esc(o.note)) : '') + '</div>'
+    + '<div style="margin-top:18px;font-size:11.5px;color:#8a9a92;text-align:center">Atlas Rental.io &middot; atlasrental.io &middot; The Digital Headquarters for Rental Businesses</div></div>';
+}
+async function _sendAtlasReceipt(env, o) {
+  try { if (!env.RESEND_KEY || !o || !o.to) return; await sendEmail(env, { to: o.to, fromName: 'Atlas Rental.io', subject: 'Your Atlas Rental.io receipt' + (o.ref ? (' ' + o.ref) : ''), html: _atlasReceiptHtml(o) }); } catch (e) { /* receipts are best-effort */ }
+}
+function _rcptDate() { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } }
+
 // ---- Atlas HQ (owner master dashboard): platform tables self-heal so the whole thing is a PASTE-ONLY deploy (no separate migration).
 // CREATE ... IF NOT EXISTS + additive ALTER (swallowed if the column already exists) are idempotent + safe to re-run.
 let _pReady = false;
@@ -771,19 +793,24 @@ export default {
           } else if (T === 'checkout.session.completed' && md.billing === 'credits' && md.tenant) {
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'credits', pack: md.pack });
+            { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: (md.pack || '') + ' Atlas.io credits', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
           } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
             if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
+            if (md.plan !== 'mo') { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website (one-time)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
           } else if (T === 'checkout.session.completed' && md.billing === 'domain' && md.tenant) {
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'domain', pack: md.domain || '', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
+            { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
           } else if (T === 'invoice.paid') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
             if (im.tenant && (im.billing === 'plan' || im.billing === 'trial')) {
               await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();   // recurring charge (or trial->paid conversion)
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             } else if (im.tenant && im.billing === 'website') {
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             }
           } else if (T === 'customer.subscription.created' || T === 'customer.subscription.updated') {
             // captures upgrades AND downgrades (new metadata.tier), plus start/cancel; store the sub id so change-plan/cancel work.
