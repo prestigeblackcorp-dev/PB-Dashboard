@@ -1824,7 +1824,7 @@ const Atlas = (function(){
     'Customer portal: fully owner-customizable + auto-generated perks',
     'Promo codes live on the customer site + auto apply box',
     'Email builder, lifecycle automations + Resend plans',
-    'E-signatures with delivery proof + device &amp; timestamp on file (kept private)',
+    'E-signatures with signer name, IP, timestamp &amp; a document fingerprint recorded server-side',
     'Tax/report CSV downloads + timestamped activity log',
     'Dark mode, hamburger + iPad nav, mobile-optimized throughout'
   ];
@@ -7079,13 +7079,14 @@ const Atlas = (function(){
   function portalPayInstallment(idx){ var b=_pBk(); if(!b||!b.plan||!b.plan.installments)return; var x=b.plan.installments[idx]; if(!x||x.paidAt)return;   // fix: renter-payable installments (own schedule -- never touches b.charges/balance, so no double-count); mirrors owner bkPlanPaid so both sides agree
     x.paidAt=Date.now(); if(!PAYMENTS_LIVE)x.test=true; _upsertBooking(b); _logEvent('booking','Portal: installment '+(PAYMENTS_LIVE?'paid':'marked paid (test)')+' ('+(x.label||'')+') on '+b.id,{booking:b.id}); save(); _renderPortal(); toast(PAYMENTS_LIVE?'Installment paid \u2014 thank you!':'Installment recorded (test \u2014 no card charged)'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ if(!_portalCfg().sections.agreement){ toast('No signature is required for this booking'); return; } portalView('sign'); return; }   // fix: gate the sign route on the agreement section toggle
-    var sigHtml=p.sig?(p.sig.type==='draw'?('<img src="'+p.sig.data+'" style="max-height:70px">'):('<span class="sig-typed">'+esc(p.sig.data)+'</span>')):'-';
+    var sigHtml=p.sig?(p.sig.type==='draw'?('<img src="'+p.sig.data+'" style="max-height:70px">'):('<span class="sig-typed">'+esc(p.sig.data)+'</span>')):(p.signerName?('<span class="sig-typed">'+esc(p.signerName)+'</span>'):'-');
+    var _tr=b.sigTrail;   // server-captured legal trail on a remotely-signed booking
     openModal('<div class="modal__head"><h3>Rental agreement</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="sign-parties"><span><b>Owner</b> '+esc(S.brand.name)+'</span><span><b>Renter</b> '+esc(b.cust)+'</span></div>'
       +'<div class="sign-doc">'+esc(_legal().agreement.text)+'</div>'
       +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:14px 0 8px">Signature</div><div class="sig-shown">'+sigHtml+'</div>'
-      +'<div class="sign-trail"><div>&#8226; Signed '+_stamp(p.signedAt)+'</div></div>'
-      +'<div style="font-size:11px;color:var(--faint);margin-top:8px">Signing device and timestamp recorded (kept private). IP is added server-side once your backend is live.</div>'
+      +'<div class="sign-trail"><div>&#8226; Signed '+_stamp(p.signedAt)+(p.signerName?(' by '+esc(p.signerName)):'')+'</div>'+(_tr?('<div>&#8226; IP '+esc(_tr.ip||'n/a')+'</div><div>&#8226; Document fingerprint <span class="mono" style="font-size:11px">'+esc(String(_tr.docHash||'').slice(0,24))+'&hellip;</span></div>'):'')+'</div>'
+      +'<div style="font-size:11px;color:var(--faint);margin-top:8px">'+(_tr?'Signer name, timestamp, IP address and a fingerprint of the exact agreement are recorded server-side (retrievable for a dispute).':'Signing device and timestamp recorded (kept private).')+'</div>'
       +'<button class="btn btn--ghost btn--full" style="margin-top:14px" onclick="Atlas.openPortal(\''+b.id+'\')">Back to portal</button></div>'); }
   /* ============================================================ BRANDED ITEMIZED RECEIPTS ============================================================ */
   function _receiptNo(b){ return 'R-'+String(b.id||'').replace(/[^0-9]/g,''); }

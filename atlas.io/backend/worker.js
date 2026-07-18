@@ -61,9 +61,9 @@ async function _sha256Hex(s) { try { var b = await crypto.subtle.digest('SHA-256
 function _sanitizeEmailHtml(h) {
   return String(h || '')
     .replace(/<\s*script[\s\S]*?<\s*\/\s*script\s*>/gi, '')
-    .replace(/<\s*(script|iframe|object|embed|form|meta|link|style|base)\b[^>]*>/gi, '')
-    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/(href|src)\s*=\s*("\s*javascript:[^"]*"|'\s*javascript:[^']*'|javascript:[^\s>]+)/gi, '$1="#"');
+    .replace(/<\s*(script|iframe|object|embed|form|meta|link|style|base|svg)\b[^>]*>/gi, '')
+    .replace(/[\s/]on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, ' ')   // strips both `<a onclick=` AND the `/`-separated `<img/onerror=` bypass
+    .replace(/javascript:/gi, 'blocked:');                          // neutralize javascript: URLs anywhere (href/src/style url(...))
 }
 
 // Password hashing. Cloudflare caps a SINGLE native PBKDF2 call at 100k iterations, so we CHAIN 6 rounds
@@ -343,13 +343,35 @@ function priceQuote(money, publishedAssets, assetName, periods) {
   var p = Math.max(1, Math.min(3650, parseInt(periods, 10) || 1));
   var a = (publishedAssets || []).filter(function (x) { return x && x.name === assetName; })[0];
   var rate = (a && Number(a.rate) > 0) ? Number(a.rate) : (Number(money.baseRate) || 0);
-  var subtotal = rate * p;
+  var gross = rate * p;
+  // AUTO long-term discount (mirror the dashboard's calcQuote so the live site charges what the owner's engine promises).
+  var rm = money.rateModel || 'day';
+  var wkP = (rm === 'hour' ? 168 : rm === 'week' ? 2 : rm === 'month' ? 999999 : 7), moP = (rm === 'hour' ? 672 : rm === 'week' ? 4 : rm === 'month' ? 12 : 28);
+  var disc = 0;
+  if (money.monthlyDisc && p >= moP) disc = gross * money.monthlyDisc / 100;
+  else if (money.weeklyDisc && p >= wkP) disc = gross * money.weeklyDisc / 100;
+  disc = Math.max(0, Math.min(disc, gross));
+  var subtotal = gross - disc;
   var taxPct = Number(money.tax) || 0;
   var tax = subtotal * taxPct / 100;
   var total = subtotal + tax;
   var deposit = depositFor(money, total);
   var c = function (x) { return Math.round((Number(x) || 0) * 100); };
-  return { rateCents: c(rate), periods: p, subtotalCents: c(subtotal), taxPct: taxPct, taxCents: c(tax), totalCents: c(total), depositCents: c(deposit) };
+  return { rateCents: c(rate), periods: p, grossCents: c(gross), subtotalCents: c(subtotal), taxPct: taxPct, taxCents: c(tax), totalCents: c(total), depositCents: c(deposit), discountCents: c(disc) };
+}
+// The dashboard/analytics/receipts/tax-export read DOLLAR-named fields (total/subtotal/disc/taxAmt/dueNow/gross/hold); the worker
+// quote is cents-shaped. Populate the dollar fields on the stored quote so a real website booking isn't recorded as $0 everywhere.
+function _quoteDollars(q) {
+  q.gross = (q.grossCents != null ? q.grossCents : q.subtotalCents || 0) / 100;
+  q.disc = (q.discountCents || 0) / 100;
+  q.subtotal = (q.subtotalCents || 0) / 100;
+  q.taxAmt = (q.taxCents || 0) / 100;
+  q.total = (q.totalCents || 0) / 100;
+  q.dueNow = (q.depositCents || 0) / 100;
+  q.deposit = (q.depositCents || 0) / 100;
+  q.balance = Math.max(0, q.total - q.dueNow);
+  q.hold = 0;   // the refundable hold is an owner-side money rule, not collected on the public path
+  return q;
 }
 
 // Resend mailer. HONEST: no RESEND_KEY -> {sent:false,reason:'no_mailer'} so a caller records "not sent", never "delivered".
@@ -616,6 +638,13 @@ async function stripeApi(secretKey, method, path, form) {
 // ---- Atlas PLATFORM billing (Atlas gets paid): server-authoritative prices for the SaaS subscription + one-time purchases,
 // charged on the platform's OWN Stripe account (env.PLATFORM_STRIPE_KEY), separate from each tenant's connected Stripe. ----
 const PLAN_PRICE_CENTS = { starter: 4999, pro: 19900, enterprise: 49900, business: 79900, unlimited: 149900 };
+const PLAN_ASSET_CAP = { starter: 10, pro: 50, enterprise: 150, business: 500, unlimited: 0 };   // 0 = unlimited; server-enforced so a downgraded/trial tenant can't exceed their plan via the API
+async function _assetCapFor(env, tid) {
+  try { const t = await env.DB.prepare('SELECT tier FROM tenants WHERE id=?').bind(tid).first();
+    const tier = String((t && t.tier) || '').toLowerCase();
+    return (tier && PLAN_ASSET_CAP[tier] != null) ? PLAN_ASSET_CAP[tier] : 25;   // no tier yet (trial/new) -> a generous default that still blocks runaway abuse
+  } catch (e) { return 0; }   // fail OPEN on a DB hiccup -> never wrongly block a legit add
+}
 const CREDIT_PACK_CENTS = { '500': 2500, '2000': 8000, '5000': 17500 };
 const WEBSITE_ADDON_CENTS = { once: 19900, mo: 1900 };
 function _planLabel(t) { return ({ starter: 'Starter', pro: 'Pro', enterprise: 'Enterprise', business: 'Business', unlimited: 'Enterprise Unlimited' })[t] || String(t || ''); }
@@ -729,7 +758,9 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_installs (id TEXT PRIMARY KEY, tenant_id TEXT, platform TEXT, created_at INTEGER)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS domains_sold (id TEXT PRIMARY KEY, tenant_id TEXT, domain TEXT, buyer_email TEXT, paid_cents INTEGER, status TEXT DEFAULT 'registered', created_at INTEGER)").run();
     try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }   // the yearly domain subscription id (for renewals)
-    await env.DB.prepare("CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, tenant_id TEXT, booking_id TEXT, doc_hash TEXT, signer_name TEXT, sig TEXT, ip TEXT, ua TEXT, signed_at INTEGER)").run();   // #205 e-signature legal trail
+    try { await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_dsold_td ON domains_sold(tenant_id, domain)").run(); } catch (e) {}   // claim-before-register idempotency (one row per tenant+domain)
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, tenant_id TEXT, booking_id TEXT, doc_hash TEXT, doc_text TEXT, signer_name TEXT, sig TEXT, ip TEXT, ua TEXT, signed_at INTEGER)").run();   // #205 e-signature legal trail
+    try { await env.DB.prepare("ALTER TABLE signatures ADD COLUMN doc_text TEXT").run(); } catch (e) {}   // store the EXACT agreement text signed -> the hash stays reproducible/verifiable even after the owner edits their template
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_sig_booking ON signatures(tenant_id, booking_id)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS promo_uses (tenant_id TEXT, code TEXT, n INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, code))").run();   // server-authoritative public promo redemption count (cap enforcement)
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
@@ -939,8 +970,8 @@ export default {
             if (_clash) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
           } catch (e) {}
           const q = priceQuote(prof.money, pubAssets, assetName, periods);
-          // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount off the pre-tax subtotal).
-          let promoCode = '';
+          // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount off the pre-tax subtotal, ON TOP of any auto discount).
+          let promoCode = '', _bumpPromo = '';
           if (vStr(b.promo, 40)) {
             const pv = _promoApply(prof, b.promo, periods, q.subtotalCents);
             if (pv.ok && pv.discountCents > 0) {
@@ -949,15 +980,16 @@ export default {
               const _cap = Number(_pRow.cap) || 0; let _capOk = true;
               if (_cap) { await ensurePlatformSchema(env); if ((Number(_pRow.used) || 0) + (await _promoServerUses(env, prof.id, pv.code)) >= _cap) _capOk = false; }
               if (_capOk) {
-                promoCode = pv.code; q.discountCents = pv.discountCents;
+                promoCode = pv.code; q.discountCents = (q.discountCents || 0) + pv.discountCents;   // ADD to the auto discount, don't overwrite it
                 q.subtotalCents = Math.max(0, q.subtotalCents - pv.discountCents);
                 q.taxCents = Math.round(q.subtotalCents * (Number(q.taxPct) || 0) / 100);
                 q.totalCents = q.subtotalCents + q.taxCents;
                 q.depositCents = Math.min(q.totalCents, Math.round(depositFor(prof.money, q.totalCents / 100) * 100));   // deposit must track the DISCOUNTED total (fixes full-prepay charging the pre-promo price)
-                if (_cap) await _promoBump(env, prof.id, pv.code);
+                if (_cap) _bumpPromo = pv.code;   // record the redemption AFTER the booking row is saved (so a failed insert doesn't burn a cap slot)
               }
             }
           }
+          _quoteDollars(q);   // CRITICAL: add the dollar-named fields the dashboard/analytics/tax exports read (else a real website booking records as $0)
           let custId = 'C-' + randId(10);
           try {
             const ex = await env.DB.prepare('SELECT id FROM customers WHERE tenant_id=? AND email=? LIMIT 1').bind(prof.id, b.email.toLowerCase()).first();
@@ -972,12 +1004,14 @@ export default {
             await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
           } catch (e) { return err(500, 'Could not save your booking. Please try again.'); }
+          if (_bumpPromo) { try { await _promoBump(env, prof.id, _bumpPromo); } catch (e) {} }   // count the redemption only after the booking actually saved
+          const _portalUrl = url.origin + '/api/portal/' + token;   // the tokenized link the customer signs + pays + manages from
           const comms = prof.settings.comms || {};
           const vars = { name: String(b.name).split(' ')[0], business: prof.name, asset: assetName, periods: periods, unit: cfg.unit || 'day', total: money2(q.totalCents), deposit: money2(q.depositCents), ref: bref };
           const cTpl = (comms.autos && comms.autos.confirm) || {};
           const custMail = await sendEmail(env, { to: b.email, tenant: prof.id, transactional: true, fromName: comms.fromName || prof.name, replyTo: comms.replyTo,
             subject: renderTpl(cTpl.subject || 'Your booking with {business} is received', vars),
-            html: _emailShell(prof, '<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p>' + (cfg.terms ? ('<p style="color:#666;font-size:13px"><b>Cancellation policy:</b> ' + esc(cfg.terms) + '</p>') : '') + '<p>' + esc(prof.name) + ' will confirm with you shortly.</p>') });
+            html: _emailShell(prof, '<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p>' + (cfg.terms ? ('<p style="color:#666;font-size:13px"><b>Cancellation policy:</b> ' + esc(cfg.terms) + '</p>') : '') + '<p>' + esc(prof.name) + ' will confirm with you shortly.</p>' + '<p style="margin:18px 0"><a href="' + esc(_portalUrl) + '" style="display:inline-block;background:' + esc((prof.brand && prof.brand.color) || '#1E6E4E') + ';color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:600">Sign &amp; manage your booking</a></p><p style="color:#888;font-size:12px">Or open: ' + esc(_portalUrl) + '</p>') });
           const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
           if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
             subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
@@ -1054,30 +1088,35 @@ export default {
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
             const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0);
             await ensurePlatformSchema(env);
-            // IDEMPOTENCY: if this domain was already registered (Stripe re-delivered the event), don't re-register or send a bogus "refunded" email.
-            const _already = md.domain ? await env.DB.prepare("SELECT id FROM domains_sold WHERE tenant_id=? AND domain=? AND status='registered' LIMIT 1").bind(md.tenant, md.domain).first() : null;
-            let _reg = _already ? { ok: true, reason: 'already' } : { ok: false, reason: 'no_registrar' };
-            if (!_already && md.domain && env.DYNADOT_KEY) _reg = await _registrarRegister(env, md.domain, 1);
-            if (_reg.ok && !_already) {
-              // #201 AUTO-CONNECT the bought name to the tenant's site (same mechanism as "connect existing": associate + provision the
-              // Cloudflare custom hostname + point DNS at our fallback). NOT nameserver delegation - that doesn't fit Cloudflare-for-SaaS.
-              const _tgt = env.SAAS_TARGET || 'saas.atlasrental.io';
-              try { await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=?").bind(md.domain, Date.now(), md.tenant).run(); } catch (e) {}
-              if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, md.domain); await _cfAddHostname(env, 'www.' + md.domain); } catch (e) {} }
-              try { await _registrarSetDns(env, md.domain, _tgt); } catch (e) {}
-              try { await env.DB.prepare("INSERT INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind('dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), md.tenant, md.domain, md.email || '', _tt, 'registered', obj.subscription || null, Date.now()).run(); } catch (e) {}
-              await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain + ' (yearly)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
-              await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
-            } else if (_reg.ok && _already) {
-              await audit(env, { tenant_id: md.tenant }, req, 'domain.register_dedup', { domain: md.domain });   // replayed event; name already ours - no side effects
-            } else if (md.domain && env.DYNADOT_KEY) {
-              // registration genuinely failed -> REAL refund (subscription mode: pull the charge off the first invoice) + cancel the yearly sub.
-              await _domainFailRefund(env, env.PLATFORM_STRIPE_KEY || '', obj.subscription || '');
-              if (md.email) await sendEmail(env, { to: md.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain could not be registered - refunded', html: '<h2>We refunded your domain purchase</h2><p>Unfortunately <b>' + esc(md.domain) + '</b> could not be registered (' + esc(_reg.reason || 'registrar error') + '), so we refunded your payment in full and cancelled the yearly billing - no charge will remain. Please try a different name.</p>' });
-              await audit(env, { tenant_id: md.tenant }, req, 'domain.register_failed_refunded', { domain: md.domain, reason: _reg.reason });
+            // IDEMPOTENCY (concurrency-safe): atomically CLAIM this (tenant,domain) via INSERT OR IGNORE on the unique index BEFORE registering.
+            // A duplicate/concurrent Stripe delivery loses the claim (changes=0) and does nothing -> no double-register, no bogus "refunded" email.
+            const _dmId = 'dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+            let _claimed = false;
+            if (md.domain) { try { const _ci = await env.DB.prepare("INSERT OR IGNORE INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind(_dmId, md.tenant, md.domain, md.email || '', _tt, 'registering', obj.subscription || null, Date.now()).run(); _claimed = !!(_ci && _ci.meta && _ci.meta.changes); } catch (e) {} }
+            if (!_claimed) {
+              await audit(env, { tenant_id: md.tenant }, req, 'domain.register_dedup', { domain: md.domain });   // another delivery already owns this name - no side effects
             } else {
-              // no registrar connected: the payment stands and the owner registers the name manually (still honest - receipt + audit trail).
-              await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              let _reg = { ok: false, reason: 'no_registrar' };
+              if (md.domain && env.DYNADOT_KEY) _reg = await _registrarRegister(env, md.domain, 1);
+              if (_reg.ok) {
+                // #201 AUTO-CONNECT the bought name (same mechanism as "connect existing": associate + Cloudflare custom hostname + registrar DNS -> our fallback).
+                const _tgt = env.SAAS_TARGET || 'saas.atlasrental.io';
+                try { await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=? AND (custom_domain IS NULL OR custom_domain=?)").bind(md.domain, Date.now(), md.tenant, md.domain).run(); } catch (e) {}   // never black out a domain the tenant already has live
+                if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, md.domain); await _cfAddHostname(env, 'www.' + md.domain); } catch (e) {} }
+                try { await _registrarSetDns(env, md.domain, _tgt); } catch (e) {}
+                try { await env.DB.prepare("UPDATE domains_sold SET status='registered', paid_cents=? WHERE id=?").bind(_tt, _dmId).run(); } catch (e) {}
+                await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain + ' (yearly)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+                await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
+              } else if (md.domain && env.DYNADOT_KEY) {
+                // registration genuinely failed -> release the claim, REAL refund (subscription: pull charge off the first invoice) + cancel the yearly sub.
+                try { await env.DB.prepare("DELETE FROM domains_sold WHERE id=?").bind(_dmId).run(); } catch (e) {}
+                await _domainFailRefund(env, env.PLATFORM_STRIPE_KEY || '', obj.subscription || '');
+                if (md.email) await sendEmail(env, { to: md.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain could not be registered - refunded', html: '<h2>We refunded your domain purchase</h2><p>Unfortunately <b>' + esc(md.domain) + '</b> could not be registered (' + esc(_reg.reason || 'registrar error') + '), so we refunded your payment in full and cancelled the yearly billing - no charge will remain. Please try a different name.</p>' });
+                await audit(env, { tenant_id: md.tenant }, req, 'domain.register_failed_refunded', { domain: md.domain, reason: _reg.reason });
+              } else {
+                // no registrar connected: keep the claim (owner registers the name manually), payment stands, honest receipt + audit.
+                await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              }
             }
           } else if (T === 'invoice.paid') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
@@ -1280,19 +1319,21 @@ export default {
         if (psub === 'sign' && method === 'POST') {
           if (!await rateLimit(env, 'psign:' + token, 12, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
           const body = await req.json().catch(function () { return {}; });
+          if (d.portal && d.portal.signedAt) return json({ ok: true, signedAt: d.portal.signedAt, already: true });   // idempotent: don't re-sign / re-notify
           const name = String(body.name || '').trim().slice(0, 120);
-          const sig = String(body.sig || '').slice(0, 200000);   // typed legal name, or a drawn-signature data URL
+          const sig = String(body.sig || '').slice(0, 8000);   // typed legal name (or a small drawn-sig) -> lives in the signatures table only, never folded into the booking blob
           if (name.length < 2) return err(400, 'Please type your full legal name.');
           if (!body.agree) return err(400, 'Please check the box to agree.');
           const at = Date.now();
           const ip = req.headers.get('CF-Connecting-IP') || '';
           const ua = String(req.headers.get('User-Agent') || '').slice(0, 300);
-          const docHash = await _sha256Hex(_agrText + '|' + name + '|' + at);
+          const docHash = await _sha256Hex(_agrText + '|' + name + '|' + at);   // reproducible: we ALSO store the exact _agrText below
           const sigId = 'sg' + at.toString(36) + Math.random().toString(36).slice(2, 7);
           await ensurePlatformSchema(env);
-          try { await env.DB.prepare('INSERT INTO signatures (id,tenant_id,booking_id,doc_hash,signer_name,sig,ip,ua,signed_at) VALUES (?,?,?,?,?,?,?,?,?)').bind(sigId, brow.tenant_id, brow.id, docHash, name, sig || name, ip, ua, at).run(); } catch (e) {}
-          d.portal = d.portal || {}; d.portal.signedAt = at; d.portal.signerName = name; if (sig) d.portal.sig = sig;
-          d.sigTrail = { signedAt: at, ip: ip, ua: ua, docHash: docHash, sigId: sigId, signer: name };   // surfaced in the dashboard booking view
+          try { await env.DB.prepare('INSERT INTO signatures (id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(sigId, brow.tenant_id, brow.id, docHash, _agrText, name, sig || name, ip, ua, at).run(); } catch (e) {}
+          d.portal = d.portal || {}; d.portal.signedAt = at; d.portal.signerName = name;   // NO 200KB sig blob in the booking row
+          d.sigTrail = { signedAt: at, ip: ip, ua: ua, docHash: docHash, sigId: sigId, signer: name };
+          d._t = at;   // FIX: bump the merge clock so the owner's dashboard actually picks up the signed state (client merges newest-wins on data._t; a later owner edit no longer wipes it)
           try { await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(d), at, brow.id).run(); } catch (e) {}
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.signed', { booking: brow.id });
           try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first();
@@ -1558,6 +1599,10 @@ export default {
               rid = coll.slice(0, 2).toUpperCase() + '-' + randId(10);   // id taken by ANOTHER tenant on the global PK -> mint a fresh server id so nothing is lost
             }
           }
+          if (coll === 'assets') {   // enforce the plan's asset cap SERVER-SIDE (was client-only -> a downgraded/trial tenant could exceed it via the API/mirror)
+            const _cap = await _assetCapFor(env, ctx.tenant_id);
+            if (_cap > 0) { const _cnt = await env.DB.prepare('SELECT COUNT(*) AS n FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).first(); if (_cnt && _cnt.n >= _cap) return err(402, 'Your plan allows up to ' + _cap + ' items - upgrade to add more.'); }
+          }
           // ONE atomic insert: base columns + all provided fields (respects NOT NULL constraints)
           const allCols = ['id', 'tenant_id', 'created_at'].concat(hasUpd ? ['updated_at'] : []).concat(cols);
           const allVals = [rid, ctx.tenant_id, now].concat(hasUpd ? [now] : []).concat(vals);
@@ -1790,6 +1835,18 @@ export default {
         return json({ ok: true, to: to });
       }
 
+      // ---- #205 retrieve the signed-agreement legal record for a booking (owner), incl. the EXACT signed text + IP/UA/hash -> viewable/exportable for a dispute ----
+      { const _sm = path.match(/^\/api\/bookings\/([A-Za-z0-9-]{1,80})\/signature$/);
+        if (_sm && method === 'GET') {
+          if (!ctx) return err(401, 'Not signed in.');
+          if (!_can(ctx, 'bookEdit')) return err(403, 'Booking permission required.');
+          await ensurePlatformSchema(env);
+          const _sr = await env.DB.prepare('SELECT id,doc_hash,doc_text,signer_name,ip,ua,signed_at FROM signatures WHERE tenant_id=? AND booking_id=? ORDER BY signed_at DESC LIMIT 1').bind(ctx.tenant_id, _sm[1]).first();
+          if (!_sr) return json({ ok: true, signed: false });
+          return json({ ok: true, signed: true, record: { sigId: _sr.id, signerName: _sr.signer_name, ip: _sr.ip, ua: _sr.ua, signedAt: _sr.signed_at, docHash: _sr.doc_hash, docText: _sr.doc_text } });
+        }
+      }
+
       // ---- tenant -> Atlas HQ: bug reports & optimization ideas (any signed-in user), land in the owner's master-dashboard inbox ----
       if (path === '/api/feedback' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -2001,7 +2058,7 @@ function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimum
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function pay(kind){fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}alert(j.message||'Payment is not available right now.')}).catch(function(){alert('Network error')})}
 function sign(){var nm=(el('sgName')?el('sgName').value:'').trim();var ag=el('sgAgree')&&el('sgAgree').checked;if(nm.length<2){alert('Please type your full legal name');return}if(!ag){alert('Please check the box to agree to the rental agreement');return}var b=el('sgBtn');if(b){b.disabled=true;b.textContent='Signing...'}fetch('/api/portal/'+T+'/sign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,sig:nm,agree:true})}).then(function(r){return r.json()}).then(function(j){if(j.ok){location.reload()}else{alert(j.error||'Could not sign');if(b){b.disabled=false;b.textContent='Agree & sign'}}}).catch(function(){alert('Network error');if(b){b.disabled=false;b.textContent='Agree & sign'}})}
-fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>'}else{pays='<p class=muted>All settled. Thank you!</p>'}var agree='';if(j.agreement){if(j.signed){agree='<div class=card><h2>Rental agreement</h2><p class=muted>Signed'+(j.signerName?(' by '+esc(j.signerName)):'')+' &mdash; thank you.</p></div>'}else{agree='<div class=card><h2>Rental agreement</h2><div style="max-height:170px;overflow:auto;font-size:12px;white-space:pre-wrap;border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:10px;margin:8px 0;line-height:1.5">'+esc(j.agreement)+'</div><label style="font-size:12.5px;display:flex;gap:7px;align-items:flex-start;margin:8px 0"><input type=checkbox id=sgAgree style="margin-top:2px"> <span>I have read and agree to this rental agreement.</span></label><input id=sgName placeholder="Type your full legal name" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:2px 0 8px;font-size:14px"><button class=btn id=sgBtn onclick=sign()>Agree & sign</button><p class=muted style="font-size:11px;margin-top:8px">Your typed name is your electronic signature. Your name, the date and time, your IP address and a document fingerprint are recorded (E-SIGN / UETA).</p></div>'}}el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div>'+agree+'<div class=card>'+pays+'</div>'}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
+fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>'}else{pays='<p class=muted>All settled. Thank you!</p>'}var agree='';if(j.agreement){if(j.signed){agree='<div class=card><h2>Rental agreement</h2><p class=muted>Signed'+(j.signerName?(' by '+esc(j.signerName)):'')+' &mdash; thank you.</p></div>'}else{agree='<div class=card><h2>Rental agreement</h2><div style="max-height:170px;overflow:auto;font-size:12px;white-space:pre-wrap;border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:10px;margin:8px 0;line-height:1.5">'+esc(j.agreement)+'</div><label style="font-size:12.5px;display:flex;gap:7px;align-items:flex-start;margin:8px 0"><input type=checkbox id=sgAgree style="margin-top:2px"> <span>I have read and agree to this rental agreement.</span></label><input id=sgName placeholder="Type your full legal name" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:2px 0 8px;font-size:14px"><button class=btn id=sgBtn onclick=sign()>Agree & sign</button><p class=muted style="font-size:11px;margin-top:8px">Your typed name is your electronic signature. We record your name, the date and time, your IP address, and a fingerprint of this exact agreement.</p></div>'}}el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div>'+agree+'<div class=card>'+pays+'</div>'}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
 `;
   return _pageDoc('Your booking', color, body, js);
 }
