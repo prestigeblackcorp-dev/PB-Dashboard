@@ -5938,10 +5938,24 @@ const Atlas = (function(){
       <button class="btn btn--primary btn--full" onclick="Atlas.doConnect('${id}','${name}')">Save ${name}</button>
       <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">\u{1F512} Your key is sent encrypted to your backend at go-live &mdash; never stored in the browser. Nothing charges until then. Disconnect anytime.</p></div>`);
   }
+  var CONN_VALIDATE={   // instant sanity-check: catch a wrong/swapped/incomplete key and say exactly how to fix it, before saving
+    stripe:function(o){ var pk=(o['Publishable key']||''), sk=(o['Secret key']||'');
+      if(/^sk_/.test(pk)||/^pk_/.test(sk)) return 'Those look swapped - the Publishable key starts with pk_, the Secret with sk_. Switch them.';
+      if(pk&&!/^pk_(live|test)_/.test(pk)) return 'The Publishable key should start with pk_live_ or pk_test_.';
+      if(sk&&!/^sk_(live|test)_/.test(sk)) return 'The Secret key should start with sk_live_ or sk_test_.';
+      if(!pk||!sk) return 'Paste BOTH keys from Stripe -> Developers -> API keys.'; return ''; },
+    email:function(k){ if(!/^re_/.test(String(k||''))) return 'Resend keys start with re_ - copy it from resend.com -> API Keys (not your account password).'; return ''; },
+    sms:function(o){ if((o['Account SID']||'')&&!/^AC[0-9a-f]{10,}/i.test(o['Account SID'])) return 'The Account SID should start with AC (from the Twilio Console dashboard).';
+      if(!o['Account SID']||!o['Auth Token']) return 'Paste both your Twilio Account SID and Auth Token.'; return ''; },
+    square:function(o){ if(!o['Access token']||!o['Location ID']) return 'Paste both the Access token and the Location ID from your Square app.'; return ''; },
+    paypal:function(o){ if(!o['Client ID']||!o['Secret']) return 'Paste both the Client ID and Secret from your PayPal app (Live).'; return ''; },
+    maps:function(k){ if((k||'')&&!/^(pk\.|sk\.)/.test(String(k))) return 'Mapbox tokens start with pk. (public) or sk. (secret).'; return ''; }
+  };
   function doConnect(id,name){
-    var _cf=CONN_FIELDS[id], key='';
-    if(_cf){ var o={},any=false; _cf.forEach(function(f,i){ var v=String((document.getElementById('connKey'+i)||{}).value||'').trim(); if(v)any=true; o[f.label]=v; }); key=any?JSON.stringify(o):''; }   // multi-credential providers: all labeled keys stored together
-    else { key=String((document.getElementById('connKey')||{}).value||'').trim(); }   // read the pasted key (was silently discarded)
+    var _cf=CONN_FIELDS[id], key='', _vals=null;
+    if(_cf){ var o={},any=false; _cf.forEach(function(f,i){ var v=String((document.getElementById('connKey'+i)||{}).value||'').trim(); if(v)any=true; o[f.label]=v; }); key=any?JSON.stringify(o):''; _vals=o; }   // multi-credential providers: all labeled keys stored together
+    else { key=String((document.getElementById('connKey')||{}).value||'').trim(); _vals=key; }   // read the pasted key (was silently discarded)
+    if(key && CONN_VALIDATE[id]){ var _cm=CONN_VALIDATE[id](_vals); if(_cm){ toast(_cm); return; } }   // stop + explain the fix instead of silently saving a bad key
     S.integrations[id]=true;
     var pf=PAY_PROVIDERS.filter(function(x){return x[0]===id;})[0];   // connecting a processor makes it active if none is yet
     if(pf){ if(!S.payments)S.payments={}; if(!S.payments.provider){ S.payments.provider=id; S.payments.label=pf[1]; } }
