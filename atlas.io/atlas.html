@@ -3229,6 +3229,7 @@ const Atlas = (function(){
       +'<div class="field"><label>Status</label><select class="select" id="aStatus"'+dis+'>'+['Available','On rent','Maintenance'].map(function(s){return '<option'+(a.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'
       +'<div class="row2"><div class="field"><label>Min booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMinLen" value="'+((a.minLen>0)?a.minLen:'')+'" placeholder="no minimum"'+dis+'></div>'
       +'<div class="field"><label>Max booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMaxLen" value="'+((a.maxLen>0)?a.maxLen:'')+'" placeholder="no maximum"'+dis+'></div></div>'
+      +((ro||!_extrasCatalog().length)?'':('<div class="field"><label>Booking extras offered <span style="color:var(--muted);font-weight:400;font-size:12px">(uncheck any to hide on this '+esc(S.fleet.noun)+')</span></label><div id="aExtras" style="display:flex;flex-direction:column;gap:7px;margin-top:4px">'+_extrasCatalog().map(function(e){ var on=!Array.isArray(a.extraIds)||a.extraIds.indexOf(e.id)>=0; return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink)"><input type="checkbox" class="aEx" value="'+esc(e.id)+'"'+(on?' checked':'')+'> '+esc(e.name)+' <span style="color:var(--muted)">'+money(e.price)+' / '+esc(e.per)+'</span></label>'; }).join('')+'</div><div class="bk-lenhint" style="margin:5px 0 0">Manage the master list in Settings &rarr; Money. All checked = every extra is offered on this '+esc(S.fleet.noun)+'.</div></div>'))
       +((_fleetSel().length>1)?('<div class="field"><label>Type</label><select class="select" id="aType"'+dis+'>'+_fleetSel().map(function(tid){ var ft=_typeById(tid)||{}; return '<option value="'+esc(tid)+'"'+(((a.type||_fleetSel()[0])===tid)?' selected':'')+'>'+esc((ft.emoji?ft.emoji+' ':'')+(ft.label||tid))+'</option>'; }).join('')+'</select></div>'):'')   // fix: multi-type fleets can re-tag a mis-categorized asset in place
       +(ro?'':'<div class="field"><label>Photo</label><div style="display:flex;align-items:center;gap:12px">'+(a.photo?('<img src="'+a.photo+'" style="width:56px;height:42px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">'):'<div style="width:56px;height:42px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">None</div>')+'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">'+(a.photo?'Replace photo':'Add photo')+'<input type="file" accept="image/*" style="display:none" onchange="Atlas.assetPhotoPick(\''+id+'\',this)"></label>'+(a.photo?('<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.assetPhotoRemove(\''+id+'\')">Remove photo</button>'):'')+'</div></div>')   // fix: assets created via add/CSV/bulk can now get a photo (a.photo, downscaled); and it can now be removed, not only replaced
       +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:14px 0 8px">Current '+rl+' <span style="color:var(--muted);font-weight:500">'+(t.name?('&middot; since '+_fmtWhen(t.since)):'&middot; vacant')+'</span></div>'
@@ -3247,6 +3248,7 @@ const Atlas = (function(){
     a.name=(val('aName')||a.name).trim(); var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
     var _r=parseFloat(val('aRate')); a.rate=(_r>=0?_r:a.rate); a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
     var _mn=parseInt(val('aMinLen'),10); a.minLen=(_mn>0?_mn:0); var _mx=parseInt(val('aMaxLen'),10); a.maxLen=(_mx>0?_mx:0);   // per-asset min/max booking length rules
+    var _exb=document.querySelectorAll('#aExtras .aEx'); if(_exb.length){ var _ck=[]; [].forEach.call(_exb,function(cb){ if(cb.checked) _ck.push(cb.value); }); if(_ck.length===_exb.length) delete a.extraIds; else a.extraIds=_ck; }   // per-asset extras: all checked = inherit global; otherwise store the offered subset (empty = none)
     if(_fleetSel().length>1){ var _at=val('aType'); if(_at&&_fleetSel().indexOf(_at)>=0) a.type=_at; }   // fix: persist the owner's per-asset type/category change (used by rate + filters)
     var tn=(val('aTenName')||'').trim();
     a.tenant = tn? { name:tn, phone:val('aTenPhone'), email:val('aTenEmail'), since:(a.tenant&&a.tenant.since)||Date.now() } : null;
@@ -3899,6 +3901,7 @@ const Atlas = (function(){
   function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':(S.money.rateModel==='month'?'month':'day')); }
   function _bkBadge(){ var el=document.getElementById('bookBadge'); if(el) el.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; }
   function _extrasCatalog(){ return (S.money && S.money.extras && S.money.extras.length) ? S.money.extras : DEFAULT_EXTRAS; }
+  function _extrasCatalogFor(name){ var a=(DATA.assets||[]).filter(function(x){return x.name===name;})[0]; if(a && Array.isArray(a.extraIds)){ var set={}; a.extraIds.forEach(function(id){set[id]=1;}); return _extrasCatalog().filter(function(e){return set[e.id];}); } return _extrasCatalog(); }   // per-asset offered extras = subset of the global catalog; no a.extraIds means inherit every extra
   function _bkReadDiscount(){ var t=val('bkDiscType')||'none', v=parseFloat(val('bkDiscVal'))||0; return {type:t,value:v}; }
   var _bkPromo=null;
   function applyBkPromo(){ var code=(val('bkPromo')||'').trim().toUpperCase(); var msg=document.getElementById('bkPromoMsg');
@@ -3959,7 +3962,7 @@ const Atlas = (function(){
       +qtyUi+rm+'</div>';
   }
   function _bkRenderExtras(){ var host=document.getElementById('bkExtras'); if(!host||!_bkDraft)return;
-    var cat=_extrasCatalog(), chosen=_bkDraft.extras, catIds=cat.map(function(e){return e.id;});
+    var cat=_extrasCatalogFor(_bkDraft.asset), chosen=_bkDraft.extras, catIds=cat.map(function(e){return e.id;});
     var h=cat.map(function(e){ var on=chosen.filter(function(x){return x.id===e.id;})[0]; return _exRowHtml(e.id,e.name,e.price,e.per,!!on,on?on.qty:1,false); }).join('');
     h+=chosen.filter(function(x){return catIds.indexOf(x.id)<0 && !x.protection;}).map(function(x){ return _exRowHtml(x.id,x.name,x.price,x.per,true,x.qty,true); }).join('');
     host.innerHTML=h; bkPreview();
