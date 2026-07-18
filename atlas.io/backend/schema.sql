@@ -11,11 +11,13 @@ CREATE TABLE IF NOT EXISTS tenants (
   name          TEXT NOT NULL,
   subdomain     TEXT UNIQUE,                 -- <subdomain>.atlasrental.io
   fleet_type    TEXT DEFAULT 'cars',
-  plan          TEXT DEFAULT 'trial',        -- trial|starter|growth|pro (server-authoritative)
+  plan          TEXT DEFAULT 'trial',        -- trial|active (server-authoritative; flipped only by the Stripe webhook)
+  tier          TEXT,                         -- starter|pro|enterprise|business|unlimited (the subscribed plan; set by webhook/grant)
+  card_on_file  INTEGER DEFAULT 0,            -- 1 once a card is saved via the trial/subscribe Checkout
   trial_ends    INTEGER,                     -- epoch ms
   brand         TEXT DEFAULT '{}',           -- JSON: logo, colors, name, subdomain
   money         TEXT DEFAULT '{}',           -- JSON: money-rules (server recomputes from this)
-  settings      TEXT DEFAULT '{}',           -- JSON: portal cfg, flags, comms
+  settings      TEXT DEFAULT '{}',           -- JSON: portal cfg, flags, comms, compCredits
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -241,4 +243,43 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   bucket        TEXT PRIMARY KEY,            -- e.g. login:1.2.3.4  or  ai:tenant123
   count         INTEGER DEFAULT 0,
   window_start  INTEGER NOT NULL
+);
+
+-- ==== ATLAS HQ: owner master-dashboard tables (also self-healed in-worker via ensurePlatformSchema, so a paste-only deploy still works) ====
+
+-- Every Atlas-revenue transaction (subscription renewal, credit pack, website, $0 trial-start). Deduped on stripe_id so webhook replays never double-count.
+CREATE TABLE IF NOT EXISTS platform_transactions (
+  id            TEXT PRIMARY KEY,
+  tenant_id     TEXT,
+  email         TEXT,
+  kind          TEXT,                        -- subscription|credits|website|trial
+  tier          TEXT,
+  pack          TEXT,
+  amount_cents  INTEGER DEFAULT 0,
+  currency      TEXT DEFAULT 'usd',
+  stripe_id     TEXT,                        -- Stripe object id (session/invoice) — the dedup key
+  created_at    INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ptxn_stripe ON platform_transactions(stripe_id);
+CREATE INDEX IF NOT EXISTS idx_ptxn_tenant ON platform_transactions(tenant_id, created_at);
+
+-- Bug reports & optimization ideas users send from inside the app, into the owner's inbox.
+CREATE TABLE IF NOT EXISTS platform_feedback (
+  id            TEXT PRIMARY KEY,
+  tenant_id     TEXT,
+  email         TEXT,
+  type          TEXT,                        -- bug|idea
+  message       TEXT,
+  page          TEXT,
+  status        TEXT DEFAULT 'new',          -- new|seen|resolved
+  created_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pfb_status ON platform_feedback(status, created_at);
+
+-- PWA install telemetry — one row per tenant+platform (dashboard "App installs" KPI).
+CREATE TABLE IF NOT EXISTS platform_installs (
+  id            TEXT PRIMARY KEY,            -- tenant_id:platform
+  tenant_id     TEXT,
+  platform      TEXT,
+  created_at    INTEGER
 );

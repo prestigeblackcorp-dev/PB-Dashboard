@@ -414,6 +414,7 @@ async function stripeCheckout(secretKey, opts) {
     add('line_items[0][price_data][product_data][name]', String(opts.name || 'Atlas Rental.io').slice(0, 120));
     if (mode === 'subscription') add('line_items[0][price_data][recurring][interval]', opts.interval || 'month');   // recurring price built inline -> no pre-made Stripe Product/Price needed
     if (opts.capture === 'manual' && mode === 'payment') add('payment_intent_data[capture_method]', 'manual');
+    if (mode === 'subscription' && opts.trialDays) add('subscription_data[trial_period_days]', String(Math.max(1, opts.trialDays)));   // card collected now, first charge deferred to trial end
     if (opts.email) add('customer_email', opts.email);
     var md = opts.metadata || {}; for (var k in md) add('metadata[' + k + ']', String(md[k]));
     if (mode === 'subscription') { for (var sk in md) add('subscription_data[metadata][' + sk + ']', String(md[sk])); }   // propagate to the subscription so renewal/cancel events carry the tenant + tier
@@ -433,6 +434,37 @@ const PLAN_PRICE_CENTS = { starter: 4999, pro: 19900, enterprise: 49900, busines
 const CREDIT_PACK_CENTS = { '500': 2500, '2000': 8000, '5000': 17500 };
 const WEBSITE_ADDON_CENTS = { once: 19900, mo: 1900 };
 function _planLabel(t) { return ({ starter: 'Starter', pro: 'Pro', enterprise: 'Enterprise', business: 'Business', unlimited: 'Enterprise Unlimited' })[t] || String(t || ''); }
+
+// ---- Atlas HQ (owner master dashboard): platform tables self-heal so the whole thing is a PASTE-ONLY deploy (no separate migration).
+// CREATE ... IF NOT EXISTS + additive ALTER (swallowed if the column already exists) are idempotent + safe to re-run.
+let _pReady = false;
+async function ensurePlatformSchema(env) {
+  if (_pReady) return;
+  try {
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_transactions (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, kind TEXT, tier TEXT, pack TEXT, amount_cents INTEGER DEFAULT 0, currency TEXT DEFAULT 'usd', stripe_id TEXT, created_at INTEGER)").run();
+    await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_ptxn_stripe ON platform_transactions(stripe_id)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ptxn_tenant ON platform_transactions(tenant_id, created_at)").run();
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_feedback (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, type TEXT, message TEXT, page TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_pfb_status ON platform_feedback(status, created_at)").run();
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_installs (id TEXT PRIMARY KEY, tenant_id TEXT, platform TEXT, created_at INTEGER)").run();
+  } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
+  _pReady = true;
+}
+// Constant-time-ish string compare so the admin key check does not leak length/position via timing.
+function _ctEq(a, b) { a = String(a || ''); b = String(b || ''); if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i); return r === 0; }
+// Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session). Fail-closed when unset.
+function adminOk(req, env) { const t = env.ADMIN_TOKEN || ''; if (!t) return false; return _ctEq(req.headers.get('X-Admin-Token') || '', t); }
+// Record one platform (Atlas-revenue) transaction, deduped on the Stripe object id so webhook replays never double-count.
+async function recordTxn(env, o) {
+  try {
+    await ensurePlatformSchema(env);
+    const id = 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    await env.DB.prepare("INSERT OR IGNORE INTO platform_transactions (id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .bind(id, o.tenant || null, o.email || null, o.kind || '', o.tier || null, o.pack || null, Math.round(Number(o.amount_cents) || 0), o.currency || 'usd', o.stripe_id || id, Date.now()).run();
+  } catch (e) { /* revenue logging must never break the webhook */ }
+}
 
 // Verify a Stripe webhook signature (header "t=<ts>,v1=<hmac>") with HMAC-SHA256 so a forged "paid" event is rejected.
 async function stripeVerify(rawBody, sigHeader, secret) {
@@ -479,14 +511,14 @@ export default {
     // CORS preflight (browsers send this before a credentialed cross-origin write)
     if (method === 'OPTIONS') return new Response(null, { status: 204, headers: Object.assign({}, securityHeaders(), cors, {
       'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-CSRF-Token', 'Access-Control-Max-Age': '86400' }) });
+      'Access-Control-Allow-Headers': 'Content-Type, X-CSRF-Token, X-Admin-Token', 'Access-Control-Max-Age': '86400' }) });
 
     const resp = await (async () => {
     try {
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
-          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET) };
+          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
@@ -666,22 +698,144 @@ export default {
             }
           } catch (e) {}
         }
-        // ---- PLATFORM billing (Atlas's own subscription revenue): flip the tenant's plan COLUMN, which the client cannot write, so it is server-authoritative ----
+        // ---- PLATFORM billing (Atlas's OWN revenue): server-authoritative. Flip plan/tier/card columns (client can't write them) + log every paid cent to platform_transactions. ----
         try {
-          if (evt.type === 'checkout.session.completed' && md.billing === 'plan' && md.tenant) {
-            await env.DB.prepare('UPDATE tenants SET plan=?, updated_at=? WHERE id=?').bind('active', Date.now(), md.tenant).run();
+          await ensurePlatformSchema(env);
+          const T = evt.type, sid = obj.id || evt.id || '';
+          if (T === 'checkout.session.completed' && md.billing === 'plan' && md.tenant) {
+            // subscription started -> unlock + record card on file. Revenue itself is booked on invoice.paid (the money event) to avoid double-counting.
+            await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, card_on_file=1, updated_at=? WHERE id=?').bind('active', md.tier || null, Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.subscribed', { tier: md.tier });
-          } else if (evt.type === 'customer.subscription.deleted' && md.billing === 'plan' && md.tenant) {
+          } else if (T === 'checkout.session.completed' && md.billing === 'trial' && md.tenant) {
+            // free trial with a card on file: no charge today, first invoice fires at trial end.
+            await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, updated_at=? WHERE id=?').bind(md.tier || null, Date.now() + 7 * 24 * 3600 * 1000, Date.now(), md.tenant).run();
+            await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.trial_card', { tier: md.tier });
+          } else if (T === 'checkout.session.completed' && md.billing === 'credits' && md.tenant) {
+            await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'credits', pack: md.pack });
+          } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
+            if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
+          } else if (T === 'invoice.paid') {
+            const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
+            if (im.tenant && (im.billing === 'plan' || im.billing === 'trial')) {
+              await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();   // recurring charge (or trial->paid conversion)
+              await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+            } else if (im.tenant && im.billing === 'website') {
+              await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+            }
+          } else if (T === 'customer.subscription.updated' && md.tenant) {
+            const st = String(obj.status || '');
+            if (st === 'active') await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', md.tier || null, Date.now(), md.tenant).run();
+            else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare('UPDATE tenants SET plan=?, updated_at=? WHERE id=?').bind('trial', Date.now(), md.tenant).run();
+          } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
             await env.DB.prepare('UPDATE tenants SET plan=?, updated_at=? WHERE id=?').bind('trial', Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
-          } else if (evt.type === 'checkout.session.completed' && (md.billing === 'credits' || md.billing === 'website') && md.tenant) {
-            await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: md.billing, pack: md.pack, plan: md.plan });
-          } else if (evt.type === 'invoice.payment_failed') {
-            const _im = (obj.subscription_details && obj.subscription_details.metadata) || {};
-            if (_im.tenant) await audit(env, { tenant_id: _im.tenant }, req, 'billing.payment_failed', {});
+          } else if (T === 'invoice.payment_failed') {
+            const im = (obj.subscription_details && obj.subscription_details.metadata) || {};
+            if (im.tenant) await audit(env, { tenant_id: im.tenant }, req, 'billing.payment_failed', {});
           }
         } catch (e) {}
         return json({ ok: true, received: true });
+      }
+
+      // ================= ATLAS HQ: owner master-dashboard API (gated by the ADMIN_TOKEN header; standalone, no tenant session; fail-closed) =================
+      if (path === '/api/admin/overview' || path === '/api/admin/members' || path === '/api/admin/transactions' || path === '/api/admin/feedback' || path === '/api/admin/feedback/update' || path === '/api/admin/grant') {
+        if (!adminOk(req, env)) return err(403, 'Admin key required.');
+        await ensurePlatformSchema(env);
+
+        if (path === '/api/admin/overview' && method === 'GET') {
+          const now = Date.now();
+          const d = new Date(now), monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+          const revTot = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions').first();
+          const revMo = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=?').bind(monthStart).first();
+          const byKind = await env.DB.prepare('SELECT kind, COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions GROUP BY kind').all();
+          const by_kind = { subscription: 0, credits: 0, website: 0, trial: 0 };
+          (byKind.results || []).forEach(function (r) { const k = (r.kind === 'plan') ? 'subscription' : r.kind; by_kind[k] = (by_kind[k] || 0) + (r.c || 0); });
+          const mem = await env.DB.prepare('SELECT plan, tier, card_on_file FROM tenants').all();
+          let total = 0, paid = 0, trials = 0, twc = 0; const by_tier = {};
+          (mem.results || []).forEach(function (t) { total++; if (t.plan === 'active') { paid++; const tr = t.tier || 'other'; by_tier[tr] = (by_tier[tr] || 0) + 1; } else { trials++; if (t.card_on_file) twc++; } });
+          let mrr = 0; Object.keys(by_tier).forEach(function (tr) { mrr += (PLAN_PRICE_CENTS[tr] || 0) * by_tier[tr]; });
+          const inst = await env.DB.prepare('SELECT COUNT(*) AS c FROM platform_installs').first();
+          const bo = await env.DB.prepare("SELECT COUNT(*) AS c FROM platform_feedback WHERE status!='resolved'").first();
+          const bt = await env.DB.prepare('SELECT COUNT(*) AS c FROM platform_feedback').first();
+          const recent = await env.DB.prepare('SELECT id,tenant_id,email,kind,tier,pack,amount_cents,created_at FROM platform_transactions ORDER BY created_at DESC LIMIT 12').all();
+          return json({ ok: true, ts: now,
+            revenue: { total_cents: revTot.c || 0, month_cents: revMo.c || 0, mrr_cents: mrr, by_kind: by_kind },
+            members: { total: total, paid: paid, trials: trials, trials_with_card: twc, by_tier: by_tier },
+            installs: { total: (inst && inst.c) || 0 }, bugs: { open: (bo && bo.c) || 0, total: (bt && bt.c) || 0 },
+            recent: (recent.results || []) });
+        }
+
+        if (path === '/api/admin/members' && method === 'GET') {
+          const rows = await env.DB.prepare(
+            "SELECT t.id AS tenant_id, t.name, t.plan, t.tier, t.created_at, t.trial_ends, t.card_on_file, " +
+            "(SELECT email FROM users WHERE tenant_id=t.id AND role='owner' ORDER BY created_at LIMIT 1) AS email, " +
+            "(SELECT COUNT(*) FROM customers WHERE tenant_id=t.id) AS customers, " +
+            "(SELECT COUNT(*) FROM bookings WHERE tenant_id=t.id) AS bookings, " +
+            "(SELECT COALESCE(SUM(amount_cents),0) FROM platform_transactions WHERE tenant_id=t.id) AS revenue_cents " +
+            "FROM tenants t ORDER BY t.created_at DESC LIMIT 500").all();
+          const comps = await env.DB.prepare('SELECT email, role FROM comp_grants').all();
+          const cmap = {}; (comps.results || []).forEach(function (c) { cmap[(c.email || '').toLowerCase()] = c.role; });
+          const members = (rows.results || []).map(function (m) { m.comp = m.email ? (cmap[(m.email || '').toLowerCase()] || null) : null; return m; });
+          return json({ ok: true, members: members });
+        }
+
+        if (path === '/api/admin/transactions' && method === 'GET') {
+          const lim = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
+          const rows = await env.DB.prepare('SELECT id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at FROM platform_transactions ORDER BY created_at DESC LIMIT ?').bind(lim).all();
+          return json({ ok: true, transactions: (rows.results || []) });
+        }
+
+        if (path === '/api/admin/feedback' && method === 'GET') {
+          const st = url.searchParams.get('status') || 'open';
+          const q = (st === 'all')
+            ? 'SELECT id,tenant_id,email,type,message,page,status,created_at FROM platform_feedback ORDER BY created_at DESC LIMIT 200'
+            : "SELECT id,tenant_id,email,type,message,page,status,created_at FROM platform_feedback WHERE status!='resolved' ORDER BY created_at DESC LIMIT 200";
+          const rows = await env.DB.prepare(q).all();
+          return json({ ok: true, feedback: (rows.results || []) });
+        }
+
+        if (path === '/api/admin/feedback/update' && method === 'POST') {
+          const b = await req.json().catch(() => ({}));
+          if (!b.id || ['new', 'seen', 'resolved'].indexOf(b.status) < 0) return err(400, 'Bad request.');
+          await env.DB.prepare('UPDATE platform_feedback SET status=? WHERE id=?').bind(b.status, String(b.id)).run();
+          return json({ ok: true });
+        }
+
+        if (path === '/api/admin/grant' && method === 'POST') {
+          const b = await req.json().catch(() => ({}));
+          const tid = String(b.tenant_id || ''); if (!tid) return err(400, 'tenant_id required.');
+          const t = await env.DB.prepare('SELECT id FROM tenants WHERE id=?').bind(tid).first();
+          if (!t) return err(404, 'No such member.');
+          const own = await env.DB.prepare("SELECT email FROM users WHERE tenant_id=? AND role='owner' ORDER BY created_at LIMIT 1").bind(tid).first();
+          const em = (own && own.email) ? own.email.toLowerCase() : '';
+          const act = String(b.action || '');
+          if (act === 'gold' || act === 'admin' || act === 'free') {
+            if (!em) return err(400, 'This member has no owner email to comp.');
+            await env.DB.prepare('INSERT INTO comp_grants (email,role,granted_by,granted_at) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET role=?,granted_at=?').bind(em, act, 'atlas-hq', Date.now(), act, Date.now()).run();
+            if (act !== 'free') await env.DB.prepare("UPDATE tenants SET plan='active', updated_at=? WHERE id=?").bind(Date.now(), tid).run();
+          } else if (act === 'tier') {
+            const tier = String(b.tier || ''); if (!PLAN_PRICE_CENTS[tier]) return err(400, 'Unknown tier.');
+            await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?").bind(tier, Date.now(), tid).run();
+          } else if (act === 'credits') {
+            const n = Math.max(0, parseInt(b.credits, 10) || 0);
+            const tr = await env.DB.prepare('SELECT settings FROM tenants WHERE id=?').bind(tid).first();
+            let s = {}; try { s = JSON.parse((tr && tr.settings) || '{}'); } catch (e) {}
+            s.compCredits = (Number(s.compCredits) || 0) + n;
+            await env.DB.prepare('UPDATE tenants SET settings=?, updated_at=? WHERE id=?').bind(JSON.stringify(s), Date.now(), tid).run();
+          } else if (act === 'trial') {
+            const days = Math.max(1, parseInt(b.days, 10) || 0);
+            const cur = await env.DB.prepare('SELECT trial_ends FROM tenants WHERE id=?').bind(tid).first();
+            const base = Math.max(Date.now(), Number(cur && cur.trial_ends) || 0);
+            await env.DB.prepare("UPDATE tenants SET plan='trial', trial_ends=?, updated_at=? WHERE id=?").bind(base + days * 24 * 3600 * 1000, Date.now(), tid).run();
+          } else return err(400, 'Unknown grant action.');
+          await audit(env, { tenant_id: tid }, req, 'admin.grant', { action: act });
+          return json({ ok: true });
+        }
+
+        return err(404, 'Unknown admin route.');
       }
 
       // ---- served customer pages (branded, self-contained; reachable via the existing /api/* route) ----
@@ -963,13 +1117,42 @@ export default {
           name = 'Atlas Rental.io hosted website' + (plan === 'mo' ? ' (monthly)' : ' (one-time)');
           if (plan === 'mo') { mode = 'subscription'; interval = 'month'; }
           meta.billing = 'website'; meta.plan = plan;
+        } else if (kind === 'trial') {
+          const tier = String(body.tier || 'pro'); amountCents = PLAN_PRICE_CENTS[tier] || PLAN_PRICE_CENTS.pro;
+          name = 'Atlas Rental.io ' + _planLabel(tier) + ' plan (7-day free trial)'; mode = 'subscription'; interval = 'month';
+          meta.billing = 'trial'; meta.tier = tier;
         } else { return err(400, 'Unknown purchase kind.'); }
-        const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval,
+        const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
           successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : ''),
           cancelUrl: origin + '/?billing=cancel', metadata: meta });
         if (!co.ok) return err(502, 'Could not start checkout: ' + co.reason);
         await audit(env, ctx, req, 'billing.checkout', { kind: kind, tier: body.tier, pack: body.pack });
         return json({ ok: true, url: co.url });
+      }
+
+      // ---- tenant -> Atlas HQ: bug reports & optimization ideas (any signed-in user), land in the owner's master-dashboard inbox ----
+      if (path === '/api/feedback' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        const type = (b.type === 'idea') ? 'idea' : 'bug';
+        const msg = String(b.message || '').slice(0, 4000).trim();
+        if (msg.length < 3) return err(400, 'Please describe the issue.');
+        const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        await env.DB.prepare("INSERT INTO platform_feedback (id,tenant_id,email,type,message,page,status,created_at) VALUES (?,?,?,?,?,?,'new',?)")
+          .bind(id, ctx.tenant_id, ctx.user.email, type, msg, String(b.page || '').slice(0, 80), Date.now()).run();
+        await audit(env, ctx, req, 'feedback.sent', { type: type });
+        return json({ ok: true });
+      }
+
+      // ---- install telemetry: count PWA installs (one row per tenant+platform; used for the master-dashboard installs KPI) ----
+      if (path === '/api/telemetry/install' && method === 'POST') {
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        const plat = (String(b.platform || 'web').match(/[a-z0-9_-]+/i) || ['web'])[0].slice(0, 24);
+        await env.DB.prepare('INSERT OR IGNORE INTO platform_installs (id,tenant_id,platform,created_at) VALUES (?,?,?,?)')
+          .bind(ctx.tenant_id + ':' + plat, ctx.tenant_id, plat, Date.now()).run();
+        return json({ ok: true });
       }
 
       if (path === '/api/integrations/connect' && method === 'POST') {

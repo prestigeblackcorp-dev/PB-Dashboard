@@ -5030,7 +5030,7 @@ const Atlas = (function(){
   function roundRect(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
   /* ---- settings ---- */
-  const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['billing','Plan &amp; billing']];
+  const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
   let setCur='branding';
   function _setTabs(){ return (_curTier().id==='diamond')? [['owner','Owner console']].concat(SET) : SET; }
   function buildSettings(){
@@ -5405,8 +5405,23 @@ const Atlas = (function(){
           <button class="btn btn--primary btn--sm" onclick="Atlas.openCredits()">Buy credits</button></div>
       </div>` + _addonsBillingHtml();
     }
+    else if(setCur==='support'){ b.innerHTML = `
+      <div class="set-block"><h3>Report a bug</h3><div class="desc">Something broken or off? Tell us &mdash; it goes straight to the Atlas team.</div>
+        <div class="field"><textarea id="fbBug" class="input" rows="4" placeholder="What happened, and where were you when it happened?"></textarea></div>
+        <button class="btn btn--primary btn--sm" onclick="Atlas.sendFeedback('bug')">Send bug report</button></div>
+      <div class="set-block"><h3>Suggest an improvement</h3><div class="desc">An idea or shortcut that would make Atlas better for you.</div>
+        <div class="field"><textarea id="fbIdea" class="input" rows="4" placeholder="What would you love Atlas to do?"></textarea></div>
+        <button class="btn btn--ghost btn--sm" onclick="Atlas.sendFeedback('idea')">Send idea</button></div>`;
+    }
   }
   function renderSetSoft(){ renderSet(); }
+  function sendFeedback(type){ var id=(type==='idea')?'fbIdea':'fbBug'; var el=document.getElementById(id); var msg=el?(el.value||'').trim():'';
+    if(msg.length<3){ toast('Add a little detail first.'); if(el) el.focus(); return; }
+    if(!ATLAS_BACKEND){ toast('Thanks - your note was recorded.'); if(el) el.value=''; return; }
+    _api('/api/feedback',{method:'POST',body:{type:type,message:msg,page:(location.hash||'app').slice(0,60)}}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ if(el) el.value=''; toast(type==='idea'?'Idea sent - thank you!':'Bug report sent - thank you!'); }
+      else { toast((res.json&&res.json.error)||'Could not send - please try again'); }
+    }).catch(function(){ toast('Network error - please try again'); }); }
 
   /* ============================== ATLASIO ============================== */
   function _aioQuicks(){ return ['What did you dream up?','Set up my pricing','Which '+S.fleet.nouns+' are idle?','Explain my analytics','Draft a win-back text','How do I connect Stripe?']; }
@@ -6021,6 +6036,8 @@ const Atlas = (function(){
         S.team.push({ id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:added, email:iv.email, role:role, perms:(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false)) });
       } }
     save(); applyBrand(); buildApp(); show('app');
+    // Card-on-file to start the free trial (Stripe hosted checkout; card SAVED, not charged today). Dormant until PAYMENTS_LIVE. On failure the owner stays in the app on trial -> never a dead-end.
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !(S.card && S.card.onFile)){ _billingCheckout('trial',{tier:S.tier||'pro'}); return; }
     setTimeout(function(){ toast('Welcome to '+S.brand.name+' on Atlas Rental.io'); if(added) setTimeout(function(){ toast(added+' added to your team - set their access in Team'); },1900); },300); }
   /* ---------- plan, tiers, Atlas.io credits &amp; billing (demo Stripe; real subscription + webhook come with the D1 worker) ---------- */
   function _trialDaysLeft(){ if(!S) return 0; return Math.max(0, (S.trialDays||7) - Math.floor((Date.now()-(S.trialStartedAt||Date.now()))/86400000)); }
@@ -6062,8 +6079,9 @@ const Atlas = (function(){
       if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
       else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; save(); } }
       else if(kind==='website'){ S.websitePaid=true; save(); }
+      else if(kind==='trial'){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }
       try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){}
-      setTimeout(function(){ toast('Payment received - thank you! You are all set.'); }, 500);
+      setTimeout(function(){ toast(kind==='trial'?'Your free trial is active - card saved, no charge today.':'Payment received - thank you! You are all set.'); }, 500);
     }
     try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
   }catch(e){} }
@@ -7205,7 +7223,13 @@ const Atlas = (function(){
   /* ---- PWA: installable + offline app shell ---- */
   var _deferredInstall=null;
   function _initPWA(){ try{ if('serviceWorker' in navigator && location.protocol!=='file:') navigator.serviceWorker.register('atlas-sw.js').catch(function(){}); }catch(e){}
-    window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); _deferredInstall=e; }); }
+    window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); _deferredInstall=e; });
+    window.addEventListener('appinstalled', function(){ _pingInstall(); });
+    try{ if((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone) _pingInstall(); }catch(e){} }
+  // Count this device's PWA install once (server dedups per tenant+platform). Needs a session; no-ops otherwise.
+  function _pingInstall(){ if(_pingInstall._done || !ATLAS_BACKEND || !store.session()) return; _pingInstall._done=true;
+    var plat=/iphone|ipad|ipod/i.test(navigator.userAgent)?'ios':(/android/i.test(navigator.userAgent)?'android':'desktop');
+    try{ _api('/api/telemetry/install',{method:'POST',body:{platform:plat}}).catch(function(){}); }catch(e){} }
   function installApp(){ if(_deferredInstall){ _deferredInstall.prompt(); try{ _deferredInstall.userChoice.then(function(){ _deferredInstall=null; }); }catch(e){} }
     else if(/iphone|ipad|ipod/i.test(navigator.userAgent)){ toast('On iPhone: tap Share, then Add to Home Screen'); }
     else { toast('Use your browser menu > Install / Add to Home Screen'); } }
@@ -7258,7 +7282,7 @@ const Atlas = (function(){
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
 </script>
