@@ -2,7 +2,7 @@
    Network-first for everything (never serve stale HTML/JS), cache only as an OFFLINE fallback.
    Own cache name so it never touches other apps' caches. Deploy Atlas in its own folder in
    production so this SW's scope stays isolated from any sibling app's service worker. */
-var CACHE = 'atlas-shell-v35';
+var CACHE = 'atlas-shell-v36';
 var SHELL = ['atlas.html', 'atlas-manifest.json', 'atlas-icon.svg'];
 
 self.addEventListener('install', function (e) {
