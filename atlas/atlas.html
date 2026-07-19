@@ -593,6 +593,19 @@ table.tbl{width:100%;border-collapse:collapse}
 .verify-card h2{font-size:21px;margin:0 0 8px;color:var(--ink,#182420)}
 .verify-card p{color:var(--muted,#5c6b63);font-size:14.5px;margin:0 0 18px;line-height:1.5}
 .verify-hint{font-size:12.5px;margin:14px 0 0!important}
+.tk-row{display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--line,#e5e1d8);border-radius:11px;margin-bottom:8px;cursor:pointer;background:var(--surface,#fff)}
+.tk-row:hover{border-color:var(--brand,#1E6E4E)}
+.tk-row.tk-unread{border-color:var(--brand,#1E6E4E);background:var(--surface-2,#f4f2ec)}
+.tk-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#1E6E4E;margin-right:6px;vertical-align:middle}
+.tk-pill{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.tk-pill.tk-open{color:#B4741A;background:#F6ECDA}
+.tk-pill.tk-ans{color:#1E6E4E;background:#E4F0EA}
+.tk-pill.tk-res{color:#5C6B63;background:#ECEBE6}
+.tk-thread{max-height:46vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:4px 2px}
+.tk-msg{max-width:88%;padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.45}
+.tk-msg__who{font-size:11px;opacity:.7;margin-bottom:3px;font-weight:600}
+.tk-msg.tk-me{align-self:flex-end;background:#1E6E4E;color:#fff}
+.tk-msg.tk-them{align-self:flex-start;background:var(--surface-2,#f4f2ec);color:var(--ink,#182420);border:1px solid var(--line,#e5e1d8)}
 /* full-screen live map */
 .trk-map-wrap.trk-fs{position:fixed;inset:0;z-index:8600;margin:0;border-radius:0;height:100vh;width:100vw;max-width:none}
 .trk-map-wrap.trk-fs #trkMap{height:100vh;width:100vw}
@@ -5543,15 +5556,62 @@ const Atlas = (function(){
       </div>` + _addonsBillingHtml();
     }
     else if(setCur==='support'){ b.innerHTML = `
+      <div class="set-block"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3>Support tickets</h3><div class="desc">Open a ticket and the Atlas team replies right here &mdash; you'll get an email too.</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.openTicket()">+ New ticket</button></div>
+        <div id="ticketList" style="margin-top:12px"><div class="bk-lenhint" style="margin:0">Loading your tickets&hellip;</div></div></div>
       <div class="set-block"><h3>Report a bug</h3><div class="desc">Something broken or off? Tell us &mdash; it goes straight to the Atlas team.</div>
         <div class="field"><textarea id="fbBug" class="input" rows="4" placeholder="What happened, and where were you when it happened?"></textarea></div>
         <button class="btn btn--primary btn--sm" onclick="Atlas.sendFeedback('bug')">Send bug report</button></div>
       <div class="set-block"><h3>Suggest an improvement</h3><div class="desc">An idea or shortcut that would make Atlas better for you.</div>
         <div class="field"><textarea id="fbIdea" class="input" rows="4" placeholder="What would you love Atlas to do?"></textarea></div>
         <button class="btn btn--ghost btn--sm" onclick="Atlas.sendFeedback('idea')">Send idea</button></div>`;
+      _loadTickets();
     }
   }
   function renderSetSoft(){ renderSet(); }
+  /* ---- support tickets (two-way threads; the platform owner replies from the master dashboard) ---- */
+  var _myTickets=[], _TKCATS=[['technical','Technical / bug'],['billing','Billing & plan'],['account','My account'],['feature','Feature request'],['other','Something else']];
+  function _tkStatusPill(s){ var m={open:['Open','tk-open'],answered:['Replied','tk-ans'],resolved:['Resolved','tk-res']}, x=m[s]||m.open; return '<span class="tk-pill '+x[1]+'">'+x[0]+'</span>'; }
+  function _loadTickets(){ var el=document.getElementById('ticketList'); if(!el)return;
+    if(!ATLAS_BACKEND){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Support tickets go live once your account is connected.</div>'; return; }
+    _api('/api/support/tickets',{method:'GET'}).then(function(res){ if(!(res.json&&res.json.ok)){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Could not load tickets.</div>'; return; }
+      _myTickets=res.json.tickets||[]; el.innerHTML=_ticketListHtml(_myTickets); }).catch(function(){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Could not load tickets.</div>'; }); }
+  function _ticketListHtml(ts){ if(!ts.length) return '<div class="bk-lenhint" style="margin:0">No tickets yet. Open one and we&rsquo;ll get right back to you.</div>';
+    return ts.map(function(t){ var last=(t.messages&&t.messages.length)?t.messages[t.messages.length-1]:null;
+      return '<div class="tk-row'+(t.unread?' tk-unread':'')+'" onclick="Atlas.viewTicket(\''+t.id+'\')">'
+        +'<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:650;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(t.unread?'<span class="tk-dot"></span>':'')+esc(t.subject)+'</div>'
+        +'<div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(last?esc((last.by==='owner'?'Atlas: ':'You: ')+String(last.msg).slice(0,60)):'')+'</div></div>'
+        +'<div style="text-align:right;flex:none;margin-left:10px">'+_tkStatusPill(t.status)+'<div style="font-size:11px;color:var(--muted);margin-top:3px">'+_stamp(t.updated_at)+'</div></div></div>';
+    }).join(''); }
+  function openTicket(){
+    openModal('<div class="modal__head"><h3>New support ticket</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Subject</label><input class="input" id="tkSubj" placeholder="A short summary"></div>'
+      +'<div class="row2"><div class="field"><label>Category</label><select class="select" id="tkCat">'+_TKCATS.map(function(c){return '<option value="'+c[0]+'">'+c[1]+'</option>';}).join('')+'</select></div>'
+      +'<div class="field"><label>Priority</label><select class="select" id="tkPri"><option value="normal">Normal</option><option value="high">Urgent</option></select></div></div>'
+      +'<div class="field"><label>How can we help?</label><textarea class="input" id="tkMsg" rows="5" placeholder="Tell us what you need..."></textarea></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.submitTicket()">Send ticket</button>'
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px">We reply here and by email, usually within a business day.</p></div>');
+    setTimeout(function(){ var e=document.getElementById('tkSubj'); if(e) e.focus(); },80); }
+  function submitTicket(){ var subj=(val('tkSubj')||'').trim(), msg=(val('tkMsg')||'').trim(), cat=val('tkCat')||'other', pri=val('tkPri')||'normal';
+    if(subj.length<2){ toast('Add a subject'); return; } if(msg.length<3){ toast('Tell us a little more'); return; }
+    if(!ATLAS_BACKEND){ closeModal(); toast('Support tickets go live once your account is connected.'); return; }
+    _api('/api/support/ticket',{method:'POST',body:{subject:subj,category:cat,priority:pri,message:msg}}).then(function(res){
+      if(res.json&&res.json.ok){ closeModal(); toast('Ticket sent - we&rsquo;ll reply shortly.'); _loadTickets(); }
+      else { toast((res.json&&res.json.error)||'Could not send - try again'); }
+    }).catch(function(){ toast('Network error - try again'); }); }
+  function viewTicket(id){ var t=(_myTickets||[]).filter(function(x){return x.id===id;})[0]; if(!t)return;
+    if(t.unread){ t.unread=0; try{ _api('/api/support/read',{method:'POST',body:{id:id}}); }catch(e){} }
+    var thread=(t.messages||[]).map(function(m){ var mine=(m.by!=='owner'); return '<div class="tk-msg '+(mine?'tk-me':'tk-them')+'"><div class="tk-msg__who">'+esc(mine?'You':'Atlas Support')+' &middot; '+_stamp(m.at)+'</div><div class="tk-msg__body">'+esc(m.msg).replace(/\n/g,'<br>')+'</div></div>'; }).join('');
+    openModal('<div class="modal__head"><h3 style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(t.subject)+'</h3>'+_tkStatusPill(t.status)+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="tk-thread">'+thread+'</div>'
+      +(t.status==='resolved'?'<div class="bk-lenhint" style="margin:10px 0 0">This ticket is resolved. Replying re-opens it.</div>':'')
+      +'<div class="field" style="margin-top:12px"><textarea class="input" id="tkReply" rows="3" placeholder="Write a reply..."></textarea></div>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas.ticketReply(\''+id+'\')">Send reply</button></div>');
+    setTimeout(function(){ var th=document.querySelector('.tk-thread'); if(th) th.scrollTop=th.scrollHeight; },60); }
+  function ticketReply(id){ var msg=(val('tkReply')||'').trim(); if(msg.length<1){ toast('Write a reply first'); return; }
+    _api('/api/support/reply',{method:'POST',body:{id:id,message:msg}}).then(function(res){
+      if(res.json&&res.json.ok){ closeModal(); toast('Reply sent'); _loadTickets(); }
+      else { toast((res.json&&res.json.error)||'Could not send'); }
+    }).catch(function(){ toast('Network error'); }); }
   function sendFeedback(type){ var id=(type==='idea')?'fbIdea':'fbBug'; var el=document.getElementById(id); var msg=el?(el.value||'').trim():'';
     if(msg.length<3){ toast('Add a little detail first.'); if(el) el.focus(); return; }
     if(!ATLAS_BACKEND){ toast('Thanks - your note was recorded.'); if(el) el.value=''; return; }
@@ -5567,6 +5627,7 @@ const Atlas = (function(){
       +'<div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn btn--primary btn--sm" id="fbKbug" onclick="Atlas._fbSet(\'bug\')" style="flex:1">Bug</button><button class="btn btn--ghost btn--sm" id="fbKidea" onclick="Atlas._fbSet(\'idea\')" style="flex:1">Idea</button></div>'
       +'<textarea id="fbQuick" class="input" rows="4" placeholder="What happened, and where? Or what would make Atlas better?"></textarea>'
       +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:12px" onclick="Atlas.sendQuickFeedback()">Send to the Atlas team</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.closeModal();Atlas.openTicket()">Open a support ticket (get a reply)</button>'
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:8px">Goes straight to the people who build Atlas.</p></div>');
     setTimeout(function(){ var el=document.getElementById('fbQuick'); if(el) el.focus(); },80); }
   function _fbSet(k){ _fbKind=(k==='idea')?'idea':'bug'; var b=document.getElementById('fbKbug'), i=document.getElementById('fbKidea');
@@ -7504,7 +7565,7 @@ const Atlas = (function(){
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
 </script>

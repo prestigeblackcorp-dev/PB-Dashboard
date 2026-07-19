@@ -788,6 +788,10 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ptxn_tenant ON platform_transactions(tenant_id, created_at)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_feedback (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, type TEXT, message TEXT, page TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_pfb_status ON platform_feedback(status, created_at)").run();
+    // Two-way support tickets (tenant <-> platform owner). `messages` = JSON thread [{by:'tenant'|'owner',name,msg,at}]; unread_* drive the badges on each side.
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS support_tickets (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, subject TEXT, category TEXT, priority TEXT DEFAULT 'normal', status TEXT DEFAULT 'open', created_at INTEGER, updated_at INTEGER, unread_owner INTEGER DEFAULT 1, unread_tenant INTEGER DEFAULT 0, messages TEXT)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ticket_tenant ON support_tickets(tenant_id, updated_at)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ticket_status ON support_tickets(status, updated_at)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_installs (id TEXT PRIMARY KEY, tenant_id TEXT, platform TEXT, created_at INTEGER)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS domains_sold (id TEXT PRIMARY KEY, tenant_id TEXT, domain TEXT, buyer_email TEXT, paid_cents INTEGER, status TEXT DEFAULT 'registered', created_at INTEGER)").run();
     try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }   // the yearly domain subscription id (for renewals)
@@ -1240,7 +1244,7 @@ export default {
       }
 
       // ================= ATLAS HQ: owner master-dashboard API (gated by the ADMIN_TOKEN header; standalone, no tenant session; fail-closed) =================
-      if (path === '/api/admin/overview' || path === '/api/admin/members' || path === '/api/admin/transactions' || path === '/api/admin/feedback' || path === '/api/admin/feedback/update' || path === '/api/admin/grant' || path === '/api/admin/delete') {
+      if (path === '/api/admin/overview' || path === '/api/admin/members' || path === '/api/admin/transactions' || path === '/api/admin/feedback' || path === '/api/admin/feedback/update' || path === '/api/admin/grant' || path === '/api/admin/delete' || path === '/api/admin/tickets' || path === '/api/admin/ticket-reply' || path === '/api/admin/ticket-status') {
         if (!adminOk(req, env)) return err(403, 'Admin key required.');
         await ensurePlatformSchema(env);
 
@@ -1356,6 +1360,35 @@ export default {
           try { await env.DB.prepare('DELETE FROM tenants WHERE id=?').bind(tid).run(); } catch (e) {}
           await audit(env, { tenant_id: tid }, req, 'admin.delete_account', { email: em, cancelled_sub: !!t.stripe_sub });
           return json({ ok: true, email: em, deleted: tid });
+        }
+
+        if (path === '/api/admin/tickets' && method === 'GET') {
+          const st = url.searchParams.get('status') || 'open';
+          const q = (st === 'all')
+            ? "SELECT * FROM support_tickets ORDER BY (status='resolved') ASC, updated_at DESC LIMIT 200"
+            : "SELECT * FROM support_tickets WHERE status!='resolved' ORDER BY updated_at DESC LIMIT 200";
+          const rows = await env.DB.prepare(q).all();
+          const tickets = (rows.results || []).map(function (r) { let m = []; try { m = JSON.parse(r.messages || '[]'); } catch (e) {} return { id: r.id, tenant_id: r.tenant_id, email: r.email, subject: r.subject, category: r.category, priority: r.priority, status: r.status, created_at: r.created_at, updated_at: r.updated_at, unread: r.unread_owner, messages: m }; });
+          return json({ ok: true, tickets: tickets });
+        }
+        if (path === '/api/admin/ticket-reply' && method === 'POST') {
+          const b = await req.json().catch(() => ({}));
+          const id = String(b.id || ''); const msg = String(b.message || '').slice(0, 6000).trim();
+          if (!id || msg.length < 1) return err(400, 'Nothing to send.');
+          const t = await env.DB.prepare('SELECT tenant_id,email,subject,messages FROM support_tickets WHERE id=?').bind(id).first();
+          if (!t) return err(404, 'No such ticket.');
+          let thread = []; try { thread = JSON.parse(t.messages || '[]'); } catch (e) {}
+          thread.push({ by: 'owner', name: 'Atlas Support', msg: msg, at: Date.now() });
+          await env.DB.prepare("UPDATE support_tickets SET messages=?, updated_at=?, status='answered', unread_owner=0, unread_tenant=1 WHERE id=?").bind(JSON.stringify(thread), Date.now(), id).run();
+          try { if (t.email) await sendEmail(env, { to: t.email, transactional: true, fromName: 'Atlas Rental.io Support', subject: 'Re: ' + (t.subject || 'your support ticket'), html: '<h2>You have a reply from Atlas support</h2><p>' + esc(msg).replace(/\n/g, '<br>') + '</p><p style="color:#889">Open it in your Atlas Rental.io dashboard: Settings &gt; Help &amp; Support.</p>' }); } catch (e) {}
+          await audit(env, { tenant_id: t.tenant_id }, req, 'support.owner_reply', { id: id });
+          return json({ ok: true });
+        }
+        if (path === '/api/admin/ticket-status' && method === 'POST') {
+          const b = await req.json().catch(() => ({}));
+          if (!b.id || ['open', 'answered', 'resolved'].indexOf(b.status) < 0) return err(400, 'Bad request.');
+          await env.DB.prepare("UPDATE support_tickets SET status=?, updated_at=?, unread_owner=CASE WHEN ?='resolved' THEN 0 ELSE unread_owner END WHERE id=?").bind(b.status, Date.now(), b.status, String(b.id)).run();
+          return json({ ok: true });
         }
 
         return err(404, 'Unknown admin route.');
@@ -1975,6 +2008,53 @@ export default {
         await env.DB.prepare("INSERT INTO platform_feedback (id,tenant_id,email,type,message,page,status,created_at) VALUES (?,?,?,?,?,?,'new',?)")
           .bind(id, ctx.tenant_id, ctx.user.email, type, msg, String(b.page || '').slice(0, 80), Date.now()).run();
         await audit(env, ctx, req, 'feedback.sent', { type: type });
+        return json({ ok: true });
+      }
+
+      // ---- SUPPORT TICKETS (tenant side: open a ticket, list mine, reply, mark-read) --------------------
+      if (path === '/api/support/ticket' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!await rateLimit(env, 'ticket:' + ctx.tenant_id, 20, 3600000)) return err(429, 'Too many tickets right now - please try again later.');
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        const subject = String(b.subject || '').slice(0, 160).trim();
+        const msg = String(b.message || '').slice(0, 6000).trim();
+        const cat = ['billing', 'technical', 'account', 'feature', 'other'].indexOf(String(b.category || '')) >= 0 ? b.category : 'other';
+        if (subject.length < 2 || msg.length < 3) return err(400, 'Add a subject and describe your question.');
+        const now = Date.now(); const id = 'tk' + now.toString(36) + Math.random().toString(36).slice(2, 6);
+        const who = (ctx.tenant && ctx.tenant.name) || ctx.user.email;
+        const thread = [{ by: 'tenant', name: who, msg: msg, at: now }];
+        await env.DB.prepare("INSERT INTO support_tickets (id,tenant_id,email,subject,category,priority,status,created_at,updated_at,unread_owner,unread_tenant,messages) VALUES (?,?,?,?,?,?,?,?,?,1,0,?)")
+          .bind(id, ctx.tenant_id, ctx.user.email, subject, cat, (b.priority === 'high' ? 'high' : 'normal'), 'open', now, now, JSON.stringify(thread)).run();
+        try { if (env.OWNER_EMAIL) await sendEmail(env, { to: env.OWNER_EMAIL, fromName: 'Atlas Rental.io Support', subject: 'New support ticket: ' + subject, html: '<h2>New support ticket</h2><p><b>From:</b> ' + esc(ctx.user.email) + ' (' + esc(who) + ')<br><b>Category:</b> ' + esc(cat) + '</p><p><b>' + esc(subject) + '</b></p><p>' + esc(msg).replace(/\n/g, '<br>') + '</p><p style="color:#889">Reply from the Atlas HQ master dashboard.</p>' }); } catch (e) {}
+        await audit(env, ctx, req, 'support.ticket_created', { id: id });
+        return json({ ok: true, id: id });
+      }
+      if (path === '/api/support/tickets' && method === 'GET') {
+        await ensurePlatformSchema(env);
+        const rows = await env.DB.prepare("SELECT id,subject,category,priority,status,created_at,updated_at,unread_tenant,messages FROM support_tickets WHERE tenant_id=? ORDER BY updated_at DESC LIMIT 100").bind(ctx.tenant_id).all();
+        return json({ ok: true, tickets: (rows.results || []).map(function (r) { let m = []; try { m = JSON.parse(r.messages || '[]'); } catch (e) {} return { id: r.id, subject: r.subject, category: r.category, priority: r.priority, status: r.status, created_at: r.created_at, updated_at: r.updated_at, unread: r.unread_tenant, messages: m }; }) });
+      }
+      if (path === '/api/support/reply' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!await rateLimit(env, 'ticketreply:' + ctx.tenant_id, 60, 3600000)) return err(429, 'Slow down a moment.');
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        const id = String(b.id || ''); const msg = String(b.message || '').slice(0, 6000).trim();
+        if (!id || msg.length < 1) return err(400, 'Nothing to send.');
+        const t = await env.DB.prepare('SELECT messages FROM support_tickets WHERE id=? AND tenant_id=?').bind(id, ctx.tenant_id).first();
+        if (!t) return err(404, 'No such ticket.');
+        let thread = []; try { thread = JSON.parse(t.messages || '[]'); } catch (e) {}
+        thread.push({ by: 'tenant', name: (ctx.tenant && ctx.tenant.name) || ctx.user.email, msg: msg, at: Date.now() });
+        await env.DB.prepare("UPDATE support_tickets SET messages=?, updated_at=?, status=CASE WHEN status='resolved' THEN 'open' ELSE status END, unread_owner=1, unread_tenant=0 WHERE id=? AND tenant_id=?").bind(JSON.stringify(thread), Date.now(), id, ctx.tenant_id).run();
+        try { if (env.OWNER_EMAIL) await sendEmail(env, { to: env.OWNER_EMAIL, fromName: 'Atlas Rental.io Support', subject: 'Reply on support ticket ' + id, html: '<p><b>' + esc(ctx.user.email) + '</b> replied:</p><p>' + esc(msg).replace(/\n/g, '<br>') + '</p>' }); } catch (e) {}
+        return json({ ok: true });
+      }
+      if (path === '/api/support/read' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        await env.DB.prepare('UPDATE support_tickets SET unread_tenant=0 WHERE id=? AND tenant_id=?').bind(String(b.id || ''), ctx.tenant_id).run();
         return json({ ok: true });
       }
 
