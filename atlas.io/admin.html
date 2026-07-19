@@ -720,7 +720,7 @@ var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6
 function _actorGet(){ try{ return localStorage.getItem('atlas_admin_actor')||''; }catch(e){ return ''; } }
 function setActor(v){ try{ localStorage.setItem('atlas_admin_actor',(v||'').trim()); }catch(e){} }
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19d';
+var ATLAS_EXPECT_BUILD='2026.07.19e';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 function renderAI(){ renderBuildBanner(); var c=DATA.aiCfg||{}, on=!!c.ai_hq_enabled, hasKey=!!c.ai_available; var st=$('aiStatus'), tg=$('aiToggleBtn'), bd=$('aiBody'); if(!st) return;
   if(c.needsDeploy){ st.innerHTML='<span class="pill gray">Not deployed</span>'; tg.style.display='none'; bd.innerHTML='<div class="mut" style="padding:10px 12px">Paste the latest worker into Cloudflare to enable the AI Command Center and the new safety features (recoverable delete, working audit trail, admin rate-limit).</div>'; return; } tg.style.display='';
@@ -944,6 +944,8 @@ function renderEnterprise(){ var e=DATA.enterprise||{}; var el=$('entBody'); if(
     +'<div class="desc" style="margin:0 0 5px"><b>Backup &amp; data portability</b></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px"><button class="btn ghost sm" onclick="entBackup()">Download full backup</button>'
       +'<input class="inp" id="entTid" placeholder="tenant id" style="width:150px;padding:7px 9px;font-size:12px"><button class="btn ghost sm" onclick="entExportTenant()">Export tenant data</button></div>'
+    +'<div class="desc" style="margin:0 0 5px"><b>Payment readiness</b> <span class="mut" style="font-weight:400">- go-live pre-flight (read-only; never moves money).</span></div>'
+    +'<div style="margin-bottom:14px"><button class="btn ghost sm" onclick="paymentsSelftest()">Check payment readiness</button><div id="paySelf" style="margin-top:8px"></div></div>'
     +(e.gmv_available?('<div class="desc" style="margin:0 0 5px"><b>GMV take-rate</b> <span class="mut" style="font-weight:400">- Stripe Connect; only affects tenants who onboarded to Connect. The rest keep their own key, $0 GMV cut.</span></div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px"><span class="mut" style="font-size:12px">Take %</span><input class="inp num" id="entBps" type="number" min="0" max="20" step="0.25" value="'+takePct+'" style="width:82px;padding:7px 9px"><button class="btn ghost sm" onclick="entSaveTake()">Save</button>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-left:6px"><input type="checkbox" id="entGmvOn" '+(e.gmv_connect_enabled?'checked':'')+' onchange="entToggleGmv(this.checked)"> Route new bookings via Connect</label></div>')
@@ -953,6 +955,21 @@ function renderEnterprise(){ var e=DATA.enterprise||{}; var el=$('entBody'); if(
 }
 function _dl(name,obj){ var s=(typeof obj==='string')?obj:JSON.stringify(obj,null,2); var a=document.createElement('a'); a.href='data:application/json;charset=utf-8,'+encodeURIComponent(s); a.download=name; document.body.appendChild(a); a.click(); document.body.removeChild(a); }
 function entBackup(){ toast('Preparing backup...'); api('/api/admin/backup').then(function(r){ if(r.json&&r.json.atlas_backup){ _dl('atlas-backup.json', r.json); toast('Backup downloaded'); } else toast((r.json&&r.json.error)||'Backup failed'); }); }
+function paymentsSelftest(){ var out=$('paySelf'); if(out) out.innerHTML='<span class="mut" style="font-size:12px">Checking Stripe (read-only)...</span>'; api('/api/admin/payments/selftest').then(function(r){ var j=r.json||{}; if(!out) return; if(r.status===404){ out.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker. Paste worker.js into Cloudflare, then reload.</div>'; return; } if(!j.ok){ out.innerHTML='<div class="mut" style="font-size:12px">'+esc((j.error)||'Could not run the check')+'</div>'; return; } out.innerHTML=_paySelfHtml(j); }).catch(function(){ if(out) out.innerHTML='<div class="mut" style="font-size:12px">Network error</div>'; }); }
+function _paySelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<div style="font-size:12.5px;display:flex;gap:8px;align-items:flex-start;padding:3px 0"><span style="color:'+(okv?'#3ecb8f':'#e0736f')+';font-weight:700;width:14px;flex:none">'+(okv?'&#10003;':'&#10007;')+'</span> <span>'+esc(label)+'</span></div>'; }
+  var mode='<span class="pill '+(j.mode==='live'?'active':(j.mode==='test'?'gray':'past'))+'">'+esc(j.mode||'?')+' mode</span>';
+  var ready=j.ready_for_live?'<span class="pill active">ready for live</span>':'<span class="pill past">not live-ready</span>';
+  var h='<div style="margin:2px 0 8px">'+mode+' '+ready+'</div>'
+   +row(c.key_set,'Platform Stripe key set')
+   +row(c.key_valid,'Key authenticates with Stripe')
+   +row(c.charges_enabled,'Charges enabled on the account')
+   +row(c.payouts_enabled,'Payouts enabled')
+   +row(c.webhook_secret_set,'Webhook signing secret set')
+   +row(c.webhook_endpoint_configured,'Webhook points at '+esc(j.expected_webhook_url||''));
+  if(j.account){ h+='<div class="mut" style="font-size:11.5px;margin-top:6px">account '+esc(j.account.id||'')+' &middot; '+esc((j.account.country||'')+' / '+String(j.account.currency||'').toUpperCase())+'</div>'; }
+  if((j.notes||[]).length){ h+='<div style="margin-top:8px">'+(j.notes.map(function(n){return '<div class="mut" style="font-size:12px;line-height:1.5">&middot; '+esc(n)+'</div>';}).join(''))+'</div>'; }
+  return h;
+}
 function entExportTenant(){ var t=($('entTid').value||'').trim(); if(!t){ toast('Enter a tenant id'); return; } api('/api/admin/export-tenant?tenant_id='+encodeURIComponent(t)).then(function(r){ if(r.json&&r.json.atlas_tenant_export){ _dl('atlas-tenant-'+t+'.json', r.json); toast('Export downloaded'); } else toast((r.json&&r.json.error)||'Export failed'); }); }
 function entSaveTake(){ var pct=parseFloat($('entBps').value)||0; var bps=Math.round(pct*100); api('/api/admin/config',{method:'POST',body:{gmv_take_bps:bps}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; renderEnterprise(); toast('Take-rate saved ('+((bps/100).toFixed(2))+'%)'); } else toast('Could not save'); }); }
 function entToggleGmv(on){ if(on && !confirm('Route NEW bookings through Stripe Connect?\n\nOnly tenants who have onboarded to Connect are affected; everyone else keeps their own Stripe key unchanged.')){ renderEnterprise(); return; } api('/api/admin/config',{method:'POST',body:{gmv_connect_enabled:on}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; toast('Connect routing '+(on?'on':'off')); } else toast('Could not update'); }); }

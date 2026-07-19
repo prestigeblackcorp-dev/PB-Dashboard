@@ -222,7 +222,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19d';
+const ATLAS_BUILD = '2026.07.19e';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2050,6 +2050,28 @@ export default {
           ]);
           await audit(env, { actor: _actor }, req, 'admin.export_tenant', { tenant_id: tid });
           return new Response(JSON.stringify({ atlas_tenant_export: true, tenant_id: tid, at: Date.now(), data: data }), { headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="atlas-tenant-' + tid + '.json"' } });
+        }
+
+        // Payment go-live PRE-FLIGHT: read-only checks (never moves money) that tell the owner exactly what's missing
+        // before flipping the platform Stripe from test -> live. De-risks the live-payment cutover.
+        if (path === '/api/admin/payments/selftest' && method === 'GET') {
+          const pk = env.PLATFORM_STRIPE_KEY || '';
+          const out = { ok: true, mode: 'none', checks: { key_set: !!pk, key_valid: false, charges_enabled: false, payouts_enabled: false, webhook_secret_set: !!env.STRIPE_WEBHOOK_SECRET, webhook_endpoint_configured: false }, expected_webhook_url: url.origin + '/api/stripe/webhook', notes: [], ready_for_live: false };
+          if (!pk) { out.notes.push('Set PLATFORM_STRIPE_KEY (your Stripe secret key) in the worker.'); return json(out); }
+          out.mode = /_live_/.test(pk) ? 'live' : (/_test_/.test(pk) ? 'test' : 'unknown');
+          const acct = await stripeApi(pk, 'GET', 'account', null);   // read-only: validates the key + returns account status
+          out.checks.key_valid = acct.ok;
+          if (acct.ok) { out.account = { id: acct.j.id, country: acct.j.country, currency: acct.j.default_currency, charges_enabled: !!acct.j.charges_enabled, payouts_enabled: !!acct.j.payouts_enabled, details_submitted: !!acct.j.details_submitted }; out.checks.charges_enabled = !!acct.j.charges_enabled; out.checks.payouts_enabled = !!acct.j.payouts_enabled; }
+          else out.notes.push('Stripe rejected the key (HTTP ' + acct.status + '). Re-check PLATFORM_STRIPE_KEY.');
+          if (!env.STRIPE_WEBHOOK_SECRET) out.notes.push('Set STRIPE_WEBHOOK_SECRET (the webhook signing secret from Stripe > Developers > Webhooks).');
+          const eps = await stripeApi(pk, 'GET', 'webhook_endpoints?limit=100', null);   // read-only: is a webhook pointed at us?
+          if (eps.ok && Array.isArray(eps.j.data)) { const m = eps.j.data.filter(function (e) { return e && e.url && e.url.indexOf('/api/stripe/webhook') >= 0; })[0]; out.checks.webhook_endpoint_configured = !!m; if (m) out.webhook = { url: m.url, status: m.status, events: (m.enabled_events || []).slice(0, 8) }; else out.notes.push('No Stripe webhook points at ' + out.expected_webhook_url + ' -- add it in Stripe > Developers > Webhooks.'); }
+          else out.notes.push('Could not read your Stripe webhook endpoints.');
+          if (out.checks.key_valid && !out.checks.charges_enabled) out.notes.push('Charges are not enabled on this Stripe account yet -- finish Stripe onboarding (business + bank details).');
+          out.ready_for_live = out.mode === 'live' && out.checks.key_valid && out.checks.charges_enabled && out.checks.webhook_secret_set && out.checks.webhook_endpoint_configured;
+          if (out.ready_for_live) out.notes.push('Ready for live: run one real end-to-end charge -> refund -> payout to confirm settlement.');
+          await audit(env, { actor: _actor }, req, 'admin.payments.selftest', { mode: out.mode, ready: out.ready_for_live });
+          return json(out);
         }
 
         // ---- Competitor watchlist (owner-managed). The cron fetches each URL + snapshots it; the AI brief diffs them. ----
