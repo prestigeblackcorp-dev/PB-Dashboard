@@ -2,20 +2,49 @@ name = "atlas"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
-# Daily GC of the unbounded tables (sessions / rate_limits / audit_log) -> worker's scheduled() handler.
+# SAFETY: never delete plaintext vars / secrets that were set in the Cloudflare dashboard
+# but are not declared in this file. Protects your existing config on the first `wrangler deploy`.
+keep_vars = true
+
+# Stream logs (errors + cron runs) to the dashboard: Workers > atlas > Logs.
+[observability]
+enabled = true
+
+# Daily maintenance + lifecycle emails + overnight dreaming/competitor crawl -> scheduled() handler.
+# scheduled() writes a `cron_last_run` heartbeat that /api/health exposes as cron_age_min.
 [triggers]
 crons = ["0 4 * * *"]
 
-# Created by: wrangler d1 create atlas  ->  paste the printed database_id below
+# ---- D1 (binding env.DB) -----------------------------------------------------
+# Get database_id from:  wrangler d1 create atlas   (or Cloudflare dashboard > D1 > atlas > copy ID).
+# This MUST stay declared so `wrangler deploy` preserves the live D1 binding.
 [[d1_databases]]
 binding = "DB"
 database_name = "atlas"
-database_id = "PASTE_AFTER_d1_create"
+database_id = "PASTE_YOUR_D1_DATABASE_ID"
 
-# Secrets are NOT set here (they'd be committed). Set them with:
+# ---- R2 file storage (binding env.R2) ---------------------------------------
+# Powers portal uploads (ID / pickup / condition photos) + tenant files. Without it those degrade honestly.
+# To enable: create the bucket once ->  wrangler r2 bucket create atlas-files
+# then UNCOMMENT the three lines below (set bucket_name to your actual bucket).
+# [[r2_buckets]]
+# binding = "R2"
+# bucket_name = "atlas-files"
+
+# ---- Secrets (NOT stored in this file) --------------------------------------
+# Existing dashboard secrets survive `wrangler deploy`. To set or rotate one:
 #   wrangler secret put SESSION_KEY        # openssl rand -base64 48
-#   wrangler secret put ENC_KEY            # openssl rand -base64 32   (must decode to 32 bytes)
-#   wrangler secret put OWNER_EMAIL        # prestigeblackcorp@gmail.com
-#   wrangler secret put OWNER_SETUP_TOKEN  # a random secret; supply it as body.setupToken to claim OWNER_EMAIL at signup (blocks a land-grab)
-# Per-integration (added in their phases):
-#   STRIPE_SECRET  STRIPE_WEBHOOK_SECRET  RESEND_KEY  TWILIO_SID  TWILIO_TOKEN  ANTHROPIC_KEY  DYNADOT_KEY
+#   wrangler secret put ENC_KEY            # openssl rand -base64 32  (must decode to 32 bytes)
+#   wrangler secret put ADMIN_TOKEN        # your master-dashboard key
+# Full list the worker reads (set the ones you use):
+#   ADMIN_TOKEN SESSION_KEY ENC_KEY ENC_KEY_2 OWNER_EMAIL OWNER_SETUP_TOKEN
+#   ANTHROPIC_KEY OPENAI_KEY GEMINI_KEY SEARCH_KEY
+#   RESEND_KEY MAIL_FROM SUPPORT_EMAIL INBOUND_SECRET
+#   PLATFORM_STRIPE_KEY STRIPE_WEBHOOK_SECRET
+#   TWILIO_SID TWILIO_TOKEN TWILIO_FROM
+#   CF_API_TOKEN CF_ZONE_ID APP_ORIGIN APP_ZONE SAAS_TARGET
+#   DYNADOT_KEY DYNADOT_SANDBOX DOMAIN_MARKUP_PCT
+#
+# FIRST-TIME SAFETY: before the very first `wrangler deploy`, run:
+#   wrangler deploy --dry-run
+# and confirm it reports the DB (and R2, if uncommented) bindings and does NOT warn about removing others.

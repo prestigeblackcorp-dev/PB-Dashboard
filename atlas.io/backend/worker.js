@@ -1282,12 +1282,13 @@ export default {
       }
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
-        const h = { ok: false, db_bound: typeof env.DB !== 'undefined', user_tables: 0, schema_loaded: false,
+        const h = { ok: false, build: ATLAS_BUILD, time: Date.now(), db_bound: typeof env.DB !== 'undefined', r2: !!_r2(env), user_tables: 0, schema_loaded: false, cron_last: 0, cron_age_min: null,
           secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!env.CF_API_TOKEN };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
           h.schema_loaded = h.user_tables >= 15;
+          const cr = parseInt(await _pcfgGet(env, 'cron_last_run', '0'), 10) || 0; h.cron_last = cr; if (cr) h.cron_age_min = Math.round((Date.now() - cr) / 60000);
         } catch (e) { h.db_ok = false; }   // don't leak DB internals to an unauthenticated caller
         h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;
         return json(h);
@@ -3172,6 +3173,7 @@ export default {
   async scheduled(event, env, ctx) {
     try {
       const now = Date.now();
+      try { await ensurePlatformSchema(env); await _pcfgSet(env, 'cron_last_run', String(now)); } catch (e) {}   // heartbeat: /api/health exposes cron_age_min so an uptime monitor can alert if the cron stops running
       await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
       // Retain ADMIN-plane actions for a year (forensics/compliance); other audit rows GC at 90 days.
