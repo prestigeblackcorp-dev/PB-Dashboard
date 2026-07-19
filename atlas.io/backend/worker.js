@@ -191,6 +191,40 @@ async function _apiKeyAuth(env, req) {
   try { await env.DB.prepare('UPDATE api_keys SET last_used_at=? WHERE id=?').bind(Date.now(), row.id).run(); } catch (e) {}
   return { keyId: row.id, tenant_id: row.tenant_id };
 }
+// ---- Developer platform pt.3: outbound webhooks. A tenant registers HTTPS endpoints; on booking.created / booking.paid we POST
+// a signed JSON event. Each endpoint has its OWN signing secret and we HMAC-SHA256 the exact body (header X-Atlas-Signature:
+// sha256=<hex>), the same verification scheme Stripe uses. Dispatch is fire-and-forget via waitUntil and every step is
+// try/caught, so a tenant's slow or broken receiver can NEVER delay or break the live booking/payment path. Gated behind the
+// same dev_api_enabled platform switch as the read API (OFF by default); an endpoint auto-pauses after 15 straight failures.
+const WEBHOOK_EVENTS = ['booking.created', 'booking.paid'];
+async function _whSignHex(secret, body) { try { const key = await crypto.subtle.importKey('raw', enc(String(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const s = await crypto.subtle.sign('HMAC', key, enc(String(body))); return Array.prototype.map.call(new Uint8Array(s), function (x) { return ('0' + x.toString(16)).slice(-2); }).join(''); } catch (e) { return ''; } }
+function _whUrlOk(u) { let _u; try { _u = new URL(String(u || '').trim()); } catch (e) { return false; } if (_u.protocol !== 'https:') return false; const h = _u.hostname.toLowerCase(); if (h === 'localhost' || h === '::1' || h.indexOf('.') < 0 || h.indexOf('metadata') >= 0 || /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(h) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h)) return false; return true; }
+function _whWants(eventsJson, event) { try { if (!eventsJson || eventsJson === '*') return true; const arr = JSON.parse(eventsJson); if (!Array.isArray(arr) || !arr.length) return true; return arr.indexOf(event) >= 0 || arr.indexOf('*') >= 0; } catch (e) { return true; } }
+async function _whSendOne(env, ep, event, data) {
+  const ts = Date.now(), id = 'evt_' + randId(20);
+  const body = JSON.stringify({ id: id, event: event, created: Math.floor(ts / 1000), data: data || {} });
+  let status = 0;
+  try { const sig = await _whSignHex(ep.secret, body);
+    const resp = await _fetchTimeout(ep.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Atlas-Webhooks/1.0', 'X-Atlas-Event': event, 'X-Atlas-Delivery': id, 'X-Atlas-Signature': 'sha256=' + sig }, body: body }, 12000);
+    status = (resp && resp.status) || 0;
+  } catch (e) { status = 0; }
+  const ok = status >= 200 && status < 300;
+  try { const nf = ok ? 0 : (Number(ep.fail_count) || 0) + 1;
+    await env.DB.prepare('UPDATE webhook_endpoints SET last_status=?, last_attempt_at=?, fail_count=?' + (nf >= 15 ? ', active=0' : '') + ' WHERE id=?').bind(status, ts, nf, ep.id).run();
+  } catch (e) {}
+  return { ok: ok, status: status, id: id };
+}
+async function _dispatchWebhooks(env, tenantId, event, data) {
+  try {
+    if (!tenantId) return;
+    if ((await _pcfgGet(env, 'dev_api_enabled', '0')) !== '1') return;   // same platform switch as the read API; OFF by default
+    const r = await env.DB.prepare('SELECT id,url,secret,events,fail_count FROM webhook_endpoints WHERE tenant_id=? AND active=1').bind(tenantId).all();
+    const eps = (r && r.results) || [];
+    for (const ep of eps) { if (_whWants(ep.events, event)) { try { await _whSendOne(env, ep, event, data); } catch (e) {} } }
+  } catch (e) {}
+}
+// Schedule a dispatch AFTER the response returns (waitUntil) so a booking/payment is never held up; falls back to a swallowed promise if no exec-context.
+function _fireWebhook(ectx, env, tenantId, event, data) { try { const p = _dispatchWebhooks(env, tenantId, event, data); if (ectx && ectx.waitUntil) ectx.waitUntil(p); else if (p && p.catch) p.catch(function () {}); } catch (e) {} }
 // state-changing requests must present a matching CSRF token + same-origin
 function csrfOk(req, ctx) {
   const tok = req.headers.get('X-CSRF-Token');
@@ -234,7 +268,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19m';
+const ATLAS_BUILD = '2026.07.19n';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1228,6 +1262,9 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, key_hash TEXT, prefix TEXT, created_at INTEGER, last_used_at INTEGER, revoked_at INTEGER)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_apikeys_hash ON api_keys(key_hash)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_apikeys_tenant ON api_keys(tenant_id, created_at)").run();
+    // Developer platform pt.3: per-tenant outbound webhook endpoints. Each holds its own signing secret (used only to HMAC our POSTs).
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS webhook_endpoints (id TEXT PRIMARY KEY, tenant_id TEXT, url TEXT, secret TEXT, events TEXT, active INTEGER DEFAULT 1, created_at INTEGER, last_status INTEGER, last_attempt_at INTEGER, fail_count INTEGER DEFAULT 0)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_webhooks_tenant ON webhook_endpoints(tenant_id, created_at)").run();
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -1367,7 +1404,7 @@ async function stripePost(secretKey, path, params) {
 
 // ================================================================ router
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, _ectx) {
     const url = new URL(req.url);
     const path = url.pathname;
     const host = (url.hostname || '').toLowerCase();
@@ -1607,6 +1644,7 @@ export default {
             subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
             html: _emailShell(prof, '<h2>New website booking</h2><p><b>' + esc(String(b.name)) + '</b> (' + esc(b.email) + (b.phone ? ', ' + esc(String(b.phone)) : '') + ') requested <b>' + esc(assetName) + '</b> for ' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + '.</p><p>Estimated <b>' + money2(q.totalCents) + '</b>. Reference <b>' + esc(bref) + '</b>. Open Atlas to confirm.</p>') });
           await audit(env, { tenant_id: prof.id }, req, 'public.book', { ref: bref, asset: assetName });
+          _fireWebhook(_ectx, env, prof.id, 'booking.created', { id: bref, ref: bref, status: 'pending', asset: assetName, periods: periods, unit: cfg.unit || 'day', total_cents: q.totalCents, deposit_cents: q.depositCents, currency: 'usd', source: 'website', portal: url.origin + '/api/portal/' + token, customer: { name: String(b.name).slice(0, 120), email: b.email.toLowerCase(), phone: String(b.phone || '').slice(0, 40) }, created: Math.floor(now / 1000) });
           let payUrl = null;
           if (q.depositCents > 0) {
             const sk = await tenantStripeKey(env, prof.id);
@@ -1648,6 +1686,7 @@ export default {
               if (tr && d.custEmail) { const pr = tenantProfile(tr); await sendEmail(env, { to: d.custEmail, fromName: pr.name,
                 subject: 'Payment received - ' + pr.name, html: _emailShell(pr, '<h2>Payment received</h2><p>Thanks! We received ' + money2(amt) + ' for booking <b>' + esc(md.booking) + '</b> (' + esc(d.asset || '') + ').</p>') }); }
               await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid', { booking: md.booking, kind: md.kind, cents: amt });
+              _fireWebhook(_ectx, env, md.tenant, 'booking.paid', { id: md.booking, ref: md.booking, kind: md.kind || 'payment', amount_cents: amt, currency: 'usd', asset: d.asset || '', status: 'confirmed', paid_at: Math.floor(Date.now() / 1000) });
             }
           } catch (e) {}
         }
@@ -2869,6 +2908,43 @@ export default {
           if (!id) return err(400, 'Which key? Pass ?id=.');
           await env.DB.prepare('UPDATE api_keys SET revoked_at=? WHERE id=? AND tenant_id=?').bind(Date.now(), id, ctx.tenant_id).run();
           await audit(env, ctx, req, 'tenant.apikey.revoke', { id: id });
+          return json({ ok: true });
+        }
+      }
+      // Developer platform pt.3: a tenant manages their own outbound webhook endpoints. Signing secret shown ONCE on create.
+      if (path === '/api/tenant/webhooks') {
+        if (method === 'GET') {
+          const r = await env.DB.prepare('SELECT id,url,events,active,created_at,last_status,last_attempt_at,fail_count FROM webhook_endpoints WHERE tenant_id=? ORDER BY created_at DESC').bind(ctx.tenant_id).all();
+          return json({ ok: true, hooks: (r.results || []), available_events: WEBHOOK_EVENTS, enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1' });
+        }
+        if (method === 'POST') {
+          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage webhooks.');
+          const b = await req.json().catch(function () { return {}; });
+          if (b.test) {   // fire a test 'ping' at one existing endpoint (awaited so the tenant sees the delivery result live)
+            const ep = await env.DB.prepare('SELECT id,url,secret,events,fail_count FROM webhook_endpoints WHERE id=? AND tenant_id=?').bind(String(b.test), ctx.tenant_id).first();
+            if (!ep) return err(404, 'No such webhook endpoint.');
+            const res = await _whSendOne(env, ep, 'ping', { message: 'This is a test event from Atlas.', at: Date.now() });
+            return json({ ok: true, delivered: res.ok, status: res.status });
+          }
+          const u = String(b.url || '').trim();
+          if (!_whUrlOk(u)) return err(400, 'Enter a valid public https:// URL (private and local addresses are blocked).');
+          const count = ((await env.DB.prepare('SELECT COUNT(*) c FROM webhook_endpoints WHERE tenant_id=?').bind(ctx.tenant_id).first()) || {}).c || 0;
+          if (count >= 10) return err(400, 'You already have 10 webhook endpoints. Delete one before adding another.');
+          let events = '*';
+          if (Array.isArray(b.events) && b.events.length) { const sel = b.events.filter(function (e) { return WEBHOOK_EVENTS.indexOf(e) >= 0; }); if (sel.length) events = JSON.stringify(sel); }
+          const secret = 'whsec_' + randId(40), id = 'wh_' + randId(16);
+          await env.DB.prepare('INSERT INTO webhook_endpoints (id,tenant_id,url,secret,events,active,created_at) VALUES (?,?,?,?,?,1,?)').bind(id, ctx.tenant_id, u, secret, events, Date.now()).run();
+          await audit(env, ctx, req, 'tenant.webhook.create', { url: u });
+          return json({ ok: true, id: id, secret: secret, note: 'Copy this signing secret now - it verifies our requests come from Atlas and will never be shown again.' });
+        }
+        if (method === 'DELETE') {
+          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage webhooks.');
+          const id = url.searchParams.get('id') || '';
+          if (!id) return err(400, 'Which webhook? Pass ?id=.');
+          await env.DB.prepare('DELETE FROM webhook_endpoints WHERE id=? AND tenant_id=?').bind(id, ctx.tenant_id).run();
+          await audit(env, ctx, req, 'tenant.webhook.delete', { id: id });
           return json({ ok: true });
         }
       }

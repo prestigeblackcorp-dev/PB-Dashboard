@@ -4,6 +4,7 @@
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
 import worker from '../worker.js';
+import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
 let scn = 'ready';
@@ -122,6 +123,64 @@ r = await worker.fetch(mkReq('POST', '/api/admin/counsel/run', { headers: H }), 
 ok(r.status === 200 && j.ok === true && !!j.ran, 'counsel/run computes deterministically with no AI key');
 r = await worker.fetch(mkReq('GET', '/api/admin/counsel', { headers: { 'X-Admin-Token': 'WRONG' } }), cEnv(), ctx);
 ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
+
+// ---- Developer platform pt.3: outbound webhooks (session-gated tenant mgmt + signed dispatch, HMAC-verified) ----
+{
+  const NOW = Date.now(), SID = 'sid_wh', CSRF = 'CSRFwh', TEN = 't_wh';
+  const hooks = new Map();
+  function whDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u', email: 'o@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/COUNT\(\*\) c FROM webhook_endpoints/.test(sql)) { let n = 0; for (const v of hooks.values()) if (v.tenant_id === a[0]) n++; return { c: n }; }
+          if (/FROM webhook_endpoints WHERE id=\? AND tenant_id=\?/.test(sql)) { const v = hooks.get(a[0]); return (v && v.tenant_id === a[1]) ? v : null; }
+          if (/FROM platform_config/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => { if (/FROM webhook_endpoints WHERE tenant_id=\? ORDER BY/.test(sql)) return { results: [...hooks.values()].filter((v) => v.tenant_id === a[0]).map((v) => ({ id: v.id, url: v.url, events: v.events, active: v.active, created_at: v.created_at, last_status: v.last_status, last_attempt_at: v.last_attempt_at, fail_count: v.fail_count })) }; return { results: [] }; },
+        run: async () => {
+          if (/INSERT INTO webhook_endpoints/.test(sql)) hooks.set(a[0], { id: a[0], tenant_id: a[1], url: a[2], secret: a[3], events: a[4], active: 1, created_at: a[5], last_status: null, last_attempt_at: null, fail_count: 0 });
+          else if (/UPDATE webhook_endpoints SET last_status/.test(sql)) { const id = a[a.length - 1], v = hooks.get(id); if (v) { v.last_status = a[0]; v.last_attempt_at = a[1]; v.fail_count = a[2]; } }
+          else if (/DELETE FROM webhook_endpoints/.test(sql)) { const v = hooks.get(a[0]); if (v && v.tenant_id === a[1]) hooks.delete(a[0]); }
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const wenv = { DB: whDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  let sent = [];
+  globalThis.fetch = (u, opts) => { sent.push({ url: String(u), opts: opts || {} }); return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({}) }); };
+  // hand-rolled request so we can set the Cookie header (undici forbids it on a real Request); worker uses method/url/headers.get/json here.
+  const whReq = (method, path, body, over) => { const headers = Object.assign({ 'content-type': 'application/json', 'cookie': 'atlas_sid=' + SID, 'x-csrf-token': CSRF, 'origin': 'https://atlasrental.io' }, over || {}); return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+
+  let wr = await worker.fetch(whReq('POST', '/api/tenant/webhooks', { url: 'https://hooks.example.com/atlas' }), wenv, ctx);
+  let wj = await wr.json();
+  ok(wr.status === 200 && /^whsec_/.test(wj.secret || '') && !!wj.id, 'webhooks: create -> id + whsec_ signing secret (shown once)');
+  const WID = wj.id, SECRET = wj.secret;
+  wr = await worker.fetch(whReq('POST', '/api/tenant/webhooks', { url: 'http://169.254.169.254/x' }), wenv, ctx);
+  ok(wr.status === 400, 'webhooks: SSRF/private/non-https URL rejected');
+  sent = [];
+  wr = await worker.fetch(whReq('POST', '/api/tenant/webhooks', { test: WID }), wenv, ctx); wj = await wr.json();
+  ok(wr.status === 200 && wj.delivered === true, 'webhooks: signed test ping delivered');
+  const sig = (sent[0] && (sent[0].opts.headers || {})['X-Atlas-Signature']) || '';
+  const exp = 'sha256=' + crypto.createHmac('sha256', SECRET).update(sent[0].opts.body).digest('hex');
+  ok(sig === exp, 'webhooks: X-Atlas-Signature is a valid HMAC-SHA256 of the exact body');
+  wr = await worker.fetch(whReq('DELETE', '/api/tenant/webhooks?id=' + WID), wenv, ctx);
+  ok(wr.status === 200, 'webhooks: delete -> 200');
+  wr = await worker.fetch(whReq('POST', '/api/tenant/webhooks', { url: 'https://a.example.com/h' }, { 'x-csrf-token': 'WRONG' }), wenv, ctx);
+  ok(wr.status === 403, 'webhooks: bad CSRF -> 403');
+  wr = await worker.fetch(whReq('GET', '/api/tenant/webhooks', null, { 'cookie': '' }), wenv, ctx);
+  ok(wr.status === 401 || wr.status === 403, 'webhooks: no session -> 401/403 (not public)');
+}
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
