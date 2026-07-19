@@ -222,7 +222,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19h';
+const ATLAS_BUILD = '2026.07.19i';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1287,7 +1287,7 @@ export default {
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, build: ATLAS_BUILD, time: Date.now(), db_bound: typeof env.DB !== 'undefined', r2: !!_r2(env), user_tables: 0, schema_loaded: false, cron_last: 0, cron_age_min: null,
-          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!env.CF_API_TOKEN };
+          secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, PLATFORM_STRIPE_TEST_KEY: !!env.PLATFORM_STRIPE_TEST_KEY, DYNADOT_KEY: !!env.DYNADOT_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!env.CF_API_TOKEN, registrar: !!env.DYNADOT_KEY };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
@@ -2016,7 +2016,7 @@ export default {
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -2025,7 +2025,7 @@ export default {
           if (typeof b.gmv_take_bps !== 'undefined') { const bps = Math.max(0, Math.min(2000, parseInt(b.gmv_take_bps, 10) || 0)); await _pcfgSet(env, 'gmv_take_bps', String(bps)); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_take_bps: bps }); }
           if (typeof b.gmv_connect_enabled !== 'undefined') { await _pcfgSet(env, 'gmv_connect_enabled', b.gmv_connect_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_connect_enabled: !!b.gmv_connect_enabled }); }
           if (typeof b.payments_test_mode !== 'undefined') { await _pcfgSet(env, 'payments_test_mode', b.payments_test_mode ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { payments_test_mode: !!b.payments_test_mode }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         // E3 admin RBAC: manage named-actor roles (owner|support|analyst). The shared-token actor 'atlas-hq' is always owner (break-glass).
@@ -2092,6 +2092,21 @@ export default {
           if (out.mode === 'test' && !out.checks.webhook_endpoint_configured) out.notes.push('For the loop to close (booking -> paid), add a TEST-mode webhook in Stripe pointed at ' + out.expected_webhook_url + '.');
           if (out.ready_for_live) out.notes.push('Ready for live: run one real end-to-end charge -> refund -> payout to confirm settlement.');
           await audit(env, { actor: _actor }, req, 'admin.payments.selftest', { mode: out.mode, ready: out.ready_for_live, test_ready: out.test_ready });
+          return json(out);
+        }
+
+        // Registrar (domain) PRE-FLIGHT: read-only. Confirms DYNADOT_KEY works + the account answers, WITHOUT buying anything.
+        // A real 'register' spends the prepaid balance; this runs only 'search' (free), so the owner can verify the key full-circle safely.
+        if (path === '/api/admin/domains/selftest' && method === 'GET') {
+          const keySet = !!env.DYNADOT_KEY;
+          const out = { ok: true, key_set: keySet, sandbox: !!env.DYNADOT_SANDBOX, checks: { key_set: keySet, api_answered: false, key_valid: false }, probe: null, notes: [], ready: false };
+          if (!keySet) { out.notes.push('Set the worker secret DYNADOT_KEY (Cloudflare > Workers > atlas > Settings > Variables > Add secret) to enable real domain search + purchase. Until then the site shows price estimates only and never buys.'); await audit(env, { actor: _actor }, req, 'admin.domains.selftest', { key_set: false, ready: false }); return json(out); }
+          const probeDomain = 'atlas-registrar-selftest-check.com';   // fixed, harmless probe -- search only, never registered
+          const s = await _registrarSearch(env, probeDomain);
+          out.probe = s; out.checks.api_answered = !!s; out.checks.key_valid = !!(s && s.ok); out.ready = !!(s && s.ok);
+          if (s && s.ok) out.notes.push('Dynadot answered for ' + probeDomain + ': ' + (s.available ? 'available' : 'taken') + (s.costCents ? (' at $' + (s.costCents / 100).toFixed(2) + '/yr') : '') + '. Your key is live -- purchases draw on your prepaid balance. Nothing was charged by this test.');
+          else out.notes.push('Dynadot did not confirm (reason: ' + ((s && s.reason) || 'unknown') + '). Re-check the DYNADOT_KEY value and that the account is funded.');
+          await audit(env, { actor: _actor }, req, 'admin.domains.selftest', { key_set: keySet, ready: out.ready });
           return json(out);
         }
 

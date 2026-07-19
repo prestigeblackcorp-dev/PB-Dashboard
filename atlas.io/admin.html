@@ -728,7 +728,7 @@ var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6
 function _actorGet(){ try{ return localStorage.getItem('atlas_admin_actor')||''; }catch(e){ return ''; } }
 function setActor(v){ try{ localStorage.setItem('atlas_admin_actor',(v||'').trim()); }catch(e){} }
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19h';
+var ATLAS_EXPECT_BUILD='2026.07.19i';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== System health card ===== */
 function loadHealth(manual){ if(manual&&$('healthBody')) $('healthBody').innerHTML='<div class="mut">Checking&hellip;</div>'; return api('/api/health').then(function(r){ DATA.health=r.json||{}; renderHealth(); }).catch(function(){ var el=$('healthBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; if($('healthSub'))$('healthSub').textContent='unreachable'; }); }
@@ -752,6 +752,7 @@ function renderHealth(){ var el=$('healthBody'); if(!el) return; var h=DATA.heal
     +_hc('Email', h.mailer?'ok':'warn', h.mailer?'on':'off')
     +_hc('AI council', h.ai_council?'ok':'warn', h.ai_council?'on':'off')
     +_hc('SaaS domains', h.saas_domains?'ok':'warn', h.saas_domains?'on':'off')
+    +_hc('Registrar', h.registrar?'ok':'warn', h.registrar?'Dynadot on':'off')
     +((h.big_rows!=null)?_hc('Payload', h.big_rows>5?'warn':'ok', (h.big_rows||0)+' big rows'):'')
     +'</div>';
   el.innerHTML=g;
@@ -982,6 +983,9 @@ function renderEnterprise(){ var e=DATA.enterprise||{}; var el=$('entBody'); if(
     +'<label style="display:flex;align-items:center;gap:7px;font-size:12.5px;margin:2px 0 8px"><input type="checkbox" id="payTest" '+(e.payments_test_mode?'checked':'')+' onchange="payToggleTest(this.checked)"> Test / sandbox mode <span class="mut">'+(e.test_key?'(PLATFORM_STRIPE_TEST_KEY set)':'(add PLATFORM_STRIPE_TEST_KEY in the worker)')+'</span></label>'
     +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px"><button class="btn ghost sm" onclick="paymentsSelftest()">Check payment readiness</button>'+((e.payments_test_mode&&e.test_key)?'<button class="btn ghost sm" onclick="payTestCharge()">Run a $49.99 test payment</button>':'')+'</div>'
     +'<div id="paySelf" style="margin-bottom:14px"></div>'
+    +'<div class="desc" style="margin:0 0 5px"><b>Domain registrar</b> <span class="mut" style="font-weight:400">- Dynadot buy/renew for tenant domains (read-only test; never buys).</span></div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px"><button class="btn ghost sm" onclick="registrarSelftest()">Test registrar key (no charge)</button><span class="mut" style="font-size:12px">'+(e.registrar?('key set'+(e.registrar_sandbox?' &middot; sandbox':'')):'add DYNADOT_KEY in the worker')+'</span></div>'
+    +'<div id="regSelf" style="margin-bottom:14px"></div>'
     +(e.gmv_available?('<div class="desc" style="margin:0 0 5px"><b>GMV take-rate</b> <span class="mut" style="font-weight:400">- Stripe Connect; only affects tenants who onboarded to Connect. The rest keep their own key, $0 GMV cut.</span></div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px"><span class="mut" style="font-size:12px">Take %</span><input class="inp num" id="entBps" type="number" min="0" max="20" step="0.25" value="'+takePct+'" style="width:82px;padding:7px 9px"><button class="btn ghost sm" onclick="entSaveTake()">Save</button>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-left:6px"><input type="checkbox" id="entGmvOn" '+(e.gmv_connect_enabled?'checked':'')+' onchange="entToggleGmv(this.checked)"> Route new bookings via Connect</label></div>')
@@ -1010,6 +1014,17 @@ function _paySelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<
   if(j.account){ h+='<div class="mut" style="font-size:11.5px;margin-top:6px">account '+esc(j.account.id||'')+' &middot; '+esc((j.account.country||'')+' / '+String(j.account.currency||'').toUpperCase())+'</div>'; }
   if((j.recent_payments||[]).length){ h+='<div class="dsec" style="margin-top:10px">Recent payments '+(j.mode==='test'?'(test)':'')+'</div>'; j.recent_payments.slice(0,8).forEach(function(p){ var amt='$'+(((p.amount||0)/100)).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); var st=p.refunded?'refunded':(p.status||''); h+='<div class="drow" style="padding:5px 2px"><span class="dl">'+esc(amt)+' '+esc(String(p.currency||'').toUpperCase())+(p.desc?(' <span class="mut">'+esc(p.desc)+'</span>'):'')+'</span><b style="color:'+(st==='succeeded'?'#3ecb8f':(st==='refunded'?'#d9b25f':'#e0736f'))+'">'+esc(st)+'</b></div>'; }); }
   else if(c.key_valid){ h+='<div class="mut" style="font-size:12px;margin-top:8px">No payments on this account yet &mdash; run a booking + pay with test card 4242 4242 4242 4242 to watch one appear here.</div>'; }
+  if((j.notes||[]).length){ h+='<div style="margin-top:8px">'+(j.notes.map(function(n){return '<div class="mut" style="font-size:12px;line-height:1.5">&middot; '+esc(n)+'</div>';}).join(''))+'</div>'; }
+  return h;
+}
+function registrarSelftest(){ var out=$('regSelf'); if(out) out.innerHTML='<span class="mut" style="font-size:12px">Checking Dynadot (read-only)...</span>'; api('/api/admin/domains/selftest').then(function(r){ var j=r.json||{}; if(!out) return; if(r.status===404){ out.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker. Paste worker.js into Cloudflare, then reload.</div>'; return; } if(!j.ok){ out.innerHTML='<div class="mut" style="font-size:12px">'+esc((j.error)||'Could not run the check')+'</div>'; return; } out.innerHTML=_regSelfHtml(j); }).catch(function(){ if(out) out.innerHTML='<div class="mut" style="font-size:12px">Network error</div>'; }); }
+function _regSelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<div style="font-size:12.5px;display:flex;gap:8px;align-items:flex-start;padding:3px 0"><span style="color:'+(okv?'#3ecb8f':'#e0736f')+';font-weight:700;width:14px;flex:none">'+(okv?'&#10003;':'&#10007;')+'</span> <span>'+esc(label)+'</span></div>'; }
+  var ready=j.ready?'<span class="pill active">key live</span>':'<span class="pill past">not verified</span>';
+  var sb=j.sandbox?' <span class="pill gray">sandbox</span>':'';
+  var h='<div style="margin:2px 0 8px">'+ready+sb+'</div>'
+   +row(c.key_set,'DYNADOT_KEY set in the worker')
+   +row(c.api_answered,'Dynadot API answered')
+   +row(c.key_valid,'Key authenticated (search returned a price)');
   if((j.notes||[]).length){ h+='<div style="margin-top:8px">'+(j.notes.map(function(n){return '<div class="mut" style="font-size:12px;line-height:1.5">&middot; '+esc(n)+'</div>';}).join(''))+'</div>'; }
   return h;
 }
