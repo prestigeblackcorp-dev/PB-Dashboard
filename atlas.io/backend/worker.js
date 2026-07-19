@@ -220,6 +220,9 @@ function vEmail(s) { return typeof s === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$
 function vStr(s, max) { return typeof s === 'string' && s.length > 0 && s.length <= (max || 200); }
 function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
+// Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
+// (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
+const ATLAS_BUILD = '2026.07.19d';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1999,7 +2002,7 @@ export default {
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
           const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), your_role: _role };
-          return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env) }, enterprise: ent });
+          return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         if (path === '/api/admin/config' && method === 'POST') {
           const b = await req.json().catch(function () { return {}; });
@@ -2007,7 +2010,7 @@ export default {
           if (typeof b.gmv_take_bps !== 'undefined') { const bps = Math.max(0, Math.min(2000, parseInt(b.gmv_take_bps, 10) || 0)); await _pcfgSet(env, 'gmv_take_bps', String(bps)); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_take_bps: bps }); }
           if (typeof b.gmv_connect_enabled !== 'undefined') { await _pcfgSet(env, 'gmv_connect_enabled', b.gmv_connect_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_connect_enabled: !!b.gmv_connect_enabled }); }
           const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env) };
-          return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env) }, enterprise: ent });
+          return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         // E3 admin RBAC: manage named-actor roles (owner|support|analyst). The shared-token actor 'atlas-hq' is always owner (break-glass).
         if (path === '/api/admin/roles' && method === 'GET') { return json({ ok: true, roles: _hqJson(await _pcfgGet(env, 'admin_roles', '{}'), {}) || {}, you: { actor: _actor, role: _role } }); }
