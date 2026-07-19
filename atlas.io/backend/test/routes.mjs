@@ -1,6 +1,7 @@
 // Atlas worker route tests -- second CI gate, beyond smoke. Deterministic (mock D1 + stubbed Stripe), no network,
 // no production. Covers the MONEY path (payment go-live self-test) + richer health fields.
 // Run locally (Node 20+):  node test/routes.mjs
+// CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
 import worker from '../worker.js';
 
