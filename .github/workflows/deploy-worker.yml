@@ -1,0 +1,62 @@
+name: Deploy Atlas Worker
+
+# Automated worker deploy = the end of hand-pasting into Cloudflare (and of the "I pasted it but nothing changed"
+# drift). Every push that touches the worker runs the smoke test FIRST; only a green test deploys.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'atlas.io/backend/worker.js'
+      - 'atlas.io/backend/wrangler.toml'
+      - 'atlas.io/backend/test/**'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch: {}   # manual "Run workflow" button
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: atlas.io/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # GATE: a broken worker (won't load, bad build stamp, delete regression, bad auth) fails here and never deploys.
+      - name: Smoke test (mock-D1, no network)
+        run: node test/smoke.mjs
+
+      # Second gate: money path (payment go-live self-test) + richer health fields.
+      - name: Route tests (money path + health)
+        run: node test/routes.mjs
+
+      # Dry run surfaces any binding it would add/remove before the real deploy touches production.
+      - name: Deploy preview (dry run)
+        run: npx --yes wrangler@3 deploy --dry-run
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy to Cloudflare
+        run: npx --yes wrangler@3 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Post-deploy: confirm the LIVE worker now serves the build we just shipped (catches a silent no-op deploy).
+      - name: Verify live build stamp
+        run: |
+          sleep 6
+          EXPECT=$(grep -oE "ATLAS_BUILD = '[^']+'" worker.js | grep -oE "'[^']+'" | tr -d "'")
+          LIVE=$(curl -s https://atlasrental.io/api/health | grep -oE '"build":"[^"]*"' | head -1 | cut -d'"' -f4)
+          echo "expected=$EXPECT live=$LIVE"
+          if [ "$EXPECT" != "$LIVE" ]; then echo "::error::Live build ($LIVE) != shipped build ($EXPECT)"; exit 1; fi
+          echo "Live worker is serving $LIVE"
