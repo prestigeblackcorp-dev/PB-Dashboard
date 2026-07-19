@@ -234,7 +234,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19l';
+const ATLAS_BUILD = '2026.07.19m';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -524,18 +524,37 @@ async function _counselCompute(env, opts) {
   const m = await _hqMetrics(env);
   const avg = m.paid ? Math.max(999, Math.round(m.mrr_cents / m.paid)) : 4999;   // avg MRR/tenant (cents); a churn ~= a year of it
   const yr = avg * 12;
+  // #5 feedback loop: Counsel LEARNS from what the owner acts on vs dismisses -> down-weight kinds they keep dismissing, keep the ones they act on.
+  var fb = {}; try { fb = _hqJson(await _pcfgGet(env, 'counsel_feedback', '{}'), {}) || {}; } catch (e) {}
+  function _fbMult(kind) { var f = fb[kind] || {}; var don = f.done || 0, dis = f.dismissed || 0; if (dis >= 3 && don === 0) return 0.35; if (dis > don + 2) return 0.6; if (don > dis + 2) return 1.15; return 1; }
   async function q(name, p) { try { return (await HQ_QUERIES[name].run(env, p || {})) || []; } catch (e) { return []; } }
   const F = []; const nm = function (t) { return t.name || t.email || ('account ' + (t.id || t.tenant_id || '')); };
-  function add(layer, kind, sev, impact, title, body, action, tid) { F.push({ layer: layer, kind: kind, severity: sev, impact_score: Math.round(impact), title: title, body_md: body || '', action: action || '', tenant_id: tid || null }); }
+  function add(layer, kind, sev, impact, title, body, action, tid) { F.push({ layer: layer, kind: kind, severity: sev, impact_score: Math.round(impact * _fbMult(kind)), title: title, body_md: body || '', action: action || '', tenant_id: tid || null }); }
   if (m.prev_mrr_cents != null && m.mrr_cents < m.prev_mrr_cents) { const drop = m.prev_mrr_cents - m.mrr_cents; add('L3', 'revenue', 'high', drop * 12, 'MRR fell to $' + Math.round(m.mrr_cents / 100) + ' (was $' + Math.round(m.prev_mrr_cents / 100) + ')', 'Recurring revenue dropped since the last snapshot -- likely a cancellation or a failed renewal.', 'Check Stripe for recent cancellations + failed payments and win the account back today.', null); }
   (await q('past_due')).forEach(function (t) { add('L1', 'past_due', 'high', yr, 'Payment failed: ' + nm(t), 'This account is past-due -- its revenue is actively at risk right now.', 'Send the update-card / billing-portal link before the grace period lapses.', t.id); });
   (await q('trials_expiring', { days: 3, has_card: 0 })).forEach(function (t) { add('L1', 'trial_expiring', 'high', yr, 'Trial ends in <3 days, no card: ' + nm(t), 'This trial lapses within 3 days with no card on file -- it will churn silently.', 'Reach out with a renewal nudge and an offer to help them finish setup.', t.id); });
   (await q('paid_no_booking', { days: 30 })).forEach(function (t) { add('L1', 'no_activation', 'high', Math.round(yr * 0.8), 'Paying, 0 bookings in 30 days: ' + nm(t), 'A paying customer with no bookings is a strong churn signal.', 'Check whether they need help publishing their booking site or importing assets.', t.id); });
   (await q('onboarding_stuck', { days: 7 })).forEach(function (t) { add('L1', 'onboarding_stuck', 'med', avg * 3, 'Stalled onboarding: ' + nm(t), 'Signed up 7+ days ago with no assets added -- unlikely to activate alone.', 'Send a first-asset template and a quick onboarding hand.', t.id); });
-  const tix = await q('tickets_open_over', { hours: 24 }); if (tix.length) add('L2', 'support', tix.length > 3 ? 'high' : 'med', tix.length * avg, tix.length + ' support ticket' + (tix.length > 1 ? 's' : '') + ' open over 24h', 'Aging support erodes trust and retention.', 'Clear the oldest first; use AI-draft in the Support inbox.', null);
+  // #4 support triage by IMPACT, not date: rank open tickets by tenant lifetime value x age x priority; surface the top few individually.
+  try {
+    const hot = ((await env.DB.prepare("SELECT s.id,s.subject,s.priority,s.created_at,s.tenant_id,s.email,(SELECT COALESCE(SUM(amount_cents),0) FROM platform_transactions WHERE tenant_id=s.tenant_id) ltv,(SELECT name FROM tenants WHERE id=s.tenant_id) tname FROM support_tickets s WHERE s.status!='resolved' AND s.created_at < ? ORDER BY s.created_at ASC LIMIT 50").bind(now - 24 * 3600000).all()).results) || [];
+    hot.forEach(function (t) { var ageH = Math.max(1, Math.round((now - (t.created_at || now)) / 3600000)); t._score = Math.round(((t.ltv || 0) + avg) * (t.priority === 'high' ? 2 : 1) * Math.min(6, 1 + ageH / 24)); });
+    hot.sort(function (a, b) { return (b._score || 0) - (a._score || 0); });
+    hot.slice(0, 3).forEach(function (t) { var ageD = Math.max(1, Math.round((now - (t.created_at || now)) / 86400000)); add('L2', 'support_ticket', 'high', t._score, 'Aging ticket (' + ageD + 'd): ' + (t.tname || t.email || 'a customer') + (t.subject ? (' -- ' + String(t.subject).slice(0, 50)) : ''), 'Ranked ABOVE newer tickets by dollar impact (this account\'s lifetime value + priority + age).', 'Answer it now -- use AI-draft in the Support inbox.', t.tenant_id); });
+    if (hot.length > 3) add('L2', 'support', 'med', (hot.length - 3) * Math.round(avg / 4), (hot.length - 3) + ' more ticket' + (hot.length - 3 > 1 ? 's' : '') + ' open over 24h', 'The rest of the aging support queue, lower dollar impact.', 'Batch-clear the remainder after the ranked ones above.', null);
+  } catch (e) {}
   if (m.new_bugs > 0) add('L2', 'bugs', m.new_bugs > 4 ? 'high' : 'med', m.new_bugs * Math.round(avg / 2), m.new_bugs + ' new bug report' + (m.new_bugs > 1 ? 's' : '') + ' unreviewed', 'Unreviewed reports hide duplicates and high-impact regressions.', 'Triage the bug queue; group duplicates; escalate anything blocking bookings or payments.', null);
   if (m.open_tickets > 10) add('L2', 'health', 'med', m.open_tickets * Math.round(avg / 3), m.open_tickets + ' support tickets open in total', 'Support backlog is building across the platform.', 'Batch-resolve or delegate; run a canned-answer + AI-draft pass.', null);
   const topRev = await q('top_tenants_revenue', { n: 3 }); if (topRev.length && m.paid > 0) add('L3', 'expansion', 'low', avg * 6, 'Expansion + proof: your top ' + topRev.length + ' accounts', 'Your highest-LTV customers are the best expansion and testimonial candidates.', 'Offer a higher tier / add-ons and ask for a review or case study.', null);
+  // #3 cross-layer: roll the per-tenant overnight "dreaming" insights (L1) up into platform-level findings -> one brief that spans customer + platform + executive.
+  try {
+    const _ins = ((await env.DB.prepare('SELECT json FROM tenant_insights LIMIT 500').all()).results) || [];
+    var idleTotal = 0, overdueN = 0, decliningN = 0, unpaidTotal = 0;
+    _ins.forEach(function (r) { var o = _hqJson(r.json, {}) || {}; idleTotal += (o.idleDaily || 0); if ((o.overdue || 0) > 0) overdueN++; if ((o.revPrev || 0) > 0 && (o.rev30 || 0) < (o.revPrev || 0) * 0.7) decliningN++; unpaidTotal += (o.unpaid || 0); });
+    if (idleTotal >= 5000) add('L1', 'fleet_idle', 'med', idleTotal * 20, 'Idle fleet across your tenants: ~$' + Math.round(idleTotal / 100) + '/day unbooked', 'Rolled up from overnight tenant insights -- utilization is the #1 lever for your customers\' revenue AND your retention.', 'Trigger the dreaming idle-asset nudge; suggest promos / availability tweaks to the affected tenants.', null);
+    if (decliningN >= 2) add('L1', 'revenue_decline', 'high', decliningN * avg * 6, decliningN + ' tenants with revenue down >30% vs the prior period', 'A cluster of declining accounts is an early churn + support signal across the base.', 'Reach out proactively; look for a shared cause (seasonality, a broken flow, pricing).', null);
+    if (overdueN >= 2) add('L2', 'overdue', 'med', overdueN * Math.round(avg / 2), overdueN + ' tenants have overdue returns right now', 'Overdue returns tie up assets and risk disputes across the platform.', 'Nudge those tenants to run the overdue-return flow.', null);
+  } catch (e) {}
   F.sort(function (a, b) { return (b.impact_score || 0) - (a.impact_score || 0); });
   var narrative = '';
   try {
@@ -552,6 +571,24 @@ async function _counselCompute(env, opts) {
   for (var i = 0; i < F.length && wrote < 24; i++) { var f = F[i]; if (acted[f.kind + '|' + (f.tenant_id || '')]) continue; try { await env.DB.prepare("INSERT INTO counsel_journal (id,day,layer,kind,tenant_id,title,body_md,data_json,severity,impact_score,action,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").bind('cj' + randId(12), day, f.layer, f.kind, f.tenant_id, f.title, f.body_md, '{}', f.severity, f.impact_score, f.action, 'new', now).run(); wrote++; } catch (e) {} }
   try { await _pcfgSet(env, 'counsel_last_day', day); } catch (e) {}
   return { day: day, findings: wrote, ai: !!narrative };
+}
+// #6 Atlas Counsel weekly/monthly rollup: a trend review (what moved in $, the biggest recurring theme, the next strategic move) stored as a
+// counsel_journal row (kind 'weekly'|'monthly'). Cron fires it via _due(); deterministic summary works with the AI key off (AI adds prose).
+async function _counselRollup(env, span) {
+  try { await ensurePlatformSchema(env); } catch (e) {}
+  const now = Date.now(); const day = new Date(now).toISOString().slice(0, 10); const backDays = span === 'monthly' ? 30 : 7;
+  const m = await _hqMetrics(env);
+  const past = await env.DB.prepare('SELECT mrr_cents,paid FROM platform_daily_snapshot WHERE day<=? ORDER BY day DESC LIMIT 1').bind(new Date(now - backDays * 86400000).toISOString().slice(0, 10)).first();
+  const mrrChange = past ? (m.mrr_cents - (past.mrr_cents || 0)) : 0; const paidChange = past ? (m.paid - (past.paid || 0)) : 0;
+  const newSignups = ((await env.DB.prepare('SELECT COUNT(*) c FROM tenants WHERE deleted_at IS NULL AND created_at>=?').bind(now - backDays * 86400000).first()) || {}).c || 0;
+  const rev = ((await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=?').bind(now - backDays * 86400000).first()) || {}).c || 0;
+  const kinds = ((await env.DB.prepare("SELECT kind, COUNT(*) c FROM counsel_journal WHERE kind NOT IN ('brief','weekly','monthly') AND created_at>=? GROUP BY kind ORDER BY c DESC LIMIT 5").bind(now - backDays * 86400000).all()).results) || [];
+  const facts = { span: span, mrr_cents: m.mrr_cents, mrr_change_cents: mrrChange, paid: m.paid, paid_change: paidChange, new_signups: newSignups, revenue_cents: rev, recurring: kinds.map(function (k) { return k.kind + ' x' + k.c; }) };
+  var md = '';
+  try { if (_hqHasAI(env)) md = (await _hqAsk(env, HQ_SYS + ' You are Atlas Counsel. Write a ' + span + ' review for the founder in at most 6 short lines: what moved (in dollars), the single biggest recurring theme, and the 1-2 strategic moves for the next ' + (span === 'monthly' ? 'month' : 'week') + '. Use ONLY these facts; invent nothing.', 'Facts (JSON): ' + JSON.stringify(facts), 500)) || ''; } catch (e) {}
+  if (!md) md = (span === 'monthly' ? 'Monthly' : 'Weekly') + ' review ' + day + ': MRR $' + Math.round(m.mrr_cents / 100) + ' (' + (mrrChange >= 0 ? '+' : '-') + '$' + Math.round(Math.abs(mrrChange) / 100) + '), ' + m.paid + ' paying (' + (paidChange >= 0 ? '+' : '') + paidChange + '), ' + newSignups + ' new signups, $' + Math.round(rev / 100) + ' collected. Recurring: ' + (facts.recurring.join(', ') || 'nothing notable') + '.';
+  try { await env.DB.prepare("INSERT INTO counsel_journal (id,day,layer,kind,tenant_id,title,body_md,data_json,severity,impact_score,action,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").bind('cj' + randId(12), day, 'L3', span, null, (span === 'monthly' ? 'Monthly' : 'Weekly') + ' review ' + day, md, JSON.stringify(facts), 'info', 0, '', span, now).run(); } catch (e) {}
+  return { span: span, mrr_change_cents: mrrChange, signups: newSignups };
 }
 
 // Founder GROWTH substrate: REAL day-by-day platform data (visits, signups, revenue) + who actually uses Atlas
@@ -2290,13 +2327,15 @@ export default {
           else citems = (await env.DB.prepare("SELECT id,day,layer,kind,tenant_id,title,body_md,severity,impact_score,action,status,created_at FROM counsel_journal WHERE kind!='brief' AND status IN ('new','done','dismissed') ORDER BY (status='new') DESC, impact_score DESC, created_at DESC LIMIT ?").bind(clim).all()).results;
           const copen = ((await env.DB.prepare("SELECT COUNT(*) c FROM counsel_journal WHERE kind!='brief' AND status='new'").first()) || {}).c || 0;
           const clast = await _pcfgGet(env, 'counsel_last_day', '');
-          return json({ ok: true, day: cday, last_run: clast, open: copen, ai: _hqHasAI(env), brief: cbrief ? { day: cbrief.day, title: cbrief.title, md: cbrief.body_md, at: cbrief.created_at } : null, items: citems || [] });
+          const crolls = ((await env.DB.prepare("SELECT day,kind,title,body_md,created_at FROM counsel_journal WHERE kind IN ('weekly','monthly') ORDER BY created_at DESC LIMIT 4").all()).results) || [];
+          return json({ ok: true, day: cday, last_run: clast, open: copen, ai: _hqHasAI(env), brief: cbrief ? { day: cbrief.day, title: cbrief.title, md: cbrief.body_md, at: cbrief.created_at } : null, rollups: crolls, items: citems || [] });
         }
         if (path === '/api/admin/counsel/act' && method === 'POST') {
           const cb = await req.json().catch(function () { return {}; });
           const cid = String(cb.id || ''); const cst = (['done', 'dismissed', 'new'].indexOf(cb.status) >= 0) ? cb.status : '';
           if (!cid || !cst) return err(400, 'Need id + status (done | dismissed | new).');
           await env.DB.prepare("UPDATE counsel_journal SET status=? WHERE id=? AND kind!='brief'").bind(cst, cid).run();
+          if (cst === 'done' || cst === 'dismissed') { try { const _cr = await env.DB.prepare('SELECT kind FROM counsel_journal WHERE id=?').bind(cid).first(); if (_cr && _cr.kind) { var _fb = _hqJson(await _pcfgGet(env, 'counsel_feedback', '{}'), {}) || {}; _fb[_cr.kind] = _fb[_cr.kind] || { done: 0, dismissed: 0 }; _fb[_cr.kind][cst] = (_fb[_cr.kind][cst] || 0) + 1; await _pcfgSet(env, 'counsel_feedback', JSON.stringify(_fb)); } } catch (e) {} }   // #5 feedback loop: learn which kinds the owner acts on vs dismisses
           await audit(env, { actor: _actor }, req, 'admin.counsel.act', { id: cid, status: cst });
           return json({ ok: true });
         }
@@ -3434,6 +3473,8 @@ export default {
     } catch (e) { /* competitor deep-crawl + learning is best-effort */ }
     // Atlas Counsel: append today's institutional-memory entry ("what deserves attention"), once per day. Best-effort; no AI key required.
     try { await _counselCompute(env, {}); } catch (e) { /* Counsel journal is best-effort */ }
+    try { if (await _due(env, 'counsel_weekly', 7 * 86400000)) await _counselRollup(env, 'weekly'); } catch (e) { /* weekly rollup best-effort */ }
+    try { if (await _due(env, 'counsel_monthly', 30 * 86400000)) await _counselRollup(env, 'monthly'); } catch (e) { /* monthly rollup best-effort */ }
   },
 };
 
