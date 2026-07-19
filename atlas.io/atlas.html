@@ -1841,7 +1841,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19c';
+  var APP_VERSION='2026.7.19d';
   var APP_CHANGELOG=[
     'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
     'Cancellation policy you set once (Settings &gt; Money): shown to customers before they pay, in the confirmation email, and merged into your rental agreement &amp; terms',
@@ -5508,6 +5508,9 @@ const Atlas = (function(){
         ${[['@','Email (Resend / SMTP)','Confirmations &amp; reminders','email'],['#','SMS (Twilio)','Text your customers','sms'],['M','Maps','Delivery &amp; addresses','maps'],['Q','QuickBooks','Sync accounting','qb'],['W','Website embed','Booking widget for your site','web']].map(c=>`
           <div class="conn-row"><div class="conn-row__ic">${c[0]}</div><div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
           <div class="conn-act">${S.integrations[c[3]]?`<span class="chip chip--ok"><span class="dot"></span>Connected</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Manage</button>`:`<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Connect</button>`}</div></div>`).join('')}
+      </div>
+      <div class="set-block"><h3>Developer API</h3><div class="desc">Read-only programmatic access to your own bookings, assets and customers &mdash; wire Atlas into your tools, spreadsheets or Zapier. Create a key and send it as a Bearer token to <code>${(ATLAS_API||'https://atlasrental.io')}/api/v1</code>.</div>
+        <button class="btn btn--primary" onclick="Atlas.openDeveloper()">Manage API keys &amp; docs</button>
       </div>`;
     else if(setCur==='portal'){ var pc=_portalCfg(); b.innerHTML=`
       <div class="set-block"><h3>Member portal</h3><div class="desc">Your customers' branded self-service area &mdash; fully generated for you and yours to edit.</div>
@@ -6228,6 +6231,37 @@ const Atlas = (function(){
       <button class="btn btn--primary btn--full" onclick="Atlas.doConnect('${id}','${name}')">Save ${name}</button>
       <p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">\u{1F512} Your key is sent encrypted to your backend at go-live &mdash; never stored in the browser. Nothing charges until then. Disconnect anytime.</p></div>`);
   }
+  // ===== Developer API: tenant self-serve keys for the read-only /api/v1 surface (pt.2) =====
+  function _devAgo(ts){ if(!ts) return ''; var m=Math.round((Date.now()-ts)/60000); if(m<1) return 'just now'; if(m<60) return m+'m ago'; var h=Math.round(m/60); if(h<48) return h+'h ago'; return Math.round(h/24)+'d ago'; }
+  function openDeveloper(){
+    if(!ATLAS_BACKEND || !_apiCsrf){ openModal('<div class="modal__head"><h3>Developer API</h3>'+_xBtn()+'</div><div class="modal__body"><div class="bk-lenhint" style="margin:0">Sign in to your Atlas account to create API keys &mdash; the developer API is available once you are signed in.</div></div>'); return; }
+    var base=(ATLAS_API||'https://atlasrental.io')+'/api/v1';
+    openModal('<div class="modal__head"><h3>Developer API</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="desc" style="margin:0 0 12px">Read-only access to your own <b>bookings</b>, <b>assets</b> and <b>customers</b>. Send your key as a Bearer token. Treat it like a password &mdash; anyone with it can read your data.</div>'
+      +'<div id="devKeys"><div style="color:var(--muted);font-size:13px">Loading your keys&hellip;</div></div>'
+      +'<div class="field" style="margin-top:14px"><label>Create a new key</label><div style="display:flex;gap:8px"><input class="input" id="devKeyName" placeholder="e.g. Zapier, Reporting" style="flex:1"><button class="btn btn--primary" onclick="Atlas.devKeyCreate()">Create</button></div></div>'
+      +'<div style="margin-top:16px;border-top:1px solid var(--line,rgba(0,0,0,.1));padding-top:14px"><b style="font-size:13px">Quick start</b>'
+        +'<pre style="background:var(--surface-2,rgba(0,0,0,.05));border-radius:8px;padding:10px;overflow-x:auto;font-size:12px;margin:8px 0 0"><code>curl -H "Authorization: Bearer YOUR_KEY" \\\n  '+esc(base)+'/bookings</code></pre>'
+        +'<div style="color:var(--muted);font-size:12px;margin-top:8px">GET endpoints: <code>/me</code> &middot; <code>/assets</code> &middot; <code>/bookings</code> &middot; <code>/customers</code>. Paginate with <code>?limit=&amp;offset=</code>. Rate limit 120/min per key.</div></div>'
+      +'</div>');
+    _devKeysLoad();
+  }
+  function _devKeysLoad(){ _api('/api/tenant/apikeys').then(function(res){ var el=document.getElementById('devKeys'); if(!el) return; var ks=(res.json&&res.json.keys)||[];
+    if(!ks.length){ el.innerHTML='<div style="color:var(--muted);font-size:13px">No API keys yet &mdash; create one below.</div>'; return; }
+    el.innerHTML=ks.map(function(k){ var rev=!!k.revoked_at;
+      return '<div class="conn-row" style="opacity:'+(rev?'.5':'1')+'"><div class="conn-row__t"><b>'+esc(k.name||'API key')+(rev?' <span class="chip chip--muted">revoked</span>':'')+'</b><small><code>'+esc(k.prefix||'')+'&hellip;</code> &middot; '+(k.last_used_at?('used '+_devAgo(k.last_used_at)):'never used')+'</small></div>'
+        +(rev?'':'<button class="btn btn--ghost btn--sm conn-act" onclick="Atlas.devKeyRevoke(\''+esc(k.id)+'\')">Revoke</button>')+'</div>'; }).join('');
+  }).catch(function(){ var el=document.getElementById('devKeys'); if(el) el.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load keys.</div>'; }); }
+  function devKeyCreate(){ if(!_canMod('settings')){ toast('Your role cannot manage API keys'); return; } var nm=(val('devKeyName')||'').trim();
+    _api('/api/tenant/apikeys',{method:'POST',body:{name:nm}}).then(function(res){ var j=res.json||{};
+      if(j.ok&&j.key){ _devShowSecret(j.key,j.name); } else toast((j.error)||'Could not create the key'); }).catch(function(){ toast('Network error'); }); }
+  function _devShowSecret(key,name){ openModal('<div class="modal__head"><h3>Copy your API key</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>'+esc(name||'API key')+'</b> &mdash; this is the only time the full key is shown. Copy it now and store it safely.</div>'
+      +'<div style="display:flex;gap:8px"><input class="input" id="devSecret" readonly value="'+esc(key)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:12px" onclick="this.select()"><button class="btn btn--primary" onclick="Atlas._devCopy()">Copy</button></div>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:14px" onclick="Atlas.openDeveloper()">Done</button></div>'); }
+  function _devCopy(){ var el=document.getElementById('devSecret'); if(!el) return; try{ el.select(); if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(el.value); } else { document.execCommand('copy'); } toast('Key copied'); }catch(e){ try{ document.execCommand('copy'); }catch(_){} toast('Key copied'); } }
+  function devKeyRevoke(id){ if(!_canMod('settings')){ toast('Your role cannot manage API keys'); return; } if(!confirm('Revoke this key? Any integration using it stops working immediately.')) return;
+    _api('/api/tenant/apikeys?id='+encodeURIComponent(id),{method:'DELETE'}).then(function(){ toast('Key revoked'); _devKeysLoad(); }).catch(function(){ toast('Could not revoke'); }); }
   var CONN_VALIDATE={   // instant sanity-check: catch a wrong/swapped/incomplete key and say exactly how to fix it, before saving
     stripe:function(o){ var pk=(o['Publishable key']||''), sk=(o['Secret key']||'');
       if(/^sk_/.test(pk)||/^pk_/.test(sk)) return 'Those look swapped - the Publishable key starts with pk_, the Secret with sk_. Switch them.';
@@ -7596,7 +7630,7 @@ const Atlas = (function(){
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,devKeyCreate,devKeyRevoke,_devCopy,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
 </script>
