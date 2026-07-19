@@ -91,6 +91,23 @@
   .card-h .sp{flex:1}
   .card-b{padding:6px 6px 8px}
   .card-b.pad{padding:16px}
+  /* collapsible cards + clickable KPIs */
+  .kpi{cursor:pointer;transition:transform .12s ease,border-color .12s ease,box-shadow .12s ease}
+  .kpi:hover{border-color:var(--em);transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,.28)}
+  .kpi:active{transform:translateY(0)}
+  .kpi .k-l::after{content:"\2197";margin-left:auto;opacity:0;color:var(--em);transition:opacity .12s;font-weight:700}
+  .kpi:hover .k-l::after{opacity:.8}
+  .card-h{cursor:pointer;user-select:none}
+  .card-h .chev{margin-left:4px;font-size:10px;color:var(--mut);transition:transform .2s ease;display:inline-block;flex:none}
+  .card.collapsed .card-b{display:none}
+  .card.collapsed .card-h{border-bottom:none}
+  .card.collapsed .chev{transform:rotate(-90deg)}
+  .drow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 4px;border-bottom:1px solid var(--line);font-size:13px}
+  .drow:last-child{border-bottom:none}
+  .drow b{white-space:nowrap;font-variant-numeric:tabular-nums}
+  .drow .dl{color:var(--mut2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dsec{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin:14px 2px 5px;font-weight:600}
+  .dsec:first-child{margin-top:2px}
 
   .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.2px;border:1px solid transparent;white-space:nowrap}
   .pill.trial{color:var(--gold2);background:rgba(239,201,120,.1);border-color:rgba(239,201,120,.22)}
@@ -244,6 +261,7 @@
     <div class="card-b pad">
       <div id="growCompare"></div>
       <div class="ai-tools" style="margin-top:12px">
+        <button class="btn gold sm" onclick="growBeat()">Beat competitors</button>
         <button class="btn ghost sm" onclick="growAI('strategy')">Go-to-market</button>
         <button class="btn ghost sm" onclick="growCampaign()">Social campaign</button>
         <button class="btn ghost sm" onclick="growPosts()">Post ideas</button>
@@ -429,6 +447,7 @@ function lock(){ _tok=''; try{ localStorage.removeItem(TOK_KEY); }catch(e){} if(
 function enter(overview){ $('gate').style.display='none'; $('app').style.display='block';
   if(overview){ DATA.overview=overview; paintOverview(); }
   loadAll();
+  initCollapsible();
   if(_timer) clearInterval(_timer);
   _timer=setInterval(function(){ loadAll(true); }, REFRESH_MS);
   setInterval(tickLive, 1000);
@@ -490,7 +509,7 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
     {id:'k_trial', label:'Trials', val:mem.trials||0, fmt:function(v){return nfmt(v);}, sub:nfmt(mem.trials_with_card||0)+' with card'},
     {id:'k_bug', label:'Open bugs', val:bugs.open||0, fmt:function(v){return nfmt(v);}, sub:nfmt(bugs.total||0)+' total'}
   ];
-  $('kpis').innerHTML = kpis.map(function(k){ return '<div class="kpi'+(k.hero?' hero':'')+(k.gold?' gold':'')+'"><div class="glow"></div>'+
+  $('kpis').innerHTML = kpis.map(function(k){ return '<div class="kpi'+(k.hero?' hero':'')+(k.gold?' gold':'')+'" onclick="kpiDrill(\''+k.id+'\')" role="button" tabindex="0" title="Click for the detail behind this number"><div class="glow"></div>'+
     '<div class="k-l">'+esc(k.label)+'</div><div class="k-v'+(k.gold?' money':'')+' num" id="'+k.id+'">'+(k.fmt(0))+'</div>'+
     '<div class="k-s num">'+k.sub+'</div></div>'; }).join('');
   kpis.forEach(function(k){ var el=$(k.id); if(el) animateNum(el, k.val, k.fmt); });
@@ -511,6 +530,52 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
 
 /* ================= members ================= */
 function setSeg(btn){ Array.prototype.forEach.call($('memSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _seg=btn.getAttribute('data-f'); renderMembers(); }
+/* ===== collapsible cards + clickable KPI drill-downs ===== */
+function initCollapsible(){
+  var cards=document.querySelectorAll('#app .card');
+  for(var i=0;i<cards.length;i++){ (function(card,idx){
+    var h=card.querySelector('.card-h'); if(!h||h.getAttribute('data-cx')) return; h.setAttribute('data-cx','1');
+    var h2=h.querySelector('h2'); var title=((h2&&h2.textContent)||('card'+idx)).replace(/[^a-z0-9]+/gi,'').toLowerCase();
+    var key='atlas_cx_'+title;
+    var chev=document.createElement('span'); chev.className='chev'; chev.innerHTML='&#9662;'; chev.setAttribute('aria-hidden','true');
+    h.insertBefore(chev,h.firstChild);
+    try{ if(localStorage.getItem(key)==='1') card.classList.add('collapsed'); }catch(e){}
+    h.addEventListener('click',function(e){ if(e.target.closest&&e.target.closest('button,select,input,a,label,textarea,.chip')) return; card.classList.toggle('collapsed'); try{ localStorage.setItem(key,card.classList.contains('collapsed')?'1':'0'); }catch(e){} });
+  })(cards[i],i); }
+  var kw=$('kpis'); if(kw&&!kw.getAttribute('data-kx')){ kw.setAttribute('data-kx','1'); kw.addEventListener('keydown',function(e){ if((e.key==='Enter'||e.key===' ')&&e.target.classList&&e.target.classList.contains('kpi')){ e.preventDefault(); e.target.click(); } }); }
+}
+function _dr(l,v){ return '<div class="drow"><span class="dl">'+l+'</span><b>'+v+'</b></div>'; }
+function _dsec(t){ return '<div class="dsec">'+esc(t)+'</div>'; }
+function _cn(code){ try{ var a=window.ATLAS_WORLD||[]; for(var i=0;i<a.length;i++){ if(a[i].c===code) return a[i].n; } }catch(e){} return code||'-'; }
+function kpiDrill(id){
+  var o=DATA.overview||{}, rev=o.revenue||{}, mem=o.members||{}, vis=o.visits||{};
+  var rl=((o.range&&o.range.label)||'this range'); var T='Detail', H='';
+  if(id==='k_rev'||id==='k_mrr'){ var bk=rev.by_kind||{}; T=(id==='k_mrr')?'MRR - recurring revenue':'Revenue';
+    H=_dsec('Totals')+_dr('All-time revenue',centsUSD(rev.total_cents||0))+_dr('In '+esc(rl),centsUSD(rev.range_cents||0))+_dr('MRR (recurring / mo)',centsUSD(rev.mrr_cents||0))
+     +_dsec('By type ('+esc(rl)+')')+_dr('Subscriptions',centsUSD(bk.subscription||0))+_dr('Credit packs',centsUSD(bk.credits||0))+_dr('Websites',centsUSD(bk.website||0))+_dr('Domains',centsUSD(bk.domain||0));
+  } else if(id==='k_mem'){ T='Members'; var byt=mem.by_tier||{}, ms=DATA.members||[];
+    H=_dsec('Overview')+_dr('Total members',nfmt(mem.total||0))+_dr('Paying',nfmt(mem.paid||0))+_dr('On trial',nfmt(mem.trials||0));
+    var tk=Object.keys(byt); if(tk.length){ H+=_dsec('By tier'); for(var i=0;i<tk.length;i++) H+=_dr(esc(TIER_LABEL[tk[i]]||tk[i]),nfmt(byt[tk[i]])); }
+    var top=ms.slice().sort(function(a,b){return (b.revenue_cents||0)-(a.revenue_cents||0);}).slice(0,8);
+    if(top.length){ H+=_dsec('Top members by revenue'); top.forEach(function(m){ H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b> <span class="mut">'+esc(TIER_LABEL[m.tier]||m.tier||'')+'</span>',centsUSD(m.revenue_cents||0)); }); }
+  } else if(id==='k_vis'){ T='Website visits';
+    H=_dsec('Traffic')+_dr('Visits in '+esc(rl),nfmt(vis.range||0))+_dr('Today',nfmt(vis.today||0));
+    var gc=((DATA.geo||{}).countries)||[]; if(gc.length){ H+=_dsec('Top countries'); gc.slice(0,8).forEach(function(c){ H+=_dr(esc(_cn(c.country||c.c||'')),nfmt(c.views||0)); }); }
+    var vt=((DATA.visits||{}).top)||[]; if(vt.length){ H+=_dsec('Top booking sites'); vt.slice(0,8).forEach(function(t){ H+=_dr(esc(t.name||t.tenant_id||'-'),nfmt(t.views||0)); }); }
+  } else if(id==='k_signup'){ T='New signups'; var ms2=(DATA.members||[]).slice().sort(function(a,b){return (b.created_at||0)-(a.created_at||0);});
+    H=_dsec('Signups')+_dr('New in '+esc(rl),nfmt(o.signups||0))+_dr('Total members',nfmt(mem.total||0));
+    if(ms2.length){ H+=_dsec('Most recent'); ms2.slice(0,10).forEach(function(m){ H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b> <span class="mut">'+esc(m.plan||'')+'</span>',dstr(m.created_at)); }); }
+  } else if(id==='k_trial'){ T='Trials'; var tr=(DATA.members||[]).filter(function(m){return m.plan==='trial';});
+    H=_dsec('Trials')+_dr('On trial',nfmt(mem.trials||0))+_dr('With card on file',nfmt(mem.trials_with_card||0));
+    if(tr.length){ H+=_dsec('Trial accounts'); tr.slice(0,12).forEach(function(m){ var dl=daysLeft(m.trial_ends); H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b>'+(m.card_on_file?' <span class="pill card">card</span>':''),(dl==null?'-':(dl<0?'expired':dl+'d left'))); }); }
+  } else if(id==='k_bug'){ T='Bug & idea inbox'; var bg=DATA.bugs||[], bo=o.bugs||{};
+    H=_dsec('Counts')+_dr('Open',nfmt(bo.open||0))+_dr('Total',nfmt(bo.total||0));
+    var open=bg.filter(function(x){return (x.status||'open')!=='resolved';});
+    if(open.length){ H+=_dsec('Open items'); open.slice(0,10).forEach(function(x){ H+=_dr('<span class="pill gray">'+esc(x.type||'note')+'</span> '+esc((x.message||'').slice(0,64)),dstr(x.created_at)); }); }
+  }
+  if(!H) H='<div class="mut">No detail available.</div>';
+  _aiOpen(T,H);
+}
 function renderMembers(){ var q=($('memSearch').value||'').toLowerCase().trim();
   var rows=(DATA.members||[]).filter(function(m){
     if(_seg==='trial' && m.plan!=='trial') return false;
@@ -744,7 +809,7 @@ function competitorDeepAll(){ var list=(DATA.competitors||[]).slice(); if(!list.
     api('/api/admin/ai/competitor-deep',{method:'POST',body:{id:c.id,force:true}}).then(function(r){ if(r.json&&r.json.ok&&r.json.intel) done++; }).catch(function(){}).then(function(){ toast('Deep-reading '+i+'/'+list.length+'...'); next(); }); })();
 }
 function addCompetitor(){ var u=($('compUrl').value||'').trim(), lbl=($('compLabel').value||'').trim(); if(!/^https?:\/\//i.test(u)){ toast('Enter a full http(s) URL'); return; } api('/api/admin/competitors',{method:'POST',body:{url:u,label:lbl}}).then(function(r){ if(r.json&&r.json.ok){ $('compUrl').value=''; $('compLabel').value=''; toast('Watching'); loadAll(true); } else toast((r.json&&r.json.error)||'Could not add'); }); }
-function delCompetitor(id){ api('/api/admin/competitors',{method:'DELETE',body:{id:id}}).then(function(r){ if(r.json&&r.json.ok){ toast('Removed'); loadAll(true); } else toast('Could not remove'); }); }
+function delCompetitor(id){ if(!confirm('Remove this competitor from the watchlist?')) return; api('/api/admin/competitors?id='+encodeURIComponent(id),{method:'DELETE'}).then(function(r){ if(r.json&&r.json.ok&&r.json.removed){ toast('Removed'); loadAll(true); } else if(r.json&&r.json.ok){ toast('Already gone'); loadAll(true); } else toast((r.json&&r.json.error)||'Could not remove'); }); }
 function aiCompetitorBrief(){ _aiOpen('Competitor + market brief','<div class="fld"><label>Optional market search (needs a search key in the worker)</label><input class="inp" id="compQ" placeholder="exotic car rental Miami pricing"></div><button class="btn gold sm" onclick="aiCompetitorBriefRun()">Generate</button><div id="compBriefOut" style="margin-top:12px"></div>'); }
 function aiCompetitorBriefRun(){ var q=(($('compQ')&&$('compQ').value)||'').trim(); var out=$('compBriefOut'); out.innerHTML=_aiBusy(); api('/api/admin/ai/competitor-brief',{method:'POST',body:{query:q}}).then(function(r){ var j=r.json||{}, h=_aiHonest(j); if(h){ out.innerHTML=h; return; } var b=j.brief||{}, s=b.sources||{}; var tag=(s.live?'<span class="pill active">live data</span>':'<span class="pill gray">general knowledge</span>')+' '+(s.watchlist?('<span class="mut" style="font-size:11px">'+s.watchlist+' watched</span> '):'')+(s.council?('<span class="mut" style="font-size:11px">+ council web research '+((s.models||[]).join(' + '))+'</span>'):''); out.innerHTML='<div style="margin-bottom:8px">'+tag+'</div><div class="ai-md">'+_mdLite(b.analysis||'')+'</div>'; }); }
 /* ================= support inbox (inbound email) ================= */
@@ -858,6 +923,7 @@ function growPosts(){ _growModal('Post ideas','<div class="fld"><label>Platform<
 function growPartners(){ _growModal('Partners & sponsors','<div class="fld"><label>Research the market <span class="mut" style="font-weight:400">(your AI council searches the web live)</span></label><input class="inp" id="growQuery" placeholder="exotic car rental associations, RV rental influencers"></div>','partners'); }
 function growAccounts(){ _growModal('Find real accounts','<div class="fld"><label>Who to find <span class="mut" style="font-weight:400">(council searches the web live)</span></label><input class="inp" id="growQuery" placeholder="car rental YouTubers, property manager communities"></div>','accounts'); }
 function growOutreach(){ _growModal('Draft outreach','<div class="fld"><label>Target (account / org / person)</label><input class="inp" id="growTarget" placeholder="@SomeRentalCreator on Instagram"></div><div class="fld"><label>Context research (optional, council searches the web)</label><input class="inp" id="growQuery" placeholder="who they are"></div>','outreach'); }
+function growBeat(){ _growModal('Beat competitors - marketing playbook','<div class="mut" style="font-size:12px;margin-bottom:8px">Your AI council studies your watched competitors\' real marketing (from your Competitor Intel deep-reads + live web research) and builds the positioning, campaigns, ready-to-run ads, and audience targeting to get Atlas in front of the right buyers first - and beat them.</div><div class="fld"><label>Focus <span class="mut" style="font-weight:400">(optional - e.g. a market or niche)</span></label><input class="inp" id="growQuery" placeholder="e.g. exotic car rental Miami, or leave blank"></div>','beat'); growRun('beat'); }
 
 /* ================= enterprise & trust (E-tier) ================= */
 function renderEnterprise(){ var e=DATA.enterprise||{}; var el=$('entBody'); if(!el) return;

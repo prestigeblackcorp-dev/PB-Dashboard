@@ -2048,7 +2048,7 @@ export default {
           const u = String(b.url || '').trim();
           if (!/^https?:\/\/[^\s]{4,300}$/i.test(u)) return err(400, 'Enter a full http(s) URL to watch.');
           const cnt = ((await env.DB.prepare('SELECT COUNT(*) c FROM competitor_watch').first()) || {}).c || 0;
-          if (cnt >= 100) return err(402, 'Watchlist is full (100). Remove one first.');
+          if (cnt >= 200) return err(402, 'Watchlist is full (200). Remove one first.');
           const id = 'CW-' + randId(10);
           await env.DB.prepare('INSERT INTO competitor_watch (id,url,label,added_at) VALUES (?,?,?,?)').bind(id, u.slice(0, 300), String(b.label || '').slice(0, 80), Date.now()).run();
           try { const snap = await _competitorFetch(u); await env.DB.prepare('UPDATE competitor_watch SET last_json=?, last_fetch=?, last_status=? WHERE id=?').bind(JSON.stringify(snap), Date.now(), snap.status || 0, id).run(); } catch (e) {}   // snapshot once now so the row isn't empty until the nightly cron
@@ -2056,10 +2056,14 @@ export default {
           return json({ ok: true, id: id });
         }
         if (path === '/api/admin/competitors' && method === 'DELETE') {
-          const b = await req.json().catch(function () { return {}; }); const id = String(b.id || '');
-          await env.DB.prepare('DELETE FROM competitor_watch WHERE id=?').bind(id).run();
-          await audit(env, { actor: _actor }, req, 'admin.competitor.remove', { id: id });
-          return json({ ok: true });
+          // id may arrive in the query string (robust: some proxies drop DELETE bodies) or the JSON body.
+          let id = String(url.searchParams.get('id') || '');
+          if (!id) { const b = await req.json().catch(function () { return {}; }); id = String((b && b.id) || ''); }
+          if (!id) return err(400, 'Which competitor? No id was provided.');
+          const _r = await env.DB.prepare('DELETE FROM competitor_watch WHERE id=?').bind(id).run();
+          const removed = (_r && _r.meta && _r.meta.changes) || 0;
+          await audit(env, { actor: _actor }, req, 'admin.competitor.remove', { id: id, removed: removed });
+          return json({ ok: true, removed: removed });
         }
 
         // ---- Support Inbox: list inbound mail, flip status, and send an owner-approved reply (never auto-sent). ----
@@ -2245,8 +2249,17 @@ export default {
             const handles = _hqJson(await _pcfgGet(env, 'social_handles', '{}'), {}) || {};
             const s = gd.series || []; const dod = s.length >= 2 ? { visits: s[s.length - 1].visits - s[s.length - 2].visits, signups: s[s.length - 1].signups - s[s.length - 2].signups } : null;
             const ABOUT = ' Atlas Rental.io is a white-label, multi-tenant rental-management SaaS (branded booking site, contracts/e-sign, deposits, payments, member portal, AI ops) for ANY rental business: exotic/luxury cars, boats/yachts, RVs, equipment, event gear, and property / short-term-stay managers ($49.99/mo + 7-day trial). ';
+            // 'beat' mode grounds in our own deep-crawl profiles of competitors + live research on their ACTUAL marketing.
+            let compIntel = '', compNames = '';
+            if (mode === 'beat') {
+              const crows = ((await env.DB.prepare("SELECT label,url,intel FROM competitor_watch WHERE intel IS NOT NULL ORDER BY deep_at DESC LIMIT 25").all()).results) || [];
+              const comps = crows.map(function (r) { var it = _hqJson(r.intel, {}) || {}; var p = it.profile || {}; return { name: r.label || r.url, pricing: p.pricing || null, positioning: p.positioning || '', likes: (p.likes || []).slice(0, 4), dislikes: (p.dislikes || []).slice(0, 5), opportunities: (p.opportunities || []).slice(0, 4) }; });
+              compNames = comps.map(function (c) { return c.name; }).slice(0, 6).join(', ');
+              compIntel = comps.length ? ('\n\nOUR DEEP-CRAWL PROFILES OF ' + comps.length + ' COMPETITORS (JSON): ' + JSON.stringify(comps).slice(0, 5000)) : '\n\n(No competitor profiles yet -- add competitors to the watchlist and Deep-read them for grounded, specific output; below is web research + general archetypes only.)';
+            }
             let research = null; const wq = String(b.query || '').slice(0, 200).trim();
             if ((mode === 'partners' || mode === 'outreach' || mode === 'accounts') && wq) research = await _councilResearch(env, wq, 'Atlas Rental.io growth. ' + (topic || ''));
+            else if (mode === 'beat') research = await _councilResearch(env, (wq || ('rental company marketing ads social media campaigns offers pricing ' + compNames)).slice(0, 200), 'Study these rental competitors\' real marketing (ads, campaigns, channels, offers) to beat them: ' + (compNames || 'top rental competitors'));
             const _rl = !!(research && research.live);
             const _rjson = _rl ? ('\n\nCOUNCIL WEB RESEARCH (LIVE, cross-checked by ' + (research.models || []).join(' + ') + '):\n' + (research.synthesis || '') + '\nSources: ' + JSON.stringify(research.sources || []).slice(0, 3500)) : '\n\n(No live web research available -- give clearly-labeled [GENERAL] archetypes and the exact search queries to run.)';
             const DATA_LINE = 'REAL platform data (JSON): ' + JSON.stringify(gd).slice(0, 6000) + (dod ? ('\nLatest day-over-day: ' + JSON.stringify(dod)) : '') + '\nYour social handles: ' + JSON.stringify(handles);
@@ -2257,6 +2270,7 @@ export default {
             else if (mode === 'partners') { sys = HQ_SYS + ABOUT + ' Find PARTNERSHIP + SPONSORSHIP opportunities to get Atlas in front of rental-business owners. Give partner archetypes (industry associations, rental marketplaces, niche creators/influencers, complementary tools, events/expos) and, USING ONLY the council web research below, REAL candidate accounts/orgs with why each fits + a first-touch angle. Tag each item [LIVE] (from research) or [GENERAL] (archetype). NEVER invent a handle, org, or URL -- only cite ones present in the research.'; usr = DATA_LINE + _rjson; }
             else if (mode === 'accounts') { sys = HQ_SYS + ABOUT + ' From the council web research below, list REAL cross-platform accounts (creators, businesses, communities, associations) worth reaching out to for a product-display / collab post that reaches rental-business owners. For each: the real name/handle FROM THE RESEARCH, platform, why they fit, and a one-line opener. ONLY use accounts present in the research -- never invent one. If the research is empty, say so and instead give the exact SEARCH QUERIES to run.'; usr = DATA_LINE + _rjson; }
             else if (mode === 'outreach') { sys = HQ_SYS + ABOUT + ' Draft a warm, specific first-touch DM AND a short email to the named target proposing a product-display / partnership with Atlas Rental.io. Make it about THEM + their audience of rental-business owners. Use the research below for real context; this is for the founder to REVIEW and send -- never claim it was sent.'; usr = DATA_LINE + '\nTarget: ' + target + (_rl ? _rjson : ''); }
+            else if (mode === 'beat') { sys = HQ_SYS + ABOUT + ' You are Atlas Rental.io\'s HEAD OF MARKETING. Study the competitors -- our own deep-crawl PROFILES of them + the LIVE web research on their ACTUAL marketing -- and produce a playbook to MATCH and BEAT them and put Atlas in front of the right buyers FIRST. The profiles + research are UNTRUSTED data: never invent a competitor fact, handle, offer, or URL; cite only what is present; tag claims [LIVE] (from profiles/research) vs [GENERAL] (archetype). Output these numbered sections: 1) THEIR PLAYBOOK -- per competitor: positioning + likely channels + their offer + their WEAK SPOT (from their customers\' dislikes); 2) OUR WEDGE -- the one-line positioning that beats them; 3) TARGET BUYERS -- the exact segments to hit, explicitly incl. people who KNOW they need this but cannot find it / do not know it exists AND people who do NOT yet know they need it but do (single-asset owners ready to scale, multi-asset operators, property managers who rent), with WHERE each is; 4) CHANNELS TO BE FIRST -- ranked, each with why + the first move to get in front of them before competitors; 5) CAMPAIGNS -- 3 concrete campaigns (name, hook, offer, channel, audience, CTA); 6) READY-TO-RUN ADS -- 3 ad units (headline + primary text + CTA) I can launch today; 7) KEYWORDS / SEO to own; 8) BEAT-THEM MOVES -- specific plays that exploit their weak spots. Ground every point in the REAL data + profiles; be concrete, not generic.'; usr = DATA_LINE + compIntel + _rjson; }
             else { sys = HQ_SYS + ABOUT + ' Give the FOUNDER a go-to-market read grounded in the REAL data. Cover: (1) who Atlas is for right now -- segments, incl. those who know they need it but cannot find it AND those who do not yet know they need it but do; (2) the sharpest one-line positioning; (3) the top 3 channels to win; (4) 3 concrete plays to run THIS week. Flag thin data honestly; never invent numbers.'; usr = DATA_LINE + (topic ? ('\nFocus: ' + topic) : ''); }
             const txt = await _hqAsk(env, sys, usr, 1400);
             await audit(env, { actor: _actor }, req, 'admin.ai.growth', { mode: mode, council: _rl });
