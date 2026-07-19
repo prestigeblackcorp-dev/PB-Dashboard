@@ -112,5 +112,16 @@ ok(r.status === 200 && j.count === 1 && j.bookings[0].id === 'bk1', 'v1 valid ke
 r = await worker.fetch(mkReq('POST', '/api/v1/me', { headers: { Authorization: 'Bearer atl_live_test' } }), devEnv('ok'), ctx);
 ok(r.status === 405, 'v1 is read-only -> POST 405');
 
+// ---- Atlas Counsel: admin-gated institutional-memory feed; works WITHOUT an AI key ----
+const cEnv = () => ({ DB: mockDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' });
+r = await worker.fetch(mkReq('GET', '/api/admin/counsel', { headers: H }), cEnv(), ctx); j = await r.json();
+ok(r.status === 200 && j.ok === true && Array.isArray(j.items), 'counsel GET -> 200 + items array');
+r = await worker.fetch(mkReq('POST', '/api/admin/counsel/act', { headers: H }), cEnv(), ctx);
+ok(r.status === 400, 'counsel/act rejects a missing id+status');
+r = await worker.fetch(mkReq('POST', '/api/admin/counsel/run', { headers: H }), cEnv(), ctx); j = await r.json();
+ok(r.status === 200 && j.ok === true && !!j.ran, 'counsel/run computes deterministically with no AI key');
+r = await worker.fetch(mkReq('GET', '/api/admin/counsel', { headers: { 'X-Admin-Token': 'WRONG' } }), cEnv(), ctx);
+ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

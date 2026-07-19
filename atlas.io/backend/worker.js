@@ -234,7 +234,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19j';
+const ATLAS_BUILD = '2026.07.19k';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -502,6 +502,40 @@ async function _hqBuildBrief(env) {
   const sys = HQ_SYS + ' Write a concise founder morning brief. Format: a one-line headline "Do this first: ___" naming the single highest-dollar action, then up to 5 short bullets (what changed, why it matters in dollars, the one action). If nothing is wrong, say so in one line and do not manufacture drama. Use the REAL numbers provided; money is in cents, divide by 100 for dollars. Plain text or light markdown, no preamble.';
   const md = await _hqAsk(env, sys, 'DATA (JSON):\n' + JSON.stringify(payload).slice(0, 9000), 900);
   return { json: payload, md: md || '' };
+}
+// ===== Atlas Counsel: institutional memory. Appends a DATED, impact-ranked "what deserves attention" list to counsel_journal
+// once/day (force to re-run). DETERMINISTIC scoring from real data -> works with the AI key OFF; AI only adds a narrative line.
+// A re-run refreshes the un-acted rows but PRESERVES what the owner already marked done/dismissed (the feedback loop). =====
+async function _counselCompute(env, opts) {
+  opts = opts || {};
+  try { await ensurePlatformSchema(env); } catch (e) {}
+  const now = Date.now(); const day = new Date(now).toISOString().slice(0, 10);
+  if (!opts.force) { try { if ((await _pcfgGet(env, 'counsel_last_day', '')) === day) return { skipped: true, day: day }; } catch (e) {} }
+  const m = await _hqMetrics(env);
+  const avg = m.paid ? Math.max(999, Math.round(m.mrr_cents / m.paid)) : 4999;   // avg MRR/tenant (cents); a churn ~= a year of it
+  const yr = avg * 12;
+  async function q(name, p) { try { return (await HQ_QUERIES[name].run(env, p || {})) || []; } catch (e) { return []; } }
+  const F = []; const nm = function (t) { return t.name || t.email || ('account ' + (t.id || t.tenant_id || '')); };
+  function add(layer, kind, sev, impact, title, body, action, tid) { F.push({ layer: layer, kind: kind, severity: sev, impact_score: Math.round(impact), title: title, body_md: body || '', action: action || '', tenant_id: tid || null }); }
+  if (m.prev_mrr_cents != null && m.mrr_cents < m.prev_mrr_cents) { const drop = m.prev_mrr_cents - m.mrr_cents; add('L3', 'revenue', 'high', drop * 12, 'MRR fell to $' + Math.round(m.mrr_cents / 100) + ' (was $' + Math.round(m.prev_mrr_cents / 100) + ')', 'Recurring revenue dropped since the last snapshot -- likely a cancellation or a failed renewal.', 'Check Stripe for recent cancellations + failed payments and win the account back today.', null); }
+  (await q('past_due')).forEach(function (t) { add('L1', 'past_due', 'high', yr, 'Payment failed: ' + nm(t), 'This account is past-due -- its revenue is actively at risk right now.', 'Send the update-card / billing-portal link before the grace period lapses.', t.id); });
+  (await q('trials_expiring', { days: 3, has_card: 0 })).forEach(function (t) { add('L1', 'trial_expiring', 'high', yr, 'Trial ends in <3 days, no card: ' + nm(t), 'This trial lapses within 3 days with no card on file -- it will churn silently.', 'Reach out with a renewal nudge and an offer to help them finish setup.', t.id); });
+  (await q('paid_no_booking', { days: 30 })).forEach(function (t) { add('L1', 'no_activation', 'high', Math.round(yr * 0.8), 'Paying, 0 bookings in 30 days: ' + nm(t), 'A paying customer with no bookings is a strong churn signal.', 'Check whether they need help publishing their booking site or importing assets.', t.id); });
+  (await q('onboarding_stuck', { days: 7 })).forEach(function (t) { add('L1', 'onboarding_stuck', 'med', avg * 3, 'Stalled onboarding: ' + nm(t), 'Signed up 7+ days ago with no assets added -- unlikely to activate alone.', 'Send a first-asset template and a quick onboarding hand.', t.id); });
+  const tix = await q('tickets_open_over', { hours: 24 }); if (tix.length) add('L2', 'support', tix.length > 3 ? 'high' : 'med', tix.length * avg, tix.length + ' support ticket' + (tix.length > 1 ? 's' : '') + ' open over 24h', 'Aging support erodes trust and retention.', 'Clear the oldest first; use AI-draft in the Support inbox.', null);
+  if (m.new_bugs > 0) add('L2', 'bugs', m.new_bugs > 4 ? 'high' : 'med', m.new_bugs * Math.round(avg / 2), m.new_bugs + ' new bug report' + (m.new_bugs > 1 ? 's' : '') + ' unreviewed', 'Unreviewed reports hide duplicates and high-impact regressions.', 'Triage the bug queue; group duplicates; escalate anything blocking bookings or payments.', null);
+  if (m.open_tickets > 10) add('L2', 'health', 'med', m.open_tickets * Math.round(avg / 3), m.open_tickets + ' support tickets open in total', 'Support backlog is building across the platform.', 'Batch-resolve or delegate; run a canned-answer + AI-draft pass.', null);
+  const topRev = await q('top_tenants_revenue', { n: 3 }); if (topRev.length && m.paid > 0) add('L3', 'expansion', 'low', avg * 6, 'Expansion + proof: your top ' + topRev.length + ' accounts', 'Your highest-LTV customers are the best expansion and testimonial candidates.', 'Offer a higher tier / add-ons and ask for a review or case study.', null);
+  F.sort(function (a, b) { return (b.impact_score || 0) - (a.impact_score || 0); });
+  var narrative = '';
+  try { if (_hqHasAI(env)) { narrative = (await _hqAsk(env, HQ_SYS + ' You are Atlas Counsel, the platform intelligence advisor. In at most 4 short lines, name today\'s single highest-value move and why (in dollars), using ONLY the findings + metrics provided. No preamble, invent nothing.', 'Ranked findings (JSON): ' + JSON.stringify(F.slice(0, 16)) + '\nMetrics: ' + JSON.stringify(m), 400)) || ''; } } catch (e) {}
+  var acted = {}; try { (((await env.DB.prepare("SELECT kind,tenant_id FROM counsel_journal WHERE day=? AND status IN ('done','dismissed')").bind(day).all()).results) || []).forEach(function (r) { acted[(r.kind || '') + '|' + (r.tenant_id || '')] = 1; }); } catch (e) {}
+  try { await env.DB.prepare("DELETE FROM counsel_journal WHERE day=? AND status IN ('new','brief')").bind(day).run(); } catch (e) {}
+  try { await env.DB.prepare("INSERT INTO counsel_journal (id,day,layer,kind,tenant_id,title,body_md,data_json,severity,impact_score,action,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").bind('cj' + randId(12), day, 'L3', 'brief', null, 'Counsel brief ' + day, narrative, JSON.stringify({ metrics: m }), 'info', 0, '', 'brief', now).run(); } catch (e) {}
+  var wrote = 0;
+  for (var i = 0; i < F.length && wrote < 24; i++) { var f = F[i]; if (acted[f.kind + '|' + (f.tenant_id || '')]) continue; try { await env.DB.prepare("INSERT INTO counsel_journal (id,day,layer,kind,tenant_id,title,body_md,data_json,severity,impact_score,action,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").bind('cj' + randId(12), day, f.layer, f.kind, f.tenant_id, f.title, f.body_md, '{}', f.severity, f.impact_score, f.action, 'new', now).run(); wrote++; } catch (e) {} }
+  try { await _pcfgSet(env, 'counsel_last_day', day); } catch (e) {}
+  return { day: day, findings: wrote, ai: !!narrative };
 }
 
 // Founder GROWTH substrate: REAL day-by-day platform data (visits, signups, revenue) + who actually uses Atlas
@@ -1171,6 +1205,11 @@ async function ensurePlatformSchema(env) {
   // the table stays tiny and each view is a single cheap upsert -- no third-party analytics, no cookies, no PII.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS page_views (tenant_id TEXT, day TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, day))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_pv_day ON page_views(day)").run(); } catch (e) {}
+  // Atlas Counsel institutional memory: an append-only, dated, ranked feed of "what deserves attention". Written nightly by the
+  // cron (deterministic scoring from real data; AI adds a narrative when a key is set). status: new|done|dismissed (the feedback loop) | brief.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS counsel_journal (id TEXT PRIMARY KEY, day TEXT, layer TEXT, kind TEXT, tenant_id TEXT, title TEXT, body_md TEXT, data_json TEXT, severity TEXT, impact_score INTEGER DEFAULT 0, action TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_counsel_day ON counsel_journal(day, impact_score)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_counsel_status ON counsel_journal(status, created_at)").run(); } catch (e) {}
   // Visit geography: aggregate views per ISO-2 country per UTC day (from Cloudflare's edge geo, req.cf.country). No IPs, no PII.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS visit_geo (day TEXT, country TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(day, country))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_vg_day ON visit_geo(day)").run(); } catch (e) {}
@@ -2218,6 +2257,34 @@ export default {
           await env.DB.prepare("UPDATE support_inbox SET status='replied', reply_body=?, replied_at=? WHERE id=?").bind(body.slice(0, 8000), Date.now(), id).run();
           await audit(env, { actor: _actor }, req, 'admin.inbox.reply', { id: id, to: m.from_email });
           return json({ ok: true, sent: true });
+        }
+
+        // ---- Atlas Counsel: institutional-memory feed + "what deserves attention today". Admin-gated; works WITHOUT an AI key
+        // (deterministic scoring from real data); the AI key only adds the narrative line. Nightly cron writes it; run = force refresh. ----
+        if (path === '/api/admin/counsel' && method === 'GET') {
+          const cstatus = url.searchParams.get('status') || '';
+          const clim = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '40', 10) || 40));
+          const cday = new Date(Date.now()).toISOString().slice(0, 10);
+          const cbrief = await env.DB.prepare("SELECT day,title,body_md,created_at FROM counsel_journal WHERE kind='brief' ORDER BY day DESC LIMIT 1").first();
+          let citems;
+          if (cstatus) citems = (await env.DB.prepare("SELECT id,day,layer,kind,tenant_id,title,body_md,severity,impact_score,action,status,created_at FROM counsel_journal WHERE kind!='brief' AND status=? ORDER BY (status='new') DESC, impact_score DESC, created_at DESC LIMIT ?").bind(cstatus, clim).all()).results;
+          else citems = (await env.DB.prepare("SELECT id,day,layer,kind,tenant_id,title,body_md,severity,impact_score,action,status,created_at FROM counsel_journal WHERE kind!='brief' AND status IN ('new','done','dismissed') ORDER BY (status='new') DESC, impact_score DESC, created_at DESC LIMIT ?").bind(clim).all()).results;
+          const copen = ((await env.DB.prepare("SELECT COUNT(*) c FROM counsel_journal WHERE kind!='brief' AND status='new'").first()) || {}).c || 0;
+          const clast = await _pcfgGet(env, 'counsel_last_day', '');
+          return json({ ok: true, day: cday, last_run: clast, open: copen, ai: _hqHasAI(env), brief: cbrief ? { day: cbrief.day, title: cbrief.title, md: cbrief.body_md, at: cbrief.created_at } : null, items: citems || [] });
+        }
+        if (path === '/api/admin/counsel/act' && method === 'POST') {
+          const cb = await req.json().catch(function () { return {}; });
+          const cid = String(cb.id || ''); const cst = (['done', 'dismissed', 'new'].indexOf(cb.status) >= 0) ? cb.status : '';
+          if (!cid || !cst) return err(400, 'Need id + status (done | dismissed | new).');
+          await env.DB.prepare("UPDATE counsel_journal SET status=? WHERE id=? AND kind!='brief'").bind(cst, cid).run();
+          await audit(env, { actor: _actor }, req, 'admin.counsel.act', { id: cid, status: cst });
+          return json({ ok: true });
+        }
+        if (path === '/api/admin/counsel/run' && method === 'POST') {
+          const cr = await _counselCompute(env, { force: true });
+          await audit(env, { actor: _actor }, req, 'admin.counsel.run', { findings: (cr && cr.findings) || 0 });
+          return json({ ok: true, ran: cr });
         }
 
         // ---- AI Command Center: intelligence routes. Flag-gated OFF; honest {ai:false} with no provider key. ----
@@ -3344,6 +3411,8 @@ export default {
         for (let i = 0; i < _st.length; i++) { try { await _competitorDeepRead(env, _st[i].id, false); } catch (e) {} }
       }
     } catch (e) { /* competitor deep-crawl + learning is best-effort */ }
+    // Atlas Counsel: append today's institutional-memory entry ("what deserves attention"), once per day. Best-effort; no AI key required.
+    try { await _counselCompute(env, {}); } catch (e) { /* Counsel journal is best-effort */ }
   },
 };
 
