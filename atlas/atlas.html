@@ -1841,8 +1841,9 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.17';
+  var APP_VERSION='2026.7.19c';
   var APP_CHANGELOG=[
+    'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
     'Cancellation policy you set once (Settings &gt; Money): shown to customers before they pay, in the confirmation email, and merged into your rental agreement &amp; terms',
     'Cross-device sync: your bookings, fleet &amp; settings back up to your account and merge across devices (turns on with your backend) &mdash; no more one-browser-only',
     'Public booking site: a real customer-reachable page + branded portal, deposits via Stripe, confirmation emails (turns on when you connect your backend + keys)',
@@ -2576,6 +2577,10 @@ const Atlas = (function(){
     var an=document.getElementById('obAssetName'); if(an){ S.firstAsset=S.firstAsset||{}; S.firstAsset.name=String(an.value||'').trim(); }
     var ar=document.getElementById('obAssetRate'); if(ar){ S.firstAsset=S.firstAsset||{}; var rv=parseFloat(String(ar.value||'').replace(/[^0-9.]/g,'')); if(rv>0) S.firstAsset.rate=rv; }
     var bn=document.getElementById('fName'); if(bn && String(bn.value||'').trim()){ S.brand.name=String(bn.value).trim(); S.brand.initial=(S.brand.name[0]||'A').toUpperCase(); }
+    S.brand=S.brand||{};   // where you operate -> lets the AI research your market, price locally + line up nearby partners
+    var _c=document.getElementById('fCity'); if(_c) S.brand.city=String(_c.value||'').trim();
+    var _z=document.getElementById('fZip'); if(_z) S.brand.zip=String(_z.value||'').trim();
+    var _ar=document.getElementById('fArea'); if(_ar) S.brand.area=String(_ar.value||'').trim();
   }catch(e){} }
   function next(){ _captureOB(); if(step<STEPS.length-1){step++; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
   function back(){ if(step>0){step--; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
@@ -2600,6 +2605,9 @@ const Atlas = (function(){
     identity:()=>`
       <h2>Make it yours</h2><p class="ob-card__lead">Your brand runs across the whole app, your portal, contracts and emails.</p>
       <div class="field"><label>Business name</label><input class="input" id="fName" value="${esc(S.brand.name)}" oninput="Atlas.brandLive()" placeholder="e.g. Summit Exotics"></div>
+      <div class="row2"><div class="field"><label>City</label><input class="input" id="fCity" value="${esc((S.brand&&S.brand.city)||'')}" placeholder="e.g. Miami, FL"></div>
+        <div class="field"><label>ZIP / postal</label><input class="input" id="fZip" value="${esc((S.brand&&S.brand.zip)||'')}" placeholder="33139"></div></div>
+      <div class="field"><label>Service area <span style="color:var(--muted);font-weight:400;font-size:12px">(where you deliver / operate)</span></label><input class="input" id="fArea" value="${esc((S.brand&&S.brand.area)||'')}" placeholder="e.g. Miami-Dade &amp; Broward"><div class="hint">Atlas uses this to spot local demand, price to your market and line up nearby partners.</div></div>
       <div class="field"><label>Logo</label>
         <div class="logo-drop" onclick="document.getElementById('fLogo').click()">
           <div class="logo-drop__prev" id="logoPrev">${S.brand.logo?`<img src="${S.brand.logo}">`:`<span>${S.brand.initial}</span>`}</div>
@@ -2854,11 +2862,11 @@ const Atlas = (function(){
     openModal('<div class="modal__head"><h3>'+title+'</h3>'+_xBtn()+'</div><div class="modal__body"><div style="white-space:pre-wrap;font-size:12.5px;line-height:1.55;color:var(--body);max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:14px">'+esc(d.text||'')+'</div></div>'); }
   // Easy API keys the owner pastes to power their public site.
   var WEB_KEYS=[
-    {id:'stripePk', label:'Stripe publishable key', ph:'pk_live_...', help:'Stripe Dashboard > Developers > API keys > Publishable key. Powers card checkout on your site.'},
-    {id:'ga', label:'Google Analytics ID', ph:'G-XXXXXXX', help:'Google Analytics > Admin > Data streams > Measurement ID. Tracks your visitors.'},
-    {id:'mapsKey', label:'Google Maps API key', ph:'AIza...', help:'Google Cloud > APIs & Services > Credentials. Shows maps + address autocomplete.'},
-    {id:'pixel', label:'Meta / TikTok Pixel ID', ph:'1234567890', help:'From your ad manager. Measures conversions from your ads.'},
-    {id:'custom', label:'Custom API key / embed', ph:'Paste any key or embed token', help:'For any other tool you connect to your site.'}
+    {id:'stripePk', label:'Stripe publishable key', ph:'pk_live_...', help:'Saved to your account. Atlas uses secure hosted Stripe Checkout, so you do not need this for payments -- keep it here only if you embed Stripe elsewhere.'},
+    {id:'ga', label:'Google Analytics ID', ph:'G-XXXXXXX', help:'Google Analytics > Admin > Data streams > Measurement ID. Once you publish, this tracks visitors on your live booking site.'},
+    {id:'mapsKey', label:'Google Maps API key', ph:'AIza...', help:'Saved to your account. Used on your site\'s map + address autocomplete once your site shows a map.'},
+    {id:'pixel', label:'Meta / TikTok Pixel ID', ph:'1234567890', help:'From your ad manager. Once you publish, this measures ad conversions on your live booking site.'},
+    {id:'custom', label:'Custom API key / embed', ph:'Paste any key or embed token', help:'Saved to your account for any other tool you connect.'}
   ];
   function _webKeys(){ var w=_web(); if(!w.keys)w.keys={}; return w.keys; }
   function _webKeysInner(){ var k=_webKeys(); return WEB_KEYS.map(function(x){ var set=!!(k[x.id]&&String(k[x.id]).trim());
@@ -3316,6 +3324,8 @@ const Atlas = (function(){
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">'+statusChip(a.status)+(a.loc?'<span style="font-size:12.5px;color:var(--muted)">in '+esc(a.loc)+'</span>':'')+'<span style="flex:1"></span><span style="font-size:13px;color:var(--muted)">'+a.util+'% '+_fterm('occ')+'</span></div>'
       +'<div class="row2"><div class="field"><label>Name</label><input class="input" id="aName" value="'+esc(a.name)+'"'+dis+'></div>'
       +'<div class="field"><label>'+esc(locL)+'</label><input class="input" id="aLoc" list="vLocList2" value="'+esc(a.loc||'')+'"'+dis+'><datalist id="vLocList2">'+(function(){var ls=[];DATA.assets.forEach(function(x){if(x.loc&&ls.indexOf(x.loc)<0)ls.push(x.loc);});return ls.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('');})()+'</datalist></div></div>'
+      +'<div class="row2"><div class="field"><label>City / market <span style="color:var(--muted);font-weight:400;font-size:12px">(where this one rents)</span></label><input class="input" id="aLocCity" value="'+esc(a.locCity||'')+'" placeholder="'+esc((S.brand&&S.brand.city)||'City')+'"'+dis+'></div>'
+      +'<div class="field"><label>ZIP</label><input class="input" id="aLocZip" value="'+esc(a.locZip||'')+'" placeholder="'+esc((S.brand&&S.brand.zip)||'')+'"'+dis+'></div></div>'
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aRate" style="width:auto;flex:1;text-align:left" value="'+a.rate+'"'+dis+'><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="aStatus"'+dis+'>'+['Available','On rent','Maintenance'].map(function(s){return '<option'+(a.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'
       +'<div class="row2"><div class="field"><label>Min booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMinLen" value="'+((a.minLen>0)?a.minLen:'')+'" placeholder="no minimum"'+dis+'></div>'
@@ -3337,6 +3347,8 @@ const Atlas = (function(){
   }
   function saveAsset(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
     a.name=(val('aName')||a.name).trim(); var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
+    var _lcc=(val('aLocCity')||'').trim(); if(_lcc)a.locCity=_lcc; else delete a.locCity;   // per-asset market -> feeds location-aware dreaming
+    var _lcz=(val('aLocZip')||'').trim(); if(_lcz)a.locZip=_lcz; else delete a.locZip;
     var _r=parseFloat(val('aRate')); a.rate=(_r>=0?_r:a.rate); a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
     var _mn=parseInt(val('aMinLen'),10); a.minLen=(_mn>0?_mn:0); var _mx=parseInt(val('aMaxLen'),10); a.maxLen=(_mx>0?_mx:0);   // per-asset min/max booking length rules
     var _exb=document.querySelectorAll('#aExtras .aEx'); if(_exb.length){ var _ck=[]; [].forEach.call(_exb,function(cb){ if(cb.checked) _ck.push(cb.value); }); if(_ck.length===_exb.length) delete a.extraIds; else a.extraIds=_ck; }   // per-asset extras: all checked = inherit global; otherwise store the offered subset (empty = none)
@@ -5286,6 +5298,9 @@ const Atlas = (function(){
       <div class="set-block"><h3>Brand identity</h3><div class="desc">This runs across your dashboard, portal, contracts and emails.</div>
         <div class="row2"><div class="field"><label>Business name</label><input class="input" value="${esc(S.brand.name)}" onchange="Atlas.setBrandName(this.value)"></div>
         <div class="field"><label>Portal subdomain</label><div class="rule-input" style="padding:0 12px"><input style="width:auto;flex:1;text-align:left" value="${esc(S.brand.subdomain)}" onchange="Atlas.S().brand.subdomain=this.value.replace(/[^a-z0-9]/g,'');Atlas.save2()"><span>.atlasrental.io</span></div></div></div>
+        <div class="row2"><div class="field"><label>City</label><input class="input" value="${esc((S.brand&&S.brand.city)||'')}" onchange="Atlas.S().brand.city=this.value.trim();Atlas.save2()" placeholder="e.g. Miami, FL"></div>
+        <div class="field"><label>ZIP / postal</label><input class="input" value="${esc((S.brand&&S.brand.zip)||'')}" onchange="Atlas.S().brand.zip=this.value.trim();Atlas.save2()" placeholder="33139"></div></div>
+        <div class="field"><label>Service area</label><input class="input" value="${esc((S.brand&&S.brand.area)||'')}" onchange="Atlas.S().brand.area=this.value.trim();Atlas.save2()" placeholder="e.g. Miami-Dade &amp; Broward"><div class="desc" style="margin-top:4px">Atlas uses where you operate to research your market, price locally and suggest nearby referral partners.</div></div>
         <div class="field"><label>Brand color</label><div class="swatches">${SWATCHES.map(c=>`<div class="swatch ${c===S.brand.color?'sel':''}" style="background:${c}" onclick="Atlas.setBrandColor('${c}')"></div>`).join('')}</div></div>
         <div class="field" style="margin:0"><label>Logo</label><div class="logo-drop" onclick="document.getElementById('setLogo').click()"><div class="logo-drop__prev">${S.brand.logo?`<img src="${S.brand.logo}">`:`<span>${S.brand.initial}</span>`}</div><div><b style="color:var(--ink);font-size:14px">Replace logo</b><div style="font-size:12.5px;color:var(--muted)">PNG or SVG</div></div></div><input type="file" id="setLogo" accept="image/*" class="hidden" onchange="Atlas.setLogo(this)"></div>
       </div>
@@ -5714,7 +5729,15 @@ const Atlas = (function(){
       if(!_aioHasBiz() && !(S.setup&&S.setup.done)){
         aioMsg('bot','Want me to <b>finish building your dashboard</b>? I will use what you told me, ask a couple of quick things and grab a photo of your '+esc(S.fleet.noun)+' if you have one &mdash; then it is all yours to edit.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.setupAssistant()">Finish my dashboard</button>');
         _aioOffer('Great - let me finish your dashboard.', function(){ setupAssistant(); });
-      } else { var _kb=_kbFor(1)[0]; if(_kb){ aioMsg('bot','\u{1F4AD} While you were away, I was <b>dreaming</b> about your '+esc(S.fleet.noun)+' business &mdash; hunting gaps, drafting campaigns, and lining up partners to reach. One idea: <b>'+esc(_kb.t)+'</b> &mdash; '+esc(_kb.d)+'<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See everything I dreamed up</button>'); _aioOffer('Opening everything I dreamed up.', function(){ openDreaming(); }); } }
+      } else {
+        var _dh=aioMsg('bot','\u{1F4AD} While you were away, I was <b>dreaming</b> about your '+esc(S.fleet.noun)+' business &mdash; combing your numbers for gaps and opportunities&hellip;');
+        _dreamFetch(function(ins){ var f=(ins&&ins.findings&&ins.findings[0])||null, html;
+          if(f){ html='\u{1F4AD} While you were away, I <b>dreamed</b> about your '+esc(S.fleet.noun)+' business and found this in your numbers: <b>'+esc(f.title)+'</b> &mdash; '+esc(f.detail)+'<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See everything I found</button>'; }
+          else { var _kb=_kbFor(1)[0]; html='\u{1F4AD} While you were away, I was <b>dreaming</b> about your '+esc(S.fleet.noun)+' business. As your bookings build up I will surface what is working in your real numbers; for now, one play: <b>'+esc((_kb&&_kb.t)||'Fill your idle days')+'</b> &mdash; '+esc((_kb&&_kb.d)||'A small discount on your slowest weekday lifts utilization.')+'<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See everything I dreamed up</button>'; }
+          try{ if(_dh&&_dh.querySelector){ var _t=_dh.querySelector('.aio-b__t'); if(_t)_t.innerHTML=html; } }catch(e){}
+        });
+        _aioOffer('Opening everything I dreamed up.', function(){ openDreaming(); });
+      }
     }catch(e){}
     document.getElementById('aioQuick').innerHTML=_aioQuicks().map(q=>`<button onclick="Atlas.aioAsk('${q.replace(/'/g,"\\'")}')">${q}</button>`).join('');
     var _qb=document.getElementById('aioQuickBar'); if(_qb) _qb.style.display=_aioQuicksOff?'none':'';
@@ -5724,7 +5747,7 @@ const Atlas = (function(){
     const body = who==='me' ? esc(String(txt==null?'':txt)) : txt;
     const el=document.createElement('div'); el.className='aio-b '+(who==='me'?'aio-b--me':'');
     el.innerHTML=`<div class="aio-b__av">${who==='me'?`<span style="color:#fff;font-size:10px;font-weight:800">You</span>`:_atlasMark()}</div><div class="aio-b__t">${body}</div>`;
-    b.appendChild(el); b.scrollTop=b.scrollHeight;
+    b.appendChild(el); b.scrollTop=b.scrollHeight; return el;
   }
   function aioSend(){ const i=document.getElementById('aioInput'); const v=i.value.trim(); if(!v)return; i.value=''; aioAsk(v); }
   function _aioGate(q){   // dream-mode: viewing + dreaming are open to everyone; SENDING needs signup (not the demo) + a card on file once the free trial ends
@@ -5961,6 +5984,12 @@ const Atlas = (function(){
     }; return '<svg viewBox="0 0 16 16" fill="none">'+(p[ch]||'')+'</svg>'; }
   function _dreamConn(){ S.conn=S.conn||{}; return S.conn; }
   // Dreaming has BEGUN: stamp a start time on first app load so the panel can show it's been running + accumulating.
+  // Real "dreaming": pull the overnight insights the worker computed from THIS owner's own data (idle assets, revenue trend, unpaid, overdue).
+  var _dreamIns=null, _dreamInsTried=false;
+  function _dreamFetch(cb){ if(_dreamInsTried){ cb(_dreamIns); return; }
+    if(typeof ATLAS_BACKEND==='undefined' || !ATLAS_BACKEND){ _dreamInsTried=true; cb(null); return; }
+    try{ _api('/api/aio/insights').then(function(res){ _dreamInsTried=true; var j=res&&res.json; _dreamIns=(j&&j.ok&&j.insights)?j.insights:null; cb(_dreamIns); }).catch(function(){ _dreamInsTried=true; cb(null); }); }catch(e){ _dreamInsTried=true; cb(null); } }
+  function _dreamFindHtml(ins){ var fs=(ins&&ins.findings)||[]; if(!fs.length) return ''; return fs.slice(0,4).map(function(f){ return '<div class="dream-row"><span class="dream-row__i">'+_notifIcon('spark')+'</span><div><b>'+esc(f.title)+'</b><span>'+esc(f.detail)+'</span></div></div>'; }).join(''); }
   function _dreamStart(){ S.dream=S.dream||{}; if(!S.dream.since){ S.dream.since=Date.now(); try{ save(); }catch(e){} } return S.dream; }
   function _dreamSinceTxt(){ var d=_dreamStart(); var days=Math.max(0,Math.floor((Date.now()-(d.since||Date.now()))/86400000)); return days<=0?'today':(days===1?'since yesterday':('for '+days+' days')); }
   function openDreaming(){
@@ -5976,12 +6005,13 @@ const Atlas = (function(){
     var connRow='<div class="dream-conns">'+['facebook','instagram','google'].map(function(ch){ var cc=conn[ch], on=!!cc, hnd=(cc&&cc.handle)?cc.handle:''; return '<button class="dream-conn'+(on?' on':'')+'" onclick="Atlas.dreamConnect(\''+ch+'\')" title="'+(on?'Edit or remove':'Link account')+'">'+_chIcon(ch)+_chName(ch)+(on?(' &#10003;'+(hnd?(' <span style="opacity:.7">'+esc(hnd)+'</span>'):'')):'')+'</button>'; }).join('')+'</div>';
     openModal('<div class="modal__head"><h3>Atlas.io has been dreaming</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="dream-lead">While your account was quiet, I went hunting for ways to grow your <b>'+one+'</b> business around '+city+' and out-work your competition. Here is what I dreamed up &mdash; all editable, nothing goes out without your yes.</div>'
-      +'<div class="dream-status"><span class="dream-dot"></span>Dreaming is <b>on</b> &mdash; running '+_dreamSinceTxt()+' &middot; '+_kbFor(99).length+' ideas explored for your '+one+' market so far.</div>'
-      +'<div class="dream-sec">Gaps &amp; ideas I found</div>'+(gapHtml||'<div class="dream-hint">Add a booking or two and I will dream up gaps specific to your real numbers.</div>')
+      +'<div class="dream-status"><span class="dream-dot"></span>Dreaming is <b>on</b> &mdash; running '+_dreamSinceTxt()+'. I comb your real numbers every night, so you wake up to fresh findings.</div>'
+      +'<div class="dream-sec">What I found in your numbers</div><div id="dreamReal"><div class="dream-hint">Reading your latest numbers&hellip;</div></div>'
       +'<div class="dream-sec">Campaigns I would run</div><div class="dream-hint">Built from the gaps above. I create + optimize; you approve every budget. Connect an ad account to launch.</div>'+campHtml
       +connRow
       +'<div class="dream-sec">People &amp; partners to connect with</div><div class="dream-hint">Warm channels that can push your '+esc(S.fleet.nouns)+' to more clients &mdash; brokers, planners, local businesses. I draft it; you approve every send.</div>'+partHtml
-      +'</div>'); }
+      +'</div>');
+    _dreamFetch(function(ins){ var _re=document.getElementById('dreamReal'); if(!_re)return; var _h=_dreamFindHtml(ins); _re.innerHTML=_h||'<div class="dream-hint">Add a booking or two and I will surface gaps specific to your real numbers.</div>'; }); }
   // Ad channels: real OAuth needs a backend, so we honestly LINK an ad-account handle/ID (persist, edit, remove) instead of faking a live integration. [FLAG: true Meta/Google OAuth requires server work.]
   function dreamConnect(ch){ var c=_dreamConn(), cur=(c[ch]&&c[ch].handle)?c[ch].handle:'';
     openModal('<div class="modal__head"><h3>'+(cur?'Edit':'Link')+' your '+_chName(ch)+' ad account</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -6587,8 +6617,9 @@ const Atlas = (function(){
   function _publicSiteAssets(){ return (DATA.assets||[]).filter(function(a){return (a.status||'')!=='Maintenance';}).map(function(a){
     var m=(typeof _moneyFor==='function')?_moneyFor(a.name):null; var rate=(m&&m.baseRate)||a.rate||S.money.baseRate;
     return { name:a.name, rate:Number(rate)||0, type:a.type||'', photo:a.photo||'', desc:a.desc||'', minLen:Number(a.minLen)||0, maxLen:Number(a.maxLen)||0, blackouts:Array.isArray(a.blackouts)?a.blackouts:[] }; }); }
-  function _publicSiteConfig(){ return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
-    collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| '') }; }
+  function _publicSiteConfig(){ var wk=_webKeys(); return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
+    collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
+    analytics:{ ga:String(wk.ga||'').trim(), pixel:String(wk.pixel||'').trim() } }; }   // #24: GA + Meta/TikTok pixel actually injected into the served booking page (see worker _bookPageHtml)
   function copyBookingLink(){ try{ navigator.clipboard.writeText(_bookingLink()); }catch(e){} toast('Booking link copied'); }
   function publishBookingSite(){ if(!_guard('webEdit','Publishing your site'))return;
     if(!ATLAS_BACKEND || !_apiCsrf){ toast('Your site is a preview. Publishing to a real link goes live once your Atlas backend is connected (see go-live steps).'); return; }
