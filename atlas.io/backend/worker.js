@@ -265,16 +265,19 @@ function _fetchTimeout(url, opts, ms) {
 }
 
 // Each asker returns the model's plain text, or '' on any error (never throws).
+// Sonnet-5 runs adaptive thinking by default, so content[0] can be a THINKING block and content[0].text is undefined.
+// Concatenate every TEXT block instead of trusting index 0, and disable thinking on these short latency-sensitive calls.
+function _claudeText(j) { try { return (j && Array.isArray(j.content)) ? j.content.filter(function (b) { return b && b.type === 'text' && b.text; }).map(function (b) { return b.text; }).join('').trim() : ''; } catch (e) { return ''; } }
 async function askClaude(key, q, context) {
   try {
     const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 700,
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 700, thinking: { type: 'disabled' },
         system: AIO_SAFETY_PROMPT + _aioCtx(context), messages: [{ role: 'user', content: q }] })
     }, 12000);
     const j = await r.json().catch(() => ({}));
-    return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
+    return _claudeText(j);
   } catch (e) { return ''; }   // network/DNS reject -> empty, never throws
 }
 async function askClaudeSchedule(key, system, userMsg) {   // dedicated JSON-schedule call: own system prompt + a higher token budget than the advisory askClaude
@@ -282,10 +285,10 @@ async function askClaudeSchedule(key, system, userMsg) {   // dedicated JSON-sch
     const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 2500, system: system, messages: [{ role: 'user', content: userMsg }] })
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 3000, thinking: { type: 'disabled' }, system: system, messages: [{ role: 'user', content: userMsg }] })
     }, 15000);
     const j = await r.json().catch(() => ({}));
-    return (j && j.content && j.content[0] && j.content[0].text) ? j.content[0].text.trim() : '';
+    return _claudeText(j);
   } catch (e) { return ''; }
 }
 async function askGPT(key, q, context) {
@@ -411,6 +414,25 @@ async function sendEmail(env, msg) {
   } catch (e) { return { sent: false, reason: 'error' }; }
 }
 // ---- suppression list (unsubscribe / SMS STOP) so the "compliance built in" copy is REAL, not vaporware ----
+// Email-verification: a stateless HMAC token (no DB row needed), same scheme as the unsubscribe link. Signs uid|email|expiry so the link can't be forged or replayed after expiry.
+async function _verifySig(env, uid, email, exp) {
+  try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY || 'k'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    var s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(email) + '|' + String(exp) + '|verify'));
+    return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
+  } catch (e) { return ''; }
+}
+async function _sendVerifyEmail(env, uid, email) {
+  var origin = env.APP_ORIGIN || 'https://atlasrental.io';
+  var exp = Date.now() + 7 * 24 * 3600 * 1000;
+  var sig = await _verifySig(env, uid, email, exp);
+  var link = origin + '/api/verify-email?u=' + encodeURIComponent(uid) + '&e=' + encodeURIComponent(email) + '&x=' + exp + '&s=' + sig;
+  var html = '<h2 style="margin:0 0 10px">Confirm your email</h2>'
+    + '<p>Welcome to Atlas Rental.io. Click below to verify <b>' + esc(email) + '</b> and activate your account.</p>'
+    + '<p style="margin:20px 0"><a href="' + link + '" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;padding:13px 24px;border-radius:10px;font-weight:700">Verify my email</a></p>'
+    + '<p style="color:#667;font-size:13px">Or paste this into your browser:<br><span style="word-break:break-all">' + esc(link) + '</span></p>'
+    + '<p style="color:#889;font-size:12px">This link expires in 7 days. If you did not create an Atlas Rental.io account, you can ignore this email.</p>';
+  return await sendEmail(env, { to: email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Verify your email to activate Atlas Rental.io', html: html });
+}
 async function _unsubSig(env, tenant, contact) {
   try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY || 'k'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     var s = await crypto.subtle.sign('HMAC', key, enc(String(tenant) + '|' + String(contact)));
@@ -784,6 +806,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_purchased INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_free INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_week INTEGER").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1").run(); } catch (e) { /* already exists -- existing users default verified so email confirmation never locks anyone out retroactively */ }
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -900,10 +923,16 @@ export default {
           .bind(tid, body.business.slice(0, 120), fleet, 'trial', now + 7 * 24 * 3600 * 1000, now, now).run();
         await env.DB.prepare('INSERT INTO users (id,email,pw_hash,pw_salt,tenant_id,role,created_at) VALUES (?,?,?,?,?,?,?)')
           .bind(uid, body.email.toLowerCase(), hash, salt, tid, 'owner', now).run();
+        // Email confirmation: send a verification link and hold the account 'unverified' until it's clicked.
+        // If the mailer is unavailable, auto-verify so a mail outage can never lock a brand-new owner out of their own account.
+        await ensurePlatformSchema(env);
+        let _vSent = false;
+        try { const _vm = await _sendVerifyEmail(env, uid, body.email.toLowerCase()); _vSent = !!(_vm && _vm.sent); } catch (e) {}
+        try { await env.DB.prepare('UPDATE users SET email_verified=? WHERE id=?').bind(_vSent ? 0 : 1, uid).run(); } catch (e) {}
         const user = { id: uid, email: body.email.toLowerCase(), tenant_id: tid };
         const sess = await createSession(env, user, req);
-        await audit(env, { tenant_id: tid, user }, req, 'signup', { email: user.email });
-        return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000, ip: (req.headers.get('CF-Connecting-IP') || '') }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+        await audit(env, { tenant_id: tid, user }, req, 'signup', { email: user.email, verifyEmail: _vSent });
+        return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000, ip: (req.headers.get('CF-Connecting-IP') || ''), verify: (_vSent ? 'sent' : 'skipped'), verified: (_vSent ? 0 : 1) }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- AUTH: login ------------------------------------------------------
@@ -925,7 +954,7 @@ export default {
         if (pwNeedsUpgrade(user.pw_hash)) { try { const _up = await hashPassword(body.password); await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_up.hash, _up.salt, user.id).run(); } catch (e) {} }
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'login', {});
-        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || '') }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)) }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- PUBLIC booking site + intake (no login; rate-limited; tenant resolved by its published subdomain slug) ----
@@ -1152,10 +1181,10 @@ export default {
             }
           } else if (T === 'invoice.paid') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
-            if (im.tenant && (im.billing === 'plan' || im.billing === 'trial')) {
-              await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();   // recurring charge (or trial->paid conversion)
-              await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
-              { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
+            if (im.tenant && (im.billing === 'plan' || im.billing === 'trial') && Number(obj.amount_paid || 0) > 0) {   // ignore the $0 subscription_create invoice at trial start -- only a REAL charge (trial->paid conversion or a renewal) books revenue, flips to active, and emails a receipt. A trialing tenant stays 'trial' with a card on file until the first real charge.
+              const _ptx = await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
+              if (_ptx && _ptx.new) { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }   // receipt only on a NEW txn -> idempotent on webhook replay
             } else if (im.tenant && im.billing === 'website') {
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
@@ -1285,7 +1314,7 @@ export default {
           if (act === 'gold' || act === 'free') {   // 'admin' comp (which confers platform-owner) is intentionally NOT reachable from the token console -> use the owner-session /api/admin/comp
             if (!em) return err(400, 'This member has no owner email to comp.');
             await env.DB.prepare('INSERT INTO comp_grants (email,role,granted_by,granted_at) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET role=?,granted_at=?').bind(em, act, 'atlas-hq', Date.now(), act, Date.now()).run();
-            if (act !== 'free') await env.DB.prepare("UPDATE tenants SET plan='active', updated_at=? WHERE id=?").bind(Date.now(), tid).run();
+            if (act !== 'free') await env.DB.prepare("UPDATE tenants SET plan='active', tier='unlimited', updated_at=? WHERE id=?").bind(Date.now(), tid).run();   // comped Gold = full access -> tier 'unlimited' so the asset cap is uncapped (a null tier silently fell back to the starter cap of 25)
           } else if (act === 'tier') {
             const tier = String(b.tier || ''); if (!PLAN_PRICE_CENTS[tier]) return err(400, 'Unknown tier.');
             await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?").bind(tier, Date.now(), tid).run();
@@ -1308,17 +1337,24 @@ export default {
         if (path === '/api/admin/delete' && method === 'POST') {
           const b = await req.json().catch(() => ({}));
           const tid = String(b.tenant_id || ''); if (!tid) return err(400, 'tenant_id required.');
-          const t = await env.DB.prepare('SELECT id FROM tenants WHERE id=?').bind(tid).first();
+          const t = await env.DB.prepare('SELECT id, stripe_sub, stripe_customer FROM tenants WHERE id=?').bind(tid).first();
           if (!t) return err(404, 'No such member.');
           const own = await env.DB.prepare("SELECT email FROM users WHERE tenant_id=? AND role='owner' ORDER BY created_at LIMIT 1").bind(tid).first();
           const em = (own && own.email) ? own.email.toLowerCase() : '';
           if (em && env.OWNER_EMAIL && em === String(env.OWNER_EMAIL).toLowerCase()) return err(403, 'The platform-owner account cannot be deleted here.');
-          // hard-delete: frees the login email (users row) + removes the tenant and all its data so a fresh signup with that email can run the full flow. Best-effort per table (a table without tenant_id is a harmless no-op).
-          const tt = ['bookings','customers','assets','charges','ledger','promos','integrations','suppressions','consents','ai_credits','audit_log','sessions','signatures','promo_uses','domains_sold','platform_transactions','platform_feedback','platform_installs','verified_customers','users'];
+          // STOP BILLING FIRST: cancel the plan subscription + any domain subscriptions (and the customer) at Stripe, else a deleted customer's card keeps getting charged forever.
+          const _pk = env.PLATFORM_STRIPE_KEY || '';
+          if (_pk) {
+            if (t.stripe_sub) { try { await stripeApi(_pk, 'DELETE', 'subscriptions/' + encodeURIComponent(t.stripe_sub)); } catch (e) {} }
+            try { const _ds = await env.DB.prepare("SELECT DISTINCT stripe_sub FROM domains_sold WHERE tenant_id=? AND stripe_sub IS NOT NULL").bind(tid).all(); const _dr = (_ds && _ds.results) || []; for (let k = 0; k < _dr.length; k++) { if (_dr[k].stripe_sub) { try { await stripeApi(_pk, 'DELETE', 'subscriptions/' + encodeURIComponent(_dr[k].stripe_sub)); } catch (e) {} } } } catch (e) {}
+            if (t.stripe_customer) { try { await stripeApi(_pk, 'DELETE', 'customers/' + encodeURIComponent(t.stripe_customer)); } catch (e) {} }
+          }
+          // Remove the account + operating data + free the login email. KEEP platform_transactions + domains_sold: those are Atlas's own revenue/audit ledger -- don't erase money history retroactively.
+          const tt = ['bookings','customers','assets','charges','ledger','promos','integrations','suppressions','consents','ai_credits','audit_log','sessions','signatures','promo_uses','platform_feedback','platform_installs','verified_customers','users'];
           for (let i = 0; i < tt.length; i++) { try { await env.DB.prepare('DELETE FROM ' + tt[i] + ' WHERE tenant_id=?').bind(tid).run(); } catch (e) {} }
           if (em) { try { await env.DB.prepare('DELETE FROM comp_grants WHERE email=?').bind(em).run(); } catch (e) {} }
           try { await env.DB.prepare('DELETE FROM tenants WHERE id=?').bind(tid).run(); } catch (e) {}
-          await audit(env, { tenant_id: tid }, req, 'admin.delete_account', { email: em });
+          await audit(env, { tenant_id: tid }, req, 'admin.delete_account', { email: em, cancelled_sub: !!t.stripe_sub });
           return json({ ok: true, email: em, deleted: tid });
         }
 
@@ -1405,6 +1441,19 @@ export default {
         return new Response(_pageDoc('Unsubscribe', pr.brand.color || '#1E6E4E', body, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
 
+      // ---- EMAIL VERIFICATION: the click-through link (public, signed token) ---------------------------
+      if (path === '/api/verify-email' && method === 'GET') {
+        const u = url.searchParams.get('u') || '', ve = (url.searchParams.get('e') || '').toLowerCase(), vx = parseInt(url.searchParams.get('x') || '0', 10) || 0, vs = url.searchParams.get('s') || '';
+        await ensurePlatformSchema(env);
+        const vOk = !!(u && ve && vx && vs && (vx > Date.now()) && _ctEq(vs, await _verifySig(env, u, ve, vx)));
+        if (vOk) { try { await env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=? AND email=?').bind(u, ve).run(); await audit(env, null, req, 'email_verified', { email: ve }); } catch (e) {} }
+        const vOrigin = env.APP_ORIGIN || 'https://atlasrental.io';
+        const vBody = vOk
+          ? ('<div class="card"><h2>Email verified</h2><p class="muted">' + esc(ve) + ' is confirmed. Your Atlas Rental.io account is active — you can close this tab and continue in the app.</p><p><a href="' + vOrigin + '/" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:700">Open Atlas Rental.io</a></p></div>')
+          : '<div class="card"><h2>Link expired</h2><p class="muted">This verification link is invalid or has expired. Sign in and use the resend option to get a fresh one.</p></div>';
+        return new Response(_pageDoc('Verify email', '#1E6E4E', vBody, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+
       // ---- Twilio inbound SMS webhook (public): STOP/UNSUBSCRIBE -> suppress; START/UNSTOP -> re-subscribe ----
       if (path === '/api/sms/inbound' && method === 'POST') {
         const raw = await req.text(); const p = new URLSearchParams(raw);
@@ -1432,6 +1481,23 @@ export default {
       if (path === '/api/auth/me' && method === 'GET') {
         const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf });
+      }
+
+      // ---- EMAIL VERIFICATION: status re-check + resend (session-gated) ------------------------------
+      if (path === '/api/auth/verify-status' && method === 'GET') {
+        await ensurePlatformSchema(env);
+        const vr = await env.DB.prepare('SELECT email_verified FROM users WHERE tenant_id=? AND email=? LIMIT 1').bind(ctx.tenant_id, ctx.user.email).first();
+        const vv = !vr ? 1 : (vr.email_verified == null ? 1 : (vr.email_verified ? 1 : 0));
+        return json({ ok: true, verified: vv });
+      }
+      if (path === '/api/auth/resend-verify' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad request.');
+        if (!await rateLimit(env, 'resendverify:' + ctx.tenant_id, 5, 3600000)) return err(429, 'Too many requests. Please wait a bit before resending.');
+        await ensurePlatformSchema(env);
+        const ur = await env.DB.prepare('SELECT id,email FROM users WHERE tenant_id=? AND email=? LIMIT 1').bind(ctx.tenant_id, ctx.user.email).first();
+        if (!ur) return err(404, 'No account.');
+        const vm = await _sendVerifyEmail(env, ur.id, (ur.email || '').toLowerCase());
+        return json({ ok: !!(vm && vm.sent), sent: !!(vm && vm.sent), reason: (vm && vm.reason) || '' });
       }
 
       // ---- tenant profile: publish brand/money/settings (+ public booking site) to the server ----
@@ -1961,7 +2027,7 @@ export default {
           m.ask(m.key, q, context).then(text => ({ name: m.name, text })).catch(() => ({ name: m.name, text: '' }))
         ));
         const models = settled.filter(m => m.text);
-        if (!models.length) return json({ live: true, models: [], synthesis: '', error: 'The council could not be reached - try again.' });
+        if (!models.length) { try { await _creditAdd(env, ctx.tenant_id, 1); } catch (e) {} return json({ live: true, models: [], synthesis: '', error: 'The council could not be reached - try again. Your credit was refunded.' }); }   // total provider outage -> give the spent credit back
         // one model synthesizes the panel into a single owner-facing answer
         let synthesis = models[0].text;
         if (models.length > 1) {

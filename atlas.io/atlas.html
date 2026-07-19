@@ -586,6 +586,13 @@ table.tbl{width:100%;border-collapse:collapse}
 .demo-exit b{color:#8FE3C6;font-weight:700}
 .demo-exit button{background:#2FA576;border:0;color:#fff;font-weight:750;font-size:12px;border-radius:999px;padding:5px 12px;font-family:inherit;cursor:pointer;white-space:nowrap}
 .demo-exit .demo-exit__back{background:transparent;border:1px solid rgba(255,255,255,.28);color:#fff;font-weight:650}
+.verify-gate{position:fixed;inset:0;z-index:9500;background:rgba(12,20,16,.55);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:24px}
+.verify-gate.on{display:flex}
+.verify-card{max-width:400px;width:100%;text-align:center;background:var(--surface,#fff);border:1px solid var(--line,#e5e1d8);border-radius:18px;padding:28px 24px;box-shadow:0 20px 60px -18px rgba(0,0,0,.5)}
+.verify-ic{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;background:#E4F0EA;color:#1E6E4E;display:grid;place-items:center}
+.verify-card h2{font-size:21px;margin:0 0 8px;color:var(--ink,#182420)}
+.verify-card p{color:var(--muted,#5c6b63);font-size:14.5px;margin:0 0 18px;line-height:1.5}
+.verify-hint{font-size:12.5px;margin:14px 0 0!important}
 /* full-screen live map */
 .trk-map-wrap.trk-fs{position:fixed;inset:0;z-index:8600;margin:0;border-radius:0;height:100vh;width:100vw;max-width:none}
 .trk-map-wrap.trk-fs #trkMap{height:100vh;width:100vw}
@@ -1702,7 +1709,7 @@ const Atlas = (function(){
     var body = mode==='login' ? {email:email,password:pass}
              : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars'};
     return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
-      if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; if(res.json.ip) _clientIp=res.json.ip; return {ok:true,tenant_id:res.json.tenant_id}; }
+      if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; if(res.json.ip) _clientIp=res.json.ip; return {ok:true,tenant_id:res.json.tenant_id,verify:res.json.verify,verified:res.json.verified}; }
       return {err:(res.json&&res.json.error)||'Could not sign in.'}; })
     .catch(function(){ return {err:'Network error \u2014 check your connection.'}; }); }
   // ===== dashboard cross-device sync (flag-gated OFF; LOSSLESS via each collection's data/info blob) =====
@@ -2495,6 +2502,7 @@ const Atlas = (function(){
     }
     S=load();
     if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
+    if(ATLAS_BACKEND && (r.verify==='sent' || r.verified===0)){ showVerifyGate(email); return; }       // email confirmation gate: hold the account until the link is clicked (if the mailer is off the server auto-verifies -> this is skipped)
     if(_authMode==='signup'){ startTrial(); return; }                        // new account -> guided onboarding
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }           // returning -> resume exactly where they were
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
@@ -2503,6 +2511,40 @@ const Atlas = (function(){
   function logout(){ store.logout(); S=null;
     var e=document.getElementById('authEmail'), p=document.getElementById('authPass'); if(e)e.value=''; if(p)p.value='';
     show('landing'); }
+  /* ---- email verification gate: account stays inactive until the emailed link is clicked ---- */
+  var _verifyEmail='', _verifyFocusBound=false;
+  function showVerifyGate(email){ _verifyEmail=email||'';
+    var e=document.getElementById('verifyGate');
+    if(!e){ e=document.createElement('div'); e.id='verifyGate'; e.className='verify-gate'; document.body.appendChild(e); }
+    e.innerHTML='<div class="verify-card">'
+      +'<div class="verify-ic"><svg viewBox="0 0 24 24" width="26" height="26" fill="none"><path d="M3 7l9 6 9-6M4 5h16v14H4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></div>'
+      +'<h2>Verify your email</h2>'
+      +'<p>We sent a link to <b>'+esc(email||'your email')+'</b>. Click it to activate your account, then come back here.</p>'
+      +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.verifyContinue()">I&rsquo;ve verified &mdash; continue</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.verifyResend()">Resend email</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:6px" onclick="Atlas.verifyStartOver()">Wrong email? Start over</button>'
+      +'<p class="verify-hint">Didn&rsquo;t get it? Check spam or promotions, or resend. The link expires in 7 days.</p></div>';
+    e.classList.add('on');
+    if(!_verifyFocusBound){ _verifyFocusBound=true; window.addEventListener('focus', _verifyMaybeRecheck); document.addEventListener('visibilitychange', _verifyMaybeRecheck); }
+  }
+  function hideVerifyGate(){ var e=document.getElementById('verifyGate'); if(e) e.classList.remove('on'); }
+  function _verifyMaybeRecheck(){ var e=document.getElementById('verifyGate'); if(!e||!e.classList.contains('on')||document.hidden) return;
+    _api('/api/auth/verify-status',{method:'GET'}).then(function(res){ if(res.json&&res.json.verified){ hideVerifyGate(); _postVerifyProceed(); } }).catch(function(){}); }
+  function verifyContinue(){
+    _api('/api/auth/verify-status',{method:'GET'}).then(function(res){
+      if(res.json&&res.json.verified){ hideVerifyGate(); _postVerifyProceed(); }
+      else { toast('Not verified yet - click the link in your email, then tap continue.'); }
+    }).catch(function(){ toast('Could not check right now - try again.'); }); }
+  function verifyResend(){
+    _api('/api/auth/resend-verify',{method:'POST',body:{}}).then(function(res){
+      if(res.json&&res.json.sent){ toast('Verification email resent - check your inbox.'); }
+      else { toast('Could not resend'+((res.json&&res.json.reason)?(' ('+res.json.reason+')'):'')+'.'); }
+    }).catch(function(){ toast('Network error - try again.'); }); }
+  function verifyStartOver(){ hideVerifyGate(); try{ logout(); }catch(e){} }
+  function _postVerifyProceed(){ S=load();
+    if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
+    else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
+    else { startTrial(); } }
   function startTrial(){
     if(!store.session()){ return goAuth('signup'); }                          // an account is the front door
     if(!S) S=load(); if(!S){ return goAuth('signup'); }
@@ -5059,10 +5101,11 @@ const Atlas = (function(){
   function setPerm(id,kind,key,val){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.perms=m.perms||_permsAll(false); m.perms[kind]=m.perms[kind]||{}; m.perms[kind][key]=!!val; m.role='custom'; save(); renderTeam(); renderSet();   // fix: refresh Settings>Team subsection
     var sel=document.querySelector('#modal select'); if(sel) sel.value='custom'; }
   function inviteMember(){ if(!_guard('teamManage','Managing team'))return;
-    openModal('<div class="modal__head"><h3>Invite a teammate</h3>'+_xBtn()+'</div><div class="modal__body">'
+    openModal('<div class="modal__head"><h3>Add a teammate</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="row2"><div class="field"><label>Name</label><input class="input" id="tmName" placeholder="Taylor Reed"></div><div class="field"><label>Email</label><input class="input" id="tmEmail" placeholder="taylor@email.com"></div></div>'
-      +'<div class="field"><label>Start with role</label><select class="select" id="tmRole">'+Object.keys(ROLE_PRESETS).filter(function(k){return k!=='custom';}).map(function(k){return '<option value="'+k+'"'+(k==='desk'?' selected':'')+'>'+ROLE_PRESETS[k].label+'</option>';}).join('')+'</select><div class="hint">You can fine-tune exactly what they see and do after inviting.</div></div>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveInvite()">Send invite</button></div>');
+      +'<div class="field"><label>Start with role</label><select class="select" id="tmRole">'+Object.keys(ROLE_PRESETS).filter(function(k){return k!=='custom';}).map(function(k){return '<option value="'+k+'"'+(k==='desk'?' selected':'')+'>'+ROLE_PRESETS[k].label+'</option>';}).join('')+'</select><div class="hint">You can fine-tune exactly what they see and do after adding.</div></div>'
+      +'<div class="hint" style="margin:-2px 0 12px">Adds them to your team and sets their permissions here. Separate teammate sign-in is coming soon.</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveInvite()">Add teammate</button></div>');
   }
   function saveInvite(){ if(!_guard('teamManage'))return; var name=(val('tmName')||'').trim(); if(!name){ toast('Enter a name'); return; }
     var role=val('tmRole')||'desk', email=(val('tmEmail')||'').trim(), perms=(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false));
@@ -5070,7 +5113,7 @@ const Atlas = (function(){
     var dup=email?S.team.filter(function(x){return String(x.email||'').trim().toLowerCase()===email.toLowerCase();})[0]:null;   // fix: a same-email invite updates the existing member instead of creating a duplicate row
     if(dup){ dup.name=name; dup.role=role; dup.perms=perms; }
     else { S.team.push({ id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:name, email:email, role:role, perms:perms }); }
-    save(); closeModal(); renderTeam(); renderSet(); toast(name+' invited \u2014 set exactly what they can access');   // fix: renderSet() refreshes Settings>Team
+    save(); closeModal(); renderTeam(); renderSet(); toast(name+' added to your team');   // honest: adds a team member + their permissions locally; teammate SIGN-IN is a separate feature not yet wired
   }
   function removeMember(id){ if(!_guard('teamManage'))return; if(!confirm('Remove this teammate and their access?'))return;
     if(S._actAs===id) exitPreview(); S.team=(S.team||[]).filter(function(x){return x.id!==id;}); save(); closeModal(); renderTeam(); renderSet(); toast('Teammate removed'); }   // fix: renderSet() refreshes Settings>Team
@@ -7163,7 +7206,7 @@ const Atlas = (function(){
     if(pm.hold) t+=_pad('+ Refundable deposit hold',32)+money(pm.hold)+'\n';
     t+='\n'+S.brand.name+' -- '+_siteUrl()+'\nManaged & securely processed through Atlas Rental.io -- atlasrental.io\n';
     try{ var blob=new Blob([t],{type:'text/plain'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='receipt-'+_receiptNo(b)+'.txt'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Receipt downloaded'); }catch(e){ toast('Download not available here'); } }
-  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; var to=b.custEmail||b.cust;
+  function sendReceipt(id){ var b=_getBooking(id); if(!b)return; if(!b.custEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.custEmail)){ toast('Add an email for '+(b.cust||'this customer')+' first, then you can send the receipt'); return; } var to=b.custEmail;
     // LIVE: email the itemized receipt to the customer through the worker (server verifies the recipient from the booking, so it can't be redirected).
     if(EMAIL_LIVE && typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf){
       toast('Sending receipt to '+esc(to)+'...');
@@ -7439,7 +7482,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,logout,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
+    goAuth,authSubmit,logout,verifyContinue,verifyResend,verifyStartOver,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
