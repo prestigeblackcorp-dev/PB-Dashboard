@@ -1211,7 +1211,7 @@ export default {
       }
 
       // ================= ATLAS HQ: owner master-dashboard API (gated by the ADMIN_TOKEN header; standalone, no tenant session; fail-closed) =================
-      if (path === '/api/admin/overview' || path === '/api/admin/members' || path === '/api/admin/transactions' || path === '/api/admin/feedback' || path === '/api/admin/feedback/update' || path === '/api/admin/grant') {
+      if (path === '/api/admin/overview' || path === '/api/admin/members' || path === '/api/admin/transactions' || path === '/api/admin/feedback' || path === '/api/admin/feedback/update' || path === '/api/admin/grant' || path === '/api/admin/delete') {
         if (!adminOk(req, env)) return err(403, 'Admin key required.');
         await ensurePlatformSchema(env);
 
@@ -1303,6 +1303,23 @@ export default {
           } else return err(400, 'Unknown grant action.');
           await audit(env, { tenant_id: tid }, req, 'admin.grant', { action: act });
           return json({ ok: true });
+        }
+
+        if (path === '/api/admin/delete' && method === 'POST') {
+          const b = await req.json().catch(() => ({}));
+          const tid = String(b.tenant_id || ''); if (!tid) return err(400, 'tenant_id required.');
+          const t = await env.DB.prepare('SELECT id FROM tenants WHERE id=?').bind(tid).first();
+          if (!t) return err(404, 'No such member.');
+          const own = await env.DB.prepare("SELECT email FROM users WHERE tenant_id=? AND role='owner' ORDER BY created_at LIMIT 1").bind(tid).first();
+          const em = (own && own.email) ? own.email.toLowerCase() : '';
+          if (em && env.OWNER_EMAIL && em === String(env.OWNER_EMAIL).toLowerCase()) return err(403, 'The platform-owner account cannot be deleted here.');
+          // hard-delete: frees the login email (users row) + removes the tenant and all its data so a fresh signup with that email can run the full flow. Best-effort per table (a table without tenant_id is a harmless no-op).
+          const tt = ['bookings','customers','assets','charges','ledger','promos','integrations','suppressions','consents','ai_credits','audit_log','sessions','signatures','promo_uses','domains_sold','platform_transactions','platform_feedback','platform_installs','verified_customers','users'];
+          for (let i = 0; i < tt.length; i++) { try { await env.DB.prepare('DELETE FROM ' + tt[i] + ' WHERE tenant_id=?').bind(tid).run(); } catch (e) {} }
+          if (em) { try { await env.DB.prepare('DELETE FROM comp_grants WHERE email=?').bind(em).run(); } catch (e) {} }
+          try { await env.DB.prepare('DELETE FROM tenants WHERE id=?').bind(tid).run(); } catch (e) {}
+          await audit(env, { tenant_id: tid }, req, 'admin.delete_account', { email: em });
+          return json({ ok: true, email: em, deleted: tid });
         }
 
         return err(404, 'Unknown admin route.');

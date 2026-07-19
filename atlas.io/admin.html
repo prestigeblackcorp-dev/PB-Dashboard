@@ -403,7 +403,7 @@ function renderMembers(){ var q=($('memSearch').value||'').toLowerCase().trim();
       '<td class="hide-sm"><span class="tier-tag">'+esc(TIER_LABEL[m.tier]||m.tier||'--')+'</span></td>'+
       '<td class="hide-sm mut num">'+dstr(m.created_at)+'</td>'+
       '<td style="text-align:right" class="money num">'+centsUSD(m.revenue_cents||0)+'</td>'+
-      '<td style="text-align:right"><button class="chip" onclick="openGrant(&quot;'+esc(m.tenant_id)+'&quot;)">Grant</button></td>'+
+      '<td style="text-align:right;white-space:nowrap"><button class="chip" onclick="openGrant(&quot;'+esc(m.tenant_id)+'&quot;)">Grant</button> <button class="chip" style="color:#e5484d;margin-left:4px" onclick="delMember(&quot;'+esc(m.tenant_id)+'&quot;)">Delete</button></td>'+
     '</tr>';
   }).join('');
   $('memTbl').innerHTML=head+'<tbody>'+body+'</tbody>';
@@ -449,6 +449,16 @@ function renderBugs(){ var b=DATA.bugs||[];
 }
 function bugStatus(id, status){ api('/api/admin/feedback/update',{method:'POST',body:{id:id,status:status}}).then(function(r){ if(r.json&&r.json.ok){ toast('Marked '+status); loadAll(true); } else toast('Could not update'); }); }
 
+/* ================= delete account (frees the login email so it can re-register) ================= */
+function delMember(tid){
+  var L=DATA.members||[], m=null; for(var i=0;i<L.length;i++){ if(L[i].tenant_id===tid){ m=L[i]; break; } } if(!m) return;   // look up by safe id (no tenant text in the onclick)
+  var who=(m.name||'this account')+(m.email?(' ('+m.email+')'):'');
+  if(!confirm('Delete '+who+'?\n\nThis permanently removes the account and ALL its data, and frees the email so it can sign up again from scratch. This cannot be undone.')) return;
+  api('/api/admin/delete',{method:'POST',body:{tenant_id:tid}}).then(function(res){
+    if(res.status===200 && res.json && res.json.ok){ toast('Deleted'+(res.json.email?(' - '+res.json.email+' is free to re-register'):'')); loadAll(); }
+    else { toast((res.json&&res.json.error)||'Could not delete that account'); }
+  }).catch(function(){ toast('Network error deleting account'); });
+}
 /* ================= grant / comp ================= */
 var _grant = {id:null, action:'tier', tier:'pro', credits:500, days:14};
 function openGrant(tid){ var m=null, _L=DATA.members||[]; for(var _i=0;_i<_L.length;_i++){ if(_L[_i].tenant_id===tid){ m=_L[_i]; break; } } if(!m) return;   // look up by safe id -> no tenant-controlled text in the onclick attribute (was a stored-XSS sink)
