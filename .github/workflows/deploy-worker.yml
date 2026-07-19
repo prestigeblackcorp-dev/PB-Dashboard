@@ -52,11 +52,16 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       # Post-deploy: confirm the LIVE worker now serves the build we just shipped (catches a silent no-op deploy).
-      - name: Verify live build stamp
+           - name: Verify live build stamp
         run: |
-          sleep 6
           EXPECT=$(grep -oE "ATLAS_BUILD = '[^']+'" worker.js | grep -oE "'[^']+'" | tr -d "'")
-          LIVE=$(curl -s https://atlasrental.io/api/health | grep -oE '"build":"[^"]*"' | head -1 | cut -d'"' -f4)
-          echo "expected=$EXPECT live=$LIVE"
-          if [ "$EXPECT" != "$LIVE" ]; then echo "::error::Live build ($LIVE) != shipped build ($EXPECT)"; exit 1; fi
-          echo "Live worker is serving $LIVE"
+          echo "expecting build $EXPECT"
+          LIVE=""
+          for i in $(seq 1 8); do
+            LIVE=$(curl -s "https://atlasrental.io/api/health?cb=${i}-${GITHUB_RUN_ID}" | grep -oE '"build":"[^"]*"' | head -1 | cut -d'"' -f4)
+            echo "attempt $i: live=$LIVE"
+            [ "$EXPECT" = "$LIVE" ] && break
+            sleep 10
+          done
+          if [ "$EXPECT" != "$LIVE" ]; then echo "::error::Live build ($LIVE) != shipped build ($EXPECT) after 8 tries"; exit 1; fi
+          echo "Live worker is serving $EXPECT"
