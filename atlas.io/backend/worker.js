@@ -948,7 +948,7 @@ export default {
             headline: pubSite.headline || '', about: pubSite.about || '',
             unit: cfg.unit || 'day', noun: cfg.noun || 'item',
             assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '', minLen: Number(a.minLen) || 0, maxLen: Number(a.maxLen) || 0 }; }),
-            config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false },
+            config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false, rateModel: prof.money.rateModel || 'day', weeklyDisc: Number(prof.money.weeklyDisc) || 0, monthlyDisc: Number(prof.money.monthlyDisc) || 0, rules: (prof.money.rules || []).filter(function (r) { return r && r.on; }).map(function (r) { return { name: String(r.name || 'Fee').slice(0, 40), kind: r.kind === 'percent' ? 'percent' : 'flat', value: Number(r.value) || 0, taxable: !!r.taxable }; }) },
             promos: (function () { var _t = new Date().toISOString().slice(0, 10); return ((prof.settings && prof.settings.promos) || []).filter(function (p) { return p && p.active !== false && !p.personal && !p.customer && !p.cust && !(p.expiry && _t > p.expiry) && !(p.cap && (p.used || 0) >= p.cap); }).map(function (p) { return { code: String(p.code || '').toUpperCase(), type: p.type === 'pct' ? 'pct' : 'amt', value: Number(p.value) || 0, minDays: Number(p.minDays) || 0 }; }); })(),
             capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } });
         }
@@ -1100,31 +1100,54 @@ export default {
             // IDEMPOTENCY (concurrency-safe): atomically CLAIM this (tenant,domain) via INSERT OR IGNORE on the unique index BEFORE registering.
             // A duplicate/concurrent Stripe delivery loses the claim (changes=0) and does nothing -> no double-register, no bogus "refunded" email.
             const _dmId = 'dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-            let _claimed = false;
-            if (md.domain) { try { const _ci = await env.DB.prepare("INSERT OR IGNORE INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind(_dmId, md.tenant, md.domain, md.email || '', _tt, 'registering', obj.subscription || null, Date.now()).run(); _claimed = !!(_ci && _ci.meta && _ci.meta.changes); } catch (e) {} }
+            let _claimed = false, _rowId = _dmId, _takeover = false;
+            if (md.domain) { try {
+              const _ci = await env.DB.prepare("INSERT OR IGNORE INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind(_dmId, md.tenant, md.domain, md.email || '', _tt, 'registering', obj.subscription || null, Date.now()).run();
+              _claimed = !!(_ci && _ci.meta && _ci.meta.changes);
+              if (!_claimed) {
+                // a row already exists for this (tenant,domain). A genuine duplicate/concurrent delivery is left alone; but a STRANDED
+                // claim -- a domain bought before the registrar was connected, or a worker that died mid-register -- is taken over and
+                // finished (else the customer paid and the name never registers). Age-gate (>5 min) so a truly concurrent second delivery
+                // still skips, and re-lock created_at so the take-over itself can't be double-run.
+                const _ex = await env.DB.prepare("SELECT id,status,created_at FROM domains_sold WHERE tenant_id=? AND domain=? LIMIT 1").bind(md.tenant, md.domain).first();
+                if (_ex && (_ex.status === 'registering' || _ex.status === 'pending_registrar') && (Date.now() - (Number(_ex.created_at) || 0)) > 300000) {
+                  _rowId = _ex.id;
+                  await env.DB.prepare("UPDATE domains_sold SET created_at=?, stripe_sub=COALESCE(stripe_sub,?) WHERE id=?").bind(Date.now(), obj.subscription || null, _rowId).run();
+                  _claimed = true; _takeover = true;
+                }
+              }
+            } catch (e) {} }
             if (!_claimed) {
               await audit(env, { tenant_id: md.tenant }, req, 'domain.register_dedup', { domain: md.domain });   // another delivery already owns this name - no side effects
             } else {
               let _reg = { ok: false, reason: 'no_registrar' };
-              if (md.domain && env.DYNADOT_KEY) _reg = await _registrarRegister(env, md.domain, 1);
+              // on a take-over the name may ALREADY be ours (worker died after a successful register) -> verify availability before acting so we never re-register or wrongly refund a domain we own.
+              if (md.domain && env.DYNADOT_KEY) {
+                let _already = false;
+                if (_takeover) { try { const _av = await _registrarSearch(env, md.domain); _already = !!(_av && _av.ok && _av.available === false); } catch (e) {} }
+                _reg = _already ? { ok: true, reason: 'already_registered' } : await _registrarRegister(env, md.domain, 1);
+              }
               if (_reg.ok) {
                 // #201 AUTO-CONNECT the bought name (same mechanism as "connect existing": associate + Cloudflare custom hostname + registrar DNS -> our fallback).
                 const _tgt = env.SAAS_TARGET || 'saas.atlasrental.io';
                 try { await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=? AND (custom_domain IS NULL OR custom_domain=?)").bind(md.domain, Date.now(), md.tenant, md.domain).run(); } catch (e) {}   // never black out a domain the tenant already has live
                 if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, md.domain); await _cfAddHostname(env, 'www.' + md.domain); } catch (e) {} }
                 try { await _registrarSetDns(env, md.domain, _tgt); } catch (e) {}
-                try { await env.DB.prepare("UPDATE domains_sold SET status='registered', paid_cents=? WHERE id=?").bind(_tt, _dmId).run(); } catch (e) {}
+                try { await env.DB.prepare("UPDATE domains_sold SET status='registered', paid_cents=? WHERE id=?").bind(_tt, _rowId).run(); } catch (e) {}
                 await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain + ' (yearly)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
                 await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
               } else if (md.domain && env.DYNADOT_KEY) {
                 // registration genuinely failed -> release the claim, REAL refund (subscription: pull charge off the first invoice) + cancel the yearly sub.
-                try { await env.DB.prepare("DELETE FROM domains_sold WHERE id=?").bind(_dmId).run(); } catch (e) {}
+                try { await env.DB.prepare("DELETE FROM domains_sold WHERE id=?").bind(_rowId).run(); } catch (e) {}
                 await _domainFailRefund(env, env.PLATFORM_STRIPE_KEY || '', obj.subscription || '');
                 if (md.email) await sendEmail(env, { to: md.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain could not be registered - refunded', html: '<h2>We refunded your domain purchase</h2><p>Unfortunately <b>' + esc(md.domain) + '</b> could not be registered (' + esc(_reg.reason || 'registrar error') + '), so we refunded your payment in full and cancelled the yearly billing - no charge will remain. Please try a different name.</p>' });
                 await audit(env, { tenant_id: md.tenant }, req, 'domain.register_failed_refunded', { domain: md.domain, reason: _reg.reason });
               } else {
-                // no registrar connected: keep the claim (owner registers the name manually), payment stands, honest receipt + audit.
+                // no registrar connected yet: mark the claim PENDING (not a permanent 'registering') so a later delivery -- once the owner
+                // wires Dynadot and Stripe re-sends the event -- takes it over and finishes registration. Payment stands, honest receipt + audit.
+                try { await env.DB.prepare("UPDATE domains_sold SET status='pending_registrar' WHERE id=?").bind(_rowId).run(); } catch (e) {}
                 await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+                await audit(env, { tenant_id: md.tenant }, req, 'domain.pending_registrar', { domain: md.domain });
               }
             }
           } else if (T === 'invoice.paid') {
@@ -2051,7 +2074,15 @@ function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimum
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 var _promo=null;
 function applyPromo(){var c=(el('promo')?el('promo').value:'').trim().toUpperCase();var m=el('promsg');var per=Math.max(1,parseInt(el('per').value,10)||1);if(!c){_promo=null;if(m)m.textContent='';return qt()}var p=(D.promos||[]).filter(function(x){return x.code===c})[0];if(!p){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Code not found'}return qt()}if(p.minDays&&per<p.minDays){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Needs at least '+p.minDays+' '+esc(D.unit)+(p.minDays>1?'s':'')}return qt()}_promo=p;if(m){m.style.color='#0a0';m.textContent=(p.type==='pct'?(p.value+'% off'):('$'+p.value+' off'))+' applied'}qt()}
-function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var p=Math.max(1,parseInt(el('per').value,10)||1);var s=(a.rate||0)*p;var d=0;if(_promo&&!(_promo.minDays&&p<_promo.minDays)){d=_promo.type==='pct'?s*_promo.value/100:_promo.value;d=Math.max(0,Math.min(s,d))}var sd=s-d;var t=sd*(D.config.tax||0)/100;el('rate').textContent=a.rate?('At '+money(a.rate*100)+' / '+D.unit):'';el('qz').innerHTML='<div class=row><span>'+p+' '+esc(D.unit)+(p>1?'s':'')+'</span><span>'+money(s*100)+'</span></div>'+(d>0?('<div class=row><span>Discount</span><span>-'+money(d*100)+'</span></div>'):'')+(D.config.tax?('<div class=row><span>Tax '+D.config.tax+'%</span><span>'+money(t*100)+'</span></div>'):'')+'<div class=tot><span>Estimated total</span><span>'+money((sd+t)*100)+'</span></div>'}
+function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var p=Math.max(1,parseInt(el('per').value,10)||1);var C=D.config||{};var g=(a.rate||0)*p;
+/* AUTO long-term discount -- mirror the worker's priceQuote so the estimate the customer sees equals the amount charged. */
+var rm=C.rateModel||'day';var wkP=(rm==='hour'?168:rm==='week'?2:rm==='month'?999999:7),moP=(rm==='hour'?672:rm==='week'?4:rm==='month'?12:28);var ad=0;if(C.monthlyDisc&&p>=moP)ad=g*C.monthlyDisc/100;else if(C.weeklyDisc&&p>=wkP)ad=g*C.weeklyDisc/100;ad=Math.max(0,Math.min(ad,g));var afterAuto=g-ad;
+/* promo -- applied on the post-auto subtotal, same order as the worker. */
+var pd=0;if(_promo&&!(_promo.minDays&&p<_promo.minDays)){pd=_promo.type==='pct'?afterAuto*_promo.value/100:_promo.value;pd=Math.max(0,Math.min(afterAuto,pd))}var sub=afterAuto-pd;
+/* owner fees (money rules) on the discounted subtotal -- mirror _reprice. */
+var fees=0,taxableFees=0,feeRows='';(C.rules||[]).forEach(function(r){if(!r)return;var amt=(r.kind==='percent'?sub*(Number(r.value)||0)/100:(Number(r.value)||0));if(amt<=0)return;fees+=amt;if(r.taxable)taxableFees+=amt;feeRows+='<div class=row><span>'+esc(r.name||'Fee')+'</span><span>'+money(amt*100)+'</span></div>';});
+var t=(sub+taxableFees)*(C.tax||0)/100;var total=sub+fees+t;
+el('rate').textContent=a.rate?('At '+money(a.rate*100)+' / '+D.unit):'';el('qz').innerHTML='<div class=row><span>'+p+' '+esc(D.unit)+(p>1?'s':'')+'</span><span>'+money(g*100)+'</span></div>'+(ad>0?('<div class=row><span>Discount</span><span>-'+money(ad*100)+'</span></div>'):'')+(pd>0?('<div class=row><span>Promo</span><span>-'+money(pd*100)+'</span></div>'):'')+feeRows+(C.tax?('<div class=row><span>Tax '+C.tax+'%</span><span>'+money(t*100)+'</span></div>'):'')+'<div class=tot><span>Estimated total</span><span>'+money(total*100)+'</span></div>'}
 function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value,promo:el('promo')?el('promo').value:''};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
 fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><select id=asset onchange=qt()>'+(j.assets||[]).map(function(a){return '<option>'+esc(a.name)+'</option>'}).join('')+'</select><div id=rate class=muted style="margin-top:5px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput=qt()><label>Start date</label><input id=st type=date><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+((j.promos&&j.promos.length)?'<label>Promo code</label><div style="display:flex;gap:6px"><input id=promo style="flex:1;text-transform:uppercase" placeholder="Optional"><button type=button class=btn style="width:auto;padding:0 14px" onclick=applyPromo()>Apply</button></div><div id=promsg style="font-size:12px;margin-top:4px"></div>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
 `;
