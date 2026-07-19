@@ -222,7 +222,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19e';
+const ATLAS_BUILD = '2026.07.19f';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1289,6 +1289,7 @@ export default {
           h.user_tables = r ? r.n : 0;
           h.schema_loaded = h.user_tables >= 15;
           const cr = parseInt(await _pcfgGet(env, 'cron_last_run', '0'), 10) || 0; h.cron_last = cr; if (cr) h.cron_age_min = Math.round((Date.now() - cr) / 60000);
+          h.big_rows = parseInt(await _pcfgGet(env, 'big_rows', '0'), 10) || 0;   // oversized booking rows (payload discipline)
         } catch (e) { h.db_ok = false; }   // don't leak DB internals to an unauthenticated caller
         h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;
         return json(h);
@@ -2068,9 +2069,14 @@ export default {
           if (eps.ok && Array.isArray(eps.j.data)) { const m = eps.j.data.filter(function (e) { return e && e.url && e.url.indexOf('/api/stripe/webhook') >= 0; })[0]; out.checks.webhook_endpoint_configured = !!m; if (m) out.webhook = { url: m.url, status: m.status, events: (m.enabled_events || []).slice(0, 8) }; else out.notes.push('No Stripe webhook points at ' + out.expected_webhook_url + ' -- add it in Stripe > Developers > Webhooks.'); }
           else out.notes.push('Could not read your Stripe webhook endpoints.');
           if (out.checks.key_valid && !out.checks.charges_enabled) out.notes.push('Charges are not enabled on this Stripe account yet -- finish Stripe onboarding (business + bank details).');
+          // Recent payments (read-only) so you can WATCH a test (or live) charge land after a checkout -- the loop, full circle.
+          if (out.checks.key_valid) { const ch = await stripeApi(pk, 'GET', 'charges?limit=8', null); if (ch.ok && Array.isArray(ch.j.data)) out.recent_payments = ch.j.data.map(function (c) { return { amount: c.amount, currency: c.currency, status: c.status, paid: !!c.paid, refunded: !!c.refunded, created: (c.created || 0) * 1000, desc: String(c.description || (c.metadata && (c.metadata.booking || c.metadata.kind)) || '').slice(0, 80) }; }); }
           out.ready_for_live = out.mode === 'live' && out.checks.key_valid && out.checks.charges_enabled && out.checks.webhook_secret_set && out.checks.webhook_endpoint_configured;
+          out.test_ready = out.mode === 'test' && out.checks.key_valid && out.checks.webhook_endpoint_configured;   // the full-circle sandbox loop will complete
+          if (out.mode === 'test') out.notes.push('Test mode (Sandbox): run a booking and pay with card 4242 4242 4242 4242 (any future expiry / any CVC / any ZIP). The charge appears below and flows through the webhook to Purchases + revenue -- no real money moves.');
+          if (out.mode === 'test' && !out.checks.webhook_endpoint_configured) out.notes.push('For the loop to close (booking -> paid), add a TEST-mode webhook in Stripe pointed at ' + out.expected_webhook_url + '.');
           if (out.ready_for_live) out.notes.push('Ready for live: run one real end-to-end charge -> refund -> payout to confirm settlement.');
-          await audit(env, { actor: _actor }, req, 'admin.payments.selftest', { mode: out.mode, ready: out.ready_for_live });
+          await audit(env, { actor: _actor }, req, 'admin.payments.selftest', { mode: out.mode, ready: out.ready_for_live, test_ready: out.test_ready });
           return json(out);
         }
 
@@ -3196,6 +3202,7 @@ export default {
     try {
       const now = Date.now();
       try { await ensurePlatformSchema(env); await _pcfgSet(env, 'cron_last_run', String(now)); } catch (e) {}   // heartbeat: /api/health exposes cron_age_min so an uptime monitor can alert if the cron stops running
+      try { const _br = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE length(data) > 200000").first(); await _pcfgSet(env, 'big_rows', String((_br && _br.c) || 0)); } catch (e) {}   // payload discipline: count oversized booking rows nightly; /api/health surfaces it so bloat is caught early
       await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
       // Retain ADMIN-plane actions for a year (forensics/compliance); other audit rows GC at 90 days.

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Atlas Rental.io - System Status</title>
+<style>
+  :root{ --bg:#0c1210; --surf:#141d18; --line:#243029; --ink:#e7f0ea; --mut:#9fb1a7; --em:#39c689; --ok:#3ac47f; --warn:#e0a94a; --bad:#e07068; --mono:ui-monospace,SFMono-Regular,Menlo,monospace; --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  @media (prefers-color-scheme:light){ :root{ --bg:#f4f7f5; --surf:#fff; --line:#e0e7e2; --ink:#13211b; --mut:#5c6b63; --em:#1c7a50; --ok:#1f9d57; --warn:#c07f1e; --bad:#c0463c; } }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6}
+  .wrap{max-width:640px;margin:0 auto;padding:40px 20px 60px}
+  .brand{font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--em)}
+  h1{font-size:26px;letter-spacing:-.02em;margin:6px 0 20px;font-weight:800}
+  .banner{display:flex;align-items:center;gap:14px;background:var(--surf);border:1px solid var(--line);border-radius:16px;padding:20px 22px;margin-bottom:18px}
+  .dot{width:16px;height:16px;border-radius:50%;flex:none;box-shadow:0 0 0 4px color-mix(in srgb,currentColor 18%,transparent)}
+  .banner .t{font-size:19px;font-weight:800;letter-spacing:-.01em}
+  .banner .s{font-size:13px;color:var(--mut)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .card{background:var(--surf);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .card .k{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);font-weight:600}
+  .card .v{font-size:15px;font-weight:700;margin-top:3px;display:flex;align-items:center;gap:7px}
+  .pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px}
+  .pok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+  .pwarn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+  .pbad{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent)}
+  .num{font-family:var(--mono)}
+  .foot{margin-top:20px;font-size:12px;color:var(--mut);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  a{color:var(--em)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">Atlas Rental.io</div>
+  <h1>System status</h1>
+  <div class="banner">
+    <div class="dot" id="dot" style="color:var(--mut);background:var(--mut)"></div>
+    <div><div class="t" id="statusText">Checking&hellip;</div><div class="s" id="statusSub">Pinging the platform</div></div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="foot"><span id="checked">&nbsp;</span><span>Auto-refreshes every 30s &middot; <a id="raw" href="#" target="_blank">raw</a></span></div>
+</div>
+<script>
+  var API = (/(^|\.)atlasrental\.io$/.test(location.hostname)) ? '' : 'https://atlas.prestigeblackcorp.workers.dev';
+  document.getElementById('raw').href = API + '/api/health';
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function pill(state,label){ var cls=state==='ok'?'pok':(state==='warn'?'pwarn':'pbad'); return '<span class="pill '+cls+'">'+esc(label)+'</span>'; }
+  function card(k,v){ return '<div class="card"><div class="k">'+esc(k)+'</div><div class="v">'+v+'</div></div>'; }
+  function ago(ms){ if(!ms) return 'never'; var m=Math.round((Date.now()-ms)/60000); if(m<60) return m+' min ago'; var h=Math.round(m/60); if(h<48) return h+' hr ago'; return Math.round(h/24)+' d ago'; }
+  function paint(h, err){
+    var dot=document.getElementById('dot'), st=document.getElementById('statusText'), sub=document.getElementById('statusSub'), grid=document.getElementById('grid');
+    if(err || !h){ dot.style.color=dot.style.background='var(--bad)'; st.textContent='Unreachable'; sub.textContent='The platform did not respond'; grid.innerHTML=''; return; }
+    var cronStale = (h.cron_age_min!=null && h.cron_age_min > 1560);
+    var allOk = h.ok && !cronStale;
+    var col = allOk ? 'var(--ok)' : (h.ok ? 'var(--warn)' : 'var(--bad)');
+    dot.style.color=dot.style.background=col;
+    st.textContent = allOk ? 'All systems operational' : (h.ok ? 'Operational (minor)' : 'Degraded');
+    sub.textContent = h.schema_loaded ? 'Booking, payments, portal and AI endpoints are live.' : 'Core services are still initializing.';
+    var g='';
+    g+=card('Booking + API', pill(h.ok?'ok':'bad', h.ok?'operational':'degraded'));
+    g+=card('Database', pill(h.db_bound&&h.schema_loaded?'ok':'bad', h.db_bound?(h.schema_loaded?'connected':'starting'):'down'));
+    g+=card('Automation (cron)', pill(cronStale?'warn':'ok', h.cron_last?ago(h.cron_last):'pending'));
+    g+=card('File storage (R2)', pill(h.r2?'ok':'warn', h.r2?'on':'off'));
+    g+=card('Payments', pill(h.platform_payments?'ok':'warn', h.platform_payments?'configured':'setup'));
+    g+=card('Email', pill(h.mailer?'ok':'warn', h.mailer?'on':'off'));
+    g+=card('AI council', pill(h.ai_council?'ok':'warn', h.ai_council?'on':'off'));
+    g+=card('Build', '<span class="num">'+esc(h.build||'?')+'</span>');
+    if(h.big_rows){ g+=card('Oversized rows', pill(h.big_rows>5?'warn':'ok', String(h.big_rows))); }
+    grid.innerHTML=g;
+  }
+  function check(){ fetch(API+'/api/health',{cache:'no-store'}).then(function(r){return r.json();}).then(function(h){ paint(h,false); document.getElementById('checked').textContent='Last checked '+new Date().toLocaleTimeString(); }).catch(function(){ paint(null,true); document.getElementById('checked').textContent='Last checked '+new Date().toLocaleTimeString(); }); }
+  check(); setInterval(check, 30000);
+</script>
+</body>
+</html>

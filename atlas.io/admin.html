@@ -720,7 +720,7 @@ var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6
 function _actorGet(){ try{ return localStorage.getItem('atlas_admin_actor')||''; }catch(e){ return ''; } }
 function setActor(v){ try{ localStorage.setItem('atlas_admin_actor',(v||'').trim()); }catch(e){} }
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19e';
+var ATLAS_EXPECT_BUILD='2026.07.19f';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 function renderAI(){ renderBuildBanner(); var c=DATA.aiCfg||{}, on=!!c.ai_hq_enabled, hasKey=!!c.ai_available; var st=$('aiStatus'), tg=$('aiToggleBtn'), bd=$('aiBody'); if(!st) return;
   if(c.needsDeploy){ st.innerHTML='<span class="pill gray">Not deployed</span>'; tg.style.display='none'; bd.innerHTML='<div class="mut" style="padding:10px 12px">Paste the latest worker into Cloudflare to enable the AI Command Center and the new safety features (recoverable delete, working audit trail, admin rate-limit).</div>'; return; } tg.style.display='';
@@ -958,7 +958,9 @@ function entBackup(){ toast('Preparing backup...'); api('/api/admin/backup').the
 function paymentsSelftest(){ var out=$('paySelf'); if(out) out.innerHTML='<span class="mut" style="font-size:12px">Checking Stripe (read-only)...</span>'; api('/api/admin/payments/selftest').then(function(r){ var j=r.json||{}; if(!out) return; if(r.status===404){ out.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker. Paste worker.js into Cloudflare, then reload.</div>'; return; } if(!j.ok){ out.innerHTML='<div class="mut" style="font-size:12px">'+esc((j.error)||'Could not run the check')+'</div>'; return; } out.innerHTML=_paySelfHtml(j); }).catch(function(){ if(out) out.innerHTML='<div class="mut" style="font-size:12px">Network error</div>'; }); }
 function _paySelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<div style="font-size:12.5px;display:flex;gap:8px;align-items:flex-start;padding:3px 0"><span style="color:'+(okv?'#3ecb8f':'#e0736f')+';font-weight:700;width:14px;flex:none">'+(okv?'&#10003;':'&#10007;')+'</span> <span>'+esc(label)+'</span></div>'; }
   var mode='<span class="pill '+(j.mode==='live'?'active':(j.mode==='test'?'gray':'past'))+'">'+esc(j.mode||'?')+' mode</span>';
-  var ready=j.ready_for_live?'<span class="pill active">ready for live</span>':'<span class="pill past">not live-ready</span>';
+  var ready;
+  if(j.mode==='test') ready=j.test_ready?'<span class="pill active">test loop ready</span>':'<span class="pill past">test setup incomplete</span>';
+  else ready=j.ready_for_live?'<span class="pill active">ready for live</span>':'<span class="pill past">not live-ready</span>';
   var h='<div style="margin:2px 0 8px">'+mode+' '+ready+'</div>'
    +row(c.key_set,'Platform Stripe key set')
    +row(c.key_valid,'Key authenticates with Stripe')
@@ -967,6 +969,8 @@ function _paySelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<
    +row(c.webhook_secret_set,'Webhook signing secret set')
    +row(c.webhook_endpoint_configured,'Webhook points at '+esc(j.expected_webhook_url||''));
   if(j.account){ h+='<div class="mut" style="font-size:11.5px;margin-top:6px">account '+esc(j.account.id||'')+' &middot; '+esc((j.account.country||'')+' / '+String(j.account.currency||'').toUpperCase())+'</div>'; }
+  if((j.recent_payments||[]).length){ h+='<div class="dsec" style="margin-top:10px">Recent payments '+(j.mode==='test'?'(test)':'')+'</div>'; j.recent_payments.slice(0,8).forEach(function(p){ var amt='$'+(((p.amount||0)/100)).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); var st=p.refunded?'refunded':(p.status||''); h+='<div class="drow" style="padding:5px 2px"><span class="dl">'+esc(amt)+' '+esc(String(p.currency||'').toUpperCase())+(p.desc?(' <span class="mut">'+esc(p.desc)+'</span>'):'')+'</span><b style="color:'+(st==='succeeded'?'#3ecb8f':(st==='refunded'?'#d9b25f':'#e0736f'))+'">'+esc(st)+'</b></div>'; }); }
+  else if(c.key_valid){ h+='<div class="mut" style="font-size:12px;margin-top:8px">No payments on this account yet &mdash; run a booking + pay with test card 4242 4242 4242 4242 to watch one appear here.</div>'; }
   if((j.notes||[]).length){ h+='<div style="margin-top:8px">'+(j.notes.map(function(n){return '<div class="mut" style="font-size:12px;line-height:1.5">&middot; '+esc(n)+'</div>';}).join(''))+'</div>'; }
   return h;
 }
