@@ -249,6 +249,13 @@
   <div id="buildBanner"></div>
   <div class="kpis" id="kpis"></div>
 
+  <!-- SYSTEM HEALTH -->
+  <style>.hgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:9px}.hc{background:var(--surf2);border:1px solid var(--line);border-radius:11px;padding:11px 13px;min-width:0}.hc .hk{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);font-weight:600}.hc .hv{font-size:14px;font-weight:700;margin-top:4px;display:flex;align-items:center;gap:6px}.hdot{width:9px;height:9px;border-radius:50%;flex:none}.hbanner{display:flex;align-items:center;gap:12px;margin-bottom:12px}.hbig{font-size:16px;font-weight:800;letter-spacing:-.01em}</style>
+  <div class="card">
+    <div class="card-h"><h2>System health</h2><span class="sub" id="healthSub"></span><div class="sp"></div><a class="chip" href="/status.html" target="_blank">Public status</a><button class="chip" onclick="loadHealth(true)">Refresh</button></div>
+    <div class="card-b pad" id="healthBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+
   <!-- AI COMMAND CENTER -->
   <style>.ai-tools{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.ai-brief{background:rgba(128,140,160,.06);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.55}.ai-brief-h{display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12px}.ai-md{font-size:13px;line-height:1.6}@media(max-width:720px){.grid{grid-template-columns:1fr!important}}</style>
   <div class="card">
@@ -449,8 +456,9 @@ function enter(overview){ $('gate').style.display='none'; $('app').style.display
   if(overview){ DATA.overview=overview; paintOverview(); }
   loadAll();
   initCollapsible();
+  loadHealth();
   if(_timer) clearInterval(_timer);
-  _timer=setInterval(function(){ loadAll(true); }, REFRESH_MS);
+  _timer=setInterval(function(){ loadAll(true); loadHealth(); }, REFRESH_MS);
   setInterval(tickLive, 1000);
 }
 
@@ -720,8 +728,34 @@ var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6
 function _actorGet(){ try{ return localStorage.getItem('atlas_admin_actor')||''; }catch(e){ return ''; } }
 function setActor(v){ try{ localStorage.setItem('atlas_admin_actor',(v||'').trim()); }catch(e){} }
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19g';
+var ATLAS_EXPECT_BUILD='2026.07.19h';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
+/* ===== System health card ===== */
+function loadHealth(manual){ if(manual&&$('healthBody')) $('healthBody').innerHTML='<div class="mut">Checking&hellip;</div>'; return api('/api/health').then(function(r){ DATA.health=r.json||{}; renderHealth(); }).catch(function(){ var el=$('healthBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; if($('healthSub'))$('healthSub').textContent='unreachable'; }); }
+function _hdot(s){ return '<span class="hdot" style="background:'+(s==='ok'?'#3ecb8f':(s==='warn'?'#e0a94a':'#e0736f'))+'"></span>'; }
+function _hc(k,s,v){ return '<div class="hc"><div class="hk">'+esc(k)+'</div><div class="hv">'+_hdot(s)+'<span>'+esc(v)+'</span></div></div>'; }
+function _hage(ms){ if(!ms) return 'pending'; var m=Math.round((Date.now()-ms)/60000); if(m<60) return m+'m ago'; var h=Math.round(m/60); if(h<48) return h+'h ago'; return Math.round(h/24)+'d ago'; }
+function renderHealth(){ var el=$('healthBody'); if(!el) return; var h=DATA.health||{}, e=DATA.enterprise||{};
+  if(!h.build && !h.db_bound){ el.innerHTML='<div class="mut">No response from the platform &mdash; the live worker may be down or not deployed yet.</div>'; if($('healthSub'))$('healthSub').textContent='unreachable'; return; }
+  var cronStale=(h.cron_age_min!=null && h.cron_age_min>1560);
+  var allOk=!!h.ok && !cronStale;
+  var col=allOk?'#3ecb8f':(h.ok?'#e0a94a':'#e0736f');
+  if($('healthSub'))$('healthSub').textContent=allOk?'all systems operational':(h.ok?'operational (minor)':'degraded');
+  var payTest=!!e.payments_test_mode;
+  var g='<div class="hbanner"><span class="hdot" style="width:15px;height:15px;background:'+col+'"></span><div><div class="hbig">'+(allOk?'All systems operational':(h.ok?'Operational':'Degraded'))+'</div><div class="mut" style="font-size:12px">build '+esc(h.build||'?')+(h.cron_last?(' &middot; cron '+_hage(h.cron_last)):'')+(payTest?' &middot; <b style="color:#e0a94a">payments in TEST mode</b>':'')+'</div></div></div>';
+  g+='<div class="hgrid">'
+    +_hc('Booking + API', h.ok?'ok':'bad', h.ok?'operational':'degraded')
+    +_hc('Database', (h.db_bound&&h.schema_loaded)?'ok':'bad', h.db_bound?(h.schema_loaded?((h.user_tables||0)+' tables'):'starting'):'down')
+    +_hc('Automation', cronStale?'warn':'ok', h.cron_last?_hage(h.cron_last):'pending')
+    +_hc('File storage', h.r2?'ok':'warn', h.r2?'R2 on':'off')
+    +_hc('Payments', payTest?'warn':(h.platform_payments?'ok':'warn'), payTest?'TEST mode':(h.platform_payments?'live':'setup'))
+    +_hc('Email', h.mailer?'ok':'warn', h.mailer?'on':'off')
+    +_hc('AI council', h.ai_council?'ok':'warn', h.ai_council?'on':'off')
+    +_hc('SaaS domains', h.saas_domains?'ok':'warn', h.saas_domains?'on':'off')
+    +((h.big_rows!=null)?_hc('Payload', h.big_rows>5?'warn':'ok', (h.big_rows||0)+' big rows'):'')
+    +'</div>';
+  el.innerHTML=g;
+}
 function renderAI(){ renderBuildBanner(); var c=DATA.aiCfg||{}, on=!!c.ai_hq_enabled, hasKey=!!c.ai_available; var st=$('aiStatus'), tg=$('aiToggleBtn'), bd=$('aiBody'); if(!st) return;
   if(c.needsDeploy){ st.innerHTML='<span class="pill gray">Not deployed</span>'; tg.style.display='none'; bd.innerHTML='<div class="mut" style="padding:10px 12px">Paste the latest worker into Cloudflare to enable the AI Command Center and the new safety features (recoverable delete, working audit trail, admin rate-limit).</div>'; return; } tg.style.display='';
   st.innerHTML = on ? (hasKey?'<span class="pill active">On</span>':'<span class="pill past">On &middot; no AI key</span>') : '<span class="pill gray">Off</span>';

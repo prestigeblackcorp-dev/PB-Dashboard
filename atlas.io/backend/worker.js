@@ -222,7 +222,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19g';
+const ATLAS_BUILD = '2026.07.19h';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1591,7 +1591,7 @@ export default {
               } else if (md.domain && env.DYNADOT_KEY) {
                 // registration genuinely failed -> release the claim, REAL refund (subscription: pull charge off the first invoice) + cancel the yearly sub.
                 try { await env.DB.prepare("DELETE FROM domains_sold WHERE id=?").bind(_rowId).run(); } catch (e) {}
-                await _domainFailRefund(env, env.PLATFORM_STRIPE_KEY || '', obj.subscription || '');
+                await _domainFailRefund(env, ((evt && evt.livemode === false && env.PLATFORM_STRIPE_TEST_KEY) ? env.PLATFORM_STRIPE_TEST_KEY : (env.PLATFORM_STRIPE_KEY || '')), obj.subscription || '');   // refund with the key matching the event's mode
                 if (md.email) await sendEmail(env, { to: md.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain could not be registered - refunded', html: '<h2>We refunded your domain purchase</h2><p>Unfortunately <b>' + esc(md.domain) + '</b> could not be registered (' + esc(_reg.reason || 'registrar error') + '), so we refunded your payment in full and cancelled the yearly billing - no charge will remain. Please try a different name.</p>' });
                 await audit(env, { tenant_id: md.tenant }, req, 'domain.register_failed_refunded', { domain: md.domain, reason: _reg.reason });
               } else {
@@ -1621,7 +1621,7 @@ export default {
                 await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'domain', pack: im.domain || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
                 const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain renewal' + (im.domain ? (' - ' + im.domain) : '') + ' (1 year)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
               } else {   // renewal failed at the registrar -> refund this year's charge + cancel the sub so we never charge again for a lapsed name
-                const _pk = env.PLATFORM_STRIPE_KEY || ''; const _rpi = obj.payment_intent || '';
+                const _pk = ((evt && evt.livemode === false && env.PLATFORM_STRIPE_TEST_KEY) ? env.PLATFORM_STRIPE_TEST_KEY : (env.PLATFORM_STRIPE_KEY || '')); const _rpi = obj.payment_intent || '';   // refund with the key matching the event's mode
                 if (_pk && _rpi) { try { await stripePost(_pk, '/refunds', { payment_intent: _rpi }); } catch (e) {} }
                 if (_pk && obj.subscription) { try { await stripeApi(_pk, 'DELETE', 'subscriptions/' + encodeURIComponent(obj.subscription)); } catch (e) {} }
                 if (im.email) await sendEmail(env, { to: im.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Domain renewal issue - refunded', html: '<h2>Your domain renewal was refunded</h2><p>We could not renew <b>' + esc(im.domain || '') + '</b> this year (' + esc(_rnReason || 'registrar error') + '), so we refunded this year\'s charge and stopped the yearly billing. Please contact us to re-secure the name if you still want it.</p>' });
@@ -1924,7 +1924,7 @@ export default {
           const em = (ownerRow && ownerRow.email) ? String(ownerRow.email).toLowerCase() : '';
           if (em && env.OWNER_EMAIL && em === String(env.OWNER_EMAIL).toLowerCase()) return err(403, 'The platform-owner account cannot be deleted here.');
           // STOP BILLING FIRST (unchanged): cancel the plan + domain subscriptions (and the customer) at Stripe so a removed member is never charged again.
-          const _pk = env.PLATFORM_STRIPE_KEY || '';
+          const _pk = await _platStripe(env);
           if (_pk) {
             if (t.stripe_sub) { try { await stripeApi(_pk, 'DELETE', 'subscriptions/' + encodeURIComponent(t.stripe_sub)); } catch (e) {} }
             try { const _ds = await env.DB.prepare("SELECT DISTINCT stripe_sub FROM domains_sold WHERE tenant_id=? AND stripe_sub IS NOT NULL").bind(tid).all(); const _dr = (_ds && _ds.results) || []; for (let k = 0; k < _dr.length; k++) { if (_dr[k].stripe_sub) { try { await stripeApi(_pk, 'DELETE', 'subscriptions/' + encodeURIComponent(_dr[k].stripe_sub)); } catch (e) {} } } } catch (e) {}
@@ -2851,7 +2851,7 @@ export default {
       if (path === '/api/billing/checkout' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
-        const pk = env.PLATFORM_STRIPE_KEY || '';
+        const pk = await _platStripe(env);   // test/sandbox mode -> test key; toggle OFF (default) -> live key, unchanged
         if (!pk) return err(400, 'Platform billing is not configured yet.');
         const body = await req.json().catch(() => ({}));
         const origin = env.APP_ORIGIN || 'https://atlasrental.io';
@@ -2905,7 +2905,7 @@ export default {
       if (path === '/api/billing/change-plan' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
-        const pk = env.PLATFORM_STRIPE_KEY || ''; if (!pk) return err(400, 'Platform billing is not configured yet.');
+        const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');   // test mode -> test key; off -> live, unchanged
         await ensurePlatformSchema(env);
         const cb = await req.json().catch(() => ({}));
         const tier = String(cb.tier || ''); const cents = PLAN_PRICE_CENTS[tier]; if (!cents) return err(400, 'Unknown plan.');
@@ -2943,7 +2943,7 @@ export default {
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
         await ensurePlatformSchema(env);
         const trow = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
-        const sub = trow && trow.stripe_sub; const pk = env.PLATFORM_STRIPE_KEY || '';
+        const sub = trow && trow.stripe_sub; const pk = await _platStripe(env);   // test mode -> test key; off -> live, unchanged
         if (sub && pk) {
           const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), 'cancel_at_period_end=true');
           if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
@@ -2960,7 +2960,7 @@ export default {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
         if (!await rateLimit(env, 'bportal:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before trying again.');
-        const pk = env.PLATFORM_STRIPE_KEY || ''; if (!pk) return err(400, 'Platform billing is not configured yet.');
+        const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');   // test mode -> test key; off -> live, unchanged
         await ensurePlatformSchema(env);
         const trow = await env.DB.prepare('SELECT stripe_customer FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         const cust = trow && trow.stripe_customer;
