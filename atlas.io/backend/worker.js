@@ -222,7 +222,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19f';
+const ATLAS_BUILD = '2026.07.19g';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -988,6 +988,10 @@ async function stripeApi(secretKey, method, path, form) {
     return { ok: r.ok, status: r.status, j: j };
   } catch (e) { return { ok: false, status: 0, j: {} }; }
 }
+// Platform Stripe key selector. Returns the LIVE key by default; the TEST key ONLY when the owner has flipped
+// payments_test_mode on AND set PLATFORM_STRIPE_TEST_KEY. Off by default -> the self-test + test-charge route are the
+// only callers today, so the live checkout/refund/Connect paths are byte-identical and never touched.
+async function _platStripe(env) { try { if ((await _pcfgGet(env, 'payments_test_mode', '0')) === '1' && env.PLATFORM_STRIPE_TEST_KEY) return env.PLATFORM_STRIPE_TEST_KEY; } catch (e) {} return env.PLATFORM_STRIPE_KEY || ''; }
 
 // ---- Atlas PLATFORM billing (Atlas gets paid): server-authoritative prices for the SaaS subscription + one-time purchases,
 // charged on the platform's OWN Stripe account (env.PLATFORM_STRIPE_KEY), separate from each tenant's connected Stripe. ----
@@ -1295,6 +1299,13 @@ export default {
         return json(h);
       }
 
+      // Public return page for the platform TEST checkout (Stripe redirects the browser here, no auth).
+      if (path === '/api/pay-testdone' && method === 'GET') {
+        const paid = url.searchParams.get('ok') === '1';
+        const body = '<div class="card"><h2>' + (paid ? 'Test payment complete' : 'Test checkout cancelled') + '</h2><p class="muted">' + (paid ? 'That fake charge is now on your TEST Stripe. Back in the master dashboard, click <b>Check payment readiness</b> and it will appear under Recent payments. No real money moved.' : 'No charge was made.') + '</p></div>';
+        return new Response(_pageDoc('Test payment', '#1E6E4E', body, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+
       // ---- AUTH: signup -----------------------------------------------------
       if (path === '/api/auth/signup' && method === 'POST') {
         const ip = req.headers.get('CF-Connecting-IP') || 'x';
@@ -1485,8 +1496,10 @@ export default {
         const raw = await req.text();
         const sig = req.headers.get('Stripe-Signature') || '';
         const secret = env.STRIPE_WEBHOOK_SECRET || '';
-        if (!secret) return json({ ok: false, reason: 'no_webhook_secret' }, 200);   // not configured -> accept silently, do nothing
-        if (!await stripeVerify(raw, sig, secret)) return err(400, 'Invalid signature.');
+        const secretTest = env.STRIPE_WEBHOOK_SECRET_TEST || '';   // also accept TEST-mode webhooks (sandbox full-circle). Additive: the live secret is tried first.
+        if (!secret && !secretTest) return json({ ok: false, reason: 'no_webhook_secret' }, 200);   // not configured -> accept silently, do nothing
+        const _sigOk = (secret && await stripeVerify(raw, sig, secret)) || (secretTest && await stripeVerify(raw, sig, secretTest));
+        if (!_sigOk) return err(400, 'Invalid signature.');
         let evt = {}; try { evt = JSON.parse(raw); } catch (e) { return err(400, 'Bad payload.'); }
         const obj = (evt.data && evt.data.object) || {};
         const md = obj.metadata || {};
@@ -2003,7 +2016,7 @@ export default {
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -2011,7 +2024,8 @@ export default {
           if (typeof b.ai_hq_enabled !== 'undefined') { await _pcfgSet(env, 'ai_hq_enabled', b.ai_hq_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { ai_hq_enabled: !!b.ai_hq_enabled }); }
           if (typeof b.gmv_take_bps !== 'undefined') { const bps = Math.max(0, Math.min(2000, parseInt(b.gmv_take_bps, 10) || 0)); await _pcfgSet(env, 'gmv_take_bps', String(bps)); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_take_bps: bps }); }
           if (typeof b.gmv_connect_enabled !== 'undefined') { await _pcfgSet(env, 'gmv_connect_enabled', b.gmv_connect_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_connect_enabled: !!b.gmv_connect_enabled }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env) };
+          if (typeof b.payments_test_mode !== 'undefined') { await _pcfgSet(env, 'payments_test_mode', b.payments_test_mode ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { payments_test_mode: !!b.payments_test_mode }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         // E3 admin RBAC: manage named-actor roles (owner|support|analyst). The shared-token actor 'atlas-hq' is always owner (break-glass).
@@ -2056,15 +2070,16 @@ export default {
         // Payment go-live PRE-FLIGHT: read-only checks (never moves money) that tell the owner exactly what's missing
         // before flipping the platform Stripe from test -> live. De-risks the live-payment cutover.
         if (path === '/api/admin/payments/selftest' && method === 'GET') {
-          const pk = env.PLATFORM_STRIPE_KEY || '';
-          const out = { ok: true, mode: 'none', checks: { key_set: !!pk, key_valid: false, charges_enabled: false, payouts_enabled: false, webhook_secret_set: !!env.STRIPE_WEBHOOK_SECRET, webhook_endpoint_configured: false }, expected_webhook_url: url.origin + '/api/stripe/webhook', notes: [], ready_for_live: false };
-          if (!pk) { out.notes.push('Set PLATFORM_STRIPE_KEY (your Stripe secret key) in the worker.'); return json(out); }
+          const _testMode = (await _pcfgGet(env, 'payments_test_mode', '0')) === '1';
+          const pk = await _platStripe(env);   // live key normally; the test key when test mode is on
+          const out = { ok: true, mode: 'none', test_mode: _testMode, keys: { live: !!env.PLATFORM_STRIPE_KEY, test: !!env.PLATFORM_STRIPE_TEST_KEY }, checks: { key_set: !!pk, key_valid: false, charges_enabled: false, payouts_enabled: false, webhook_secret_set: !!(_testMode ? env.STRIPE_WEBHOOK_SECRET_TEST : env.STRIPE_WEBHOOK_SECRET), webhook_endpoint_configured: false }, expected_webhook_url: url.origin + '/api/stripe/webhook', notes: [], ready_for_live: false };
+          if (!pk) { out.notes.push(_testMode ? 'Test mode is on but PLATFORM_STRIPE_TEST_KEY is not set -- add an sk_test_... key in the worker.' : 'Set PLATFORM_STRIPE_KEY (your Stripe secret key) in the worker.'); return json(out); }
           out.mode = /_live_/.test(pk) ? 'live' : (/_test_/.test(pk) ? 'test' : 'unknown');
           const acct = await stripeApi(pk, 'GET', 'account', null);   // read-only: validates the key + returns account status
           out.checks.key_valid = acct.ok;
           if (acct.ok) { out.account = { id: acct.j.id, country: acct.j.country, currency: acct.j.default_currency, charges_enabled: !!acct.j.charges_enabled, payouts_enabled: !!acct.j.payouts_enabled, details_submitted: !!acct.j.details_submitted }; out.checks.charges_enabled = !!acct.j.charges_enabled; out.checks.payouts_enabled = !!acct.j.payouts_enabled; }
           else out.notes.push('Stripe rejected the key (HTTP ' + acct.status + '). Re-check PLATFORM_STRIPE_KEY.');
-          if (!env.STRIPE_WEBHOOK_SECRET) out.notes.push('Set STRIPE_WEBHOOK_SECRET (the webhook signing secret from Stripe > Developers > Webhooks).');
+          if (!out.checks.webhook_secret_set) out.notes.push('Set ' + (_testMode ? 'STRIPE_WEBHOOK_SECRET_TEST (the TEST webhook signing secret)' : 'STRIPE_WEBHOOK_SECRET (the webhook signing secret)') + ' from Stripe > Developers > Webhooks.');
           const eps = await stripeApi(pk, 'GET', 'webhook_endpoints?limit=100', null);   // read-only: is a webhook pointed at us?
           if (eps.ok && Array.isArray(eps.j.data)) { const m = eps.j.data.filter(function (e) { return e && e.url && e.url.indexOf('/api/stripe/webhook') >= 0; })[0]; out.checks.webhook_endpoint_configured = !!m; if (m) out.webhook = { url: m.url, status: m.status, events: (m.enabled_events || []).slice(0, 8) }; else out.notes.push('No Stripe webhook points at ' + out.expected_webhook_url + ' -- add it in Stripe > Developers > Webhooks.'); }
           else out.notes.push('Could not read your Stripe webhook endpoints.');
@@ -2078,6 +2093,20 @@ export default {
           if (out.ready_for_live) out.notes.push('Ready for live: run one real end-to-end charge -> refund -> payout to confirm settlement.');
           await audit(env, { actor: _actor }, req, 'admin.payments.selftest', { mode: out.mode, ready: out.ready_for_live, test_ready: out.test_ready });
           return json(out);
+        }
+
+        // Run a real TEST-mode Stripe checkout (fake money) so the owner can watch a payment come in full circle.
+        // Uses ONLY PLATFORM_STRIPE_TEST_KEY -> it can never touch the live key / live checkout code.
+        if (path === '/api/admin/payments/testcharge' && method === 'POST') {
+          const tk = env.PLATFORM_STRIPE_TEST_KEY || '';
+          if (!tk) return json({ ok: false, message: 'Set PLATFORM_STRIPE_TEST_KEY (an sk_test_... key) in the worker first. It stays separate from your live key.' });
+          if (!/_test_/.test(tk)) return json({ ok: false, message: 'PLATFORM_STRIPE_TEST_KEY must be a TEST key (starts with sk_test_).' });
+          const b = await req.json().catch(function () { return {}; });
+          const cents = Math.max(50, Math.min(500000, parseInt(b.amountCents, 10) || 4999));
+          const co = await stripeCheckout(tk, { amountCents: cents, name: 'Atlas Rental.io test payment', email: String(b.email || env.OWNER_EMAIL || 'test@atlasrental.io'), successUrl: url.origin + '/api/pay-testdone?ok=1', cancelUrl: url.origin + '/api/pay-testdone?ok=0', metadata: { kind: 'platform_test' } });
+          if (!co.ok) return json({ ok: false, message: 'Could not start the test checkout (HTTP ' + co.status + ').' });
+          await audit(env, { actor: _actor }, req, 'admin.payments.testcharge', { cents: cents });
+          return json({ ok: true, payUrl: co.url, amountCents: cents });
         }
 
         // ---- Competitor watchlist (owner-managed). The cron fetches each URL + snapshots it; the AI brief diffs them. ----
