@@ -903,7 +903,7 @@ export default {
         const user = { id: uid, email: body.email.toLowerCase(), tenant_id: tid };
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: tid, user }, req, 'signup', { email: user.email });
-        return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000 }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+        return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000, ip: (req.headers.get('CF-Connecting-IP') || '') }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- AUTH: login ------------------------------------------------------
@@ -925,7 +925,7 @@ export default {
         if (pwNeedsUpgrade(user.pw_hash)) { try { const _up = await hashPassword(body.password); await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_up.hash, _up.salt, user.id).run(); } catch (e) {} }
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'login', {});
-        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || '') }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- PUBLIC booking site + intake (no login; rate-limited; tenant resolved by its published subdomain slug) ----
