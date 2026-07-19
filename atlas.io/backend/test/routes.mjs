@@ -81,5 +81,36 @@ ok((j.notes || []).some((n) => /Nothing was charged/.test(n)), 'domains selftest
 r = await worker.fetch(mkReq('GET', '/api/admin/domains/selftest', { headers: { 'X-Admin-Token': 'WRONG' } }), { DB: mockDB(), ADMIN_TOKEN: 'k', DYNADOT_KEY: 'dyn_x' }, ctx);
 ok(r.status === 401 || r.status === 403, 'domains selftest rejects a bad admin token');
 
+// ---- Developer API v1: gated OFF by default, key-authenticated, tenant-scoped, read-only ----
+function devDB(scn) {
+  function stmt(sql) {
+    let a = [];
+    const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/FROM platform_config/.test(sql)) return scn === 'off' ? null : { v: '1' };
+        if (/FROM api_keys WHERE key_hash/.test(sql)) return scn === 'ok' ? { id: 'k1', tenant_id: 't_1', revoked_at: null } : null;
+        if (/FROM rate_limits/.test(sql)) return null;
+        if (/FROM tenants WHERE id/.test(sql)) return { id: 't_1', name: 'Alpha', subdomain: 'alpha', fleet_type: 'cars', plan: 'pro' };
+        if (/sqlite_master/.test(sql)) return { n: 30 };
+        return null;
+      },
+      all: async () => { if (/FROM bookings WHERE tenant_id/.test(sql)) return { results: [{ id: 'bk1', customer_id: 'c1', asset_id: 'a1', starts: 1, ends: 2, status: 'confirmed', revenue_cents: 1000, created_at: 1, updated_at: 1 }] }; return { results: [] }; },
+      run: async () => ({ success: true, meta: { changes: 1 } }),
+    };
+    return api;
+  }
+  return { prepare: stmt };
+}
+const devEnv = (scn) => ({ DB: devDB(scn), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' });
+r = await worker.fetch(mkReq('GET', '/api/v1/me'), devEnv('off'), ctx); j = await r.json();
+ok(r.status === 503 && j.error === 'api_disabled', 'v1 gated OFF by default -> 503');
+r = await worker.fetch(mkReq('GET', '/api/v1/me'), devEnv('nokey'), ctx);
+ok(r.status === 401, 'v1 ON without a key -> 401');
+r = await worker.fetch(mkReq('GET', '/api/v1/bookings', { headers: { Authorization: 'Bearer atl_live_test' } }), devEnv('ok'), ctx); j = await r.json();
+ok(r.status === 200 && j.count === 1 && j.bookings[0].id === 'bk1', 'v1 valid key -> tenant-scoped bookings');
+r = await worker.fetch(mkReq('POST', '/api/v1/me', { headers: { Authorization: 'Bearer atl_live_test' } }), devEnv('ok'), ctx);
+ok(r.status === 405, 'v1 is read-only -> POST 405');
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

@@ -179,6 +179,18 @@ async function resolveSession(env, req) {
   const isOwner = (user.email === env.OWNER_EMAIL) || (comp && comp.role === 'admin');
   return { session: s, user, tenant_id: s.tenant_id, isOwner: !!isOwner, comp: comp ? comp.role : null };
 }
+// ---- Developer platform: tenant API keys (issued to tenants for the read-only /api/v1 surface) ----
+// The secret is returned ONCE at creation; only its SHA-256 hash is persisted, so a DB dump never yields a usable key.
+async function _genApiKey() { const secret = 'atl_live_' + randId(40); return { secret: secret, prefix: secret.slice(0, 16), hash: await _sha256Hex(secret) }; }
+async function _apiKeyAuth(env, req) {
+  let k = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  if (!k) k = (req.headers.get('X-Api-Key') || '').trim();
+  if (!k || k.indexOf('atl_') !== 0) return null;
+  const row = await env.DB.prepare('SELECT id,tenant_id,revoked_at FROM api_keys WHERE key_hash=?').bind(await _sha256Hex(k)).first();
+  if (!row || row.revoked_at) return null;
+  try { await env.DB.prepare('UPDATE api_keys SET last_used_at=? WHERE id=?').bind(Date.now(), row.id).run(); } catch (e) {}
+  return { keyId: row.id, tenant_id: row.tenant_id };
+}
 // state-changing requests must present a matching CSRF token + same-origin
 function csrfOk(req, ctx) {
   const tok = req.headers.get('X-CSRF-Token');
@@ -222,7 +234,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19i';
+const ATLAS_BUILD = '2026.07.19j';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1125,6 +1137,10 @@ async function ensurePlatformSchema(env) {
     try { await env.DB.prepare("ALTER TABLE signatures ADD COLUMN doc_text TEXT").run(); } catch (e) {}   // store the EXACT agreement text signed -> the hash stays reproducible/verifiable even after the owner edits their template
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_sig_booking ON signatures(tenant_id, booking_id)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS promo_uses (tenant_id TEXT, code TEXT, n INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, code))").run();   // server-authoritative public promo redemption count (cap enforcement)
+    // Developer platform: per-tenant API keys. Only the SHA-256 hash is stored -> a DB dump never yields a usable key; the full secret is shown ONCE at creation.
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, key_hash TEXT, prefix TEXT, created_at INTEGER, last_used_at INTEGER, revoked_at INTEGER)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_apikeys_hash ON api_keys(key_hash)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_apikeys_tenant ON api_keys(tenant_id, created_at)").run();
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -1297,6 +1313,26 @@ export default {
         } catch (e) { h.db_ok = false; }   // don't leak DB internals to an unauthenticated caller
         h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;
         return json(h);
+      }
+
+      // ===== Developer API v1 =====================================================================
+      // Public surface authenticated by a tenant API key (Authorization: Bearer atl_live_...). READ-ONLY,
+      // tenant-scoped, rate-limited, and gated OFF by default (owner flips dev_api_enabled in HQ). It only ever
+      // READS a tenant's own rows -> it can never touch another tenant's data, and never writes or moves money.
+      if (path.indexOf('/api/v1/') === 0) {
+        if ((await _pcfgGet(env, 'dev_api_enabled', '0')) !== '1') return json({ ok: false, error: 'api_disabled', message: 'The Atlas developer API is not enabled for this platform yet.' }, 503);
+        const auth = await _apiKeyAuth(env, req);
+        if (!auth) return json({ ok: false, error: 'unauthorized', message: 'Provide a valid API key: Authorization: Bearer atl_live_...' }, 401);
+        if (!(await rateLimit(env, 'apiv1:' + auth.keyId, 120, 60000))) return json({ ok: false, error: 'rate_limited', message: 'Rate limit is 120 requests/minute per key.' }, 429);
+        if (method !== 'GET') return json({ ok: false, error: 'read_only', message: 'The v1 API is read-only.' }, 405);
+        const tid = auth.tenant_id;
+        const lim = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
+        const off = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
+        if (path === '/api/v1/me') { const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan FROM tenants WHERE id=? AND deleted_at IS NULL').bind(tid).first(); return json({ ok: true, tenant: t || null }); }
+        if (path === '/api/v1/assets') { const r = await env.DB.prepare('SELECT id,name,type,status,day_rate_cents,info FROM assets WHERE tenant_id=? ORDER BY name LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, assets: (r.results || []).map(function (a) { return { id: a.id, name: a.name, type: a.type, status: a.status, day_rate_cents: a.day_rate_cents, info: _hqJson(a.info, {}) }; }) }); }
+        if (path === '/api/v1/bookings') { const r = await env.DB.prepare('SELECT id,customer_id,asset_id,starts,ends,status,revenue_cents,created_at,updated_at FROM bookings WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, bookings: r.results || [] }); }
+        if (path === '/api/v1/customers') { const r = await env.DB.prepare('SELECT id,name,email,phone,created_at FROM customers WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, customers: r.results || [] }); }
+        return json({ ok: false, error: 'not_found', message: 'Unknown endpoint. Try /api/v1/me, /api/v1/assets, /api/v1/bookings, /api/v1/customers.' }, 404);
       }
 
       // Public return page for the platform TEST checkout (Stripe redirects the browser here, no auth).
@@ -2016,7 +2052,7 @@ export default {
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -2025,7 +2061,8 @@ export default {
           if (typeof b.gmv_take_bps !== 'undefined') { const bps = Math.max(0, Math.min(2000, parseInt(b.gmv_take_bps, 10) || 0)); await _pcfgSet(env, 'gmv_take_bps', String(bps)); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_take_bps: bps }); }
           if (typeof b.gmv_connect_enabled !== 'undefined') { await _pcfgSet(env, 'gmv_connect_enabled', b.gmv_connect_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_connect_enabled: !!b.gmv_connect_enabled }); }
           if (typeof b.payments_test_mode !== 'undefined') { await _pcfgSet(env, 'payments_test_mode', b.payments_test_mode ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { payments_test_mode: !!b.payments_test_mode }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX };
+          if (typeof b.dev_api_enabled !== 'undefined') { await _pcfgSet(env, 'dev_api_enabled', b.dev_api_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { dev_api_enabled: !!b.dev_api_enabled }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1' };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         // E3 admin RBAC: manage named-actor roles (owner|support|analyst). The shared-token actor 'atlas-hq' is always owner (break-glass).
@@ -2682,6 +2719,34 @@ export default {
         return json({ ok: true, live: true, provider: row.provider, positions: res.positions });
       }
 
+      // Developer platform: a tenant manages their own API keys (for the /api/v1 read surface). Secret shown once on create.
+      if (path === '/api/tenant/apikeys') {
+        if (method === 'GET') {
+          const r = await env.DB.prepare('SELECT id,name,prefix,created_at,last_used_at,revoked_at FROM api_keys WHERE tenant_id=? ORDER BY created_at DESC').bind(ctx.tenant_id).all();
+          return json({ ok: true, keys: (r.results || []) });
+        }
+        if (method === 'POST') {
+          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage API keys.');
+          const active = ((await env.DB.prepare('SELECT COUNT(*) c FROM api_keys WHERE tenant_id=? AND revoked_at IS NULL').bind(ctx.tenant_id).first()) || {}).c || 0;
+          if (active >= 10) return err(400, 'You already have 10 active API keys. Revoke one before creating another.');
+          const b = await req.json().catch(function () { return {}; });
+          const name = vStr(b.name, 60) ? b.name.slice(0, 60) : 'API key';
+          const g = await _genApiKey();
+          await env.DB.prepare('INSERT INTO api_keys (id,tenant_id,name,key_hash,prefix,created_at) VALUES (?,?,?,?,?,?)').bind(randId(16), ctx.tenant_id, name, g.hash, g.prefix, Date.now()).run();
+          await audit(env, ctx, req, 'tenant.apikey.create', { name: name });
+          return json({ ok: true, key: g.secret, prefix: g.prefix, name: name, note: 'Copy this key now - for security it will never be shown again.' });
+        }
+        if (method === 'DELETE') {
+          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage API keys.');
+          const id = url.searchParams.get('id') || '';
+          if (!id) return err(400, 'Which key? Pass ?id=.');
+          await env.DB.prepare('UPDATE api_keys SET revoked_at=? WHERE id=? AND tenant_id=?').bind(Date.now(), id, ctx.tenant_id).run();
+          await audit(env, ctx, req, 'tenant.apikey.revoke', { id: id });
+          return json({ ok: true });
+        }
+      }
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
           const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
