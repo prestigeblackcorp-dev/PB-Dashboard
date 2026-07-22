@@ -1841,7 +1841,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19d';
+  var APP_VERSION='2026.7.19f';
   var APP_CHANGELOG=[
     'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
     'Cancellation policy you set once (Settings &gt; Money): shown to customers before they pay, in the confirmation email, and merged into your rental agreement &amp; terms',
@@ -5511,6 +5511,9 @@ const Atlas = (function(){
       </div>
       <div class="set-block"><h3>Developer API</h3><div class="desc">Read-only programmatic access to your own bookings, assets and customers &mdash; wire Atlas into your tools, spreadsheets or Zapier. Create a key and send it as a Bearer token to <code>${(ATLAS_API||'https://atlasrental.io')}/api/v1</code>.</div>
         <button class="btn btn--primary" onclick="Atlas.openDeveloper()">Manage API keys &amp; docs</button>
+      </div>
+      <div class="set-block"><h3>Webhooks</h3><div class="desc">Let your other tools react the moment something happens here. Atlas can ping your website, Zapier, or any app your developer builds the instant a booking is created or paid &mdash; no coding needed to set up.</div>
+        <button class="btn btn--primary" onclick="Atlas.openWebhooks()">Set up webhooks</button>
       </div>`;
     else if(setCur==='portal'){ var pc=_portalCfg(); b.innerHTML=`
       <div class="set-block"><h3>Member portal</h3><div class="desc">Your customers' branded self-service area &mdash; fully generated for you and yours to edit.</div>
@@ -6243,6 +6246,10 @@ const Atlas = (function(){
       +'<div style="margin-top:16px;border-top:1px solid var(--line,rgba(0,0,0,.1));padding-top:14px"><b style="font-size:13px">Quick start</b>'
         +'<pre style="background:var(--surface-2,rgba(0,0,0,.05));border-radius:8px;padding:10px;overflow-x:auto;font-size:12px;margin:8px 0 0"><code>curl -H "Authorization: Bearer YOUR_KEY" \\\n  '+esc(base)+'/bookings</code></pre>'
         +'<div style="color:var(--muted);font-size:12px;margin-top:8px">GET endpoints: <code>/me</code> &middot; <code>/assets</code> &middot; <code>/bookings</code> &middot; <code>/customers</code>. Paginate with <code>?limit=&amp;offset=</code>. Rate limit 120/min per key.</div></div>'
+      +'<div style="margin-top:18px;border-top:1px solid var(--line,rgba(0,0,0,.1));padding-top:14px"><b style="font-size:13px">Webhooks</b>'
+        +'<div class="desc" style="margin:4px 0 10px">Ping your other tools when bookings happen &mdash; managed in its own place now.</div>'
+        +'<button class="btn btn--ghost" onclick="Atlas.openWebhooks()">Open webhooks</button>'
+      +'</div>'
       +'</div>');
     _devKeysLoad();
   }
@@ -6262,6 +6269,77 @@ const Atlas = (function(){
   function _devCopy(){ var el=document.getElementById('devSecret'); if(!el) return; try{ el.select(); if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(el.value); } else { document.execCommand('copy'); } toast('Key copied'); }catch(e){ try{ document.execCommand('copy'); }catch(_){} toast('Key copied'); } }
   function devKeyRevoke(id){ if(!_canMod('settings')){ toast('Your role cannot manage API keys'); return; } if(!confirm('Revoke this key? Any integration using it stops working immediately.')) return;
     _api('/api/tenant/apikeys?id='+encodeURIComponent(id),{method:'DELETE'}).then(function(){ toast('Key revoked'); _devKeysLoad(); }).catch(function(){ toast('Could not revoke'); }); }
+  function _devHostOf(u){ try{ return new URL(u).host; }catch(e){ return u; } }
+  function _devHooksLoad(){ _api('/api/tenant/webhooks').then(function(res){ var el=document.getElementById('devHooks'); if(!el) return; var j=res.json||{}; var hs=j.hooks||[];
+    var head=(j.enabled===false)?'<div class="bk-lenhint" style="margin:0 0 8px;font-size:12px">Endpoints save and test right away; live <b>booking.created</b>/<b>booking.paid</b> delivery switches on once the developer platform is enabled.</div>':'';
+    if(!hs.length){ el.innerHTML=head+'<div style="color:var(--muted);font-size:13px">No endpoints yet &mdash; add one below.</div>'; return; }
+    el.innerHTML=head+hs.map(function(h){ var st=h.last_status, pill=(!h.active)?'<span class="chip chip--muted">paused</span>':(st?((st>=200&&st<300)?'<span class="chip">'+esc(String(st))+'</span>':'<span class="chip chip--muted">'+esc(String(st))+'</span>'):'');
+      return '<div class="conn-row"><div class="conn-row__t"><b>'+esc(_devHostOf(h.url))+'</b> '+pill+'<small><code>'+esc(h.url)+'</code>'+(h.last_attempt_at?(' &middot; last '+_devAgo(h.last_attempt_at)):'')+(h.fail_count>0?(' &middot; '+h.fail_count+' fail'+(h.fail_count>1?'s':'')):'')+'</small></div>'
+        +'<div style="display:flex;gap:6px"><button class="btn btn--ghost btn--sm conn-act" onclick="Atlas.devHookTest(\''+esc(h.id)+'\')">Test</button><button class="btn btn--ghost btn--sm conn-act" onclick="Atlas.devHookDelete(\''+esc(h.id)+'\')">Delete</button></div></div>'; }).join('');
+  }).catch(function(){ var el=document.getElementById('devHooks'); if(el) el.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load endpoints.</div>'; }); }
+  function devHookCreate(){ if(!_canMod('settings')){ toast('Your role cannot manage webhooks'); return; } var u=(val('devHookUrl')||'').trim(); if(!u){ toast('Enter an https URL'); return; }
+    _api('/api/tenant/webhooks',{method:'POST',body:{url:u}}).then(function(res){ var j=res.json||{};
+      if(j.ok&&j.secret){ _devShowHookSecret(j.secret); } else toast((j.error)||'Could not add the endpoint'); }).catch(function(){ toast('Network error'); }); }
+  function _devShowHookSecret(secret){ openModal('<div class="modal__head"><h3>Copy your signing secret</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)">This is the only time your signing secret is shown. It is the proof-stamp that our pings really come from Atlas &mdash; paste it into your tool or give it to your developer, and store it somewhere safe.</div>'
+      +'<div style="display:flex;gap:8px"><input class="input" id="devSecret" readonly value="'+esc(secret)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:12px" onclick="this.select()"><button class="btn btn--primary" onclick="Atlas._devCopy()">Copy</button></div>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:14px" onclick="Atlas.openWebhooks()">Done</button></div>'); }
+  function devHookTest(id){ toast('Sending test event...'); _api('/api/tenant/webhooks',{method:'POST',body:{test:id}}).then(function(res){ var j=res.json||{}; if(j.ok){ toast(j.delivered?('Delivered (HTTP '+j.status+')'):('Your endpoint returned '+(j.status||'no response'))); } else toast((j.error)||'Could not send'); }).catch(function(){ toast('Network error'); }); }
+  function devHookDelete(id){ if(!_canMod('settings')){ toast('Your role cannot manage webhooks'); return; } if(!confirm('Delete this webhook endpoint? Atlas stops sending events to it immediately.')) return;
+    _api('/api/tenant/webhooks?id='+encodeURIComponent(id),{method:'DELETE'}).then(function(){ toast('Endpoint deleted'); _devHooksLoad(); }).catch(function(){ toast('Could not delete'); }); }
+  // ===== Webhooks: plain-English, first-class module (own Settings card + modal; reuses the /api/tenant/webhooks plumbing above) =====
+  function openWebhooks(){
+    if(!ATLAS_BACKEND || !_apiCsrf){ openModal('<div class="modal__head"><h3>Webhooks</h3>'+_xBtn()+'</div><div class="modal__body"><div class="bk-lenhint" style="margin:0">Sign in to your Atlas account to set up webhooks &mdash; this is available once you are signed in.</div></div>'); return; }
+    openModal('<div class="modal__head"><h3>Webhooks</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="desc" style="margin:0 0 14px">A webhook is a simple automatic ping Atlas sends to a link you choose, the moment a booking is created or paid &mdash; so your other tools can react right away, with no coding needed to set it up.</div>'
+      +'<b style="font-size:13px">Your endpoints</b>'
+      +'<div id="devHooks" style="margin-top:6px"><div style="color:var(--muted);font-size:13px">Loading&hellip;</div></div>'
+      +'<div style="margin-top:18px;border-top:1px solid var(--line,rgba(0,0,0,.1));padding-top:14px"><b style="font-size:13px">Add one in 3 easy steps</b>'
+        +'<ol class="step-list" style="margin:8px 0 12px">'
+          +'<li>Get a link from the tool you want to connect (in Zapier it is called a &quot;Catch Hook&quot; link; your developer can also give you one).</li>'
+          +'<li>Paste that link below and press Add.</li>'
+          +'<li>Copy the signing secret we show you ONCE (it is the proof-stamp your tool uses to trust our pings), then press Test to see it work.</li>'
+        +'</ol>'
+        +'<div class="field"><label>Add an endpoint (https URL)</label><div style="display:flex;gap:8px"><input class="input" id="devHookUrl" placeholder="https://your-app.com/atlas-webhook" style="flex:1"><button class="btn btn--primary" onclick="Atlas.devHookCreate()">Add</button></div></div>'
+      +'</div>'
+      +'<div style="margin-top:18px"><b style="font-size:13px">Quick-start guides</b>'
+        +'<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13.5px;color:var(--ink)">Connect with Zapier</summary><div style="font-size:13px;color:var(--muted);margin:8px 0 0 2px">'
+          +'<ol class="step-list">'
+            +'<li>Create a Zap.</li>'
+            +'<li>Pick <b>Webhooks by Zapier</b> as the trigger app.</li>'
+            +'<li>Choose the event <b>Catch Hook</b>.</li>'
+            +'<li>Copy the link Zapier shows, paste it above, and press Add.</li>'
+            +'<li>Press Test, then build the rest of your Zap with the booking info that arrives.</li>'
+          +'</ol>'
+        +'</div></details>'
+        +'<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13.5px;color:var(--ink)">Connect with Make.com</summary><div style="font-size:13px;color:var(--muted);margin:8px 0 0 2px">'
+          +'<ol class="step-list">'
+            +'<li>Add a <b>Custom webhook</b> module.</li>'
+            +'<li>Click Add.</li>'
+            +'<li>Copy the address it shows.</li>'
+            +'<li>Paste it above and press Add.</li>'
+            +'<li>Press Test.</li>'
+          +'</ol>'
+        +'</div></details>'
+        +'<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13.5px;color:var(--ink)">I have my own website or developer</summary><div style="font-size:13px;color:var(--muted);margin:8px 0 0 2px">'
+          +'<ol class="step-list">'
+            +'<li>Paste the link your developer gives you above and press Add.</li>'
+            +'<li>Press Test to confirm it works.</li>'
+            +'<li>Hand your developer the signing secret plus the technical details below &mdash; that is everything they need.</li>'
+          +'</ol>'
+        +'</div></details>'
+      +'</div>'
+      +'<details style="margin-top:16px;border-top:1px solid var(--line,rgba(0,0,0,.1));padding-top:12px"><summary style="cursor:pointer;font-size:13.5px;color:var(--ink)">Technical details (for your developer)</summary><div style="font-size:12.5px;color:var(--muted);margin-top:10px">'
+        +'<div>Events: <code>booking.created</code>, <code>booking.paid</code> (plus a ping test event sent by the Test button).</div>'
+        +'<div style="margin-top:8px">Sample delivery body:</div>'
+        +'<pre style="background:var(--surface-2,rgba(0,0,0,.05));border-radius:8px;padding:10px;overflow-x:auto;font-size:11.5px;margin:6px 0"><code>{&quot;id&quot;:&quot;evt_...&quot;,&quot;event&quot;:&quot;booking.created&quot;,&quot;created&quot;:1721400000,&quot;data&quot;:{&quot;id&quot;:&quot;BK-...&quot;,&quot;asset&quot;:&quot;...&quot;,&quot;total_cents&quot;:50000,&quot;customer&quot;:{...}}}</code></pre>'
+        +'<div>Headers: <code>X-Atlas-Event</code>, <code>X-Atlas-Delivery</code>, and <code>X-Atlas-Signature: sha256=</code>HMAC-SHA256 of the exact raw request body, keyed with the signing secret.</div>'
+        +'<div style="margin-top:8px">Delivery notes: https public URLs only (local/private addresses are blocked) &middot; one attempt per event &middot; an endpoint auto-pauses after 15 straight failures (delete and re-add to resume) &middot; last status and fail count show on each endpoint row above.</div>'
+        +'<div style="margin-top:8px">Endpoints save and Test works right away; automatic booking pings switch on once the Atlas developer platform is enabled.</div>'
+      +'</div></details>'
+      +'</div>');
+    _devHooksLoad();
+  }
   var CONN_VALIDATE={   // instant sanity-check: catch a wrong/swapped/incomplete key and say exactly how to fix it, before saving
     stripe:function(o){ var pk=(o['Publishable key']||''), sk=(o['Secret key']||'');
       if(/^sk_/.test(pk)||/^pk_/.test(sk)) return 'Those look swapped - the Publishable key starts with pk_, the Secret with sk_. Switch them.';
@@ -7630,7 +7708,7 @@ const Atlas = (function(){
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,devKeyCreate,devKeyRevoke,_devCopy,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     S:()=>S,save2:save,setBackend};
 })();
 </script>
