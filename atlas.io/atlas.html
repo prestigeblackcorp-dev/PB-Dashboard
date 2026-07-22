@@ -1846,8 +1846,9 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19i';
+  var APP_VERSION='2026.7.19j';
   var APP_CHANGELOG=[
+    'Atlas.io can now make small, reversible changes for you right from chat (Settings &gt; Owner console, beta): theme, navigation, business profile and email timing, always previewed with one-tap undo',
     'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
     'Cancellation policy you set once (Settings &gt; Money): shown to customers before they pay, in the confirmation email, and merged into your rental agreement &amp; terms',
     'Cross-device sync: your bookings, fleet &amp; settings back up to your account and merge across devices (turns on with your backend) &mdash; no more one-browser-only',
@@ -1870,7 +1871,8 @@ const Atlas = (function(){
     ['advancedGeofence','Geofence entry/exit alerts on the live map'],
     ['smartReceipts','Auto-email a receipt the moment a booking is paid (needs a connected mailer)'],
     ['betaForecast','Predictive utilization + revenue forecast'],
-    ['instantPatch','Apply owner hot-fixes without a reload (coming soon)']
+    ['instantPatch','Apply owner hot-fixes without a reload (coming soon)'],
+    ['aiActions','Atlas.io can make changes for you (preview + one-tap undo)']
   ];
   function _flags(){ if(!S.flags)S.flags={}; return S.flags; }
   /* ---- Team roles & granular, enforced permissions ---- */
@@ -2199,7 +2201,7 @@ const Atlas = (function(){
     save(); if(f==='mode')renderSet(); }
   function toggleAuto(k,on){ if(!_canMod('settings'))return; _comms().autos[k].on=!!on; save(); toast((_comms().autos[k].on?'On':'Off')+': '+(AUTO_META.filter(function(m){return m[0]===k;})[0]||['','email'])[1]); }
   function setAutoDays(k,v){ if(!_canMod('settings'))return; var n=Math.max(0,parseInt(v,10)||0); _comms().autos[k].days=n; save(); }
-  function verifyResend(){ if(!_canMod('settings'))return; var cm=_comms(); if(!/^re_/.test((cm.resendKey||'').trim())){ toast('Paste your Resend key (starts with re_)'); return; } cm.resendVerified=true; save(); renderSet(); toast(EMAIL_LIVE?'Resend connected \u2014 sending is live':'Resend key saved. Confirmation & receipt emails start sending once your Atlas backend mailer is live.'); }
+  function verifyResendKey(){ if(!_canMod('settings'))return; var cm=_comms(); if(!/^re_/.test((cm.resendKey||'').trim())){ toast('Paste your Resend key (starts with re_)'); return; } cm.resendVerified=true; save(); renderSet(); toast(EMAIL_LIVE?'Resend connected \u2014 sending is live':'Resend key saved. Confirmation & receipt emails start sending once your Atlas backend mailer is live.'); }
   function openEmailPlans(){ var cm=_comms();
     var html='<div class="modal__head"><h3>Email plans</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<p style="color:var(--muted);font-size:13.5px;margin:0 0 14px">Every plan includes automated emails and the builder. Pick the monthly volume you need.</p>';
@@ -5562,7 +5564,7 @@ const Atlas = (function(){
       } else {
         html+='<div class="field" style="margin-top:14px"><label>Resend API key</label><input class="input mono" value="'+esc(cm.resendKey)+'" placeholder="re_..." onchange="Atlas.setCommsField(\'resendKey\',this.value)"></div>'
           +'<div class="field"><label>From name</label><input class="input" value="'+esc(cm.fromName||S.brand.name)+'" onchange="Atlas.setCommsField(\'fromName\',this.value)"></div>'
-          +'<div style="display:flex;gap:8px;align-items:center">'+(cm.resendVerified?(EMAIL_LIVE?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted"><span class="dot"></span>Key saved &middot; not live yet</span>'):'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.verifyResend()">Verify key</button></div>'
+          +'<div style="display:flex;gap:8px;align-items:center">'+(cm.resendVerified?(EMAIL_LIVE?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted"><span class="dot"></span>Key saved &middot; not live yet</span>'):'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.verifyResendKey()">Verify key</button></div>'
           +'<div class="bk-lenhint" style="margin:10px 0 0">Billed by Resend directly &mdash; your volume, your account. Atlas just orchestrates.</div>';
       }
       html+='</div><div class="set-block"><h3>Automated emails</h3><div class="desc">Configure them here &mdash; they send automatically once email delivery is live on your account. Every one is editable.</div>'+(!EMAIL_LIVE?'<div class="bk-lenhint" style="margin:0 0 10px;color:var(--warn,#b45309)">Sending is not live yet &mdash; these turn on when your Atlas backend mailer is deployed (see go-live steps). Until then this is setup only; nothing is emailed.</div>':'');
@@ -5874,12 +5876,17 @@ const Atlas = (function(){
       return;
     }
     _aioPending=null;   // any fresh (non-affirmative) message supersedes a stale offer
-    var _srvEnforced=(ATLAS_BACKEND && _apiCsrf && _aioCouncilOn);   // the live council spends + enforces credits SERVER-side and returns the balance
+    // Real-actions (Phase 1, flag-gated): an actionable-looking message routes to the structured planner
+    // instead of the plain heuristic/council reply, so Atlas.io can PROPOSE a registered action (preview +
+    // one-tap undo) instead of just talking about it. Off by default -- see AIO_ACTIONS + _flags().aiActions.
+    var _wantsPlan=!!(_flags().aiActions && _aioLooksActionable(_low));
+    var _srvEnforced=(ATLAS_BACKEND && _apiCsrf && (_aioCouncilOn || _wantsPlan));   // the live council/planner spend + enforce credits SERVER-side and return the balance
     if(!_srvEnforced && !_spendCredit(1)){
       setTimeout(function(){ aioMsg('bot','You are out of Atlas.io credits for this week. Your free '+_curTier().credits.toLocaleString()+' refill Monday &mdash; or grab more now.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openCredits()">Buy credits</button>'); }, 300);
       return;
     }
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
+    if(_wantsPlan){ _aioPlan(q); return; }
     if(_aioCouncilOn){ _aioCouncil(q); return; }
     setTimeout(function(){ var _r=aioReply(q); aioMsg('bot',_r); _aioArmFromText(_r); },450);
   }
@@ -5916,6 +5923,314 @@ const Atlas = (function(){
     if(/(kill|hurt|harm|cut) myself|want to die|end my life|suicid/.test(s))
       return 'I\u2019m really sorry you\u2019re feeling this way, and I can\u2019t help with that here. Please reach out to someone who can \u2014 in the US you can call or text <b>988</b> anytime. You matter.';
     return null;
+  }
+  /* ============================== ATLASIO REAL ACTIONS (Phase 1) ==============================
+     THE PRINCIPLE: the AI only ever PROPOSES a registered action as {type,params}; this registry is the
+     allow-list. Applying an action means calling the SAME setter a manual click already calls, so every
+     existing validation / RBAC / money-rule / save()->sync path runs exactly as it does for a human click.
+     The AI can never bypass a guardrail because it never touches state directly -- it can only name a
+     registered type, and _aioValidateAction() re-checks registry membership + shape + RBAC before anything
+     runs, whether the type came from the live planner or the offline fallback. Flag-gated: see 'aiActions'
+     in OWNER_FLAGS + the gate in aioAsk(). Phase 1 = appearance/profile/notify only; nothing here ever
+     touches money, sends a message, or changes billing/team/plan. */
+  // cap resolves through the SAME PERM_MODS/PERM_CAPS tables + _canMod/_canCap the rest of the app already
+  // uses (see _guard). Unknown cap -> fail CLOSED (denied), never open.
+  function _aioCapOk(capKey){
+    if(!capKey) return true;
+    if(PERM_CAPS.some(function(c){return c[0]===capKey;})) return _canCap(capKey);
+    if(PERM_MODS.some(function(m){return m[0]===capKey;})) return _canMod(capKey);
+    return false;
+  }
+  function _aioNavLabel(k){ var n=_navAllowed().filter(function(x){return x[0]===k;})[0]; return n?_navLabelFor(n):k; }
+  const AIO_ACTIONS={
+    'theme.set':{
+      params:['mode'], hint:'mode must be exactly "dark" or "light".',
+      cap:null, extraGate:_canDark, money:false, tier:'auto',
+      label:function(p){ return (p.mode==='dark'?'Switch to dark mode':'Switch to light mode'); },
+      summary:function(p){ return {field:'Theme', before:_theme(), after:(p.mode==='dark'?'dark':'light')}; },
+      validate:function(p){ if(p.mode!=='dark'&&p.mode!=='light') return {ok:false,msg:'Theme must be dark or light.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:_theme()}; },
+      apply:function(p){ setTheme(p.mode); },
+      undo:function(snap){ setTheme(snap.prevValue); }
+    },
+    'nav.hide':{
+      params:['tab'], hint:function(){ return 'tab is one of the tenant\u2019s current tabs (match by name or current label): '+_navAllowed().map(function(n){return _navLabelFor(n);}).join(', ')+'.'; },
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Hide the '+esc(_aioNavLabel(_navKey(p.tab)))+' tab'; },
+      summary:function(p){ var k=_navKey(p.tab); return {field:'Navigation', before:_aioNavLabel(k)+' \u2014 visible', after:_aioNavLabel(k)+' \u2014 hidden from the bottom bar'}; },
+      validate:function(p){ var k=_navKey(p.tab); if(!k) return {ok:false,msg:'Which tab? Yours are: '+_navAllowed().map(function(n){return _navLabelFor(n);}).join(', ')+'.'}; if(k==='overview') return {ok:false,msg:'Overview stays pinned as your home base, but I can hide any other tab.'}; return {ok:true}; },
+      snapshot:function(p){ var k=_navKey(p.tab), c=_navCfg(); return {key:k, wasHidden:c.hidden.indexOf(k)>=0}; },
+      apply:function(p){ if(!_canMod('settings')) return false; return navHide(_navKey(p.tab)); },
+      undo:function(snap){ if(snap.wasHidden) navHide(snap.key); else navShow(snap.key); }
+    },
+    'nav.show':{
+      params:['tab'], hint:function(){ return 'tab is one of the tenant\u2019s current tabs (match by name or current label): '+_navAllowed().map(function(n){return _navLabelFor(n);}).join(', ')+'.'; },
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Show the '+esc(_aioNavLabel(_navKey(p.tab)))+' tab'; },
+      summary:function(p){ var k=_navKey(p.tab); return {field:'Navigation', before:_aioNavLabel(k)+' \u2014 hidden from the bottom bar', after:_aioNavLabel(k)+' \u2014 visible'}; },
+      validate:function(p){ var k=_navKey(p.tab); if(!k) return {ok:false,msg:'Which tab? Yours are: '+_navAllowed().map(function(n){return _navLabelFor(n);}).join(', ')+'.'}; return {ok:true}; },
+      snapshot:function(p){ var k=_navKey(p.tab), c=_navCfg(); return {key:k, wasHidden:c.hidden.indexOf(k)>=0}; },
+      apply:function(p){ if(!_canMod('settings')) return false; return navShow(_navKey(p.tab)); },
+      undo:function(snap){ if(snap.wasHidden) navHide(snap.key); else navShow(snap.key); }
+    },
+    'nav.rename':{
+      params:['tab','label'], hint:function(){ return 'tab is one of: '+_navAllowed().map(function(n){return _navLabelFor(n);}).join(', ')+'. label is the new short name (max 18 characters).'; },
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Rename '+esc(_aioNavLabel(_navKey(p.tab)))+' to "'+esc(String(p.label||'').trim().slice(0,18))+'"'; },
+      summary:function(p){ var k=_navKey(p.tab); return {field:'Navigation label', before:_aioNavLabel(k), after:String(p.label||'').trim().slice(0,18)}; },
+      validate:function(p){ var k=_navKey(p.tab); if(!k) return {ok:false,msg:'Which tab? Yours are: '+_navAllowed().map(function(n){return _navLabelFor(n);}).join(', ')+'.'}; if(!String(p.label||'').trim()) return {ok:false,msg:'What should I rename it to?'}; return {ok:true}; },
+      snapshot:function(p){ var k=_navKey(p.tab), c=_navCfg(); return {key:k, prevLabel:c.labels[k]||''}; },
+      apply:function(p){ if(!_canMod('settings')) return false; return navRename(_navKey(p.tab), p.label); },
+      undo:function(snap){ navRename(snap.key, snap.prevLabel); }
+    },
+    'nav.bar':{
+      params:['on'], hint:'on is true to show the bottom tab bar, false to hide it.',
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return p.on?'Show the bottom tab bar':'Hide the bottom tab bar'; },
+      summary:function(p){ return {field:'Bottom tab bar', before:(_navCfg().off?'Off':'On'), after:(p.on?'On':'Off')}; },
+      validate:function(){ return {ok:true}; },
+      snapshot:function(){ return {prevOn:!_navCfg().off}; },
+      apply:function(p){ if(!_canMod('settings')) return false; return navSetBar(!!p.on); },
+      undo:function(snap){ navSetBar(snap.prevOn); }
+    },
+    'nav.reset':{
+      params:[], hint:'no params.',
+      cap:'settings', money:false, tier:'confirm',
+      label:function(){ return 'Reset navigation to the default (nothing hidden, no renames, tab bar on)'; },
+      summary:function(){ var c=_navCfg(), n=c.hidden.length+Object.keys(c.labels).length+(c.off?1:0); return {field:'Navigation', before:(n?('customized ('+n+' change'+(n===1?'':'s')+')'):'already default'), after:'default'}; },
+      validate:function(){ return {ok:true}; },
+      snapshot:function(){ return {nav:JSON.parse(JSON.stringify(_navCfg()))}; },
+      apply:function(){ if(!_canMod('settings')) return false; navReset(); },
+      undo:function(snap){ S.nav=snap.nav; save(); _renderNavs(); try{buildSettings();}catch(e){} }
+    },
+    'profile.setName':{
+      params:['value'], hint:'value is the new business name (max 60 characters).',
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Rename your business to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'Business name', before:S.brand.name, after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What should I rename your business to?'}; if(v.length>60) return {ok:false,msg:'Keep the business name under 60 characters.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:S.brand.name}; },
+      apply:function(p){ if(!_canMod('settings')) return false; setBrandName(String(p.value).trim()); },
+      undo:function(snap){ setBrandName(snap.prevValue); }
+    },
+    'profile.setCity':{
+      params:['value'], hint:'value is the new city or market.',
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Set your city to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'City', before:(S.brand&&S.brand.city)||'(not set)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'Which city should I set?'}; if(v.length>80) return {ok:false,msg:'Keep the city under 80 characters.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:(S.brand&&S.brand.city)||''}; },
+      apply:function(p){ if(!_canMod('settings')) return false; setField('brand.city', String(p.value).trim()); try{buildApp();}catch(e){} try{buildSettings();}catch(e){} },
+      undo:function(snap){ setField('brand.city', snap.prevValue); try{buildApp();}catch(e){} try{buildSettings();}catch(e){} }
+    },
+    'profile.setHeadline':{
+      params:['value'], hint:'value is the new website headline (max 120 characters).',
+      cap:'webEdit', money:false, tier:'auto',
+      label:function(p){ return 'Update your website headline to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'Headline', before:_web().headline||'(not set)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What should the headline say?'}; if(v.length>120) return {ok:false,msg:'Keep the headline under 120 characters.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:_web().headline||''}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; setWebField('headline', String(p.value).trim()); try{buildSettings();}catch(e){} },
+      undo:function(snap){ setWebField('headline', snap.prevValue); try{buildSettings();}catch(e){} }
+    },
+    'profile.setAbout':{
+      params:['value'], hint:'value is the new website about-section text (max 1000 characters).',
+      cap:'webEdit', money:false, tier:'auto',
+      label:function(){ return 'Update your website about section'; },
+      summary:function(p){ return {field:'About', before:_web().about||'(not set)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What should the about section say?'}; if(v.length>1000) return {ok:false,msg:'Keep the about section under 1000 characters.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:_web().about||''}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; setWebField('about', String(p.value).trim()); try{buildSettings();}catch(e){} },
+      undo:function(snap){ setWebField('about', snap.prevValue); try{buildSettings();}catch(e){} }
+    },
+    'profile.setHours':{
+      params:['value'], hint:'value is the new business hours as free text, e.g. "Mon-Fri 9am-6pm" (max 120 characters).',
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Set your business hours to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'Business hours', before:(S.brand&&S.brand.hours)||'(not set)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What hours should I set?'}; if(v.length>120) return {ok:false,msg:'Keep your hours under 120 characters.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:(S.brand&&S.brand.hours)||''}; },
+      apply:function(p){ if(!_canMod('settings')) return false; setBrandHours(String(p.value).trim()); },
+      undo:function(snap){ setBrandHours(snap.prevValue); }
+    },
+    'profile.setPhone':{
+      params:['value'], hint:'value is the new business phone number (max 40 characters).',
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Set your business phone to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'Phone', before:(S.brand&&S.brand.phone)||'(not set)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What phone number should I set?'}; if(v.replace(/[^0-9]/g,'').length<7) return {ok:false,msg:'That does not look like a phone number.'}; if(v.length>40) return {ok:false,msg:'Keep the phone number under 40 characters.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:(S.brand&&S.brand.phone)||''}; },
+      apply:function(p){ if(!_canMod('settings')) return false; setBrandPhone(String(p.value).trim()); },
+      undo:function(snap){ setBrandPhone(snap.prevValue); }
+    },
+    'profile.setEmail':{
+      params:['value'], hint:'value is the new business contact email (a valid email address).',
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ return 'Set your business contact email to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'Contact email', before:(S.brand&&S.brand.email)||'(not set)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What email should I set?'}; if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) return {ok:false,msg:'That does not look like a valid email.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:(S.brand&&S.brand.email)||''}; },
+      apply:function(p){ if(!_canMod('settings')) return false; setBrandEmail(String(p.value).trim()); },
+      undo:function(snap){ setBrandEmail(snap.prevValue); }
+    },
+    'notify.toggleAuto':{
+      params:['key','on'], hint:function(){ return 'key is one of: '+AUTO_META.map(function(m){return m[0]+' ('+m[1]+')';}).join(', ')+'. on is true or false.'; },
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ var m=AUTO_META.filter(function(x){return x[0]===p.key;})[0]; return (p.on?'Turn on ':'Turn off ')+(m?m[1]:p.key)+' emails'; },
+      summary:function(p){ var m=AUTO_META.filter(function(x){return x[0]===p.key;})[0], a=_comms().autos[p.key]; return {field:(m?m[1]:p.key)+' emails', before:(a&&a.on?'On':'Off'), after:(p.on?'On':'Off')}; },
+      validate:function(p){ if(!AUTO_META.some(function(x){return x[0]===p.key;})) return {ok:false,msg:'Which automation? '+AUTO_META.map(function(x){return x[1];}).join(', ')+'.'}; return {ok:true}; },
+      snapshot:function(p){ return {prevOn:!!_comms().autos[p.key].on}; },
+      apply:function(p){ if(!_canMod('settings')) return false; toggleAuto(p.key, !!p.on); },
+      undo:function(snap,p){ toggleAuto(p.key, snap.prevOn); }
+    },
+    'notify.setAutoDays':{
+      params:['key','days'], hint:function(){ return 'key is one of: '+AUTO_META.map(function(m){return m[0]+' ('+m[1]+')';}).join(', ')+'. days is a whole number 0-60.'; },
+      cap:'settings', money:false, tier:'confirm',
+      label:function(p){ var m=AUTO_META.filter(function(x){return x[0]===p.key;})[0]; return 'Set '+(m?m[1]:p.key)+' timing to '+Math.max(0,parseInt(p.days,10)||0)+' day'+(Math.max(0,parseInt(p.days,10)||0)===1?'':'s'); },
+      summary:function(p){ var m=AUTO_META.filter(function(x){return x[0]===p.key;})[0], a=_comms().autos[p.key]; return {field:(m?m[1]:p.key)+' timing (days)', before:String((a&&a.days!=null)?a.days:0), after:String(Math.max(0,parseInt(p.days,10)||0))}; },
+      validate:function(p){ if(!AUTO_META.some(function(x){return x[0]===p.key;})) return {ok:false,msg:'Which automation? '+AUTO_META.map(function(x){return x[1];}).join(', ')+'.'}; var n=parseInt(p.days,10); if(isNaN(n)||n<0||n>60) return {ok:false,msg:'Give me a number of days between 0 and 60.'}; return {ok:true}; },
+      snapshot:function(p){ return {prevDays:_comms().autos[p.key].days}; },
+      apply:function(p){ if(!_canMod('settings')) return false; setAutoDays(p.key, p.days); },
+      undo:function(snap,p){ setAutoDays(p.key, snap.prevDays); }
+    }
+  };
+  // Registry membership -> validate() -> RBAC. The ONLY path any action (live-planner or offline) can run
+  // through; an unregistered type is always an honest "can't do that yet", never a guess.
+  function _aioValidateAction(a){
+    if(!a || typeof a.type!=='string') return {ok:false,msg:'I could not read that as an action.'};
+    var entry=AIO_ACTIONS[a.type];
+    if(!entry) return {ok:false,msg:'I cannot do that yet from chat \u2014 it is not one of my reviewed, safe actions. You can still make this change from the right tab.'};
+    var params=(a.params&&typeof a.params==='object')?a.params:{};
+    if(!_aioCapOk(entry.cap)) return {ok:false,msg:'That is not in your access.'};
+    if(entry.extraGate && !entry.extraGate()) return {ok:false,msg:'That is not available on your plan yet.'};
+    var v; try{ v=entry.validate(params); }catch(e){ v={ok:false,msg:'I could not check that.'}; }
+    if(!v||!v.ok) return {ok:false,msg:(v&&v.msg)||'I could not do that.'};
+    return {ok:true, entry:entry, params:params};
+  }
+  function _aioManifest(){
+    return Object.keys(AIO_ACTIONS).map(function(t){ var e=AIO_ACTIONS[t];
+      return {type:t, params:e.params||[], hint:(typeof e.hint==='function'?e.hint():(e.hint||''))};
+    });
+  }
+  // Registry-driven action cards reuse the SAME chat-bubble styling as the council (.cx-card/.cx-card__h/
+  // .cx-card__b) so no new CSS is needed. tier:'auto' snapshots -> applies -> shows a "Done" card with
+  // [Undo]. tier:'confirm' shows a before/after diff with [Apply]/[Cancel] and only runs on the explicit
+  // tap -- this generalizes the existing _aioOffer say/run closure (still used for plain nav offers) into
+  // a structured, allow-listed, reversible pipeline.
+  var _aioUndoStack=[];     // {id,type,params,snap,label} for APPLIED actions -- undo runs entry.undo(snap,params)
+  var _aioConfirmQ={};      // id -> {type,entry,params} for PROPOSED confirm-tier actions awaiting a tap
+  var _aioActSeq=0;
+  function _aioNextId(){ _aioActSeq++; return 'aa'+_aioActSeq+'_'+Date.now().toString(36); }
+  function _aioDiffHtml(sum){ if(!sum) return ''; return '<div style="margin-bottom:2px"><b>'+esc(sum.field)+':</b> '+esc(String(sum.before))+' &rarr; <b style="color:var(--ink)">'+esc(String(sum.after))+'</b></div>'; }
+  // Runs ONE already-validated action: summary+snapshot (read-only, for the card + undo) -> apply (the real
+  // setter). Only returns ok:true once the setter actually ran, so a card only ever says "Done" when
+  // something real happened -- surfaces the genuine error otherwise (NEVER-LIE).
+  function _aioRunAction(entry,params){
+    var sum=null; try{ sum=entry.summary(params); }catch(e){}
+    var snap=null; try{ snap=entry.snapshot(params); }catch(e){}
+    try{ var r=entry.apply(params); if(r===false) return {ok:false,msg:'That could not be applied \u2014 your access or plan may not allow it.'}; }
+    catch(e){ return {ok:false,msg:'That could not be applied ('+(e&&e.message?e.message:'unexpected error')+').'}; }
+    return {ok:true, sum:sum, snap:snap};
+  }
+  function _aioPushUndo(type,params,snap,label,useId){ var id=useId||_aioNextId(); _aioUndoStack.push({id:id,type:type,params:params,snap:snap,label:label}); return id; }
+  // Proposes a whole plan (one or more actions) from the live planner or the offline fallback. Each action
+  // is re-validated here regardless of where it came from -- the AI only ever NAMES a type; this decides
+  // whether it actually runs.
+  function _aioProposeActions(actions){
+    (actions||[]).forEach(function(a){
+      var v=_aioValidateAction(a);
+      if(!v.ok){ aioMsg('bot', esc(v.msg)); _logEvent('aio','Denied: '+String((a&&a.type)||'unknown'),{type:a&&a.type,msg:v.msg}); return; }
+      var entry=v.entry, params=v.params;
+      if(entry.tier==='confirm'){
+        var sum=null; try{ sum=entry.summary(params); }catch(e){}
+        var id=_aioNextId(); _aioConfirmQ[id]={type:a.type, entry:entry, params:params};
+        var body=_aioDiffHtml(sum)+'<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn--primary btn--sm" onclick="Atlas.aioApply(\''+id+'\')">Apply</button><button class="btn btn--ghost btn--sm" onclick="Atlas.aioCancel(\''+id+'\')">Cancel</button></div>';
+        aioMsg('bot','<div class="cx-card" id="'+id+'"><div class="cx-card__h">'+entry.label(params)+'</div><div class="cx-card__b">'+body+'</div></div>');
+        _logEvent('aio','Proposed: '+entry.label(params),{type:a.type,params:params});
+      } else {
+        var res=_aioRunAction(entry, params);
+        if(!res.ok){ aioMsg('bot','I could not do that \u2014 '+esc(res.msg||'')); _logEvent('aio','Failed: '+entry.label(params),{type:a.type,msg:res.msg}); return; }
+        var uid=_aioPushUndo(a.type, params, res.snap, entry.label(params));
+        var body=_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+uid+'\')">Undo</button></div>';
+        aioMsg('bot','<div class="cx-card" id="'+uid+'"><div class="cx-card__h">Done \u2014 '+entry.label(params)+'</div><div class="cx-card__b">'+body+'</div></div>');
+        _logEvent('aio','Applied: '+entry.label(params),{type:a.type,params:params});
+      }
+    });
+  }
+  function aioApply(id){
+    var pend=_aioConfirmQ[id]; if(!pend){ toast('That was already handled.'); return; }
+    delete _aioConfirmQ[id];
+    var res=_aioRunAction(pend.entry, pend.params);
+    var card=document.getElementById(id);
+    if(!res.ok){ if(card) card.innerHTML='<div class="cx-card__h">Could not apply</div><div class="cx-card__b">'+esc(res.msg||'')+'</div>'; _logEvent('aio','Failed: '+pend.entry.label(pend.params),{type:pend.type,msg:res.msg}); return; }
+    _aioPushUndo(pend.type, pend.params, res.snap, pend.entry.label(pend.params), id);
+    if(card) card.innerHTML='<div class="cx-card__h">Done \u2014 '+pend.entry.label(pend.params)+'</div><div class="cx-card__b">'+_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+id+'\')">Undo</button></div></div>';
+    _logEvent('aio','Applied: '+pend.entry.label(pend.params),{type:pend.type,params:pend.params});
+  }
+  function aioCancel(id){
+    var pend=_aioConfirmQ[id]; if(!pend){ toast('That was already handled.'); return; }
+    delete _aioConfirmQ[id];
+    var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Cancelled \u2014 '+pend.entry.label(pend.params)+'</div>';
+    _logEvent('aio','Cancelled: '+pend.entry.label(pend.params),{type:pend.type});
+  }
+  function aioUndo(id){
+    var idx=-1; for(var i=0;i<_aioUndoStack.length;i++){ if(_aioUndoStack[i].id===id){ idx=i; break; } }
+    if(idx<0){ toast('Already undone.'); return; }
+    var item=_aioUndoStack[idx]; var entry=AIO_ACTIONS[item.type];
+    if(!entry){ toast('Could not undo that.'); return; }
+    try{ entry.undo(item.snap, item.params); }catch(e){ toast('Could not undo that.'); return; }
+    _aioUndoStack.splice(idx,1);
+    var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+esc(item.label||'')+'</div>';
+    _logEvent('aio','Undid: '+item.label,{type:item.type});
+    toast('Undone');
+  }
+  // Cheap local pre-filter: is this message worth routing to the structured planner at all? Never
+  // authoritative -- worst case a message that should have matched just gets the normal helpful reply.
+  function _aioLooksActionableNoNav(s){
+    return /\b(dark mode|light mode|dark theme|light theme)\b/.test(s)
+      || /\bmake (it|my dashboard|the app|this|everything) (dark|light)\b/.test(s)
+      || /\bswitch (to |it )?(dark|light)\b/.test(s)
+      || /\b(rename|change|update|set) (my |our |the )?(business|company|brand) name\b/.test(s)
+      || /\bcall (my|the) business\b/.test(s)
+      || /\b(set|update|change) (my |our )?city\b/.test(s)
+      || /\b(head ?line|tagline)\b/.test(s)
+      || /\babout (section|us|page|blurb)\b/.test(s)
+      || /\b(business hours|opening hours|hours of operation|store hours)\b/.test(s)
+      || /\b(phone number|business phone|contact number)\b/.test(s)
+      || /\b(contact email|business email|support email)\b/.test(s)
+      || /\bauto.?(email|reminder)|automatic (email|reminder)|reminder (email|timing|days)\b/.test(s);
+  }
+  function _aioLooksActionable(s){
+    if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
+    return _aioLooksActionableNoNav(s);
+  }
+  // Live path: POST the registry manifest + the ask to the worker's strict-JSON planner. Falls back to the
+  // existing offline nav heuristic (or an honest not-yet-connected message) on {live:false} or any error --
+  // this never regresses #131's nav-by-voice, it just gives it a card+undo experience once it IS live.
+  function _aioPlan(q){
+    if(!(ATLAS_BACKEND && _apiCsrf)){ _aioPlanFallback(q); return; }
+    aioMsg('bot','<div class="cx-think"><span class="cx-dot"></span><span class="cx-dot"></span><span class="cx-dot"></span> Working on it&hellip;</div>');
+    _api('/api/aio/plan',{method:'POST',body:{q:String(q),context:_aioBizContext(),allowed:_aioManifest()}}).then(function(res){
+      var j=res&&res.json;
+      _aioDropThink();
+      if(j && typeof j.credits==='number'){ try{ if(!S.credits)S.credits={}; S.credits.bal=j.credits; save(); var _cc=document.getElementById('aioCreditCount'); if(_cc)_cc.textContent=j.credits.toLocaleString(); }catch(e){} }
+      if(j && j.error==='out_of_credits'){ aioMsg('bot','You are out of Atlas.io credits for this week. Your free '+_curTier().credits.toLocaleString()+' refill Monday &mdash; or grab more now.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openCredits()">Buy credits</button>'); return; }
+      if(res.status>=200 && res.status<300 && j && j.live===true){
+        if(j.ok===false){ aioMsg('bot', esc(j.error||'I could not read a plan from that \u2014 try rephrasing.')); return; }
+        if(j.reply) aioMsg('bot', esc(j.reply));
+        if(j.actions && j.actions.length) _aioProposeActions(j.actions);
+        if(j.clarify && j.clarify.length) aioMsg('bot', j.clarify.map(function(c){return esc(c);}).join('<br>'));
+        if(j.unsupported && j.unsupported.length) aioMsg('bot', 'From chat I cannot yet '+esc(j.unsupported[0])+' \u2014 you can still do that from the right tab.');
+        if(!j.reply && !(j.actions&&j.actions.length) && !(j.clarify&&j.clarify.length) && !(j.unsupported&&j.unsupported.length)) aioMsg('bot', aioReply(q));
+        return;
+      }
+      _aioPlanFallback(q);
+    }).catch(function(){ _aioDropThink(); _aioPlanFallback(q); });
+  }
+  function _aioPlanFallback(q){
+    var s=String(q).toLowerCase().trim();
+    var navr=_aioNavReply(s);
+    aioMsg('bot', navr || 'I can prepare that once Atlas.io\u2019s live action planner is connected. For now I can still reshape your navigation by voice, or make this change from the right tab in Settings.');
   }
   // ---- Atlas.io knowledge base: researched rental-business intelligence the assistant draws on so its
   // advice is specific + valuable per asset type. Local seed; the LIVE Atlas.io (worker + ANTHROPIC_KEY)
@@ -6171,6 +6486,16 @@ const Atlas = (function(){
     const s=q.toLowerCase(); const m=S.money;
     var _safe=_aioSafety(s); if(_safe) return _safe;   // refuse unsafe intent BEFORE any normal reply
     var _navr=_aioNavReply(s); if(_navr) return _navr;   // #131: reshape the nav by voice ("hide the Website tab", "rename Bookings to Rentals")
+    // Phase-1 real-actions vocabulary (theme/profile/notify) with the aiActions flag OFF: say so honestly and
+    // point to the toggle, rather than falling through to a generic reply that ignores what was actually asked.
+    // (Nav phrases are untouched -- _aioNavReply above already handled those, flag or no flag.)
+    if(!_flags().aiActions && _aioLooksActionableNoNav(s)){
+      var _canToggle=(_curTier().id==='diamond'||_isOwnerAcct());
+      return 'I can make that change for you right from chat, but that is currently switched off.'
+        +(_canToggle
+          ? ' Turn on <b>Atlas.io can make changes for you</b> in Settings &gt; Owner console to let me apply it \u2014 you will always get a preview and one-tap undo.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.goSettings(\'owner\')">Open the toggle</button>'
+          : ' Ask your account owner to turn on <b>Atlas.io can make changes for you</b> in Settings.');
+    }
     // NEVER invent data. If the account has no assets AND no bookings, refuse to quote numbers -- guide them to add real data.
     if(!_aioHasBiz() && /\bidle\b|utiliz|occupanc|analytic|\bnumbers?\b|revenue|how (many|much)|repeat|top source|trending|this (week|month)|booking(s)? (are|is|do)|earn|income|profit|made this|make this/.test(s))
       return `I only ever answer from <b>your</b> real numbers, and your account is empty right now \u2014 so I won't make any up. Add your first ${esc(S.fleet.noun)} (and a booking or two) and I'll track your revenue, utilization and idle ${esc(S.fleet.nouns)} live.`
@@ -7827,6 +8152,12 @@ const Atlas = (function(){
   function setBrandName(v){S.brand.name=v;S.brand.initial=(v.trim()[0]||'Y').toUpperCase();save();buildApp();buildSettings();toast('Brand updated');}
   function setBrandColor(c){S.brand.color=c;save();applyBrand();renderSet();buildApp();}
   function setLogo(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{S.brand.logo=e.target.result;save();buildApp();renderSet();toast('Logo updated');};r.readAsDataURL(f);}
+  // Business hours / phone / contact email -- no dedicated Settings field exists for these yet, so these three
+  // tiny setters exist mainly so Atlas.io (AIO_ACTIONS profile.setHours/setPhone/setEmail) has a real setter to
+  // call, matching the setBrandName pattern. Self-gated (RBAC) since nothing else guards them today.
+  function setBrandHours(v){ if(!_canMod('settings'))return; S.brand=S.brand||{}; S.brand.hours=String(v||'').slice(0,120); save(); try{buildSettings();}catch(e){} }
+  function setBrandPhone(v){ if(!_canMod('settings'))return; S.brand=S.brand||{}; S.brand.phone=String(v||'').slice(0,40); save(); try{buildSettings();}catch(e){} }
+  function setBrandEmail(v){ if(!_canMod('settings'))return; S.brand=S.brand||{}; S.brand.email=String(v||'').slice(0,254); save(); try{buildSettings();}catch(e){} }
 
   function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
   function _cssUrl(s){ return String(s==null?'':s).replace(/['"()\\\r\n<>]/g,''); }   // safe to interpolate into a CSS url('...') context (owner-uploaded photos are data:/https URLs; these chars only appear as a breakout attempt)
@@ -7875,7 +8206,7 @@ const Atlas = (function(){
   return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
-    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
+    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
@@ -7895,7 +8226,7 @@ const Atlas = (function(){
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
-    setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResend,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
+    setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,

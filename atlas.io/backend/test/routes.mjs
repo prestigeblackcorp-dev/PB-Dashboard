@@ -575,5 +575,88 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(r.status === 200 && j.ok === true && !j.mfa_required, 'MFA: after disable, login is unchanged again -- exactly like an mfa-off user');
 }
 
+// ---- Atlas.io real-actions planner (Phase 1): POST /api/aio/plan. The AI only ever PROPOSES {type,params};
+// this endpoint's job is strict-JSON translation, mirroring /api/schedule's parse/fallback shape plus
+// /api/aio's CSRF/viewer guard and credit spend. The CLIENT's own registry is authoritative for which action
+// types are real, so a type outside the tenant's allow-list is tolerated here, never thrown. ----
+{
+  const NOW = Date.now(), SID = 'sid_plan', CSRF = 'CSRFplan', TEN = 't_plan';
+  function planDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_plan', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_plan', email: 'plan@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM tenants WHERE id/.test(sql)) return { tier: 'pro', credits_purchased: 0, credits_free: 500, credits_week: 999999999 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const planEnv = { DB: planDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' };
+  const planReq = (body, over) => { const headers = Object.assign({ 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }, over || {}); return { method: 'POST', url: 'https://atlasrental.io/api/aio/plan', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+
+  // missing CSRF token -> 403 (never reaches the model)
+  let pr = await worker.fetch(planReq({ q: 'make it dark', allowed: [] }, { 'x-csrf-token': undefined }), planEnv, ctx);
+  ok(pr.status === 403, 'aio/plan: missing CSRF token -> 403 (got ' + pr.status + ')');
+
+  // valid request -> parses the model's proposed action + reply
+  const claudeJson = JSON.stringify({ reply: 'Sure, switching to dark mode.', actions: [{ type: 'theme.set', params: { mode: 'dark' }, because: 'you asked for dark mode' }], unsupported: [], clarify: [] });
+  globalThis.fetch = (u, opts) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: claudeJson }] }) });
+  pr = await worker.fetch(planReq({ q: 'make it dark', allowed: [{ type: 'theme.set', params: ['mode'] }] }), planEnv, ctx);
+  let pj = await pr.json();
+  ok(pr.status === 200 && pj.live === true && pj.ok === true, 'aio/plan: valid request -> live:true ok:true (got ' + JSON.stringify(pj) + ')');
+  ok(Array.isArray(pj.actions) && pj.actions.length === 1 && pj.actions[0].type === 'theme.set' && pj.actions[0].params.mode === 'dark', 'aio/plan: parses the model\'s proposed action + params');
+  ok(typeof pj.reply === 'string' && pj.reply.length > 0, 'aio/plan: carries the model\'s reply text');
+
+  // a type outside the tenant's allow-list is TOLERATED (passed through, never thrown) -- the CLIENT registry
+  // (AIO_ACTIONS + _aioValidateAction) is what actually decides whether an action is real; the server just relays.
+  const unknownJson = JSON.stringify({ reply: '', actions: [{ type: 'booking.cancel', params: { id: 'bk1' }, because: 'test' }], unsupported: [], clarify: [] });
+  globalThis.fetch = (u, opts) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: unknownJson }] }) });
+  pr = await worker.fetch(planReq({ q: 'cancel booking 1', allowed: [{ type: 'theme.set', params: ['mode'] }] }), planEnv, ctx);
+  pj = await pr.json();
+  ok(pr.status === 200 && pj.ok === true && pj.actions[0].type === 'booking.cancel', 'aio/plan: an out-of-allow-list type from the model passes through unthrown (client registry is what filters it)');
+
+  // malformed (non-JSON) model output -> ok:false, never throws
+  globalThis.fetch = (u, opts) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'not json at all' }] }) });
+  pr = await worker.fetch(planReq({ q: 'do something', allowed: [] }), planEnv, ctx);
+  pj = await pr.json();
+  ok(pr.status === 200 && pj.live === true && pj.ok === false && typeof pj.error === 'string' && pj.error.length > 0, 'aio/plan: malformed model output -> {live:true,ok:false} with an error, never throws');
+
+  // viewer role -> 403 (read-only), same guard as /api/aio and /api/schedule
+  function viewerPlanDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_plan_v', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_plan_v', email: 'planviewer@x.com', tenant_id: TEN, role: 'viewer', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const viewerPlanEnv = { DB: viewerPlanDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' };
+  pr = await worker.fetch(planReq({ q: 'make it dark', allowed: [] }), viewerPlanEnv, ctx);
+  ok(pr.status === 403, 'aio/plan: viewer role -> 403 read-only (got ' + pr.status + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

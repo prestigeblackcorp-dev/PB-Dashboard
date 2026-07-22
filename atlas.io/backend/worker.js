@@ -299,7 +299,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19s';
+const ATLAS_BUILD = '2026.07.19t';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4053,6 +4053,53 @@ function doReset(){
           return json({ live: true, ok: true, result: parsed });
         } catch (e) {
           return json({ live: true, ok: false, error: 'The scheduler could not be reached - built locally instead.' });
+        }
+      }
+
+      // ---- Atlas.io real-actions planner (Phase 1): the AI PROPOSES structured, allow-listed actions; it never
+      // touches tenant data itself. The client applies each action by calling the SAME setter a manual click
+      // calls (registry validate -> RBAC -> existing setter), so this endpoint's only job is a reliable
+      // translation from plain language into {type,params} within the client's OWN allow-list (sent as
+      // `allowed`). Mirrors /api/schedule's strict-JSON shape + /api/aio's dual rate limit and credit spend;
+      // never touches /api/aio, the council, or AIO_SAFETY_PROMPT. --
+      if (path === '/api/aio/plan' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
+        const _pday = new Date().toISOString().slice(0, 10);
+        if (!await rateLimit(env, 'aioplan:' + ctx.tenant_id + ':' + _pday, 120, 86400000)) return err(429, 'Daily Atlas.io limit reached. It resets tomorrow.');
+        if (!await rateLimit(env, 'aioplan:global:' + _pday, 5000, 86400000)) return err(429, 'Atlas.io is temporarily at capacity. Please try again later.');   // platform-wide ceiling, same shape as /api/aio
+        if (!env.ANTHROPIC_KEY) return json({ live: false });   // no key -> client falls back to its offline nav heuristic
+        const pbody = await req.json().catch(() => ({}));
+        const q = (typeof pbody.q === 'string' ? pbody.q : '').slice(0, 2000).trim();
+        if (!q) return err(400, 'Ask a question.');
+        const context = typeof pbody.context === 'string' ? pbody.context.slice(0, 4000) : '';
+        const allowed = Array.isArray(pbody.allowed) ? pbody.allowed.slice(0, 40) : [];
+        const _cr = await _creditOp(env, ctx.tenant_id, null, 1);   // server-authoritative: spend 1 credit for a live plan call
+        if (!_cr.ok) return json({ live: true, ok: false, error: 'out_of_credits', actions: [], unsupported: [], clarify: [], credits: 0 });
+        const sys = 'You are Atlas.io, translating a rental-business owner\'s plain-language request into STRUCTURED actions for their OWN dashboard. Output STRICT JSON ONLY - no prose, no markdown fences. '
+          + 'You may ONLY use these exact action types, each with ONLY its listed params (any other field is ignored): ' + JSON.stringify(allowed).slice(0, 4000) + '. '
+          + 'Never invent a type or a param name that is not listed above. If the owner asks for something these actions cannot do, describe it in plain English in "unsupported" instead of forcing a nearest-match action. '
+          + 'If a request is ambiguous (which tab, what value), ask one short clarifying question in "clarify" instead of guessing. '
+          + 'Return exactly: {"reply":"<one short sentence for the owner>","actions":[{"type":"<allow-listed type>","params":{},"because":"<why, one short clause>"}],"unsupported":["..."],"clarify":["..."]}. '
+          + 'Never propose an action that charges money, sends a message, or changes billing/team/plan - none of those are in your allow-list and none ever will be through this endpoint.';
+        try {
+          let raw = await askClaudeSchedule(env.ANTHROPIC_KEY, sys, q + (context ? ('\n\nBusiness context:\n' + context) : ''));
+          raw = String(raw || '').replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+          let parsed = null; try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
+          if (!parsed || typeof parsed !== 'object') {
+            try { await _creditAdd(env, ctx.tenant_id, 1); } catch (e) {}   // give the spent credit back on a malformed reply
+            return json({ live: true, ok: false, error: 'Could not read a plan from that - try rephrasing. Your credit was refunded.', actions: [], unsupported: [], clarify: [], credits: _cr.balance });
+          }
+          const actions = Array.isArray(parsed.actions) ? parsed.actions.filter(a => a && typeof a === 'object' && typeof a.type === 'string').slice(0, 20)
+            .map(a => ({ type: a.type.slice(0, 60), params: (a.params && typeof a.params === 'object' && !Array.isArray(a.params)) ? a.params : {}, because: (typeof a.because === 'string' ? a.because.slice(0, 200) : '') })) : [];
+          const unsupported = Array.isArray(parsed.unsupported) ? parsed.unsupported.filter(s => typeof s === 'string').slice(0, 10).map(s => s.slice(0, 200)) : [];
+          const clarify = Array.isArray(parsed.clarify) ? parsed.clarify.filter(s => typeof s === 'string').slice(0, 5).map(s => s.slice(0, 200)) : [];
+          const reply = typeof parsed.reply === 'string' ? parsed.reply.slice(0, 600) : '';
+          await audit(env, ctx, req, 'aio.plan', { chars: q.length, actions: actions.length, unsupported: unsupported.length });
+          return json({ live: true, ok: true, reply, actions, unsupported, clarify, credits: _cr.balance });
+        } catch (e) {
+          try { await _creditAdd(env, ctx.tenant_id, 1); } catch (e2) {}   // give the spent credit back if the model could not be reached at all
+          return json({ live: true, ok: false, error: 'Atlas.io could not be reached - try again. Your credit was refunded.', actions: [], unsupported: [], clarify: [], credits: _cr.balance });
         }
       }
 
