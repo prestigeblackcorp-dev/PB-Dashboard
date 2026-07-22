@@ -91,7 +91,7 @@ if('serviceWorker' in navigator){
 })();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://accounts.google.com/gsi/client" onload="initGCal()" async defer></script>
+<script src="https://accounts.google.com/gsi/client" onload="window.initGCal&&initGCal()" async defer></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -4451,6 +4451,14 @@ function _slingDot(b){
   var c=(col==='White')?'#f1f1f1':'#22c55e';
   return '<span title="Slingshot '+col+' \u00B7 signed" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:'+c+';border:1px solid rgba(0,0,0,.4);box-shadow:0 0 0 1px rgba(255,255,255,.25);margin-right:6px;vertical-align:middle"></span>';
 }
+// Extension tombstones: a deleted extension is flagged _deleted (never spliced out), so its signed
+// record stays forensically on the booking (recoverable) while every render/count/money site treats it
+// as gone. _extLive = the visible/countable list (skips tombstoned) -- use this everywhere for display,
+// counts, and money. _extAll = every entry incl. tombstoned -- ONLY for merge/graft/sig-offload paths
+// that must never lose a tombstoned entry's data (those keep reading b.extensions raw; _extAll is here
+// for any future such path that wants the intent documented).
+function _extLive(b){ return ((b&&b.extensions)||[]).filter(function(e){ return e && !e._deleted; }); }
+function _extAll(b){ return ((b&&b.extensions)||[]).filter(Boolean); }
 // Signatures are monotonic "signed" events \u2014 a stale local edit (newer _t) must NEVER un-sign a
 // booking. After picking the newer-_t winner, graft in any signature the OTHER copy has that the
 // winner is missing: primary contract, each authorized driver, AND every extension (primary + its
@@ -4513,6 +4521,24 @@ function _graftSignatures(base, other){
       if(!ext.paid && oe.paid){ ext.paid=true; ext.paidAt=oe.paidAt||ext.paidAt; if(oe.paymentMethod) ext.paymentMethod=oe.paymentMethod; }
     });
   }
+  // An extension id present ONLY on `other` (entirely absent from base -- the loop above only patches
+  // ids present on BOTH sides) was being silently dropped forever by the _t-race merge: a stale device
+  // wins, never saw the extension the newer device created, and it vanishes. Append a deep copy so it's
+  // never lost -- including a tombstoned copy (its _deleted flag travels with it, so a delete on one
+  // device still hides it everywhere once merged). Re-sort by createdAt so "Extension #N" numbering
+  // (index within _extLive) stays chronological. Defensive: never let this throw out of the merge.
+  try{
+    if(Array.isArray(other.extensions) && other.extensions.length){
+      if(!Array.isArray(base.extensions)) base.extensions=[];
+      var _baseExtIds={};
+      base.extensions.forEach(function(e){ if(e && e.id) _baseExtIds[e.id]=true; });
+      other.extensions.forEach(function(oe2){
+        if(!oe2 || !oe2.id || _baseExtIds[oe2.id]) return;
+        base.extensions.push(JSON.parse(JSON.stringify(oe2)));
+      });
+      base.extensions.sort(function(a,b2){ return (Number(a&&a.createdAt)||0)-(Number(b2&&b2.createdAt)||0); });
+    }
+  }catch(_egErr){ try{ console.warn('_graftSignatures: extension append pass skipped', _egErr); }catch(_e2){} }
   // Portal charges: preserve a confirmed payment (paidAt) + its extension link (_extId) across merges,
   // so a payment made via the portal can't be lost and always reconciles the extension to "paid".
   if(Array.isArray(base.portalCharges) && Array.isArray(other.portalCharges)){
@@ -4715,8 +4741,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v276';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v278';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v277';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v279';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7531,6 +7557,13 @@ function initGCal(){
   }
   updateGCalUI();
 }
+// The <script onload> (index.html ~line 94) can fire before this function exists yet -- an async GSI
+// load-order race that used to throw "initGCal is not defined". That onload is now a guarded no-op
+// (window.initGCal&&initGCal()), so make sure init still actually runs: if google.accounts is ALREADY
+// present right here (meaning GSI finished loading before we got this far), call it once now instead of
+// waiting on the delayed fallback below. initGCal() itself is always safe to call -- it no-ops unless
+// google.accounts is ready and it hasn't already initialised (gcalTokenClient).
+if(window.google && window.google.accounts && !gcalTokenClient){ try{ initGCal(); }catch(_gcErr){} }
 // Fallback: if Google script loads before onload fires, retry after a short delay
 setTimeout(function(){ if(!gcalTokenClient) initGCal(); }, 1500);
 setTimeout(function(){ if(!gcalTokenClient) initGCal(); }, 4000);
@@ -8004,7 +8037,7 @@ function getDeposit(b){ var d=Number(b.deposit)||0; if(!d&&b.vehicle&&VEHICLE_CO
 // Extension revenue (gross). Each extension's additionalCharge is counted here exactly once \u2014 an
 // extension adds its FULL value to gross; its broker fee is subtracted in net via extensionBrokerTotal.
 // NEVER fold an extension into b.revenue (that double-counts it against this sum + today's KPI).
-function extensionCharge(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.additionalCharge)||0);},0); }
+function extensionCharge(b){ return _extLive(b).reduce(function(s,e){return s+(Number(e&&e.additionalCharge)||0);},0); }
 
 // -- Unified extension recorder \u2014 SINGLE SOURCE OF TRUTH for all extension paths --------------
 // Create-Extension modal, Send-Extension-Link (portal self-extend), and portal "Extension"
@@ -8102,7 +8135,7 @@ function _balanceWithCharges(b){
   var _pc=_unpaidChargesTotal(b);
   if(b.balancePaidAt){
     var _bpa=Number(b.balancePaidAt)||0;
-    var _ext=(b.extensions||[]).reduce(function(s,e){ return s+((e&&!e.paid&&Number(e.createdAt||0)>_bpa)?Math.max(0,Number(e.additionalCharge)||0):0); },0);
+    var _ext=_extLive(b).reduce(function(s,e){ return s+((e&&!e.paid&&Number(e.createdAt||0)>_bpa)?Math.max(0,Number(e.additionalCharge)||0):0); },0);
     return Math.max(0,_ext+_pc);
   }
   var _base=b.remainingBalance!=null?Number(b.remainingBalance)||0:Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock)||0));
@@ -8136,7 +8169,7 @@ function _paymentsReceived(b){
     if(!c||!c.paidAt||c._foldedIntoRevenue||c._extPayment||c._extRecorded||c._dlApplied||c._extId||_isDepositCharge(c)) return;
     out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt), card:_cardOnline(c.paidMethod)});
   });
-  (b.extensions||[]).forEach(function(e){
+  _extLive(b).forEach(function(e){
     if(!e||!e.paidAt||!(Number(e.additionalCharge)>0)) return;
     out.push({label:'Extension', amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt), card:_cardOnline(e.paymentMethod)});
   });
@@ -8211,7 +8244,7 @@ function _baseCashOn(b, dayStr){
   var _pd=b.pickupDate||b.date||'';
   var paidTs=b.balancePaidAt || (getRemainingBalance(b)===0 && !b.balancePaidAt ? (_pd?new Date(_pd+'T12:00:00').getTime():0) : 0);
   if(!paidTs || dateStr(new Date(paidTs))!==dayStr) return { base:0, stripe:0 };
-  var extPaidDay=(b.extensions||[]).reduce(function(es,e){ return (e&&e.paidAt&&dateStr(new Date(e.paidAt))===dayStr)?es+(Number(e.additionalCharge)||0):es; },0);
+  var extPaidDay=_extLive(b).reduce(function(es,e){ return (e&&e.paidAt&&dateStr(new Date(e.paidAt))===dayStr)?es+(Number(e.additionalCharge)||0):es; },0);
   var collected=(b.balancePaidAmount!=null && !isNaN(Number(b.balancePaidAmount)))?Number(b.balancePaidAmount):baseBalance;
   var base=Math.max(0,Math.min(collected-extPaidDay,baseBalance));
   var stripe=(_isCardMethod(b.balancePaidMethod))?base:0;
@@ -8277,7 +8310,9 @@ function _revertExtensionCharge(b, c){
     var _ext=(b.extensions||[]).find(function(e){ return e&&e.id===c._extId; });
     var _amt=_ext?(Number(_ext.additionalCharge)||0):fee;
     if(_ext && !_ext.paid && _amt>0 && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-_amt); }
-    b.extensions=(b.extensions||[]).filter(function(e){ return !(e&&e.id===c._extId); });
+    // Tombstone instead of removing: the entry (and its signature, if signed) stays on the booking for
+    // forensic recovery, but _extLive() everywhere else treats it as gone (money already reversed above).
+    if(_ext && !_ext._deleted){ _ext._deleted=true; _ext._deletedAt=Date.now(); }
   } else {
     // Legacy fold model (older charges): the fee had been added straight into b.revenue.
     b.revenue=Math.max(0,(Number(b.revenue)||0)-fee);
@@ -8334,18 +8369,18 @@ function _reconcilePaidExtensionCharges(){
       // Any paid portal charge LINKED to an extension (card request, recorded charge, etc.) \u2192 mark
       // that extension PAID + clear its amount from the balance \u2014 no matter which flow paid it.
       if(c && c.paidAt && c._extId){
-        var _ext=(b.extensions||[]).find(function(e){ return e&&e.id===c._extId; });
+        var _ext=_extLive(b).find(function(e){ return e&&e.id===c._extId; });
         if(_ext && !_ext.paid){
           _markExtPaidInternal(b, _ext, c.paidMethod||(c._extPayment?'stripe':'card'));
           b._t=Date.now(); changed=true;
-          var _en=(b.extensions||[]).findIndex(function(e){ return e&&e.id===c._extId; })+1;
+          var _en=_extLive(b).findIndex(function(e){ return e&&e.id===c._extId; })+1;
           logNotif('payment','Extension #'+_en+' paid (portal) \u2014 $'+(Number(_ext.additionalCharge)||0).toFixed(2)+' via '+(c.paidMethod||'card'),(b.name||''),b.id);
         }
       }
     });
     // Fallback \u2014 an unpaid extension whose exact amount was paid via a portal extension charge that
     // never got linked (_extId missing): match by amount + extension category, then link + mark paid.
-    (b.extensions||[]).forEach(function(ext){
+    _extLive(b).forEach(function(ext){
       if(!ext || ext.paid || !(Number(ext.additionalCharge)>0)) return;
       var _amt=Number(ext.additionalCharge)||0;
       var _m=(b.portalCharges||[]).find(function(c){ return c && c.paidAt && !c._extId && (c._extPayment || chargeCategory(c)==='extension') && Math.abs((Number(c.amount)||0)-_amt)<0.005; });
@@ -8353,7 +8388,7 @@ function _reconcilePaidExtensionCharges(){
         _m._extId=ext.id;
         _markExtPaidInternal(b, ext, _m.paidMethod||'card');
         b._t=Date.now(); changed=true;
-        var _en2=(b.extensions||[]).indexOf(ext)+1;
+        var _en2=_extLive(b).indexOf(ext)+1;
         logNotif('payment','Extension #'+_en2+' marked paid \u2014 matched $'+_amt.toFixed(2)+' portal payment',(b.name||''),b.id);
       }
     });
@@ -8430,8 +8465,8 @@ function _authDriverPaidTotal(b){ return ((b&&Array.isArray(b.extraDrivers))?b.e
 function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(b.refundSent?0:(Number(b.depositKept)||0))+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b); }  // a RETURNED deposit (refundSent) is not revenue -- mirror the Deposits Kept card + close-out invariant
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
-function brokerRateDays(b){ var x=(b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
-function extensionBrokerTotal(b){ return (b.extensions||[]).reduce(function(s,e){return s+(Number(e&&e.brokerFee)||0);},0); }
+function brokerRateDays(b){ var x=_extLive(b).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
+function extensionBrokerTotal(b){ return _extLive(b).reduce(function(s,e){return s+(Number(e&&e.brokerFee)||0);},0); }
 // Total broker fee owed: original days \u00D7 rate + each extension's own broker fee. For a
 // booking with no extensions this is identical to the old brokerFee \u00D7 days.
 function brokerFeeTotal(b){ return (Number(b.brokerFee)||0)*brokerRateDays(b)+extensionBrokerTotal(b); }
@@ -8786,7 +8821,7 @@ function _bkEarnedComponents(b, cutoff, tod){
     if(_addlIncomeAmt(b)>0.005) out.push({l:'Additional income',a:_addlIncomeAmt(b)});
     if(_authDriverPaidTotal(b)>0.005) out.push({l:'Authorized-driver pay',a:_authDriverPaidTotal(b)});
   }
-  (b.extensions||[]).forEach(function(e,i){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pk); if(inW(ed)) out.push({l:'Extension '+(i+1),a:amt}); });
+  _extLive(b).forEach(function(e,i){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pk); if(inW(ed)) out.push({l:'Extension '+(i+1),a:amt}); });
   (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)&&!_isBalanceCharge(c)))return; if(inW(dateStr(new Date(c.paidAt)))) out.push({l:(c.description?String(c.description):'Portal charge'),a:Number(c.amount)||0}); });
   return out;
 }
@@ -8981,8 +9016,7 @@ function renderKPIs(filtered, containerId){
 
   if(containerId==='kpiGrid' && _kpiPeriod !== 'all'){
     extChargeTotal = active.reduce(function(s,b){
-      if(!b.extensions) return s;
-      return s+b.extensions.reduce(function(es,ext){
+      return s+_extLive(b).reduce(function(es,ext){
         return es+(Number(ext.additionalCharge)||0);
       },0);
     },0);
@@ -9030,10 +9064,10 @@ function renderKPIs(filtered, containerId){
     // Extensions line; its broker subtracts into net. Cash-basis: an extension counts when its money is
     // collected, not when it was created \u2014 and ONLY here, never via the parent booking's base above.
     extChargeTotal = allActive.reduce(function(s,b){
-      return s+(b.extensions||[]).reduce(function(es,e){ return (e&&Number(e.additionalCharge)>0&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.additionalCharge)||0):es; },0);
+      return s+_extLive(b).reduce(function(es,e){ return (e&&Number(e.additionalCharge)>0&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.additionalCharge)||0):es; },0);
     },0);
     _extBfToday = allActive.reduce(function(s,b){
-      return s+(b.extensions||[]).reduce(function(es,e){ return (e&&Number(e.brokerFee)>0&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.brokerFee)||0):es; },0);
+      return s+_extLive(b).reduce(function(es,e){ return (e&&Number(e.brokerFee)>0&&e.paidAt&&dateStr(new Date(e.paidAt))===tod)?es+(Number(e.brokerFee)||0):es; },0);
     },0);
     // Portal charges paid today (cash-basis, non-extension \u2014 extension-linked charges excluded)
     var portalChargeTodayRev = allActive.reduce(function(s,b){
@@ -9422,7 +9456,7 @@ function renderCharts(filtered){
       var cf=(_cardBal?Math.max(0,baseAll-dl):0)*0.1325+(_cardDL?_dlExactPremium(b):0);
       if(cf){ R[pk]=(R[pk]||0)+cf; C[pk]=(C[pk]||0)+cf; _chartCardFee+=cf; _chartCardFeeN++; }
     } }
-    (b.extensions||[]).forEach(function(e){
+    _extLive(b).forEach(function(e){
       var amt=Number(e&&e.additionalCharge)||0; if(!amt) return;
       var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
       if(!_inWinC(ed)) return; var k=_bkKey(ed,gran); if(k){ R[k]=(R[k]||0)+amt; C[k]=(C[k]||0)+(Number(e.brokerFee)||0);
@@ -9860,7 +9894,7 @@ function openTypeDrilldown(typeKey){
         if(inWin(pickup)){ var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
           if(!_p2pMethod(b.balancePaidMethod)) fee+=Math.max(0,baseAll-dl)*0.1325;
           if(!_p2pMethod(b.dateLockMethod)) fee+=_dlExactPremium(b); }
-        (b.extensions||[]).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(inWin(ed)&&!_p2pMethod(e&&e.paymentMethod)) fee+=amt*0.1325; });
+        _extLive(b).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(inWin(ed)&&!_p2pMethod(e&&e.paymentMethod)) fee+=amt*0.1325; });
         (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)&&!_isBalanceCharge(c)))return; if(inWin(dateStr(new Date(c.paidAt)))&&!_p2pMethod(c.paidMethod)) fee+=(Number(c.amount)||0)*0.1325; });
         if(fee>0.5){ total+=fee; cr.push({id:b.id,date:(b.pickupDate||b.date||''),name:b.name,sub:'card sale',vehicle:b.vehicle,val:fee}); }
       });
@@ -9891,7 +9925,7 @@ function openBucketDrilldown(bucketKey){
         var cost=getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b)+cf;
         if(cost){ totC+=cost; costRows.push({id:b.id,date:pickup,name:b.name,sub:'est cost'+(b.brokerFee?' + broker':'')+(cf?' + card fee':''),vehicle:b.vehicle,val:cost}); }
       }
-      (b.extensions||[]).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(!inWin(ed))return; var cfe=!_p2pMethod(e&&e.paymentMethod)?amt*0.1325:0; totR+=amt+cfe; revRows.push({id:b.id,date:ed,name:b.name,sub:'extension',vehicle:b.vehicle,val:amt+cfe}); var ce=(Number(e.brokerFee)||0)+cfe; if(ce){ totC+=ce; costRows.push({id:b.id,date:ed,name:b.name,sub:'ext broker/fee',vehicle:b.vehicle,val:ce}); } });
+      _extLive(b).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(!inWin(ed))return; var cfe=!_p2pMethod(e&&e.paymentMethod)?amt*0.1325:0; totR+=amt+cfe; revRows.push({id:b.id,date:ed,name:b.name,sub:'extension',vehicle:b.vehicle,val:amt+cfe}); var ce=(Number(e.brokerFee)||0)+cfe; if(ce){ totC+=ce; costRows.push({id:b.id,date:ed,name:b.name,sub:'ext broker/fee',vehicle:b.vehicle,val:ce}); } });
       (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)&&!_isBalanceCharge(c)))return; var cd=dateStr(new Date(c.paidAt)); if(!inWin(cd))return; var amt=Number(c.amount)||0, cfc=!_p2pMethod(c.paidMethod)?amt*0.1325:0; totR+=amt+cfc; revRows.push({id:b.id,date:cd,name:b.name,sub:(c.description||'portal charge'),vehicle:b.vehicle,val:amt+cfc}); if(cfc){ totC+=cfc; costRows.push({id:b.id,date:cd,name:b.name,sub:'charge card fee',vehicle:b.vehicle,val:cfc}); } });
     });
     (incomes||[]).forEach(function(i){ if(!i||i._deleted)return; var d=(i.fromDate||'').slice(0,10); if(!inWin(d))return; var amt=Number(i.amount)||0; totR+=amt; revRows.push({date:d,name:(i.description||'Other income'),sub:(i.category||'income'),vehicle:(i.vehicle||''),val:amt}); });
@@ -9948,8 +9982,7 @@ function renderVehicleTable(filtered){
       map[b.vehicle].revenue+=Number(b.dateLock);
     });
     allActive.forEach(function(b){
-      if(!b.extensions) return;
-      b.extensions.forEach(function(ext){
+      _extLive(b).forEach(function(ext){
         if(!(Number(ext.additionalCharge)>0)||!ext.createdAt) return;
         if(dateStr(new Date(ext.createdAt))!==_kpiDR3.from) return;
         _seedV(b.vehicle);
@@ -11665,7 +11698,7 @@ function renderCancelled(){
 
 // Small gold "+N days/hrs ext" tag for the trip-card Duration when the booking has extensions.
 function _extDaysLabel(b){
-  var arr=(b.extensions||[]); if(!arr.length) return '';
+  var arr=_extLive(b); if(!arr.length) return '';
   var d=arr.reduce(function(s,e){ return s+((e&&e.extensionUnit==='hours')?0:(Number(e&&e.extensionDays)||0)); },0);
   var h=arr.reduce(function(s,e){ return s+((e&&e.extensionUnit==='hours')?(Number(e.extensionDays)||0):0); },0);
   var parts=[]; if(d>0) parts.push('+'+d+' day'+(d!==1?'s':'')); if(h>0) parts.push('+'+h+' hr'+(h!==1?'s':''));
@@ -12060,7 +12093,7 @@ function openBookingDetail(id){
       bdExtBtn.style.display='none';
     } else {
       bdExtBtn.style.display='';
-      var _extCount=(b.extensions||[]).length;
+      var _extCount=_extLive(b).length;
       bdExtBtn.textContent='\uD83D\uDCC5 Extension'+(_extCount?' ('+_extCount+')':'');
       bdExtBtn.onclick=function(){
         closeBookingDetail();
@@ -12069,7 +12102,7 @@ function openBookingDetail(id){
         setTimeout(function(){
           _updateExtensionTabs();
           var _exts=bookings.find(function(x){return x.id===b.id;});
-          var _eLen=(_exts&&_exts.extensions)?_exts.extensions.length:0;
+          var _eLen=_exts?_extLive(_exts).length:0;
           if(_eLen>0){
             _contractShowTab(_eLen-1);
           } else {
@@ -12181,7 +12214,7 @@ function openBookingDetail(id){
     addonsHtml+
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' \u2014 '+esc(b.addlIncome.desc):'')+'</span></div>':'')+
     (Number(b.lateReturnFee)?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">\uD83D\uDD52 Late Return Fee</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.lateReturnFee)+'</span></div>':'')+
-    (extensionCharge(b)>0?'<div class="detail-row"><span class="detail-label" style="color:#a78bfa">\uD83D\uDCC5 Extension Charges</span><span class="detail-val" style="color:#a78bfa;font-weight:700">+'+$$(extensionCharge(b))+'<span style="font-size:10px;font-weight:400;color:var(--muted)"> across '+(b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length+' extension'+(((b.extensions||[]).filter(function(e){return e.additionalCharge>0;}).length!==1)?'s':'')+'</span></span></div>':'')+
+    (extensionCharge(b)>0?'<div class="detail-row"><span class="detail-label" style="color:#a78bfa">\uD83D\uDCC5 Extension Charges</span><span class="detail-val" style="color:#a78bfa;font-weight:700">+'+$$(extensionCharge(b))+'<span style="font-size:10px;font-weight:400;color:var(--muted)"> across '+_extLive(b).filter(function(e){return e.additionalCharge>0;}).length+' extension'+((_extLive(b).filter(function(e){return e.additionalCharge>0;}).length!==1)?'s':'')+'</span></span></div>':'')+
     ((b.portalCharges||[]).length>0 ?
       '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0;display:flex;align-items:center;justify-content:space-between">\uD83D\uDCB8 Portal Charges<button class="btn btn-sm" onclick="deleteAllPortalCharges(\''+esc(b.id)+'\')" title="Delete ALL portal charges on this booking \u2014 totals revert" style="background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.3);padding:1px 7px;font-size:9px;border-radius:6px;cursor:pointer;font-weight:700">\uD83D\uDDD1 Delete all</button></div>'+
       (b.portalCharges||[]).map(function(c){
@@ -12207,9 +12240,9 @@ function openBookingDetail(id){
       (b.extensionPaidEmailSentAt?'<div class="detail-row"><span class="detail-label" style="color:#22c55e">\u2705 Extension Paid</span><span class="detail-val">Confirmed &amp; emailed customer <span style="color:var(--muted);font-size:10px">'+new Date(b.extensionPaidEmailSentAt).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'</span></span></div>':''):'')+
 
     // Extension Contracts
-    (b.extensions&&b.extensions.length?
-      '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">\uD83D\uDCC5 Extension Agreements ('+(b.extensions.length)+')</div>'+
-      b.extensions.map(function(ext,i){
+    (_extLive(b).length?
+      '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">\uD83D\uDCC5 Extension Agreements ('+(_extLive(b).length)+')</div>'+
+      _extLive(b).map(function(ext,i){
         var signed=!!(ext.signed&&ext.sig);
         return '<div class="detail-row"><span class="detail-label" style="color:'+(signed?'#22c55e':'#fb923c')+'">Ext #'+(i+1)+' '+(signed?'\u2705':'\u23F3')+'</span>'+
           '<span class="detail-val">'+fmtDateFull(ext.fromDate)+' &rarr; <strong>'+fmtDateFull(ext.toDate)+'</strong>'+
@@ -12344,7 +12377,7 @@ function openBookingDetail(id){
         (VERIFY_URL?'<button class="btn btn-sm" onclick="resendVerificationEmail(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">\u21BA Resend Verify Link</button>':'')+
         '<button class="btn btn-sm" onclick="sendPickupReminder(\''+b.id+'\');closeBookingDetail()" style="border-color:rgba(34,197,94,.4);color:var(--green)">\uD83D\uDCE8 Send Reminder</button>'+
         (WORKER_URL&&(b.status==='confirmed'||b.status==='active')?'<button class="btn btn-sm" onclick="sendExtensionLink(\''+b.id+'\')" style="border-color:rgba(201,169,98,.4);color:var(--gold)">\uD83D\uDD17 Send Extension Link</button>':'')+
-        (b.type!=='chauffeur'&&b.type!=='event'?'<button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_updateExtensionTabs();var _el=(bookings.find(function(x){return x.id===\''+b.id+'\'})||{}).extensions;if(_el&&_el.length){_contractShowTab(_el.length-1);}else{addExtensionContract();}},200)" style="border-color:rgba(167,139,250,.5);color:#a78bfa;font-weight:800">\uD83D\uDCC5 Extension Contract</button>':'')+
+        (b.type!=='chauffeur'&&b.type!=='event'?'<button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_updateExtensionTabs();var _el=_extLive(bookings.find(function(x){return x.id===\''+b.id+'\'})||{});if(_el.length){_contractShowTab(_el.length-1);}else{addExtensionContract();}},200)" style="border-color:rgba(167,139,250,.5);color:#a78bfa;font-weight:800">\uD83D\uDCC5 Extension Contract</button>':'')+
         '<button class="btn btn-sm" onclick="confirmResendReview(\''+b.id+'\')" style="border-color:rgba(251,191,36,.4);color:#fbbf24">\u2B50 Resend Review</button>'+
         (!b.dateLock?'<button class="btn btn-sm" onclick="markDateLockPaid(\''+b.id+'\')" style="border-color:rgba(34,197,94,.5);color:var(--green);font-weight:700">\u2705 Mark $100 Date Lock Paid</button>':'')+
       '</div>'
@@ -13992,7 +14025,7 @@ function _mileageOverage(b, odomOutArg){
   var origPerDay = (Number(b.includedMiles)>0 && origDays>0) ? (Number(b.includedMiles)/origDays) : (Number(vm.miles)||0);
   var origMiles = origUnlim ? 0 : (Number(b.includedMiles)>0 ? Number(b.includedMiles) : origPerDay*origDays);
   var segs = [{ label:'Original', days:origDays, unlimited:origUnlim, perDay:origPerDay, miles:origMiles, startOdom:0 }];
-  (b.extensions||[]).forEach(function(e,i){
+  _extLive(b).forEach(function(e,i){
     if(!e) return;
     var eu = !!e.unlimited;
     var ed = Number(e.extensionDays)||0;
@@ -14055,7 +14088,7 @@ function coCalcMiles(){
   var overRow=$d('coOverageRow');
   var mileChargeInput=$d('coMileageCharge');
   if(overRow){
-    var _hasExt=!!(b.extensions&&b.extensions.length);
+    var _hasExt=!!_extLive(b).length;
     if(_mo.mode==='unlimited'){
       overRow.style.display='flex'; overRow.style.flexDirection='column';
       overRow.style.background='rgba(124,252,152,.07)';
@@ -14230,7 +14263,7 @@ function saveCloseOut(){
     var _bMile=bookings[idx].mileageCharge||0;
     // Include still-unpaid extension charges. Rebuilding the balance from `revenue` alone (the old code)
     // dropped them, erasing money the customer still owes on any booking with an unpaid extension.
-    var _bExt=(bookings[idx].extensions||[]).reduce(function(s,e){ return s+((e&&!e.paid)?Math.max(0,Number(e.additionalCharge)||0):0); },0);
+    var _bExt=_extLive(bookings[idx]).reduce(function(s,e){ return s+((e&&!e.paid)?Math.max(0,Number(e.additionalCharge)||0):0); },0);
     bookings[idx].remainingBalance=Math.max(0,_bRev+_bDep-_bLock+_bFuel+_bMile+_bExt);
   }
   bookings[idx].damage = $d('coDamageFlagged').checked ? {
@@ -14824,8 +14857,8 @@ function sendExtDriverSigningLink(bookingId, extId, driverIdx){
   if(!b){ showToast('Booking not found'); return; }
   var d=(b.extraDrivers&&b.extraDrivers[driverIdx]);
   if(!d){ showToast('Driver not found'); return; }
-  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
-  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var ext=_extLive(b).find(function(e){ return e&&e.id===extId; });
+  var extNum=_extLive(b).findIndex(function(e){ return e&&e.id===extId; })+1;
   var base = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
   var url = base + '?sign=' + encodeURIComponent(bookingId) + '&extId=' + encodeURIComponent(extId) + '&driver=' + driverIdx;
   if(!d.email){
@@ -17266,7 +17299,7 @@ function sendReceiptEmail(b){
   if(Number(b.bouquet)>0) addons.push({label:'Bouquet',val:b.bouquet});
   // Itemize extensions + real (paid, non-deposit, non-ext-linked) charges so the Trip total is self-consistent
   var _extraRows='';
-  (b.extensions||[]).forEach(function(e){ if(e&&Number(e.additionalCharge)>0) _extraRows+='<tr><td style="padding:6px 0;color:#666">Rental extension'+(e.toDate?' (to '+esc((typeof fmtDate==='function'?fmtDate(e.toDate):e.toDate))+')':'')+'</td><td style="padding:6px 0;text-align:right">'+$$(e.additionalCharge)+'</td></tr>'; });
+  _extLive(b).forEach(function(e){ if(e&&Number(e.additionalCharge)>0) _extraRows+='<tr><td style="padding:6px 0;color:#666">Rental extension'+(e.toDate?' (to '+esc((typeof fmtDate==='function'?fmtDate(e.toDate):e.toDate))+')':'')+'</td><td style="padding:6px 0;text-align:right">'+$$(e.additionalCharge)+'</td></tr>'; });
   (b.portalCharges||[]).forEach(function(c){ if(c&&c.paidAt&&Number(c.amount)>0&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._dlApplied&&!c._foldedIntoRevenue&&!(typeof _isDepositCharge==='function'&&_isDepositCharge(c))) _extraRows+='<tr><td style="padding:6px 0;color:#666">'+esc(c.description||'Additional charge')+'</td><td style="padding:6px 0;text-align:right">'+$$(c.amount)+'</td></tr>'; });
   var sumRows='<tr><td style="padding:6px 0;color:#666;width:150px">Vehicle</td><td style="padding:6px 0;font-weight:600;text-align:right">'+esc(b.vehicle)+'</td></tr>'+
     '<tr><td style="padding:6px 0;color:#666">Pickup</td><td style="padding:6px 0;text-align:right">'+fmtDate(b.pickupDate||b.date||'')+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</td></tr>'+
@@ -18492,7 +18525,7 @@ function getRemainingBalance(b){
     // Returns 0 when there is no such extension, so every booking without a post-payment extension behaves
     // EXACTLY as before (the old "paid \u2192 always 0" invariant is preserved for that case).
     var _bpa=Number(b.balancePaidAt)||0;
-    return Math.max(0,(b.extensions||[]).reduce(function(s,e){
+    return Math.max(0,_extLive(b).reduce(function(s,e){
       return s + ((e && !e.paid && Number(e.createdAt||0)>_bpa) ? Math.max(0,Number(e.additionalCharge)||0) : 0);
     },0));
   }
@@ -21254,7 +21287,7 @@ function closeContract(){
 
 function _updateExtensionTabs(){
   var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
-  var exts = (b && b.extensions) ? b.extensions : [];
+  var exts = b ? _extLive(b) : [];
   var tabsWrap = $d('contractDocTabs');
   var tabBtns  = $d('contractExtTabBtns');
   if(!tabsWrap || !tabBtns) return;
@@ -21321,7 +21354,7 @@ function _contractShowTab(extIdx){
     _renderContractContent();
   } else {
     var b = bookings.find(function(x){return x.id===_contractBookingId;});
-    var ext = b && b.extensions && b.extensions[extIdx];
+    var ext = b && _extLive(b)[extIdx];
     if(!ext) return;
     // Hide main signing area, show extension sig area
     if(sigArea)    sigArea.style.display = 'none';
@@ -21342,16 +21375,23 @@ function deleteExtension(bookingId, extId){
   var b=bookings[idx];
   var ei=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; });
   if(ei===-1) return;
-  var ext=b.extensions[ei], extNum=ei+1;
+  var ext=b.extensions[ei];
+  if(ext._deleted) return; // already deleted -- never re-run the reversal math twice
+  var _liveBeforeDel=_extLive(b), _liveIdx=_liveBeforeDel.indexOf(ext);
+  var extNum=(_liveIdx>=0?_liveIdx:ei)+1; // N = index within _extLive, matching what's shown everywhere else
   var amt=Number(ext.additionalCharge)||0, n=Math.max(0,Number(ext.extensionDays)||0), unit=(ext.extensionUnit==='hours')?'hr':'d';
   if(!confirm('Delete Extension #'+extNum+' and ALL its data?\n\nThis reverses its date change (\u2212'+n+' '+unit+'), removes its '+(amt?('$'+amt.toFixed(2)+' charge, '):'')+'signatures and any linked card requests, and recalculates revenue/broker. This cannot be undone.')) return;
+  // SIGNED-DELETE DOUBLE CONFIRM: a signed extension is executed contract data -- make the second click
+  // name that plainly instead of letting a routine cleanup click silently take out a signature.
+  var _extIsSigned=!!(ext.signed || ext.sig || (ext.driverSigs && Object.keys(ext.driverSigs).length));
+  if(_extIsSigned && !confirm('Extension #'+extNum+' is SIGNED. Deleting it removes that signed extension from the contract view (it stays recoverable). Continue?')) return;
   // 1) Reverse the rental-window move.
   if(ext.extensionUnit==='hours'){ _shiftDropoffHours(b, -n); }
   else { var _sd=b.dropoffDate?parseLocalDate(b.dropoffDate):null; if(_sd&&!isNaN(_sd.getTime())) b.dropoffDate=dateStr(addDays(_sd,-n)); }
   b.days=Math.max(1,(Number(b.days)||1)-n);
   // 2) Reverse the money. The value was counted in gross via extensionCharge() (never folded into
-  //    b.revenue), so dropping the entry below removes it from gross. If it was still UNPAID it also
-  //    sat in the balance due \u2014 take it back out here.
+  //    b.revenue), so tombstoning the entry below removes it from gross (extensionCharge skips _deleted
+  //    entries via _extLive). If it was still UNPAID it also sat in the balance due \u2014 take it back out here.
   if(amt>0 && !ext.paid && b.remainingBalance!=null){ b.remainingBalance=Math.max(0,(Number(b.remainingBalance)||0)-amt); }
   // 3) Wipe children: every portal charge linked to this extension (card request + fold source).
   var _kids=0;
@@ -21360,8 +21400,9 @@ function deleteExtension(bookingId, extId){
     b.portalCharges=b.portalCharges.filter(function(c){ return !(c && c._extId===extId); });
     _kids=_before-b.portalCharges.length;
   }
-  // 4) Drop the extension entry (its signatures live on it).
-  b.extensions.splice(ei,1);
+  // 4) Tombstone the extension entry instead of removing it -- its signatures + full record stay on the
+  //    object (forensically recoverable via _extAll/raw b.extensions) but _extLive() hides it everywhere.
+  ext._deleted=true; ext._deletedAt=Date.now();
   b._t=Date.now();
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
   logNotif('extension','Extension #'+extNum+' DELETED \u2014 reversed \u2212'+n+' '+unit+(amt?(', \u2212$'+amt.toFixed(2)):'')+(_kids?(', removed '+_kids+' linked charge'+(_kids!==1?'s':'')):''),(b.name||''),bookingId);
@@ -21369,8 +21410,8 @@ function deleteExtension(bookingId, extId){
   render();
   // Refresh the contract view: jump to a remaining extension, else the base contract.
   if(_contractBookingId===bookingId){
-    var rem=(b.extensions||[]).length;
-    if(rem>0) _contractShowTab(Math.min(ei, rem-1));
+    var rem=_extLive(b).length;
+    if(rem>0) _contractShowTab(Math.min(_liveIdx>=0?_liveIdx:0, rem-1));
     else _contractShowTab(-1);
   }
   toast('\uD83D\uDDD1 Extension #'+extNum+' deleted \u2014 all data reversed');
@@ -21383,9 +21424,9 @@ function _carryMainSigToExt(bookingId, extId, who){
   var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
   if(idx===-1) return;
   var b=bookings[idx];
-  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
+  var ext=_extLive(b).find(function(e){ return e&&e.id===extId; });
   if(!ext){ toast('Extension not found'); return; }
-  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var extNum=_extLive(b).findIndex(function(e){ return e&&e.id===extId; })+1;
   var _td=new Date(), _tds=(_td.getMonth()+1)+'/'+_td.getDate()+'/'+_td.getFullYear();
   if(who==='primary'){
     if(!(b.customerSig && b.customerSig.indexOf('data:image/')===0)){ toast('No main-contract signature on file for the customer'); return; }
@@ -21403,14 +21444,16 @@ function _carryMainSigToExt(bookingId, extId, who){
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
   var _who = who==='primary' ? (b.name||'customer') : ((b.extraDrivers[Number(who)]||{}).name||('Driver '+(Number(who)+1)));
   logNotif('extsigned','Extension #'+extNum+' \u2014 '+_who+'\u2019s signature carried over from main contract',(b.name||''),bookingId);
-  if(_contractBookingId===bookingId){ var _ei=(b.extensions||[]).indexOf(ext); if(_ei>=0) _renderExtensionView(b,_ei); }
+  if(_contractBookingId===bookingId){ var _ei=_extLive(b).indexOf(ext); if(_ei>=0) _renderExtensionView(b,_ei); }
   render();
   toast('\u270D '+_who+'\u2019s signature carried over to Extension #'+extNum);
 }
 
 function _renderExtensionView(b, extIdx){
-  if(!b || !b.extensions || !b.extensions[extIdx]) return;
-  var ext = b.extensions[extIdx];
+  if(!b) return;
+  var _extListRV=_extLive(b);
+  if(!_extListRV[extIdx]) return;
+  var ext = _extListRV[extIdx];
   var html = _buildExtensionContractHtml(b, extIdx);
   // Use the dedicated extension iframe \u2014 hide the original contract frame entirely
   // so nothing writing to contractPreviewFrame can ever affect the extension view
@@ -21498,7 +21541,7 @@ function _renderExtensionView(b, extIdx){
   if(_pbCumulativeOn()){
     var _isS=function(s){ return !!(s&&String(s).indexOf('data:image/')===0); };
     var _baseOk=_isS(b.customerSig) && (b.extraDrivers||[]).every(function(d){ return !d||!d.name||d.status==='denied'||_isS(d.sig); });
-    var _exAll=(b.extensions||[]).filter(Boolean);
+    var _exAll=_extLive(b);
     var _kB=-1; for(var _k=0;_k<extIdx;_k++){ if(!_extFullySignedForGate(b,_exAll[_k])){ _kB=_k; break; } }
     var _gateDone=_extFullySignedForGate(b,ext);
     var _locked=!((_baseOk&&_kB===-1)||ext.unlockOverride);
@@ -21587,7 +21630,7 @@ function _extFromComputed(ext){
 }
 // Original return = the FIRST extension's computed "from" (before any extension moved the dropoff).
 function _originalReturnDate(b){
-  var exts=(b&&b.extensions)||[];
+  var exts=_extLive(b);
   if(!exts.length) return (b&&b.dropoffDate)||'';
   return _extFromComputed(exts[0]) || (b.dropoffDate||'');
 }
@@ -21603,7 +21646,7 @@ function _fmtSigStamp(sigAt, sigDate){
   return sigDate||'';
 }
 function _buildExtensionContractHtml(b, extIdx){
-  var exts = b.extensions || [];
+  var exts = _extLive(b);
   var ext  = exts[extIdx];
   var extNum = extIdx + 1;
   var today  = new Date();
@@ -21762,7 +21805,7 @@ function _extFullySignedForGate(b, ext){
 // TARGET party (targetDriverIdx null=primary) the live pad (#sigPH/#sigDatePH), read-only for the rest.
 function _buildExtAmendmentHtml(bk, extIdx, opts){
   opts=opts||{};
-  var exts=(bk.extensions||[]).filter(Boolean), ext=exts[extIdx];
+  var exts=_extLive(bk), ext=exts[extIdx];
   if(!ext) return '';
   var dark=!!opts.dark, signMode=(opts.mode==='sign');
   var tx=dark?'#e8e8e8':'#111', mut=dark?'#9a9a9a':'#555', faint=dark?'#8a8a8a':'#666';
@@ -21844,7 +21887,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
 // contract for a cumulative download. Returns '' when off / no extensions.
 function _buildDashAmendments(b, dark){
   if(!_pbCumulativeOn()) return '';
-  var exts=(b&&b.extensions||[]).filter(Boolean); if(!exts.length) return '';
+  var exts=_extLive(b); if(!exts.length) return '';
   var out='';
   for(var i=0;i<exts.length;i++){ out+='<div data-pb-pagebreak></div>'+_buildExtAmendmentHtml(b, i, {mode:'readonly', dark:!!dark, owner_signature:(typeof OWNER_SIGNATURE==='string'?OWNER_SIGNATURE:'')}); }
   return out;
@@ -21852,8 +21895,8 @@ function _buildDashAmendments(b, dark){
 // Owner override: unlock an extension for signing even if an earlier one isn't fully signed yet.
 function _unlockExtension(bookingId, extId){
   var b=bookings.find(function(x){ return x&&x.id===bookingId; }); if(!b) return;
-  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; }); if(!ext) return;
-  var n=(b.extensions||[]).indexOf(ext)+1;
+  var ext=_extLive(b).find(function(e){ return e&&e.id===extId; }); if(!ext) return;
+  var n=_extLive(b).indexOf(ext)+1;
   if(!confirm('Unlock Extension #'+n+' for signing now?\n\nThis lets the client sign it even though an earlier extension is not fully signed. Use this only when an earlier signer is delaying.')) return;
   ext.unlockOverride=true; b._t=Date.now();
   if(typeof save==='function') save(); if(typeof flushCloudSave==='function') flushCloudSave();
@@ -21869,14 +21912,15 @@ function _unlockExtension(bookingId, extId){
 // date @ noon) so re-deriving on every load/merge never creates duplicates.
 function _extSignCommEntries(b){
   var out=[];
-  if(!b || !b.extensions || !b.extensions.length) return out;
+  var _extListSC=_extLive(b);
+  if(!b || !_extListSC.length) return out;
   var _isImg=function(s){ return s && String(s).indexOf('data:image/')===0; };
   var _ts=function(dateStr,fallback){
     if(dateStr){ var d=new Date(String(dateStr)+' 12:00:00'); if(!isNaN(d.getTime())) return d.getTime(); }
     return Number(fallback)||0;
   };
   var drivers=(b.extraDrivers||[]);
-  b.extensions.forEach(function(ext,i){
+  _extListSC.forEach(function(ext,i){
     if(!ext) return;
     var n=i+1, times=[];
     if(ext.signed && _isImg(ext.sig)){
@@ -21920,7 +21964,7 @@ function _extMileToggle(){
 function addExtensionContract(){
   var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
   if(!b){ showToast('No booking selected'); return; }
-  var exts = b.extensions || [];
+  var exts = _extLive(b);
   var currentEnd = exts.length ? exts[exts.length-1].toDate : (b.dropoffDate || b.date || '');
   // Calendar can't go before TODAY and can't be on/before the current return date.
   var _td = todayStr();
@@ -21998,7 +22042,7 @@ function addExtensionContract(){
 function confirmAddExtension(){
   var b = _contractBookingId ? bookings.find(function(x){return x.id===_contractBookingId;}) : null;
   if(!b){ showToast('No booking selected'); return; }
-  var exts = b.extensions || [];
+  var exts = _extLive(b);
   var currentEnd = exts.length ? exts[exts.length-1].toDate : (b.dropoffDate || b.date || '');
   var newEndDate = ($d('extNewDate')&&$d('extNewDate').value)||'';
   if(!newEndDate){ alert('Pick a new return date.'); return; }
@@ -22030,7 +22074,7 @@ function confirmAddExtension(){
   // Remember how the broker fee was entered, for the per-day breakdown on the contract.
   if(newExt && _extBrokerMode==='perday'){ newExt.brokerMode='perday'; newExt.brokerPerDay=_extBrokerInput; }
   bookings[idx]._t = Date.now();
-  var _extNum = bookings[idx].extensions.length;
+  var _extNum = _extLive(bookings[idx]).length;
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
   logNotif('extension','Extension #'+_extNum+' created \u2014 +'+extDays+' day'+(extDays!==1?'s':'')+', new return '+newEndDate+(addlCharge?(' \u00B7 $'+addlCharge.toFixed(2)):'')+(payMethod?(' \u00B7 '+payMethod):''),(b.name||''),bookings[idx].id);
   syncToGCal(bookings[idx]);
@@ -22039,7 +22083,7 @@ function confirmAddExtension(){
   // Stripe \u2192 send a card payment request to the client portal automatically.
   if(payMethod==='stripe' && addlCharge>0){ _sendExtensionStripePayment(bookings[idx].id, newExt.id); }
   showToast('Extension #'+_extNum+' created \u2705'+(payMethod==='stripe'&&addlCharge>0?' \u2014 card request sent to portal':''));
-  _contractShowTab(bookings[idx].extensions.length - 1);
+  _contractShowTab(_extLive(bookings[idx]).length - 1);
   _updateExtensionTabs();
 }
 
@@ -22051,9 +22095,9 @@ function _sendExtensionStripePayment(bookingId, extId){
   var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
   if(idx===-1) return;
   var b=bookings[idx];
-  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
+  var ext=_extLive(b).find(function(e){ return e&&e.id===extId; });
   if(!ext || !(Number(ext.additionalCharge)>0)) return;
-  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var extNum=_extLive(b).findIndex(function(e){ return e&&e.id===extId; })+1;
   var amt=Number(ext.additionalCharge)||0;
   if(!b.portalCharges) b.portalCharges=[];
   if(!(b.portalCharges||[]).some(function(c){ return c && c._extId===extId && !c.paidAt; })){
@@ -22103,7 +22147,7 @@ function _markExtPaidInternal(b, ext, method){
 function _settleOutstandingExtensions(b, method){
   if(!b) return 0;
   var bpa=Number(b.balancePaidAt)||0, sum=0;
-  (b.extensions||[]).forEach(function(e){
+  _extLive(b).forEach(function(e){
     if(!e || e.paid || !(Number(e.additionalCharge)>0)) return;
     // When a base payment already exists it covered everything up to its time, so only extensions created
     // AFTER it are newly owed. With no base payment yet, every unpaid extension is part of the balance.
@@ -22134,9 +22178,9 @@ function markExtensionPaid(bookingId, extId, method){
   var idx=bookings.findIndex(function(x){ return x.id===bookingId; });
   if(idx===-1) return;
   var b=bookings[idx];
-  var ext=(b.extensions||[]).find(function(e){ return e&&e.id===extId; });
+  var ext=_extLive(b).find(function(e){ return e&&e.id===extId; });
   if(!ext) return;
-  var extNum=(b.extensions||[]).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var extNum=_extLive(b).findIndex(function(e){ return e&&e.id===extId; })+1;
   if(ext.paid){ toast('Extension #'+extNum+' is already paid'); return; }
   var _m = method || prompt('Payment method received for Extension #'+extNum+' (Zelle, Cash App, Venmo, Cash, Card, Other):', (ext.paymentMethod && ext.paymentMethod!=='stripe') ? ext.paymentMethod : 'Zelle');
   if(_m===null) return;
@@ -22147,7 +22191,7 @@ function markExtensionPaid(bookingId, extId, method){
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
   logNotif('payment','Extension #'+extNum+' marked PAID \u2014 $'+(Number(ext.additionalCharge)||0).toFixed(2)+' ('+(ext.paymentMethod||'manual')+')',(b.name||''),bookingId);
   render();
-  if(_contractBookingId===bookingId){ var _ei=(b.extensions||[]).findIndex(function(e){return e&&e.id===extId;}); if(_ei>=0) _renderExtensionView(b,_ei); }
+  if(_contractBookingId===bookingId){ var _ei=_extLive(b).findIndex(function(e){return e&&e.id===extId;}); if(_ei>=0) _renderExtensionView(b,_ei); }
   toast('\u2705 Extension #'+extNum+' marked paid');
 }
 
@@ -22183,10 +22227,11 @@ function saveExtSig(){
   var sig = c.toDataURL('image/png');
   var t = new Date(); var sigDate = (t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
   var idx = bookings.findIndex(function(x){return x.id===_contractBookingId;});
-  if(idx===-1||!bookings[idx].extensions||!bookings[idx].extensions[_contractActiveExtIdx]) return;
-  bookings[idx].extensions[_contractActiveExtIdx].sig     = sig;
-  bookings[idx].extensions[_contractActiveExtIdx].sigDate = sigDate;
-  bookings[idx].extensions[_contractActiveExtIdx].signed  = true;
+  if(idx===-1) return;
+  var _seList=_extLive(bookings[idx]); if(!_seList[_contractActiveExtIdx]) return;
+  _seList[_contractActiveExtIdx].sig     = sig;
+  _seList[_contractActiveExtIdx].sigDate = sigDate;
+  _seList[_contractActiveExtIdx].signed  = true;
   bookings[idx]._t = Date.now();
   save();
   showToast('Extension signature saved \u2705');
@@ -22197,11 +22242,12 @@ function saveExtSig(){
 function _overrideExtSig(){
   if(!confirm('Override and clear this extension signature?')) return;
   var idx = bookings.findIndex(function(x){return x.id===_contractBookingId;});
-  if(idx===-1||!bookings[idx].extensions||!bookings[idx].extensions[_contractActiveExtIdx]) return;
-  bookings[idx].extensions[_contractActiveExtIdx].sig     = '';
-  bookings[idx].extensions[_contractActiveExtIdx].sigDate = '';
-  bookings[idx].extensions[_contractActiveExtIdx].signed  = false;
-  bookings[idx].extensions[_contractActiveExtIdx].sigClearedAt = Date.now(); // tombstone: a stale-device merge must NOT resurrect the cleared ext sig
+  if(idx===-1) return;
+  var _oeList=_extLive(bookings[idx]); if(!_oeList[_contractActiveExtIdx]) return;
+  _oeList[_contractActiveExtIdx].sig     = '';
+  _oeList[_contractActiveExtIdx].sigDate = '';
+  _oeList[_contractActiveExtIdx].signed  = false;
+  _oeList[_contractActiveExtIdx].sigClearedAt = Date.now(); // tombstone: a stale-device merge must NOT resurrect the cleared ext sig
   bookings[idx]._t = Date.now();
   save();
   _contractShowTab(_contractActiveExtIdx);
@@ -22214,7 +22260,7 @@ function sendSignedExtCopyToClient(){
   if(!b||!b.email){ showToast('No email on file for this booking'); return; }
   if(!MESSAGING_URL){ showToast('Messaging worker not configured'); return; }
   var extIdx = _contractActiveExtIdx;
-  var ext = (b.extensions||[])[extIdx];
+  var ext = _extLive(b)[extIdx];
   if(!ext||!ext.signed||!ext.sig){ showToast('Extension not yet signed by the renter'); return; }
   if(b.extraDrivers&&b.extraDrivers.length&&!_extFullySigned(b,ext)){
     if(!confirm('Not all additional authorized drivers have signed this extension yet. Send the signed copy to everyone anyway?')) return;
@@ -22269,7 +22315,7 @@ function sendExtensionSigningLink(){
   if(_contractActiveExtIdx < 0){ showToast('No extension selected'); return; }
   var b = bookings.find(function(x){return x.id===_contractBookingId;});
   if(!b){ showToast('Booking not found'); return; }
-  var exts = b.extensions || [];
+  var exts = _extLive(b);
   var ext  = exts[_contractActiveExtIdx];
   if(!ext){ showToast('Extension not found'); return; }
   var extIdx = _contractActiveExtIdx;
@@ -22278,7 +22324,7 @@ function sendExtensionSigningLink(){
   // Mark sentAt
   var bidx = bookings.findIndex(function(x){return x.id===_contractBookingId;});
   if(bidx !== -1){
-    bookings[bidx].extensions[extIdx].sentAt = Date.now();
+    var _sslExt=_extLive(bookings[bidx])[extIdx]; if(_sslExt) _sslExt.sentAt = Date.now();
     bookings[bidx]._t = Date.now();
     save();
   }
@@ -22372,7 +22418,7 @@ function _contractFileBase(){
   var typ, dt;
   // Extension docs save as "<Client First Last> Extension <N> <start date>" (N is 1-based;
   // date = when the extension starts = ext.fromDate). Original doc keeps Contract/Waiver + sig date.
-  var _ext=(_contractActiveExtIdx>=0 && b && b.extensions) ? b.extensions[_contractActiveExtIdx] : null;
+  var _ext=(_contractActiveExtIdx>=0 && b) ? _extLive(b)[_contractActiveExtIdx] : null;
   if(_ext){ typ='Extension '+(_contractActiveExtIdx+1); dt=((_ext.fromDate||_ext.toDate||_ext.sigDate||'')+'')||_fb; }
   else { typ=_contractIsWaiver?'Waiver':'Contract'; dt=(b&&b.customerSigDate)?(b.customerSigDate+''):_fb; }
   dt=dt.replace(/[\/\\:*?"<>|]/g,'-');
@@ -23236,7 +23282,7 @@ function markChargePaid(bookingId, chargeId){
   var _cp=charges[cIdx];
   // Any extension-linked card payment marked paid \u2192 mark that extension paid + clear its balance,
   // no matter which flow created the link.
-  if(_cp._extId){ var _xe=(bookings[idx].extensions||[]).find(function(e){ return e&&e.id===_cp._extId; }); if(_xe && !_xe.paid) _markExtPaidInternal(bookings[idx], _xe, _cp.paidMethod||'manual'); }
+  if(_cp._extId){ var _xe=_extLive(bookings[idx]).find(function(e){ return e&&e.id===_cp._extId; }); if(_xe && !_xe.paid) _markExtPaidInternal(bookings[idx], _xe, _cp.paidMethod||'manual'); }
   // Extension charge \u2192 fold the days into the rental (new dropoff + day count + revenue).
   var _foldedQty=(chargeCategory(_cp)==='extension' && (parseInt(_cp.extensionDays,10)||0)>0 && !_cp._extApplied) ? (parseInt(_cp.extensionDays,10)||0) : 0;
   var _foldedUnit=(_cp.extensionUnit==='hours')?'hr':'day';
@@ -23278,6 +23324,16 @@ function deletePortalCharge(bookingId, chargeId){
       : (c.paidAt?('Revenue drops by '+$$(_amt)+' and '+$$(_amt)+' returns to the balance due.'):'This pending request will be removed.'))+
     '\nBooking totals revert immediately. (This does not refund any card payment.)';
   if(!confirm(_msg)) return;
+  // SIGNED-DELETE DOUBLE CONFIRM: this charge is the record of a SIGNED extension -- require a second,
+  // explicit confirm so a routine "delete a pending charge" click can't silently take out executed
+  // contract data. The extension is tombstoned (not hard-removed) by _revertExtensionCharge either way.
+  if(_isExt && c._extId){
+    var _dpcExt=(bookings[idx].extensions||[]).find(function(e){ return e&&e.id===c._extId; });
+    if(_dpcExt && (_dpcExt.signed || _dpcExt.sig || (_dpcExt.driverSigs && Object.keys(_dpcExt.driverSigs).length))){
+      var _dpcNum=_extLive(bookings[idx]).indexOf(_dpcExt)+1; if(_dpcNum<1) _dpcNum=1;
+      if(!confirm('This charge is linked to SIGNED Extension #'+_dpcNum+'. Deleting it also removes that signed extension from the contract view (it stays recoverable). Continue?')) return;
+    }
+  }
   if(_isExt) _revertExtensionCharge(bookings[idx], c);
   if(_isDL) _revertDateLockCharge(bookings[idx], c);
   bookings[idx].portalCharges=charges.filter(function(x){ return !x || x.id!==chargeId; });
@@ -23306,6 +23362,21 @@ function deleteAllPortalCharges(bookingId){
     (_extCount>0?('Any extensions roll back ('+_extCount+' extension'+(_extCount!==1?'s':'')+' \u2014 dropoff restored). '):'')+
     '\nBooking totals revert immediately. This cannot be undone. (Does not refund any card payment.)';
   if(!confirm(_msg)) return;
+  // SIGNED-DELETE DOUBLE CONFIRM: name any SIGNED extension linked to these charges plainly before the
+  // bulk cascade runs (each is tombstoned, not hard-removed, by _revertExtensionCharge -- recoverable).
+  var _dacSignedNums=[];
+  charges.forEach(function(c){
+    if(!c || !c._extApplied || !c._extId) return;
+    var _dacExt=(bookings[idx].extensions||[]).find(function(e){ return e&&e.id===c._extId; });
+    if(_dacExt && (_dacExt.signed || _dacExt.sig || (_dacExt.driverSigs && Object.keys(_dacExt.driverSigs).length))){
+      var _dacN=_extLive(bookings[idx]).indexOf(_dacExt)+1; if(_dacN<1) _dacN=1;
+      if(_dacSignedNums.indexOf(_dacN)===-1) _dacSignedNums.push(_dacN);
+    }
+  });
+  if(_dacSignedNums.length){
+    var _dacLbl=(_dacSignedNums.length===1)?('SIGNED Extension #'+_dacSignedNums[0]):(_dacSignedNums.length+' SIGNED extensions (#'+_dacSignedNums.join(', #')+')');
+    if(!confirm('One or more of these charges is linked to '+_dacLbl+'. Deleting them also removes that signed extension data from the contract view (it stays recoverable). Continue?')) return;
+  }
   charges.forEach(function(c){ if(c&&c._extApplied) _revertExtensionCharge(bookings[idx], c); if(c&&c._dlApplied) _revertDateLockCharge(bookings[idx], c); });
   bookings[idx].portalCharges=[];
   bookings[idx]._t=Date.now();
@@ -23717,7 +23788,9 @@ function _initExtensionSigningMode(bookingId, extId){
     if(!data||!data.booking){ body.innerHTML='<div style="color:#f87171;padding:20px">Unable to load. Contact Prestige Black Rentals at (214) 207-2481.</div>'; return; }
     var bk=data.booking;
     if(!bk){ body.innerHTML='<div style="color:#f87171;padding:20px">Booking not found. This link may have expired.</div>'; return; }
-    var exts=bk.extensions||[];
+    // NOTE: bk is the worker-served snapshot -- _extLive still hides a tombstoned extension here so a
+    // stale signing link for a deleted extension shows "not found" instead of resurrecting it.
+    var exts=_extLive(bk);
     var extIdx=exts.findIndex(function(e){return e.id===extId;});
     if(extIdx===-1){ body.innerHTML='<div style="color:#f87171;padding:20px">Extension not found. Please contact Prestige Black Rentals.</div>'; return; }
     var ext=exts[extIdx];
@@ -23843,7 +23916,7 @@ function _smSubmitExtSig(bookingId, extId){
   .then(function(freshData){
     var bkFresh=freshData&&freshData.booking?freshData.booking:null;
     if(!bkFresh){_showSaveErr('Error loading data \u2014 please refresh.'); return;}
-    var exts=bkFresh.extensions||[];
+    var exts=_extLive(bkFresh);
     var extIdx=exts.findIndex(function(e){return e.id===extId;});
     if(extIdx===-1){_showSaveErr('Extension not found. Please contact us.'); return;}
     // Save ONLY the extension signature via the public endpoint
@@ -23855,7 +23928,7 @@ function _smSubmitExtSig(bookingId, extId){
       var sigBody=$d('signingModeBody');
       var _smBk=(window._smBookings||[]).find(function(bk){return bk.id===bookingId;})||{};
       var name=(_smBk.name||'').split(' ')[0]||'there';
-      var _smExts=_smBk.extensions||[];
+      var _smExts=_extLive(_smBk);
       var _smExtIdx=_smExts.findIndex(function(e){return e.id===extId;});
       var _smExt=_smExts[_smExtIdx]||{};
       var extNum=_smExtIdx+1;
@@ -25136,7 +25209,7 @@ function _earnedRevInWindow(b, cutoff, tod){
   function _inW(ds){ ds=(ds||'').slice(0,10); return !!ds && ds>=cutoff && ds<=tod; }
   var rev=0, pickup=b.pickupDate||b.date||'';
   if(_inW(pickup)) rev += (totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b));  // base fields
-  (b.extensions||[]).forEach(function(e){
+  _extLive(b).forEach(function(e){
     var amt=Number(e&&e.additionalCharge)||0; if(!amt) return;
     var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
     if(_inW(ed)) rev+=amt;
@@ -25155,7 +25228,7 @@ function _earnedBrokerInWindow(b, cutoff, tod){
   function _inW(ds){ ds=(ds||'').slice(0,10); return !!ds && ds>=cutoff && ds<=tod; }
   var bk=0, pickup=b.pickupDate||b.date||'';
   if(_inW(pickup)) bk += (Number(b.brokerFee)||0)*brokerRateDays(b);
-  (b.extensions||[]).forEach(function(e){
+  _extLive(b).forEach(function(e){
     var bf=Number(e&&e.brokerFee)||0; if(!bf) return;
     var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
     if(_inW(ed)) bk+=bf;
@@ -25197,7 +25270,7 @@ function _earnedCardRevInWindow(b, cutoff, tod){
     if(_cardM(b.balancePaidMethod)) rev+=Math.max(0,baseAll-dl);
     if(_cardM(b.dateLockMethod))    rev+=dl;
   }
-  (b.extensions||[]).forEach(function(e){
+  _extLive(b).forEach(function(e){
     var amt=Number(e&&e.additionalCharge)||0; if(!amt||!_cardM(e&&e.paymentMethod)) return;
     var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
     if(_inW(ed)) rev+=amt;
