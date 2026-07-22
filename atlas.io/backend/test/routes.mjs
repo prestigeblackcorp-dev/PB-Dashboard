@@ -182,5 +182,54 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(wr.status === 401 || wr.status === 403, 'webhooks: no session -> 401/403 (not public)');
 }
 
+// ---- security hardening (2026-07-22): security headers everywhere, test-endpoint authz, competitor SSRF guard ----
+{
+  // H2: a served HTML page that never sets security headers itself (the public /api/unsub landing page) still gets
+  // them from the final response merge in fetch().
+  const hr = await worker.fetch(mkReq('GET', '/api/unsub'), { DB: mockDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, ctx);
+  ok(hr.headers.get('x-content-type-options') === 'nosniff', 'security headers: nosniff present on a served HTML page');
+  ok(hr.headers.get('x-frame-options') === 'DENY', 'security headers: X-Frame-Options present on a served HTML page');
+  ok(!!hr.headers.get('strict-transport-security'), 'security headers: HSTS present on a served HTML page');
+}
+
+{
+  // M4: /api/email/test + /api/sms/test refuse a signed-in viewer (no `settings` capability) before any send is attempted.
+  const NOW = Date.now(), SID = 'sid_view', CSRF = 'CSRFview', TEN = 't_view';
+  function viewDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_v', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_v', email: 'viewer@x.com', tenant_id: TEN, role: 'viewer', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const venv = { DB: viewDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  // hand-rolled request (mirrors whReq above): a real Request can't carry a Cookie header via undici
+  const vReq = (path) => { const headers = { 'content-type': 'application/json', 'cookie': 'atlas_sid=' + SID, 'x-csrf-token': CSRF, 'origin': 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => ({}), text: async () => '{}' }; };
+  let vr = await worker.fetch(vReq('/api/email/test'), venv, ctx);
+  ok(vr.status === 403, 'email/test: viewer with no settings capability -> 403 (got ' + vr.status + ')');
+  vr = await worker.fetch(vReq('/api/sms/test'), venv, ctx);
+  ok(vr.status === 403, 'sms/test: viewer with no settings capability -> 403 (got ' + vr.status + ')');
+}
+
+{
+  // M5: competitor-watchlist add rejects a link-local/private URL (SSRF guard) even though it passes the basic http(s) shape check.
+  const ssrfReq = new Request('https://atlasrental.io/api/admin/competitors', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H), body: JSON.stringify({ url: 'http://169.254.169.254/latest/meta-data', label: 'ssrf' }) });
+  const sr = await worker.fetch(ssrfReq, { DB: mockDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, ctx);
+  ok(sr.status === 400, 'competitor add: SSRF-blocked private URL -> 400 (got ' + sr.status + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

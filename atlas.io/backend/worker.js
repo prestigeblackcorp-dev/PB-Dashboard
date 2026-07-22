@@ -268,7 +268,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19n';
+const ATLAS_BUILD = '2026.07.19o';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -437,7 +437,7 @@ const SOCIAL = {
   tiktok: { name: 'TikTok', auth: 'https://www.tiktok.com/v2/auth/authorize/', token: 'https://open.tiktokapis.com/v2/oauth/token/', scope: 'user.info.basic,video.publish', id: 'SOCIAL_TIKTOK_ID', secret: 'SOCIAL_TIKTOK_SECRET', pkce: false }
 };
 function _socialRedirect(env, platform) { return (env.APP_ORIGIN || 'https://atlasrental.io') + '/api/social/callback/' + platform; }
-async function _socialSig(env, s) { try { const key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY || 'k'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const b = await crypto.subtle.sign('HMAC', key, enc('social|' + s)); return Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join('').slice(0, 32); } catch (e) { return ''; } }
+async function _socialSig(env, s) { if (!env.SESSION_KEY) return ''; try { const key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const b = await crypto.subtle.sign('HMAC', key, enc('social|' + s)); return Array.prototype.map.call(new Uint8Array(b), function (x) { return ('0' + x.toString(16)).slice(-2); }).join('').slice(0, 32); } catch (e) { return ''; } }
 async function _s256(s) { try { const d = await crypto.subtle.digest('SHA-256', enc(s)); return b64(new Uint8Array(d)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); } catch (e) { return ''; } }
 async function _socialStatus(env) {
   const out = {}; let rows = [];
@@ -869,7 +869,8 @@ async function sendEmail(env, msg) {
 // ---- suppression list (unsubscribe / SMS STOP) so the "compliance built in" copy is REAL, not vaporware ----
 // Email-verification: a stateless HMAC token (no DB row needed), same scheme as the unsubscribe link. Signs uid|email|expiry so the link can't be forged or replayed after expiry.
 async function _verifySig(env, uid, email, exp) {
-  try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY || 'k'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  if (!env.SESSION_KEY) return '';
+  try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     var s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(email) + '|' + String(exp) + '|verify'));
     return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
   } catch (e) { return ''; }
@@ -887,8 +888,9 @@ async function _sendVerifyEmail(env, uid, email) {
   return await sendEmail(env, { to: email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Verify your email to activate Atlas Rental.io', html: html });
 }
 async function _unsubSig(env, tenant, contact) {
-  try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY || 'k'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    var s = await crypto.subtle.sign('HMAC', key, enc(String(tenant) + '|' + String(contact)));
+  if (!env.SESSION_KEY) return '';
+  try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    var s = await crypto.subtle.sign('HMAC', key, enc('unsub|' + String(tenant) + '|' + String(contact)));
     return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 32);
   } catch (e) { return ''; }
 }
@@ -901,6 +903,24 @@ async function suppress(env, tenant, contact, kind, reason) {
 }
 async function unsuppress(env, tenant, contact) {
   try { await env.DB.prepare('DELETE FROM suppressions WHERE tenant_id=? AND contact=?').bind(tenant, String(contact).toLowerCase()).run(); } catch (e) {}
+}
+// Twilio inbound-webhook authenticity check (X-Twilio-Signature): base64(HMAC-SHA1(authToken, fullURL + sorted "key"+"value" pairs of every POST param)).
+// Fail-CLOSED by design: no auth token configured, no header present, or a mismatch -> false, and the caller must NOT act on the request (still answers
+// with empty TwiML 200 so Twilio doesn't retry-storm). See https://www.twilio.com/docs/usage/security#validating-requests.
+async function _twilioSigOk(env, req, url, params) {
+  try {
+    const token = env.TWILIO_TOKEN || env.TWILIO_AUTH_TOKEN || '';
+    if (!token) return false;
+    const given = req.headers.get('X-Twilio-Signature') || '';
+    if (!given) return false;
+    const fullUrl = url.origin + url.pathname + (url.search || '');
+    const entries = []; params.forEach(function (v, k) { entries.push([k, v]); });
+    entries.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+    let data = fullUrl; entries.forEach(function (e) { data += e[0] + e[1]; });
+    const key = await crypto.subtle.importKey('raw', enc(String(token)), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    const sigBuf = await crypto.subtle.sign('HMAC', key, enc(data));
+    return _ctEq(given, b64(sigBuf));
+  } catch (e) { return false; }
 }
 // ---- marketing broadcast helpers (real /api/outreach/send): per-recipient personalization + concurrency-limited send ----
 function _fillTokens(s, r, prof) {
@@ -1428,7 +1448,7 @@ export default {
             const pr = tenantProfile(cd);
             const liveSite = pr.settings.publicSite && pr.settings.publicSite.published;
             const color = (pr.brand && pr.brand.color) || '#1E6E4E';
-            if (liveSite) return new Response(_bookPageHtml(cd.subdomain, color), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+            if (liveSite) return new Response(_bookPageHtml(cd.subdomain, color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
           }
         } catch (e) { /* fall through to normal routing */ }
       }
@@ -1863,7 +1883,7 @@ export default {
       if (_fm && method === 'GET') {
         const r2 = _r2(env); if (!r2) return err(404, 'File storage not configured.');
         const key = decodeURIComponent(_fm[1]).slice(0, 300);
-        try { const obj = await r2.get(key); if (!obj) return err(404, 'Not found.'); const h = { 'Cache-Control': 'public, max-age=86400' }; try { if (obj.httpMetadata && obj.httpMetadata.contentType) h['Content-Type'] = obj.httpMetadata.contentType; } catch (e) {} return new Response(obj.body, { headers: h }); } catch (e) { return err(404, 'Not found.'); }
+        try { const obj = await r2.get(key); if (!obj) return err(404, 'Not found.'); const h = { 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' }; try { if (obj.httpMetadata && obj.httpMetadata.contentType) h['Content-Type'] = obj.httpMetadata.contentType; } catch (e) {} return new Response(obj.body, { headers: h }); } catch (e) { return err(404, 'Not found.'); }
       }
 
       // ---- Inbound email webhook: your mail provider / forwarder (Resend, Postmark, SendGrid, generic) POSTs parsed mail
@@ -2305,6 +2325,7 @@ export default {
           const b = await req.json().catch(function () { return {}; });
           const u = String(b.url || '').trim();
           if (!/^https?:\/\/[^\s]{4,300}$/i.test(u)) return err(400, 'Enter a full http(s) URL to watch.');
+          if (!_whUrlOk(u)) return err(400, 'That URL is not allowed.');
           const cnt = ((await env.DB.prepare('SELECT COUNT(*) c FROM competitor_watch').first()) || {}).c || 0;
           if (cnt >= 200) return err(402, 'Watchlist is full (200). Remove one first.');
           const id = 'CW-' + randId(10);
@@ -2579,7 +2600,7 @@ export default {
         const live = pr && pr.settings.publicSite && pr.settings.publicSite.published;
         const color = (pr && pr.brand && pr.brand.color) || '#1E6E4E';
         if (!live) return new Response(_pageDoc('Not available', color, '<div class="card"><h2>Not available yet</h2><p class="muted">This booking site has not been published.</p></div>', ''), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-        return new Response(_bookPageHtml(bp[1], color), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        return new Response(_bookPageHtml(bp[1], color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend))?$/);
       if (ptp) {
@@ -2599,6 +2620,7 @@ export default {
             uploads: (((d.portal && d.portal.uploads) || []).map(function (u) { return { kind: u.kind, url: u.url, at: u.at }; })), requests: ((d.portal && d.portal.requests) || []), storage: !!_r2(env) });
         }
         if (psub === 'pay' && method === 'POST') {
+          if (!await rateLimit(env, 'ppay:' + token, 20, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
           const sk = await tenantStripeKey(env, brow.tenant_id);
           if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Online payment is not enabled yet - the owner will arrange payment with you.' });
           const q = d.quote || {}; const body = await req.json().catch(function () { return {}; });
@@ -2714,7 +2736,9 @@ export default {
 
       // ---- Twilio inbound SMS webhook (public): STOP/UNSUBSCRIBE -> suppress; START/UNSTOP -> re-subscribe ----
       if (path === '/api/sms/inbound' && method === 'POST') {
+        if (!await rateLimit(env, 'smsin:' + ((req.headers.get('CF-Connecting-IP')) || 'x'), 60, 60000)) return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' } });
         const raw = await req.text(); const p = new URLSearchParams(raw);
+        if (!await _twilioSigOk(env, req, url, p)) return new Response('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', { headers: { 'Content-Type': 'text/xml' } });
         const fromPhone = (p.get('From') || '').toLowerCase(); const bodyTxt = (p.get('Body') || '').trim().toUpperCase(); const toPhone = p.get('To') || '';
         if (fromPhone && toPhone) {
           let tid = null;
@@ -2959,7 +2983,11 @@ export default {
           if (!_can(ctx, 'pricing') && !_can(ctx, 'webEdit') && !_can(ctx, 'settings')) return err(403, 'You do not have permission to edit money rules, the website, or settings.');
           const body = await req.json().catch(function () { return {}; });
           const sets = [], vals = [];
-          if (body.brand && typeof body.brand === 'object') { sets.push('brand=?'); vals.push(JSON.stringify(body.brand)); }
+          if (body.brand && typeof body.brand === 'object') {
+            const _bl = body.brand.logo;   // M1: a logo must be a data: image or an https URL -- never an arbitrary string an owner-facing view could interpret as markup/attribute (e.g. `x" onerror=...`)
+            const _brand = (typeof _bl === 'string' && _bl && !/^data:image\//i.test(_bl) && !/^https:\/\//i.test(_bl)) ? Object.assign({}, body.brand, { logo: '' }) : body.brand;
+            sets.push('brand=?'); vals.push(JSON.stringify(_brand));
+          }
           if (body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }
           if (body.settings && typeof body.settings === 'object') { sets.push('settings=?'); vals.push(JSON.stringify(body.settings)); }
           if (vStr(body.name, 120)) { sets.push('name=?'); vals.push(body.name.slice(0, 120)); }
@@ -2984,6 +3012,8 @@ export default {
       // ---- email: send a REAL test to the owner (HONEST: sent:false + reason when no mailer is connected) ----
       if (path === '/api/email/test' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to send test messages.');
+        if (!await rateLimit(env, 'emltest:' + ctx.tenant_id, 5, 3600000)) return err(429, 'Too many test emails - please wait a moment.');
         const body = await req.json().catch(function () { return {}; });
         const to = vEmail(body.to) ? body.to : ctx.user.email;
         const t = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
@@ -2996,6 +3026,8 @@ export default {
       // ---- SMS: send a REAL test text (HONEST: sent:false + reason when no Twilio creds) ----
       if (path === '/api/sms/test' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to send test messages.');
+        if (!await rateLimit(env, 'smstest:' + ctx.tenant_id, 5, 3600000)) return err(429, 'Too many test messages - please wait a moment.');
         const body = await req.json().catch(function () { return {}; });
         const t = await env.DB.prepare('SELECT name,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         const pr = tenantProfile(t || { name: 'Atlas Rental.io' });
@@ -3132,6 +3164,7 @@ export default {
       if (path === '/api/billing/checkout' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'bchk:' + ctx.tenant_id, 20, 3600000)) return err(429, 'Please wait a moment before trying again.');
         const pk = await _platStripe(env);   // test/sandbox mode -> test key; toggle OFF (default) -> live key, unchanged
         if (!pk) return err(400, 'Platform billing is not configured yet.');
         const body = await req.json().catch(() => ({}));
@@ -3186,6 +3219,7 @@ export default {
       if (path === '/api/billing/change-plan' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'bchg:' + ctx.tenant_id, 20, 3600000)) return err(429, 'Please wait a moment before trying again.');
         const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');   // test mode -> test key; off -> live, unchanged
         await ensurePlatformSchema(env);
         const cb = await req.json().catch(() => ({}));
@@ -3222,6 +3256,7 @@ export default {
       if (path === '/api/billing/cancel' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'bcan:' + ctx.tenant_id, 10, 3600000)) return err(429, 'Please wait a moment before trying again.');
         await ensurePlatformSchema(env);
         const trow = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         const sub = trow && trow.stripe_sub; const pk = await _platStripe(env);   // test mode -> test key; off -> live, unchanged
@@ -3503,6 +3538,8 @@ export default {
     }
     })();
     for (const k in cors) resp.headers.set(k, cors[k]);   // CORS on every response
+    const _frameable = !!resp.headers.get('X-Atlas-Frameable'); if (resp.headers.has('X-Atlas-Frameable')) resp.headers.delete('X-Atlas-Frameable');   // internal marker only -- strip before it ever reaches a client
+    const _sh = securityHeaders(); for (const k in _sh) { if (_frameable && (k === 'X-Frame-Options' || k === 'Content-Security-Policy')) continue; if (!resp.headers.has(k)) resp.headers.set(k, _sh[k]); }   // H2: HSTS/nosniff/frame/CSP/referrer/permissions on every response (HTML pages + /api/f/ included); json()/err() already set these so this never overwrites them. The public booking page opts out of the two anti-framing headers ONLY (via X-Atlas-Frameable) -- tenants <iframe> it on their own site (atlas.html _modalEmbed); portal/e-sign/receipt/unsub/verify/api-f keep the full set
     return resp;
   },
 
