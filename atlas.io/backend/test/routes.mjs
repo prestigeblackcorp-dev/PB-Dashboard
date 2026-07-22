@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker from '../worker.js';
+import worker, { _b32decode, _hotp, _totpAt } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -416,6 +416,163 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(oj.members.by_tier && oj.members.by_tier.pro === 3 && oj.members.by_tier.starter === 2, '/api/admin/overview: by_tier comes from the new GROUP BY query');
   ok(typeof oj.revenue.mrr_cents === 'number' && oj.revenue.mrr_cents === (19900 * 3 + 4999 * 2), '/api/admin/overview: mrr_cents computed from the SQL-derived by_tier (unchanged JS math)');
   ok('signups' in oj && oj.visits && oj.installs && oj.bugs && oj.inbox && Array.isArray(oj.recent), '/api/admin/overview: full response shape unchanged (signups/visits/installs/bugs/inbox/recent present)');
+}
+
+// ---- MFA (two-factor authentication): additive, opt-in, OFF by default. Standalone RFC 6238 vector first (the
+// official test key "12345678901234567890" @ unix time 59 must produce 287082 -- if this ever fails, the TOTP
+// implementation is broken and nothing below can be trusted), then the full login/challenge/verify lifecycle
+// through worker.fetch() against a stateful mock D1, exactly like every other block in this file. ----
+{
+  const rfcSecret = Buffer.from('12345678901234567890', 'ascii');   // RFC 6238's test key IS the raw ASCII bytes, not base32
+  const rfcCode = await _totpAt(rfcSecret, 59, 30, 6);
+  ok(rfcCode === '287082', 'RFC 6238 standalone vector: TOTP(ASCII secret "12345678901234567890", t=59) === 287082 (got ' + rfcCode + ')');
+  const rfcCode8 = await _hotp(rfcSecret, 1, 8);
+  ok(rfcCode8 === '94287082', 'RFC 6238 standalone vector: 8-digit HOTP at counter=1 === 94287082 (got ' + rfcCode8 + ', cross-checks the dynamic-truncation math)');
+
+  const users = new Map();        // id -> row (mirrors the real `users` table's MFA columns)
+  const usersByEmail = new Map();
+  const sessions = new Map();
+  const rateLimits = new Map();
+  const platformConfig = new Map();
+  const mfaCodes = new Map();
+  function mfaDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return sessions.get(a[0]) || null;
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM users WHERE email=\?/.test(sql)) { const id = usersByEmail.get(a[0]); return id ? users.get(id) : null; }
+          if (/FROM users WHERE id=\?/.test(sql)) return users.get(a[0]) || null;
+          if (/mfa_pending_enc FROM users/.test(sql)) return users.get(a[0]) || null;
+          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) { const v = platformConfig.get(a[0]); return v === undefined ? null : { v }; }
+          if (/code_hash, expires_at FROM mfa_codes WHERE uid=\?/.test(sql)) return mfaCodes.get(a[0]) || null;
+          if (/sqlite_master/.test(sql)) return { n: 25 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,created_at\)/.test(sql)) {
+            const [id, email, pw_hash, pw_salt, tenant_id, role, created_at] = a;
+            users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, mfa_secret_enc: null, mfa_pending_enc: null, mfa_backup_json: null, mfa_enabled_at: null });
+            usersByEmail.set(email, id);
+          } else if (/UPDATE users SET last_login=\? WHERE id=\?/.test(sql)) { const u = users.get(a[1]); if (u) u.last_login = a[0]; }
+          else if (/UPDATE users SET mfa_pending_enc=\?, mfa_backup_json=\? WHERE id=\?/.test(sql)) { const u = users.get(a[2]); if (u) { u.mfa_pending_enc = a[0]; u.mfa_backup_json = a[1]; } }
+          else if (/mfa_method='totp', mfa_secret_enc=mfa_pending_enc, mfa_pending_enc=NULL/.test(sql)) { const u = users.get(a[1]); if (u) { u.mfa_method = 'totp'; u.mfa_secret_enc = u.mfa_pending_enc; u.mfa_pending_enc = null; u.mfa_enabled_at = a[0]; } }
+          else if (/mfa_method='email', mfa_secret_enc=NULL/.test(sql)) { const u = users.get(a[1]); if (u) { u.mfa_method = 'email'; u.mfa_secret_enc = null; u.mfa_pending_enc = null; u.mfa_backup_json = null; u.mfa_enabled_at = a[0]; } }
+          else if (/mfa_method=NULL, mfa_secret_enc=NULL/.test(sql)) { const u = users.get(a[0]); if (u) { u.mfa_method = null; u.mfa_secret_enc = null; u.mfa_pending_enc = null; u.mfa_backup_json = null; u.mfa_enabled_at = null; } }
+          else if (/UPDATE users SET mfa_backup_json=\? WHERE id=\?/.test(sql)) { const u = users.get(a[1]); if (u) u.mfa_backup_json = a[0]; }
+          else if (/INSERT INTO rate_limits/.test(sql)) rateLimits.set(a[0], { count: 1, window_start: a[1] });
+          else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const r = rateLimits.get(a[0]); if (r) r.count++; }
+          else if (/INSERT INTO platform_config/.test(sql)) platformConfig.set(a[0], a[1]);
+          else if (/INSERT INTO mfa_codes/.test(sql)) mfaCodes.set(a[0], { code_hash: a[1], expires_at: a[2], created_at: a[3] });
+          else if (/DELETE FROM mfa_codes WHERE uid=\?/.test(sql)) mfaCodes.delete(a[0]);
+          else if (/INSERT INTO sessions/.test(sql)) sessions.set(a[0], { id: a[0], user_id: a[1], tenant_id: a[2], csrf: a[3], created_at: a[4], idle_at: a[5], expires_at: a[6], revoked_at: null });
+          return { success: true, meta: { changes: 1 } };   // every ensurePlatformSchema CREATE/ALTER -- best-effort, always "succeeds"
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const mfaEnv = { DB: mfaDB(), SESSION_KEY: 'test-session-key-not-a-real-secret', ENC_KEY: Buffer.alloc(32, 7).toString('base64'), OWNER_EMAIL: 'owner@x.com' };   // exactly 32 raw bytes, base64-encoded -- what encSecret/decSecret's AES-GCM key import expects
+  const mfaReq = (method, path, body, cookie) => { const headers = { 'content-type': 'application/json', origin: 'https://atlasrental.io' }; if (cookie) headers['cookie'] = cookie; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  const mfaReqCsrf = (method, path, body, cookie, csrf) => { const rq = mfaReq(method, path, body, cookie); rq.headers = { get: (k) => { const m = { 'content-type': 'application/json', origin: 'https://atlasrental.io', cookie: cookie || '', 'x-csrf-token': csrf || '' }; const v = m[String(k).toLowerCase()]; return v === undefined || v === '' ? null : v; } }; return rq; };
+  function newestSession() { let best = null; for (const s of sessions.values()) if (!best || s.created_at >= best.created_at) best = s; return best; }
+
+  // (a) mfa-off login: unchanged -- a session issued in one round trip, no challenge
+  let r = await worker.fetch(mfaReq('POST', '/api/auth/signup', { email: 'plain@x.com', password: 'correcthorsebatterystaple', business: 'Plain Co' }), mfaEnv, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.ok === true, 'MFA: signup (no MFA) -> 200 ok');
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'plain@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !!j.csrf && !j.mfa_required, 'MFA: mfa-off login issues a session directly, no mfa_required (unchanged path)');
+  ok(newestSession() && newestSession().csrf === j.csrf, 'MFA: mfa-off login created a real session row matching the returned csrf');
+
+  // (b) turn on TOTP for a second user, then confirm login now demands the challenge
+  r = await worker.fetch(mfaReq('POST', '/api/auth/signup', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple', business: 'MFA Co' }), mfaEnv, ctx);
+  j = await r.json();
+  const cookie1 = 'atlas_sid=' + newestSession().id, csrf1 = j.csrf;
+  r = await worker.fetch(mfaReqCsrf('POST', '/api/auth/mfa/totp/setup', {}, cookie1, csrf1), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok && j.secret && j.otpauth && Array.isArray(j.backup_codes) && j.backup_codes.length === 10, 'MFA: totp/setup returns a base32 secret + otpauth URI + 10 backup codes');
+  const keyBytes = _b32decode(j.secret), backupCodes = j.backup_codes;
+  const totpNow = () => _totpAt(keyBytes, Math.floor(Date.now() / 1000), 30, 6);
+  r = await worker.fetch(mfaReqCsrf('POST', '/api/auth/mfa/totp/confirm', { code: 'wrongcode' }, cookie1, csrf1), mfaEnv, ctx);
+  ok(r.status === 401, 'MFA: totp/confirm rejects a wrong code');
+  r = await worker.fetch(mfaReqCsrf('POST', '/api/auth/mfa/totp/confirm', { code: await totpNow() }, cookie1, csrf1), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok && j.method === 'totp', 'MFA: totp/confirm with the REAL current code activates mfa_method=totp');
+
+  const sessCountBefore = sessions.size;
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === false && j.mfa_required === true && j.method === 'totp' && !!j.challenge, 'MFA: mfa-on login returns mfa_required:true + method:totp + a challenge instead of a session');
+  ok(sessions.size === sessCountBefore, 'MFA: mfa-on login created NO session row until the challenge is verified');
+  const challenge = j.challenge;
+
+  // (c) wrong code counts toward lockout; 5 bad codes lock the challenge (even a subsequently-correct one is refused)
+  for (let i = 0; i < 5; i++) {
+    r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge, code: '000000' }), mfaEnv, ctx);
+    ok(r.status === 401, 'MFA: wrong code attempt #' + (i + 1) + ' rejected');
+  }
+  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge, code: await totpNow() }), mfaEnv, ctx);
+  ok(r.status === 401, 'MFA: after 5 bad codes the challenge is LOCKED -- even a correct code is now rejected');
+  // the lock is scoped per-account (bucket "mfabad:<uid>"), not per-challenge, so a fresh login challenge for the
+  // SAME account is deliberately still covered by it -- reset the bucket here (simulating the window elapsing)
+  rateLimits.delete('mfabad:' + usersByEmail.get('mfauser@x.com'));
+
+  // (d) a correct TOTP code on a fresh challenge issues a real session + (with remember_device) a trusted-device token
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  const challenge2 = j.challenge;
+  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge: challenge2, code: await totpNow(), remember_device: true }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !!j.csrf && !!j.trusted_device, 'MFA: correct TOTP code -> real session + a trusted_device token (remember_device:true)');
+  const trustedToken = j.trusted_device;
+
+  // (e) that trusted-device token skips the challenge on the next login
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple', trusted_device: trustedToken }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !j.mfa_required, 'MFA: a valid trusted-device token skips the challenge entirely');
+
+  // (f) a backup code clears a challenge once, then fails on reuse; a different backup code still works
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  const challenge3 = j.challenge;
+  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge: challenge3, code: backupCodes[0] }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true, 'MFA: an unused backup code clears the challenge');
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  const challenge4 = j.challenge;
+  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge: challenge4, code: backupCodes[0] }), mfaEnv, ctx);
+  ok(r.status === 401, 'MFA: the SAME backup code fails the second time (single-use, already consumed)');
+  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge: challenge4, code: backupCodes[1] }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true, 'MFA: a different, still-unused backup code still works');
+
+  // (g) platform kill switch: mfa_enabled=0 bypasses the challenge platform-wide, even for this mfa-on user
+  platformConfig.set('mfa_enabled', '0');
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !j.mfa_required, 'MFA: kill switch (mfa_enabled=0) bypasses the challenge platform-wide');
+  platformConfig.set('mfa_enabled', '1');
+
+  // (h) disable requires a fresh code OR the account password -- neither present -> refused; password -> allowed
+  r = await worker.fetch(mfaReqCsrf('POST', '/api/auth/mfa/disable', {}, cookie1, csrf1), mfaEnv, ctx);
+  ok(r.status === 401, 'MFA: disable refuses with neither a password nor a code');
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple', trusted_device: trustedToken }), mfaEnv, ctx);
+  j = await r.json();
+  const cookieMfa = 'atlas_sid=' + newestSession().id, csrfMfa = j.csrf;
+  r = await worker.fetch(mfaReqCsrf('POST', '/api/auth/mfa/disable', { password: 'correcthorsebatterystaple' }, cookieMfa, csrfMfa), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && j.method === 'off', 'MFA: the account password authorizes disabling');
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !j.mfa_required, 'MFA: after disable, login is unchanged again -- exactly like an mfa-off user');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }

@@ -299,7 +299,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19r';
+const ATLAS_BUILD = '2026.07.19s';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -995,6 +995,203 @@ async function _sendChunked(items, size, fn) {
   return out;
 }
 
+// ===================== MFA (two-factor authentication) -- additive, opt-in, OFF by default =====================
+// Every existing user has mfa_method NULL (treated as 'off'); the branch inserted into /api/auth/login only runs
+// for a user who has explicitly turned this on, AND only when the platform kill-switch (_pcfgGet mfa_enabled) is
+// on, AND only when the request doesn't already carry a valid trusted-device token. An 'off' user short-circuits
+// the very first check (mfa_method !== 'off') so there is no extra DB read and no extra round-trip for them --
+// the response shape and session issuance are byte-for-byte what they were before this feature existed.
+//
+// Two methods, owner's choice which to offer:
+//   'email' -- a 6-digit code emailed on a non-trusted device. Reuses the SAME Resend mailer as password-reset (#17).
+//   'totp'  -- an authenticator app (RFC 6238). Comes with 10 one-time backup codes (hashed at rest) so losing the
+//              device never locks the owner out; a TOTP user can ALSO always fall back to an emailed code.
+// A signed (HMAC SESSION_KEY, fail-closed) "remember this device" token lets a returning device skip the challenge
+// for ~30 days; it embeds the CURRENT mfa_method, so switching or disabling the method invalidates old trust for
+// free (the embedded method no longer matches what's on the user row -> signature check fails -> challenge required).
+
+// ---- base32 (RFC 4648, no padding) -- the otpauth:// secret format every authenticator app expects ----
+const _B32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function _b32encode(bytes) {
+  let bits = 0, value = 0, out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    value = (value << 8) | bytes[i]; bits += 8;
+    while (bits >= 5) { out += _B32_ALPHABET[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += _B32_ALPHABET[(value << (5 - bits)) & 31];
+  return out;
+}
+function _b32decode(str) {
+  const s = String(str || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+  let bits = 0, value = 0; const out = [];
+  for (let i = 0; i < s.length; i++) {
+    const idx = _B32_ALPHABET.indexOf(s[i]); if (idx < 0) continue;
+    value = (value << 5) | idx; bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+  }
+  return new Uint8Array(out);
+}
+
+// ---- HOTP/TOTP (RFC 4226 / RFC 6238) over WebCrypto HMAC-SHA1. MUST self-test against the official RFC 6238
+// vector (ASCII secret "12345678901234567890" @ unix time 59 -> 287082) -- see backend/test/routes.mjs, which
+// asserts this exact value; if that assertion ever fails, this function is broken and nothing here can be trusted. ----
+async function _hotp(keyBytes, counter, digits) {
+  const buf = new ArrayBuffer(8);
+  new DataView(buf).setBigUint64(0, BigInt(counter), false);   // 8-byte big-endian counter, per RFC 4226
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+  const offset = sig[sig.length - 1] & 0xf;                     // dynamic truncation, RFC 4226 section 5.3
+  const code = ((sig[offset] & 0x7f) << 24) | ((sig[offset + 1] & 0xff) << 16) | ((sig[offset + 2] & 0xff) << 8) | (sig[offset + 3] & 0xff);
+  const d = digits || 6;
+  return String(code % Math.pow(10, d)).padStart(d, '0');
+}
+async function _totpAt(keyBytes, unixSeconds, step, digits) {
+  return await _hotp(keyBytes, Math.floor(unixSeconds / (step || 30)), digits || 6);
+}
+// Accepts the current 30s step AND its immediate neighbors (clock drift), per RFC 6238. Constant-time compare per candidate.
+async function _totpMatchesWindow(keyBytes, code) {
+  const c = String(code || '').replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(c)) return false;
+  const now = Math.floor(Date.now() / 1000);
+  for (const d of [0, -1, 1]) { if (_ctEq(await _totpAt(keyBytes, now + d * 30, 30, 6), c)) return true; }
+  return false;
+}
+// AAD for the encrypted TOTP secret -- binds ciphertext to this exact user (see encSecret/decSecret doc above).
+function _mfaAad(uid) { return 'mfa:' + uid; }
+
+// ---- backup codes: 10 one-time recovery codes shown ONCE at TOTP setup, stored as SHA-256 hashes. They are
+// system-generated (already high-entropy) rather than user-chosen, so unlike a password PBKDF2 buys nothing here
+// and would cost 10x a real login's CPU on every setup -- a plain salted-by-uid SHA-256 is the right tool.
+// 5 bits/char from a 32-symbol alphabet (no ambiguous 0/O/1/I) -> 50 bits of entropy per code, backstopped by the
+// same hard lockout as every other MFA factor. ----
+const _BC_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function _genBackupCode() {
+  const b = crypto.getRandomValues(new Uint8Array(10));
+  let s = ''; for (let i = 0; i < 10; i++) s += _BC_ALPHABET[b[i] & 31];
+  return s.slice(0, 5) + '-' + s.slice(5);
+}
+function _normBackupCode(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+
+// ---- signed, stateless challenge token (uid|exp|purpose over HMAC SESSION_KEY) -- same pattern as _resetSig /
+// _verifySig above, with its OWN purpose tag so a login challenge can never be replayed as a reset/verify link
+// (or vice versa), exactly why those two stayed separate functions instead of one shared/parameterized signer. ----
+async function _mfaChallengeSig(env, uid, exp) {
+  if (!env.SESSION_KEY) return '';
+  try { const key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(exp) + '|mfachallenge'));
+    return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
+  } catch (e) { return ''; }
+}
+function _mfaParseChallenge(s) {
+  const p = String(s || '').split('.');
+  if (p.length !== 3) return null;
+  const exp = parseInt(p[1], 10) || 0;
+  if (!p[0] || !exp || !p[2]) return null;
+  return { uid: p[0], exp: exp, sig: p[2] };
+}
+// Builds the {mfa_required:true,...} response AND (for the 'email' method) fires the code email. Called from the
+// login handler only after the password has already verified -- the challenge token is the ONLY thing a client
+// can use going forward; the plaintext password is never needed again for this flow.
+async function _mfaIssueChallenge(env, user) {
+  const exp = Date.now() + 10 * 60 * 1000;   // ~10min, short-lived like the password-reset link
+  const sig = await _mfaChallengeSig(env, user.id, exp);
+  const method = user.mfa_method === 'totp' ? 'totp' : 'email';
+  if (method === 'email') { try { await _mfaSendEmailCode(env, user); } catch (e) {} }   // best-effort; /resend covers a delivery hiccup
+  return json({ ok: false, mfa_required: true, method: method, challenge: user.id + '.' + exp + '.' + sig });
+}
+
+// ---- trusted device: signed uid|exp|method token (same HMAC family as above, fail-closed with no SESSION_KEY).
+// Binding the CURRENT mfa_method into the signature means changing OR disabling the method silently invalidates
+// every previously-issued trust token for that user -- no revocation list to store or clean up. ----
+async function _trustedDeviceSig(env, uid, exp, method) {
+  if (!env.SESSION_KEY) return '';
+  try { const key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(exp) + '|' + String(method) + '|trustdevice'));
+    return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
+  } catch (e) { return ''; }
+}
+async function _mfaDeviceTrusted(env, body, user) {
+  try {
+    const tok = String((body && body.trusted_device) || ''); if (!tok) return false;
+    const p = tok.split('.'); if (p.length !== 3 || p[0] !== user.id) return false;
+    const exp = parseInt(p[1], 10) || 0; if (!exp || exp < Date.now()) return false;
+    const expect = await _trustedDeviceSig(env, user.id, exp, user.mfa_method || 'off');
+    return !!expect && _ctEq(p[2], expect);
+  } catch (e) { return false; }   // fail-closed: any parse/crypto error -> not trusted -> challenge still required
+}
+
+// ---- email code: cryptographically random 6 digits (never Math.random), hashed+stored keyed by uid (~10min TTL,
+// single active code per user -- a resend simply replaces it), emailed via the SAME Resend mailer as password-reset. ----
+function _mfaGen6() { const u = new Uint32Array(1); crypto.getRandomValues(u); return String(u[0] % 1000000).padStart(6, '0'); }
+async function _mfaSendEmailCode(env, user) {
+  await ensurePlatformSchema(env);
+  const code = _mfaGen6();
+  const hash = await _sha256Hex(user.id + ':' + code);
+  const exp = Date.now() + 10 * 60 * 1000;
+  await env.DB.prepare('INSERT INTO mfa_codes (uid,code_hash,expires_at,created_at) VALUES (?,?,?,?) ON CONFLICT(uid) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, created_at=excluded.created_at')
+    .bind(user.id, hash, exp, Date.now()).run();
+  const html = '<h2 style="margin:0 0 10px">Your sign-in code</h2><p>Use this code to finish signing in to Atlas Rental.io:</p>'
+    + '<p style="margin:20px 0;font-size:32px;font-weight:800;letter-spacing:6px;color:#1E6E4E">' + esc(code) + '</p>'
+    + '<p style="color:#889;font-size:12px">This code expires in 10 minutes. If you did not try to sign in, you can ignore this email -- your account is still safe.</p>';
+  return await sendEmail(env, { to: user.email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Your Atlas Rental.io sign-in code', html: html });
+}
+async function _mfaCheckEmailCode(env, uid, code) {
+  try {
+    const row = await env.DB.prepare('SELECT code_hash, expires_at FROM mfa_codes WHERE uid=?').bind(uid).first();
+    if (!row || !row.expires_at || row.expires_at < Date.now()) return false;
+    const h = await _sha256Hex(uid + ':' + String(code || '').trim());
+    if (!_ctEq(h, row.code_hash)) return false;
+    await env.DB.prepare('DELETE FROM mfa_codes WHERE uid=?').bind(uid).run();   // single-use
+    return true;
+  } catch (e) { return false; }
+}
+async function _mfaCheckTotp(env, user, code) {
+  if (!user.mfa_secret_enc) return false;
+  try { const b32 = await decSecret(env, user.mfa_secret_enc, _mfaAad(user.id)); return await _totpMatchesWindow(_b32decode(b32), code); }
+  catch (e) { return false; }
+}
+async function _mfaCheckBackupCode(env, user, code) {
+  try {
+    if (!user.mfa_backup_json) return false;
+    const list = jparse(user.mfa_backup_json, []); if (!Array.isArray(list) || !list.length) return false;
+    const norm = _normBackupCode(code); if (!norm) return false;
+    const h = await _sha256Hex(user.id + ':' + norm);
+    let found = -1;
+    for (let i = 0; i < list.length; i++) { if (!list[i].used && _ctEq(list[i].h, h)) { found = i; break; } }
+    if (found < 0) return false;
+    list[found].used = true; list[found].usedAt = Date.now();
+    await env.DB.prepare('UPDATE users SET mfa_backup_json=? WHERE id=?').bind(JSON.stringify(list), user.id).run();
+    return true;
+  } catch (e) { return false; }
+}
+// Tries every factor for this uid -- emailed code, TOTP (+-1 step), backup code -- so a TOTP user can always fall
+// back to an emailed code (no-lockout safety requirement). Whichever method ISN'T the active one simply has no
+// stored material to match (e.g. mfa_secret_enc is null after switching to email), so trying it is a harmless,
+// instant false -- this function does not need to branch on user.mfa_method at all.
+async function _mfaCheckAnyFactor(env, user, code) {
+  if (!code) return { ok: false };
+  if (await _mfaCheckEmailCode(env, user.id, code)) return { ok: true, backup: false };
+  if (await _mfaCheckTotp(env, user, code)) return { ok: true, backup: false };
+  if (await _mfaCheckBackupCode(env, user, code)) return { ok: true, backup: true };
+  return { ok: false };
+}
+// Read-only lockout PEEK (never mutates) -- lets the verify handler refuse ANY further attempt, correct code or
+// not, once 5 bad codes have already been recorded via rateLimit() against the SAME bucket (called only on a
+// wrong attempt, below). Fails OPEN on a DB hiccup, matching the "never lock the owner out on our own error"
+// ethos used everywhere else in this file (e.g. audit()).
+async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
+  try {
+    const row = await env.DB.prepare('SELECT count,window_start FROM rate_limits WHERE bucket=?').bind(bucket).first();
+    if (!row) return false;
+    if (Date.now() - row.window_start > windowMs) return false;
+    return row.count >= max;
+  } catch (e) { return false; }
+}
+// Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
+// calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
+// REAL implementation instead of a hand-rolled copy.
+export { _b32encode, _b32decode, _hotp, _totpAt };
+
 // ===================== #201 Domain registrar (Dynadot API v3) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
 // The envelope is inconsistent across commands (success is "ResponseCode" OR "SuccessCode", sometimes under a {Cmd}Header child),
@@ -1352,6 +1549,13 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_free INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_week INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1").run(); } catch (e) { /* already exists -- existing users default verified so email confirmation never locks anyone out retroactively */ }
+  // MFA (two-factor auth, additive/opt-in/OFF by default): NULL/absent mfa_method == 'off' for every existing user,
+  // so this ALTER never changes anyone's login behavior on its own -- see the login handler's gate.
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_method TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_secret_enc TEXT").run(); } catch (e) { /* already exists -- ACTIVE encrypted TOTP secret (encSecret/decSecret, AAD='mfa:'+uid) */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_pending_enc TEXT").run(); } catch (e) { /* already exists -- secret generated at /totp/setup, not yet proven with a real code from the app */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_backup_json TEXT").run(); } catch (e) { /* already exists -- JSON [{h:sha256hex,used:bool}] x10, hashed at rest, shown to the owner ONCE in plaintext at setup */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_enabled_at INTEGER").run(); } catch (e) { /* already exists */ }
   // Soft-delete tombstone: set on /api/admin/delete, cleared on /api/admin/restore. Keeps every row + the audit_log
   // (a real revert path + forensics) instead of the old one-click irreversible 16-table wipe.
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN deleted_at INTEGER").run(); } catch (e) { /* already exists */ }
@@ -1360,6 +1564,12 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN connect_charges_enabled INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   // Platform key/value config (feature flags like ai_hq_enabled live here; edited from the admin console).
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_config (k TEXT PRIMARY KEY, v TEXT, updated_at INTEGER)").run(); } catch (e) {}
+  // MFA email codes: uid is the PRIMARY KEY, so a resend / a fresh login challenge simply UPSERTs (ON CONFLICT) --
+  // only ONE active 6-digit code ever exists per user, and sending a new one immediately kills the old one.
+  // Chose a small dedicated table over reusing platform_config: platform_config is a global singleton k/v store
+  // with no expiry semantics of its own, where a per-user row would be an awkward fit; this mirrors the existing
+  // sessions/rate_limits tables (a real primary key, a natural upsert, O(1) lookup by uid).
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS mfa_codes (uid TEXT PRIMARY KEY, code_hash TEXT, expires_at INTEGER, created_at INTEGER)").run(); } catch (e) {}
   // AI Command Center support tables: a daily metric snapshot (so "vs. last week" is REAL, not a live guess), the
   // generated founder briefs, and a short-TTL cache so re-opening the dashboard doesn't re-burn model tokens.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_daily_snapshot (day TEXT PRIMARY KEY, mrr_cents INTEGER DEFAULT 0, paid INTEGER DEFAULT 0, trials INTEGER DEFAULT 0, twc INTEGER DEFAULT 0, active_tenants INTEGER DEFAULT 0, rev_day_cents INTEGER DEFAULT 0, signups INTEGER DEFAULT 0, at INTEGER)").run(); } catch (e) {}
@@ -1619,6 +1829,14 @@ export default {
         await env.DB.prepare('UPDATE users SET last_login=? WHERE id=?').bind(Date.now(), user.id).run();
         // Transparently upgrade a legacy single-100k hash to the 600k scheme now that we hold the plaintext.
         if (pwNeedsUpgrade(user.pw_hash)) { try { const _up = await hashPassword(body.password); await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_up.hash, _up.salt, user.id).run(); } catch (e) {} }
+        // ---- MFA gate (additive, opt-in, OFF by default -- see the "MFA" section above). `_mfaMethod !== 'off'`
+        // is deliberately the FIRST (left) operand of this && so the kill-switch config read and the trusted-device
+        // check are NEVER reached for the overwhelming majority of users (mfa_method NULL/'off'): zero extra queries,
+        // zero extra round-trips, and every line below this block is the exact same, unmodified original code path. ----
+        const _mfaMethod = user.mfa_method || 'off';
+        if (_mfaMethod !== 'off' && (await _pcfgGet(env, 'mfa_enabled', '1')) === '1' && !(await _mfaDeviceTrusted(env, body, user))) {
+          return await _mfaIssueChallenge(env, user);
+        }
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'login', {});
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)) }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
@@ -1700,6 +1918,51 @@ function doReset(){
         try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=?').bind(Date.now(), ru).run(); } catch (e) {}
         await audit(env, null, req, 'auth.password_reset', { email: re });
         return json({ ok: true });
+      }
+
+      // ---- AUTH: MFA challenge verify (public -- the signed challenge token IS the credential here, there is no
+      // session yet). Tries every unlocked factor for this uid in turn: the emailed code, a valid TOTP (+-1 step),
+      // or an unused backup code -- any ONE clears the challenge (the "authenticator OR backup code OR email"
+      // no-lockout design). Hard rate-limited per-uid AND per-IP, plus a 5-bad-code lock on the challenge itself. ----
+      if (path === '/api/auth/mfa/verify' && method === 'POST') {
+        const ip = req.headers.get('CF-Connecting-IP') || 'x';
+        const body = await req.json().catch(() => ({}));
+        const chal = _mfaParseChallenge(body.challenge);
+        if (!chal) return err(401, 'This code entry session has expired. Please sign in again.');
+        if (!await rateLimit(env, 'mfaver:' + ip, 20, 900000)) return err(429, 'Too many attempts. Try again later.');
+        if (!await rateLimit(env, 'mfaver:' + chal.uid, 15, 900000)) return err(429, 'Too many attempts. Try again later.');
+        const expectSig = await _mfaChallengeSig(env, chal.uid, chal.exp);
+        if (!expectSig || !_ctEq(chal.sig, expectSig) || chal.exp < Date.now()) return err(401, 'This code entry session has expired. Please sign in again.');
+        const user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(chal.uid).first();
+        if (!user) return err(401, 'This code entry session has expired. Please sign in again.');
+        const lockBucket = 'mfabad:' + user.id;
+        if (await _mfaAttemptsLocked(env, lockBucket, 5, 600000)) return err(401, 'Too many incorrect codes. Please sign in again.');
+        const result = await _mfaCheckAnyFactor(env, user, String(body.code || '').trim().slice(0, 24));
+        if (!result.ok) { await rateLimit(env, lockBucket, 5, 600000); await audit(env, null, req, 'mfa.verify_fail', { uid: user.id }); return err(401, 'Incorrect code.'); }
+        await env.DB.prepare('UPDATE users SET last_login=? WHERE id=?').bind(Date.now(), user.id).run();
+        const sess = await createSession(env, user, req);
+        let deviceToken = null;
+        if (body.remember_device) { const dexp = Date.now() + 30 * 24 * 3600 * 1000; deviceToken = user.id + '.' + dexp + '.' + (await _trustedDeviceSig(env, user.id, dexp, user.mfa_method || 'off')); }
+        await audit(env, { tenant_id: user.tenant_id, user }, req, 'mfa.verify_ok', { backup: result.backup });
+        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), trusted_device: deviceToken }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+      }
+
+      // ---- AUTH: resend the MFA email code (public; gated by the SAME challenge token, not a session -- also how
+      // a TOTP user who lost their device asks for the email fallback) ----
+      if (path === '/api/auth/mfa/email/resend' && method === 'POST') {
+        const ip = req.headers.get('CF-Connecting-IP') || 'x';
+        const body = await req.json().catch(() => ({}));
+        const chal = _mfaParseChallenge(body.challenge);
+        if (!chal) return err(401, 'This code entry session has expired. Please sign in again.');
+        const expectSig = await _mfaChallengeSig(env, chal.uid, chal.exp);
+        if (!expectSig || !_ctEq(chal.sig, expectSig) || chal.exp < Date.now()) return err(401, 'This code entry session has expired. Please sign in again.');
+        if (!await rateLimit(env, 'mfaresend:' + chal.uid, 1, 60000)) return err(429, 'Please wait a moment before requesting another code.');
+        if (!await rateLimit(env, 'mfaresendh:' + chal.uid, 5, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        if (!await rateLimit(env, 'mfaresendip:' + ip, 20, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        const user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(chal.uid).first();
+        if (!user) return err(401, 'This code entry session has expired. Please sign in again.');
+        const sent = await _mfaSendEmailCode(env, user);
+        return json({ ok: true, sent: !!(sent && sent.sent) });
       }
 
       // ---- PUBLIC booking site + intake (no login; rate-limited; tenant resolved by its published subdomain slug) ----
@@ -2387,7 +2650,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -2397,7 +2660,10 @@ function doReset(){
           if (typeof b.gmv_connect_enabled !== 'undefined') { await _pcfgSet(env, 'gmv_connect_enabled', b.gmv_connect_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { gmv_connect_enabled: !!b.gmv_connect_enabled }); }
           if (typeof b.payments_test_mode !== 'undefined') { await _pcfgSet(env, 'payments_test_mode', b.payments_test_mode ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { payments_test_mode: !!b.payments_test_mode }); }
           if (typeof b.dev_api_enabled !== 'undefined') { await _pcfgSet(env, 'dev_api_enabled', b.dev_api_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { dev_api_enabled: !!b.dev_api_enabled }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1' };
+          // MFA kill switch (default '1' == the feature is available to any user who opts in). Setting it to '0' is
+          // the emergency escape hatch: EVERY tenant's login skips the MFA branch platform-wide until it's set back.
+          if (typeof b.mfa_enabled !== 'undefined') { await _pcfgSet(env, 'mfa_enabled', b.mfa_enabled ? '1' : '0'); await audit(env, { actor: _actor }, req, 'admin.config', { mfa_enabled: !!b.mfa_enabled }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1' };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent });
         }
         // E3 admin RBAC: manage named-actor roles (owner|support|analyst). The shared-token actor 'atlas-hq' is always owner (break-glass).
@@ -2946,6 +3212,74 @@ function doReset(){
       if (path === '/api/auth/me' && method === 'GET') {
         const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf });
+      }
+
+      // ---- MFA: current status for Settings (authed; per-USER, not per-tenant -- any team member manages their own) ----
+      if (path === '/api/auth/mfa/status' && method === 'GET') {
+        const row = await env.DB.prepare('SELECT mfa_method, mfa_backup_json FROM users WHERE id=?').bind(ctx.user.id).first();
+        const list = row ? jparse(row.mfa_backup_json, []) : [];
+        const remaining = Array.isArray(list) ? list.filter(function (c) { return !c.used; }).length : 0;
+        return json({ ok: true, method: (row && row.mfa_method) || 'off', backup_codes_remaining: remaining });
+      }
+
+      // ---- MFA: begin authenticator-app setup (authed). Generates a PENDING secret + the 10 backup codes; NOTHING
+      // is active yet -- /totp/confirm must prove a real code from the app before mfa_method flips on, so a
+      // mis-scanned/mistyped secret can never silently lock the owner into an unusable state. ----
+      if (path === '/api/auth/mfa/totp/setup' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!await rateLimit(env, 'mfasetup:' + ctx.user.id, 10, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        await ensurePlatformSchema(env);
+        const secretBytes = crypto.getRandomValues(new Uint8Array(20));
+        const b32 = _b32encode(secretBytes);
+        const plainCodes = [], hashedCodes = [];
+        for (let i = 0; i < 10; i++) { const c = _genBackupCode(); plainCodes.push(c); hashedCodes.push({ h: await _sha256Hex(ctx.user.id + ':' + _normBackupCode(c)), used: false }); }
+        const pendingEnc = await encSecret(env, b32, _mfaAad(ctx.user.id));
+        await env.DB.prepare('UPDATE users SET mfa_pending_enc=?, mfa_backup_json=? WHERE id=?').bind(pendingEnc, JSON.stringify(hashedCodes), ctx.user.id).run();
+        await audit(env, ctx, req, 'mfa.totp_setup', {});
+        const uri = 'otpauth://totp/Atlas:' + encodeURIComponent(ctx.user.email) + '?secret=' + b32 + '&issuer=Atlas&digits=6&period=30';
+        return json({ ok: true, secret: b32, otpauth: uri, backup_codes: plainCodes });
+      }
+
+      // ---- MFA: confirm the pending secret with a real code from the app -> activates it. Moves the ciphertext
+      // column-to-column (same AAD in both, see _mfaAad) rather than decrypt+re-encrypt -- one less crypto round trip. ----
+      if (path === '/api/auth/mfa/totp/confirm' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!await rateLimit(env, 'mfaconfirm:' + ctx.user.id, 10, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        const body = await req.json().catch(() => ({}));
+        const row = await env.DB.prepare('SELECT mfa_pending_enc FROM users WHERE id=?').bind(ctx.user.id).first();
+        if (!row || !row.mfa_pending_enc) return err(400, 'Start setup again from Settings.');
+        let b32; try { b32 = await decSecret(env, row.mfa_pending_enc, _mfaAad(ctx.user.id)); } catch (e) { return err(400, 'Start setup again from Settings.'); }
+        if (!(await _totpMatchesWindow(_b32decode(b32), body.code))) return err(401, 'Incorrect code. Check your authenticator app and try again.');
+        await env.DB.prepare("UPDATE users SET mfa_method='totp', mfa_secret_enc=mfa_pending_enc, mfa_pending_enc=NULL, mfa_enabled_at=? WHERE id=?").bind(Date.now(), ctx.user.id).run();
+        await audit(env, ctx, req, 'mfa.totp_enabled', {});
+        return json({ ok: true, method: 'totp' });
+      }
+
+      // ---- MFA: turn on email codes (authed). The account email is already a proven, verified channel -- it is
+      // how password resets and confirmations already arrive -- so unlike TOTP there is no "did the transfer even
+      // work" risk to confirm first; flips on immediately, and retires any leftover authenticator material so the
+      // account is left in one clean, unambiguous state. ----
+      if (path === '/api/auth/mfa/email/enable' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        await env.DB.prepare("UPDATE users SET mfa_method='email', mfa_secret_enc=NULL, mfa_pending_enc=NULL, mfa_backup_json=NULL, mfa_enabled_at=? WHERE id=?").bind(Date.now(), ctx.user.id).run();
+        await audit(env, ctx, req, 'mfa.email_enabled', {});
+        return json({ ok: true, method: 'email' });
+      }
+
+      // ---- MFA: disable (authed + a FRESH code OR the account password -- a stolen session cookie alone can
+      // never turn this off). ----
+      if (path === '/api/auth/mfa/disable' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!await rateLimit(env, 'mfadisable:' + ctx.user.id, 8, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        const body = await req.json().catch(() => ({}));
+        const full = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(ctx.user.id).first();
+        let verified = false;
+        if (full && vStr(body.password, 200)) verified = await verifyPassword(body.password, full.pw_salt, full.pw_hash);
+        if (!verified && full && body.code) verified = (await _mfaCheckAnyFactor(env, full, String(body.code).trim().slice(0, 24))).ok;
+        if (!verified) { await audit(env, ctx, req, 'mfa.disable_fail', {}); return err(401, 'Enter your account password or a current code to turn off two-factor authentication.'); }
+        await env.DB.prepare("UPDATE users SET mfa_method=NULL, mfa_secret_enc=NULL, mfa_pending_enc=NULL, mfa_backup_json=NULL, mfa_enabled_at=NULL WHERE id=?").bind(ctx.user.id).run();
+        await audit(env, ctx, req, 'mfa.disabled', {});
+        return json({ ok: true, method: 'off' });
       }
 
       // ---- E1: R2 file upload (session-gated). base64 data URL in -> stored in R2 -> returns a public capability URL.

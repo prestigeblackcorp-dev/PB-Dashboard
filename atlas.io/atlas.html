@@ -1721,9 +1721,12 @@ const Atlas = (function(){
       .then(function(r){ return r.json().catch(function(){return{};}).then(function(j){ return {status:r.status,json:j}; }); }); }
   // Server-authoritative signup/login -> the server assigns tenant_id + a CSRF token (held in memory).
   function _srvAuth(mode,email,pass){
-    var body = mode==='login' ? {email:email,password:pass}
+    // A remembered device sends back its trusted_device token (see mfaSubmit) so the server can skip a repeat
+    // 2FA challenge; sits in the JSON body (not a header) so it never needs a CORS allow-list change.
+    var body = mode==='login' ? {email:email,password:pass,trusted_device:_mfaDeviceToken(email)}
              : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars'};
     return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
+      if(res.json && res.json.mfa_required){ return {mfa:true, method:res.json.method, challenge:res.json.challenge}; }
       if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; if(res.json.ip) _clientIp=res.json.ip; return {ok:true,tenant_id:res.json.tenant_id,verify:res.json.verify,verified:res.json.verified}; }
       return {err:(res.json&&res.json.error)||'Could not sign in.'}; })
     .catch(function(){ return {err:'Network error \u2014 check your connection.'}; }); }
@@ -1843,7 +1846,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19h';
+  var APP_VERSION='2026.7.19i';
   var APP_CHANGELOG=[
     'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
     'Cancellation policy you set once (Settings &gt; Money): shown to customers before they pay, in the confirmation email, and merged into your rental agreement &amp; terms',
@@ -2484,6 +2487,12 @@ const Atlas = (function(){
   /* ============================== ONBOARDING ============================== */
   let step=0; const STEPS=['welcome','identity','fleet','money','connect','asset','invite','done'];
   var _authMode='signup';
+  /* ---- 2FA (MFA) login challenge state + trusted-device token storage. Off by default: this code path only runs
+     when the server's login response actually says mfa_required (see _srvAuth above). ---- */
+  var _mfaChallengeTok='', _mfaEmailCur='', _mfaMethodCur='email', _mfaBackupMode=false, _mfaPendingCodes=[];
+  function _mfaTdKey(email){ return 'atlas_td_'+_emailKey(email); }
+  function _mfaDeviceToken(email){ try{ var v=JSON.parse(localStorage.getItem(_mfaTdKey(email))||'null'); if(v&&v.token&&v.exp>Date.now()) return v.token; }catch(e){} return undefined; }
+  function _mfaSaveDeviceToken(email,token){ try{ if(!token) return; var parts=String(token).split('.'); var exp=parseInt(parts[1],10)||(Date.now()+2592000000); localStorage.setItem(_mfaTdKey(email), JSON.stringify({token:token,exp:exp})); }catch(e){} }
   function goAuth(mode){ try{ _demoTeardown(); }catch(e){} _authMode=(mode==='login')?'login':'signup'; renderAuth(); show('auth'); var e=document.getElementById('authEmail'); if(e) setTimeout(function(){e.focus();},60); }
   function _demoTeardown(){ if(_demo){ _demo.on=false; clearTimeout(_demo.timer); } var c=document.getElementById('dcoach'); if(c) c.classList.remove('on'); var x=document.getElementById('demoExit'); if(x) x.classList.remove('on'); }
   function renderAuth(){
@@ -2509,14 +2518,23 @@ const Atlas = (function(){
       // SAME id so every existing (synchronous, instant) render keeps working -- then hydrate the server rows.
       _authErr('');
       r = await _srvAuth(_authMode, email, pass);
+      if(r.mfa){ _mfaBegin(email, r.method, r.challenge); return; }   // 2FA is on for this account -- show the code screen instead of finishing sign-in
       if(r.err){ _authErr(r.err); return; }
-      _lsSet(SK, {email:_emailKey(email), tenantId:r.tenant_id});
-      if(!_lsGet('atlas_tenant_'+r.tenant_id, null)) _lsSet('atlas_tenant_'+r.tenant_id, fresh());
-      await _srvHydrate(r.tenant_id);
+      await _srvAuthSettle(email, r.tenant_id);
     } else {
       r = _authMode==='login' ? store.login(email,pass) : store.signup(email,pass);
       if(r.err){ _authErr(r.err); return; }
     }
+    await _afterAuthSuccess(email, r);
+  }
+  // Shared with the post-2FA success path (mfaSubmit): local session pointer + seed + server hydrate.
+  async function _srvAuthSettle(email, tenantId){
+    _lsSet(SK, {email:_emailKey(email), tenantId:tenantId});
+    if(!_lsGet('atlas_tenant_'+tenantId, null)) _lsSet('atlas_tenant_'+tenantId, fresh());
+    await _srvHydrate(tenantId);
+  }
+  // Whatever screen comes next once a real session exists -- shared by a direct login AND a post-2FA verify.
+  async function _afterAuthSuccess(email, r){
     S=load();
     if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
     if(ATLAS_BACKEND && (r.verify==='sent' || r.verified===0)){ showVerifyGate(email); return; }       // email confirmation gate: hold the account until the link is clicked (if the mailer is off the server auto-verifies -> this is skipped)
@@ -2575,6 +2593,60 @@ const Atlas = (function(){
     _api('/api/auth/forgot-password',{method:'POST',body:{email:email}}).then(function(res){
       closeModal(); toast((res.json&&res.json.message)||GENERIC);
     }).catch(function(){ closeModal(); toast(GENERIC); });
+  }
+  /* ---- 2FA (MFA) login challenge screen. Only ever shown when the server itself says mfa_required -- an account
+     with 2FA off never sees any of this. Same overlay pattern as the email-verify gate above (.verify-gate). ---- */
+  function _mfaBegin(email, method, challenge){
+    _mfaEmailCur=email; _mfaMethodCur=(method==='totp')?'totp':'email'; _mfaChallengeTok=challenge; _mfaBackupMode=false;
+    _mfaShowGate();
+  }
+  function _mfaShowGate(){
+    var e=document.getElementById('mfaGate');
+    if(!e){ e=document.createElement('div'); e.id='mfaGate'; e.className='verify-gate'; document.body.appendChild(e); }
+    var isBackup=_mfaBackupMode;
+    var lead = isBackup ? 'Enter one of your backup codes.' : (_mfaMethodCur==='totp' ? 'Enter the 6-digit code from your authenticator app.' : 'We emailed you a 6-digit code.');
+    e.innerHTML='<div class="verify-card">'
+      +'<div class="verify-ic"><svg viewBox="0 0 24 24" width="26" height="26" fill="none"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></div>'
+      +'<h2>Verify it is you</h2>'
+      +'<p>'+lead+'</p>'
+      +'<input class="input" id="mfaCode" placeholder="'+(isBackup?'XXXXX-XXXXX':'123456')+'" style="text-align:center;font-size:20px;letter-spacing:3px" autocomplete="one-time-code" onkeydown="if(event.key===\'Enter\')Atlas.mfaSubmit()">'
+      +'<div id="mfaErr" style="display:none;background:var(--danger-bg);color:var(--danger);font-size:12.5px;font-weight:600;border-radius:8px;padding:8px 10px;margin-top:10px"></div>'
+      +(isBackup?'':'<label class="cfg-check" style="justify-content:center;gap:7px;font-size:12.5px;color:var(--muted);margin:14px 0 4px"><input type="checkbox" id="mfaRemember" checked>Remember this device for 30 days</label>')
+      +'<button class="btn btn--primary btn--lg btn--full" style="margin-top:10px" onclick="Atlas.mfaSubmit()">Verify</button>'
+      +(isBackup?'':('<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.mfaResend()">'+(_mfaMethodCur==='totp'?'Email me a code instead':'Resend code')+'</button>'))
+      +(!isBackup && _mfaMethodCur==='totp'?'<button class="btn btn--ghost btn--full" style="margin-top:6px" onclick="Atlas.mfaToggleBackup()">Use a backup code instead</button>':'')
+      +(isBackup?'<button class="btn btn--ghost btn--full" style="margin-top:6px" onclick="Atlas.mfaToggleBackup()">Use my authenticator or email instead</button>':'')
+      +'<button class="btn btn--ghost btn--full" style="margin-top:6px" onclick="Atlas.mfaCancel()">Cancel</button>'
+      +'<p class="verify-hint">Lost access to both? A backup code always works, or reset your account password.</p></div>';
+    e.classList.add('on');
+    setTimeout(function(){ var c=document.getElementById('mfaCode'); if(c) c.focus(); },60);
+  }
+  function mfaCancel(){ var e=document.getElementById('mfaGate'); if(e) e.classList.remove('on'); }
+  function mfaToggleBackup(){ _mfaBackupMode=!_mfaBackupMode; _mfaShowGate(); }
+  function _mfaErr(m){ var el=document.getElementById('mfaErr'); if(!el) return; el.textContent=m; el.style.display='block'; }
+  async function mfaSubmit(){
+    var code=(val('mfaCode')||'').trim();
+    if(!code){ _mfaErr('Enter the code.'); return; }
+    var rememberEl=document.getElementById('mfaRemember');
+    var remember = rememberEl ? !!rememberEl.checked : false;
+    var res = await _api('/api/auth/mfa/verify',{method:'POST',body:{challenge:_mfaChallengeTok, code:code, remember_device:remember}}).catch(function(){ return null; });
+    if(!res){ _mfaErr('Network error - try again.'); return; }
+    var j=res.json||{};
+    if(res.status>=200 && res.status<300 && j.ok){
+      _apiCsrf=j.csrf; if(j.ip) _clientIp=j.ip;
+      if(j.trusted_device) _mfaSaveDeviceToken(_mfaEmailCur, j.trusted_device);
+      mfaCancel();
+      await _srvAuthSettle(_mfaEmailCur, j.tenant_id);
+      await _afterAuthSuccess(_mfaEmailCur, {tenant_id:j.tenant_id, verify:'', verified:j.verified});
+    } else {
+      _mfaErr((j&&j.error)||'Incorrect code.');
+    }
+  }
+  function mfaResend(){
+    _api('/api/auth/mfa/email/resend',{method:'POST',body:{challenge:_mfaChallengeTok}}).then(function(res){
+      var j=res.json||{};
+      toast(j.sent?'Code sent - check your email.':'Could not send a code right now.');
+    }).catch(function(){ toast('Network error'); });
   }
   function _postVerifyProceed(){ S=load();
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
@@ -5212,7 +5284,7 @@ const Atlas = (function(){
   function roundRect(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
   /* ---- settings ---- */
-  const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
+  const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['security','Security'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
   let setCur='branding';
   function _setTabs(){ return (_curTier().id==='diamond')? [['owner','Owner console']].concat(SET) : SET; }
   function buildSettings(){
@@ -5576,6 +5648,13 @@ const Atlas = (function(){
         ${_shiftsHtml()}
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addShift()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a shift</button>
       </div>`;
+    else if(setCur==='security'){
+      b.innerHTML='<div class="set-block"><h3>Two-factor authentication (2FA)</h3>'
+        +'<div class="desc">2FA means signing in needs your password plus a quick second check &mdash; so a stolen password alone cannot get into your account. This is per person: everyone on your team sets up their own.</div>'
+        +'<div id="mfaStatus"><div style="color:var(--muted);font-size:13px">Loading&hellip;</div></div>'
+        +'</div>';
+      _mfaStatusLoad();
+    }
     else if(setCur==='billing'){ var _t=_curTier(), _c=_credits(); b.innerHTML = (_isActive() ? `
       <div class="set-block"><h3>Plan &amp; billing</h3><div class="desc">Your subscription.</div>
         <div style="display:flex;align-items:center;gap:16px;padding:18px;border:1px solid var(--brand);background:var(--brand-050);border-radius:12px;flex-wrap:wrap">
@@ -6360,6 +6439,97 @@ const Atlas = (function(){
       +'</div></details>'
       +'</div>');
     _devHooksLoad();
+  }
+  // ===== 2FA (MFA) Settings module: status + turn on / switch method / turn off. Per-PERSON, not per-tenant --
+  // every signed-in team member manages their own, regardless of role (this protects THEIR login, not a shared
+  // tenant setting), so it is never gated behind _canMod('settings') the way webhooks/API keys are. =====
+  function _mfaStatusLoad(){
+    var el=document.getElementById('mfaStatus'); if(!el) return;
+    if(!ATLAS_BACKEND || !_apiCsrf){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Sign in to your Atlas account to turn on two-factor authentication.</div>'; return; }
+    _api('/api/auth/mfa/status').then(function(res){
+      var j=res.json||{}; var method=j.method||'off';
+      var sess=store.session(); var remembered=!!_mfaDeviceToken((sess&&sess.email)||'');
+      var html='';
+      if(method==='off'){
+        html+='<div class="chip chip--muted" style="margin-bottom:12px">Off</div>'
+          +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+          +'<button class="btn btn--primary btn--sm" onclick="Atlas.mfaEnableEmail()">Turn on email codes</button>'
+          +'<button class="btn btn--ghost btn--sm" onclick="Atlas.openMfaSetupTotp()">Set up authenticator app</button>'
+          +'</div>';
+      } else {
+        html+='<div class="chip chip--ok" style="margin-bottom:12px"><span class="dot"></span>'+(method==='totp'?'Authenticator app':'Email codes')+'</div>'
+          +(method==='totp'?('<div class="desc" style="margin:0 0 12px">'+(j.backup_codes_remaining||0)+' backup code'+(j.backup_codes_remaining===1?'':'s')+' remaining.</div>'):'')
+          +(remembered?'<div class="desc" style="margin:0 0 12px">This device is remembered &mdash; you should not be asked for a code here again for up to 30 days.</div>':'')
+          +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+          +(method==='email'?'<button class="btn btn--ghost btn--sm" onclick="Atlas.openMfaSetupTotp()">Switch to authenticator app</button>':'<button class="btn btn--ghost btn--sm" onclick="Atlas.mfaEnableEmail()">Switch to email codes</button>')
+          +'<button class="btn btn--sm btn--danger" onclick="Atlas.openMfaDisable()">Turn off</button>'
+          +'</div>';
+      }
+      el.innerHTML=html;
+    }).catch(function(){ el.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load your 2FA status.</div>'; });
+  }
+  function mfaEnableEmail(){
+    _api('/api/auth/mfa/email/enable',{method:'POST',body:{}}).then(function(res){
+      var j=res.json||{};
+      if(j.ok){ toast('Email codes turned on'); _mfaStatusLoad(); } else toast((j.error)||'Could not turn on email codes');
+    }).catch(function(){ toast('Network error'); });
+  }
+  function openMfaSetupTotp(){
+    _api('/api/auth/mfa/totp/setup',{method:'POST',body:{}}).then(function(res){
+      var j=res.json||{};
+      if(!j.ok){ toast((j.error)||'Could not start setup'); return; }
+      _mfaPendingCodes=j.backup_codes||[];
+      openModal('<div class="modal__head"><h3>Set up an authenticator app</h3>'+_xBtn()+'</div><div class="modal__body">'
+        +'<div class="desc" style="margin:0 0 14px">Open an authenticator app &mdash; Google Authenticator, Authy, 1Password, Microsoft Authenticator, any of them work &mdash; add a new account, and enter this key. Then type the 6-digit code it shows to confirm.</div>'
+        +'<div class="field"><label>Secret key</label><div style="display:flex;gap:8px"><input class="input" id="devSecret" readonly value="'+esc(j.secret)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:13px;letter-spacing:1px" onclick="this.select()"><button class="btn btn--ghost" onclick="Atlas._devCopy()">Copy</button></div></div>'
+        +'<div class="desc" style="margin:8px 0 14px;word-break:break-all;font-size:11.5px">Some apps can scan a setup link instead of typing the key: <code>'+esc(j.otpauth)+'</code></div>'
+        +'<div class="field"><label>6-digit code from your app</label><input class="input" id="mfaConfirmCode" placeholder="123456" style="text-align:center;font-size:18px;letter-spacing:3px" autocomplete="one-time-code" onkeydown="if(event.key===\'Enter\')Atlas.mfaConfirmTotp()"></div>'
+        +'<div id="mfaSetupErr" style="display:none;background:var(--danger-bg);color:var(--danger);font-size:12.5px;font-weight:600;border-radius:8px;padding:8px 10px;margin-bottom:10px"></div>'
+        +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.mfaConfirmTotp()">Confirm and turn on</button>'
+        +'<div class="bk-lenhint" style="margin-top:14px">You will get 10 backup codes once this is confirmed &mdash; save them somewhere safe. Any one of them signs you in if you ever lose this device.</div>'
+        +'</div>');
+      setTimeout(function(){ var c=document.getElementById('mfaConfirmCode'); if(c) c.focus(); },80);
+    }).catch(function(){ toast('Network error'); });
+  }
+  function _mfaSetupErr(m){ var el=document.getElementById('mfaSetupErr'); if(!el) return; el.textContent=m; el.style.display='block'; }
+  function mfaConfirmTotp(){
+    var code=(val('mfaConfirmCode')||'').trim();
+    if(!code){ _mfaSetupErr('Enter the 6-digit code.'); return; }
+    _api('/api/auth/mfa/totp/confirm',{method:'POST',body:{code:code}}).then(function(res){
+      var j=res.json||{};
+      if(j.ok){ _mfaShowBackupCodes(_mfaPendingCodes); } else _mfaSetupErr((j.error)||'Incorrect code.');
+    }).catch(function(){ _mfaSetupErr('Network error - try again.'); });
+  }
+  function _mfaShowBackupCodes(codes){
+    _mfaPendingCodes=codes||[];
+    openModal('<div class="modal__head"><h3>Save your backup codes</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)">Two-factor authentication is on. These 10 codes are shown only now &mdash; each works once, and any one of them signs you in if you ever lose your authenticator. Save them somewhere safe.</div>'
+      +'<div style="font-family:ui-monospace,monospace;font-size:14px;line-height:1.9;background:var(--surface-2,rgba(0,0,0,.05));border-radius:8px;padding:12px 14px;margin-bottom:12px">'+_mfaPendingCodes.map(function(c){return esc(c);}).join('<br>')+'</div>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas._mfaDownloadCodes()">Download codes</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.closeModal();Atlas.goSettings(\'security\')">Done</button></div>');
+  }
+  function _mfaDownloadCodes(){
+    try{ var txt='Atlas Rental.io -- two-factor backup codes\nGenerated '+_todayStr()+'\n\nEach code works once. Store this somewhere safe.\n\n'+_mfaPendingCodes.join('\n')+'\n';
+      var blob=new Blob([txt],{type:'text/plain'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='atlas-backup-codes-'+_todayStr()+'.txt'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Backup codes downloaded');
+    }catch(e){ toast('Download not available here'); }
+  }
+  function openMfaDisable(){
+    openModal('<div class="modal__head"><h3>Turn off two-factor authentication</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="desc" style="margin:0 0 14px">To confirm it is really you, enter your account password, or a current 2FA code.</div>'
+      +'<div class="field"><label>Account password</label><input class="input" type="password" id="mfaOffPass" autocomplete="current-password"></div>'
+      +'<div class="desc" style="margin:6px 0;text-align:center">or</div>'
+      +'<div class="field"><label>Current 2FA code</label><input class="input" id="mfaOffCode" placeholder="123456 or a backup code" autocomplete="one-time-code"></div>'
+      +'<div id="mfaOffErr" style="display:none;background:var(--danger-bg);color:var(--danger);font-size:12.5px;font-weight:600;border-radius:8px;padding:8px 10px;margin-bottom:10px"></div>'
+      +'<button class="btn btn--danger btn--full btn--lg" onclick="Atlas.mfaDisableSubmit()">Turn off 2FA</button></div>');
+  }
+  function _mfaOffErr(m){ var el=document.getElementById('mfaOffErr'); if(!el) return; el.textContent=m; el.style.display='block'; }
+  function mfaDisableSubmit(){
+    var pass=(val('mfaOffPass')||''), code=(val('mfaOffCode')||'').trim();
+    if(!pass && !code){ _mfaOffErr('Enter your password or a code.'); return; }
+    _api('/api/auth/mfa/disable',{method:'POST',body:{password:pass,code:code}}).then(function(res){
+      var j=res.json||{};
+      if(j.ok){ closeModal(); toast('Two-factor authentication turned off'); _mfaStatusLoad(); } else _mfaOffErr((j.error)||'Could not verify - try again.');
+    }).catch(function(){ _mfaOffErr('Network error - try again.'); });
   }
   var CONN_VALIDATE={   // instant sanity-check: catch a wrong/swapped/incomplete key and say exactly how to fix it, before saving
     stripe:function(o){ var pk=(o['Publishable key']||''), sk=(o['Secret key']||'');
@@ -7708,6 +7878,7 @@ const Atlas = (function(){
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,logout,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
+    mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
@@ -7730,6 +7901,7 @@ const Atlas = (function(){
     renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,
     S:()=>S,save2:save,setBackend};
 })();
 </script>
