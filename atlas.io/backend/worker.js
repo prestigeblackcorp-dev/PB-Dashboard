@@ -144,6 +144,37 @@ async function decSecret(env, blob, aad) {
   throw new Error('decrypt failed');
 }
 
+// Binary counterpart to encSecret/decSecret, for file bytes at rest in R2 (#260 -- audit finding #37/#30). Same
+// AES-GCM + key-versioning scheme (_encKeys) and the same "AAD binds ciphertext to its context" hardening, but
+// packed as a raw byte envelope instead of a ":"-joined base64 string since R2 stores a body, not a DB column:
+//   [1 version byte][12-byte iv][ciphertext...]
+// AAD is always the R2 key itself (unique per file, tenant+booking-scoped), so a copied/renamed object can't be
+// replayed under a different key -- GCM auth fails if the context differs, same guarantee encSecret gives.
+async function _encBytes(env, aad, u8) {
+  const ks = _encKeys(env); if (!ks.length) throw new Error('no ENC_KEY');
+  const { v, raw } = ks[0];                  // encrypt with the newest key
+  const key = await crypto.subtle.importKey('raw', unb64(raw), 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv, additionalData: enc(String(aad)) }, key, u8));
+  const out = new Uint8Array(1 + iv.length + ct.length);
+  out[0] = v; out.set(iv, 1); out.set(ct, 1 + iv.length);
+  return out;
+}
+async function _decBytes(env, aad, stored) {
+  const u = stored instanceof Uint8Array ? stored : new Uint8Array(stored);
+  if (u.length < 13) throw new Error('bad blob');
+  const v = u[0], iv = u.slice(1, 13), ct = u.slice(13);
+  const params = { name: 'AES-GCM', iv: iv, additionalData: enc(String(aad)) };
+  const cand = _encKeys(env).filter(k => k.v === v);   // exact mirror of decSecret's versioned-blob path -- this envelope is always versioned (v is 1 or 2, never legacy/unversioned), so there is no "try all keys" branch to mirror here
+  for (const k of cand) {
+    try {
+      const key = await crypto.subtle.importKey('raw', unb64(k.raw), 'AES-GCM', false, ['decrypt']);
+      return new Uint8Array(await crypto.subtle.decrypt(params, key, ct));
+    } catch (e) { /* wrong key/version -> try the next (mirrors decSecret's ENC_KEY -> ENC_KEY_2 fallback) */ }
+  }
+  throw new Error('decrypt failed');
+}
+
 // ---------------------------------------------------------------- cookies + sessions
 function parseCookies(req) {
   const out = {}; const h = req.headers.get('Cookie') || '';
@@ -268,7 +299,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19o';
+const ATLAS_BUILD = '2026.07.19p';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1883,7 +1914,33 @@ export default {
       if (_fm && method === 'GET') {
         const r2 = _r2(env); if (!r2) return err(404, 'File storage not configured.');
         const key = decodeURIComponent(_fm[1]).slice(0, 300);
-        try { const obj = await r2.get(key); if (!obj) return err(404, 'Not found.'); const h = { 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' }; try { if (obj.httpMetadata && obj.httpMetadata.contentType) h['Content-Type'] = obj.httpMetadata.contentType; } catch (e) {} return new Response(obj.body, { headers: h }); } catch (e) { return err(404, 'Not found.'); }
+        // #260 KYC/ID photos are sensitive PII -- a capability key alone isn't enough for these. Require the viewer
+        // to be a session on the SAME tenant the file belongs to, or hold the portal token for that exact booking.
+        // Non-id kinds (pickup/condition/return/photo) are unchanged: they still serve on the (now-strong) key alone.
+        const _idm = key.match(/\/portal\/([^/]+)\/id-/);
+        if (_idm) {
+          const _bookingId = _idm[1], _tenantId = key.split('/')[1] || '';
+          let _authed = false;
+          try { const _sctx = await resolveSession(env, req); if (_sctx && _sctx.tenant_id === _tenantId) _authed = true; } catch (e) {}
+          if (!_authed) {
+            try {
+              const _ptok = url.searchParams.get('token') || '';
+              if (_ptok) { const _pbrow = await env.DB.prepare('SELECT id FROM bookings WHERE portal_token=? LIMIT 1').bind(_ptok).first(); if (_pbrow && _pbrow.id === _bookingId) _authed = true; }
+            } catch (e) {}
+          }
+          if (!_authed) return err(403, 'Not authorized.');
+        }
+        try {
+          const obj = await r2.get(key); if (!obj) return err(404, 'Not found.');
+          const h = { 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' };
+          if (obj.customMetadata && obj.customMetadata.enc === '1') {   // #260 encrypted body -> decrypt, real type came from customMetadata (httpMetadata never saw plaintext type)
+            const plain = await _decBytes(env, key, new Uint8Array(await obj.arrayBuffer()));
+            h['Content-Type'] = (obj.customMetadata && obj.customMetadata.ct) || 'application/octet-stream';
+            return new Response(plain, { headers: h });
+          }
+          try { if (obj.httpMetadata && obj.httpMetadata.contentType) h['Content-Type'] = obj.httpMetadata.contentType; } catch (e) {}   // legacy plaintext object (pre-#260)
+          return new Response(obj.body, { headers: h });
+        } catch (e) { return err(404, 'Not found.'); }
       }
 
       // ---- Inbound email webhook: your mail provider / forwarder (Resend, Postmark, SendGrid, generic) POSTs parsed mail
@@ -2678,11 +2735,13 @@ export default {
           const m = String(body.data || '').match(/^data:([^;]+);base64,(.+)$/);
           if (!m) return err(400, 'Please attach a valid image or PDF.');
           const mime = m[1], b64 = m[2];
+          if (['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].indexOf(String(mime).toLowerCase()) < 0) return err(400, 'Please upload a JPG, PNG, WEBP, or PDF.');   // #260 MIME allow-list -- a data URI can claim any content-type
           if (b64.length > 9000000) return err(413, 'That file is too large (about 6MB max).');
           let bytes; try { bytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); }); } catch (e) { return err(400, 'Could not read that file.'); }
-          const ext = mime.indexOf('pdf') >= 0 ? 'pdf' : (mime.indexOf('png') >= 0 ? 'png' : 'jpg');
-          const key = 't/' + brow.tenant_id + '/portal/' + brow.id + '/' + kind + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + '.' + ext;
-          try { await r2.put(key, bytes, { httpMetadata: { contentType: mime } }); } catch (e) { return json({ ok: false, reason: 'store_failed', message: 'Could not save the file. Please try again.' }); }
+          const ext = mime.indexOf('pdf') >= 0 ? 'pdf' : (mime.indexOf('png') >= 0 ? 'png' : (mime.indexOf('webp') >= 0 ? 'webp' : 'jpg'));
+          const key = 't/' + brow.tenant_id + '/portal/' + brow.id + '/' + kind + '-' + randId(24) + '.' + ext;   // #260 unguessable capability key (was Date.now+Math.random -- predictable/brute-forceable)
+          let encBytes; try { encBytes = await _encBytes(env, key, bytes); } catch (e) { return json({ ok: false, reason: 'store_failed', message: 'Could not save the file. Please try again.' }); }
+          try { await r2.put(key, encBytes, { customMetadata: { ct: mime, enc: '1' } }); } catch (e) { return json({ ok: false, reason: 'store_failed', message: 'Could not save the file. Please try again.' }); }   // #260 ciphertext body -> real type lives in customMetadata, not httpMetadata
           const capUrl = url.origin + '/api/f/' + key;
           d.portal = d.portal || {}; d.portal.uploads = d.portal.uploads || [];
           d.portal.uploads.push({ kind: kind, key: key, url: capUrl, at: Date.now(), name: String(body.name || '').slice(0, 80) });
@@ -2772,11 +2831,14 @@ export default {
         const r2 = _r2(env); if (!r2) return json({ ok: false, reason: 'no_storage', message: 'File storage is not configured -- bind an R2 bucket named R2. Inline storage is used until then.' });
         const b = await req.json().catch(function () { return {}; });
         const m = String(b.data || '').match(/^data:([^;]+);base64,(.+)$/); if (!m) return err(400, 'Send a base64 data URL in "data".');
-        const ct = m[1].slice(0, 80); let bin; try { bin = Uint8Array.from(atob(m[2]), function (c) { return c.charCodeAt(0); }); } catch (e) { return err(400, 'Bad base64.'); }
+        const ct = m[1].slice(0, 80);
+        if (['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].indexOf(String(ct).toLowerCase()) < 0) return err(400, 'Please upload a JPG, PNG, WEBP, or PDF.');   // #260 MIME allow-list -- a data URI can claim any content-type
+        let bin; try { bin = Uint8Array.from(atob(m[2]), function (c) { return c.charCodeAt(0); }); } catch (e) { return err(400, 'Bad base64.'); }
         if (bin.length > 15 * 1024 * 1024) return err(413, 'File too large (max 15MB).');
         const safe = String(b.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '').slice(-40) || 'file';
-        const key = 't/' + ctx.tenant_id + '/' + randId(16) + '-' + safe;
-        try { await r2.put(key, bin, { httpMetadata: { contentType: ct } }); } catch (e) { return json({ ok: false, reason: 'store_failed' }); }
+        const key = 't/' + ctx.tenant_id + '/' + randId(24) + '-' + safe;   // #260 bumped alongside the portal key hardening (was randId(16), already strong -- kept in lockstep)
+        let encBin; try { encBin = await _encBytes(env, key, bin); } catch (e) { return json({ ok: false, reason: 'store_failed' }); }
+        try { await r2.put(key, encBin, { customMetadata: { ct: ct, enc: '1' } }); } catch (e) { return json({ ok: false, reason: 'store_failed' }); }   // #260 ciphertext body -> real type lives in customMetadata, not httpMetadata
         await audit(env, ctx, req, 'file.upload', { bytes: bin.length });
         return json({ ok: true, key: key, url: (env.APP_ORIGIN || 'https://atlasrental.io') + '/api/f/' + encodeURIComponent(key) });
       }
