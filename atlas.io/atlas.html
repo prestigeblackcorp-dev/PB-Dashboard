@@ -1394,6 +1394,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       <div id="authErr" style="display:none;background:var(--danger-bg);color:var(--danger);font-size:13px;font-weight:600;border-radius:9px;padding:10px 12px;margin-bottom:14px"></div>
       <div class="field"><label>Work email</label><input class="input" id="authEmail" type="email" placeholder="you@yourcompany.com" autocomplete="email" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
       <div class="field"><label>Password</label><input class="input" id="authPass" type="password" placeholder="At least 6 characters" autocomplete="current-password" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
+      <p id="authForgot" style="text-align:right;margin:-6px 0 10px;display:none"><a onclick="Atlas.forgotPassword();return false" style="color:var(--muted);font-size:12.5px;cursor:pointer;text-decoration:underline">Forgot password?</a></p>
       <div id="authConsent" style="margin:2px 0 6px"><label class="cfg-check" style="align-items:flex-start;gap:9px;font-size:12px;color:var(--muted);text-align:left"><input type="checkbox" id="authAgree" style="margin-top:2px;flex:none"><span>I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Terms</a> &amp; <a href="/privacy" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Privacy Policy</a>. My 7-day free trial converts to $49.99/mo after the trial unless I cancel &mdash; cancel anytime.</span></label></div>
       <button class="btn btn--primary btn--full btn--lg" id="authBtn" onclick="Atlas.authSubmit()" style="margin-top:6px">Create account</button>
       <p style="text-align:center;font-size:13.5px;color:var(--muted);margin-top:18px" id="authSwitch"></p>
@@ -1842,7 +1843,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19g';
+  var APP_VERSION='2026.7.19h';
   var APP_CHANGELOG=[
     'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
     'Cancellation policy you set once (Settings &gt; Money): shown to customers before they pay, in the confirmation email, and merged into your rental agreement &amp; terms',
@@ -2494,6 +2495,7 @@ const Atlas = (function(){
       ? 'New to Atlas? <a onclick="Atlas.goAuth(\'signup\')" style="color:var(--brand);font-weight:700;cursor:pointer">Create an account</a>'
       : 'Already have an account? <a onclick="Atlas.goAuth(\'login\')" style="color:var(--brand);font-weight:700;cursor:pointer">Sign in</a>';
     var _cw=document.getElementById('authConsent'); if(_cw) _cw.style.display=login?'none':'block';   // consent shown only when creating an account
+    var _fw=document.getElementById('authForgot'); if(_fw) _fw.style.display=login?'block':'none';   // forgot-password link: only meaningful once an account (and a password) already exists
     var _ag=document.getElementById('authAgree'); if(_ag) _ag.checked=false;
     _authErr('');
   }
@@ -2556,6 +2558,24 @@ const Atlas = (function(){
       else { toast('Could not resend'+((res.json&&res.json.reason)?(' ('+res.json.reason+')'):'')+'.'); }
     }).catch(function(){ toast('Network error - try again.'); }); }
   function verifyStartOver(){ hideVerifyGate(); try{ logout(); }catch(e){} }
+  /* ---- forgot password: emails a signed, time-limited reset link (server never reveals whether the address has an account) ---- */
+  function forgotPassword(){
+    var pre=(document.getElementById('authEmail')||{}).value||'';
+    openModal('<div class="modal__head"><h3>Reset your password</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<p style="font-size:13px;color:var(--muted);margin:0 0 14px">Enter your account email and we&rsquo;ll send you a link to set a new password.</p>'
+      +'<div class="field"><label>Work email</label><input class="input" id="fpEmail" type="email" placeholder="you@yourcompany.com" value="'+esc(pre)+'" onkeydown="if(event.key===\'Enter\')Atlas.sendResetLink()"></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.sendResetLink()">Send reset link</button></div>');
+    setTimeout(function(){ var e=document.getElementById('fpEmail'); if(e) e.focus(); },80);
+  }
+  function sendResetLink(){
+    var email=(val('fpEmail')||'').trim();
+    var GENERIC='If that email is registered, a reset link is on the way.';
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ toast('Enter a valid email address.'); return; }
+    if(!ATLAS_BACKEND){ closeModal(); toast(GENERIC); return; }
+    _api('/api/auth/forgot-password',{method:'POST',body:{email:email}}).then(function(res){
+      closeModal(); toast((res.json&&res.json.message)||GENERIC);
+    }).catch(function(){ closeModal(); toast(GENERIC); });
+  }
   function _postVerifyProceed(){ S=load();
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
@@ -7687,7 +7707,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,logout,verifyContinue,verifyResend,verifyStartOver,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
+    goAuth,authSubmit,logout,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,

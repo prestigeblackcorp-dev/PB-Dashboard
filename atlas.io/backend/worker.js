@@ -299,7 +299,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19p';
+const ATLAS_BUILD = '2026.07.19q';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -906,6 +906,15 @@ async function _verifySig(env, uid, email, exp) {
     return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
   } catch (e) { return ''; }
 }
+// Password-reset link signature: the SAME stateless HMAC scheme as _verifySig (uid|email|expiry|purpose), just tagged
+// 'reset' instead of 'verify' so a verify-email link and a reset-password link can never be swapped for the other's purpose.
+async function _resetSig(env, uid, email, exp) {
+  if (!env.SESSION_KEY) return '';
+  try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    var s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(email) + '|' + String(exp) + '|reset'));
+    return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
+  } catch (e) { return ''; }
+}
 async function _sendVerifyEmail(env, uid, email) {
   var origin = env.APP_ORIGIN || 'https://atlasrental.io';
   var exp = Date.now() + 7 * 24 * 3600 * 1000;
@@ -917,6 +926,19 @@ async function _sendVerifyEmail(env, uid, email) {
     + '<p style="color:#667;font-size:13px">Or paste this into your browser:<br><span style="word-break:break-all">' + esc(link) + '</span></p>'
     + '<p style="color:#889;font-size:12px">This link expires in 7 days. If you did not create an Atlas Rental.io account, you can ignore this email.</p>';
   return await sendEmail(env, { to: email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Verify your email to activate Atlas Rental.io', html: html });
+}
+// Password-reset email: same shape as _sendVerifyEmail (transactional, Atlas Rental.io branded), a 1-hour link instead of 7 days.
+async function _sendResetEmail(env, uid, email) {
+  var origin = env.APP_ORIGIN || 'https://atlasrental.io';
+  var exp = Date.now() + 3600 * 1000;
+  var sig = await _resetSig(env, uid, email, exp);
+  var link = origin + '/api/auth/reset?uid=' + encodeURIComponent(uid) + '&e=' + encodeURIComponent(email) + '&exp=' + exp + '&s=' + sig;
+  var html = '<h2 style="margin:0 0 10px">Reset your password</h2>'
+    + '<p>We got a request to reset the password for <b>' + esc(email) + '</b> on Atlas Rental.io.</p>'
+    + '<p style="margin:20px 0"><a href="' + link + '" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;padding:13px 24px;border-radius:10px;font-weight:700">Reset my password</a></p>'
+    + '<p style="color:#667;font-size:13px">Or paste this into your browser:<br><span style="word-break:break-all">' + esc(link) + '</span></p>'
+    + '<p style="color:#889;font-size:12px">This link expires in 1 hour. If you did not request a password reset, you can safely ignore this email -- your password will not change.</p>';
+  return await sendEmail(env, { to: email, transactional: true, fromName: 'Atlas Rental.io', subject: 'Reset your Atlas Rental.io password', html: html });
 }
 async function _unsubSig(env, tenant, contact) {
   if (!env.SESSION_KEY) return '';
@@ -1580,6 +1602,84 @@ export default {
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'login', {});
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)) }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+      }
+
+      // ---- AUTH: forgot-password (public; audit gap #17). NEVER reveals whether an email has an account --
+      // same generic response either way, and a DB hiccup still answers generically instead of erroring. ----
+      if (path === '/api/auth/forgot-password' && method === 'POST') {
+        const ip = req.headers.get('CF-Connecting-IP') || 'x';
+        const GENERIC = { ok: true, message: 'If that email is registered, a reset link is on the way.' };
+        if (!await rateLimit(env, 'fpw:' + ip, 5, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        const body = await req.json().catch(() => ({}));
+        const femail = vEmail(body.email) ? body.email.toLowerCase() : '';
+        if (!femail) return json(GENERIC);   // bad shape -> still the generic response, never a distinguishing error
+        if (!await rateLimit(env, 'fpwem:' + femail, 3, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        try {
+          if (env.SESSION_KEY) {   // no key -> a link could never be validated later; fail-soft, don't send
+            const fuser = await env.DB.prepare('SELECT id,email FROM users WHERE email=?').bind(femail).first();
+            if (fuser) { try { await _sendResetEmail(env, fuser.id, fuser.email); await audit(env, null, req, 'auth.forgot_password', { email: fuser.email }); } catch (e) {} }
+          }
+        } catch (e) { /* DB hiccup: still answer generically -- an error here must never leak account existence */ }
+        return json(GENERIC);
+      }
+
+      // ---- AUTH: password reset -- the emailed click-through link (public, signed token; serves a set-new-password form) ----
+      if (path === '/api/auth/reset' && method === 'GET') {
+        const ru = url.searchParams.get('uid') || '', re = (url.searchParams.get('e') || '').toLowerCase(),
+          rx = parseInt(url.searchParams.get('exp') || '0', 10) || 0, rs = url.searchParams.get('s') || '';
+        const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _ctEq(rs, await _resetSig(env, ru, re, rx)));
+        if (!rOk) {
+          const badBody = '<div class="card"><h2>Link expired</h2><p class="muted">This reset link is invalid or has expired. Request a new one from the sign-in screen.</p></div>';
+          return new Response(_pageDoc('Reset password', '#1E6E4E', badBody, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        }
+        // Values only ever reach here once _ctEq confirms they match our own signature -- uid/email/sig are therefore
+        // exactly what WE generated, never attacker-chosen. They flow to the browser as esc()'d hidden-input VALUES
+        // (attribute context) rather than being interpolated into the inline script, so the script itself stays a
+        // fully static string regardless of what characters an email address happens to contain.
+        const rBody = '<div class="card"><h2>Choose a new password</h2><p class="muted">' + esc(re) + '</p>'
+          + '<input type="hidden" id="ruid" value="' + esc(ru) + '"><input type="hidden" id="remail" value="' + esc(re) + '"><input type="hidden" id="rexp" value="' + esc(String(rx)) + '"><input type="hidden" id="rsig" value="' + esc(rs) + '">'
+          + '<label>New password</label><input id="p1" type="password" autocomplete="new-password" placeholder="At least 8 characters">'
+          + '<label>Confirm new password</label><input id="p2" type="password" autocomplete="new-password" placeholder="Repeat the password">'
+          + '<div id="msg" class="err"></div>'
+          + '<button id="go" class="btn" onclick="doReset()">Set new password</button></div>';
+        const rScript = `
+function doReset(){
+  var m=document.getElementById('msg'); m.textContent='';
+  var p1=document.getElementById('p1').value, p2=document.getElementById('p2').value;
+  if(p1.length<8){ m.textContent='Password must be at least 8 characters.'; return; }
+  if(p1!==p2){ m.textContent='Passwords do not match.'; return; }
+  var b=document.getElementById('go'); b.disabled=true; b.textContent='Saving...';
+  var payload={uid:document.getElementById('ruid').value,e:document.getElementById('remail').value,exp:document.getElementById('rexp').value,s:document.getElementById('rsig').value,password:p1};
+  fetch('/api/auth/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      if(j.ok){ document.querySelector('.card').innerHTML='<h2>Password updated</h2><p class="muted">You can close this tab and sign in with your new password.</p>'; }
+      else { m.textContent=j.error||'Something went wrong'; b.disabled=false; b.textContent='Set new password'; }
+    })
+    .catch(function(){ m.textContent='Network error, please try again'; b.disabled=false; b.textContent='Set new password'; });
+}
+`;
+        return new Response(_pageDoc('Reset password', '#1E6E4E', rBody, rScript), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+
+      // ---- AUTH: password reset -- apply the new password (public; re-validates the SAME signed token, never trusts the GET) ----
+      if (path === '/api/auth/reset' && method === 'POST') {
+        const body = await req.json().catch(() => ({}));
+        const ru = String(body.uid || '').slice(0, 64), re = String(body.e || '').toLowerCase(),
+          rx = parseInt(body.exp || '0', 10) || 0, rs = String(body.s || '');
+        if (!ru) return err(400, 'This reset link is invalid or has expired.');
+        if (!await rateLimit(env, 'rpw:' + ru, 10, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _ctEq(rs, await _resetSig(env, ru, re, rx)));
+        if (!rOk) return err(400, 'This reset link is invalid or has expired.');
+        if (!vStr(body.password, 200) || body.password.length < 8) return err(400, 'Password must be at least 8 characters.');
+        const { hash, salt } = await hashPassword(body.password);
+        const upd = await env.DB.prepare('UPDATE users SET pw_hash=?, pw_salt=? WHERE id=? AND lower(email)=?').bind(hash, salt, ru, re).run();
+        if (!(upd && upd.meta && upd.meta.changes)) return err(400, 'This reset link is invalid or has expired.');
+        // A password reset is a strong compromise-or-recovery signal -- kill every existing session for this user so a
+        // stolen cookie dies the instant the legitimate owner resets (same intent as the logout revoke, just for all of them).
+        try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=?').bind(Date.now(), ru).run(); } catch (e) {}
+        await audit(env, null, req, 'auth.password_reset', { email: re });
+        return json({ ok: true });
       }
 
       // ---- PUBLIC booking site + intake (no login; rate-limited; tenant resolved by its published subdomain slug) ----

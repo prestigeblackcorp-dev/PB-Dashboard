@@ -231,5 +231,95 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(sr.status === 400, 'competitor add: SSRF-blocked private URL -> 400 (got ' + sr.status + ')');
 }
 
+// ---- password reset (audit gap #17): forgot-password never reveals whether an email has an account; GET/POST
+//      /api/auth/reset re-validate the SAME signed token (never trust the GET), and a successful reset revokes
+//      every session for that user. ----
+{
+  const users = new Map();   // email(lower) -> {id,email,pw_hash,pw_salt}
+  users.set('known@x.com', { id: 'u_pw1', email: 'known@x.com', pw_hash: 'p2$old', pw_salt: 'saltold' });
+  const sessionsRevokedFor = [];
+  function pwDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM users WHERE email=\?/.test(sql)) return users.get(a[0]) || null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 25 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/UPDATE users SET pw_hash=\?, pw_salt=\? WHERE id=\? AND lower\(email\)=\?/.test(sql)) {
+            const [hash, salt, id, email] = a;
+            const u = users.get(email);
+            if (u && u.id === id) { u.pw_hash = hash; u.pw_salt = salt; return { success: true, meta: { changes: 1 } }; }
+            return { success: true, meta: { changes: 0 } };
+          }
+          if (/UPDATE sessions SET revoked_at=\? WHERE user_id=\?/.test(sql)) { sessionsRevokedFor.push(a[1]); return { success: true, meta: { changes: 1 } }; }
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const pwEnv = { DB: pwDB(), SESSION_KEY: 'sek', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', RESEND_KEY: 'rk_test' };
+  const pReq = (method, path, body) => new Request('https://atlasrental.io' + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+
+  // capture the outbound "email" so we can pull out a genuinely-signed link for the positive-path checks below
+  // (mirrors how the webhooks test above recovers the signed payload -- there is no other way to get a valid
+  // token from outside the worker, since _resetSig is intentionally not exported).
+  let sent = [];
+  const _origFetch = globalThis.fetch;
+  globalThis.fetch = (u, opts) => { sent.push(String((opts && opts.body) || '')); return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ id: 'm1' }) }); };
+
+  // 1) forgot-password: an EXISTING email -> generic ok (no enumeration)
+  let pr = await worker.fetch(pReq('POST', '/api/auth/forgot-password', { email: 'Known@X.com' }), pwEnv, ctx);
+  let pj = await pr.json();
+  ok(pr.status === 200 && pj.ok === true && /reset link is on the way/i.test(pj.message || ''), 'forgot-password: existing email -> generic ok + message');
+
+  // 2) forgot-password: a NON-existing email -> the SAME generic response (no enumeration)
+  let pr2 = await worker.fetch(pReq('POST', '/api/auth/forgot-password', { email: 'nobody@x.com' }), pwEnv, ctx);
+  let pj2 = await pr2.json();
+  ok(pr2.status === 200 && pj2.ok === true && pj2.message === pj.message, 'forgot-password: unknown email -> identical generic response (no enumeration)');
+
+  const sentMail = sent.map((b) => { try { return JSON.parse(b); } catch (e) { return {}; } }).find((b) => b.html && /Reset your password/i.test(b.html));
+  const linkM = ((sentMail && sentMail.html) || '').match(/href="([^"]+)"/);
+  const link = linkM ? linkM[1].replace(/&amp;/g, '&') : '';
+  const goodQ = link ? link.slice(link.indexOf('?')) : '';
+  ok(!!goodQ, 'forgot-password actually emailed a /api/auth/reset link (precondition for the checks below)');
+
+  // 3) GET reset with a BAD signature -> serves the invalid/expired page, never the password form
+  let gr = await worker.fetch(mkReq('GET', '/api/auth/reset?uid=u_pw1&e=known@x.com&exp=' + (Date.now() + 999999) + '&s=deadbeef'), pwEnv, ctx);
+  let gt = await gr.text();
+  ok(gr.status === 200 && /invalid or has expired/i.test(gt) && !/Choose a new password/i.test(gt), 'GET reset: bad signature -> invalid-link page, not the form');
+
+  // 4) GET reset with the GENUINE link -> serves the set-new-password form
+  if (goodQ) {
+    let gr2 = await worker.fetch(mkReq('GET', '/api/auth/reset' + goodQ), pwEnv, ctx);
+    let gt2 = await gr2.text();
+    ok(gr2.status === 200 && /Choose a new password/i.test(gt2), 'GET reset: a genuine link renders the new-password form');
+  }
+
+  // 5) POST reset with a BAD signature -> rejected, stored password untouched
+  let br = await worker.fetch(pReq('POST', '/api/auth/reset', { uid: 'u_pw1', e: 'known@x.com', exp: Date.now() + 999999, s: 'deadbeef', password: 'newpassword1' }), pwEnv, ctx);
+  ok(br.status >= 400, 'POST reset: bad signature -> rejected (got ' + br.status + ')');
+  ok(users.get('known@x.com').pw_hash === 'p2$old', 'POST reset: bad signature never touched the stored password');
+
+  // 6) POST reset with the GENUINE token -> succeeds, hash changes, and every session for that user is revoked
+  if (goodQ) {
+    const qp = new URLSearchParams(goodQ);
+    let gpr = await worker.fetch(pReq('POST', '/api/auth/reset', { uid: qp.get('uid'), e: qp.get('e'), exp: qp.get('exp'), s: qp.get('s'), password: 'brandNewPassw0rd' }), pwEnv, ctx);
+    let gpj = await gpr.json();
+    ok(gpr.status === 200 && gpj.ok === true, 'POST reset: genuine token + an 8+ char password -> ok:true');
+    ok(users.get('known@x.com').pw_hash !== 'p2$old', 'POST reset: pw_hash actually changed');
+    ok(sessionsRevokedFor.indexOf('u_pw1') >= 0, 'POST reset: every session for that user is revoked (UPDATE sessions SET revoked_at)');
+  }
+
+  globalThis.fetch = _origFetch;
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
