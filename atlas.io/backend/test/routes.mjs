@@ -321,5 +321,102 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   globalThis.fetch = _origFetch;
 }
 
+// ---- Scale/perf (SCALING.md): /api/data/<collection> GET pagination -- default unchanged, limit/offset honored + clamped ----
+{
+  const NOW = Date.now(), SID = 'sid_pg', CSRF = 'CSRFpg', TEN = 't_pg';
+  const allAssets = [
+    { id: 'a1', tenant_id: TEN, name: 'Asset 1', created_at: 5 },
+    { id: 'a2', tenant_id: TEN, name: 'Asset 2', created_at: 4 },
+    { id: 'a3', tenant_id: TEN, name: 'Asset 3', created_at: 3 },
+    { id: 'a4', tenant_id: TEN, name: 'Asset 4', created_at: 2 },
+    { id: 'a5', tenant_id: TEN, name: 'Asset 5', created_at: 1 },
+  ];
+  function pgDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_pg', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_pg', email: 'pg@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => {
+          // mirrors the real SQL shape: SELECT * FROM assets WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?
+          if (/FROM assets WHERE tenant_id=\?/.test(sql) && /LIMIT \? OFFSET \?/.test(sql)) { const lim = a[1], off = a[2]; return { results: allAssets.slice(off, off + lim) }; }
+          return { results: [] };
+        },
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const pgEnv = { DB: pgDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  // hand-rolled request (mirrors whReq/vReq above): a real Request can't carry a Cookie header via undici
+  const pgReq = (path) => { const headers = { 'content-type': 'application/json', 'cookie': 'atlas_sid=' + SID, 'x-csrf-token': CSRF, 'origin': 'https://atlasrental.io' }; return { method: 'GET', url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => ({}), text: async () => '' }; };
+
+  let pr = await worker.fetch(pgReq('/api/data/assets'), pgEnv, ctx);
+  let pj = await pr.json();
+  ok(pr.status === 200 && pj.items.length === 5 && pj.limit === 1000 && pj.offset === 0 && pj.hasMore === false, 'data pagination: no query params -> default behavior unchanged (all 5 rows, limit 1000, offset 0)');
+
+  pr = await worker.fetch(pgReq('/api/data/assets?limit=2'), pgEnv, ctx); pj = await pr.json();
+  ok(pr.status === 200 && pj.items.length === 2 && pj.items[0].id === 'a1' && pj.items[1].id === 'a2' && pj.limit === 2 && pj.hasMore === true, 'data pagination: limit=2 -> first page of 2 + hasMore:true');
+
+  pr = await worker.fetch(pgReq('/api/data/assets?limit=2&offset=2'), pgEnv, ctx); pj = await pr.json();
+  ok(pr.status === 200 && pj.items.length === 2 && pj.items[0].id === 'a3' && pj.items[1].id === 'a4' && pj.offset === 2, 'data pagination: limit=2&offset=2 -> next page');
+
+  pr = await worker.fetch(pgReq('/api/data/assets?limit=2&offset=4'), pgEnv, ctx); pj = await pr.json();
+  ok(pr.status === 200 && pj.items.length === 1 && pj.items[0].id === 'a5' && pj.hasMore === false, 'data pagination: last partial page -> hasMore:false');
+
+  pr = await worker.fetch(pgReq('/api/data/assets?limit=99999'), pgEnv, ctx); pj = await pr.json();
+  ok(pr.status === 200 && pj.limit === 1000, 'data pagination: limit clamped to max 1000');
+
+  pr = await worker.fetch(pgReq('/api/data/assets?limit=-5&offset=-5'), pgEnv, ctx); pj = await pr.json();
+  ok(pr.status === 200 && pj.limit === 1 && pj.offset === 0, 'data pagination: negative limit clamped to min 1, negative offset clamped to 0');
+}
+
+// ---- Scale/perf (SCALING.md): _hqMetrics + /api/admin/overview bucketing moved from a full-tenant-table JS loop to SQL
+// aggregates (COUNT/SUM CASE WHEN + GROUP BY). Parity with the old JS loop was verified separately on a 17-row mock
+// dataset via a real SQLite engine (every field matched); this just guards the response SHAPE + wiring never regress. ----
+{
+  function ovDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          if (/FROM platform_config/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          // the new SQL-aggregate bucket query (replaces the old "SELECT plan,tier,... FROM tenants" + JS forEach)
+          if (/COUNT\(\*\) total/.test(sql) && /SUM\(CASE WHEN plan IS 'active'/.test(sql)) return { total: 12, paid: 5, comped: 1, trials: 6, twc: 2 };
+          if (/COALESCE\(SUM\(amount_cents\),0\)/.test(sql)) return { c: 0 };
+          return null;
+        },
+        all: async () => {
+          // the new by-tier GROUP BY query (replaces the old byTier JS forEach)
+          if (/GROUP BY \(CASE WHEN tier IS NULL/.test(sql)) return { results: [{ tier: 'pro', n: 3 }, { tier: 'starter', n: 2 }] };
+          return { results: [] };
+        },
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const ovEnv = { DB: ovDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const or_ = await worker.fetch(mkReq('GET', '/api/admin/overview', { headers: H }), ovEnv, ctx);
+  const oj = await or_.json();
+  ok(or_.status === 200 && oj.ok === true, '/api/admin/overview: 200 + ok:true after the SQL-aggregate rewrite');
+  ok(oj.members && oj.members.total === 12 && oj.members.paid === 5 && oj.members.comped === 1 && oj.members.trials === 6 && oj.members.trials_with_card === 2, '/api/admin/overview: members bucket numbers come from the new SQL aggregate');
+  ok(oj.members.by_tier && oj.members.by_tier.pro === 3 && oj.members.by_tier.starter === 2, '/api/admin/overview: by_tier comes from the new GROUP BY query');
+  ok(typeof oj.revenue.mrr_cents === 'number' && oj.revenue.mrr_cents === (19900 * 3 + 4999 * 2), '/api/admin/overview: mrr_cents computed from the SQL-derived by_tier (unchanged JS math)');
+  ok('signups' in oj && oj.visits && oj.installs && oj.bugs && oj.inbox && Array.isArray(oj.recent), '/api/admin/overview: full response shape unchanged (signups/visits/installs/bugs/inbox/recent present)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

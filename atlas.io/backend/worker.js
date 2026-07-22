@@ -299,7 +299,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19q';
+const ATLAS_BUILD = '2026.07.19r';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -551,11 +551,14 @@ async function _hqPickIntent(env, question) {
 async function _hqMetrics(env) {
   const now = Date.now(); const day = new Date(now).toISOString().slice(0, 10);
   const d = new Date(now), monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1), dayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  const mem = ((await env.DB.prepare('SELECT plan,tier,card_on_file,stripe_sub,created_at,trial_ends FROM tenants WHERE deleted_at IS NULL').all()).results) || [];
-  var paid = 0, trials = 0, twc = 0, comped = 0, byTier = {};
-  mem.forEach(function (t) { if (t.plan === 'active' && t.stripe_sub) { paid++; byTier[t.tier || 'other'] = (byTier[t.tier || 'other'] || 0) + 1; } else if (t.plan === 'active') { comped++; } else if (t.plan !== 'deleted') { trials++; if (t.card_on_file) twc++; } });
+  // SQL-aggregated bucketing (was: fetch EVERY tenant row + bucket in JS -- cost scaled with tenant count; now scales
+  // with result size instead). Parity with the old JS loop verified on a mock dataset before this shipped (SCALING.md).
+  const agg = ((await env.DB.prepare("SELECT COALESCE(SUM(CASE WHEN plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' THEN 1 ELSE 0 END),0) paid, COALESCE(SUM(CASE WHEN plan IS 'active' AND NOT (stripe_sub IS NOT NULL AND stripe_sub<>'') THEN 1 ELSE 0 END),0) comped, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND plan IS NOT 'deleted' THEN 1 ELSE 0 END),0) trials, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND plan IS NOT 'deleted' AND COALESCE(card_on_file,0)<>0 THEN 1 ELSE 0 END),0) twc, COALESCE(SUM(CASE WHEN COALESCE(created_at,0)>=? THEN 1 ELSE 0 END),0) signups FROM tenants WHERE deleted_at IS NULL").bind(dayStart - 86400000).first()) || {});
+  const tierRows = ((await env.DB.prepare("SELECT (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END) tier, COUNT(*) n FROM tenants WHERE deleted_at IS NULL AND plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' GROUP BY (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)").all()).results) || [];
+  var paid = agg.paid || 0, trials = agg.trials || 0, twc = agg.twc || 0, comped = agg.comped || 0, byTier = {};
+  tierRows.forEach(function (r) { byTier[r.tier] = r.n; });
   var mrr = 0; Object.keys(byTier).forEach(function (k) { mrr += (PLAN_PRICE_CENTS[k] || 0) * byTier[k]; });
-  const signups = mem.filter(function (t) { return (t.created_at || 0) >= dayStart - 86400000; }).length;
+  const signups = agg.signups || 0;
   const revDay = ((await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=?').bind(dayStart - 86400000).first()) || {}).c || 0;
   const revMonth = ((await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=?').bind(monthStart).first()) || {}).c || 0;
   const activeTenants = ((await env.DB.prepare('SELECT COUNT(DISTINCT tenant_id) c FROM bookings WHERE created_at>=?').bind(now - 30 * 86400000).first()) || {}).c || 0;
@@ -1390,6 +1393,23 @@ async function ensurePlatformSchema(env) {
   // Social OAuth: access/refresh tokens per platform, stored ENCRYPTED (encSecret, AAD='social:<platform>'). Owner links each
   // platform once (OAuth); auto-posting + audience read run off the stored token. Nothing posts without an explicit owner action.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS social_tokens (platform TEXT PRIMARY KEY, token_enc TEXT, refresh_enc TEXT, account TEXT, scopes TEXT, connected_at INTEGER)").run(); } catch (e) {}
+  // Scale/perf indexes (SCALING.md): hot query patterns that lacked one. Each independent -- if a column/table on some
+  // older deploy doesn't match, only that one index is skipped, the rest still land.
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_tenants_customdomain ON tenants(custom_domain)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_tenants_stripecust ON tenants(stripe_customer)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_tenants_created ON tenants(created_at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_starts ON bookings(starts)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_ends ON bookings(ends)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_ratelimits_window ON rate_limits(window_start)').run(); } catch (e) {}
+  // (tenant_id, created_at) composites for the /api/data collections that only had a lone tenant_id index -- speeds
+  // the "ORDER BY created_at DESC" list reads (incl. the new pagination below) without a full per-tenant sort scan.
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_assets_tenant_created ON assets(tenant_id, created_at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_tenant_created ON bookings(tenant_id, created_at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_customers_tenant_created ON customers(tenant_id, created_at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_charges_tenant_created ON charges(tenant_id, created_at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_tenant_created ON ledger(tenant_id, created_at)').run(); } catch (e) {}
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -1698,8 +1718,9 @@ function doReset(){
         if (method === 'GET' && !sub) {
           if (!published) return err(404, 'This booking site is not published yet.');
           // First-party visit count (one upsert per UTC day per tenant; no cookies/PII). Best-effort -- never blocks the page.
-          try { const _day = new Date(Date.now()).toISOString().slice(0, 10); await env.DB.prepare("INSERT INTO page_views (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(prof.id, _day).run();
-            var _cc = (req.cf && req.cf.country) || ''; if (/^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase()).run(); } catch (e) {}
+          const _day = new Date(Date.now()).toISOString().slice(0, 10); const _pvp = (async function () { try { await env.DB.prepare("INSERT INTO page_views (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(prof.id, _day).run();
+            var _cc = (req.cf && req.cf.country) || ''; if (/^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase()).run(); } catch (e) {} })();   // best-effort, deferred (waitUntil) so the public booking page is never held up by analytics writes -- same pattern as _fireWebhook
+          if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_pvp); else _pvp.catch(function () {});
           return json({ ok: true, business: prof.name, subdomain: slug,
             brand: { color: prof.brand.color || '', logo: prof.brand.logo || '', initial: prof.brand.initial || (prof.name || 'A')[0] },
             headline: pubSite.headline || '', about: pubSite.about || '',
@@ -2089,9 +2110,12 @@ function doReset(){
           const byKind = await env.DB.prepare('SELECT kind, COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<? GROUP BY kind').bind(range.start, range.end).all();
           const by_kind = { subscription: 0, credits: 0, website: 0, trial: 0 };
           (byKind.results || []).forEach(function (r) { const k = (r.kind === 'plan') ? 'subscription' : r.kind; by_kind[k] = (by_kind[k] || 0) + (r.c || 0); });
-          const mem = await env.DB.prepare('SELECT plan, tier, card_on_file, stripe_sub FROM tenants WHERE deleted_at IS NULL').all();
-          let total = 0, paid = 0, trials = 0, twc = 0, comped = 0; const by_tier = {};
-          (mem.results || []).forEach(function (t) { total++; if (t.plan === 'active' && t.stripe_sub) { paid++; const tr = t.tier || 'other'; by_tier[tr] = (by_tier[tr] || 0) + 1; } else if (t.plan === 'active') { comped++; } else { trials++; if (t.card_on_file) twc++; } });   // only real paying subscriptions (with a stripe_sub) count toward paid/MRR; comped/manually-active are separate
+          // SQL-aggregated (was: fetch EVERY tenant row + bucket in JS). Same bucketing rules, now scales with result
+          // size not tenant count; parity with the old JS loop verified on a mock dataset before this shipped.
+          const agg2 = ((await env.DB.prepare("SELECT COUNT(*) total, COALESCE(SUM(CASE WHEN plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' THEN 1 ELSE 0 END),0) paid, COALESCE(SUM(CASE WHEN plan IS 'active' AND NOT (stripe_sub IS NOT NULL AND stripe_sub<>'') THEN 1 ELSE 0 END),0) comped, COALESCE(SUM(CASE WHEN plan IS NOT 'active' THEN 1 ELSE 0 END),0) trials, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND COALESCE(card_on_file,0)<>0 THEN 1 ELSE 0 END),0) twc FROM tenants WHERE deleted_at IS NULL").first()) || {});
+          const tierRows2 = ((await env.DB.prepare("SELECT (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END) tier, COUNT(*) n FROM tenants WHERE deleted_at IS NULL AND plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' GROUP BY (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)").all()).results) || [];
+          let total = agg2.total || 0, paid = agg2.paid || 0, trials = agg2.trials || 0, twc = agg2.twc || 0, comped = agg2.comped || 0; const by_tier = {};
+          tierRows2.forEach(function (r) { by_tier[r.tier] = r.n; });   // only real paying subscriptions (with a stripe_sub) count toward paid/MRR; comped/manually-active are separate
           let mrr = 0; Object.keys(by_tier).forEach(function (tr) { mrr += (PLAN_PRICE_CENTS[tr] || 0) * by_tier[tr]; });
           const signups = await env.DB.prepare('SELECT COUNT(*) AS c FROM tenants WHERE created_at>=? AND created_at<?').bind(range.start, range.end).first();
           const vRange = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views WHERE day>=? AND day<=?').bind(range.startDay, range.endDay).first();
@@ -3243,8 +3267,12 @@ function doReset(){
             const one = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? AND id=? LIMIT 1`).bind(ctx.tenant_id, id).first();
             return one ? json({ item: one }) : err(404, 'Not found.');
           }
-          const rows = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1000`).bind(ctx.tenant_id).all();
-          return json({ items: rows.results || [] });
+          // Pagination (optional): with no query params, behavior is IDENTICAL to before (LIMIT 1000, no offset).
+          const _lim = Math.min(1000, Math.max(1, parseInt(url.searchParams.get('limit') || '1000', 10) || 1000));
+          const _off = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
+          const rows = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?`).bind(ctx.tenant_id, _lim, _off).all();
+          const _items = rows.results || [];
+          return json({ items: _items, limit: _lim, offset: _off, count: _items.length, hasMore: _items.length === _lim });
         }
         // all writes: CSRF + origin
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -3729,9 +3757,11 @@ function doReset(){
     } catch (e) { /* nightly snapshot + brief are best-effort */ }
     // Overnight per-tenant "dreaming": compute REAL insights from each active tenant's own data so they wake to fresh, true findings.
     try {
+      if (await _due(env, 'dreaming', 20 * 3600000)) {   // per-tenant insights ~once/20h even though the cron ticks every 2h (was missing this gate -- ran every tick, ~12x/day)
       const _D = 86400000, _cut = Date.now() - 90 * _D;
       const acts = ((await env.DB.prepare('SELECT DISTINCT tenant_id FROM bookings WHERE created_at > ? OR (starts IS NOT NULL AND starts > ?) LIMIT 300').bind(_cut, Date.now()).all()).results) || [];
       for (let i = 0; i < acts.length; i++) { try { const ins = await _computeTenantInsights(env, acts[i].tenant_id); const s = JSON.stringify(ins.json); await env.DB.prepare('INSERT INTO tenant_insights (tenant_id,json,md,at) VALUES (?,?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET json=?,md=?,at=?').bind(acts[i].tenant_id, s, '', Date.now(), s, '', Date.now()).run(); } catch (e) {} }
+      }
     } catch (e) { /* overnight dreaming is best-effort */ }
     // Overnight: deep-crawl EVERY watched competitor (whole site: pricing/fleet/reviews/about) so the brief diffs today vs yesterday --
     // real "what changed". They PERSIST until the owner removes one (no expiry). LIMIT 100 = the full watchlist cap, so none are skipped.
