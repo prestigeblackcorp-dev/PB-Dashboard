@@ -1455,6 +1455,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
           <div class="greet"><h2 id="greetLine">Welcome back</h2><p id="greetSub">Here's how your fleet is doing today.</p></div>
           <div id="ovRangeBar" style="display:flex;justify-content:flex-end;margin-bottom:10px"></div>
           <div class="kpi-row" id="kpiRow"></div>
+          <div id="ovGetStarted"></div>
           <div class="grid-2">
             <div class="card">
               <div class="card__head"><h3>Revenue &amp; bookings</h3><span class="link">Last 8 weeks</span></div>
@@ -2889,7 +2890,7 @@ const Atlas = (function(){
       <div class="field"><label>Teammate email</label><input class="input" placeholder="name@yourcompany.com" value="${esc(S.invite.email||'')}" oninput="Atlas.setField('invite.email',this.value)"></div>
       <div class="field"><label>Role</label><select class="select" onchange="Atlas.setField('invite.role',this.value)"><option value="manager"${S.invite.role==='manager'?' selected':''}>Manager &mdash; full access except billing</option><option value="desk"${(S.invite.role==='desk'||!S.invite.role)?' selected':''}>Staff &mdash; bookings &amp; customers</option><option value="viewer"${S.invite.role==='viewer'?' selected':''}>Viewer &mdash; read-only</option></select></div>${''/* the shown option now reflects S.invite.role and defaults to Staff -- matching the 'desk' fallback at finish() so the created teammate's role never silently differs from what was displayed */}
       <div class="hint" style="margin-top:4px">Add more teammates anytime from Settings &rsaquo; Team after setup.</div>${''/* fix: the old '+ Add another' button only toasted a false 'Invitation queued' and queued nothing -- replaced with honest guidance (onboarding creates one invite; the rest are added in Settings > Team) */}
-      ${obNav('Finish setup')}`,
+      ${obNav('Review &amp; finish')}`,
 
     done:()=>`
       <div style="text-align:center;padding:8px 0">
@@ -2918,8 +2919,8 @@ const Atlas = (function(){
   function brandLive(){ const v=document.getElementById('fName').value; S.brand.name=v; S.brand.initial=(v.trim()[0]||'Y').toUpperCase();
     S.brand.subdomain=v.toLowerCase().replace(/[^a-z0-9]+/g,'').slice(0,20)||'yourcompany';
     document.getElementById('pvName').textContent=v||'Your Company'; const pi=document.getElementById('pvInit'); if(pi)pi.textContent=S.brand.initial; save(); }
-  function logoPick(inp){ const f=inp.files[0]; if(!f)return; const r=new FileReader(); r.onload=e=>{S.brand.logo=e.target.result;save();
-    document.getElementById('logoPrev').innerHTML=`<img src="${esc(S.brand.logo)}">`; document.getElementById('pvLogo').innerHTML=`<img src="${esc(S.brand.logo)}">`;}; r.readAsDataURL(f); }
+  function logoPick(inp){ const f=inp.files[0]; if(!f)return; const r=new FileReader(); r.onload=e=>{ _downscaleImg(String(e.target.result||''),512,0.85,function(out){ S.brand.logo=out||e.target.result; save();
+    var _lp=document.getElementById('logoPrev'); if(_lp) _lp.innerHTML=`<img src="${esc(S.brand.logo)}">`; var _pv=document.getElementById('pvLogo'); if(_pv) _pv.innerHTML=`<img src="${esc(S.brand.logo)}">`; try{applyBrand();}catch(e){} }); }; r.readAsDataURL(f); }
   function pickColor(c){ S.brand.color=c; save(); applyBrand();
     document.querySelectorAll('#swatches .swatch').forEach(s=>s.classList.toggle('sel',s.style.background===hexToRgbCss(c))); }
   function hexToRgbCss(h){let[r,g,b]=hex2rgb(h);return`rgb(${r}, ${g}, ${b})`}
@@ -3215,6 +3216,7 @@ const Atlas = (function(){
       else { mob.style.display=''; document.body.classList.remove('mnav-off');
         var vis=all.filter(function(n){ return cfg.hidden.indexOf(n[0])<0; });
         mob.innerHTML=vis.map(function(n){ return '<button class="mnav__i'+(n[0]===active?' active':'')+'" data-mnav="'+n[0]+'" onclick="Atlas.go(\''+n[0]+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(_navLabelFor(n))+(n[3]?'<span class="badge" id="m_'+n[3]+'"></span>':'')+'</button>'; }).join('');
+        try{ var _am=mob.querySelector('.mnav__i.active'); if(_am&&_am.scrollIntoView) _am.scrollIntoView({inline:'center',block:'nearest'}); }catch(e){}   // keep the active tab visible in the horizontally-scrolling bar (Settings/Website were off-screen at 375px)
       }
     }
     _refreshNavBadges();
@@ -3492,6 +3494,7 @@ const Atlas = (function(){
     return {from:0,to:Infinity,short:'all'}; }
   function _inOvRange(b){ var B=_ovRangeBounds(_ovRange), t=(b.startTs||b.createdAt||0); return t>=B.from && t<=B.to; }   // KPI date-range filter: attribute revenue by rental start, else booked date
   function setOvRange(v){ _ovRange=v; try{ renderOverview(); }catch(e){} }
+  function gsDismiss(){ if(!S) return; S.gsDismissed=true; try{ save(); }catch(e){} try{ renderOverview(); }catch(e){} }
   function renderOverview(){
     DATA.bookings=_bookings();
     _recomputeUtil();   // real per-asset utilization from bookings -> KPI, charts + AI all agree
@@ -3507,6 +3510,15 @@ const Atlas = (function(){
     document.getElementById('kpiRow').innerHTML=kpis.map(k=>`<div class="kpi kpi--clk" onclick="Atlas.drillKpi('${k[2]}')"><div class="kpi__top"><span class="kpi__label">${k[0]}</span>
       <span class="kpi__ic"><svg viewBox="0 0 20 20" fill="none"><path d="${k[3]}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
       <div class="kpi__val tnum">${k[1]}</div><div class="kpi__hint">View breakdown &rarr;</div></div>`).join('');
+    // Getting-started next-steps card: shown only to a brand-new tenant (no bookings yet) until dismissed, so a
+    // first-time owner always has a clear roadmap instead of a screen of zeros.
+    var _gs=document.getElementById('ovGetStarted');
+    if(_gs){ if(!S.gsDismissed && DATA.bookings.length===0){ var _st=function(n,cta,fn,pri){ return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:13.5px">'+n+'</b><button class="btn '+(pri?'btn--primary':'btn--ghost')+' btn--sm" onclick="'+fn+'">'+cta+'</button></div>'; };
+      _gs.innerHTML='<div class="card" style="border:1px solid var(--brand);position:relative;margin-bottom:14px"><button onclick="Atlas.gsDismiss()" title="Dismiss" style="position:absolute;top:9px;right:12px;background:none;border:0;color:var(--muted);font-size:20px;line-height:1;cursor:pointer">&times;</button><div class="card__head" style="border:0;padding-bottom:2px"><h3>Getting started</h3></div><div class="card__body" style="display:flex;flex-direction:column;gap:11px"><p class="bk-lenhint" style="margin:0 0 2px">Three steps to go live:</p>'
+        +_st('1. Add your first '+esc(S.fleet.noun),'Add '+esc(S.fleet.noun),'Atlas.addVehicle()',true)
+        +_st('2. Take your first booking','New booking','Atlas.newBooking()',false)
+        +_st('3. Publish your booking website','Set up site','Atlas.go(\'website\')',false)
+        +'</div></div>'; } else _gs.innerHTML=''; }
     // util list
     document.getElementById('utilList').innerHTML=DATA.assets.length ? DATA.assets.slice(0,5).map(a=>`<div class="util-row" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
       <div class="util-row__t"><b>${esc(a.name)}</b><small>${esc(a.status)}</small><div class="bar"><i style="width:${a.util}%"></i></div></div>
@@ -3517,7 +3529,7 @@ const Atlas = (function(){
       <td>${esc(b.asset)}</td><td class="tnum">${_fmtWhen(b.startTs,b.time)} &middot; ${b.periods}${_pu}</td>
       <td class="tnum"><b>${money(_bkTotal(b))}</b></td><td>${statusChip(b.status)}</td></tr>`;
     const head=`<thead><tr><th>Booking</th><th>Customer</th><th>${cap(S.fleet.noun)}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
-    document.getElementById('bookTbl').innerHTML=head+'<tbody>'+(DATA.bookings.length?DATA.bookings.slice(0,5).map(rows).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px 8px">No bookings yet &mdash; new bookings show up here.</td></tr>')+'</tbody>';
+    document.getElementById('bookTbl').innerHTML=head+'<tbody>'+(DATA.bookings.length?DATA.bookings.slice(0,5).map(rows).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px 8px">No bookings yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.newBooking()">create your first booking</span>.</td></tr>')+'</tbody>';
     document.getElementById('bookTblFull').innerHTML=head+'<tbody>'+DATA.bookings.map(rows).join('')+'</tbody>';
     setTimeout(()=>drawRevChart(),30);
   }
@@ -5380,6 +5392,14 @@ const Atlas = (function(){
     var _rs=_revSeries(); const data=_rs.rev, bk=_rs.cnt, pad=8, bw=(w-pad*2)/data.length*0.5, gap=(w-pad*2)/data.length;
     const max=Math.max(1,Math.max.apply(null,data))*1.15, bmax=Math.max(1,Math.max.apply(null,bk)), base=h-22;
     const brand=_cssVar('--brand'), brand1=_cssVar('--brand-100'), surf=_cssVar('--surface')||'#fff', faint=_cssVar('--faint')||'#A9AEB6';
+    // Empty-state: with zero revenue across all 8 weeks, a flat line reads as broken -- draw the axis + a clear label instead.
+    if(!data.some(function(v){return v>0;})){
+      ctx.fillStyle=faint; ctx.font='10px -apple-system,sans-serif'; ctx.textAlign='center';
+      ['W1','W2','W3','W4','W5','W6','W7','W8'].forEach(function(l,i){ ctx.fillText(l,pad+gap*i+gap/2,h-6); });
+      ctx.fillStyle=_cssVar('--muted')||'#7C828C'; ctx.font='600 12px -apple-system,sans-serif'; ctx.fillText('No revenue yet',w/2,h/2-4);
+      ctx.fillStyle=faint; ctx.font='10.5px -apple-system,sans-serif'; ctx.fillText('Your first bookings will chart here',w/2,h/2+12);
+      return;
+    }
     // line for bookings
     data.forEach((v,i)=>{ const x=pad+gap*i+gap/2, bh=(v/max)*(base-10);
       // bar
@@ -7190,6 +7210,8 @@ const Atlas = (function(){
         S.team.push({ id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:added, email:iv.email, role:role, perms:(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false)) });
       } }
     save(); applyBrand(); buildApp(); show('app');
+    if(iv.email && String(iv.email).indexOf('@')<=0){ setTimeout(function(){ toast('That teammate email looked off &mdash; you can add them anytime from Team'); },900); }   // was silently dropped
+    _kickLiveTour();   // always kick the one-time guided tour after setup (a checkout redirect below cancels the pending timer; the post-return reload path re-kicks it, so it fires exactly once)
     // Card-on-file to start the free trial (Stripe hosted checkout; card SAVED, not charged today). Dormant until PAYMENTS_LIVE. On failure the owner stays in the app on trial -> never a dead-end.
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !(S.card && S.card.onFile)){ _billingCheckout('trial',{tier:S.tier||'pro'}); return; }
     setTimeout(function(){ toast('Welcome to '+S.brand.name+' on Atlas Rental.io'); if(added) setTimeout(function(){ toast(added+' added to your team - set their access in Team'); },1900); },300); }
@@ -8511,7 +8533,7 @@ const Atlas = (function(){
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
-    drillKpi,setOvRange,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
+    drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
