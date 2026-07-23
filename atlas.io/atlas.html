@@ -2786,7 +2786,11 @@ const Atlas = (function(){
     var _z=document.getElementById('fZip'); if(_z) S.brand.zip=String(_z.value||'').trim();
     var _ar=document.getElementById('fArea'); if(_ar) S.brand.area=String(_ar.value||'').trim();
   }catch(e){} }
-  function next(){ _captureOB(); if(step<STEPS.length-1){step++; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
+  function next(){ _captureOB();
+    // gapless-onboarding guard: the business name brands the whole app/portal/contracts -- never let a click-through
+    // advance on the blank "Your Company" default (was: silently committed everywhere).
+    if(STEPS[step]==='identity'){ var _nm=((S.brand&&S.brand.name)||'').trim(); if(!_nm||/^your company$/i.test(_nm)){ var _el=document.getElementById('fName'); if(_el){ try{_el.focus();}catch(e){} } toast('Add your business name to continue'); return; } }
+    if(step<STEPS.length-1){step++; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
   function back(){ if(step>0){step--; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
   const OB={
     welcome:()=>`
@@ -2869,7 +2873,7 @@ const Atlas = (function(){
 
     asset:()=>`
       <h2>Add your first ${S.fleet.noun}</h2><p class="ob-card__lead">Just enough to go live. You can bulk-import the rest later.</p>
-      <div class="field"><label>${cap(S.fleet.noun)} name</label><input class="input" id="obAssetName" placeholder="e.g. ${S.fleet.sample[0]}" value="${esc(S.firstAsset.name||S.fleet.sample[0])}" oninput="Atlas.setField('firstAsset.name',this.value)"></div>
+      <div class="field"><label>${cap(S.fleet.noun)} name</label><input class="input" id="obAssetName" placeholder="e.g. ${S.fleet.sample[0]}" value="${esc(S.firstAsset.name||'')}" oninput="Atlas.setField('firstAsset.name',this.value)"></div>
       <div class="row2">
         <div class="field"><label>${({hour:'Hourly',week:'Weekly',month:'Monthly'})[S.money.rateModel]||'Daily'} rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="obAssetRate" style="width:auto;flex:1;text-align:left" value="${S.firstAsset.rate||S.money.baseRate}" oninput="Atlas.setField('firstAsset.rate',this.value)"></div></div>
         <div class="field"><label>Status</label><select class="select" onchange="Atlas.setField('firstAsset.status',this.value)"><option ${S.firstAsset.status==='Maintenance'?'':'selected'}>Available</option><option ${S.firstAsset.status==='Maintenance'?'selected':''}>Maintenance</option></select></div>
@@ -3735,7 +3739,7 @@ const Atlas = (function(){
     } else {
       locsEl.innerHTML='';
       document.getElementById('fleetSub').textContent=`${n} of ${capTxt} ${S.fleet.nouns} on ${_curTier().name} \u00b7 ${avail} available now`;
-      grid.innerHTML=DATA.assets.map(_assetCard).join('');
+      grid.innerHTML=DATA.assets.length?DATA.assets.map(_assetCard).join(''):'<div class="empty" style="grid-column:1/-1"><div class="empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13l2-5h14l2 5v5H3zM7 18a2 2 0 100-4 2 2 0 000 4zM17 18a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div><h3>No '+esc(S.fleet.nouns)+' yet</h3><p>Add your first '+esc(S.fleet.noun)+' to start taking bookings &mdash; you can bulk-import the rest later.</p><button class="btn btn--primary" onclick="Atlas.addVehicle()">Add your first '+esc(S.fleet.noun)+'</button></div>';
     }
   }
   /* ---- Bookings module (persisted per-tenant collection, priced by the money engine) ---- */
@@ -4847,6 +4851,7 @@ const Atlas = (function(){
     {id:'meitrack',name:'Meitrack'},{id:'concox',name:'Concox / Jimi IoT'},{id:'navixy',name:'Navixy'},{id:'flespi',name:'flespi'},
     {id:'other',name:'Other (generic API)'}
   ];
+  var TRK_LIVE={bouncie:1,samsara:1,traccar:1};   // providers with a real live-sync backend integration today; every other brand connects in preview (simulated positions)
   var TRK_BOX={minLat:30.20,maxLat:30.34,minLng:-97.82,maxLng:-97.66};
   var TRK_STREETS=['Congress Ave','S Lamar Blvd','E 6th St','Guadalupe St','Riverside Dr','Cesar Chavez St','Burnet Rd','Manor Rd','Airport Blvd','Barton Springs Rd','MoPac Expy','I-35 Frontage'];
   var _trkTimer=null, _trkSaveTick=0, _trkSel=null;
@@ -4956,21 +4961,28 @@ const Atlas = (function(){
   function _trkGuideHtml(id){ var t=TRACKERS.filter(function(x){return x.id===id;})[0]||{name:id}; var g=_trackerGuide(id,t.name);
     return '<div class="trk-guide"><div class="trk-guide__hd">How to connect '+esc(t.name)+' <span>You will need: '+esc(g.need)+'</span></div><ol class="trk-guide__steps">'+g.steps.map(function(s){return '<li>'+esc(s)+'</li>';}).join('')+'</ol></div>'; }
   function trkGuideUpdate(){ var el=document.getElementById('trkGuide'); if(el) el.innerHTML=_trkGuideHtml(val('trkProv')); }
-  function openTrackerConnect(){ openModal('<div class="modal__head"><h3>Connect a tracker</h3>'+_xBtn()+'</div><div class="modal__body">'
-    +'<div style="display:flex;gap:6px;margin:0 0 14px"><button class="btn btn--primary btn--sm" id="trkTabLive" onclick="Atlas.trkConnTab(\'live\')" style="flex:1">Live data</button><button class="btn btn--ghost btn--sm" id="trkTabPrev" onclick="Atlas.trkConnTab(\'prev\')" style="flex:1">Preview</button></div>'
-    +'<div id="trkLivePane">'
-      +'<div class="field"><label>Provider</label><select class="select" id="trkLiveProv" onchange="Atlas.trkLiveFieldsUpdate()"><option value="bouncie">Bouncie (OBD dongles)</option><option value="samsara">Samsara</option><option value="traccar">Traccar (self-hosted)</option></select></div>'
-      +'<div id="trkLiveFields">'+_trkLiveFields('bouncie')+'</div>'
-      +'<div class="bk-lenhint" style="margin:0 0 12px">Your keys are stored <b>encrypted on the server</b> (never in the browser). Positions refresh automatically every 30 seconds.</div>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.connectTrackerLive()">Connect live tracking</button>'
-    +'</div>'
-    +'<div id="trkPrevPane" style="display:none">'
-      +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+'</option>';}).join('')+'</select></div>'
-      +'<div id="trkGuide">'+_trkGuideHtml(TRACKERS[0].id)+'</div>'
-      +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" placeholder="Paste your API key or access token"></div>'
-      +'<div class="bk-lenhint" style="margin:0 0 14px"><b>Preview:</b> shows the live-map layout with simulated positions so you can explore before wiring a real device.</div>'
-      +'<button class="btn btn--ghost btn--full btn--lg" onclick="Atlas.connectTracker()">Preview the live map</button>'
-    +'</div></div>'); }
+  // ONE unified list (was two provider dropdowns in two tabs). Pick a provider -> the correct fields for THAT provider
+  // render below (real multi-field forms for the 3 live integrations; a URL+key form for the rest) + its own how-to steps.
+  function openTrackerConnect(){ var opts=TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+(TRK_LIVE[x.id]?' (live sync)':'')+'</option>';}).join('');
+    openModal('<div class="modal__head"><h3>Connect a tracker</h3>'+_xBtn()+'</div><div class="modal__body">'
+    +'<p class="bk-lenhint" style="margin:0 0 12px">Pick your GPS provider, follow the steps, and paste your keys. Live sync is supported for <b>Bouncie</b>, <b>Samsara</b> and <b>Traccar</b> today; every other brand connects in <b>preview</b> (the live-map layout with simulated positions) while live sync rolls out.</p>'
+    +'<div class="field"><label>Your GPS provider</label><select class="select" id="trkProv" onchange="Atlas.trkFieldsUpdate()">'+opts+'</select></div>'
+    +'<div id="trkGuide"></div>'
+    +'<div id="trkFields"></div>'
+    +'<div id="trkConnNote"></div>'
+    +'<button class="btn btn--primary btn--full btn--lg" id="trkConnBtn" onclick="Atlas.trkConnect()">Connect</button>'
+    +'</div>'); trkFieldsUpdate(); }
+  // correct inputs per provider: the 3 real integrations get their exact multi-field forms; everyone else gets an
+  // optional Server/API URL (some providers require one) + an API key/login field. Guide steps come from _trackerGuide.
+  function _trkConnFields(prov){ if(TRK_LIVE[prov]) return _trkLiveFields(prov);
+    return '<div class="field"><label>Server / API URL <span style="color:var(--muted);font-weight:400">(only if your provider gives you one)</span></label><input class="input mono" id="trkUrl" placeholder="https://api.your-provider.com"></div>'
+      +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" placeholder="Paste your API key, token, or login"></div>'; }
+  function trkFieldsUpdate(){ var prov=val('trkProv'); var g=document.getElementById('trkGuide'), f=document.getElementById('trkFields'), n=document.getElementById('trkConnNote'), b=document.getElementById('trkConnBtn');
+    if(g) g.innerHTML=_trkGuideHtml(prov); if(f) f.innerHTML=_trkConnFields(prov);
+    var live=!!TRK_LIVE[prov], nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;
+    if(n) n.innerHTML='<div class="bk-lenhint" style="margin:0 0 14px">'+(live?'Your keys are stored <b>encrypted on the server</b> (never in your browser) and positions refresh automatically every 30 seconds.':'<b>Live sync for '+esc(nm)+' is coming.</b> Connect now to explore the live-map layout with simulated positions &mdash; your key is not stored until live sync is ready.')+'</div>';
+    if(b) b.textContent=live?'Connect live tracking':'Preview the live map'; }
+  function trkConnect(){ if(TRK_LIVE[val('trkProv')]) return connectTrackerLive(); return connectTracker(); }
   function trkConnTab(which){ var lp=document.getElementById('trkLivePane'), pp=document.getElementById('trkPrevPane'), lt=document.getElementById('trkTabLive'), pt=document.getElementById('trkTabPrev'); if(!lp||!pp)return; var live=which!=='prev'; lp.style.display=live?'':'none'; pp.style.display=live?'none':''; if(lt)lt.className='btn btn--sm '+(live?'btn--primary':'btn--ghost'); if(pt)pt.className='btn btn--sm '+(live?'btn--ghost':'btn--primary'); }
   function trkLiveFieldsUpdate(){ var el=document.getElementById('trkLiveFields'); if(el) el.innerHTML=_trkLiveFields(val('trkLiveProv')); }
   function _trkLiveFields(prov){
@@ -4983,7 +4995,7 @@ const Atlas = (function(){
       +'<div class="field"><label>Authorization Code</label><input class="input mono" id="bnCode" placeholder="Users &amp; Devices &gt; Expand your account"></div>'
       +'<div class="field"><label>Redirect URL</label><input class="input mono" id="bnRedir" placeholder="the redirect URL you set on the app"></div>'; }
   function connectTrackerLive(){ if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to connect live tracking'); return; }
-    var prov=val('trkLiveProv'), secret='', meta={};
+    var prov=val('trkProv'), secret='', meta={};
     if(prov==='samsara'){ secret=(val('smTok')||'').trim(); if(!secret){ toast('Paste your Samsara API token'); return; } }
     else if(prov==='traccar'){ var h=(val('tcHost')||'').trim(), u=(val('tcUser')||'').trim(); secret=(val('tcPass')||'').trim(); if(!h||!secret){ toast('Enter your server URL and token/password'); return; } meta={host:h}; if(u)meta.user=u; }
     else { var ci=(val('bnCid')||'').trim(), cs=(val('bnSec')||'').trim(), cd=(val('bnCode')||'').trim(), rd=(val('bnRedir')||'').trim(); if(!ci||!cs||!cd){ toast('Fill in Client ID, Secret and Authorization Code'); return; } secret=JSON.stringify({client_id:ci,client_secret:cs,code:cd,redirect_uri:rd}); }
@@ -4992,7 +5004,7 @@ const Atlas = (function(){
       if(!(res.status>=200&&res.status<300&&res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not save the connection'); return; }
       var t=_trackers(); t.provider=prov; t.connected=true; t.live=true; delete t.apiKey; _logEvent('tracker','Connected live GPS provider ('+prov+')',{provider:prov}); save(); closeModal(); renderTracking(); _trkFetchLive(true); _trkStart();
     }).catch(function(){ toast('Network error connecting'); }); }
-  function connectTracker(){ var prov=val('trkProv'), key=(val('trkKey')||'').trim(); if(!key){ toast('Enter anything to start the preview'); return; }
+  function connectTracker(){ var prov=val('trkProv');   // preview path: key is NOT stored (real polling not wired for this brand yet), so it's optional -- no friction
     var t=_trackers(); t.provider=prov; t.connected=true; var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;   // do NOT store the pasted key: real provider polling is not wired yet, so keeping a key would be collecting an unused credential
     _trkSeed(); _logEvent('tracker','Live-map preview started ('+nm+') -- '+(DATA.assets||[]).length+' '+S.fleet.nouns+' shown with simulated positions',{provider:prov}); save(); closeModal(); renderTracking(); toast('Preview ready -- showing simulated positions'); }
   // Edit a LIVE connection's provider / API key in place -- update capability alongside connect (create) + disconnect (delete), without wiping vehicles or dropping the session.
@@ -8509,7 +8521,7 @@ const Atlas = (function(){
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
-    renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
+    renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,
