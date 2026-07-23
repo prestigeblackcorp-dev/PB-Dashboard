@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ac';
+const ATLAS_BUILD = '2026.07.19ad';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1599,6 +1599,11 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_customer TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }
+  // #281 PUBLIC-SITE TAKEDOWN: timestamp (ms) of when this tenant most recently flipped to plan='past_due' (set by
+  // the Stripe webhook below, once via COALESCE so a repeat failed-payment webhook never resets the grace clock).
+  // NULL/absent == never delinquent, or already recovered. Cleared back to NULL in the SAME statement that flips
+  // plan back to 'active' -- see /api/stripe/webhook. Read-only from the two public serve paths (_siteTakenDown).
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN delinquent_since INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain_status TEXT").run(); } catch (e) { /* already exists */ }
   // #278 feature-level payment gating: 'once' | 'mo' (real Stripe purchase, stamped by the webhook) or
@@ -1789,6 +1794,37 @@ async function _lockedTenantCount(env) {
     const r = await env.DB.prepare("SELECT COUNT(*) c FROM tenants WHERE deleted_at IS NULL AND plan!='deleted' AND plan!='active' AND NOT (plan='trial' AND trial_ends>=?)").bind(Date.now()).first();
     return (r && r.c) || 0;
   } catch (e) { return 0; }
+}
+// ---- #281 PUBLIC-SITE TAKEDOWN (flag-gated OFF by default via platform_config.site_takedown_enabled) ----
+// SEPARATE from #276's dashboard lockout above: #276 gates the OWNER's own dashboard; this gates what the worker
+// SERVES on a delinquent tenant's PUBLIC booking site (the two "served customer pages" call sites: the custom-
+// domain front door and /api/book/<slug>). settings.publicSite.published is NEVER touched here -- only what gets
+// SERVED for it -- so the instant the tenant pays (plan flips back to 'active', which clears delinquent_since in
+// the SAME webhook statement -- see /api/stripe/webhook) the real site is restored instantly, with no manual step
+// and no lost content. Pure (one flag read, no writes); fails OPEN (false = serve the real site) on ANY error,
+// a missing tenant row, an unset/null delinquent_since, or an active plan -- this must NEVER invent a takedown
+// from absent or unexpected data. `tenant` needs .plan + .delinquent_since -- both are present whether the caller
+// used a named SELECT (widened to include them) or SELECT * (the subdomain path, once the ALTER above has run).
+const _TAKEDOWN_GRACE_MS = 3 * 86400000;   // 3-day grace period after the FIRST failed-payment webhook
+async function _siteTakenDown(env, tenant) {
+  try {
+    if (!tenant) return false;                                                     // no row to evaluate -> fail open
+    if ((await _pcfgGet(env, 'site_takedown_enabled', '0')) !== '1') return false;  // OFF by default -> byte-identical to today (the only cost when off: this one cheap flag read)
+    if (tenant.plan === 'active') return false;                                     // belt-and-suspenders: a paid tenant is NEVER taken down, even if delinquent_since is stale/unexpected
+    const since = Number(tenant.delinquent_since);
+    if (!since || !isFinite(since)) return false;                                   // never delinquent, or already cleared -> never take down
+    return (Date.now() - since) > _TAKEDOWN_GRACE_MS;
+  } catch (e) { return false; }   // any error -> fail OPEN, serve the real site
+}
+// Friendly, brand-colored standalone page shown INSTEAD of a delinquent tenant's public booking site (see
+// _siteTakenDown). Says nothing about payment/billing/delinquency -- this is shown to the TENANT'S OWN customers,
+// never the tenant, so it must never embarrass the tenant publicly. Served as 200 (not 503): this outage has no
+// known end (it lasts exactly as long as the tenant stays unpaid, which may be indefinite), so a "come back
+// shortly" 503+Retry-After would misrepresent it -- and search engines treat a 503 that persists more than a
+// couple of days as a real error and may drop the page from their index, which would hurt the tenant more than a
+// plain 200 placeholder would.
+function _siteUnavailableHtml(color) {
+  return _pageDoc('Temporarily unavailable', color, '<div class="card"><h2>Temporarily unavailable</h2><p class="muted">This booking site is temporarily unavailable. Please check back soon.</p></div>', '');
 }
 // ---- #280 CARD-REQUIRED-FOR-TRIAL ACCESS GATING (flag-gated OFF by default via platform_config.trial_requires_card) ----
 // Pure function, no I/O -- INDEPENDENT of _billingState/#276 above: a tenant can need a card even when the #276
@@ -1992,12 +2028,16 @@ export default {
         try {
           await ensurePlatformSchema(env);
           const hostBase = host.replace(/^www\./, '');   // www.theirsite.com and theirsite.com both route to the tenant
-          const cd = await env.DB.prepare("SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(hostBase).first();
+          const cd = await env.DB.prepare("SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings,delinquent_since FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(hostBase).first();
           if (cd && cd.subdomain) {
             const pr = tenantProfile(cd);
             const liveSite = pr.settings.publicSite && pr.settings.publicSite.published;
             const color = (pr.brand && pr.brand.color) || '#1E6E4E';
             if (liveSite) {
+              // #281: delinquent >3 days + flag on -> serve the friendly "temporarily unavailable" page INSTEAD of
+              // the real site; publicSite.published is untouched, so this is instant + auto-reversed the moment
+              // plan flips back to 'active' (see _siteTakenDown). Fails OPEN on any error -- never blocks the real site.
+              if (await _siteTakenDown(env, cd)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
               // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
               const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
               return new Response(_bookPageHtml(cd.subdomain, color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
@@ -2469,7 +2509,8 @@ function doReset(){
           const T = evt.type, sid = obj.id || evt.id || '';
           if (T === 'checkout.session.completed' && md.billing === 'plan' && md.tenant) {
             // subscription started -> unlock + card on file + remember the Stripe customer/subscription so we can change/cancel it later. Revenue books on invoice.paid to avoid double-counting.
-            await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind('active', md.tier || null, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
+            // #281: also clear delinquent_since -- belt-and-suspenders alongside the invoice.paid/subscription.updated(active) clears below, so a re-subscribe after a past-due lapse never leaves a stale timestamp behind.
+            await env.DB.prepare('UPDATE tenants SET plan=?, delinquent_since=NULL, tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind('active', md.tier || null, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.subscribed', { tier: md.tier });
           } else if (T === 'checkout.session.completed' && md.billing === 'trial' && md.tenant) {
             // free trial with a card on file: no charge today, first invoice fires at trial end.
@@ -2551,7 +2592,8 @@ function doReset(){
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
             if (im.tenant && (im.billing === 'plan' || im.billing === 'trial') && Number(obj.amount_paid || 0) > 0) {   // ignore the $0 subscription_create invoice at trial start -- only a REAL charge (trial->paid conversion or a renewal) books revenue, flips to active, and emails a receipt. A trialing tenant stays 'trial' with a card on file until the first real charge.
               const _ptx = await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
-              await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
+              // #281: THE back-to-active transition for a recovered past_due tenant -- clear delinquent_since in the SAME statement so the public-site takedown (_siteTakenDown) lifts instantly, with no separate step.
+              await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, delinquent_since=NULL, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
               if (_ptx && _ptx.new) { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }   // receipt only on a NEW txn -> idempotent on webhook replay
             } else if (im.tenant && im.billing === 'website') {
               await env.DB.prepare("UPDATE tenants SET website_addon='mo', updated_at=? WHERE id=?").bind(Date.now(), im.tenant).run();   // #278: monthly renewal keeps the entitlement current
@@ -2579,9 +2621,9 @@ function doReset(){
             // subscription (same customer, different metadata.billing) must NEVER flip the plan or clobber the plan's stripe_sub.
             if (md.tenant && (md.billing === 'plan' || md.billing === 'trial')) {
               const st = String(obj.status || '');
-              if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
+              if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #281: belt-and-suspenders clear alongside invoice.paid's (this can fire first/instead on some recoveries)
               else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
-              else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'.
+              else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(Date.now(), obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'. #281: stamp delinquent_since ONCE (COALESCE) so a repeat past_due webhook never resets the 3-day takedown grace clock.
               else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
             }
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
@@ -2617,7 +2659,8 @@ function doReset(){
               // gate can lock them until they fix their card, and so the master-dash past_due list + MRR stop counting
               // them as paid. ONLY a real subscriber (stripe_sub set) -- never a comped or manually-managed account.
               // Auto-recovers: a later invoice.paid on a successful retry flips them back to plan='active'.
-              try { await env.DB.prepare("UPDATE tenants SET plan='past_due', updated_at=? WHERE id=? AND stripe_sub IS NOT NULL AND plan!='deleted'").bind(Date.now(), im.tenant).run(); } catch (e) {}
+              // #281: stamp delinquent_since ONCE (COALESCE) -- a repeat payment_failed webhook for the same lapse must never reset the 3-day public-site takedown grace clock.
+              try { await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), updated_at=? WHERE id=? AND stripe_sub IS NOT NULL AND plan!='deleted'").bind(Date.now(), Date.now(), im.tenant).run(); } catch (e) {}
             }
           }
         } catch (e) {}
@@ -3027,7 +3070,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', tenants_locked: await _lockedTenantCount(env), your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -3044,6 +3087,10 @@ function doReset(){
           // this ON is the ONLY thing that activates the 402 lockout for past-due/canceled/trial-expired tenants;
           // this route is already OWNER_ONLY (path starts with /api/admin/config, matched by the OWNER_ONLY regex).
           if (typeof b.payment_gate_enabled !== 'undefined') { await _pcfgSet(env, 'payment_gate_enabled', b.payment_gate_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { payment_gate_enabled: !!b.payment_gate_enabled }); }
+          // #281 public-site takedown gate: OFF by default (see _siteTakenDown above). Flipping this ON is the ONLY
+          // thing that activates the public "temporarily unavailable" swap for a tenant delinquent (past_due) for
+          // more than 3 days; this route is already OWNER_ONLY (path starts with /api/admin/config).
+          if (typeof b.site_takedown_enabled !== 'undefined') { await _pcfgSet(env, 'site_takedown_enabled', b.site_takedown_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { site_takedown_enabled: !!b.site_takedown_enabled }); }
           // #278 feature-level payment gating (website builder/hosted site/custom domains): OFF by default (see
           // _websiteEntitled/_grandfatherWebsite above). Flipping this ON is the ONLY thing that activates the 402 on
           // a NEW un-entitled publish or custom-domain connect; this route is already OWNER_ONLY.
@@ -3053,7 +3100,7 @@ function doReset(){
           // a protected endpoint -- independent of #276's payment_gate_enabled (this can be on while that is off,
           // and vice versa). This route is already OWNER_ONLY (path starts with /api/admin/config).
           if (typeof b.trial_requires_card !== 'undefined') { await _pcfgSet(env, 'trial_requires_card', b.trial_requires_card ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { trial_requires_card: !!b.trial_requires_card }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', tenants_locked: await _lockedTenantCount(env) };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env) };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are
@@ -3523,6 +3570,11 @@ function doReset(){
         const live = pr && pr.settings.publicSite && pr.settings.publicSite.published;
         const color = (pr && pr.brand && pr.brand.color) || '#1E6E4E';
         if (!live) return new Response(_pageDoc('Not available', color, '<div class="card"><h2>Not available yet</h2><p class="muted">This booking site has not been published.</p></div>', ''), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        // #281: delinquent >3 days + flag on -> serve the friendly "temporarily unavailable" page INSTEAD of the
+        // real site; publicSite.published is untouched, so this is instant + auto-reversed the moment plan flips
+        // back to 'active' (see _siteTakenDown). Fails OPEN on any error -- never blocks the real site. tr came
+        // from SELECT * above, so .plan/.delinquent_since are already present (no ensurePlatformSchema needed here).
+        if (await _siteTakenDown(env, tr)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
         // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
         const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
         return new Response(_bookPageHtml(bp[1], color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge

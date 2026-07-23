@@ -1644,5 +1644,129 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(cardFlag === '1', '#280 admin config: the bad-token POST above never actually wrote to platform_config (still "1" from the earlier real POST) (got ' + JSON.stringify(cardFlag) + ')');
 }
 
+// ---- #281 PUBLIC-SITE TAKEDOWN: a tenant delinquent (past_due) for MORE than a 3-day grace period gets a
+// friendly "temporarily unavailable" page swapped in for their PUBLIC booking site (both serve paths: the
+// custom-domain front door and /api/book/<slug>); settings.publicSite.published is never touched, and paying
+// (plan back to 'active') restores the real site instantly. Flag-gated OFF by default via
+// platform_config.site_takedown_enabled. Self-contained: own mock D1 + own request builders/helpers below --
+// references nothing from any sibling block (see the wgEnvFor scope-bug lesson noted near the #279 block above,
+// which is exactly the mistake this pattern avoids). ----
+{
+  const DAY281 = 86400000;
+  // tenantRow shape returned by BOTH real call sites: SELECT * (subdomain path) and the named, widened SELECT
+  // (custom-domain path) -- both must carry .plan + .delinquent_since alongside the usual profile fields.
+  function tdRow(plan, delinquentSince) {
+    return {
+      id: 't_td281', subdomain: 'td281', fleet_type: 'cars', plan: plan, tier: 'starter', website_addon: null,
+      custom_domain: 'td281-custom.example', custom_domain_status: 'live',
+      brand: JSON.stringify({ color: '#123456' }), money: JSON.stringify({}),
+      settings: JSON.stringify({ publicSite: { published: true, headline: 'Hi', assets: [], config: {} } }),
+      delinquent_since: delinquentSince,
+    };
+  }
+  function tdDB(tenantRow, flagOn) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM tenants WHERE subdomain=\?/.test(sql)) return tenantRow;                 // subdomain path (SELECT *)
+          if (/FROM tenants WHERE custom_domain=\?/.test(sql)) return tenantRow;              // custom-domain path (named SELECT)
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'site_takedown_enabled' && flagOn) ? { v: '1' } : null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const tdCtx = { waitUntil(p) { p.catch(function () {}); }, passThroughOnException() {} };
+  const tdEnv = (tenantRow, flagOn) => ({ DB: tdDB(tenantRow, flagOn), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' });
+  const tdCustomReq = (hostname) => new Request('https://' + hostname + '/', { method: 'GET', headers: { 'Content-Type': 'application/json' } });
+  const isUnavailable = (s) => s.indexOf('Temporarily unavailable') >= 0;
+  const isRealPage = (s) => s.indexOf('id="app"') >= 0 && !isUnavailable(s);
+
+  // (a) flag OFF: even a long-past_due tenant's real site still serves -- proves the feature is fully inert when off
+  let r = await worker.fetch(mkReq('GET', '/api/book/td281'), tdEnv(tdRow('past_due', Date.now() - 30 * DAY281), false), tdCtx);
+  let t = await r.text();
+  ok(r.status === 200 && isRealPage(t), '#281 flag OFF: long-past_due tenant still serves the real booking page (got status ' + r.status + ')');
+
+  // (b) flag ON, delinquent 1 day (< 3-day grace): still inside the grace period -> real site
+  r = await worker.fetch(mkReq('GET', '/api/book/td281'), tdEnv(tdRow('past_due', Date.now() - 1 * DAY281), true), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isRealPage(t), '#281 flag ON, delinquent 1 day (< 3-day grace): real booking page still serves (got status ' + r.status + ')');
+
+  // (c) flag ON, delinquent 4 days (> 3-day grace): the friendly unavailable page, HTTP 200, no billing language
+  r = await worker.fetch(mkReq('GET', '/api/book/td281'), tdEnv(tdRow('past_due', Date.now() - 4 * DAY281), true), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isUnavailable(t), '#281 flag ON, delinquent 4 days (> 3-day grace): serves the "temporarily unavailable" page (got status ' + r.status + ', marker=' + isUnavailable(t) + ')');
+  ok(t.toLowerCase().indexOf('payment') < 0 && t.toLowerCase().indexOf('billing') < 0 && t.toLowerCase().indexOf('delinquent') < 0 && t.toLowerCase().indexOf('past due') < 0, '#281 unavailable page never mentions payment/billing/delinquency (customer-facing -- must never embarrass the tenant)');
+
+  // (d) belt-and-suspenders: plan==='active' is ALWAYS served, even with a very stale delinquent_since + flag ON
+  r = await worker.fetch(mkReq('GET', '/api/book/td281'), tdEnv(tdRow('active', Date.now() - 999 * DAY281), true), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isRealPage(t), '#281 plan=active is NEVER taken down even with a stale delinquent_since (got status ' + r.status + ')');
+
+  // (e) null delinquent_since is ALWAYS served, flag ON, plan past_due (never delinquent, or already recovered)
+  r = await worker.fetch(mkReq('GET', '/api/book/td281'), tdEnv(tdRow('past_due', null), true), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isRealPage(t), '#281 null delinquent_since is NEVER taken down (got status ' + r.status + ')');
+
+  // (f) the SAME gate applies at the OTHER call site (custom-domain front door), not just /api/book/<slug>
+  r = await worker.fetch(tdCustomReq('td281-custom.example'), tdEnv(tdRow('past_due', Date.now() - 4 * DAY281), true), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isUnavailable(t), '#281 custom-domain serve path: flag ON + >3 days -> unavailable page too (got status ' + r.status + ')');
+  r = await worker.fetch(tdCustomReq('td281-custom.example'), tdEnv(tdRow('past_due', Date.now() - 4 * DAY281), false), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isRealPage(t), '#281 custom-domain serve path: flag OFF -> real site (got status ' + r.status + ')');
+}
+
+// ---- #281 admin toggle: GET/POST /api/admin/config surfaces site_takedown_enabled, independently of the other
+// gates (mirrors the #280 cfgDB2/cfgEnv2/cfgReq2 pattern above -- self-contained, own helpers). ----
+{
+  let takedownFlag = null;   // null == unset (reads as default '0'/off); '1'/'0' once toggled via POST
+  function cfgDB3() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'site_takedown_enabled' && takedownFlag != null) ? { v: takedownFlag } : null;
+          if (/COUNT\(\*\) c FROM tenants/.test(sql)) return { c: 0 };
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO platform_config/.test(sql)) { if (a[0] === 'site_takedown_enabled') takedownFlag = a[1]; }
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const cfgEnv3 = { DB: cfgDB3(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const cfgReq3 = (method, headers, body) => new Request('https://atlasrental.io/api/admin/config', { method, headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}), body: body !== undefined ? JSON.stringify(body) : undefined });
+
+  let r = await worker.fetch(cfgReq3('GET', H), cfgEnv3, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.enterprise.site_takedown_enabled === false, '#281 admin config: site_takedown_enabled defaults to false (got ' + JSON.stringify(j.enterprise && j.enterprise.site_takedown_enabled) + ')');
+
+  r = await worker.fetch(cfgReq3('POST', H, { site_takedown_enabled: true }), cfgEnv3, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.enterprise.site_takedown_enabled === true, '#281 admin config: POST site_takedown_enabled:true flips it on (got ' + JSON.stringify(j.enterprise && j.enterprise.site_takedown_enabled) + ')');
+  ok(j.enterprise.payment_gate_enabled === false, '#281 admin config: flipping site_takedown_enabled leaves payment_gate_enabled untouched (independent flags) (got ' + JSON.stringify(j.enterprise && j.enterprise.payment_gate_enabled) + ')');
+
+  r = await worker.fetch(cfgReq3('POST', { 'X-Admin-Token': 'WRONG' }, { site_takedown_enabled: false }), cfgEnv3, ctx);
+  ok(r.status === 401 || r.status === 403, '#281 admin config: a bad admin token cannot flip the gate (got ' + r.status + ')');
+  ok(takedownFlag === '1', '#281 admin config: the bad-token POST above never actually wrote to platform_config (still "1" from the earlier real POST) (got ' + JSON.stringify(takedownFlag) + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
