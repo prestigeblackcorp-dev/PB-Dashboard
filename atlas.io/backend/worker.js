@@ -1912,6 +1912,8 @@ async function ensurePlatformSchema(env) {
   // Soft-delete tombstone: set on /api/admin/delete, cleared on /api/admin/restore. Keeps every row + the audit_log
   // (a real revert path + forensics) instead of the old one-click irreversible 16-table wipe.
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN deleted_at INTEGER").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN delete_reason TEXT").run(); } catch (e) { /* churn reason captured when the owner self-deletes; shown in the master-dash Deleted list, cleared on restore */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN deleted_by TEXT").run(); } catch (e) { /* 'self' (owner self-deleted) vs 'admin' (platform removed) -- lets the master dash flag self-deletions */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tz TEXT").run(); } catch (e) { /* already exists -- IANA time zone from Cloudflare edge geo (req.cf.timezone), captured at signup + backfilled on profile save */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_connect_acct TEXT").run(); } catch (e) { /* E2 Stripe Connect: the tenant's connected-account id (GMV take-rate path, flag-gated OFF; live charge path is untouched until the owner enables it) */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN connect_charges_enabled INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -3421,6 +3423,7 @@ function doReset(){
         if (_isOwnerEmail(env, _actx.user.email)) return err(403, 'This account cannot be deleted here.');
         const _ab = await req.json().catch(function () { return {}; });
         if (String(_ab.confirm || '').trim().toUpperCase() !== 'DELETE') return err(400, 'Type DELETE to confirm.');
+        const _areason = String(_ab.reason || '').replace(/\s+/g, ' ').trim().slice(0, 500) || 'Not specified';
         const _atid = _actx.tenant_id;
         const _at = await env.DB.prepare('SELECT id, stripe_sub, stripe_customer FROM tenants WHERE id=?').bind(_atid).first();
         if (!_at) return err(404, 'Account not found.');
@@ -3433,12 +3436,12 @@ function doReset(){
         // SOFT-delete (reversible, no data loss): mark deleted + revoke sessions + tombstone every login email so the
         // address frees for re-signup; every row + the audit_log survive for the owner's /restore (or a later purge).
         const _astamp = Date.now();
-        try { await env.DB.prepare("UPDATE tenants SET plan='deleted', deleted_at=?, stripe_sub=NULL, updated_at=? WHERE id=?").bind(_astamp, _astamp, _atid).run(); } catch (e) {}
+        try { await env.DB.prepare("UPDATE tenants SET plan='deleted', deleted_at=?, delete_reason=?, deleted_by='self', stripe_sub=NULL, updated_at=? WHERE id=?").bind(_astamp, _areason, _astamp, _atid).run(); } catch (e) {}
         try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE tenant_id=? AND revoked_at IS NULL').bind(_astamp, _atid).run(); } catch (e) {}
         try { const _aur = ((await env.DB.prepare('SELECT id,email FROM users WHERE tenant_id=?').bind(_atid).all()).results) || [];
           for (let i = 0; i < _aur.length; i++) { const u = _aur[i]; if (!u.email || String(u.email).indexOf('_deleted.') === 0) continue; const tomb = ('_deleted.' + _astamp + '.' + u.email).slice(0, 254); try { await env.DB.prepare('UPDATE users SET email=? WHERE id=?').bind(tomb, u.id).run(); } catch (e) {} }
         } catch (e) {}
-        await audit(env, { tenant_id: _atid, actor: _actx.user.email }, req, 'account.self_delete', { email: _actx.user.email });
+        await audit(env, { tenant_id: _atid, actor: _actx.user.email }, req, 'account.self_delete', { email: _actx.user.email, reason: _areason });
         return json({ ok: true, deleted: _atid });
       }
 
@@ -3787,7 +3790,7 @@ function doReset(){
           // SOFT-DELETE (reversible, no data loss): mark deleted + revoke sessions + FREE every login email by tombstoning it
           // (rename, not drop) so the address can re-register immediately, while every row + the audit_log survive for /restore + forensics.
           const stamp = Date.now();
-          try { await env.DB.prepare("UPDATE tenants SET plan='deleted', deleted_at=?, stripe_sub=NULL, updated_at=? WHERE id=?").bind(stamp, stamp, tid).run(); } catch (e) {}
+          try { await env.DB.prepare("UPDATE tenants SET plan='deleted', deleted_at=?, deleted_by='admin', stripe_sub=NULL, updated_at=? WHERE id=?").bind(stamp, stamp, tid).run(); } catch (e) {}
           for (let i = 0; i < urows.length; i++) {
             const u = urows[i]; if (!u.email) continue;
             const tomb = ('_deleted.' + stamp + '.' + u.email).slice(0, 254);   // frees the real address for re-signup; /restore strips this prefix back
@@ -3813,7 +3816,7 @@ function doReset(){
             if (taken) { blocked.push(orig); continue; }   // the address was re-registered while deleted -> can't reclaim it
             try { await env.DB.prepare('UPDATE users SET email=? WHERE id=?').bind(orig, u.id).run(); } catch (e) {}
           }
-          try { await env.DB.prepare("UPDATE tenants SET plan='trial', deleted_at=NULL, updated_at=? WHERE id=?").bind(Date.now(), tid).run(); } catch (e) {}
+          try { await env.DB.prepare("UPDATE tenants SET plan='trial', deleted_at=NULL, delete_reason=NULL, deleted_by=NULL, updated_at=? WHERE id=?").bind(Date.now(), tid).run(); } catch (e) {}
           await audit(env, { tenant_id: tid, actor: _actor, staff_id: _staffId }, req, 'admin.restore', { blocked_emails: blocked });
           return json({ ok: true, restored: tid, blocked_emails: blocked });
         }
@@ -3838,7 +3841,7 @@ function doReset(){
           return json({ ok: true, purged: tid, r2_deleted: _r2del });
         }
         if (path === '/api/admin/deleted' && method === 'GET') {
-          const rows = await env.DB.prepare("SELECT t.id AS tenant_id, t.name, t.tier, t.deleted_at, (SELECT email FROM users WHERE tenant_id=t.id LIMIT 1) AS email FROM tenants t WHERE t.deleted_at IS NOT NULL ORDER BY t.deleted_at DESC LIMIT 200").all();
+          const rows = await env.DB.prepare("SELECT t.id AS tenant_id, t.name, t.tier, t.deleted_at, t.delete_reason, t.deleted_by, (SELECT email FROM users WHERE tenant_id=t.id LIMIT 1) AS email FROM tenants t WHERE t.deleted_at IS NOT NULL ORDER BY t.deleted_at DESC LIMIT 200").all();
           const out = (rows.results || []).map(function (r) { const m = /^_deleted\.\d+\.(.+)$/.exec(r.email || ''); if (m) r.email = m[1]; return r; });
           return json({ ok: true, deleted: out });
         }
