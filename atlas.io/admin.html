@@ -628,7 +628,7 @@ function daysLeft(ts){ if(!ts) return null; return Math.ceil((ts-Date.now())/864
 function toast(msg){ var t=$('toast'); t.innerHTML='<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M13 4.5 6.5 11 3 7.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(msg); t.classList.add('on'); clearTimeout(t._t); t._t=setTimeout(function(){ t.classList.remove('on'); },2600); }
 
 function api(path, opts){ opts=opts||{}; var h={'Content-Type':'application/json','X-Admin-Token':_tok};
-  return fetch(ATLAS_API+path,{method:opts.method||'GET',headers:h,body:opts.body?JSON.stringify(opts.body):undefined})
+  return fetch(ATLAS_API+path,{method:opts.method||'GET',headers:h,credentials:'same-origin',body:opts.body?JSON.stringify(opts.body):undefined})
     .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,json:j}; }); }); }
 
 /* ================= section nav (tab bar; only the active section's cards render) ================= */
@@ -1013,7 +1013,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19aj';
+var ATLAS_EXPECT_BUILD='2026.07.19ak';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1703,8 +1703,15 @@ function staffRevoke(id){ if(!confirm('Revoke this staffer\'s access? Their toke
 
 /* ================= boot ================= */
 (function(){ try{ var sp=new URLSearchParams(location.search); if(sp.get('social')){ var pl=sp.get('social'); var msg=sp.get('connected')?(pl+' connected'):(sp.get('err')?(pl+' connect failed: '+sp.get('err')):''); if(msg) setTimeout(function(){ toast(msg); },900); history.replaceState({},'',location.pathname); } }catch(e){} })();
-(function(){ var saved=''; try{ saved=localStorage.getItem(TOK_KEY)||''; }catch(e){}
-  if(saved){ _tok=saved; api('/api/admin/overview').then(function(res){ if(res.status===200&&res.json&&res.json.ok){ enter(res.json); } else { _tok=''; $('gate').style.display='flex'; } }).catch(function(){ _tok=''; }); }
+(function(){ var g=$('gate'); if(g) g.style.display='none';   // probe credentials first; only fall back to the manual gate if none work (avoids a token-gate flash for session sign-in)
+  var saved=''; try{ saved=localStorage.getItem(TOK_KEY)||''; }catch(e){}
+  function _showGate(){ if(g) g.style.display='flex'; }
+  function _probe(){ return api('/api/admin/overview').then(function(res){ if(res.status===200&&res.json&&res.json.ok){ enter(res.json); return true; } return false; }); }
+  // Two ways in, auto-detected: a stored admin key (staff / token flow) OR an owner SESSION cookie set by the hidden
+  // entry. Try the stored key first if present; on any miss, probe the session (empty token -> the worker's owner-session
+  // bridge recognizes a signed-in owner). Neither -> the manual key gate. A stale key falls through to the session probe.
+  if(saved){ _tok=saved; _probe().then(function(ok){ if(ok) return; _tok=''; return _probe().then(function(ok2){ if(!ok2) _showGate(); }); }).catch(function(){ _tok=''; _probe().then(function(ok2){ if(!ok2) _showGate(); }).catch(_showGate); }); }
+  else { _tok=''; _probe().then(function(ok){ if(!ok) _showGate(); }).catch(_showGate); }
 })();
 </script>
 </body>

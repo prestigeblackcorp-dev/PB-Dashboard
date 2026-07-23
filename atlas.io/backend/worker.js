@@ -196,6 +196,28 @@ async function createSession(env, user, req) {
       req.headers.get('CF-Connecting-IP') || '', (req.headers.get('User-Agent') || '').slice(0, 240)).run();
   return { id, csrf };
 }
+// Platform-owner identity is EMAIL-based (never a stored role). A hidden emergency/backup owner can be added WITHOUT
+// any code change by setting the OWNER_EMAIL_2 Cloudflare secret -- both OWNER_EMAIL and OWNER_EMAIL_2 get identical,
+// full owner authority everywhere this is consulted, and both are equally protected (neither can be banned, issued a
+// staff token, or casually deleted). Case-insensitive; empty/unset secrets never match. The email is only in the
+// secret store, never in this (public-readable) source -- so the backup owner is invisible to anyone reading the code.
+function _isOwnerEmail(env, email) {
+  if (!email) return false;
+  var e = String(email).toLowerCase();
+  return !!((env.OWNER_EMAIL && e === String(env.OWNER_EMAIL).toLowerCase()) || (env.OWNER_EMAIL_2 && e === String(env.OWNER_EMAIL_2).toLowerCase()) || (env.OWNER_EMAIL_3 && e === String(env.OWNER_EMAIL_3).toLowerCase()));
+}
+// Owner TIER rank for the asymmetric hidden hierarchy: 0=not an owner, 1=primary (OWNER_EMAIL), 2=super-admin backup
+// (OWNER_EMAIL_2 -- superior to + hidden from tier 1), 3=all-seeing root (OWNER_EMAIL_3 -- superior to both; queued).
+// Highest matching slot wins if one address is (mis)configured into more than one. Case-insensitive; an unset slot
+// never matches. _isOwnerEmail stays the base "is ANY owner" check; _ownerTier adds the rank the asymmetric rules key on.
+function _ownerTier(env, email) {
+  if (!email) return 0;
+  var e = String(email).toLowerCase();
+  if (env.OWNER_EMAIL_3 && e === String(env.OWNER_EMAIL_3).toLowerCase()) return 3;
+  if (env.OWNER_EMAIL_2 && e === String(env.OWNER_EMAIL_2).toLowerCase()) return 2;
+  if (env.OWNER_EMAIL && e === String(env.OWNER_EMAIL).toLowerCase()) return 1;
+  return 0;
+}
 async function resolveSession(env, req) {
   const sid = parseCookies(req).atlas_sid;
   if (!sid) return null;
@@ -208,7 +230,7 @@ async function resolveSession(env, req) {
   if (!user) return null;
   const comp = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(user.email).first();
   const compRole = comp ? (comp.role === 'admin' ? 'gold' : comp.role) : null;   // read-time coercion: a legacy 'admin' comp row reads as 'gold' -- safe even before the ensurePlatformSchema migration runs
-  const isOwner = (user.email === env.OWNER_EMAIL);   // THE ONE INVARIANT: platform-owner authority is EMAIL-ONLY. comp_grants can never confer it (see /api/admin/comp, which only accepts role in {gold, free}).
+  const isOwner = _isOwnerEmail(env, user.email);   // THE ONE INVARIANT: platform-owner authority is EMAIL-ONLY (OWNER_EMAIL or the hidden OWNER_EMAIL_2 backup). comp_grants can never confer it (see /api/admin/comp, which only accepts role in {gold, free}).
   return { session: s, user, tenant_id: s.tenant_id, isOwner: !!isOwner, comp: compRole };
 }
 // ---- Developer platform: tenant API keys (issued to tenants for the read-only /api/v1 surface) ----
@@ -355,7 +377,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19aj';
+const ATLAS_BUILD = '2026.07.19ak';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1867,8 +1889,90 @@ function adminOk(req, env) { const t = env.ADMIN_TOKEN || ''; if (!t) return fal
 // out (fail-SAFE). Anything else must be an exact, hashed, active, non-revoked admin_staff row (mirrors the tenant
 // api_keys pattern: _genApiKey/_apiKeyAuth ~L216-224) -- a present-but-unmatched credential fails CLOSED and is
 // NEVER treated as owner. X-Admin-Actor is not read here, or anywhere: identity + role come only from this resolver.
+// ---- Hidden-entry login page (served only at env.OWNER_ENTRY_PATH). Self-contained, no external assets, pure ASCII,
+// neutral "Atlas HQ" branding (no giveaway). Two-step: email+password -> /api/auth/login; on mfa_required -> code ->
+// /api/auth/mfa/verify. On success (session cookie set same-origin) it redirects to /admin.html. Built by string
+// concatenation (no template literals / no ${}) so it drops cleanly into this worker module. ----
+function _ownerEntryHtml() {
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' +
+    '<meta name="robots" content="noindex,nofollow,noarchive,nosnippet">' +
+    '<title>Atlas HQ</title>' +
+    '<style>' +
+    ':root{color-scheme:dark}*{box-sizing:border-box}' +
+    'body{margin:0;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;background:#0a0b0d;color:#e8eaed;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding:24px}' +
+    '.box{width:100%;max-width:340px}' +
+    '.brand{font-weight:700;letter-spacing:.16em;font-size:11px;color:#8a9098;text-transform:uppercase;text-align:center;margin:0 0 22px}' +
+    'h1{font-size:19px;font-weight:600;margin:0 0 4px;text-align:center}' +
+    '.sub{font-size:13px;color:#8a9098;text-align:center;margin:0 0 18px}' +
+    'label{display:block;font-size:12px;color:#8a9098;margin:14px 0 6px}' +
+    'input{width:100%;padding:12px 13px;border:1px solid #2a2d31;border-radius:10px;background:#141619;color:#e8eaed;font-size:16px;outline:none;-webkit-appearance:none}' +
+    'input:focus{border-color:#c9a227}' +
+    'button{width:100%;margin-top:22px;padding:13px;border:0;border-radius:10px;background:#c9a227;color:#0a0b0d;font-size:15px;font-weight:600;cursor:pointer}' +
+    'button:disabled{opacity:.55;cursor:default}' +
+    '.err{color:#ef6a6a;font-size:13px;margin-top:14px;min-height:18px;text-align:center}' +
+    '.hint{color:#8a9098;font-size:12px;text-align:center;margin:10px 0 0}' +
+    '.hidden{display:none}' +
+    '</style></head><body><div class="box">' +
+    '<p class="brand">Atlas HQ</p>' +
+    '<h1 id="ttl">Sign in</h1><p class="sub" id="sub">Secure console access</p>' +
+    '<div id="step1">' +
+    '<label for="em">Email</label><input id="em" type="email" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">' +
+    '<label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password">' +
+    '</div>' +
+    '<div id="setupOnly" class="hidden">' +
+    '<label for="biz">Business name</label><input id="biz" type="text" autocomplete="organization" maxlength="120">' +
+    '<label for="tok">Setup token</label><input id="tok" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">' +
+    '</div>' +
+    '<div id="step2" class="hidden">' +
+    '<label for="cd">Verification code</label><input id="cd" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="12">' +
+    '<p class="hint" id="mhint"></p>' +
+    '</div>' +
+    '<button id="go" type="button">Continue</button>' +
+    '<div class="err" id="err"></div>' +
+    '<p class="hint"><a href="#" id="toggle" style="color:#c9a227;text-decoration:none">First time here? Set up the account</a></p>' +
+    '</div><script>' +
+    '(function(){' +
+    'var em=document.getElementById("em"),pw=document.getElementById("pw"),biz=document.getElementById("biz"),tok=document.getElementById("tok"),cd=document.getElementById("cd");' +
+    'var go=document.getElementById("go"),err=document.getElementById("err"),ttl=document.getElementById("ttl"),sub=document.getElementById("sub"),toggle=document.getElementById("toggle");' +
+    'var s1=document.getElementById("step1"),setupOnly=document.getElementById("setupOnly"),s2=document.getElementById("step2"),mh=document.getElementById("mhint");' +
+    'var mode="login",challenge=null,busy=false;' +
+    'function post(u,b){return fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},credentials:"same-origin",body:JSON.stringify(b)}).then(function(r){return r.json().catch(function(){return {};}).then(function(j){return {status:r.status,j:j};});});}' +
+    'function done(){location.href="/admin.html";}' +
+    'function fail(m){err.textContent=m||"Something went wrong.";busy=false;go.disabled=false;}' +
+    'function setMode(m){mode=m;challenge=null;err.textContent="";s1.className="";s2.className="hidden";setupOnly.className=(m==="setup")?"":"hidden";go.textContent=(m==="setup")?"Create account":"Continue";ttl.textContent=(m==="setup")?"Set up account":"Sign in";sub.textContent=(m==="setup")?"First-time owner setup":"Secure console access";toggle.textContent=(m==="setup")?"Have an account? Sign in":"First time here? Set up the account";}' +
+    'function submit(){if(busy)return;err.textContent="";' +
+    'if(challenge){var code=(cd.value||"").trim();if(!code){fail("Enter your verification code.");return;}busy=true;go.disabled=true;' +
+    'post("/api/auth/mfa/verify",{challenge:challenge,code:code}).then(function(r){if(r.status===200&&r.j&&r.j.ok){done();}else{fail((r.j&&r.j.error)||"Incorrect code.");}}).catch(function(){fail("Network error. Try again.");});return;}' +
+    'var e=(em.value||"").trim(),p=pw.value||"";if(!e||!p){fail("Enter your email and password.");return;}' +
+    'if(mode==="setup"){var b=(biz.value||"").trim(),t=(tok.value||"").trim();if(p.length<8){fail("Password must be at least 8 characters.");return;}if(!b){fail("Enter a business name.");return;}if(!t){fail("Enter your setup token.");return;}busy=true;go.disabled=true;' +
+    'post("/api/auth/signup",{email:e,password:p,business:b,setupToken:t}).then(function(r){if(r.status===200&&r.j&&r.j.ok){done();return;}fail((r.j&&r.j.error)||"Could not create the account.");}).catch(function(){fail("Network error. Try again.");});return;}' +
+    'busy=true;go.disabled=true;' +
+    'post("/api/auth/login",{email:e,password:p}).then(function(r){' +
+    'if(r.status===200&&r.j&&r.j.ok){done();return;}' +
+    'if(r.j&&r.j.mfa_required){challenge=r.j.challenge;s1.className="hidden";setupOnly.className="hidden";s2.className="";ttl.textContent="Verification";sub.textContent="One more step";mh.textContent=(r.j.method==="totp")?"Enter the 6-digit code from your authenticator app.":"We sent a code to your email.";cd.focus();busy=false;go.disabled=false;go.textContent="Verify";return;}' +
+    'fail((r.j&&r.j.error)||"Wrong email or password.");' +
+    '}).catch(function(){fail("Network error. Try again.");});}' +
+    'go.addEventListener("click",submit);' +
+    'toggle.addEventListener("click",function(ev){ev.preventDefault();setMode(mode==="login"?"setup":"login");});' +
+    'document.addEventListener("keydown",function(ev){if(ev.key==="Enter")submit();});' +
+    'try{em.focus();}catch(_e){}' +
+    '})();' +
+    '<\/script></body></html>';
+}
 async function _adminIdentity(req, env) {
-  if (adminOk(req, env)) return { actor: (env.OWNER_EMAIL || 'atlas-hq'), role: 'owner', via: 'owner-token', staffId: null };
+  if (adminOk(req, env)) return { actor: (env.OWNER_EMAIL || 'atlas-hq'), role: 'owner', via: 'owner-token', staffId: null, tier: 1 };
+  // Owner SESSION bridge: a signed-in platform owner (primary OR the hidden backup) operates the master dashboard with
+  // just their session cookie -- no ADMIN_TOKEN needed. This is how the backup super-admin, who reaches the app through
+  // the hidden entry, gets full owner authority. Authority stays EMAIL-only (resolveSession derives isOwner from
+  // _isOwnerEmail); tier carries the rank for the asymmetric rules. A non-owner/staff session is isOwner=false here and
+  // is NOT bridged -- it falls through to the staff-token path below. Any lookup error falls through too (never opens).
+  try {
+    const _sc = await resolveSession(env, req);
+    if (_sc && _sc.isOwner && _sc.user && _isOwnerEmail(env, _sc.user.email)) {
+      return { actor: _sc.user.email, role: 'owner', via: 'owner-session', staffId: null, tier: _ownerTier(env, _sc.user.email) };
+    }
+  } catch (e) { /* never let a session-lookup error open or crash admin auth */ }
   const presented = req.headers.get('X-Admin-Token') || '';
   if (!presented || presented.indexOf('atlst_') !== 0) return null;   // no credential, or not shaped like a staff token -> 403, no DB hit needed
   try {
@@ -1876,7 +1980,7 @@ async function _adminIdentity(req, env) {
     const row = await env.DB.prepare('SELECT id,email,role,active,revoked_at FROM admin_staff WHERE token_hash=?').bind(await _sha256Hex(presented)).first();
     if (!row || !row.active || row.revoked_at || (row.role !== 'support' && row.role !== 'analyst')) return null;   // FAIL CLOSED: missing / inactive / revoked / anything but support|analyst
     try { await env.DB.prepare('UPDATE admin_staff SET last_seen_at=? WHERE id=?').bind(Date.now(), row.id).run(); } catch (e) { /* best-effort; never blocks auth */ }
-    return { actor: row.email, role: row.role, via: 'staff-token', staffId: row.id };
+    return { actor: row.email, role: row.role, via: 'staff-token', staffId: row.id, tier: 0 };
   } catch (e) { return null; }   // any DB error on the staff-lookup path fails CLOSED -- the owner branch above never reaches here
 }
 // Global master-dashboard date window. Day-aligned (UTC) so timestamp queries and the day-bucketed page_views agree.
@@ -1987,7 +2091,7 @@ const _PAYMENT_OPEN = /^\/api\/(health|auth\/|billing\/|verify-email|stripe\/web
 async function _billingStateForTenant(env, tenantId, email) {
   try {
     const t = await env.DB.prepare('SELECT plan,trial_ends,tier,stripe_sub FROM tenants WHERE id=?').bind(tenantId).first();
-    const isOwner = !!(email && env.OWNER_EMAIL && email === env.OWNER_EMAIL);
+    const isOwner = _isOwnerEmail(env, email);
     let comp = null;
     try { const c = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(email).first(); comp = c ? (c.role === 'admin' ? 'gold' : c.role) : null; } catch (e) {}
     return _billingState(t, isOwner, comp);
@@ -2055,7 +2159,7 @@ function _cardGateState(tenant, isOwner, comp) {
 async function _cardGateStateForTenant(env, tenantId, email) {
   try {
     const t = await env.DB.prepare('SELECT card_on_file,stripe_sub FROM tenants WHERE id=?').bind(tenantId).first();
-    const isOwner = !!(email && env.OWNER_EMAIL && email === env.OWNER_EMAIL);
+    const isOwner = _isOwnerEmail(env, email);
     let comp = null;
     try { const c = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(email).first(); comp = c ? (c.role === 'admin' ? 'gold' : c.role) : null; } catch (e) {}
     return _cardGateState(t, isOwner, comp);
@@ -2279,6 +2383,20 @@ export default {
 
     const resp = await (async () => {
     try {
+      // ---- HIDDEN OWNER ENTRY: an unlinked sign-in door at a secret path (env.OWNER_ENTRY_PATH), served BEFORE the
+      // ban-check so a mistakenly-banned owner can always reach the recovery door. Exists ONLY when the secret is set;
+      // nothing links to it; noindex/no-store/no-referrer so it never lands in a crawler, cache, or referer header. It
+      // only RENDERS the login form -- all real auth still flows through /api/auth/login (+ MFA), which sets the session.
+      if (env.OWNER_ENTRY_PATH && method === 'GET' && path === '/api/' + env.OWNER_ENTRY_PATH) {
+        return new Response(_ownerEntryHtml(), { status: 200, headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'X-Robots-Tag': 'noindex, nofollow, noarchive, nosnippet',
+          'Referrer-Policy': 'no-referrer',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY'
+        } });
+      }
       // ---- ABUSE-DEFENSE: global IP-ban check ------------------------------------------------------------------
       // Additive + fail-open: byte-identical to today whenever bans_active !== '1' (one cheap _pcfgGet read and
       // nothing else -- no table scan, no per-request cost until the owner actually bans something). Placed as the
@@ -2297,10 +2415,18 @@ export default {
             try {
               const _bRow = await env.DB.prepare('SELECT ip,expires_at FROM ip_bans WHERE ip=?').bind(_banIp).first();
               if (_bRow && (!_bRow.expires_at || _bRow.expires_at > Date.now())) {
-                const _hitP = env.DB.prepare('UPDATE ip_bans SET hits=hits+1 WHERE ip=?').bind(_banIp).run();
-                if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_hitP); else if (_hitP && _hitP.catch) _hitP.catch(function () {});
-                _logAttack(env, _ectx, { ip: _banIp, kind: 'ip_ban_block', path: path, method: method, blocked: 1, outcome: '403 blocked', ua: (req.headers.get('User-Agent') || '') });
-                return new Response('Forbidden', { status: 403 });   // neutral body -- never reveals a ban system exists
+                // BREAK-GLASS: a signed-in platform owner (primary OR hidden backup) is NEVER locked out by an IP ban
+                // -- ultimate recovery. The session lookup runs ONLY here, on the already-rare banned-IP path, so
+                // normal traffic pays nothing. An attacker on a banned IP can't forge an owner session, so this can't
+                // be abused to evade a ban. Fails toward blocking (exempt only on a confirmed owner session).
+                var _ownerExempt = false;
+                try { var _os = await resolveSession(env, req); _ownerExempt = !!(_os && _os.isOwner); } catch (e) {}
+                if (!_ownerExempt) {
+                  const _hitP = env.DB.prepare('UPDATE ip_bans SET hits=hits+1 WHERE ip=?').bind(_banIp).run();
+                  if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_hitP); else if (_hitP && _hitP.catch) _hitP.catch(function () {});
+                  _logAttack(env, _ectx, { ip: _banIp, kind: 'ip_ban_block', path: path, method: method, blocked: 1, outcome: '403 blocked', ua: (req.headers.get('User-Agent') || '') });
+                  return new Response('Forbidden', { status: 403 });   // neutral body -- never reveals a ban system exists
+                }
               }
             } catch (e) { /* fail-open: never block a request on a DB error */ }
           }
@@ -2384,8 +2510,8 @@ export default {
         // Reserve the platform-owner email: isOwner is granted by email match (see resolveSession), so a stranger who
         // registers OWNER_EMAIL first would become platform admin. The real owner claims it with OWNER_SETUP_TOKEN
         // (a Worker secret set at deploy); without a matching token, the reserved email cannot be signed up.
-        if (env.OWNER_EMAIL && body.email.toLowerCase() === String(env.OWNER_EMAIL).toLowerCase()) {
-          if (!env.OWNER_SETUP_TOKEN || body.setupToken !== env.OWNER_SETUP_TOKEN) { await audit(env, null, req, 'owner.claim_blocked', { email: body.email.toLowerCase() }); return err(403, 'That email is reserved for the platform owner.'); }   // #253: highest-signal denial -- someone tried to register the reserved owner email
+        if (_isOwnerEmail(env, body.email)) {
+          if (!env.OWNER_SETUP_TOKEN || !_ctEq(String(body.setupToken || ''), String(env.OWNER_SETUP_TOKEN))) { await audit(env, null, req, 'owner.claim_blocked', { email: body.email.toLowerCase() }); return err(403, 'That email is reserved for the platform owner.'); }   // #253: highest-signal denial -- someone tried to register the reserved owner email. Constant-time compare so the setup token can't be recovered byte-by-byte via response timing.
         }
         // ---- ABUSE-DEFENSE signup gate: additive, a no-op (one cheap _pcfgGet read) unless a ban actually exists.
         // Checks BOTH the new account's own email and the caller's IP; either match -> the same neutral 403 (never
@@ -3072,7 +3198,7 @@ function doReset(){
           return err(403, 'Admin key required.');
         }
         await ensurePlatformSchema(env);   // idempotent no-op if the staff-token branch above already ran it; guarantees every table the routes below touch exists, for BOTH identity paths
-        const _actor = _id.actor, _role = _id.role, _staffId = _id.staffId, _via = _id.via;
+        const _actor = _id.actor, _role = _id.role, _staffId = _id.staffId, _via = _id.via, _reqTier = _id.tier || 0;
         // #264 role gate: ALLOW-LIST, fail-safe (an unlisted admin path is owner-only). Identity above is server-verified
         // (env token == owner; else a hashed/active/non-revoked admin_staff row) -- no client header can move a caller
         // between roles, and a present-but-unmatched credential already returned 403 above (never silently == owner).
@@ -3288,7 +3414,12 @@ function doReset(){
             "FROM tenants t WHERE t.deleted_at IS NULL ORDER BY t.created_at DESC LIMIT 500").all();
           const comps = await env.DB.prepare('SELECT email, role FROM comp_grants').all();
           const cmap = {}; (comps.results || []).forEach(function (c) { cmap[(c.email || '').toLowerCase()] = (c.role === 'admin' ? 'gold' : c.role); });   // legacy admin rows display as gold -- never owner
-          const members = (rows.results || []).map(function (m) { m.comp = m.email ? (cmap[(m.email || '').toLowerCase()] || null) : null; return m; });
+          // INVISIBILITY: scrub any strictly-higher-tier owner (e.g. the hidden super-admin backup) from the members
+          // list for a lower-tier requester, so a compromised primary can't see/scrape the backup's email here. A
+          // higher/equal tier (the backup itself, an all-seeing root) still sees everyone. Owner accounts are few, so
+          // the per-row _ownerTier check is cheap. This is the itemized-list half of "never known"; aggregate COUNTS
+          // (overview) still include it -- a +1 in a total reveals no address.
+          const members = (rows.results || []).filter(function (m) { return _ownerTier(env, m.email) <= _reqTier; }).map(function (m) { m.comp = m.email ? (cmap[(m.email || '').toLowerCase()] || null) : null; return m; });
           return json({ ok: true, members: members });
         }
 
@@ -3353,7 +3484,7 @@ function doReset(){
           const urows = ((await env.DB.prepare('SELECT id,email,role FROM users WHERE tenant_id=?').bind(tid).all()).results) || [];
           const ownerRow = urows.find(function (u) { return u.role === 'owner'; }) || urows[0];
           const em = (ownerRow && ownerRow.email) ? String(ownerRow.email).toLowerCase() : '';
-          if (em && env.OWNER_EMAIL && em === String(env.OWNER_EMAIL).toLowerCase()) return err(403, 'The platform-owner account cannot be deleted here.');
+          if (em && _isOwnerEmail(env, em)) return err(403, 'The platform-owner account cannot be deleted here.');
           // STOP BILLING FIRST (unchanged): cancel the plan + domain subscriptions (and the customer) at Stripe so a removed member is never charged again.
           const _pk = await _platStripe(env);
           if (_pk) {
@@ -3402,7 +3533,7 @@ function doReset(){
           if (!t.deleted_at) return err(409, 'Soft-delete first: purge only removes an already-deleted account (two-step, no accidental wipe).');
           const own = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? LIMIT 1').bind(tid).first();
           const em = (own && own.email) ? String(own.email) : '';
-          if (em && env.OWNER_EMAIL && em.toLowerCase().indexOf(String(env.OWNER_EMAIL).toLowerCase()) >= 0) return err(403, 'Cannot purge the platform-owner account.');
+          if (em && _isOwnerEmail(env, em)) return err(403, 'Cannot purge the platform-owner account.');
           // Hard-remove operating data ONLY. KEEP audit_log + platform_transactions + domains_sold: Atlas's forensic + revenue ledger is never erased retroactively.
           const tt = ['bookings','customers','assets','charges','ledger','promos','integrations','suppressions','consents','ai_credits','sessions','signatures','promo_uses','platform_feedback','platform_installs','verified_customers','support_tickets','users'];
           for (let i = 0; i < tt.length; i++) { try { await env.DB.prepare('DELETE FROM ' + tt[i] + ' WHERE tenant_id=?').bind(tid).run(); } catch (e) {} }
@@ -3532,7 +3663,7 @@ function doReset(){
           const role = (b.role === 'support' || b.role === 'analyst') ? b.role : '';
           if (!vEmail(email)) return err(400, 'A valid email is required.');
           if (!role) return err(400, "Role must be 'support' or 'analyst'.");   // no self-escalation: any other value (incl. 'owner') is rejected outright
-          if (env.OWNER_EMAIL && email === String(env.OWNER_EMAIL).toLowerCase()) return err(400, 'The platform-owner email cannot be issued a staff token.');   // no self-escalation: the owner's identity is the env token only, never a storable row
+          if (_isOwnerEmail(env, email)) return err(400, 'The platform-owner email cannot be issued a staff token.');   // no self-escalation: the owner's identity is the env token only, never a storable row
           const exists = await env.DB.prepare('SELECT id FROM admin_staff WHERE email=?').bind(email).first();
           if (exists) return err(409, 'That email already has a staff record -- rotate or revoke it instead.');
           const secret = 'atlst_' + randId(40);
@@ -3983,7 +4114,16 @@ function doReset(){
           } else {
             _bval = _bval.toLowerCase();
             if (_bval.length > 254 || _bval.indexOf('@') < 0) return err(400, 'Not a valid email address.');
-            if (env.OWNER_EMAIL && _bval === String(env.OWNER_EMAIL).toLowerCase()) return err(400, 'Cannot ban the platform owner.');
+            // Owner accounts are unbannable. A requester may only LEARN that for owner accounts at or below their own
+            // tier: the primary banning its own address gets the honest message. ANY lower tier probing a HIGHER owner
+            // (e.g. the primary guessing the hidden backup) must learn NOTHING -- a silent no-op returning the exact
+            // {ok:true} a normal ban returns, so a higher-tier account can't be discovered by a differing response.
+            // The higher account is immune to the ban either way (see the resolveSession exemption on the ban check).
+            var _tgtTier = _ownerTier(env, _bval);
+            if (_tgtTier > 0) {
+              if (_tgtTier <= _reqTier) return err(400, 'Cannot ban the platform owner.');
+              return json({ ok: true });   // never confirm a higher-tier owner exists; do not write, flip bans_active, or audit
+            }
           }
           const _breason = String(b.reason || '').slice(0, 300);
           const _bnow = Date.now();
