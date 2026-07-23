@@ -218,6 +218,16 @@ function _ownerTier(env, email) {
   if (env.OWNER_EMAIL && e === String(env.OWNER_EMAIL).toLowerCase()) return 1;
   return 0;
 }
+// SQL fragment that EXCLUDES platform-owner operator tenants (primary + hidden backup + all-seeing root) from any
+// tenant query -- owners run the platform, they are NOT customers, so their own signup tenant must never inflate
+// members / signups / trials / MRR or appear in any customer list or metric (for ANY viewer, including the owner
+// themselves). Returns { clause, binds }; empty when no owner emails are set (byte-identical to before). Append the
+// clause inside the WHERE (before any GROUP BY) and spread `binds` into `.bind(...)` AFTER that query's own binds.
+function _excludeOwnerTenants(env, col) {
+  var owners = [env.OWNER_EMAIL, env.OWNER_EMAIL_2, env.OWNER_EMAIL_3].filter(Boolean).map(function (e) { return String(e).toLowerCase(); });
+  if (!owners.length) return { clause: '', binds: [] };
+  return { clause: ' AND ' + (col || 'id') + ' NOT IN (SELECT tenant_id FROM users WHERE LOWER(email) IN (' + owners.map(function () { return '?'; }).join(',') + '))', binds: owners };
+}
 async function resolveSession(env, req) {
   const sid = parseCookies(req).atlas_sid;
   if (!sid) return null;
@@ -377,7 +387,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19al';
+const ATLAS_BUILD = '2026.07.19am';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -749,8 +759,9 @@ async function _hqMetrics(env) {
   const d = new Date(now), monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1), dayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   // SQL-aggregated bucketing (was: fetch EVERY tenant row + bucket in JS -- cost scaled with tenant count; now scales
   // with result size instead). Parity with the old JS loop verified on a mock dataset before this shipped (SCALING.md).
-  const agg = ((await env.DB.prepare("SELECT COALESCE(SUM(CASE WHEN plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' THEN 1 ELSE 0 END),0) paid, COALESCE(SUM(CASE WHEN plan IS 'active' AND NOT (stripe_sub IS NOT NULL AND stripe_sub<>'') THEN 1 ELSE 0 END),0) comped, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND plan IS NOT 'deleted' THEN 1 ELSE 0 END),0) trials, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND plan IS NOT 'deleted' AND COALESCE(card_on_file,0)<>0 THEN 1 ELSE 0 END),0) twc, COALESCE(SUM(CASE WHEN COALESCE(created_at,0)>=? THEN 1 ELSE 0 END),0) signups FROM tenants WHERE deleted_at IS NULL").bind(dayStart - 86400000).first()) || {});
-  const tierRows = ((await env.DB.prepare("SELECT (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END) tier, COUNT(*) n FROM tenants WHERE deleted_at IS NULL AND plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' GROUP BY (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)").all()).results) || [];
+  const _xo = _excludeOwnerTenants(env, 'id');   // owners are operators, not customers -- keep them out of the Morning Brief metrics/snapshot too
+  const agg = ((await env.DB.prepare("SELECT COALESCE(SUM(CASE WHEN plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' THEN 1 ELSE 0 END),0) paid, COALESCE(SUM(CASE WHEN plan IS 'active' AND NOT (stripe_sub IS NOT NULL AND stripe_sub<>'') THEN 1 ELSE 0 END),0) comped, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND plan IS NOT 'deleted' THEN 1 ELSE 0 END),0) trials, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND plan IS NOT 'deleted' AND COALESCE(card_on_file,0)<>0 THEN 1 ELSE 0 END),0) twc, COALESCE(SUM(CASE WHEN COALESCE(created_at,0)>=? THEN 1 ELSE 0 END),0) signups FROM tenants WHERE deleted_at IS NULL" + _xo.clause).bind(dayStart - 86400000, ..._xo.binds).first()) || {});
+  const tierRows = ((await env.DB.prepare("SELECT (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END) tier, COUNT(*) n FROM tenants WHERE deleted_at IS NULL AND plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>''" + _xo.clause + " GROUP BY (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)").bind(..._xo.binds).all()).results) || [];
   var paid = agg.paid || 0, trials = agg.trials || 0, twc = agg.twc || 0, comped = agg.comped || 0, byTier = {};
   tierRows.forEach(function (r) { byTier[r.tier] = r.n; });
   var mrr = 0; Object.keys(byTier).forEach(function (k) { mrr += (PLAN_PRICE_CENTS[k] || 0) * byTier[k]; });
@@ -863,7 +874,7 @@ async function _hqGrowthData(env, range) {
   const days = {};
   function bump(day, k, v) { if (!day) return; days[day] = days[day] || { day: day, visits: 0, signups: 0, revenue_cents: 0 }; days[day][k] += v; }
   try { const pv = (await env.DB.prepare('SELECT day, COALESCE(SUM(views),0) v FROM page_views WHERE day>=? AND day<=? GROUP BY day').bind(range.startDay, range.endDay).all()).results || []; pv.forEach(function (r) { bump(r.day, 'visits', r.v || 0); }); } catch (e) {}
-  try { const su = (await env.DB.prepare('SELECT created_at FROM tenants WHERE deleted_at IS NULL AND created_at>=? AND created_at<?').bind(range.start, range.end).all()).results || []; su.forEach(function (r) { bump(iso(r.created_at), 'signups', 1); }); } catch (e) {}
+  try { var _xg = _excludeOwnerTenants(env, 'id'); const su = (await env.DB.prepare('SELECT created_at FROM tenants WHERE deleted_at IS NULL AND created_at>=? AND created_at<?' + _xg.clause).bind(range.start, range.end, ..._xg.binds).all()).results || []; su.forEach(function (r) { bump(iso(r.created_at), 'signups', 1); }); } catch (e) {}
   try { const tx = (await env.DB.prepare('SELECT created_at, amount_cents FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).all()).results || []; tx.forEach(function (r) { bump(iso(r.created_at), 'revenue_cents', r.amount_cents || 0); }); } catch (e) {}
   const series = Object.keys(days).sort().map(function (d) { return days[d]; });
   const totals = series.reduce(function (a, r) { a.visits += r.visits; a.signups += r.signups; a.revenue_cents += r.revenue_cents; return a; }, { visits: 0, signups: 0, revenue_cents: 0 });
@@ -3235,12 +3246,13 @@ function doReset(){
           (byKind.results || []).forEach(function (r) { const k = (r.kind === 'plan') ? 'subscription' : r.kind; by_kind[k] = (by_kind[k] || 0) + (r.c || 0); });
           // SQL-aggregated (was: fetch EVERY tenant row + bucket in JS). Same bucketing rules, now scales with result
           // size not tenant count; parity with the old JS loop verified on a mock dataset before this shipped.
-          const agg2 = ((await env.DB.prepare("SELECT COUNT(*) total, COALESCE(SUM(CASE WHEN plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' THEN 1 ELSE 0 END),0) paid, COALESCE(SUM(CASE WHEN plan IS 'active' AND NOT (stripe_sub IS NOT NULL AND stripe_sub<>'') THEN 1 ELSE 0 END),0) comped, COALESCE(SUM(CASE WHEN plan IS NOT 'active' THEN 1 ELSE 0 END),0) trials, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND COALESCE(card_on_file,0)<>0 THEN 1 ELSE 0 END),0) twc FROM tenants WHERE deleted_at IS NULL").first()) || {});
-          const tierRows2 = ((await env.DB.prepare("SELECT (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END) tier, COUNT(*) n FROM tenants WHERE deleted_at IS NULL AND plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' GROUP BY (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)").all()).results) || [];
+          const _xo = _excludeOwnerTenants(env, 'id');   // owners are operators, not customers -- never count them in members/trials/paid/signups
+          const agg2 = ((await env.DB.prepare("SELECT COUNT(*) total, COALESCE(SUM(CASE WHEN plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' THEN 1 ELSE 0 END),0) paid, COALESCE(SUM(CASE WHEN plan IS 'active' AND NOT (stripe_sub IS NOT NULL AND stripe_sub<>'') THEN 1 ELSE 0 END),0) comped, COALESCE(SUM(CASE WHEN plan IS NOT 'active' THEN 1 ELSE 0 END),0) trials, COALESCE(SUM(CASE WHEN plan IS NOT 'active' AND COALESCE(card_on_file,0)<>0 THEN 1 ELSE 0 END),0) twc FROM tenants WHERE deleted_at IS NULL" + _xo.clause).bind(..._xo.binds).first()) || {});
+          const tierRows2 = ((await env.DB.prepare("SELECT (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END) tier, COUNT(*) n FROM tenants WHERE deleted_at IS NULL AND plan IS 'active' AND stripe_sub IS NOT NULL AND stripe_sub<>''" + _xo.clause + " GROUP BY (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)").bind(..._xo.binds).all()).results) || [];
           let total = agg2.total || 0, paid = agg2.paid || 0, trials = agg2.trials || 0, twc = agg2.twc || 0, comped = agg2.comped || 0; const by_tier = {};
           tierRows2.forEach(function (r) { by_tier[r.tier] = r.n; });   // only real paying subscriptions (with a stripe_sub) count toward paid/MRR; comped/manually-active are separate
           let mrr = 0; Object.keys(by_tier).forEach(function (tr) { mrr += (PLAN_PRICE_CENTS[tr] || 0) * by_tier[tr]; });
-          const signups = await env.DB.prepare('SELECT COUNT(*) AS c FROM tenants WHERE deleted_at IS NULL AND created_at>=? AND created_at<?').bind(range.start, range.end).first();   // exclude deleted tenants from the signups KPI (delete stamps deleted_at)
+          const signups = await env.DB.prepare('SELECT COUNT(*) AS c FROM tenants WHERE deleted_at IS NULL AND created_at>=? AND created_at<?' + _xo.clause).bind(range.start, range.end, ..._xo.binds).first();   // exclude deleted + owner-operator tenants from the signups KPI
           const vRange = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views WHERE day>=? AND day<=?').bind(range.startDay, range.endDay).first();
           const vToday = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views WHERE day=?').bind(new Date(now).toISOString().slice(0, 10)).first();
           const vTot = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views').first();
@@ -3435,7 +3447,7 @@ function doReset(){
           // higher/equal tier (the backup itself, an all-seeing root) still sees everyone. Owner accounts are few, so
           // the per-row _ownerTier check is cheap. This is the itemized-list half of "never known"; aggregate COUNTS
           // (overview) still include it -- a +1 in a total reveals no address.
-          const members = (rows.results || []).filter(function (m) { return _ownerTier(env, m.email) <= _reqTier; }).map(function (m) { m.comp = m.email ? (cmap[(m.email || '').toLowerCase()] || null) : null; return m; });
+          const members = (rows.results || []).filter(function (m) { return !_isOwnerEmail(env, m.email); }).map(function (m) { m.comp = m.email ? (cmap[(m.email || '').toLowerCase()] || null) : null; return m; });   // owners are operators, not customers -- excluded from the members list for EVERY viewer (managed on the separate owner-accounts panel)
           return json({ ok: true, members: members });
         }
 
@@ -4107,9 +4119,9 @@ function doReset(){
           // lower-tier viewer -- not as the actor of its own logins, and not via an email carried in the event meta
           // (signup/ban/claim rows). A higher/equal-tier viewer (the backup itself, an all-seeing root) still sees all.
           _events = _events.filter(function (e) {
-            if (_ownerTier(env, e.actor) > _reqTier) return false;
+            if (_isOwnerEmail(env, e.actor)) return false;
             var m = e.meta || {}, em = m.email || m.value || m.to || m.target || '';
-            if (em && _ownerTier(env, em) > _reqTier) return false;
+            if (em && _isOwnerEmail(env, em)) return false;
             return true;
           });
           if (_filter && _filter !== 'all') _events = _events.filter(function (e) { return e.category === _filter; });
@@ -4206,7 +4218,7 @@ function doReset(){
           // INVISIBILITY: keep the attack signal (IP, kind, that a claim/login was blocked) but blank any strictly-
           // higher-tier owner email (the hidden backup) for a lower-tier viewer, so a probe against the protected
           // address can never reveal the address itself in this feed.
-          _events = _events.map(function (e) { if (e.email && _ownerTier(env, e.email) > _reqTier) e.email = ''; return e; });
+          _events = _events.map(function (e) { if (e.email && _isOwnerEmail(env, e.email)) e.email = ''; return e; });
           const _counts = {}, _sample = {};
           (_atR.results || []).forEach(function (r) { if (!r.ip) return; _counts[r.ip] = (_counts[r.ip] || 0) + 1; if (!_sample[r.ip]) _sample[r.ip] = r.kind; });
           (_auR.results || []).forEach(function (r) { if (_FAIL_KINDS.indexOf(r.action) < 0 || !r.ip) return; _counts[r.ip] = (_counts[r.ip] || 0) + 1; if (!_sample[r.ip]) _sample[r.ip] = r.action; });
@@ -4393,7 +4405,7 @@ function doReset(){
         if (vOk) { try { await env.DB.prepare('UPDATE users SET email_verified=1 WHERE id=? AND email=?').bind(u, ve).run(); await audit(env, null, req, 'email_verified', { email: ve }); } catch (e) {} }
         const vOrigin = env.APP_ORIGIN || 'https://atlasrental.io';
         const vBody = vOk
-          ? ('<div class="card"><h2>Email verified</h2><p class="muted">' + esc(ve) + ' is confirmed. Your Atlas Rental.io account is active — you can close this tab and continue in the app.</p><p><a href="' + vOrigin + '/" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:700">Open Atlas Rental.io</a></p></div>')
+          ? ('<div class="card"><h2>Email verified</h2><p class="muted">' + esc(ve) + ' is confirmed. Your Atlas Rental.io account is active — you can close this tab and continue in the app.</p><p><a href="' + vOrigin + (_isOwnerEmail(env, ve) ? '/admin.html' : '/') + '" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:700">Open Atlas Rental.io</a></p></div>')
           : '<div class="card"><h2>Link expired</h2><p class="muted">This verification link is invalid or has expired. Sign in and use the resend option to get a fresh one.</p></div>';
         return new Response(_pageDoc('Verify email', '#1E6E4E', vBody, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
