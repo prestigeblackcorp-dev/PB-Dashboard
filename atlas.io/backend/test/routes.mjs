@@ -1338,19 +1338,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   cfg = wgEnvFor({ scn: 'dom_entitled', gateOn: true, tier: 'starter', website_addon: 'mo', custom_domain: null });
   r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'example.com' }), cfg.env, ctx);
   ok(r.status === 200, '#278 flag ON: entitled tenant custom-domain connect (no prior domain) -> 200 (got ' + r.status + ')');
-}
 
 // ---- #279 LIVE-SITE CRITICAL: PUT /api/tenant/profile settings=? must MERGE, never blind-replace. Two real
 // callers PUT partial settings objects (publishBookingSite sends only {comms,publicSite}; the generic auto-mirror
 // _srvMirrorProfile dumps every OTHER top-level key but never models publicSite at all) -- a blind replace let
 // either one silently erase what the other owns, including dropping a LIVE customer booking link's publicSite
 // off the server while the dashboard still showed it published. Reuses the #278 wgEnvFor/wgReq harness (same
-// endpoint) plus its getLastUpdate() capture to inspect what was actually WRITTEN, not just the response status. ----
-{
+// endpoint) plus its getLastUpdate() capture to inspect what was actually WRITTEN, not just the response status.
+// (Runs inside the #278 block above so it reuses that section's wgEnvFor/wgReq/getLastUpdate harness -- a bare
+// { } block here would put those helpers out of scope: ReferenceError wgEnvFor, which is what broke CI at build aa.) ----
   // (a) an auto-mirror-shaped save (settings lacks publicSite entirely) must NOT drop a publicSite already stored.
-  let cfg = wgEnvFor({ scn: 'merge_keep_pubsite', gateOn: false, tier: 'starter', website_addon: null,
+  cfg = wgEnvFor({ scn: 'merge_keep_pubsite', gateOn: false, tier: 'starter', website_addon: null,
     curSettings: { publicSite: { published: true, headline: 'Live site' }, website: { built: true, tagline: 'old tagline' } } });
-  let r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { comms: { email: true } } }), cfg.env, ctx);
+  r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { comms: { email: true } } }), cfg.env, ctx);
   ok(r.status === 200, '#279 (a) settings save with no publicSite key -> 200 (got ' + r.status + ')');
   let upd = cfg.getLastUpdate();
   let written = upd ? JSON.parse(upd.args[0]) : null;
