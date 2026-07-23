@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT NOT NULL UNIQUE,
   pw_hash       TEXT NOT NULL,               -- PBKDF2/scrypt/argon2 output (never plaintext)
   pw_salt       TEXT NOT NULL,
-  pw_algo       TEXT DEFAULT 'pbkdf2-sha256-210000',
+  pw_algo       TEXT DEFAULT 'pbkdf2-sha256-100000',
   tenant_id     TEXT NOT NULL,
   role          TEXT DEFAULT 'owner',        -- owner|manager|staff (per-tenant RBAC)
   caps          TEXT DEFAULT '{}',           -- JSON: fine-grained capability overrides

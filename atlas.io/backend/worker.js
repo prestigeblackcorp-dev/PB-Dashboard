@@ -70,6 +70,10 @@ function _sanitizeEmailHtml(h) {
 // (each round's 256-bit output feeds the next as key material) for 600k effective iterations -- OWASP's
 // PBKDF2-SHA256 floor. New hashes are tagged 'p2$'; legacy single-100k hashes (untagged) still verify and
 // are transparently re-hashed to the 600k scheme on the user's next successful login (see login handler).
+// verifyPassword() derives with THIS constant (it does NOT read users.pw_algo), so every stored hash is a
+// 100000-iteration PBKDF2-SHA256 -- the schema's pw_algo default was corrected from a wrong "210000" label to match.
+// To raise the count later WITHOUT locking anyone out: make verifyPassword read the per-row pw_algo iteration count,
+// write the true count on new/changed passwords, and let the existing pwNeedsUpgrade() re-hash on next login.
 const PBKDF2_ITERS = 100000;
 const PBKDF2_ROUNDS = 6;               // 6 x 100k = 600k effective
 async function _pbkdf2(materialBytes, salt) {
@@ -2358,6 +2362,27 @@ async function _websiteServeGrandfather(env, tenant) {
 async function _due(env, key, minMs) { try { var last = parseInt(await _pcfgGet(env, 'due_' + key, '0'), 10) || 0; if (Date.now() - last >= minMs) { await _pcfgSet(env, 'due_' + key, String(Date.now())); return true; } } catch (e) {} return false; }
 // ---- E-tier (enterprise) helpers ----
 function _r2(env) { return env.R2 || env.FILES || env.BUCKET || null; }   // owner binds an R2 bucket named R2/FILES/BUCKET; absent -> file endpoints degrade honestly and the app keeps its inline storage
+// Delete every R2 object under a key prefix (e.g. a tenant's `atlas/t/<id>/` namespace). Used by account-purge (so a
+// hard purge truly removes uploaded ID/license/condition files, not just the D1 rows) + the retention sweep. Bounded to
+// 50 list-pages of 1000 (<=50k objects/call) so it can never run away; every failure is swallowed so it never breaks
+// the caller (purge must still succeed even if R2 is briefly unavailable). Returns the count deleted.
+async function _r2DeletePrefix(env, prefix) {
+  const r2 = _r2(env); if (!r2 || !prefix) return 0;
+  let deleted = 0, rounds = 0;
+  try {
+    // List the first page under the prefix, delete it, repeat -- because each round removes exactly what it listed, the
+    // next round's first page is the following batch. This avoids any cursor-vs-concurrent-delete pagination skips.
+    while (rounds < 100) {
+      const listed = await r2.list({ prefix: prefix, limit: 1000 });
+      const keys = (listed.objects || []).map(function (o) { return o.key; });
+      if (!keys.length) break;
+      try { await r2.delete(keys); } catch (e) { break; }   // stop on a delete failure so we can never loop forever re-listing the same page
+      deleted += keys.length;
+      rounds++;
+    }
+  } catch (e) {}
+  return deleted;
+}
 async function _gmvFeeCents(env, amountCents) { const bps = parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0; return Math.max(0, Math.round((Number(amountCents) || 0) * bps / 10000)); }   // basis points -> cents (E2 GMV take-rate, dormant until enabled)
 
 // ==================================================================================================================
@@ -3360,6 +3385,29 @@ function doReset(){
           return new Response(obj.body, { headers: h });
         } catch (e) { return err(404, 'Not found.'); }
       }
+      // Per-file DELETE (data-subject erasure / owner cleanup): remove one uploaded file from R2 + strip its booking
+      // reference. Session-scoped + CSRF-guarded, and the key MUST live under the caller's own `atlas/t/<tenant>/`
+      // namespace -- so a tenant can only ever delete its own files. Makes the Privacy Policy's "you may request
+      // deletion of specific files" real.
+      if (_fm && method === 'DELETE') {
+        const r2 = _r2(env); if (!r2) return err(404, 'File storage not configured.');
+        const _dctx = await resolveSession(env, req);
+        if (!_dctx || !_dctx.tenant_id) return err(401, 'Sign in to delete files.');
+        if (!csrfOk(req, _dctx)) return err(403, 'Bad or missing CSRF token.');
+        const dkey = decodeURIComponent(_fm[1]).slice(0, 300);
+        const pref = 'atlas/t/' + _dctx.tenant_id + '/';
+        if (dkey.indexOf(pref) !== 0 || dkey.indexOf('..') >= 0) return err(403, 'That file is not in your account.');
+        try { await r2.delete(dkey); } catch (e) { return err(502, 'Could not delete the file. Please try again.'); }
+        try {   // best-effort: drop the reference from the owning booking's portal.uploads so the UI stops listing it
+          const _bid = (dkey.match(/\/portal\/([^/]+)\//) || [])[1] || '';
+          if (_bid) {
+            const _br = await env.DB.prepare('SELECT id,data FROM bookings WHERE id=? AND tenant_id=?').bind(_bid, _dctx.tenant_id).first();
+            if (_br) { const _d = jparse(_br.data, {}); if (_d.portal && Array.isArray(_d.portal.uploads)) { const _n = _d.portal.uploads.length; _d.portal.uploads = _d.portal.uploads.filter(function (u) { return u.key !== dkey; }); if (_d.portal.uploads.length !== _n) { _d._t = Date.now(); await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(_d), Date.now(), _br.id).run(); } } }
+          }
+        } catch (e) {}
+        await audit(env, { tenant_id: _dctx.tenant_id }, req, 'file.delete', { key: dkey });
+        return json({ ok: true, deleted: dkey });
+      }
 
       // ---- Inbound email webhook: your mail provider / forwarder (Resend, Postmark, SendGrid, generic) POSTs parsed mail
       // here and it lands in the Support Inbox. Secured by INBOUND_SECRET (header X-Inbound-Secret or ?secret=), NOT the
@@ -3749,8 +3797,12 @@ function doReset(){
           const tt = ['bookings','customers','assets','charges','ledger','promos','integrations','suppressions','consents','ai_credits','sessions','signatures','promo_uses','platform_feedback','platform_installs','verified_customers','support_tickets','users'];
           for (let i = 0; i < tt.length; i++) { try { await env.DB.prepare('DELETE FROM ' + tt[i] + ' WHERE tenant_id=?').bind(tid).run(); } catch (e) {} }
           try { await env.DB.prepare('DELETE FROM tenants WHERE id=?').bind(tid).run(); } catch (e) {}
-          await audit(env, { tenant_id: tid, actor: _actor, staff_id: _staffId }, req, 'admin.purge', { email: em });
-          return json({ ok: true, purged: tid });
+          // Also hard-remove this tenant's uploaded files (ID/license/condition images) from R2 -- previously purge only
+          // deleted D1 rows, so sensitive documents survived a full purge. Bounded + fail-safe; the D1 purge above stands
+          // regardless of R2 outcome.
+          let _r2del = 0; try { _r2del = await _r2DeletePrefix(env, 'atlas/t/' + tid + '/'); } catch (e) {}
+          await audit(env, { tenant_id: tid, actor: _actor, staff_id: _staffId }, req, 'admin.purge', { email: em, r2_deleted: _r2del });
+          return json({ ok: true, purged: tid, r2_deleted: _r2del });
         }
         if (path === '/api/admin/deleted' && method === 'GET') {
           const rows = await env.DB.prepare("SELECT t.id AS tenant_id, t.name, t.tier, t.deleted_at, (SELECT email FROM users WHERE tenant_id=t.id LIMIT 1) AS email FROM tenants t WHERE t.deleted_at IS NOT NULL ORDER BY t.deleted_at DESC LIMIT 200").all();
@@ -5832,6 +5884,31 @@ function doReset(){
       } catch (e) {}
       await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
+      // Flag-gated document retention sweep (DEFAULT OFF -> fully inert). When `id_retention_days` > 0, delete renter
+      // ID/license images from R2 once they are older than N days; when `photo_retention_days` > 0, the same for
+      // condition photos. Age is measured from the UPLOAD timestamp (always recorded), which is robust + easy to reason
+      // about. Bounded to 300 bookings per run; every failure is swallowed so it can never break the rest of the cron.
+      // Nothing is touched while both flags are 0. Owner sets the windows in the master dashboard.
+      try {
+        const _idRet = parseInt(await _pcfgGet(env, 'id_retention_days', '0'), 10) || 0;
+        const _phRet = parseInt(await _pcfgGet(env, 'photo_retention_days', '0'), 10) || 0;
+        const _r2b = _r2(env);
+        if ((_idRet > 0 || _phRet > 0) && _r2b) {
+          const _rows = (await env.DB.prepare("SELECT id, data FROM bookings WHERE data LIKE '%\"uploads\"%' ORDER BY updated_at ASC LIMIT 300").all()).results || [];
+          for (let _i = 0; _i < _rows.length; _i++) {
+            try {
+              const _d = jparse(_rows[_i].data, {}); const _ups = (_d.portal && _d.portal.uploads) || []; if (!_ups.length) continue;
+              let _changed = false; const _keep = [];
+              for (let _j = 0; _j < _ups.length; _j++) {
+                const _u = _ups[_j], _win = (_u.kind === 'id') ? _idRet : _phRet;
+                if (_win > 0 && _u.key && _u.at && (now - _u.at) > _win * 86400000) { try { await _r2b.delete(_u.key); _changed = true; continue; } catch (e) {} }
+                _keep.push(_u);
+              }
+              if (_changed) { _d.portal.uploads = _keep; _d._t = now; await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(_d), now, _rows[_i].id).run(); }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
       // Retain ADMIN- and OWNER-plane actions for a year (forensics/compliance); other audit rows GC at 90 days.
       // #253 extended this to also spare owner.% (owner.denied / owner.claim_blocked are high-signal security rows).
       await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action IS NULL OR (action NOT LIKE 'admin.%' AND action NOT LIKE 'owner.%'))").bind(now - 90 * 24 * 3600 * 1000).run();
