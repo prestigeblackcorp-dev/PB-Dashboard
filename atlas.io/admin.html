@@ -264,7 +264,7 @@
   <header class="topbar">
     <div class="brand">
       <div class="mk"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3 3 20h4l5-10 5 10h4L12 3Z" fill="#eafff4"/></svg></div>
-      <div><b>ATLAS HQ</b><span>Master Dashboard</span></div>
+      <div><b id="hqBrand">ATLAS HQ</b><span id="hqBrandSub">Master Dashboard</span></div>
     </div>
     <div class="top-spacer"></div>
     <select id="rangeSel" onchange="setRange(this.value)" title="Date range" style="background:#0c1310;border:1px solid var(--line2);border-radius:8px;color:var(--ink);padding:7px 10px;font-size:12.5px;font-family:inherit;outline:none;margin-right:2px">
@@ -608,6 +608,8 @@ var TIER_LABEL = {starter:'Starter',pro:'Pro',enterprise:'Enterprise',business:'
 var _tok = '';
 var DATA = { overview:null, members:[], txns:[], bugs:[], tickets:[], aiCfg:null, visits:null, inbox:[], inboxCounts:{}, competitors:[], geo:null, purchases:null, growth:null, socialHandles:{}, socialPlatforms:{}, enterprise:{}, you:{}, security:null, errors:null };
 function _isOwner(){ return !!(DATA.you && DATA.you.role==='owner'); }
+function _isSuperOwner(){ return !!(DATA.you && (DATA.you.tier||0)>=2); }   /* tier-2+ = super-admin backup (or all-seeing root); tier-1 primary is NOT super */
+function applyTierBrand(){ var b=document.getElementById('hqBrand'); if(b) b.textContent=_isSuperOwner()?'ATLAS SHQ':'ATLAS HQ'; var s=document.getElementById('hqBrandSub'); if(s) s.textContent=_isSuperOwner()?'Super HQ':'Master Dashboard'; try{ if(_isSuperOwner()) document.title='Atlas SHQ \u2014 Super HQ'; }catch(e){} }
 var _seg = 'all', _bugSeg = 'open', _tkSeg = 'open', _timer = null, _lastFetch = 0, _prevKpi = {};
 var _range = '30d', _inboxSeg = 'new', _purKind = 'all', _purQ = '';
 var _secFilter = 'all', _secQ = '';
@@ -692,7 +694,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
     if(r[2].json&&r[2].json.ok){ DATA.txns=r[2].json.transactions||[]; renderTxns(); }
     if(r[3].json&&r[3].json.ok){ DATA.bugs=r[3].json.feedback||[]; renderBugs(); }
     if(r[4]&&r[4].json&&r[4].json.ok){ DATA.tickets=r[4].json.tickets||[]; renderTickets(); }
-    if(r[5]&&r[5].json&&r[5].json.config){ DATA.aiCfg=r[5].json.config; DATA.enterprise=r[5].json.enterprise||{}; DATA.you=r[5].json.you||{}; renderEnterprise(); } else { DATA.aiCfg={ai_hq_enabled:false,ai_available:false,needsDeploy:true}; } renderAI();
+    if(r[5]&&r[5].json&&r[5].json.config){ DATA.aiCfg=r[5].json.config; DATA.enterprise=r[5].json.enterprise||{}; DATA.you=r[5].json.you||{}; renderEnterprise(); applyTierBrand(); } else { DATA.aiCfg={ai_hq_enabled:false,ai_available:false,needsDeploy:true}; } renderAI();
     if(r[6]&&r[6].json&&r[6].json.ok){ DATA.visits=r[6].json; renderVisits(); }
     if(r[7]&&r[7].json&&r[7].json.ok){ DATA.inbox=r[7].json.messages||[]; DATA.inboxCounts=r[7].json.counts||{}; DATA.inboxCanSend=!!r[7].json.can_send; renderInbox(); }
     if(r[8]&&r[8].json&&r[8].json.ok){ DATA.competitors=r[8].json.competitors||[]; DATA.searchAvailable=!!r[8].json.search_available; renderCompetitors(); }
@@ -1013,7 +1015,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19am';
+var ATLAS_EXPECT_BUILD='2026.07.19an';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
