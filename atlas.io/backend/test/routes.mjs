@@ -658,5 +658,60 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(pr.status === 403, 'aio/plan: viewer role -> 403 read-only (got ' + pr.status + ')');
 }
 
+// ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
+// a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
+{
+  const NOW = Date.now();
+  // scn: 'owner' (OWNER_EMAIL, no comp row) | 'gold' | 'free' | 'legacyadmin' (non-owner email, comp_grants.role='admin')
+  function compEnvFor(scn) {
+    const SID = 'sid_comp_' + scn, CSRF = 'csrf_comp_' + scn, TEN = 't_comp_' + scn, UID = 'u_comp_' + scn;
+    const email = scn === 'owner' ? 'o@x.com' : (scn + '@member.com');
+    const compRole = scn === 'owner' ? null : (scn === 'legacyadmin' ? 'admin' : scn);
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: email, tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants WHERE email/.test(sql)) return compRole ? { role: compRole } : null;
+          if (/FROM tenants WHERE id/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { DB: { prepare: stmt }, SID, CSRF };
+  }
+  const compReq = (method, path, cfg, body) => { const headers = { 'content-type': 'application/json', 'cookie': 'atlas_sid=' + cfg.SID, 'x-csrf-token': cfg.CSRF, 'origin': 'https://atlasrental.io' }; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+
+  // (a) OWNER_EMAIL session -> isOwner true
+  const dOwner = compEnvFor('owner');
+  let r = await worker.fetch(compReq('GET', '/api/auth/me', dOwner), { DB: dOwner.DB, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.user.isOwner === true, 'isOwner: OWNER_EMAIL session -> true');
+
+  // (b) a comp_grants role for a NON-owner email -- gold, free, and a legacy 'admin' row -- must NEVER read as owner
+  for (const scn of ['gold', 'free', 'legacyadmin']) {
+    const d = compEnvFor(scn);
+    let rr = await worker.fetch(compReq('GET', '/api/auth/me', d), { DB: d.DB, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, ctx);
+    let jj = await rr.json();
+    ok(rr.status === 200 && jj.user.isOwner === false, 'isOwner: non-owner email w/ comp_grants.role=' + scn + ' -> false (got ' + JSON.stringify(jj.user) + ')');
+  }
+  ok((await (await worker.fetch(compReq('GET', '/api/auth/me', compEnvFor('legacyadmin')), { DB: compEnvFor('legacyadmin').DB, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, ctx)).json()).user.comp === 'gold',
+    'isOwner: a legacy admin comp row read-time-coerces to comp="gold" (never surfaced as admin)');
+
+  // (c) the owner-session comp endpoint rejects role='admin' outright, but still grants gold/free
+  const dGrant = compEnvFor('owner');
+  let cr = await worker.fetch(compReq('POST', '/api/admin/comp', dGrant, { email: 'newmember@x.com', role: 'admin' }), { DB: dGrant.DB, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, ctx);
+  ok(cr.status === 400, 'comp endpoint: role=admin is rejected (got ' + cr.status + ')');
+  let cr2 = await worker.fetch(compReq('POST', '/api/admin/comp', dGrant, { email: 'newmember@x.com', role: 'gold' }), { DB: dGrant.DB, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, ctx);
+  ok(cr2.status === 200, 'comp endpoint: role=gold still accepted (got ' + cr2.status + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

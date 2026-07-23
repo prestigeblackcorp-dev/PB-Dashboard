@@ -207,8 +207,9 @@ async function resolveSession(env, req) {
   const user = await env.DB.prepare('SELECT id,email,tenant_id,role,caps FROM users WHERE id=?').bind(s.user_id).first();
   if (!user) return null;
   const comp = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(user.email).first();
-  const isOwner = (user.email === env.OWNER_EMAIL) || (comp && comp.role === 'admin');
-  return { session: s, user, tenant_id: s.tenant_id, isOwner: !!isOwner, comp: comp ? comp.role : null };
+  const compRole = comp ? (comp.role === 'admin' ? 'gold' : comp.role) : null;   // read-time coercion: a legacy 'admin' comp row reads as 'gold' -- safe even before the ensurePlatformSchema migration runs
+  const isOwner = (user.email === env.OWNER_EMAIL);   // THE ONE INVARIANT: platform-owner authority is EMAIL-ONLY. comp_grants can never confer it (see /api/admin/comp, which only accepts role in {gold, free}).
+  return { session: s, user, tenant_id: s.tenant_id, isOwner: !!isOwner, comp: compRole };
 }
 // ---- Developer platform: tenant API keys (issued to tenants for the read-only /api/v1 surface) ----
 // The secret is returned ONCE at creation; only its SHA-256 hash is persisted, so a DB dump never yields a usable key.
@@ -299,7 +300,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19t';
+const ATLAS_BUILD = '2026.07.19u';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1620,6 +1621,10 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_customers_tenant_created ON customers(tenant_id, created_at)').run(); } catch (e) {}
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_charges_tenant_created ON charges(tenant_id, created_at)').run(); } catch (e) {}
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_tenant_created ON ledger(tenant_id, created_at)').run(); } catch (e) {}
+  // One-time self-heal migration: owner authority is EMAIL-ONLY now (see resolveSession) -- a comp_grants row can
+  // never confer it, so any pre-existing role='admin' grant is retroactively downgraded to 'gold' (no data/access
+  // loss: 'gold' still means every feature, comped). Idempotent -- a no-op once every row has already migrated.
+  try { await env.DB.prepare("UPDATE comp_grants SET role='gold' WHERE role='admin'").run(); } catch (e) {}
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -2490,7 +2495,7 @@ function doReset(){
             "(SELECT COALESCE(SUM(amount_cents),0) FROM platform_transactions WHERE tenant_id=t.id) AS revenue_cents " +
             "FROM tenants t WHERE t.deleted_at IS NULL ORDER BY t.created_at DESC LIMIT 500").all();
           const comps = await env.DB.prepare('SELECT email, role FROM comp_grants').all();
-          const cmap = {}; (comps.results || []).forEach(function (c) { cmap[(c.email || '').toLowerCase()] = c.role; });
+          const cmap = {}; (comps.results || []).forEach(function (c) { cmap[(c.email || '').toLowerCase()] = (c.role === 'admin' ? 'gold' : c.role); });   // legacy admin rows display as gold -- never owner
           const members = (rows.results || []).map(function (m) { m.comp = m.email ? (cmap[(m.email || '').toLowerCase()] || null) : null; return m; });
           return json({ ok: true, members: members });
         }
@@ -2525,7 +2530,7 @@ function doReset(){
           const own = await env.DB.prepare("SELECT email FROM users WHERE tenant_id=? AND role='owner' ORDER BY created_at LIMIT 1").bind(tid).first();
           const em = (own && own.email) ? own.email.toLowerCase() : '';
           const act = String(b.action || '');
-          if (act === 'gold' || act === 'free') {   // 'admin' comp (which confers platform-owner) is intentionally NOT reachable from the token console -> use the owner-session /api/admin/comp
+          if (act === 'gold' || act === 'free') {   // 'admin' is retired entirely -- comp_grants can never confer platform-owner (owner authority is EMAIL-ONLY, see resolveSession); /api/admin/comp also only accepts gold/free
             if (!em) return err(400, 'This member has no owner email to comp.');
             await env.DB.prepare('INSERT INTO comp_grants (email,role,granted_by,granted_at) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET role=?,granted_at=?').bind(em, act, 'atlas-hq', Date.now(), act, Date.now()).run();
             if (act !== 'free') await env.DB.prepare("UPDATE tenants SET plan='active', tier='unlimited', updated_at=? WHERE id=?").bind(Date.now(), tid).run();   // comped Gold = full access -> tier 'unlimited' so the asset cap is uncapped (a null tier silently fell back to the starter cap of 25)
@@ -3665,14 +3670,15 @@ function doReset(){
         }
       }
 
-      // ---- admin/owner only: comp registry ----------------------------------
+      // ---- admin/owner only: comp registry. 'admin' is NOT a grantable role -- owner/platform-admin authority is
+      // EMAIL-ONLY (see resolveSession's isOwner calc) and can never be conferred by a comp_grants row. -------------
       if (path === '/api/admin/comp' && (method === 'POST' || method === 'DELETE')) {
         if (!ctx.isOwner) return err(403, 'Owner only.');        // re-checked server-side, every request
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         const body = await req.json().catch(() => ({}));
         if (!vEmail(body.email)) return err(400, 'Valid email required.');
         if (method === 'POST') {
-          if (['admin', 'gold', 'free'].indexOf(body.role) < 0) return err(400, 'Bad role.');
+          if (['gold', 'free'].indexOf(body.role) < 0) return err(400, 'Bad role.');
           await env.DB.prepare('INSERT INTO comp_grants (email,role,granted_by,granted_at) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET role=?,granted_at=?')
             .bind(body.email.toLowerCase(), body.role, ctx.user.email, Date.now(), body.role, Date.now()).run();
           await audit(env, ctx, req, 'comp.grant', { email: body.email, role: body.role });

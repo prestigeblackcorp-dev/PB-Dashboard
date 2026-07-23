@@ -1825,28 +1825,35 @@ const Atlas = (function(){
     {id:'business',  name:'Business',             price:799,  vehicles:500,      locations:99,       credits:3000, blurb:'Up to 500 assets, multiple locations'},
     {id:'unlimited', name:'Enterprise Unlimited', price:1499, vehicles:Infinity, locations:Infinity, credits:8000, blurb:'Unlimited assets + locations'},
     {id:'diamond',   name:'Diamond',              price:0,    vehicles:Infinity, locations:Infinity, credits:Infinity, blurb:'Owner / Admin \u2014 limitless', owner:true},
-    {id:'gold',      name:'Gold',                 price:0,    vehicles:Infinity, locations:Infinity, credits:3000, blurb:'Complimentary \u2014 all features', comp:true},
+    {id:'gold',      name:'Gold',                 price:0,    vehicles:Infinity, locations:Infinity, credits:3000, blurb:'Complimentary \u2014 all features', comp:true, permanent:true}, // early-tester comp: never auto-expires or downgrades (owner must explicitly compRevoke to remove it); 3000 credits/wk vs Starter's 100
     {id:'freecomp',  name:'Free access',          price:0,    vehicles:Infinity, locations:Infinity, credits:1000, blurb:'Free \u2014 full access', comp:true}
   ];
   // The owner/admin account. Logging in with this email auto-grants the limitless Diamond tier + owner tools.
   var OWNER_EMAIL='prestigeblackcorp@gmail.com';
-  // Comp registry: owner grants any email a free tier. Local now (localStorage, cross-tenant); in production this lives server-side keyed by email.
+  // Comp registry: owner grants any email a free tier (Gold or Free -- NEVER owner/Diamond; see _isOwnerAcct below).
+  // Local now (localStorage, cross-tenant); in production this lives server-side keyed by email (worker.js comp_grants).
   var COMP_KEY='atlas_comp_v1';
-  function _compMap(){ try{ return JSON.parse(localStorage.getItem(COMP_KEY)||'{}')||{}; }catch(e){ return {}; } }
+  function _compMap(){ var m; try{ m=JSON.parse(localStorage.getItem(COMP_KEY)||'{}')||{}; }catch(e){ m={}; }
+    var changed=false; for(var k in m){ if(m[k]==='admin'){ m[k]='gold'; changed=true; } }   // one-time migration: a legacy 'admin' comp grant is retroactively 'gold' -- owner authority is EMAIL-ONLY, never a comp role (see _isOwnerAcct)
+    if(changed) _compSetMap(m); return m; }
   function _compSetMap(m){ try{ localStorage.setItem(COMP_KEY, JSON.stringify(m||{})); }catch(e){} }
-  // Returns 'admin' | 'gold' | 'free' | null for an email. The owner email is always admin.
-  function _compGrantFor(email){ email=String(email||'').trim().toLowerCase(); if(!email) return null;
-    if(email===OWNER_EMAIL) return 'admin'; var g=_compMap()[email]; return (g==='admin'||g==='gold'||g==='free')?g:null; }
+  // Returns 'gold' | 'free' | null for a NON-owner email. Never 'admin' -- a stored legacy 'admin' grant reads as
+  // 'gold' (read-time coercion, safe even if _compMap()'s migration above has not run yet).
+  function _compGrantFor(email){ email=String(email||'').trim().toLowerCase(); if(!email||email===OWNER_EMAIL) return null;
+    var g=_compMap()[email]; if(g==='admin') g='gold'; return (g==='gold'||g==='free')?g:null; }
   function _sessEmail(){ var s=store.session(); return s&&s.email?String(s.email).toLowerCase():''; }
-  function _isOwnerAcct(){ var g=_compGrantFor(_sessEmail()); return g==='admin'; }   // owner OR an admin-comped email
+  // THE ONE INVARIANT: owner / Diamond / platform-admin is EMAIL-ONLY. No comp grant, no role, no other code path
+  // may ever return true here for any email other than OWNER_EMAIL.
+  function _isOwnerAcct(){ return _sessEmail()===OWNER_EMAIL; }
   // Apply the owner/comp grant for whoever is signed in (runs on every app entry, in applyBrand()).
-  function _grantOwnerIfNeeded(){ if(!S) return; var g=_compGrantFor(_sessEmail()); if(!g) return;
-    if(g==='admin'){ if(S.tier!=='diamond'||S.plan!=='active'){ S.tier='diamond'; S.plan='active'; if(S.credits) S.credits.free=Infinity; save(); } }
-    else if(g==='gold'){ if(S.tier!=='gold'||S.plan!=='active'){ S.tier='gold'; S.plan='active'; save(); } }
+  function _grantOwnerIfNeeded(){ if(!S) return; var email=_sessEmail();
+    if(email===OWNER_EMAIL){ if(S.tier!=='diamond'||S.plan!=='active'){ S.tier='diamond'; S.plan='active'; if(S.credits) S.credits.free=Infinity; save(); } return; }
+    var g=_compGrantFor(email); if(!g) return;
+    if(g==='gold'){ if(S.tier!=='gold'||S.plan!=='active'){ S.tier='gold'; S.plan='active'; save(); } }         // permanent early-tester comp -- never auto-expires or downgrades
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19j';
+  var APP_VERSION='2026.7.19k';
   var APP_CHANGELOG=[
     'Atlas.io can now make small, reversible changes for you right from chat (Settings &gt; Owner console, beta): theme, navigation, business profile and email timing, always previewed with one-tap undo',
     'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
@@ -5288,7 +5295,7 @@ const Atlas = (function(){
   /* ---- settings ---- */
   const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['security','Security'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
   let setCur='branding';
-  function _setTabs(){ return (_curTier().id==='diamond')? [['owner','Owner console']].concat(SET) : SET; }
+  function _setTabs(){ return _isOwnerAcct()? [['owner','Owner console']].concat(SET) : SET; }   // owner console is EMAIL-gated (OWNER_EMAIL only), never tier -- a client-spoofed diamond tier cannot surface it
   function buildSettings(){
     document.getElementById('setTabs').innerHTML=_setTabs().map(s=>`<button class="set-tab ${s[0]===setCur?'active':''}" data-set="${s[0]}" onclick="Atlas.setTab('${s[0]}')">${s[1]}</button>`).join('');
     renderSet(); setTimeout(_scrollActiveSetTab,20);
@@ -5306,22 +5313,24 @@ const Atlas = (function(){
   function openLiveDashboard(){ _logEvent('owner','Opened live Prestige Black dashboard'); try{ window.open('../index.html','_blank','noopener'); }catch(e){} toast('Opening your live dashboard'); }
   function checkUpdates(){ _logEvent('owner','Checked for updates'); toast('You are on the latest version (v'+APP_VERSION+')'); }
   function viewChangelog(){ openModal('<div class="modal__head"><h3>What is new &middot; v'+APP_VERSION+'</h3>'+_xBtn()+'</div><div class="modal__body"><div class="portal__docs" style="border:none;padding:0">'+APP_CHANGELOG.map(function(c){return '<div class="portal__doc" style="cursor:default"><span>&#10003; '+esc(c)+'</span></div>';}).join('')+'</div></div>'); }
-  function toggleFlag(k,on){ if(!_isOwnerAcct()&&_curTier().id!=='diamond')return; _flags()[k]=!!on; save(); var lbl=(OWNER_FLAGS.filter(function(f){return f[0]===k;})[0]||['',k])[1]; _logEvent('owner','Upgrade '+(on?'enabled':'disabled')+': '+lbl,{flag:k}); toast(lbl+(on?' enabled':' disabled')); }
+  function toggleFlag(k,on){ if(!_isOwnerAcct())return; _flags()[k]=!!on; save(); var lbl=(OWNER_FLAGS.filter(function(f){return f[0]===k;})[0]||['',k])[1]; _logEvent('owner','Upgrade '+(on?'enabled':'disabled')+': '+lbl,{flag:k}); toast(lbl+(on?' enabled':' disabled')); }
   // Comped-accounts manager (owner/admin only). Grants persist in the cross-tenant comp map; each email gets its tier on next sign-in.
-  function _compListHtml(){ var m=_compMap(); var ks=Object.keys(m).filter(function(k){return m[k]==='admin'||m[k]==='gold'||m[k]==='free';}).sort();
-    var rows='<div class="mp-row" style="opacity:.7"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(OWNER_EMAIL)+'</span><span class="chip chip--brand">Admin &middot; owner</span></div>';
-    rows+=ks.map(function(k){ var role=m[k], lbl=role==='admin'?'Admin':role==='gold'?'Gold':'Free', ch=role==='admin'?'chip--brand':role==='gold'?'chip--warn':'chip--ok';
+  function _compListHtml(){ var m=_compMap(); var ks=Object.keys(m).filter(function(k){ var r=m[k]; return r==='admin'||r==='gold'||r==='free'; }).sort();   // 'admin' kept in the filter only so a not-yet-migrated legacy row still shows (displayed + treated as Gold below) -- it is NEVER owner
+    var rows='<div class="mp-row" style="opacity:.7"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(OWNER_EMAIL)+'</span><span class="chip chip--brand">Owner &middot; platform admin</span></div>';
+    rows+=ks.map(function(k){ var role=m[k]; if(role==='admin') role='gold';   // legacy admin grant, coerced for display -- never re-surfaced as Admin
+      var lbl=role==='gold'?'Gold':'Free', ch=role==='gold'?'chip--warn':'chip--ok';
       return '<div class="mp-row"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(k)+'</span><span style="display:flex;gap:8px;align-items:center;flex:none"><span class="chip '+ch+'">'+lbl+'</span><button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:4px 8px" onclick="Atlas.compRevoke(\''+esc(k)+'\')">Remove</button></span></div>'; }).join('');
     if(!ks.length) rows+='<div class="bk-lenhint" style="margin:8px 0 0">No comped emails yet &mdash; add one above.</div>';
     return rows; }
   function compGrant(){ if(!_isOwnerAcct())return; var em=(val('compEmail')||'').trim().toLowerCase(), role=val('compRole')||'gold';
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ toast('Enter a valid email'); return; }
     if(em===OWNER_EMAIL){ toast('That is already the owner account'); return; }
+    if(role!=='gold'&&role!=='free') role='gold';   // hard allow-list -- 'admin' (or anything else) can never be granted from this picker
     var m=_compMap(); m[em]=role; _compSetMap(m);
     var el=document.getElementById('compList'); if(el)el.innerHTML=_compListHtml();
     var ie=document.getElementById('compEmail'); if(ie)ie.value='';
     _logEvent('owner','Comp granted: '+em+' \u2192 '+role,{email:em,role:role});
-    toast(em+' granted '+(role==='admin'?'Admin':role==='gold'?'Gold':'Free')+' access'); }
+    toast(em+' granted '+(role==='gold'?'Gold':'Free')+' access'); }
   function compRevoke(em){ if(!_isOwnerAcct())return; em=String(em||'').toLowerCase(); var m=_compMap(); if(!m[em])return;
     delete m[em]; _compSetMap(m); var el=document.getElementById('compList'); if(el)el.innerHTML=_compListHtml();
     _logEvent('owner','Comp revoked: '+em,{email:em}); toast('Access removed for '+em); }
@@ -5381,9 +5390,9 @@ const Atlas = (function(){
           +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn btn--ghost btn--sm" onclick="Atlas.checkUpdates()">Check for updates</button><button class="btn btn--ghost btn--sm" onclick="Atlas.viewChangelog()">Changelog</button><button class="btn btn--ghost btn--sm" onclick="Atlas.installApp()">Install app</button></div>'
           +OWNER_FLAGS.map(function(f){ return '<div class="auto-row"><label class="switch"><input type="checkbox" '+(_flags()[f[0]]?'checked':'')+' onchange="Atlas.toggleFlag(\''+f[0]+'\',this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">'+f[1]+'</b><div style="font-size:12.5px;color:var(--muted)">Beta &middot; toggles instantly</div></div></div>'; }).join('')
         +'</div>'
-        +'<div class="set-block"><h3>Comped accounts</h3><div class="desc">Grant any email free access by tier. <b>Admin</b> = full owner powers, <b>Gold</b> = every feature (comped), <b>Free</b> = full access at no charge. Takes effect the next time that email signs in.</div>'
+        +'<div class="set-block"><h3>Comped accounts</h3><div class="desc">Grant any email free access by tier. <b>Gold</b> = every feature, permanent. <b>Free</b> = full access, no charge. Neither is ever Owner &mdash; platform admin is always just '+esc(OWNER_EMAIL)+'. Takes effect the next time that email signs in.</div>'
           +'<div class="row2" style="align-items:flex-end"><div class="field"><label>Email</label><input class="input" id="compEmail" placeholder="name@business.com"></div>'
-          +'<div class="field"><label>Access level</label><select class="select" id="compRole"><option value="gold">Gold &mdash; all features, comped</option><option value="free">Free &mdash; full access, no charge</option><option value="admin">Admin &mdash; owner powers</option></select></div></div>'
+          +'<div class="field"><label>Access level</label><select class="select" id="compRole"><option value="gold">Gold &mdash; all features, comped</option><option value="free">Free &mdash; full access, no charge</option></select></div></div>'
           +'<button class="btn btn--primary btn--sm" onclick="Atlas.compGrant()">Grant access</button>'
           +'<div id="compList" style="margin-top:14px">'+_compListHtml()+'</div>'
         +'</div>'
@@ -6490,7 +6499,7 @@ const Atlas = (function(){
     // point to the toggle, rather than falling through to a generic reply that ignores what was actually asked.
     // (Nav phrases are untouched -- _aioNavReply above already handled those, flag or no flag.)
     if(!_flags().aiActions && _aioLooksActionableNoNav(s)){
-      var _canToggle=(_curTier().id==='diamond'||_isOwnerAcct());
+      var _canToggle=_isOwnerAcct();
       return 'I can make that change for you right from chat, but that is currently switched off.'
         +(_canToggle
           ? ' Turn on <b>Atlas.io can make changes for you</b> in Settings &gt; Owner console to let me apply it \u2014 you will always get a preview and one-tap undo.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.goSettings(\'owner\')">Open the toggle</button>'

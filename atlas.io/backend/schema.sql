@@ -54,10 +54,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
--- ---- Platform-owner comp registry (global, owner/admin only) -----------------
+-- ---- Comp registry (global, owner-session managed) ---------------------------
+-- Grants a free tier by email. NEVER confers owner/platform-admin -- that authority is EMAIL-ONLY (see worker.js
+-- resolveSession's isOwner calc, which checks only user.email === OWNER_EMAIL). A legacy role='admin' row from
+-- before this was retired is read-time-coerced to 'gold' and self-heal-migrated in ensurePlatformSchema().
 CREATE TABLE IF NOT EXISTS comp_grants (
   email         TEXT PRIMARY KEY,
-  role          TEXT NOT NULL,               -- admin|gold|free
+  role          TEXT NOT NULL,               -- gold|free (legacy 'admin' rows are coerced to gold, never owner)
   granted_by    TEXT,
   granted_at    INTEGER NOT NULL
 );
