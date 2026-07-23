@@ -250,6 +250,36 @@ function _ownerMgmtGuard(env, reqTier, targetEmail) {
   if (tt >= reqTier) return { ok: false, status: 403, msg: 'You cannot act on an equal or higher-tier account.' };
   return { ok: true, tier: tt };
 }
+// ---- TAKE CONTROL trap/honeypot forensics. Server-side telemetry from Cloudflare's edge (what the visitor's own
+// requests reveal) -- all legal, our own logs, our own decoy. NOT: IMEI (no browser API exposes it) or any device
+// access beyond what they send. The report built from this is what law enforcement subpoenas the ISP with. ----
+function _cfTelemetry(req) {
+  var cf = (req && req.cf) || {};
+  return {
+    ip: (req.headers.get('CF-Connecting-IP') || ''),
+    ua: (req.headers.get('User-Agent') || ''),
+    asn: (cf.asn != null ? String(cf.asn) : ''),
+    as_org: (cf.asOrganization || ''),
+    geo: { lat: (cf.latitude || ''), lng: (cf.longitude || ''), city: (cf.city || ''), region: (cf.region || ''), country: (cf.country || ''), postal: (cf.postalCode || ''), tz: (cf.timezone || '') }
+  };
+}
+// Heuristic VPN/proxy/Tor/datacenter-egress detector from the Cloudflare ASN org name. NOT absolute (a residential
+// proxy can evade it) -- but it flags commercial VPNs, Tor, and hosting/datacenter egress, which is where masked
+// traffic lives. Used to LABEL trap telemetry (informational) and, in stage 3, to block anonymized PRIMARY logins.
+var _ANON_ORG_RE = /(vpn|proxy|\btor\b|datacamp|m247|nordvpn|mullvad|expressvpn|surfshark|private internet|cyberghost|ovh|hetzner|digitalocean|linode|vultr|choopa|leaseweb|\bcolo|hosting|datacenter|datacentre|\bcloud\b|amazon|\baws\b|google llc|\bazure\b|oracle|contabo|scaleway|quadranet|frantech|hostwinds)/i;
+function _isAnonEgress(asOrg) { var o = String(asOrg || ''); return o ? _ANON_ORG_RE.test(o) : false; }
+// Write one honeypot incident row (non-blocking, fail-safe). fingerprint = client device profile from the beacon; typed
+// = anything they entered into the decoy. Truncated to keep rows bounded.
+function _trapCapture(env, ectx, req, email, action, fingerprint, typed) {
+  try {
+    var t = _cfTelemetry(req), id = 'inc' + randId(14), now = Date.now();
+    var p = env.DB.prepare('INSERT INTO owner_incidents (id,target_email,ts,ip,geo,asn,as_org,ua,fingerprint,action,path,typed,is_anon,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(id, String(email).toLowerCase(), now, t.ip, JSON.stringify(t.geo), t.asn, t.as_org, t.ua,
+        fingerprint ? JSON.stringify(fingerprint).slice(0, 4000) : null, String(action || '').slice(0, 200), '',
+        typed ? String(typed).slice(0, 500) : null, _isAnonEgress(t.as_org) ? 1 : 0, now).run();
+    if (ectx && ectx.waitUntil) ectx.waitUntil(p); else if (p && p.catch) p.catch(function () {});
+  } catch (e) {}
+}
 async function resolveSession(env, req) {
   const sid = parseCookies(req).atlas_sid;
   if (!sid) return null;
@@ -409,7 +439,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ao';
+const ATLAS_BUILD = '2026.07.19ap';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2509,6 +2539,20 @@ export default {
         } catch (e) { /* fall through to normal routing */ }
       }
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
+      // TAKE CONTROL trap beacon (public): the decoy page posts a device fingerprint here. Records ONLY when the caller's
+      // OWN session is a trapped owner; otherwise a silent {ok} (never reveals the trap exists). Rate-limited, self-scoping.
+      if (path === '/api/trap/beacon' && method === 'POST') {
+        try {
+          if (await rateLimit(env, 'trapbeacon:' + ((req.headers.get('CF-Connecting-IP')) || 'x'), 40, 60000)) {
+            const _bs = await resolveSession(env, req);
+            if (_bs && _bs.user && _isOwnerEmail(env, _bs.user.email)) {
+              const _bcs = await _ownerControlState(env, _bs.user.email);
+              if (_bcs.trapped) { const _bb = await req.json().catch(() => ({})); _trapCapture(env, _ectx, req, _bs.user.email, 'fingerprint', (_bb && (_bb.fingerprint || _bb.fp)) || _bb, _bb && _bb.typed); }
+            }
+          }
+        } catch (e) {}
+        return json({ ok: true });
+      }
       if (path === '/api/health' && method === 'GET') {
         const h = { ok: false, build: ATLAS_BUILD, time: Date.now(), db_bound: typeof env.DB !== 'undefined', r2: !!_r2(env), user_tables: 0, schema_loaded: false, cron_last: 0, cron_age_min: null, cron_fresh: false,
           secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, PLATFORM_STRIPE_TEST_KEY: !!env.PLATFORM_STRIPE_TEST_KEY, DYNADOT_KEY: !!env.DYNADOT_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!env.CF_API_TOKEN, registrar: !!env.DYNADOT_KEY };
@@ -4251,6 +4295,30 @@ function doReset(){
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control', { action: _fon ? 'freeze' : 'unfreeze', target: _fem, target_tier: _fg.tier });
           return json({ ok: true, frozen: _fon });
         }
+        // TAKE CONTROL stage 2 -- TRAP (honeypot): flip the target owner into a watched state. They keep moving (decoy),
+        // but every request they make is logged to owner_incidents. Reversible.
+        if (path === '/api/admin/owner/trap' && method === 'POST') {
+          const _tb = await req.json().catch(() => ({}));
+          const _tem = String(_tb.email || '').toLowerCase(), _ton = (_tb.on !== false);
+          const _tg = _ownerMgmtGuard(env, _reqTier, _tem);
+          if (!_tg.ok) return err(_tg.status, _tg.msg);
+          const _tnow = Date.now();
+          await env.DB.prepare('INSERT INTO owner_control (email,trapped,trapped_at,trapped_by,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET trapped=?,trapped_at=?,trapped_by=?,updated_at=?').bind(_tem, _ton ? 1 : 0, _tnow, _actor, _tnow, _ton ? 1 : 0, _tnow, _actor, _tnow).run();
+          _ownerControlBust(_tem);
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control', { action: _ton ? 'trap_on' : 'trap_off', target: _tem, target_tier: _tg.tier });
+          return json({ ok: true, trapped: _ton });
+        }
+        // Honeypot incident feed for a trapped (or previously trapped) lower-tier owner -- the evidence rows.
+        if (path === '/api/admin/owner/incidents' && method === 'GET') {
+          if (!(_reqTier >= 2)) return err(403, 'Take Control is restricted to the super-admin.');
+          const _iem = String(new URL(req.url).searchParams.get('email') || '').toLowerCase();
+          const _ig = _ownerMgmtGuard(env, _reqTier, _iem);
+          if (!_ig.ok) return err(_ig.status, _ig.msg);
+          const _ilim = Math.min(2000, Math.max(1, parseInt(new URL(req.url).searchParams.get('limit') || '500', 10) || 500));
+          const _ir = await env.DB.prepare('SELECT id,ts,ip,geo,asn,as_org,ua,fingerprint,action,typed,is_anon FROM owner_incidents WHERE target_email=? ORDER BY ts DESC LIMIT ?').bind(_iem, _ilim).all();
+          const _rows = (_ir.results || []).map(function (r) { return { id: r.id, ts: r.ts, ip: r.ip, geo: jparse(r.geo, {}), asn: r.asn, as_org: r.as_org, ua: r.ua, fingerprint: jparse(r.fingerprint, null), action: r.action, typed: r.typed, is_anon: !!r.is_anon }; });
+          return json({ ok: true, target: _iem, incidents: _rows, count: _rows.length });
+        }
 
         // Attack-attempt feed: attack_log (hot-path blocks/probes) UNION-merged with the audit_log rows already
         // classified as a "failure" for the security-log view above, normalized to one shared shape so the owner
@@ -4489,6 +4557,10 @@ function doReset(){
 
       // ---- everything below requires a valid session ------------------------
       const ctx = await resolveSession(env, req);
+      // TAKE CONTROL trap: a TRAPPED owner's every authenticated request is silently logged (IP/geo/ISP/device/action)
+      // to the honeypot incident feed, non-blocking. Only reached for an owner session (rare) + only writes when the
+      // trap is on -> ~zero cost for normal traffic. The owner still moves freely (decoy) so they don't realize it.
+      try { if (ctx && ctx.user && _isOwnerEmail(env, ctx.user.email)) { const _tcs = await _ownerControlState(env, ctx.user.email); if (_tcs.trapped) _trapCapture(env, _ectx, req, ctx.user.email, method + ' ' + path); } } catch (e) {}
 
       if (path === '/api/auth/logout' && method === 'POST') {
         if (ctx) { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(Date.now(), ctx.session.id).run(); await audit(env, ctx, req, 'logout', {}); }
