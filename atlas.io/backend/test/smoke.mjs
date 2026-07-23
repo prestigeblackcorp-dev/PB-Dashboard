@@ -46,7 +46,7 @@ function mockDB() {
 
 const env = { DB: mockDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-const EXPECT_BUILD = '2026.07.19ak';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
+const EXPECT_BUILD = '2026.07.19al';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
 
 function mkReq(method, path, opts = {}) {
   return new Request('https://atlasrental.io' + path, {

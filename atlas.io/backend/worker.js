@@ -377,7 +377,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ak';
+const ATLAS_BUILD = '2026.07.19al';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2396,7 +2396,14 @@ export default {
       // ban-check so a mistakenly-banned owner can always reach the recovery door. Exists ONLY when the secret is set;
       // nothing links to it; noindex/no-store/no-referrer so it never lands in a crawler, cache, or referer header. It
       // only RENDERS the login form -- all real auth still flows through /api/auth/login (+ MFA), which sets the session.
-      if (env.OWNER_ENTRY_PATH && method === 'GET' && path === '/api/' + env.OWNER_ENTRY_PATH) {
+      // Tolerant match so the door opens no matter how a phone or messaging app massages the link: normalize the
+      // secret (drop a leading slash or "api/" prefix + any trailing slash) and the request path (drop a trailing
+      // slash; also try a percent-decoded form), then compare. Web and mobile resolve to the same login door.
+      // (Cannot fix a link whose characters were changed by iOS "smart punctuation" -- that is a different string;
+      // for that the owner opens the clean URL once and Adds to Home Screen.)
+      var _oentP = String(env.OWNER_ENTRY_PATH || '').replace(/^\/+/, '').replace(/^api\//i, '').replace(/\/+$/, '');
+      var _oentReq = path.replace(/\/+$/, ''); var _oentReqD = _oentReq; try { _oentReqD = decodeURIComponent(_oentReq); } catch (_e) {}
+      if (_oentP && method === 'GET' && (_oentReq === '/api/' + _oentP || _oentReqD === '/api/' + _oentP)) {
         return new Response(_ownerEntryHtml(), { status: 200, headers: {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
