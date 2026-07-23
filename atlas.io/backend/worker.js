@@ -5884,31 +5884,10 @@ function doReset(){
       } catch (e) {}
       await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
-      // Flag-gated document retention sweep (DEFAULT OFF -> fully inert). When `id_retention_days` > 0, delete renter
-      // ID/license images from R2 once they are older than N days; when `photo_retention_days` > 0, the same for
-      // condition photos. Age is measured from the UPLOAD timestamp (always recorded), which is robust + easy to reason
-      // about. Bounded to 300 bookings per run; every failure is swallowed so it can never break the rest of the cron.
-      // Nothing is touched while both flags are 0. Owner sets the windows in the master dashboard.
-      try {
-        const _idRet = parseInt(await _pcfgGet(env, 'id_retention_days', '0'), 10) || 0;
-        const _phRet = parseInt(await _pcfgGet(env, 'photo_retention_days', '0'), 10) || 0;
-        const _r2b = _r2(env);
-        if ((_idRet > 0 || _phRet > 0) && _r2b) {
-          const _rows = (await env.DB.prepare("SELECT id, data FROM bookings WHERE data LIKE '%\"uploads\"%' ORDER BY updated_at ASC LIMIT 300").all()).results || [];
-          for (let _i = 0; _i < _rows.length; _i++) {
-            try {
-              const _d = jparse(_rows[_i].data, {}); const _ups = (_d.portal && _d.portal.uploads) || []; if (!_ups.length) continue;
-              let _changed = false; const _keep = [];
-              for (let _j = 0; _j < _ups.length; _j++) {
-                const _u = _ups[_j], _win = (_u.kind === 'id') ? _idRet : _phRet;
-                if (_win > 0 && _u.key && _u.at && (now - _u.at) > _win * 86400000) { try { await _r2b.delete(_u.key); _changed = true; continue; } catch (e) {} }
-                _keep.push(_u);
-              }
-              if (_changed) { _d.portal.uploads = _keep; _d._t = now; await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(_d), now, _rows[_i].id).run(); }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {}
+      // NOTE: NO automatic/time-based deletion of customer records or uploaded files. Owner policy = retain everything
+      // for records + logs; the ONLY thing that deletes a tenant's data + files is the deliberate two-step account
+      // deletion (soft-delete -> purge), which also clears their R2 objects. (A previous flag-gated retention sweep was
+      // removed on purpose so nothing can ever auto-expire records.)
       // Retain ADMIN- and OWNER-plane actions for a year (forensics/compliance); other audit rows GC at 90 days.
       // #253 extended this to also spare owner.% (owner.denied / owner.claim_blocked are high-signal security rows).
       await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action IS NULL OR (action NOT LIKE 'admin.%' AND action NOT LIKE 'owner.%'))").bind(now - 90 * 24 * 3600 * 1000).run();
@@ -6115,7 +6094,7 @@ var _PRIVACY_SECTIONS = [
   { h: '8. AI processing', p: ['When you use AI-assisted features, relevant business and, where applicable, customer data is sent to our AI providers to generate responses. We use providers that process this data to provide the feature. AI output may be inaccurate and is not professional advice. Do not enter information into AI features that you are not permitted to share.'] },
   { h: '9. Data we process for our customers', p: ['For End Customer personal information, our customer is the controller and directs the processing; Atlas processes it to provide the Service and per our agreement with that customer. If you are an End Customer and want to access, correct, or delete your information, please contact the business you interacted with; we will assist that business as its processor.'] },
   { h: '10. Cookies, local storage, and analytics', p: ['Atlas&#39;s own applications use first-party cookies and local storage to keep you signed in, remember preferences, and store app data, and use a privacy-preserving, first-party visit measure (a random identifier kept in local storage, with only country-level location derived from network data and no cross-site tracking). We do not use third-party advertising cookies in our own applications. A business that operates a public booking site through the Service may choose to add its own third-party analytics or advertising tools (such as Google Analytics or the Meta pixel) to that site; that is the business&#39;s choice and is governed by the business&#39;s own privacy notice.'] },
-  { h: '11. Data retention and deletion', p: ['We retain information for as long as an account is active and as needed to provide the Service, and afterward as needed to comply with legal, tax, accounting, security, and dispute-resolution obligations, after which we delete or de-identify it. Account deletion is a two-step process: an account is first deactivated (reversible) and can then be permanently purged, which deletes records across the platform; certain records &mdash; such as billing and transaction history and security audit logs &mdash; are retained as permitted or required by law. Uploaded files such as ID/license images and condition photos are stored encrypted; you may request deletion of specific files, and we are expanding automated retention controls for these documents. You can export your data through the Service.'] },
+  { h: '11. Data retention and deletion', p: ['We retain your information, records, and uploaded files for as long as your account is active and for our own business, records, security, and legal purposes &mdash; we do not automatically expire or delete them on a timer. The only routine deletion happens when an account is deleted: account deletion is a two-step process (an account is first deactivated and reversible, then can be permanently purged), and a purge deletes the tenant&#39;s records and uploaded files &mdash; including ID/license images and condition photos &mdash; across the platform. Certain records, such as billing and transaction history and security audit logs, are retained afterward as permitted or required by law. You may also ask us to delete specific files, and you can export your data through the Service.'] },
   { h: '12. Security', p: ['We use administrative, technical, and physical safeguards designed to protect information, including encryption in transit (HTTPS/TLS with HSTS), encryption of sensitive stored fields and uploaded documents, hashed passwords, optional multi-factor authentication, role-based access controls, rate limiting, append-only audit logging, and network and application security controls. No method of transmission or storage is completely secure, so we cannot guarantee absolute security, but we work to protect your information.'] },
   { h: '13. Data breach notification', p: ['If we become aware of a security incident affecting personal information, we will investigate and notify affected customers and, where required, regulators and individuals, as and within the time required by applicable law. Where Atlas acts as a processor, we will notify the relevant customer so it can meet its own obligations.'] },
   { h: '14. Your privacy choices and rights', p: ['Depending on where you live, you may have rights to access, correct, delete, or receive a copy of your personal information, to opt out of the sale or sharing of personal information (we do not sell or share it), and to not be discriminated against for exercising these rights. If you are in California, the CCPA/CPRA provides these rights; if you are in the EEA or UK, the GDPR provides rights to access, rectification, erasure, restriction, portability, and objection, and the right to complain to a supervisory authority. To exercise a right, email <a href="mailto:privacy@atlasrental.io">privacy@atlasrental.io</a>; we will verify your request and respond as required by law. If you are an End Customer, direct your request to the business you interacted with, and we will assist it.'] },
