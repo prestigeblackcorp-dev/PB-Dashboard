@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19af';
+const ATLAS_BUILD = '2026.07.19ag';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -450,14 +450,14 @@ async function askGPT(key, q, context, _mEnv, _mCtx) {
 }
 async function askGemini(key, q, context, _mEnv, _mCtx) {
   try {
-    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
+    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(key), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ systemInstruction: { parts: [{ text: AIO_SAFETY_PROMPT + _aioCtx(context) }] },
         contents: [{ parts: [{ text: q }] }] })
     }, 12000);
     const j = await r.json().catch(() => ({}));
-    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'gemini-2.0-flash', _aiUsageFrom('gemini', j));   // #286: never affects the line below
+    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'gemini-3.6-flash', _aiUsageFrom('gemini', j));   // #286: never affects the line below
     return ((((((j.candidates || [])[0] || {}).content || {}).parts || [])[0] || {}).text || '').trim();
   } catch (e) { return ''; }
 }
@@ -491,13 +491,13 @@ async function _researchGPT(key, prompt, _mEnv, _mCtx) {
 }
 async function _researchGemini(key, prompt, _mEnv, _mCtx) {
   try {
-    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(key), {
+    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(key), {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tools: [{ google_search: {} }], contents: [{ parts: [{ text: prompt }] }] })
     }, 28000);
     const j = await r.json().catch(() => ({})); const cand = (j.candidates || [])[0] || {}; let src = [];
     try { ((((cand.groundingMetadata || {}).groundingChunks) || [])).forEach(function (c) { if (c && c.web && c.web.uri) src.push({ title: String(c.web.title || '').slice(0, 160), url: c.web.uri }); }); } catch (e) {}
-    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'gemini-2.0-flash', _aiUsageFrom('gemini', j));   // #286: token cost only -- Google's grounding tool ALSO carries its own per-request fee, not captured here (see AI_PRICES comment)
+    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'gemini-3.6-flash', _aiUsageFrom('gemini', j));   // #286: token cost only -- Google's grounding tool ALSO carries its own per-request fee, not captured here (see AI_PRICES comment)
     const text = ((((cand.content || {}).parts) || []).map(function (p) { return p.text || ''; }).join('')).trim(); return text ? { name: 'Gemini', text: text, sources: src } : null;
   } catch (e) { return null; }
 }
@@ -541,19 +541,15 @@ async function _councilResearch(env, query, context, _mCtx) {
 //    only prices TOKENS (matching the cost formula below), so _researchGPT's true cost is UNDER-counted by that
 //    per-call fee. The exact current fee for the non-mini variant could not be confirmed via search; flagged, not
 //    guessed, and not fixed in this pass. ***
-//  - gemini-2.0-flash: Google's last-published rate was $0.10 / $0.40 per 1M. *** IMPORTANT DISCOVERY: public
-//    sources found via web search at authoring time (2026-07-23) state Google retired/shut down the
-//    gemini-2.0-flash endpoint on 2026-06-01 and that calls to it now return errors rather than completions. If
-//    true, askGemini / _researchGemini / the HQ fleet's Gemini entry (all still coded against this exact model
-//    string) may currently be failing silently in production -- each already fails-open to '' on any error, so
-//    nothing breaks, but Gemini's slice of the council/HQ fleet may effectively be dark right now, and metered
-//    spend for it will correctly show ~$0 (no tokens are generated when a call errors before completion). This is
-//    a PRE-EXISTING condition unrelated to this feature and OUT OF SCOPE here (task is metering, not AI-call
-//    behavior) -- flagging for the owner/a follow-up, not fixing. ***
-//  - gemini-2.5-flash / gemini-3.5-flash: pre-added (harmless no-op today; nothing in the code requests these model
-//    strings yet) as the likely next Gemini model per the same search: 2.5-flash $0.30/$2.50, 3.5-flash
-//    $1.50/$9.00 per 1M. VERIFY before relying on either; update the model string in askGemini/_researchGemini/
-//    _hqAsk's fleet if/when the owner migrates off the (possibly dead) 2.0-flash endpoint.
+//  - gemini-3.6-flash: THE LIVE Gemini model (migrated 2026-07-23). Google made 3.6-flash GA on 2026-07-21 at
+//    $1.50 / $7.50 per 1M input/output (confirmed via web search at authoring time). askGemini / _researchGemini /
+//    _hqAsk's fleet now all request this exact string. NOTE: _researchGemini uses Google Search grounding, which
+//    carries its OWN per-request fee on top of tokens -- not captured here (token cost only), same caveat as the
+//    search models above.
+//  - gemini-2.0-flash: RETIRED by Google on 2026-06-01 (calls errored; the council's Gemini leg was silently dark
+//    for ~7 weeks until the 2026-07-23 migration above). Its price row is KEPT only so any historical metered rows
+//    still price correctly -- no code requests this string anymore. gemini-2.5-flash / gemini-3.5-flash rows remain
+//    pre-added, harmless, and unused.
 // A model string not found here falls back to 'default' -- set to the highest of the known rates (claude-sonnet-5's)
 // so an unrecognized/new model is never silently treated as free; the /api/admin/pnl response flags this per model
 // via a `priced` boolean so the dashboard can surface it, rather than a number just quietly being wrong.
@@ -564,6 +560,7 @@ const AI_PRICES = {
   'gemini-2.0-flash': { input: 0.10, output: 0.40 },
   'gemini-2.5-flash': { input: 0.30, output: 2.50 },
   'gemini-3.5-flash': { input: 1.50, output: 9.00 },
+  'gemini-3.6-flash': { input: 1.50, output: 7.50 },   // LIVE Gemini model (GA 2026-07-21): $1.50 in / $7.50 out per 1M
   'default': { input: 3.00, output: 15.00 }
 };
 // Normalizes each provider's raw usage shape into {input_tokens, output_tokens}. Never throws; anything missing/malformed -> 0s (never guesses a nonzero count).
@@ -659,8 +656,8 @@ async function _hqAsk(env, system, user, maxTok, opts, ectx) {
       const r = await _fetchTimeout('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'authorization': 'Bearer ' + env.OPENAI_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-4o', max_tokens: mt, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) }, 22000);
       if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'gpt-4o', _aiUsageFrom('openai', j)); return (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ? j.choices[0].message.content.trim() : ''; } },
     { p: 'gemini', has: !!env.GEMINI_KEY, call: async function () {
-      const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ parts: [{ text: user }] }] }) }, 22000);
-      if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'gemini-2.0-flash', _aiUsageFrom('gemini', j)); return ((((((j.candidates || [])[0] || {}).content || {}).parts || [])[0] || {}).text || '').trim(); } }
+      const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ parts: [{ text: user }] }] }) }, 22000);
+      if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'gemini-3.6-flash', _aiUsageFrom('gemini', j)); return ((((((j.candidates || [])[0] || {}).content || {}).parts || [])[0] || {}).text || '').trim(); } }
   ];
   var order = fleet.filter(function (m) { return m.has; });
   if (opts.prefer) order.sort(function (a, b) { return (b.p === opts.prefer ? 1 : 0) - (a.p === opts.prefer ? 1 : 0); });
@@ -823,7 +820,7 @@ async function _hqGrowthData(env, range) {
   const days = {};
   function bump(day, k, v) { if (!day) return; days[day] = days[day] || { day: day, visits: 0, signups: 0, revenue_cents: 0 }; days[day][k] += v; }
   try { const pv = (await env.DB.prepare('SELECT day, COALESCE(SUM(views),0) v FROM page_views WHERE day>=? AND day<=? GROUP BY day').bind(range.startDay, range.endDay).all()).results || []; pv.forEach(function (r) { bump(r.day, 'visits', r.v || 0); }); } catch (e) {}
-  try { const su = (await env.DB.prepare('SELECT created_at FROM tenants WHERE created_at>=? AND created_at<?').bind(range.start, range.end).all()).results || []; su.forEach(function (r) { bump(iso(r.created_at), 'signups', 1); }); } catch (e) {}
+  try { const su = (await env.DB.prepare('SELECT created_at FROM tenants WHERE deleted_at IS NULL AND created_at>=? AND created_at<?').bind(range.start, range.end).all()).results || []; su.forEach(function (r) { bump(iso(r.created_at), 'signups', 1); }); } catch (e) {}
   try { const tx = (await env.DB.prepare('SELECT created_at, amount_cents FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).all()).results || []; tx.forEach(function (r) { bump(iso(r.created_at), 'revenue_cents', r.amount_cents || 0); }); } catch (e) {}
   const series = Object.keys(days).sort().map(function (d) { return days[d]; });
   const totals = series.reduce(function (a, r) { a.visits += r.visits; a.signups += r.signups; a.revenue_cents += r.revenue_cents; return a; }, { visits: 0, signups: 0, revenue_cents: 0 });
@@ -1641,7 +1638,7 @@ async function _sendAtlasReceipt(env, o) {
 function _rcptDate() { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } }
 
 // ---- Atlas.io CREDITS, server-authoritative. Weekly free allotment per tier + persistent purchased packs; spent 1 per live AI council call. ----
-const TIER_CREDITS = { starter: 100, pro: 500, enterprise: 1500, business: 3000, unlimited: 8000, gold: 1000, freecomp: 1000 };   // must match the client TIERS credits (gold=1000 tester cap, freecomp=1000; were missing -> fell back to 500)
+const TIER_CREDITS = { starter: 300, pro: 1000, enterprise: 3000, business: 4500, unlimited: 10000, gold: 1000, freecomp: 1000 };   // weekly AI credits per tier -- MUST match the client TIERS credits (atlas.html). Owner-set allotments 2026-07-23. gold=1000 tester cap, freecomp=1000.
 function _creditWeek() { return Math.floor((Date.now() / 86400000 + 4) / 7); }   // Monday-aligned 7-day bucket
 async function _creditOp(env, tid, tierHint, spend) {
   try {
@@ -1758,6 +1755,12 @@ async function ensurePlatformSchema(env) {
   // Visit geography: aggregate views per ISO-2 country per UTC day (from Cloudflare's edge geo, req.cf.country). No IPs, no PII.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS visit_geo (day TEXT, country TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(day, country))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_vg_day ON visit_geo(day)").run(); } catch (e) {}
+  // #287 Visit geography (region/state drill-down for the master-dashboard world map): same shape/convention as
+  // visit_geo above -- aggregate views per (day, country, region), region = Cloudflare's edge geo req.cf.regionCode
+  // (fallback req.cf.region), name/code only -- no IPs, no PII. Independent try/catch (own table, own index): a
+  // failure here never affects visit_geo/page_views, and this table starting empty never blocks anything that reads it.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS visit_geo_region (day TEXT, country TEXT, region TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(day, country, region))").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_vgr_day ON visit_geo_region(day)").run(); } catch (e) {}
   // #274 live presence: which sids pinged recently, for the master-dashboard "N online now" pill (/api/visit-ping
   // upserts this; the cron GC below drops rows once they go stale). sid is the PRIMARY KEY so a browser's repeat
   // 60s heartbeat is one cheap UPSERT, never a growing table. No IPs, no PII -- country only, same as visit_geo.
@@ -1841,20 +1844,30 @@ async function _adminIdentity(req, env) {
 }
 // Global master-dashboard date window. Day-aligned (UTC) so timestamp queries and the day-bucketed page_views agree.
 // Returns startMs/endMs (end-exclusive, for created_at ranges) + startDay/endDay ISO strings (inclusive, for page_views).
-function _adminRange(rangeStr) {
-  var D = 86400000, now = Date.now(), d = new Date(now);
-  var todayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+// Ranges are computed in the PLATFORM timezone (America/Chicago -- the same TZ the whole master dashboard displays in),
+// NOT UTC. A UTC "yesterday"/"today" during the CT evening is actually the owner's OTHER day (UTC has already rolled
+// over), which made Today/Yesterday money KPIs off by the ~5-6h offset -- the reported "yesterday filter not accurate".
+// created_at/money (start/end ms) is now CT-exact. nowMs is injectable for deterministic tests (defaults to Date.now()).
+function _adminRange(rangeStr, nowMs) {
+  var D = 86400000, now = (typeof nowMs === 'number' ? nowMs : Date.now()), TZ = 'America/Chicago';
+  // America/Chicago offset (ms) at instant t: read t's CT wall-clock via Intl, interpret it as if UTC, subtract the real instant.
+  var _off = function (t) { var p = {}; new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(new Date(t)).forEach(function (x) { if (x.type !== 'literal') p[x.type] = x.value; }); return Date.UTC(+p.year, +p.month - 1, +p.day, (p.hour === '24' ? 0 : +p.hour), +p.minute, +p.second) - Math.floor(t / 1000) * 1000; };
+  // CT midnight of the CT calendar-day containing instant t, as a true-UTC ms (recomputes the offset per instant, so it is DST-correct at each boundary).
+  var _mid = function (t) { var p = {}; new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(t)).forEach(function (x) { if (x.type !== 'literal') p[x.type] = x.value; }); return Date.UTC(+p.year, +p.month - 1, +p.day) - _off(t); };
   var iso = function (t) { return new Date(t).toISOString().slice(0, 10); };
-  var r = String(rangeStr || '30d');
-  var m = { start: todayStart - 29 * D, end: now, label: 'Last 30 days', key: '30d' };
+  var todayStart = _mid(now), r = String(rangeStr || '30d');
+  var m = { start: _mid(now - 29 * D), end: now, label: 'Last 30 days', key: '30d' };
   if (r === 'today') m = { start: todayStart, end: now, label: 'Today', key: 'today' };
-  else if (r === 'yesterday') m = { start: todayStart - D, end: todayStart, label: 'Yesterday', key: 'yesterday' };
-  else if (r === '7d') m = { start: todayStart - 6 * D, end: now, label: 'Last 7 days', key: '7d' };
-  else if (r === '30d') m = { start: todayStart - 29 * D, end: now, label: 'Last 30 days', key: '30d' };
-  else if (r === 'year') m = { start: Date.UTC(d.getUTCFullYear(), 0, 1), end: now, label: 'This year', key: 'year' };
+  else if (r === 'yesterday') m = { start: _mid(now - D), end: todayStart, label: 'Yesterday', key: 'yesterday' };
+  else if (r === '7d') m = { start: _mid(now - 6 * D), end: now, label: 'Last 7 days', key: '7d' };
+  else if (r === '30d') m = { start: _mid(now - 29 * D), end: now, label: 'Last 30 days', key: '30d' };
+  else if (r === 'year') { var yr = +new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric' }).format(new Date(now)); m = { start: _mid(Date.UTC(yr, 0, 1, 12)), end: now, label: 'This year', key: 'year' }; }
   else if (r === 'all') m = { start: 0, end: now, label: 'All time', key: 'all' };
+  // Day-bucketed tables (page_views/visit_geo/visit_geo_region/platform_ai_spend) key on UTC dates; map the CT window to
+  // the UTC date-strings it spans. Money is CT-exact; visit-day buckets are UTC-granular, so a Today/Yesterday boundary can
+  // still include up to the ~5-6h TZ offset of the adjacent UTC day -- a strict improvement over the prior all-UTC ranges.
   m.startDay = r === 'all' ? '0001-01-01' : iso(m.start);
-  m.endDay = iso(r === 'yesterday' ? (todayStart - D) : (m.end - 1));   // last INCLUDED day (yesterday's window ends the day before today)
+  m.endDay = iso((r === 'yesterday' ? todayStart : m.end) - 1);   // last INCLUDED day (end is exclusive -> step back 1ms)
   return m;
 }
 // Platform config get/set (feature flags etc.). Fail-soft: a DB hiccup returns the fallback rather than throwing.
@@ -2429,7 +2442,8 @@ function doReset(){
           const _wg278 = _websiteServeGrandfather(env, trow); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
           // First-party visit count (one upsert per UTC day per tenant; no cookies/PII). Best-effort -- never blocks the page.
           const _day = new Date(Date.now()).toISOString().slice(0, 10); const _pvp = (async function () { try { await env.DB.prepare("INSERT INTO page_views (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(prof.id, _day).run();
-            var _cc = (req.cf && req.cf.country) || ''; if (/^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase()).run(); } catch (e) {} })();   // best-effort, deferred (waitUntil) so the public booking page is never held up by analytics writes -- same pattern as _fireWebhook
+            var _cc = (req.cf && req.cf.country) || ''; if (/^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase()).run();
+            var _rg = (req.cf && (req.cf.regionCode || req.cf.region)) || ''; if (_rg && /^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo_region (day,country,region,views) VALUES (?,?,?,1) ON CONFLICT(day,country,region) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase(), String(_rg).slice(0, 60)).run(); } catch (e) {} })();   // best-effort, deferred (waitUntil) so the public booking page is never held up by analytics writes -- same pattern as _fireWebhook. #287: region (regionCode, fallback region name) is additive-only -- absent region -> zero extra writes, byte-identical to before.
           if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_pvp); else _pvp.catch(function () {});
           return json({ ok: true, business: prof.name, subdomain: slug,
             brand: { color: prof.brand.color || '', logo: prof.brand.logo || '', initial: prof.brand.initial || (prof.name || 'A')[0] },
@@ -2575,6 +2589,7 @@ function doReset(){
               try {
                 await env.DB.prepare("INSERT INTO page_views (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(vtid, vday).run();
                 if (/^[A-Z]{2}$/.test(vcc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(vday, vcc).run();
+                const vrg = (req.cf && (req.cf.regionCode || req.cf.region)) || ''; if (vrg && /^[A-Z]{2}$/.test(vcc)) await env.DB.prepare("INSERT INTO visit_geo_region (day,country,region,views) VALUES (?,?,?,1) ON CONFLICT(day,country,region) DO UPDATE SET views=views+1").bind(vday, vcc, String(vrg).slice(0, 60)).run();   // #287: additive, best-effort, same try/catch as the writes above -- absent region -> zero extra writes
                 await env.DB.prepare("INSERT INTO active_now (sid,last_at,src,country) VALUES (?,?,?,?) ON CONFLICT(sid) DO UPDATE SET last_at=?,src=?,country=?").bind(vsid, Date.now(), vsrc, vcc, Date.now(), vsrc, vcc).run();
               } catch (e) { /* best-effort analytics write; never surfaces */ }
             })();
@@ -2906,7 +2921,7 @@ function doReset(){
           let total = agg2.total || 0, paid = agg2.paid || 0, trials = agg2.trials || 0, twc = agg2.twc || 0, comped = agg2.comped || 0; const by_tier = {};
           tierRows2.forEach(function (r) { by_tier[r.tier] = r.n; });   // only real paying subscriptions (with a stripe_sub) count toward paid/MRR; comped/manually-active are separate
           let mrr = 0; Object.keys(by_tier).forEach(function (tr) { mrr += (PLAN_PRICE_CENTS[tr] || 0) * by_tier[tr]; });
-          const signups = await env.DB.prepare('SELECT COUNT(*) AS c FROM tenants WHERE created_at>=? AND created_at<?').bind(range.start, range.end).first();
+          const signups = await env.DB.prepare('SELECT COUNT(*) AS c FROM tenants WHERE deleted_at IS NULL AND created_at>=? AND created_at<?').bind(range.start, range.end).first();   // exclude deleted tenants from the signups KPI (delete stamps deleted_at)
           const vRange = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views WHERE day>=? AND day<=?').bind(range.startDay, range.endDay).first();
           const vToday = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views WHERE day=?').bind(new Date(now).toISOString().slice(0, 10)).first();
           const vTot = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views').first();
@@ -2940,8 +2955,18 @@ function doReset(){
           return json({ ok: true, range: { key: range.key, label: range.label }, series: (rows.results || []), top: topFriendly });
         }
         // Website visits by country (for the master-dashboard world map). ISO-2 codes -> the client resolves names from world-geo.
+        // #287: ?country=XX drills into that country's region/state breakdown (visit_geo_region) instead of the
+        // country-level list -- additive; the plain country-level response below is byte-for-byte unchanged when
+        // no country param is given. Gated identically to the country-level query above (same /api/admin/* plane).
         if (path === '/api/admin/visits-geo' && method === 'GET') {
           const range = _adminRange(new URL(req.url).searchParams.get('range'));
+          const _ctry = String(new URL(req.url).searchParams.get('country') || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+          if (_ctry) {
+            const rrows = await env.DB.prepare('SELECT region, COALESCE(SUM(views),0) AS views FROM visit_geo_region WHERE country=? AND day>=? AND day<=? GROUP BY region ORDER BY views DESC').bind(_ctry, range.startDay, range.endDay).all();
+            const rlist = (rrows.results || []).filter(function (r) { return r.region; });
+            const rtotal = rlist.reduce(function (s, r) { return s + (r.views || 0); }, 0);
+            return json({ ok: true, range: { key: range.key, label: range.label }, country: _ctry, total: rtotal, regions: rlist });
+          }
           const rows = await env.DB.prepare('SELECT country, COALESCE(SUM(views),0) AS views FROM visit_geo WHERE day>=? AND day<=? GROUP BY country ORDER BY views DESC').bind(range.startDay, range.endDay).all();
           const list = (rows.results || []).filter(function (r) { return r.country && r.country !== 'XX' && r.country !== 'T1'; });   // drop unknowns + Tor exit
           const total = list.reduce(function (s, r) { return s + (r.views || 0); }, 0);
@@ -3007,7 +3032,19 @@ function doReset(){
           const fixedCosts = { items: fixedItems, monthly_total_cents: monthlyTotalCents, range_cents: fixedRangeCents, month_cents: prorate(monthDays), total_cents: prorate(platformAgeDays) };
           const expenses = { range_cents: aiSpend.range_cents + fixedCosts.range_cents, month_cents: aiSpend.month_cents + fixedCosts.month_cents, total_cents: aiSpend.total_cents + fixedCosts.total_cents };
           const net = { range_cents: revenue.range_cents - expenses.range_cents, month_cents: revenue.month_cents - expenses.month_cents, total_cents: revenue.total_cents - expenses.total_cents };
-          return json({ ok: true, range: { key: range.key, label: range.label }, revenue: revenue, ai_spend: aiSpend, fixed_costs: fixedCosts, expenses: expenses, net: net });
+          // ---- Per-tier free-AI-credit margin: even if a tenant burns 100% of their free weekly credits, does the plan stay profitable? ----
+          // basis = owner-assumed micro-USD cost of 1 free credit (tunable via /api/admin/config credit_cost_micros). Computed from the
+          // authoritative TIER_CREDITS + PLAN_PRICE_CENTS so it can never drift from the real allotments. metered_cost_per_call = real
+          // avg from platform_ai_spend so the owner can calibrate the basis to what we ACTUALLY pay (never give away an unprofitable plan).
+          const basisMicros = Math.max(0, parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000);
+          const WK2MO = 52 / 12;
+          const marginTiers = ['starter', 'pro', 'enterprise', 'business', 'unlimited'].map(function (t) {
+            const wk = TIER_CREDITS[t] || 0, mo = Math.round(wk * WK2MO), price = PLAN_PRICE_CENTS[t] || 0, freeCost = Math.round(mo * basisMicros / 10000);
+            return { tier: t, price_cents: price, credits_week: wk, credits_month: mo, free_ai_cost_cents: freeCost, margin_cents: price - freeCost, margin_pct: price ? Math.round((price - freeCost) / price * 1000) / 10 : 0 };
+          });
+          const callAgg = await env.DB.prepare('SELECT COALESCE(SUM(cost_micros),0) cm, COALESCE(SUM(calls),0) c FROM platform_ai_spend').first();
+          const planMargins = { basis_micros: basisMicros, metered_cost_per_call_micros: (callAgg && callAgg.c) ? Math.round(callAgg.cm / callAgg.c) : 0, metered_calls: (callAgg && callAgg.c) || 0, tiers: marginTiers };
+          return json({ ok: true, range: { key: range.key, label: range.label }, revenue: revenue, ai_spend: aiSpend, fixed_costs: fixedCosts, expenses: expenses, net: net, plan_margins: planMargins });
         }
         // Growth substrate: real day-by-day data + fleet mix + geo (the day-by-day comparison + growth AI read from this).
         if (path === '/api/admin/growth-data' && method === 'GET') {
@@ -3269,7 +3306,10 @@ function doReset(){
             await _pcfgSet(env, 'platform_fixed_costs_json', JSON.stringify(_fc));
             await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { fixed_costs_count: _fc.length, fixed_costs_monthly_total_cents: _fc.reduce(function (s, x) { return s + x.monthly_cents; }, 0) });
           }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [] };
+          // Owner-tunable AI-credit cost basis (micro-USD per 1 free credit) -- drives the Plan-margins projection ONLY
+          // (what one free weekly credit is ASSUMED to cost us). Clamped $0..$1/credit. Never charges any tenant.
+          if (typeof b.credit_cost_micros !== 'undefined') { const _ccm = Math.max(0, Math.min(1000000, parseInt(b.credit_cost_micros, 10) || 0)); await _pcfgSet(env, 'credit_cost_micros', String(_ccm)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { credit_cost_micros: _ccm }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], credit_cost_micros: parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000 };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are

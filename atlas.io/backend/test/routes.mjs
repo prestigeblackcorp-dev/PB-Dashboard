@@ -2055,5 +2055,148 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(r.status === 403, 'pnl: a VALID support-role staff token still gets 403 -- pnl is OWNER_ONLY, not just any authenticated admin (got ' + r.status + ')');
 }
 
+// ---- #287 master-dashboard world-map drill-down: (1) visit_geo_region accumulates per (day,country,region) at
+// the SAME best-effort/deferred capture site as visit_geo (/api/visit-ping), is additive (an absent region writes
+// nothing extra), and never disturbs the existing page_views/active_now writes; (2) GET /api/admin/visits-geo
+// ?country=XX returns that country's regions ranked by views, is gated identically to the existing country-level
+// query on the same route, and leaves the no-?country= response byte-for-byte unchanged. Own self-contained mocks
+// (do not reference any other block's helper). NOTE: req.cf cannot be set via the Request constructor in this
+// Node harness -- part A assigns it directly onto the built Request instance (the same technique Cloudflare's own
+// local-dev tooling uses), since the worker only ever reads req.cf.country/req.cf.regionCode/req.cf.region off
+// whatever object it is given. This whole block is HAND-TRACED, not yet run via `node test/routes.mjs`. ----
+{
+  // -- part A: the region capture at /api/visit-ping accumulates per (day,country,region), is additive-only
+  // (an absent region writes nothing extra), and never disturbs the existing page_views/active_now writes --
+  {
+    const pv = new Map(), an = new Map(), vgr = new Map();
+    function vgrCaptureDB() {
+      function stmt(sql) {
+        let a = [];
+        const api = {
+          bind: (...x) => { a = x; return api; },
+          first: async () => {
+            if (/FROM sqlite_master/.test(sql)) return { n: 30 };
+            if (/FROM rate_limits/.test(sql)) return null;   // not under test here -- always allow, mirrors the #274 visit-ping block's vbDB
+            if (/FROM platform_config/.test(sql)) return null;
+            return null;
+          },
+          all: async () => ({ results: [] }),
+          run: async () => {
+            if (/INSERT INTO page_views/.test(sql)) pv.set(a[0], (pv.get(a[0]) || 0) + 1);
+            else if (/INSERT INTO active_now/.test(sql)) an.set(a[0], { last_at: a[1], src: a[2] });
+            else if (/INSERT INTO visit_geo_region/.test(sql)) { const k = a[0] + '|' + a[1] + '|' + a[2]; vgr.set(k, (vgr.get(k) || 0) + 1); }
+            return { success: true, meta: { changes: 1 } };
+          },
+        };
+        return api;
+      }
+      return { prepare: stmt };
+    }
+    const vgrEnv = { DB: vgrCaptureDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+    let waited = [];
+    const vgrCtx = { waitUntil(p) { waited.push(p); }, passThroughOnException() {} };
+    function geoCfReq(sid, cf) {
+      const req = new Request('https://atlasrental.io/api/visit-ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ src: 'site', sid: sid }) });
+      req.cf = cf || {};   // Cloudflare's edge-geo object -- Node's built-in Request has no special handling for this, so it is attached directly, same as local Workers dev tooling
+      return req;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+
+    // three distinct visitors, same country+region -> the region bucket accumulates to 3
+    for (let i = 1; i <= 3; i++) {
+      const rr = await worker.fetch(geoCfReq('sid_vgr_ca_' + i, { country: 'US', regionCode: 'CA' }), vgrEnv, vgrCtx);
+      ok(rr.status === 204, 'visit-ping (US/CA) #' + i + ' -> 204 (got ' + rr.status + ')');
+    }
+    await Promise.all(waited); waited.length = 0;
+    ok(vgr.get(today + '|US|CA') === 3, 'visit_geo_region: 3 visits to the same (day,country,region) accumulate to views=3 (got ' + vgr.get(today + '|US|CA') + ')');
+
+    // a different region in the SAME country is its own bucket -- not a collision with CA
+    let rr = await worker.fetch(geoCfReq('sid_vgr_tx_1', { country: 'US', regionCode: 'TX' }), vgrEnv, vgrCtx);
+    ok(rr.status === 204, 'visit-ping (US/TX) -> 204 (got ' + rr.status + ')');
+    await Promise.all(waited); waited.length = 0;
+    ok(vgr.get(today + '|US|TX') === 1 && vgr.get(today + '|US|CA') === 3, 'visit_geo_region: a different region is its own (day,country,region) row, CA unaffected (got TX=' + vgr.get(today + '|US|TX') + ', CA=' + vgr.get(today + '|US|CA') + ')');
+
+    // regionCode absent -> falls back to the region full name
+    rr = await worker.fetch(geoCfReq('sid_vgr_fallback_1', { country: 'GB', region: 'England' }), vgrEnv, vgrCtx);
+    ok(rr.status === 204, 'visit-ping (GB, region name only, no regionCode) -> 204 (got ' + rr.status + ')');
+    await Promise.all(waited); waited.length = 0;
+    ok(vgr.get(today + '|GB|England') === 1, 'visit_geo_region: falls back to req.cf.region (full name) when regionCode is absent (got ' + vgr.get(today + '|GB|England') + ')');
+
+    // no region at all (regionCode AND region both absent) -> ADDITIVE: zero extra writes, byte-identical to
+    // today's country-only capture -- page_views/active_now still land normally
+    const vgrSizeBefore = vgr.size;
+    rr = await worker.fetch(geoCfReq('sid_vgr_noregion_1', { country: 'DE' }), vgrEnv, vgrCtx);
+    ok(rr.status === 204, 'visit-ping (DE, no region at all) -> 204 (got ' + rr.status + ')');
+    await Promise.all(waited); waited.length = 0;
+    ok(vgr.size === vgrSizeBefore, 'visit_geo_region: no region present -> zero extra writes, row count unchanged (got ' + vgr.size + ' vs before=' + vgrSizeBefore + ')');
+    ok(pv.get('_site') === 6 && an.has('sid_vgr_noregion_1'), 'the region-less ping still recorded page_views + active_now normally -- region capture never displaces the existing writes (got pv=' + pv.get('_site') + ')');
+  }
+
+  // -- part B: GET /api/admin/visits-geo?country=XX -- ranked regions, honest empty state for a country with none
+  // yet, the plain (no ?country=) response is untouched, and the gate matches the base visits-geo query (any
+  // valid admin identity -- owner or a non-owner support/analyst staff token -- may read it; a bad token 403s) --
+  {
+    function vgrRangeDB(staffRow) {
+      function stmt(sql) {
+        let a = [];
+        const api = {
+          bind: (...x) => { a = x; return api; },
+          first: async () => {
+            if (/FROM admin_staff WHERE token_hash=\?/.test(sql)) return staffRow || null;
+            if (/FROM platform_config/.test(sql)) return null;
+            if (/FROM sqlite_master/.test(sql)) return { n: 25 };
+            if (/FROM rate_limits/.test(sql)) return null;
+            return null;
+          },
+          all: async () => {
+            if (/FROM visit_geo_region WHERE country=\?/.test(sql) && /GROUP BY region/.test(sql)) {
+              if (a[0] === 'US') return { results: [{ region: 'CA', views: 120 }, { region: 'TX', views: 80 }, { region: 'NY', views: 50 }] };
+              return { results: [] };   // e.g. 'ZZ' -- a real country with zero region rows yet
+            }
+            if (/FROM visit_geo WHERE day/.test(sql) && /GROUP BY country/.test(sql)) return { results: [{ country: 'US', views: 250 }, { country: 'GB', views: 40 }] };
+            return { results: [] };
+          },
+          run: async () => ({ success: true, meta: { changes: 1 } }),
+        };
+        return api;
+      }
+      return { prepare: stmt };
+    }
+    const vgrEnv2 = { DB: vgrRangeDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+
+    // owner token + ?country=us (lowercase on purpose) -> 200, ranked regions, normalized uppercase country
+    let r = await worker.fetch(mkReq('GET', '/api/admin/visits-geo?range=30d&country=us', { headers: H }), vgrEnv2, ctx);
+    let j = await r.json();
+    ok(r.status === 200 && j.ok === true, 'visits-geo drill: owner token + ?country=us -> 200 ok (got ' + r.status + ')');
+    ok(j.country === 'US', 'visits-geo drill: country echoed back normalized to uppercase ISO-2 (got ' + JSON.stringify(j.country) + ')');
+    ok(Array.isArray(j.regions) && j.regions.length === 3 && j.regions[0].region === 'CA' && j.regions[0].views === 120, 'visits-geo drill: regions pass through ranked exactly as the DB returned them (got ' + JSON.stringify(j.regions) + ')');
+    ok(j.total === 250, 'visits-geo drill: total = sum of the region views, 120+80+50=250 (got ' + j.total + ')');
+
+    // a country with zero region rows yet -> honest empty state, not an error
+    r = await worker.fetch(mkReq('GET', '/api/admin/visits-geo?range=30d&country=zz', { headers: H }), vgrEnv2, ctx);
+    j = await r.json();
+    ok(r.status === 200 && j.ok === true && Array.isArray(j.regions) && j.regions.length === 0 && j.total === 0, 'visits-geo drill: a country with no region data yet -> ok:true, regions:[], total:0 (got ' + JSON.stringify(j) + ')');
+
+    // no ?country= param at all -> the existing country-level response is byte-for-byte unchanged
+    r = await worker.fetch(mkReq('GET', '/api/admin/visits-geo?range=30d', { headers: H }), vgrEnv2, ctx);
+    j = await r.json();
+    ok(r.status === 200 && Array.isArray(j.countries) && j.countries.length === 2 && j.country === undefined && j.regions === undefined, 'visits-geo: no ?country= -> the plain country-level shape is untouched (got keys ' + Object.keys(j).join(',') + ')');
+
+    // ---- gate: a bad/garbage token never resolves an identity -> 403 ----
+    r = await worker.fetch(mkReq('GET', '/api/admin/visits-geo?range=30d&country=us', { headers: { 'X-Admin-Token': 'WRONG' } }), vgrEnv2, ctx);
+    ok(r.status === 403, 'visits-geo drill: garbage admin token -> 403 (got ' + r.status + ')');
+
+    // ---- gate: matches how the base (country-level) /api/admin/visits-geo is gated -- visits-geo is NOT in
+    // OWNER_ONLY, so a VALID non-owner (support) staff token still resolves an identity and IS allowed a read here
+    // too (staff can already see country-level traffic; the region drill-down is the same class of read) ----
+    const staffSecret = 'atlst_' + crypto.randomBytes(20).toString('hex');
+    const staffRow = { id: 's_geo1', email: 'support@member.com', role: 'support', active: 1, revoked_at: null };
+    const vgrStaffEnv = { DB: vgrRangeDB(staffRow), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+    r = await worker.fetch(mkReq('GET', '/api/admin/visits-geo?range=30d&country=us', { headers: { 'X-Admin-Token': staffSecret } }), vgrStaffEnv, ctx);
+    j = await r.json();
+    ok(r.status === 200 && j.ok === true, 'visits-geo drill: a VALID support-role staff token is allowed (read-only, not OWNER_ONLY) -- matches the base visits-geo gate (got ' + r.status + ')');
+  }
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

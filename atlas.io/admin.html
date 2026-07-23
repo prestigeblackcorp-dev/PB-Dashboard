@@ -63,7 +63,8 @@
 
   /* ---- app shell ---- */
   #app{display:none;max-width:1320px;margin:0 auto;padding:0 20px 60px;overflow-x:clip}
-  .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;padding:14px 2px;margin-bottom:6px;background:linear-gradient(180deg,rgba(8,12,10,.94),rgba(8,12,10,.72) 70%,rgba(8,12,10,0));backdrop-filter:blur(10px)}
+  .hqhead{position:sticky;top:0;z-index:20;padding-top:env(safe-area-inset-top,0px);background:linear-gradient(180deg,#0a0f0d 0%,#0a0f0d 64%,rgba(10,15,13,.90) 100%);backdrop-filter:blur(10px)}
+  .topbar{display:flex;align-items:center;gap:14px;padding:14px 2px 8px}
   .brand{display:flex;align-items:center;gap:11px;min-width:0}
   .brand .mk{width:34px;height:34px;border-radius:10px;flex:none;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,var(--em2),#0f6b45);box-shadow:0 4px 14px rgba(35,168,108,.3)}
   .brand>div{min-width:0}
@@ -259,6 +260,7 @@
 
 <!-- ================= APP ================= -->
 <div id="app">
+  <div class="hqhead">
   <header class="topbar">
     <div class="brand">
       <div class="mk"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3 3 20h4l5-10 5 10h4L12 3Z" fill="#eafff4"/></svg></div>
@@ -284,6 +286,7 @@
     <button data-sec="security" onclick="setSection('security')">Security</button>
     <button data-sec="settings" onclick="setSection('settings')">Settings</button>
   </nav>
+  </div>
 
   <!-- KPI ROW -->
   <div id="buildBanner"></div>
@@ -390,13 +393,24 @@
   </div>
 
   <!-- VISITS WORLD MAP -->
+  <style>#geoMapBox.geo-fs{position:fixed!important;max-width:none!important;margin:0!important;border-radius:0!important;border:none!important;inset:0;z-index:70;display:flex;align-items:center;justify-content:center}</style>
   <div class="card">
     <div class="card-h"><h2>Visits by country</h2><span class="sub" id="geoSub"></span><div class="sp"></div><span class="sub" id="geoRange"></span></div>
     <div class="card-b pad">
-      <div id="geoMapBox" style="position:relative;max-width:940px;margin:0 auto;background:#0b1512;border:1px solid var(--line);border-radius:12px;overflow:hidden">
+      <div id="geoMapBox" style="position:relative;max-width:940px;margin:0 auto;background:#0b1512;border:1px solid var(--line);border-radius:12px;overflow:hidden;touch-action:none">
         <div id="geoMap" style="width:100%"><div class="mut" style="padding:20px">Loading map&hellip;</div></div>
         <div id="geoTip" style="position:absolute;pointer-events:none;display:none;left:0;top:0;background:#0a0f0d;border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;line-height:1.4;box-shadow:0 6px 18px rgba(0,0,0,.55);z-index:5;white-space:nowrap"></div>
+        <!-- #287: pan/zoom controls + full-screen toggle (top-right) and the country-drill "back to world" control (top-left, shown only while drilled). Both stay pinned to this box in full-screen since position:absolute is relative to it. -->
+        <div id="geoCtrl" style="position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:5px;z-index:6">
+          <button class="icon-btn" onclick="geoZoomBy(1.6)" title="Zoom in"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+          <button class="icon-btn" onclick="geoZoomBy(0.625)" title="Zoom out"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+          <button class="icon-btn" onclick="geoResetView()" title="Reset view"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 4v6h6M20 20v-6h-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 15a8 8 0 0 0 13.9 3M18.5 9A8 8 0 0 0 4.6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          <button class="icon-btn" id="geoFsBtn" onclick="geoToggleFullscreen()" title="Full screen"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+        <div id="geoBackBtn" style="position:absolute;left:8px;top:8px;z-index:6;display:none"><button class="chip" style="background:#111a16;border-color:var(--line2)" onclick="geoBackToWorld()">&larr; Back to world</button></div>
       </div>
+      <!-- #287: ranked region/state breakdown for a drilled-in country (hidden until a country is selected); honest empty state if a country has no region rows yet -->
+      <div id="geoDrill" style="margin-top:12px;display:none"></div>
       <div id="geoList" style="margin-top:12px"></div>
     </div>
   </div>
@@ -424,6 +438,12 @@
     <div class="card-h"><h2>Expenses &amp; net profit</h2><span class="sub" id="pnlSub"></span></div>
     <div class="split" id="pnlSplit"></div>
     <div class="card-b pad" id="pnlDetail"><div class="mut">Loading&hellip;</div></div>
+  </div>
+
+  <!-- PLAN MARGINS: free weekly Atlas.io credits per tier vs plan price -- profitable even at 100% credit burn -->
+  <div class="card">
+    <div class="card-h"><h2>Plan margins</h2><span class="sub" id="marginSub"></span></div>
+    <div class="card-b pad" id="marginBox"><div class="mut">Loading&hellip;</div></div>
   </div>
 
   <!-- PURCHASES (itemized: subscriptions, credits, websites, domains) -->
@@ -578,6 +598,7 @@ var _secFilter = 'all', _secQ = '';
 /* ================= helpers ================= */
 function $(id){ return document.getElementById(id); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function _oa(s){ return "'"+String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;')+"'"; }   // single-quoted JS-string literal safe inside a double-quoted onclick attr (JSON.stringify wrapped ids in double-quotes, which closed the attr early -> dead handler)
 function centsUSD(c){ c=Number(c)||0; return '$'+(c/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function centsUSD0(c){ c=Number(c)||0; return '$'+Math.round(c/100).toLocaleString('en-US'); }
 function nfmt(n){ return (Number(n)||0).toLocaleString('en-US'); }
@@ -660,7 +681,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
     if(r[10]&&r[10].json&&r[10].json.ok){ DATA.purchases=r[10].json; renderPurchases(); }
     if(r[11]&&r[11].json&&r[11].json.ok){ DATA.growth=r[11].json.growth||null; renderGrowth(); }
     if(r[12]&&r[12].json&&r[12].json.ok){ DATA.socialHandles=r[12].json.handles||{}; DATA.socialPlatforms=r[12].json.platforms||{}; renderSocial(); }
-    if(r[13]&&r[13].json&&r[13].json.ok){ DATA.pnl=r[13].json; paintOverview(); renderPnl(); }
+    if(r[13]&&r[13].json&&r[13].json.ok){ DATA.pnl=r[13].json; paintOverview(); renderPnl(); renderMargin(); }
     setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700);
     if((r[0].json&&r[0].json.ok)===false || r[0].status===403){ lock(); }
   }).catch(function(){ setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700); });
@@ -713,6 +734,24 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
 }
 
 /* ================= expenses + net profit (task #286) ================= */
+function renderMargin(){ var p=DATA.pnl||{}, pm=p.plan_margins, el=$('marginBox'); if(!el) return;
+  if(!pm||!pm.tiers||!pm.tiers.length){ el.innerHTML='<div class="mut">No margin data yet.</div>'; var s0=$('marginSub'); if(s0)s0.textContent=''; return; }
+  var basisUsd=(pm.basis_micros||0)/1000000, TL={starter:'Starter',pro:'Pro',enterprise:'Enterprise',business:'Business',unlimited:'Unlimited'};
+  var worst=Math.min.apply(null,pm.tiers.map(function(t){return t.margin_pct;}));
+  var sub=$('marginSub'); if(sub) sub.textContent='at $'+basisUsd.toFixed(4)+'/credit, worst tier still nets '+worst+'%';
+  var th='padding:6px 8px;text-align:right;font-size:11px;color:var(--mut2);font-weight:700;border-bottom:1px solid var(--line);white-space:nowrap';
+  var td='padding:7px 8px;text-align:right;font-variant-numeric:tabular-nums;border-bottom:1px solid var(--line);white-space:nowrap';
+  var rows=pm.tiers.map(function(t){ var cls=t.margin_pct>=60?'#3ecb8f':(t.margin_pct>=30?'#e5b567':'#e5484d');
+    return '<tr><td style="'+td+';text-align:left;font-weight:700">'+esc(TL[t.tier]||t.tier)+'</td><td style="'+td+'">'+centsUSD0(t.price_cents)+'/mo</td><td style="'+td+'">'+nfmt(t.credits_week)+'</td><td style="'+td+'">'+nfmt(t.credits_month)+'</td><td style="'+td+'">'+centsUSD0(t.free_ai_cost_cents)+'</td><td style="'+td+';font-weight:800">'+centsUSD0(t.margin_cents)+'</td><td style="'+td+';color:'+cls+';font-weight:800">'+t.margin_pct+'%</td></tr>';
+  }).join('');
+  var realUsd=pm.metered_cost_per_call_micros?(pm.metered_cost_per_call_micros/1000000):0;
+  el.innerHTML=
+    '<div class="desc" style="margin:0 0 8px">Worst-case margin if a tenant burns <b>100%</b> of their free weekly Atlas.io credits, at your assumed cost per credit. Positive on every tier means the free AI allotment can never make a plan unprofitable.</div>'+
+    '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="'+th+';text-align:left">Plan</th><th style="'+th+'">Price</th><th style="'+th+'">Credits/wk</th><th style="'+th+'">Credits/mo</th><th style="'+th+'">Free-AI/mo</th><th style="'+th+'">Margin</th><th style="'+th+'">Margin %</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div class="drow" style="margin-top:8px"><span class="dl">Your real metered AI cost / call</span><b>'+(realUsd?('$'+realUsd.toFixed(4)+' avg &middot; '+nfmt(pm.metered_calls)+' calls'):'no calls metered yet')+'</b></div>'+
+    (_isOwner()?('<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><label style="font-size:12px;color:var(--mut2)">Assumed cost per credit (USD)</label><input class="inp" id="marginBasis" type="number" min="0" max="1" step="0.0005" value="'+basisUsd.toFixed(4)+'" style="width:120px"><button class="btn ghost sm" onclick="saveMarginBasis()">Save</button><span class="mut" style="font-size:11px">Tune to your real cost/call so the projection matches what you pay.</span></div>'):'');
+}
+function saveMarginBasis(){ var el=$('marginBasis'); if(!el) return; var usd=Math.max(0,Math.min(1,parseFloat(el.value)||0)); api('/api/admin/config',{method:'POST',body:{credit_cost_micros:Math.round(usd*1000000)}}).then(function(r){ if(r&&r.json&&r.json.ok){ toast('Credit cost basis saved'); loadAll(); } else toast('Save failed'); }); }
 function renderPnl(){ var p=DATA.pnl||{}; var rev=p.revenue||{}, ai=p.ai_spend||{}, fc=p.fixed_costs||{}, exp=p.expenses||{}, net=p.net||{};
   var rl=((p.range&&p.range.label)||'this range');
   $('pnlSub').textContent = rl+', to the cent';
@@ -873,8 +912,8 @@ function renderBugs(){ var b=DATA.bugs||[];
       '<div class="bug-msg">'+esc(f.message||'')+'</div>'+
       '<div class="bug-meta">'+esc(f.email||f.tenant_id||'')+(f.page?(' &middot; '+esc(f.page)):'')+' &middot; '+ago(f.created_at)+'</div>'+
       '<div class="bug-acts">'+
-        '<button class="chip'+(st==='seen'?' on':'')+'" onclick="bugStatus('+JSON.stringify(f.id)+',\'seen\')">Seen</button>'+
-        '<button class="chip'+(st==='resolved'?' on':'')+'" onclick="bugStatus('+JSON.stringify(f.id)+',\'resolved\')">Resolved</button>'+
+        '<button class="chip'+(st==='seen'?' on':'')+'" onclick="bugStatus('+_oa(f.id)+',\'seen\')">Seen</button>'+
+        '<button class="chip'+(st==='resolved'?' on':'')+'" onclick="bugStatus('+_oa(f.id)+',\'resolved\')">Resolved</button>'+
       '</div></div>';
   }).join('');
 }
@@ -887,7 +926,7 @@ function renderTickets(){ var ts=DATA.tickets||[];
   if(!ts.length){ $('supportList').innerHTML='<div class="empty"><svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><br>No support tickets.<br><span style="font-size:11.5px">Tenant tickets land here for you to reply.</span></div>'; return; }
   $('supportList').innerHTML = ts.map(function(t){
     var last=(t.messages&&t.messages.length)?t.messages[t.messages.length-1]:null;
-    return '<div class="bug'+(t.unread?' tk-unread':'')+'" style="cursor:pointer" onclick="tkOpen('+JSON.stringify(t.id)+')"><div class="bug-top">'+(t.unread?'<span class="tk-dot"></span>':'')+'<b style="font-size:13.5px">'+esc(t.subject||'(no subject)')+'</b><div class="sp" style="flex:1"></div>'+_tkPill(t.status)+(t.priority==='high'?' <span class="pill past">Urgent</span>':'')+'</div>'+
+    return '<div class="bug'+(t.unread?' tk-unread':'')+'" style="cursor:pointer" onclick="tkOpen('+_oa(t.id)+')"><div class="bug-top">'+(t.unread?'<span class="tk-dot"></span>':'')+'<b style="font-size:13.5px">'+esc(t.subject||'(no subject)')+'</b><div class="sp" style="flex:1"></div>'+_tkPill(t.status)+(t.priority==='high'?' <span class="pill past">Urgent</span>':'')+'</div>'+
       '<div class="bug-msg" style="font-size:12.5px">'+(last?esc((last.by==='owner'?'You: ':'')+String(last.msg).slice(0,110)):'')+'</div>'+
       '<div class="bug-meta">'+esc(t.email||t.tenant_id||'')+' &middot; '+esc(t.category||'')+' &middot; '+ago(t.updated_at)+'</div></div>';
   }).join('');
@@ -899,7 +938,7 @@ function tkOpen(id){ var t=(DATA.tickets||[]).filter(function(x){return x.id===i
     '<div class="modal-b"><div class="desc">'+esc(t.email||'')+' &middot; '+esc(t.category||'')+'</div>'+
       '<div class="tk-thread-a">'+thread+'</div>'+
       '<textarea id="tkReplyBox" rows="3" placeholder="Reply to the customer..." style="width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid rgba(128,140,160,.35);background:transparent;color:inherit;font-family:inherit;font-size:13px;box-sizing:border-box"></textarea><div id="tkAiMeta" class="mut" style="font-size:11.5px;margin-top:6px"></div></div>'+
-    '<div class="modal-f">'+((DATA.aiCfg&&DATA.aiCfg.ai_hq_enabled)?('<button class="btn ghost" onclick="aiDraft('+JSON.stringify(id)+')">Draft with AI</button>'):'')+'<button class="btn ghost" onclick="tkStatus('+JSON.stringify(id)+',\'resolved\')">Mark resolved</button><button class="btn gold" onclick="tkReply('+JSON.stringify(id)+')">Send reply</button></div>';
+    '<div class="modal-f">'+((DATA.aiCfg&&DATA.aiCfg.ai_hq_enabled)?('<button class="btn ghost" onclick="aiDraft('+_oa(id)+')">Draft with AI</button>'):'')+'<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'resolved\')">Mark resolved</button><button class="btn gold" onclick="tkReply('+_oa(id)+')">Send reply</button></div>';
   $('scrim').classList.add('on'); }
 function tkReply(id){ var el=$('tkReplyBox'); var msg=el?(el.value||'').trim():''; if(msg.length<1){ toast('Write a reply'); return; }
   api('/api/admin/ticket-reply',{method:'POST',body:{id:id,message:msg}}).then(function(r){ if(r.json&&r.json.ok){ closeModal(); toast('Reply sent'); loadAll(true); } else toast('Could not send'); }); }
@@ -948,7 +987,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19af';
+var ATLAS_EXPECT_BUILD='2026.07.19ag';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1055,7 +1094,7 @@ function aiHealth(tid){ _aiOpen('Tenant health','<div id="aiHe">'+_aiBusy()+'</d
 function aiDraft(id){ var box=$('tkReplyBox'); if(box){ box.value='Drafting a reply...'; box.disabled=true; } api('/api/admin/ai/ticket-draft',{method:'POST',body:{id:id}}).then(function(r){ var j=r.json||{}; if(box) box.disabled=false; if(j.enabled===false||j.ai===false){ if(box)box.value=''; toast(j.reason||'AI is off'); return; } if(box) box.value=j.draft||''; var meta=$('tkAiMeta'); if(meta){ meta.innerHTML=(j.summary?('<b>Summary:</b> '+esc(j.summary)+' '):'')+(j.suggested_priority?('<span class="pill '+(j.suggested_priority==='high'?'past':'gray')+'">'+esc(j.suggested_priority)+'</span> '):'')+(j.confidence?('<span class="mut">confidence '+Math.round(j.confidence*100)+'%</span> '):'')+'<span class="mut">&mdash; review before sending</span>'; } }); }
 /* ================= deleted accounts (soft-delete recovery) ================= */
 function openDeleted(){ _aiOpen('Deleted accounts','<div id="delList">'+_aiBusy()+'</div>'); loadDeleted(); }
-function loadDeleted(){ api('/api/admin/deleted').then(function(r){ var el=$('delList'); if(!el)return; var d=(r.json&&r.json.deleted)||[]; if(!d.length){ el.innerHTML='<div class="mut" style="padding:10px">No deleted accounts. Deletes are recoverable and land here.</div>'; return; } el.innerHTML='<div class="desc" style="margin:0 0 8px">Deleted accounts keep all data + the audit log. <b>Restore</b> brings one back; <b>Purge</b> (two-step) removes its operating data for good but keeps the revenue + audit ledger.</div>'+d.map(function(x){ return '<div class="bug"><div class="bug-top"><b>'+esc(x.name||'(unnamed)')+'</b><div class="sp" style="flex:1"></div><span class="mut">'+dstr(x.deleted_at)+'</span></div><div class="bug-meta">'+esc(x.email||'')+' &middot; '+esc(TIER_LABEL[x.tier]||x.tier||'')+'</div><div class="bug-acts"><button class="chip" onclick="restoreAcct('+JSON.stringify(x.tenant_id)+')">Restore</button> <button class="chip" style="color:#e5484d" onclick="purgeAcct('+JSON.stringify(x.tenant_id)+','+JSON.stringify(x.email||'')+')">Purge</button></div></div>'; }).join(''); }); }
+function loadDeleted(){ api('/api/admin/deleted').then(function(r){ var el=$('delList'); if(!el)return; var d=(r.json&&r.json.deleted)||[]; if(!d.length){ el.innerHTML='<div class="mut" style="padding:10px">No deleted accounts. Deletes are recoverable and land here.</div>'; return; } el.innerHTML='<div class="desc" style="margin:0 0 8px">Deleted accounts keep all data + the audit log. <b>Restore</b> brings one back; <b>Purge</b> (two-step) removes its operating data for good but keeps the revenue + audit ledger.</div>'+d.map(function(x){ return '<div class="bug"><div class="bug-top"><b>'+esc(x.name||'(unnamed)')+'</b><div class="sp" style="flex:1"></div><span class="mut">'+dstr(x.deleted_at)+'</span></div><div class="bug-meta">'+esc(x.email||'')+' &middot; '+esc(TIER_LABEL[x.tier]||x.tier||'')+'</div><div class="bug-acts"><button class="chip" onclick="restoreAcct('+_oa(x.tenant_id)+')">Restore</button> <button class="chip" style="color:#e5484d" onclick="purgeAcct('+_oa(x.tenant_id)+','+_oa(x.email||'')+')">Purge</button></div></div>'; }).join(''); }); }
 function restoreAcct(tid){ api('/api/admin/restore',{method:'POST',body:{tenant_id:tid}}).then(function(r){ if(r.json&&r.json.ok){ var bl=r.json.blocked_emails||[]; toast(bl.length?('Restored, but email '+bl[0]+' was re-taken'):'Account restored'); loadDeleted(); loadAll(true); } else toast('Could not restore'); }); }
 function purgeAcct(tid,email){ if(!confirm('Permanently purge '+(email||'this account')+'?\n\nThis removes its operating data for good. The revenue ledger and audit log are KEPT. This cannot be undone.')) return; api('/api/admin/purge',{method:'POST',body:{tenant_id:tid}}).then(function(r){ if(r.json&&r.json.ok){ toast('Purged'); loadDeleted(); loadAll(true); } else toast((r.json&&r.json.error)||'Could not purge'); }); }
 
@@ -1088,8 +1127,8 @@ function renderCompetitors(){ var el=$('compList'); if(!el) return; var list=DAT
     var pg=(c.pages>1?' <span class="pill gray">'+c.pages+' pages</span>':'');
     var intelLine='';
     if(pf){ var lk=(pf.likes||[]).slice(0,2).map(esc).join(', '); var dl=(pf.dislikes||[]).slice(0,2).map(esc).join(', ');
-      intelLine='<div class="bug-msg" style="font-size:12px;cursor:pointer" onclick="competitorShow('+JSON.stringify(c.id)+')">'+(lk?('<b style="color:#3ecb8f">Likes:</b> '+lk):'')+(dl?('&nbsp; <b style="color:#e0736f">Dislikes:</b> '+dl):'')+' <span class="mut" style="font-size:11px">- full profile</span></div>'; }
-    return '<div class="bug"><div class="bug-top"><b style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46%">'+esc(c.label||c.title||c.url)+'</b><div class="sp" style="flex:1"></div>'+st+pg+' <button class="chip" onclick="competitorDeep('+JSON.stringify(c.id)+')">'+(pf?'Re-read':'Deep read')+'</button> <button class="chip" onclick="delCompetitor('+JSON.stringify(c.id)+')">Remove</button></div><div class="bug-meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(c.url)+'</div>'+(pr?'<div class="bug-msg" style="font-size:12px">prices: '+esc(pr)+(c.price_count>4?(' +'+(c.price_count-4)+' more'):'')+'</div>':'')+intelLine+'</div>';
+      intelLine='<div class="bug-msg" style="font-size:12px;cursor:pointer" onclick="competitorShow('+_oa(c.id)+')">'+(lk?('<b style="color:#3ecb8f">Likes:</b> '+lk):'')+(dl?('&nbsp; <b style="color:#e0736f">Dislikes:</b> '+dl):'')+' <span class="mut" style="font-size:11px">- full profile</span></div>'; }
+    return '<div class="bug"><div class="bug-top"><b style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46%">'+esc(c.label||c.title||c.url)+'</b><div class="sp" style="flex:1"></div>'+st+pg+' <button class="chip" onclick="competitorDeep('+_oa(c.id)+')">'+(pf?'Re-read':'Deep read')+'</button> <button class="chip" onclick="delCompetitor('+_oa(c.id)+')">Remove</button></div><div class="bug-meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(c.url)+'</div>'+(pr?'<div class="bug-msg" style="font-size:12px">prices: '+esc(pr)+(c.price_count>4?(' +'+(c.price_count-4)+' more'):'')+'</div>':'')+intelLine+'</div>';
   }).join('');
 }
 function _compChips(arr,cls){ return (arr||[]).slice(0,10).map(function(x){ return '<span class="pill '+cls+'" style="margin:2px 3px 2px 0;display:inline-block;white-space:normal">'+esc(String(x))+'</span>'; }).join('')||'<span class="mut">-</span>'; }
@@ -1122,7 +1161,7 @@ function aiCompetitorBriefRun(){ var q=(($('compQ')&&$('compQ').value)||'').trim
 function renderInbox(){ var el=$('inboxList'); if(!el) return; var msgs=DATA.inbox||[], c=DATA.inboxCounts||{};
   var isb=$('inboxSub'); if(isb) isb.textContent = (c.new||0)+' new'+(DATA.inboxCanSend?'':' - no mailer');
   if(!msgs.length){ el.innerHTML='<div class="empty" style="padding:16px"><svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 6h16v12H4z" stroke="currentColor" stroke-width="1.6"/><path d="m4 7 8 6 8-6" stroke="currentColor" stroke-width="1.6"/></svg><br>No messages here.<br><span style="font-size:11.5px">Forward your atlasrental.io support mail to the worker\'s /api/inbound-email (secured by INBOUND_SECRET) and it lands here for an AI-drafted, you-approved reply.</span></div>'; return; }
-  el.innerHTML = msgs.map(function(m){ return '<div class="bug" style="cursor:pointer" onclick="inboxOpen('+JSON.stringify(m.id)+')"><div class="bug-top">'+(m.status==='new'?'<span class="tk-dot"></span>':'')+'<b style="font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:62%">'+esc(m.subject||'(no subject)')+'</b><div class="sp" style="flex:1"></div><span class="pill '+(m.status==='new'?'trial':(m.status==='replied'?'active':'gray'))+'">'+esc(m.status||'new')+'</span></div><div class="bug-msg" style="font-size:12.5px">'+esc(String(m.body||'').slice(0,110))+'</div><div class="bug-meta">'+esc(m.from_name||m.from_email||'')+' &middot; '+ago(m.received_at)+'</div></div>'; }).join('');
+  el.innerHTML = msgs.map(function(m){ return '<div class="bug" style="cursor:pointer" onclick="inboxOpen('+_oa(m.id)+')"><div class="bug-top">'+(m.status==='new'?'<span class="tk-dot"></span>':'')+'<b style="font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:62%">'+esc(m.subject||'(no subject)')+'</b><div class="sp" style="flex:1"></div><span class="pill '+(m.status==='new'?'trial':(m.status==='replied'?'active':'gray'))+'">'+esc(m.status||'new')+'</span></div><div class="bug-msg" style="font-size:12.5px">'+esc(String(m.body||'').slice(0,110))+'</div><div class="bug-meta">'+esc(m.from_name||m.from_email||'')+' &middot; '+ago(m.received_at)+'</div></div>'; }).join('');
 }
 function inboxOpen(id){ var m=(DATA.inbox||[]).filter(function(x){return x.id===id;})[0]; if(!m) return; var aiOn=!!(DATA.aiCfg&&DATA.aiCfg.ai_hq_enabled);
   $('modal').innerHTML =
@@ -1133,37 +1172,245 @@ function inboxOpen(id){ var m=(DATA.inbox||[]).filter(function(x){return x.id===
       '<textarea id="inReplyBox" rows="5" placeholder="Write your reply (or draft with AI)..." style="width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid rgba(128,140,160,.35);background:transparent;color:inherit;font-family:inherit;font-size:13px;box-sizing:border-box">'+esc(m.reply_body||'')+'</textarea>'+
       '<div id="inAiMeta" class="mut" style="font-size:11.5px;margin-top:6px"></div>'+
       (DATA.inboxCanSend?'':'<div class="desc" style="color:var(--amber);margin-top:6px">No mailer configured (set RESEND_KEY in the worker) &mdash; you can draft here, but Send is disabled until then.</div>')+'</div>'+
-    '<div class="modal-f">'+(aiOn?('<button class="btn ghost" onclick="inboxDraft('+JSON.stringify(id)+')">Draft with AI</button>'):'')+'<button class="btn ghost" onclick="inboxStatus('+JSON.stringify(id)+',\'closed\')">Close</button><button class="btn gold" onclick="inboxSend('+JSON.stringify(id)+')"'+(DATA.inboxCanSend?'':' disabled style="opacity:.5;cursor:not-allowed"')+'>Send reply</button></div>';
+    '<div class="modal-f">'+(aiOn?('<button class="btn ghost" onclick="inboxDraft('+_oa(id)+')">Draft with AI</button>'):'')+'<button class="btn ghost" onclick="inboxStatus('+_oa(id)+',\'closed\')">Close</button><button class="btn gold" onclick="inboxSend('+_oa(id)+')"'+(DATA.inboxCanSend?'':' disabled style="opacity:.5;cursor:not-allowed"')+'>Send reply</button></div>';
   $('scrim').classList.add('on'); }
 function inboxDraft(id){ var box=$('inReplyBox'); if(box){ box.value='Drafting...'; box.disabled=true; } api('/api/admin/ai/inbox-draft',{method:'POST',body:{id:id}}).then(function(r){ var j=r.json||{}; if(box) box.disabled=false; if(j.enabled===false||j.ai===false){ if(box)box.value=''; toast(j.reason||'AI is off'); return; } if(box) box.value=j.draft||''; var meta=$('inAiMeta'); if(meta){ meta.innerHTML=(j.summary?('<b>Summary:</b> '+esc(j.summary)+' '):'')+(j.suggested_priority?('<span class="pill '+(j.suggested_priority==='high'?'past':'gray')+'">'+esc(j.suggested_priority)+'</span> '):'')+'<span class="mut">&mdash; review before sending</span>'; } }); }
 function inboxSend(id){ if(!DATA.inboxCanSend){ toast('No mailer configured'); return; } var box=$('inReplyBox'); var body=box?(box.value||'').trim():''; if(body.length<2){ toast('Write a reply first'); return; } if(!confirm('Send this reply now?')) return; api('/api/admin/inbox/reply',{method:'POST',body:{id:id,body:body}}).then(function(r){ var j=r.json||{}; if(j.ok&&j.sent){ closeModal(); toast('Reply sent'); loadAll(true); } else toast((j&&j.message)||'Could not send'); }); }
 function inboxStatus(id,st){ api('/api/admin/inbox/status',{method:'POST',body:{id:id,status:st}}).then(function(r){ if(r.json&&r.json.ok){ closeModal(); toast('Marked '+st); loadAll(true); } else toast('Could not update'); }); }
 
 /* ================= visits world map (self-contained SVG choropleth from world-geo.js) ================= */
+/* #287: real pan/zoom + full-screen + country drill-down, hand-rolled (no external lib -- CSP blocks CDNs anyway,
+   and this must stay self-contained). All transform math runs in the SVG's OWN viewBox units (0..1000 x 0..500)
+   via svg.getScreenCTM()/matrixTransform(), which stays correct at any on-screen pixel size -- entering/exiting
+   full-screen never needs the current view recomputed. Additive: with no interaction, the original renderGeo()
+   behavior (render once, recolor in place on refresh, hover tooltip, top-countries list) is unchanged. */
 function _worldReady(){ return (typeof ATLAS_WORLD!=='undefined' && ATLAS_WORLD && ATLAS_WORLD.length>0); }
 function _geoShade(v,max){ if(!v) return '#16241d'; var t=Math.sqrt(v/(max||1)); var a=[26,58,45], b=[49,214,138]; var c=[0,1,2].map(function(i){return Math.round(a[i]+(b[i]-a[i])*t);}); return 'rgb('+c[0]+','+c[1]+','+c[2]+')'; }
+function _geoWorldEntry(code){ try{ var a=window.ATLAS_WORLD||[]; for(var i=0;i<a.length;i++){ if(a[i].c===code) return a[i]; } }catch(e){} return null; }
+
+var GEO_VB_W=1000, GEO_VB_H=500, GEO_ZMIN=1, GEO_ZMAX=40;
+var _geoZoom={k:1,tx:0,ty:0};   // current pan/zoom transform, in the SVG's own 0..1000 x 0..500 viewBox units
+var _geoBuilt=false;             // the SVG+<g>+paths + all interaction listeners are built exactly once
+var _geoFullscreen=false;
+var _geoDrillCountry=null;       // ISO2 of the country currently drilled into, or null = world view
+var _geoDrag=null;               // {startVb,tx0,ty0,downX,downY,target} while a mouse/1-finger pan is active
+var _geoPinch=null;              // {d0,k0,px,py} while a 2-finger pinch-zoom is active
+var _geoMoved=0;                 // px moved since the current press-down -- distinguishes a tap/click from a drag
+var _expandI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// client point (screen px) -> the SVG root's OWN user-space (the 0..1000 x 0..500 viewBox), via the browser's CTM
+// -- correct regardless of the element's on-screen size, aspect-ratio letterboxing, or full-screen state.
+function _geoClientToVb(svg,clientX,clientY){
+  try{
+    var pt=svg.createSVGPoint(); pt.x=clientX; pt.y=clientY;
+    var ctm=svg.getScreenCTM();
+    if(ctm){ var p=pt.matrixTransform(ctm.inverse()); return {x:p.x,y:p.y}; }
+  }catch(e){}
+  var r=svg.getBoundingClientRect();
+  return {x:(clientX-r.left)/Math.max(1,r.width)*GEO_VB_W, y:(clientY-r.top)/Math.max(1,r.height)*GEO_VB_H};
+}
+// clamp panning so the content (0..1000x500 scaled by k) always fully covers the viewport -- the map can never be
+// panned off-screen into blank space; at k=1 this collapses to (0,0), i.e. no panning possible when fully zoomed out.
+function _geoClamp(){
+  var k=_geoZoom.k;
+  _geoZoom.tx=Math.min(0,Math.max(GEO_VB_W-GEO_VB_W*k,_geoZoom.tx));
+  _geoZoom.ty=Math.min(0,Math.max(GEO_VB_H-GEO_VB_H*k,_geoZoom.ty));
+}
+function _geoApply(animate){
+  var g=$('geoZoomG'); if(!g) return;
+  g.style.transition = animate ? 'transform .45s cubic-bezier(.2,.7,.2,1)' : 'none';
+  g.setAttribute('transform','translate('+_geoZoom.tx.toFixed(2)+','+_geoZoom.ty.toFixed(2)+') scale('+_geoZoom.k.toFixed(4)+')');
+}
+// zoom keeping the content point under (mx,my) [viewBox units] fixed on screen -- the standard "zoom toward
+// cursor" identity; used by wheel, pinch, and the +/- buttons (which zoom around the viewport's own center).
+function _geoZoomAt(mx,my,factor){
+  var k0=_geoZoom.k, kNew=Math.min(GEO_ZMAX,Math.max(GEO_ZMIN,k0*factor));
+  var px=(mx-_geoZoom.tx)/k0, py=(my-_geoZoom.ty)/k0;
+  _geoZoom.k=kNew; _geoZoom.tx=mx-px*kNew; _geoZoom.ty=my-kNew*py;
+  _geoClamp();
+}
+function geoZoomBy(factor){ _geoZoomAt(GEO_VB_W/2,GEO_VB_H/2,factor); _geoApply(true); }
+function geoResetView(){
+  if(_geoDrillCountry){ var w=_geoWorldEntry(_geoDrillCountry); if(w&&w.d){ _geoFitTo(w.d,true); return; } }
+  _geoZoom={k:1,tx:0,ty:0}; _geoApply(true);
+}
+// bounding box of a country's pre-projected path (M/L/Z only -- verified against world-geo.js, no curves -- so a
+// flat numeric scan pairs up correctly into (x,y) points without needing a real path parser).
+function _geoBBox(d){
+  var nums=(d.match(/-?\d+\.?\d*/g)||[]).map(Number);
+  var minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(var i=0;i+1<nums.length;i+=2){ var x=nums[i],y=nums[i+1]; if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y; }
+  if(minX===Infinity) return null;
+  return {minX:minX,minY:minY,maxX:maxX,maxY:maxY};
+}
+function _geoFitTo(d,animate){
+  var bb=_geoBBox(d); if(!bb) return;
+  var bw=Math.max(1e-6,bb.maxX-bb.minX), bh=Math.max(1e-6,bb.maxY-bb.minY);
+  var cx=(bb.minX+bb.maxX)/2, cy=(bb.minY+bb.maxY)/2;
+  var MARGIN=1.6;   // show the country's bbox at ~1/1.6 of the viewport so it reads in context, not edge-to-edge
+  var k=Math.min(GEO_ZMAX,Math.max(GEO_ZMIN, Math.min(GEO_VB_W/(bw*MARGIN), GEO_VB_H/(bh*MARGIN))));
+  _geoZoom.k=k; _geoZoom.tx=GEO_VB_W/2-cx*k; _geoZoom.ty=GEO_VB_H/2-cy*k;
+  _geoClamp(); _geoApply(animate!==false);
+}
+
+/* ---- full screen: #geoMapBox becomes a fixed full-viewport overlay (CSS .geo-fs, see the <style> next to the
+   markup); the pan/zoom transform is untouched since it is defined in viewBox units, not pixels ---- */
+function geoToggleFullscreen(){ _geoFullscreen ? geoExitFullscreen() : geoEnterFullscreen(); }
+function _geoSetFsSizing(on){ var svg=$('geoSvg'), mp=$('geoMap'); if(mp) mp.style.height = on?'100%':''; if(svg) svg.style.height = on?'100%':'auto'; }
+function geoEnterFullscreen(){
+  var box=$('geoMapBox'); if(!box||_geoFullscreen) return;
+  box.classList.add('geo-fs'); _geoSetFsSizing(true); _geoFullscreen=true;
+  var b=$('geoFsBtn'); if(b){ b.innerHTML=_xI; b.title='Exit full screen'; }
+  document.addEventListener('keydown',_geoEscHandler);
+}
+function geoExitFullscreen(){
+  var box=$('geoMapBox'); if(!box||!_geoFullscreen) return;
+  box.classList.remove('geo-fs'); _geoSetFsSizing(false); _geoFullscreen=false;
+  var b=$('geoFsBtn'); if(b){ b.innerHTML=_expandI; b.title='Full screen'; }
+  document.removeEventListener('keydown',_geoEscHandler);
+}
+function _geoEscHandler(e){ if(e.key==='Escape') geoExitFullscreen(); }
+
+/* ---- country drill: zoom/pan to fit the country's bbox + fetch its ranked regions (fetched on demand, not in
+   the main loadAll batch) ---- */
+function geoSelectCountry(code){
+  code=String(code||'').toUpperCase(); if(!code) return;
+  var w=_geoWorldEntry(code); if(!w||!w.d) return;
+  _geoDrillCountry=code; _geoFitTo(w.d,true);
+  var back=$('geoBackBtn'); if(back) back.style.display='block';
+  var lst=$('geoList'); if(lst) lst.style.display='none';
+  var dr=$('geoDrill'); if(dr){ dr.style.display='block'; dr.innerHTML='<div class="mut" style="font-size:12.5px;padding:6px 0">Loading '+esc(_cn(code))+' regions&hellip;</div>'; }
+  _geoFetchRegions(code);
+}
+function geoBackToWorld(){
+  _geoDrillCountry=null; _geoZoom={k:1,tx:0,ty:0}; _geoApply(true);
+  var back=$('geoBackBtn'); if(back) back.style.display='none';
+  var lst=$('geoList'); if(lst) lst.style.display='';
+  var dr=$('geoDrill'); if(dr){ dr.style.display='none'; dr.innerHTML=''; }
+}
+function _geoFetchRegions(code){
+  var dr=$('geoDrill'), reqCode=code;
+  api('/api/admin/visits-geo?range='+_range+'&country='+encodeURIComponent(code)).then(function(r){
+    if(_geoDrillCountry!==reqCode || !dr) return;   // the user moved on (back-to-world / a different country) before this landed -- drop the stale response
+    var j=r.json||{};
+    if(!(j&&j.ok)){ dr.innerHTML='<div class="mut" style="font-size:12.5px;padding:6px 0">Could not load region data.</div>'; return; }
+    var regions=j.regions||[], rtotal=j.total||0;
+    var head='<div class="desc" style="margin:0 0 6px;display:flex;align-items:center;gap:8px"><b style="text-transform:none;letter-spacing:0;font-size:13px;color:var(--ink)">'+esc(_cn(code))+'</b><span class="mut">'+nfmt(rtotal)+' located views</span></div>';
+    if(!regions.length){ dr.innerHTML=head+'<div class="mut" style="font-size:12.5px">No region-level data yet &mdash; it accrues as visitors arrive.</div>'; return; }
+    dr.innerHTML=head+regions.slice(0,20).map(function(rg){ var pct=rtotal?Math.round(rg.views/rtotal*100):0;
+      return '<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0"><span style="width:160px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(rg.region||'-')+'</span><div style="flex:1;height:6px;background:#16241d;border-radius:6px;overflow:hidden"><i style="display:block;height:100%;width:'+pct+'%;background:var(--em)"></i></div><b class="num" style="width:54px;text-align:right">'+nfmt(rg.views)+'</b></div>'; }).join('');
+  }).catch(function(){ if(_geoDrillCountry===reqCode && dr) dr.innerHTML='<div class="mut" style="font-size:12.5px">Could not load region data.</div>'; });
+}
+
+/* ---- pan/zoom/tap wiring -- attached exactly once, when the SVG is first built ---- */
+function _geoWireInteractions(){
+  var svg=$('geoSvg'), tip=$('geoTip'), box=$('geoMapBox'); if(!svg||!box) return;
+  var _last=null;
+  function clearHover(){ if(_last){ _last.style.filter=''; _last=null; } if(tip) tip.style.display='none'; }
+  svg.addEventListener('mousemove',function(e){
+    if(_geoDrag) return;
+    var t=e.target; if(!t||t.tagName!=='path'||!t.getAttribute('data-n')){ clearHover(); return; }
+    if(_last!==t){ if(_last)_last.style.filter=''; _last=t; t.style.filter='brightness(1.4)'; }
+    var v=+(t.getAttribute('data-v')||0), gtot=(DATA.geo&&DATA.geo.total)||0, pct= gtot? Math.round(v/gtot*100):0, code=t.getAttribute('data-c');
+    tip.innerHTML='<b>'+esc(t.getAttribute('data-n'))+'</b>'+(code?(' <span class="mut">'+esc(code)+'</span>'):'')+'<br>'+nfmt(v)+' visit'+(v===1?'':'s')+(v?(' &middot; '+pct+'%'):'');
+    var r=box.getBoundingClientRect(), tw=tip.offsetWidth, th=tip.offsetHeight;
+    tip.style.display='block'; tip.style.left=Math.max(4,Math.min(e.clientX-r.left+12, r.width-tw-6))+'px'; tip.style.top=Math.max(4,(e.clientY-r.top)-th-8)+'px';
+  });
+  svg.addEventListener('mouseleave',clearHover);
+
+  box.addEventListener('wheel',function(e){
+    e.preventDefault();
+    var vb=_geoClientToVb(svg,e.clientX,e.clientY);
+    _geoZoomAt(vb.x,vb.y,Math.pow(1.0016,-e.deltaY));
+    _geoApply(false);
+  },{passive:false});
+
+  box.addEventListener('mousedown',function(e){
+    if(e.button!==0) return;
+    _geoMoved=0;
+    _geoDrag={ startVb:_geoClientToVb(svg,e.clientX,e.clientY), tx0:_geoZoom.tx, ty0:_geoZoom.ty, downX:e.clientX, downY:e.clientY, target:e.target };
+    clearHover();
+  });
+  window.addEventListener('mousemove',function(e){
+    if(!_geoDrag) return;
+    _geoMoved=Math.max(_geoMoved, Math.abs(e.clientX-_geoDrag.downX)+Math.abs(e.clientY-_geoDrag.downY));
+    var cur=_geoClientToVb(svg,e.clientX,e.clientY);
+    _geoZoom.tx=_geoDrag.tx0+(cur.x-_geoDrag.startVb.x); _geoZoom.ty=_geoDrag.ty0+(cur.y-_geoDrag.startVb.y);
+    _geoClamp(); _geoApply(false);
+  });
+  window.addEventListener('mouseup',function(){
+    if(!_geoDrag) return;
+    var wasTap=_geoMoved<6, tgt=_geoDrag.target; _geoDrag=null;
+    if(wasTap && tgt && tgt.tagName==='path'){ var code=tgt.getAttribute('data-c'); if(code) geoSelectCountry(code); }
+  });
+
+  box.addEventListener('touchstart',function(e){
+    if(e.touches.length===1){
+      var t0=e.touches[0]; _geoMoved=0; _geoPinch=null;
+      _geoDrag={ startVb:_geoClientToVb(svg,t0.clientX,t0.clientY), tx0:_geoZoom.tx, ty0:_geoZoom.ty, downX:t0.clientX, downY:t0.clientY, target:e.target };
+    } else if(e.touches.length===2){
+      _geoDrag=null;
+      var a=e.touches[0], b=e.touches[1];
+      var d0=Math.sqrt(Math.pow(b.clientX-a.clientX,2)+Math.pow(b.clientY-a.clientY,2));
+      var midVb=_geoClientToVb(svg,(a.clientX+b.clientX)/2,(a.clientY+b.clientY)/2);
+      _geoPinch={ d0:Math.max(1,d0), k0:_geoZoom.k, px:(midVb.x-_geoZoom.tx)/_geoZoom.k, py:(midVb.y-_geoZoom.ty)/_geoZoom.k };
+      e.preventDefault();
+    }
+  },{passive:false});
+  box.addEventListener('touchmove',function(e){
+    if(e.touches.length===1 && _geoDrag){
+      var t0=e.touches[0];
+      _geoMoved=Math.max(_geoMoved, Math.abs(t0.clientX-_geoDrag.downX)+Math.abs(t0.clientY-_geoDrag.downY));
+      var cur=_geoClientToVb(svg,t0.clientX,t0.clientY);
+      _geoZoom.tx=_geoDrag.tx0+(cur.x-_geoDrag.startVb.x); _geoZoom.ty=_geoDrag.ty0+(cur.y-_geoDrag.startVb.y);
+      _geoClamp(); _geoApply(false); e.preventDefault();
+    } else if(e.touches.length===2 && _geoPinch){
+      var a=e.touches[0], b=e.touches[1];
+      var d1=Math.sqrt(Math.pow(b.clientX-a.clientX,2)+Math.pow(b.clientY-a.clientY,2));
+      var midVb=_geoClientToVb(svg,(a.clientX+b.clientX)/2,(a.clientY+b.clientY)/2);
+      var kNew=Math.min(GEO_ZMAX,Math.max(GEO_ZMIN, _geoPinch.k0*(d1/_geoPinch.d0)));
+      _geoZoom.k=kNew; _geoZoom.tx=midVb.x-_geoPinch.px*kNew; _geoZoom.ty=midVb.y-kNew*_geoPinch.py;
+      _geoClamp(); _geoApply(false); e.preventDefault();
+    }
+  },{passive:false});
+  box.addEventListener('touchend',function(e){
+    if(e.touches.length===0){
+      if(_geoPinch){ _geoPinch=null; }
+      else if(_geoDrag){ var wasTap=_geoMoved<6, tgt=_geoDrag.target; _geoDrag=null; if(wasTap && tgt && tgt.tagName==='path'){ var code=tgt.getAttribute('data-c'); if(code) geoSelectCountry(code); } }
+    } else if(e.touches.length===1){ _geoPinch=null; _geoDrag=null; }   // dropped from 2 fingers to 1 -- end the gesture rather than resuming a stale drag
+  });
+}
+
+function _geoRenderList(list,total){
+  var ge=$('geoList'); if(!ge) return;
+  if(!list.length){ ge.innerHTML='<div class="mut" style="font-size:12.5px">No located visits yet in this window. Countries fill in as your booking pages get traffic &mdash; from Cloudflare\'s edge geo, with no IPs or PII stored.</div>'; return; }
+  var nm={}; ATLAS_WORLD.forEach(function(c){ if(c.c) nm[c.c]=c.n; });
+  ge.innerHTML='<div class="desc" style="margin:0 0 6px">Top countries &middot; click one to drill in</div>'+list.slice(0,12).map(function(r){ var pct=total?Math.round(r.views/total*100):0, code=String(r.country||'').toUpperCase().replace(/[^A-Z]/g,'');
+    return '<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0;cursor:pointer" onclick="geoSelectCountry(\''+code+'\')"><span style="width:160px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(nm[code]||code)+'</span><div style="flex:1;height:6px;background:#16241d;border-radius:6px;overflow:hidden"><i style="display:block;height:100%;width:'+pct+'%;background:var(--em)"></i></div><b class="num" style="width:54px;text-align:right">'+nfmt(r.views)+'</b></div>'; }).join('');
+}
+
 function renderGeo(){ var el=$('geoMap'); if(!el) return; var g=DATA.geo||{}; var list=g.countries||[]; var total=g.total||0;
   var gr=$('geoRange'); if(gr) gr.textContent=(g.range&&g.range.label)||'';
   var gs=$('geoSub'); if(gs) gs.textContent= total? (nfmt(total)+' located views / '+list.length+' countries') : '';
   if(!_worldReady()){ el.innerHTML='<div class="mut" style="padding:20px">Map data unavailable.</div>'; return; }
   var byCode={}; list.forEach(function(r){ byCode[String(r.country||'').toUpperCase()]=r.views||0; });
   var max=list.length? Math.max.apply(null,list.map(function(r){return r.views||0;})) : 0;
-  var paths=ATLAS_WORLD.map(function(c){ var v=byCode[c.c]||0; var fill=c.c? _geoShade(v,max):'#16241d';
-    return '<path d="'+c.d+'" fill="'+fill+'" stroke="#0b1512" stroke-width="0.4" fill-rule="evenodd" data-c="'+esc(c.c)+'" data-n="'+esc(c.n)+'" data-v="'+v+'"></path>'; }).join('');
-  el.innerHTML='<svg viewBox="0 0 1000 500" style="width:100%;height:auto;display:block" id="geoSvg">'+paths+'</svg>';
-  var svg=$('geoSvg'), tip=$('geoTip'), box=$('geoMapBox'); var _last=null;
-  function clear(){ if(_last){ _last.style.filter=''; _last=null; } tip.style.display='none'; }
-  svg.addEventListener('mousemove',function(e){ var t=e.target; if(!t||t.tagName!=='path'||!t.getAttribute('data-n')){ clear(); return; }
-    if(_last!==t){ if(_last)_last.style.filter=''; _last=t; t.style.filter='brightness(1.4)'; }
-    var v=+(t.getAttribute('data-v')||0), pct= total? Math.round(v/total*100):0, code=t.getAttribute('data-c');
-    tip.innerHTML='<b>'+esc(t.getAttribute('data-n'))+'</b>'+(code?(' <span class="mut">'+esc(code)+'</span>'):'')+'<br>'+nfmt(v)+' visit'+(v===1?'':'s')+(v?(' &middot; '+pct+'%'):'');
-    var r=box.getBoundingClientRect(), tw=tip.offsetWidth, th=tip.offsetHeight;
-    tip.style.display='block'; tip.style.left=Math.max(4,Math.min(e.clientX-r.left+12, r.width-tw-6))+'px'; tip.style.top=Math.max(4,(e.clientY-r.top)-th-8)+'px'; });
-  svg.addEventListener('mouseleave',clear);
-  var ge=$('geoList'); if(ge){ if(!list.length){ ge.innerHTML='<div class="mut" style="font-size:12.5px">No located visits yet in this window. Countries fill in as your booking pages get traffic &mdash; from Cloudflare\'s edge geo, with no IPs or PII stored.</div>'; }
-    else { var nm={}; ATLAS_WORLD.forEach(function(c){ if(c.c) nm[c.c]=c.n; });
-      ge.innerHTML='<div class="desc" style="margin:0 0 6px">Top countries</div>'+list.slice(0,12).map(function(r){ var pct=total?Math.round(r.views/total*100):0, code=String(r.country||'').toUpperCase();
-        return '<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0"><span style="width:160px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(nm[code]||code)+'</span><div style="flex:1;height:6px;background:#16241d;border-radius:6px;overflow:hidden"><i style="display:block;height:100%;width:'+pct+'%;background:var(--em)"></i></div><b class="num" style="width:54px;text-align:right">'+nfmt(r.views)+'</b></div>'; }).join(''); } }
+  if(!_geoBuilt){
+    var paths=ATLAS_WORLD.map(function(c){ var v=byCode[c.c]||0; var fill=c.c? _geoShade(v,max):'#16241d';
+      return '<path d="'+c.d+'" fill="'+fill+'" stroke="#0b1512" stroke-width="0.4" fill-rule="evenodd" data-c="'+esc(c.c)+'" data-n="'+esc(c.n)+'" data-v="'+v+'"></path>'; }).join('');
+    el.innerHTML='<svg viewBox="0 0 '+GEO_VB_W+' '+GEO_VB_H+'" style="width:100%;height:auto;display:block" id="geoSvg" preserveAspectRatio="xMidYMid meet"><g id="geoZoomG">'+paths+'</g></svg>';
+    _geoApply(false);
+    _geoWireInteractions();
+    _geoBuilt=true;
+  } else {
+    var paths2=document.querySelectorAll('#geoZoomG path');
+    for(var i=0;i<paths2.length && i<ATLAS_WORLD.length;i++){
+      var c2=ATLAS_WORLD[i], v2=byCode[c2.c]||0, fill2=c2.c? _geoShade(v2,max):'#16241d';
+      paths2[i].setAttribute('fill',fill2); paths2[i].setAttribute('data-v',v2);
+    }
+  }
+  _geoRenderList(list,total);
+  if(_geoDrillCountry) _geoFetchRegions(_geoDrillCountry);   // keep the open region panel fresh across range changes/periodic refreshes
 }
 /* ================= purchases (itemized + filtered) ================= */
 function _purKindLabel(k){ return ({subscription:'Subscription',plan:'Subscription',credits:'Credits',website:'Website',domain:'Domain',trial:'Trial'})[k] || (k? (k.charAt(0).toUpperCase()+k.slice(1)) : 'Other'); }
