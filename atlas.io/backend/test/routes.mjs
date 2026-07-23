@@ -1253,6 +1253,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     const SID = 'sid_wg_' + opts.scn, CSRF = 'csrf_wg_' + opts.scn, TEN = 't_wg_' + opts.scn, UID = 'u_wg_' + opts.scn;
     const email = opts.email || (opts.scn + '@member.com');
     const tenantRow = { id: TEN, tier: opts.tier || 'starter', website_addon: opts.website_addon || null, settings: JSON.stringify(opts.curSettings || {}), custom_domain: opts.custom_domain || null };
+    let _lastUpdate = null;   // #279: captures the args bound to the tenants UPDATE, so a test can inspect what was actually WRITTEN (not just the response status) -- purely additive, existing call sites that never read getLastUpdate() are unaffected.
     function stmt(sql) {
       let a = [];
       const api = {
@@ -1271,11 +1272,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           return null;
         },
         all: async () => ({ results: [] }),
-        run: async () => ({ success: true, meta: { changes: 1 } }),
+        run: async () => { if (/^UPDATE tenants SET/.test(sql)) _lastUpdate = { sql, args: a }; return { success: true, meta: { changes: 1 } }; },
       };
       return api;
     }
-    return { SID, CSRF, TEN, env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' } };
+    return { SID, CSRF, TEN, env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' }, getLastUpdate: () => _lastUpdate };
   }
   const wgReq = (method, path, cfg, body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + cfg.SID, 'x-csrf-token': cfg.CSRF, origin: 'https://atlasrental.io' }; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
 
@@ -1337,6 +1338,48 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   cfg = wgEnvFor({ scn: 'dom_entitled', gateOn: true, tier: 'starter', website_addon: 'mo', custom_domain: null });
   r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'example.com' }), cfg.env, ctx);
   ok(r.status === 200, '#278 flag ON: entitled tenant custom-domain connect (no prior domain) -> 200 (got ' + r.status + ')');
+}
+
+// ---- #279 LIVE-SITE CRITICAL: PUT /api/tenant/profile settings=? must MERGE, never blind-replace. Two real
+// callers PUT partial settings objects (publishBookingSite sends only {comms,publicSite}; the generic auto-mirror
+// _srvMirrorProfile dumps every OTHER top-level key but never models publicSite at all) -- a blind replace let
+// either one silently erase what the other owns, including dropping a LIVE customer booking link's publicSite
+// off the server while the dashboard still showed it published. Reuses the #278 wgEnvFor/wgReq harness (same
+// endpoint) plus its getLastUpdate() capture to inspect what was actually WRITTEN, not just the response status. ----
+{
+  // (a) an auto-mirror-shaped save (settings lacks publicSite entirely) must NOT drop a publicSite already stored.
+  let cfg = wgEnvFor({ scn: 'merge_keep_pubsite', gateOn: false, tier: 'starter', website_addon: null,
+    curSettings: { publicSite: { published: true, headline: 'Live site' }, website: { built: true, tagline: 'old tagline' } } });
+  let r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { comms: { email: true } } }), cfg.env, ctx);
+  ok(r.status === 200, '#279 (a) settings save with no publicSite key -> 200 (got ' + r.status + ')');
+  let upd = cfg.getLastUpdate();
+  let written = upd ? JSON.parse(upd.args[0]) : null;
+  ok(!!written && written.publicSite && written.publicSite.published === true, '#279 (a) MERGE: previously-stored publicSite.published survives a settings save that never mentions it (got ' + JSON.stringify(written && written.publicSite) + ')');
+  ok(!!written && written.website && written.website.built === true, '#279 (a) MERGE: other previously-stored top-level keys (e.g. settings.website) also survive (got ' + JSON.stringify(written && written.website) + ')');
+  ok(!!written && written.comms && written.comms.email === true, '#279 (a) the NEW key the body actually sent (comms) is applied (got ' + JSON.stringify(written && written.comms) + ')');
+
+  // (b) a publishBookingSite-shaped save (settings = {comms,publicSite} only) still stores publicSite -- and must
+  // NOT wipe an unrelated previously-stored key (e.g. settings.trackers) that publishBookingSite never mentions.
+  cfg = wgEnvFor({ scn: 'merge_publish', gateOn: false, tier: 'starter', website_addon: null,
+    curSettings: { trackers: { ga: 'UA-123' }, legal: { cancelPolicy: 'strict' } } });
+  r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { comms: { email: true }, publicSite: { published: true, headline: 'Rent with us' } } }), cfg.env, ctx);
+  ok(r.status === 200, '#279 (b) publish (settings has publicSite) -> 200 (got ' + r.status + ')');
+  upd = cfg.getLastUpdate();
+  written = upd ? JSON.parse(upd.args[0]) : null;
+  ok(!!written && written.publicSite && written.publicSite.published === true, '#279 (b) publishing still stores publicSite.published:true (got ' + JSON.stringify(written && written.publicSite) + ')');
+  ok(!!written && written.trackers && written.trackers.ga === 'UA-123', '#279 (b) MERGE: publishBookingSite\'s narrow payload no longer wipes an unrelated stored key like settings.trackers (got ' + JSON.stringify(written && written.trackers) + ')');
+  ok(!!written && written.legal && written.legal.cancelPolicy === 'strict', '#279 (b) MERGE: ...or settings.legal (got ' + JSON.stringify(written && written.legal) + ')');
+
+  // (c) invariant check: a top-level key that IS present in the body must still fully REPLACE (not union/append)
+  // the stored value -- this is how "delete a promo" / "hide a nav item" already work (resend the whole trimmed
+  // array/object under its unchanged top-level key), and the merge must not turn that into an accidental restore.
+  cfg = wgEnvFor({ scn: 'merge_replace_not_union', gateOn: false, tier: 'starter', website_addon: null,
+    curSettings: { promos: [{ id: 'p1', code: 'SAVE10' }, { id: 'p2', code: 'SAVE20' }] } });
+  r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { promos: [{ id: 'p1', code: 'SAVE10' }] } }), cfg.env, ctx);
+  ok(r.status === 200, '#279 (c) resending a trimmed settings.promos array -> 200 (got ' + r.status + ')');
+  upd = cfg.getLastUpdate();
+  written = upd ? JSON.parse(upd.args[0]) : null;
+  ok(!!written && Array.isArray(written.promos) && written.promos.length === 1 && written.promos[0].id === 'p1', '#279 (c) a PRESENT top-level key still fully replaces (deleting promo p2 by resending the trimmed array actually removes it, merge does not resurrect it) (got ' + JSON.stringify(written && written.promos) + ')');
 }
 
 // ---- #278 (cont.): the PUBLIC served site is NEVER blocked by this feature -- only the PUBLISH/CONNECT actions

@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19z';
+const ATLAS_BUILD = '2026.07.19aa';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3980,23 +3980,39 @@ function doReset(){
           if (body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }
           if (body.settings && typeof body.settings === 'object') {
             // ---- #278 FEATURE-LEVEL PAYMENT GATING: server-authoritative, flag-gated OFF by default (platform_config.
-            // feature_gate_enabled). While OFF, this whole block is a single cheap _pcfgGet read and NOTHING else
-            // changes -- publishing behaves byte-identical to before this feature existed. Building/editing/previewing
-            // the site (this same PUT, with settings.publicSite.published anything other than true) is ALWAYS free --
-            // only actually GOING live requires entitlement. NEVER-BREAK-A-LIVE-SITE: reads the tenant's CURRENT
-            // (pre-update) published state first -- if it is already published, this save is allowed through
-            // unchanged no matter what (grandfather), and the entitlement column is stamped right now so the very
-            // next request never has to re-derive it (see _grandfatherWebsite).
+            // feature_gate_enabled). Building/editing/previewing the site (this same PUT, with settings.publicSite.
+            // published anything other than true) is ALWAYS free -- only actually GOING live requires entitlement.
+            // NEVER-BREAK-A-LIVE-SITE: reads the tenant's CURRENT (pre-update) row first -- if it is already
+            // published, this save is allowed through unchanged no matter what (grandfather), and the entitlement
+            // column is stamped right now so the very next request never has to re-derive it (see _grandfatherWebsite).
+            // #279: that same pre-update row is now ALSO the merge base for every settings write below, so reading it
+            // is no longer conditional on the gate flag -- one cheap indexed PK lookup either way (the "flag OFF ->
+            // byte-identical" promise still holds for the 402/grandfather GATING logic itself, just not for this read).
             const _wantsPublish = !!(body.settings.publicSite && body.settings.publicSite.published === true);
+            const _cur279 = await env.DB.prepare('SELECT id,tier,website_addon,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+            const _curSettings279 = _cur279 ? jparse(_cur279.settings, {}) : {};
             if (_wantsPublish && (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1') {
               await ensurePlatformSchema(env);   // this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady)
-              const _cur278 = await env.DB.prepare('SELECT id,tier,website_addon,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
-              const _curSettings278 = _cur278 ? jparse(_cur278.settings, {}) : {};
-              const _alreadyPublished278 = !!(_curSettings278.publicSite && _curSettings278.publicSite.published);
-              if (_alreadyPublished278) { await _grandfatherWebsite(env, _cur278); }
-              else if (!_websiteEntitled(_cur278, ctx.isOwner, ctx.comp)) { return json({ error: 'website_addon_required' }, 402); }
+              const _alreadyPublished278 = !!(_curSettings279.publicSite && _curSettings279.publicSite.published);
+              if (_alreadyPublished278) { await _grandfatherWebsite(env, _cur279); }
+              else if (!_websiteEntitled(_cur279, ctx.isOwner, ctx.comp)) { return json({ error: 'website_addon_required' }, 402); }
             }
-            sets.push('settings=?'); vals.push(JSON.stringify(body.settings));
+            // #279 FIX (LIVE-SITE CRITICAL): shallow-MERGE body.settings over the row read above instead of blind-
+            // replacing the whole settings column. Root cause: two different callers PUT PARTIAL settings objects --
+            // publishBookingSite (atlas.html) sends only {comms,publicSite}, while the generic auto-mirror
+            // (_srvMirrorProfile, fires ~1.5s after ANY dashboard edit via _srvSyncSoon) dumps every OTHER top-level
+            // client-state key but never models publicSite at all. Under a blind replace those two stomp each other:
+            // publishing wipes settings.website/trackers/legal/etc, and the very next unrelated edit's auto-sync
+            // wipes settings.publicSite right back off -- silently 404-ing a LIVE customer booking link while the
+            // dashboard still shows "published". Traced every PUT /api/tenant/profile caller in atlas.html -- neither
+            // one omits a top-level settings key to mean "delete this key" (the mirror is a superset dump of local
+            // state; publishBookingSite is a narrow single-purpose write), so a shallow top-level merge is safe: any
+            // key the body DOES send still fully replaces that key's old value unchanged (e.g. removing a promo by
+            // resending the trimmed settings.promos array, or hiding a nav item via settings.nav, both still overwrite
+            // exactly as before) -- only keys ABSENT from body.settings change behavior, from silently-deleted to
+            // preserved.
+            const _mergedSettings279 = Object.assign({}, _curSettings279, body.settings);
+            sets.push('settings=?'); vals.push(JSON.stringify(_mergedSettings279));
           }
           if (vStr(body.name, 120)) { sets.push('name=?'); vals.push(body.name.slice(0, 120)); }
           if (typeof body.subdomain === 'string') {
