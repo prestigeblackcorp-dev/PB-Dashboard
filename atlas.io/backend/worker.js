@@ -472,7 +472,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19aq';
+const ATLAS_BUILD = '2026.07.19ar';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2080,8 +2080,8 @@ async function _adminIdentity(req, env) {
   try {
     const _sc = await resolveSession(env, req);
     if (_sc && _sc.isOwner && _sc.user && _isOwnerEmail(env, _sc.user.email)) {
-      var _acs = await _ownerControlState(env, _sc.user.email);   // TAKE CONTROL: a FROZEN owner loses master-dash authority
-      if (!_acs.frozen) return { actor: _sc.user.email, role: 'owner', via: 'owner-session', staffId: null, tier: _ownerTier(env, _sc.user.email) };
+      var _acs = await _ownerControlState(env, _sc.user.email);   // TAKE CONTROL: a FROZEN or DATA-LOCKED owner loses master-dash authority (freeze also blocks login; data-lock only strips the dash + platform logs/kpi/data)
+      if (!_acs.frozen && !_acs.data_locked) return { actor: _sc.user.email, role: 'owner', via: 'owner-session', staffId: null, tier: _ownerTier(env, _sc.user.email) };
     }
   } catch (e) { /* never let a session-lookup error open or crash admin auth */ }
   const presented = req.headers.get('X-Admin-Token') || '';
@@ -2708,6 +2708,21 @@ export default {
         if (!user || !ok) { await audit(env, null, req, 'login_fail', { email: body.email.toLowerCase() }); return err(401, 'Wrong email or password.'); }
         // TAKE CONTROL: a FROZEN owner account is locked out at the door (a higher-tier super-admin stripped its access).
         try { if (_isOwnerEmail(env, user.email)) { const _lc = await _ownerControlState(env, user.email); if (_lc.frozen) { await audit(env, null, req, 'owner.login_frozen', { email: user.email }); return err(403, 'This account is suspended.'); } } } catch (e) {}
+        // TAKE CONTROL: no-anonymizer rule for the PRIMARY owner (flag `primary_no_anon`, OFF by default). When on, a
+        // tier-1 primary login from a VPN/proxy/Tor/datacenter IP is refused so the true IP can never be masked. The
+        // super-admin backup (tier>=2) is ALWAYS exempt -- break-glass recovery must never be VPN-locked. Fails OPEN on
+        // any lookup error so a reputation-service hiccup can never lock the real owner out.
+        try {
+          if (_ownerTier(env, user.email) === 1 && (await _pcfgGet(env, 'primary_no_anon', '0')) === '1') {
+            const _lip = req.headers.get('CF-Connecting-IP') || '';
+            const _lrep = await _ipReputation(env, _lip, (req.cf && req.cf.asOrganization) || '');
+            if (_lrep && _lrep.anon) {
+              await audit(env, null, req, 'owner.login_anon_blocked', { email: user.email, ip: _lip, as_org: (req.cf && req.cf.asOrganization) || '', type: _lrep.type || '' });
+              _logAttack(env, _ectx, { ip: _lip, email: user.email, kind: 'primary_anon_block', path: path, method: method, blocked: 1, outcome: '403 VPN/proxy blocked', ua: (req.headers.get('User-Agent') || '') });
+              return err(403, 'For security, this account cannot be accessed over a VPN or proxy. Connect directly and try again.');
+            }
+          }
+        } catch (e) {}
         await env.DB.prepare('UPDATE users SET last_login=? WHERE id=?').bind(Date.now(), user.id).run();
         // Transparently upgrade a legacy single-100k hash to the 600k scheme now that we hold the plaintext.
         if (pwNeedsUpgrade(user.pw_hash)) { try { const _up = await hashPassword(body.password); await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_up.hash, _up.salt, user.id).run(); } catch (e) {} }
@@ -3743,6 +3758,7 @@ function doReset(){
           // a protected endpoint -- independent of #276's payment_gate_enabled (this can be on while that is off,
           // and vice versa). This route is already OWNER_ONLY (path starts with /api/admin/config).
           if (typeof b.trial_requires_card !== 'undefined') { await _pcfgSet(env, 'trial_requires_card', b.trial_requires_card ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { trial_requires_card: !!b.trial_requires_card }); }
+          if (typeof b.primary_no_anon !== 'undefined' && _reqTier >= 2) { await _pcfgSet(env, 'primary_no_anon', b.primary_no_anon ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { primary_no_anon: !!b.primary_no_anon }); }   // TAKE CONTROL: super-admin-only (a compromised primary can't disable its own VPN block)
           // #286: owner-entered fixed monthly platform costs (Cloudflare, Resend, Twilio, ...) -- feeds the P&L
           // Expenses block. Sanitized + capped (max 50 rows, label <=80 chars, monthly_cents clamped to a sane
           // $0-$1,000,000/mo range) so a typo or a hostile body can never write an absurd or unbounded value.
@@ -4352,6 +4368,58 @@ function doReset(){
           const _ir = await env.DB.prepare('SELECT id,ts,ip,geo,asn,as_org,ua,fingerprint,action,typed,is_anon,anon_detail FROM owner_incidents WHERE target_email=? ORDER BY ts DESC LIMIT ?').bind(_iem, _ilim).all();
           const _rows = (_ir.results || []).map(function (r) { return { id: r.id, ts: r.ts, ip: r.ip, geo: jparse(r.geo, {}), asn: r.asn, as_org: r.as_org, ua: r.ua, fingerprint: jparse(r.fingerprint, null), action: r.action, typed: r.typed, is_anon: !!r.is_anon, anon_detail: jparse(r.anon_detail, null) }; });
           return json({ ok: true, target: _iem, incidents: _rows, count: _rows.length });
+        }
+        // TAKE CONTROL stage 3 -- RECREATE (force new credentials): scramble the password (old one dies) + clear MFA +
+        // revoke sessions, then email the target a fresh password-reset link so the real owner sets new creds. Not a
+        // freeze (login itself still works once they reset).
+        if (path === '/api/admin/owner/reset-creds' && method === 'POST') {
+          const _rb = await req.json().catch(() => ({}));
+          const _rem = String(_rb.email || '').toLowerCase();
+          const _rg = _ownerMgmtGuard(env, _reqTier, _rem);
+          if (!_rg.ok) return err(_rg.status, _rg.msg);
+          const _ru = await env.DB.prepare('SELECT id,email FROM users WHERE email=?').bind(_rem).first();
+          if (!_ru) return err(404, 'That owner has no account yet.');
+          const _scr = await hashPassword('x' + randId(40));
+          await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=?,mfa_method=?,mfa_secret=NULL,mfa_backup_json=NULL WHERE id=?').bind(_scr.hash, _scr.salt, 'off', _ru.id).run();
+          try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=?').bind(Date.now(), _ru.id).run(); } catch (e) {}
+          let _rsent = false; try { const _rm = await _sendResetEmail(env, _ru.id, _ru.email); _rsent = !!(_rm && _rm.sent); } catch (e) {}
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control', { action: 'reset_creds', target: _rem, target_tier: _rg.tier, reset_email: _rsent });
+          return json({ ok: true, reset_email_sent: _rsent });
+        }
+        // DATA-LOCK: strip the target's access to the platform logs/kpi/data (master dash) while preserving all records
+        // as evidence. They can still log in (unlike freeze) -- they just can't view anything. Reversible.
+        if (path === '/api/admin/owner/data-lock' && method === 'POST') {
+          const _lb = await req.json().catch(() => ({}));
+          const _lem = String(_lb.email || '').toLowerCase(), _lon = (_lb.on !== false);
+          const _lg = _ownerMgmtGuard(env, _reqTier, _lem);
+          if (!_lg.ok) return err(_lg.status, _lg.msg);
+          const _lnow = Date.now();
+          await env.DB.prepare('INSERT INTO owner_control (email,data_locked,updated_at) VALUES (?,?,?) ON CONFLICT(email) DO UPDATE SET data_locked=?,updated_at=?').bind(_lem, _lon ? 1 : 0, _lnow, _lon ? 1 : 0, _lnow).run();
+          _ownerControlBust(_lem);
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control', { action: _lon ? 'data_lock' : 'data_unlock', target: _lem, target_tier: _lg.tier });
+          return json({ ok: true, data_locked: _lon });
+        }
+        // KILL SWITCH -- DELETE: typed-confirm + LAST-OWNER safeguard. Removes the user row + soft-deletes its tenant +
+        // revokes sessions. The email stays an owner slot (env), so it can be re-claimed fresh via signup + setup token.
+        if (path === '/api/admin/owner/delete' && method === 'POST') {
+          const _db3 = await req.json().catch(() => ({}));
+          const _dem = String(_db3.email || '').toLowerCase();
+          const _dg = _ownerMgmtGuard(env, _reqTier, _dem);
+          if (!_dg.ok) return err(_dg.status, _dg.msg);
+          if (String(_db3.confirm || '').toLowerCase() !== _dem) return err(400, 'Type the exact email to confirm deletion.');
+          const _du = await env.DB.prepare('SELECT id,tenant_id FROM users WHERE email=?').bind(_dem).first();
+          if (!_du) return err(404, 'That owner has no account to delete.');
+          const _owEmails = [env.OWNER_EMAIL, env.OWNER_EMAIL_2, env.OWNER_EMAIL_3].filter(Boolean).map(function (e) { return String(e).toLowerCase(); });
+          let _existing = 0; for (let _k = 0; _k < _owEmails.length; _k++) { try { const _ex = await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(_owEmails[_k]).first(); if (_ex) _existing++; } catch (e) {} }
+          if (_existing <= 1) return err(409, 'Refused: this is the last remaining owner account.');
+          const _dnow = Date.now();
+          try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=?').bind(_dnow, _du.id).run(); } catch (e) {}
+          try { await env.DB.prepare('DELETE FROM users WHERE id=?').bind(_du.id).run(); } catch (e) {}
+          if (_du.tenant_id) { try { await env.DB.prepare('UPDATE tenants SET deleted_at=?, updated_at=? WHERE id=?').bind(_dnow, _dnow, _du.tenant_id).run(); } catch (e) {} }
+          try { await env.DB.prepare('DELETE FROM owner_control WHERE email=?').bind(_dem).run(); } catch (e) {}
+          _ownerControlBust(_dem);
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control', { action: 'delete', target: _dem, target_tier: _dg.tier });
+          return json({ ok: true, deleted: true, reclaimable: true });
         }
 
         // Attack-attempt feed: attack_log (hot-path blocks/probes) UNION-merged with the audit_log rows already
