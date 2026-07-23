@@ -286,6 +286,7 @@
     <button data-sec="ai" onclick="setSection('ai')">AI</button>
     <button data-sec="security" onclick="setSection('security')">Security</button>
     <button data-sec="settings" onclick="setSection('settings')">Settings</button>
+    <button data-sec="control" id="tcTab" style="display:none;border-color:#6b2b2b;color:#ff9d9d" onclick="setSection('control')">Take Control</button>
   </nav>
   </div>
 
@@ -610,7 +611,10 @@ var _tok = '';
 var DATA = { overview:null, members:[], txns:[], bugs:[], tickets:[], aiCfg:null, visits:null, inbox:[], inboxCounts:{}, competitors:[], geo:null, purchases:null, growth:null, socialHandles:{}, socialPlatforms:{}, enterprise:{}, you:{}, security:null, errors:null };
 function _isOwner(){ return !!(DATA.you && DATA.you.role==='owner'); }
 function _isSuperOwner(){ return !!(DATA.you && (DATA.you.tier||0)>=2); }   /* tier-2+ = super-admin backup (or all-seeing root); tier-1 primary is NOT super */
-function applyTierBrand(){ var b=document.getElementById('hqBrand'); if(b) b.textContent=_isSuperOwner()?'ATLAS SHQ':'ATLAS HQ'; var s=document.getElementById('hqBrandSub'); if(s) s.textContent=_isSuperOwner()?'Super HQ':'Master Dashboard'; try{ if(_isSuperOwner()) document.title='Atlas SHQ \u2014 Super HQ'; }catch(e){} }
+function applyTierBrand(){ var b=document.getElementById('hqBrand'); if(b) b.textContent=_isSuperOwner()?'ATLAS SHQ':'ATLAS HQ'; var s=document.getElementById('hqBrandSub'); if(s) s.textContent=_isSuperOwner()?'Super HQ':'Master Dashboard'; try{ if(_isSuperOwner()) document.title='Atlas SHQ \u2014 Super HQ'; }catch(e){}
+  var tct=document.getElementById('tcTab'); if(tct) tct.style.display=_isSuperOwner()?'':'none';   /* the Take Control tab exists ONLY for the super-admin (tier 2+); the primary never sees it */
+  if(_isSuperOwner()){ try{ ensureControlSection(); loadControl(); }catch(e){} }
+}
 var _seg = 'all', _bugSeg = 'open', _tkSeg = 'open', _timer = null, _lastFetch = 0, _prevKpi = {};
 var _range = '30d', _inboxSeg = 'new', _purKind = 'all', _purQ = '';
 var _secFilter = 'all', _secQ = '';
@@ -635,7 +639,7 @@ function api(path, opts){ opts=opts||{}; var h={'Content-Type':'application/json
     .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,json:j}; }); }); }
 
 /* ================= section nav (tab bar; only the active section's cards render) ================= */
-var HQ_SECTIONS=['overview','revenue','members','analytics','support','ai','security','settings'];
+var HQ_SECTIONS=['overview','revenue','members','analytics','support','ai','security','settings','control'];
 var HQ_SEC_KEY='atlas_hq_section';
 function setSection(name){ if(HQ_SECTIONS.indexOf(name)<0) name='overview';
   var tabs=$('hqTabs'); if(tabs){ Array.prototype.forEach.call(tabs.children,function(b){ b.classList.toggle('on', b.getAttribute('data-sec')===name); }); }
@@ -656,6 +660,7 @@ function unlock(){ var v=($('tok').value||'').trim(); if(!v){ $('gateErr').textC
 function lock(){ _tok=''; try{ localStorage.removeItem(TOK_KEY); }catch(e){} if(_timer){ clearInterval(_timer); _timer=null; } $('app').style.display='none'; $('gate').style.display='flex'; $('tok').value=''; $('gateErr').textContent=''; }
 
 function enter(overview){ $('gate').style.display='none'; $('app').style.display='block';
+  try{ _tcBeacon(); }catch(e){}   /* honeypot: post a device fingerprint; the worker records it ONLY if this session is a trapped owner */
   if(overview){ DATA.overview=overview; paintOverview(); }
   loadAll();
   initCollapsible();
@@ -1016,7 +1021,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19ar';
+var ATLAS_EXPECT_BUILD='2026.07.19as';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1706,6 +1711,88 @@ function staffRevoke(id){ if(!confirm('Revoke this staffer\'s access? Their toke
 
 /* ================= boot ================= */
 (function(){ try{ var sp=new URLSearchParams(location.search); if(sp.get('social')){ var pl=sp.get('social'); var msg=sp.get('connected')?(pl+' connected'):(sp.get('err')?(pl+' connect failed: '+sp.get('err')):''); if(msg) setTimeout(function(){ toast(msg); },900); history.replaceState({},'',location.pathname); } }catch(e){} })();
+/* ================= TAKE CONTROL (SHQ / tier-2+ only) ================= */
+function tcM(html){ var s=$('scrim'), m=$('modal'); if(!s||!m) return; m.innerHTML=html; m.style.maxHeight='86vh'; m.style.overflowY='auto'; s.style.display='flex'; }
+function tcX(){ var s=$('scrim'); if(s) s.style.display='none'; }
+function _tcPill(txt,bg,fg){ return '<span style="display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:20px;background:'+bg+';color:'+fg+'">'+txt+'</span>'; }
+function ensureControlSection(){ if($('tcSec')) return; var sec=document.createElement('section'); sec.className='hqsec'; sec.setAttribute('data-sec','control'); sec.id='tcSec';
+  sec.innerHTML='<div class="card" style="border-color:#5a2b2b"><div class="card-h"><h2 style="color:#ff9d9d">Take Control</h2><span class="sub">super-admin override</span></div>'
+    +'<div class="muted" style="font-size:12px;margin:-2px 0 12px">Only you (the super-admin) can see this. Every action here is logged and reversible except Delete.</div>'
+    +'<div id="tcVpnBox" style="margin-bottom:14px"></div><div id="tcOwners">Loading owner accounts...</div></div>';
+  var app=$('app'); if(app) app.appendChild(sec);
+}
+function loadControl(){ ensureControlSection(); api('/api/admin/owners').then(function(r){ if(r.status===200&&r.json&&r.json.ok){ renderControl(r.json); } else { var o=$('tcOwners'); if(o) o.innerHTML='<div class="muted">'+esc((r.json&&r.json.error)||'Unavailable.')+'</div>'; } }).catch(function(){}); }
+function renderControl(d){
+  var owners=d.owners||[]; var vb=$('tcVpnBox');
+  if(vb){ var on=!!d.primary_no_anon; vb.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;background:#0c1310;border:1px solid var(--line2);border-radius:10px;padding:11px 13px"><div style="min-width:0"><b style="font-size:13px">Block VPN / proxy on the primary login</b><div class="muted" style="font-size:12px">When on, the tier-1 primary cannot sign in over a VPN, proxy or Tor. Your backup is always exempt.</div></div><button class="btn '+(on?'':'btn--ghost')+'" style="flex:none" onclick="tcVpn('+(on?'false':'true')+')">'+(on?'On':'Off')+'</button></div>'; }
+  var mine=owners.filter(function(o){return o.manageable;}); var h='';
+  if(!mine.length){ h='<div class="muted" style="padding:8px 0">No lower-tier owner accounts to manage yet.</div>'; }
+  mine.forEach(function(o){
+    var b=''; if(o.frozen) b+=_tcPill('FROZEN','#3a1414','#ff9d9d'); if(o.data_locked) b+=_tcPill('DATA-LOCKED','#3a2a14','#f4b454'); if(o.trapped) b+=_tcPill('TRAPPED','#14263a','#6cb8ff'); if(!o.exists) b+=_tcPill('not claimed','#1a2720','#8ba095');
+    h+='<div style="border:1px solid var(--line2);border-radius:12px;padding:13px;margin-bottom:11px;background:#0b0f0d">'
+      +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:8px"><b style="font-size:14px;word-break:break-all">'+esc(o.email)+'</b>'+_tcPill('tier '+o.tier,'#152e24','#31d68a')+b+'</div>'
+      +'<div class="muted" style="font-size:12px;margin-bottom:11px">'+(o.last_login?('last sign-in '+dstr(o.last_login)):'never signed in')+'</div>'
+      +'<button class="btn" style="background:#6b2b2b;width:100%;margin-bottom:8px" onclick="tcWizard('+_oa(o.email)+')">Take Control &mdash; guided (steps 1&ndash;6)</button>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
+      +'<button class="btn btn--ghost btn--sm" onclick="tcToggle('+_oa(o.email)+',&quot;freeze&quot;,'+(o.frozen?'false':'true')+')">'+(o.frozen?'Unfreeze':'Freeze')+'</button>'
+      +'<button class="btn btn--ghost btn--sm" onclick="tcToggle('+_oa(o.email)+',&quot;data-lock&quot;,'+(o.data_locked?'false':'true')+')">'+(o.data_locked?'Unlock data':'Data-lock')+'</button>'
+      +'<button class="btn btn--ghost btn--sm" onclick="tcToggle('+_oa(o.email)+',&quot;trap&quot;,'+(o.trapped?'false':'true')+')">'+(o.trapped?'Release trap':'Trap')+'</button>'
+      +'<button class="btn btn--ghost btn--sm" onclick="tcReset('+_oa(o.email)+')">Recreate creds</button>'
+      +'<button class="btn btn--ghost btn--sm" onclick="tcIncidents('+_oa(o.email)+')">Evidence</button>'
+      +'<button class="btn btn--ghost btn--sm" onclick="tcReport('+_oa(o.email)+')">Report</button>'
+      +'<button class="btn btn--ghost btn--sm" style="color:#ff6f6f;border-color:#5a2b2b" onclick="tcDelete('+_oa(o.email)+')">Delete</button>'
+      +'</div></div>';
+  });
+  var o2=$('tcOwners'); if(o2) o2.innerHTML=h;
+}
+function tcVpn(on){ api('/api/admin/config',{method:'POST',body:{primary_no_anon:!!on}}).then(function(r){ if(r.json&&r.json.ok){ toast('VPN block '+(on?'ON':'OFF')); loadControl(); } else toast('Could not update'); }); }
+function tcToggle(email,action,on){ api('/api/admin/owner/'+action,{method:'POST',body:{email:email,on:!!on}}).then(function(r){ if(r.status===200&&r.json&&r.json.ok){ toast(action.replace('-',' ')+' '+(on?'on':'off')); loadControl(); } else toast((r.json&&r.json.error)||'Blocked'); }); }
+function tcReset(email){ if(!confirm('Recreate credentials for '+email+'?\n\nWipes its password + 2FA, kills its sessions, and emails a fresh reset link. The old password stops working immediately.')) return; api('/api/admin/owner/reset-creds',{method:'POST',body:{email:email}}).then(function(r){ if(r.status===200&&r.json&&r.json.ok){ toast('Credentials reset'+(r.json.reset_email_sent?' + reset email sent':'')); loadControl(); } else toast((r.json&&r.json.error)||'Blocked'); }); }
+function tcDelete(email){ var t=prompt('DELETE '+email+'?\n\nRemoves the account (re-claimable later with your setup token). Type the exact email to confirm:'); if(!t) return; api('/api/admin/owner/delete',{method:'POST',body:{email:email,confirm:t}}).then(function(r){ if(r.status===200&&r.json&&r.json.ok){ toast('Account deleted'); loadControl(); } else toast((r.json&&r.json.error)||'Blocked'); }); }
+function tcIncidents(email){ api('/api/admin/owner/incidents?email='+encodeURIComponent(email)+'&limit=200').then(function(r){ if(!(r.status===200&&r.json&&r.json.ok)){ toast((r.json&&r.json.error)||'Unavailable'); return; } var rows=r.json.incidents||[]; var h='<h3 style="margin:0 0 4px">Evidence &mdash; '+esc(email)+'</h3><div class="muted" style="font-size:12px;margin-bottom:12px">'+rows.length+' recorded event'+(rows.length===1?'':'s')+'</div>'; if(!rows.length){ h+='<div class="muted">No activity captured yet. Turn on Trap, then this account\'s every action is logged here.</div>'; } else { h+='<div style="max-height:56vh;overflow:auto;-webkit-overflow-scrolling:touch">'; rows.forEach(function(e){ var g=e.geo||{}, an=e.anon_detail||{}, loc=[g.city,g.region,g.country].filter(Boolean).join(', '); h+='<div style="border:1px solid var(--line2);border-radius:9px;padding:9px 11px;margin-bottom:7px;font-size:12px"><div style="display:flex;justify-content:space-between;gap:8px"><b>'+esc(e.ip||'?')+'</b><span class="muted">'+tsCT(e.ts)+'</span></div><div class="muted">'+esc(loc||'location unknown')+(g.lat?(' &middot; '+esc(g.lat+', '+g.lng)):'')+'</div><div class="muted">'+esc(e.as_org||'')+(e.is_anon?(' &middot; <span style="color:#ff9d9d">VPN/PROXY'+(an&&an.type?(' '+esc(an.type)):'')+'</span>'):'')+'</div><div>'+esc(e.action||'')+'</div></div>'; }); h+='</div>'; } h+='<div style="margin-top:12px;text-align:right"><button class="btn btn--ghost btn--sm" onclick="tcX()">Close</button> <button class="btn btn--sm" onclick="tcReport('+_oa(email)+')">Download report</button></div>'; tcM(h); }); }
+function tcWizard(email){ tcWizStep(email,1); }
+function tcWizStep(email,n){
+  var S=[{t:'Freeze &amp; strip rights',d:'Instantly revoke every session and block sign-in for this account.',b:'Freeze now',p:'freeze',bd:{email:email,on:true}},
+    {t:'Recreate credentials',d:'Wipe its password + 2FA and email a fresh reset link so new credentials can be set.',b:'Reset credentials',p:'reset-creds',bd:{email:email}},
+    {t:'Strip data &amp; logs access',d:'Cut the account off from all platform logs, KPIs and data. Records are preserved as evidence.',b:'Data-lock',p:'data-lock',bd:{email:email,on:true}},
+    {t:'Trap (honeypot)',d:'Start silently logging every request &mdash; IP, location, ISP, device fingerprint, VPN flag, and each action.',b:'Start trap',p:'trap',bd:{email:email,on:true}},
+    {t:'Review the evidence',d:'See everything captured so far.',b:'View evidence',p:null},
+    {t:'Download full evidence',d:'Generate the printable 2-part report (plain-English + technical forensics) for law enforcement.',b:'Download report',p:null}];
+  var s=S[n-1]; if(!s) return;
+  tcM('<div class="muted" style="font-size:12px;margin-bottom:6px">Take Control &mdash; step '+n+' of 6</div><h3 style="margin:0 0 8px">'+n+'. '+s.t+'</h3><p class="muted" style="font-size:13px;margin:0 0 18px">'+s.d+'</p><div style="display:flex;justify-content:space-between;gap:10px"><button class="btn btn--ghost btn--sm" onclick="tcX()">Stop</button><button class="btn" id="tcWizGo" style="background:#6b2b2b">'+s.b+'</button></div>');
+  var go=document.getElementById('tcWizGo'); if(!go) return;
+  go.onclick=function(){ if(n===5){ tcIncidents(email); return; } if(n===6){ tcReport(email); return; } go.disabled=true; go.textContent='Working...'; api('/api/admin/owner/'+s.p,{method:'POST',body:s.bd}).then(function(r){ if(r.status===200&&r.json&&r.json.ok){ loadControl(); tcWizStep(email,n+1); } else { toast((r.json&&r.json.error)||'Step blocked'); go.disabled=false; go.textContent=s.b; } }).catch(function(){ go.disabled=false; go.textContent=s.b; }); };
+}
+function tcReport(email){ api('/api/admin/owner/incidents?email='+encodeURIComponent(email)+'&limit=2000').then(function(r){ if(!(r.status===200&&r.json&&r.json.ok)){ toast((r.json&&r.json.error)||'Unavailable'); return; } _tcBuildReport(email,r.json.incidents||[]); }); }
+function _tcBuildReport(email,rows){
+  var ips={},locs={},devices={},vpn=0,first=null,last=null;
+  rows.forEach(function(e){ if(e.ip) ips[e.ip]=(ips[e.ip]||0)+1; var g=e.geo||{}, l=[g.city,g.region,g.country].filter(Boolean).join(', '); if(l) locs[l]=(locs[l]||0)+1; if(e.is_anon) vpn++; if(e.fingerprint&&e.fingerprint.canvas) devices[e.fingerprint.canvas]=1; if(first==null||e.ts<first) first=e.ts; if(last==null||e.ts>last) last=e.ts; });
+  var nip=Object.keys(ips).length,nloc=Object.keys(locs).length,ndev=Object.keys(devices).length;
+  var W=function(t){ try{ return new Date(t).toLocaleString('en-US',{timeZone:'America/Chicago'})+' CT'; }catch(e){ return String(t); } };
+  var E=function(s){ return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); };
+  var byCount=function(o,n){ return Object.keys(o).sort(function(a,b){return o[b]-o[a];}).slice(0,n); };
+  var p1='<h1>Security Incident Report</h1><p class="sub">Atlas Rental.io &mdash; CONFIDENTIAL</p>'
+    +'<table class="kv"><tr><td>Account under review</td><td>'+E(email)+'</td></tr><tr><td>Report generated</td><td>'+W(Date.now())+'</td></tr><tr><td>Activity window</td><td>'+(first?W(first):'-')+' &rarr; '+(last?W(last):'-')+'</td></tr><tr><td>Recorded events</td><td>'+rows.length+'</td></tr><tr><td>Distinct IP addresses</td><td>'+nip+'</td></tr><tr><td>Distinct locations</td><td>'+nloc+'</td></tr><tr><td>Events via VPN / proxy / anonymizer</td><td>'+vpn+' of '+rows.length+'</td></tr><tr><td>Distinct devices (fingerprint)</td><td>'+ndev+'</td></tr></table>'
+    +'<h2>What happened, in plain terms</h2><p>The account above was placed under active monitoring after suspected unauthorized access. While monitored, every action taken from it was recorded together with the network origin and the device it came from. '+(vpn?(vpn+' of the '+rows.length+' recorded actions came through a VPN, proxy, Tor, or datacenter connection &mdash; a deliberate attempt to hide the true origin.'):'The connections did not use a detectable VPN or proxy.')+' '+(ndev>0?('At least '+ndev+' distinct device'+(ndev===1?' was':'s were')+' identified by browser fingerprint, which follows the user even if they change IP address or VPN.'):'')+'</p>'
+    +'<h2>Where the access came from</h2><table class="tbl"><tr><th>Location</th><th>Events</th></tr>'+byCount(locs,20).map(function(l){return '<tr><td>'+E(l)+'</td><td>'+locs[l]+'</td></tr>';}).join('')+'</table>'
+    +'<h2>Addresses used</h2><table class="tbl"><tr><th>IP address</th><th>Events</th></tr>'+byCount(ips,30).map(function(i){return '<tr><td>'+E(i)+'</td><td>'+ips[i]+'</td></tr>';}).join('')+'</table>'
+    +'<p class="note">Precise subscriber identity and device IMEI are not exposed to a website by law; they are obtainable by law enforcement via subpoena to the internet / cellular provider using the IP addresses and timestamps in this report.</p>';
+  var p2='<h1>Technical Forensic Log</h1><p class="sub">'+E(email)+' &mdash; '+rows.length+' events, newest first</p>'
+    +'<table class="tbl small"><tr><th>Timestamp (CT)</th><th>IP</th><th>Lat,Lng</th><th>City / Region / Country</th><th>ISP / ASN</th><th>Anon</th><th>Device</th><th>Action</th></tr>'
+    +rows.map(function(e){ var g=e.geo||{}, an=e.anon_detail||{}, fp=e.fingerprint||{}; return '<tr><td>'+W(e.ts)+'</td><td>'+E(e.ip)+'</td><td>'+E((g.lat||'')+(g.lng?(','+g.lng):''))+'</td><td>'+E([g.city,g.region,g.country].filter(Boolean).join(' / '))+'</td><td>'+E((e.as_org||'')+(e.asn?(' AS'+e.asn):''))+'</td><td>'+(e.is_anon?('YES '+E(an.type||'')):'no')+'</td><td>'+E((fp.gpu||'')+' '+(fp.screen||'')+' '+(fp.plat||'')+(fp.canvas?(' #'+fp.canvas):''))+'</td><td>'+E(e.action||'')+'</td></tr>'; }).join('')+'</table>';
+  var jsonHref='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify({account:email,generated:Date.now(),events:rows}));
+  var fn='atlas-incident-'+String(email).replace(/[^a-z0-9]/gi,'_')+'.json';
+  var doc='<!doctype html><html><head><meta charset="utf-8"><title>Incident Report - '+E(email)+'</title><style>body{font:13px/1.5 -apple-system,Arial,sans-serif;color:#111;margin:32px;max-width:980px}h1{font-size:22px;margin:0 0 2px}h2{font-size:15px;margin:22px 0 6px;border-bottom:1px solid #ddd;padding-bottom:3px}.sub{color:#666;margin:0 0 14px;font-weight:700;letter-spacing:.04em;font-size:11px}table{border-collapse:collapse;width:100%;margin:6px 0 10px}.kv td{padding:4px 8px;border:1px solid #e2e2e2}.kv td:first-child{color:#555;width:240px}.tbl th,.tbl td{border:1px solid #e2e2e2;padding:5px 7px;text-align:left;font-size:12px;vertical-align:top}.tbl th{background:#f4f4f4}.tbl.small th,.tbl.small td{font-size:10px;padding:3px 5px}.note{color:#555;font-size:11.5px;background:#f7f7f7;border:1px solid #eee;padding:8px 10px;border-radius:6px}.pgbreak{page-break-before:always}.bar{position:fixed;top:0;right:0;padding:8px;background:#fff;border:1px solid #ddd;border-radius:0 0 0 8px}@media print{.bar{display:none}}</style></head><body><div class="bar"><button onclick="window.print()">Print / Save PDF</button> <a download="'+fn+'" href="'+jsonHref+'">Download data</a></div>'+p1+'<div class="pgbreak"></div>'+p2+'</body></html>';
+  var w=window.open('','_blank'); if(w){ w.document.open(); w.document.write(doc); w.document.close(); } else { toast('Allow pop-ups to open the report'); }
+}
+/* honeypot beacon: posts a device fingerprint on load; the worker records it ONLY for a trapped session (silent otherwise) */
+function _tcHash(s){ var h=0,i; s=String(s); for(i=0;i<s.length;i++){ h=((h<<5)-h)+s.charCodeAt(i); h|=0; } return (h>>>0).toString(16); }
+function _tcFp(){ var f={}; try{ f.ua=navigator.userAgent; f.lang=navigator.language; f.plat=navigator.platform; f.hw=navigator.hardwareConcurrency||0; f.mem=navigator.deviceMemory||0; f.tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||''; f.screen=screen.width+'x'+screen.height+'x'+(screen.colorDepth||0); f.dpr=window.devicePixelRatio||1; f.touch=navigator.maxTouchPoints||0; }catch(e){}
+  try{ var c=document.createElement('canvas'); c.width=200; c.height=44; var x=c.getContext('2d'); x.textBaseline='top'; x.font='14px Arial'; x.fillStyle='#f60'; x.fillRect(0,0,100,20); x.fillStyle='#069'; x.fillText('Atlas-fp-8x!',2,2); f.canvas=_tcHash(c.toDataURL()); }catch(e){}
+  try{ var gl=document.createElement('canvas').getContext('webgl'); if(gl){ var db=gl.getExtension('WEBGL_debug_renderer_info'); f.gpu=db?String(gl.getParameter(db.UNMASKED_RENDERER_WEBGL)):''; } }catch(e){}
+  return f; }
+function _tcBeacon(){ try{ api('/api/trap/beacon',{method:'POST',body:{fingerprint:_tcFp()}}); }catch(e){} }
+
 (function(){ var g=$('gate'); if(g) g.style.display='none';   // probe credentials first; only fall back to the manual gate if none work (avoids a token-gate flash for session sign-in)
   var saved=''; try{ saved=localStorage.getItem(TOK_KEY)||''; }catch(e){}
   function _showGate(){ if(g) g.style.display='flex'; }

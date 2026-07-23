@@ -472,7 +472,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ar';
+const ATLAS_BUILD = '2026.07.19as';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4330,7 +4330,7 @@ function doReset(){
             let _ur = null; try { _ur = await env.DB.prepare('SELECT id,created_at,last_login FROM users WHERE email=?').bind(_oel).first(); } catch (e) {}
             _list.push({ email: _oel, tier: _ot, is_self: (_ot === _reqTier), manageable: (_ot < _reqTier), exists: !!_ur, created_at: _ur ? _ur.created_at : null, last_login: _ur ? _ur.last_login : null, frozen: !!_cs.frozen, data_locked: !!_cs.data_locked, trapped: !!_cs.trapped });
           }
-          return json({ ok: true, owners: _list, your_tier: _reqTier });
+          return json({ ok: true, owners: _list, your_tier: _reqTier, primary_no_anon: (await _pcfgGet(env, 'primary_no_anon', '0')) === '1' });
         }
         if (path === '/api/admin/owner/freeze' && method === 'POST') {
           const _fb = await req.json().catch(() => ({}));
