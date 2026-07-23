@@ -1853,8 +1853,9 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19l';
+  var APP_VERSION='2026.7.19m';
   var APP_CHANGELOG=[
+    'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
     'Atlas.io can now make small, reversible changes for you right from chat (Settings &gt; Owner console, beta): theme, navigation, business profile and email timing, always previewed with one-tap undo',
     'Tell Atlas where you operate (Settings &gt; Brand, plus per asset): your city, service area &amp; ZIP now power location-aware dreaming &mdash; local gaps, market-based pricing ideas and nearby referral-partner suggestions',
     'Cancellation policy you set once (Settings &gt; Money): shown to customers before they pay, in the confirmation email, and merged into your rental agreement &amp; terms',
@@ -5951,6 +5952,41 @@ const Atlas = (function(){
     return false;
   }
   function _aioNavLabel(k){ var n=_navAllowed().filter(function(x){return x[0]===k;})[0]; return n?_navLabelFor(n):k; }
+  // ---- Phase-2 (money/config) helpers: resolve free-text params to real ids the same way _navKey resolves
+  // a spoken tab name, and wrap the two "create a new row" setters -- rules[] has no per-field setter until
+  // a row exists, and promos have no per-field setter at all -- so undo can find/remove exactly what was made.
+  function _aioTypeId(q){ q=(q||'').toString().trim().toLowerCase(); if(!q) return null;
+    var types=_fleetSel().map(function(id){ return FLEET_TYPES.filter(function(t){return t.id===id;})[0]||{id:id,label:id,noun:id,nouns:id}; });
+    var hit=types.filter(function(t){ return t.id===q || (t.label||'').toLowerCase()===q || (t.noun||'').toLowerCase()===q || (t.nouns||'').toLowerCase()===q; })[0];
+    if(hit) return hit.id;
+    hit=types.filter(function(t){ return (t.label||'').toLowerCase().indexOf(q)>=0 || (t.noun||'').toLowerCase().indexOf(q)>=0 || (t.nouns||'').toLowerCase().indexOf(q)>=0; })[0];
+    return hit?hit.id:null; }
+  function _aioTypeLabel(id){ var t=FLEET_TYPES.filter(function(x){return x.id===id;})[0]; return t?t.label:String(id||''); }
+  function _aioFindRule(name){ var q=String(name||'').trim().toLowerCase(); if(!q) return null; var rs=S.money.rules||[];
+    var hit=rs.filter(function(r){return (r.name||'').toLowerCase()===q;})[0]; if(hit) return hit;
+    return rs.filter(function(r){return (r.name||'').toLowerCase().indexOf(q)>=0;})[0]||null; }
+  function _aioPromoCode(raw){ return String(raw||'').trim().toUpperCase().replace(/\s+/g,''); }
+  // fees.add: addRule() always appends {id:'r'+(_rc+1),...} -- that id is deterministic BEFORE the push, so
+  // snapshot() (which runs before apply(), synchronously, nothing else can run addRule() in between) can
+  // predict it for undo without stashing any extra state.
+  function _aioAddFeeRule(name,kind,value,taxable){
+    addRule();
+    var rs=S.money.rules||[], r=rs[rs.length-1];
+    if(!r) return null;
+    setRule(r.id,'name',name); setRule(r.id,'kind',kind); setRule(r.id,'value',value); setRule(r.id,'taxable',!!taxable);
+    return r.id; }
+  // promo.add: promos have no per-field setter (savePromo builds the object inline) -- mirrors savePromo()
+  // exactly (same id scheme, same shape, same save()+log()+refresh tail) so a chat-created promo is
+  // indistinguishable from a manually-created one.
+  function _aioAddPromo(p){
+    var code=_aioPromoCode(p.code); if(!code || _findPromo(code)) return null;
+    var v=parseFloat(p.value)||0; if(v<=0) return null;
+    var promo={ id:'pm'+Date.now().toString(36), code:code, type:(p.kind==='amount'?'amt':'pct'), value:v,
+      minDays:parseInt(p.minDays,10)||0, cap:parseInt(p.cap,10)||0, expiry:(p.expiry||''), used:0, active:true, createdAt:Date.now() };
+    _promos().push(promo);
+    _logEvent('promo','Promo code '+promo.code+' created ('+(promo.type==='pct'?promo.value+'% off':money(promo.value)+' off')+')',{code:promo.code});
+    save(); try{ renderSet(); }catch(e){}
+    return promo.id; }
   const AIO_ACTIONS={
     'theme.set':{
       params:['mode'], hint:'mode must be exactly "dark" or "light".',
@@ -6101,8 +6137,114 @@ const Atlas = (function(){
       snapshot:function(p){ return {prevDays:_comms().autos[p.key].days}; },
       apply:function(p){ if(!_canMod('settings')) return false; setAutoDays(p.key, p.days); },
       undo:function(snap,p){ setAutoDays(p.key, snap.prevDays); }
+    },
+    /* ---- Phase 2: pricing / fees / promos (all money-adjacent -> tier:'confirm', money:true except
+       promo.disable). Same rule as Phase 1: every apply() re-checks its own cap and calls the SAME setter
+       a manual click calls, so validation/RBAC/save()->sync are inherited for free. ---- */
+    'pricing.setBaseRate':{
+      params:['value'], hint:function(){ return 'value is the new base rate in dollars per '+(S.money.rateModel||'day')+'.'; },
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ return 'Set your base rate to '+money(parseFloat(p.value)||0)+' / '+S.money.rateModel; },
+      summary:function(p){ return {field:'Base rate (per '+S.money.rateModel+')', before:money(S.money.baseRate||0), after:money(parseFloat(p.value)||0)}; },
+      validate:function(p){ var v=parseFloat(p.value); if(isNaN(v)||v<0) return {ok:false,msg:'Give me a base rate of 0 or more.'}; if(v>1000000) return {ok:false,msg:'That rate looks too high \u2014 try a smaller number.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:S.money.baseRate}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; setMoney('baseRate', parseFloat(p.value)||0); try{renderSet();}catch(e){} },
+      undo:function(snap){ setMoney('baseRate', snap.prevValue); try{renderSet();}catch(e){} }
+    },
+    'pricing.setTypeRate':{
+      params:['type','value'], hint:function(){ return 'type is one of the types you rent: '+_fleetSel().map(function(id){return _aioTypeLabel(id);}).join(', ')+'. value is the new rate per '+(S.money.rateModel||'day')+' for that type (blank falls back to your base rate).'; },
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ var id=_aioTypeId(p.type); return 'Set the '+esc(id?_aioTypeLabel(id):String(p.type||''))+' rate to '+money(parseFloat(p.value)||0)+' / '+S.money.rateModel; },
+      summary:function(p){ var id=_aioTypeId(p.type), bt=id&&(S.money.byType||{})[id]; return {field:(id?_aioTypeLabel(id):String(p.type||''))+' rate', before:(bt!=null?money(bt):('base rate ('+money(S.money.baseRate||0)+')')), after:money(parseFloat(p.value)||0)}; },
+      validate:function(p){ var id=_aioTypeId(p.type); if(!id) return {ok:false,msg:'Which type? You rent: '+_fleetSel().map(function(x){return _aioTypeLabel(x);}).join(', ')+'.'}; var v=parseFloat(p.value); if(isNaN(v)||v<0) return {ok:false,msg:'Give me a rate of 0 or more.'}; if(v>1000000) return {ok:false,msg:'That rate looks too high \u2014 try a smaller number.'}; return {ok:true}; },
+      snapshot:function(p){ var id=_aioTypeId(p.type), bt=id?(S.money.byType||{})[id]:undefined; return {id:id, hadOwn:(bt!=null), prevValue:bt}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; var id=_aioTypeId(p.type); if(!id) return false; setTypeRate(id, parseFloat(p.value)||0); try{renderSet();}catch(e){} },
+      undo:function(snap){ if(!snap.id) return; setTypeRate(snap.id, snap.hadOwn?snap.prevValue:''); try{renderSet();}catch(e){} }
+    },
+    'pricing.setWeeklyDiscount':{
+      params:['percent'], hint:'percent is the weekly-rental discount, 0-100.',
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ return 'Set your weekly discount to '+Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'%'; },
+      summary:function(p){ return {field:'Weekly discount', before:(S.money.weeklyDisc||0)+'%', after:Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'%'}; },
+      validate:function(p){ var v=parseFloat(p.percent); if(isNaN(v)||v<0||v>100) return {ok:false,msg:'Give me a weekly discount between 0 and 100 percent.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:S.money.weeklyDisc}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; setMoney('weeklyDisc', Math.max(0,Math.min(100,parseFloat(p.percent)||0))); try{renderSet();}catch(e){} },
+      undo:function(snap){ setMoney('weeklyDisc', snap.prevValue); try{renderSet();}catch(e){} }
+    },
+    'pricing.setMonthlyDiscount':{
+      params:['percent'], hint:'percent is the monthly-rental discount, 0-100.',
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ return 'Set your monthly discount to '+Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'%'; },
+      summary:function(p){ return {field:'Monthly discount', before:(S.money.monthlyDisc||0)+'%', after:Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'%'}; },
+      validate:function(p){ var v=parseFloat(p.percent); if(isNaN(v)||v<0||v>100) return {ok:false,msg:'Give me a monthly discount between 0 and 100 percent.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:S.money.monthlyDisc}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; setMoney('monthlyDisc', Math.max(0,Math.min(100,parseFloat(p.percent)||0))); try{renderSet();}catch(e){} },
+      undo:function(snap){ setMoney('monthlyDisc', snap.prevValue); try{renderSet();}catch(e){} }
+    },
+    'pricing.setTaxRate':{
+      params:['percent'], hint:'percent is your sales tax rate, 0-100.',
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ return 'Set your sales tax to '+Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'%'; },
+      summary:function(p){ return {field:'Sales tax', before:(S.money.tax||0)+'%', after:Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'%'}; },
+      validate:function(p){ var v=parseFloat(p.percent); if(isNaN(v)||v<0||v>100) return {ok:false,msg:'Give me a tax rate between 0 and 100 percent.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:S.money.tax}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; setMoney('tax', Math.max(0,Math.min(100,parseFloat(p.percent)||0))); try{renderSet();}catch(e){} },
+      undo:function(snap){ setMoney('tax', snap.prevValue); try{renderSet();}catch(e){} }
+    },
+    'pricing.setDeposit':{
+      params:['mode','percent'], hint:'mode is "percent" (a percent of the total collected now), "full" (pay in full to book), or "none" (nothing upfront). percent (0-100) is required when mode is "percent".',
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ return 'Set your deposit to '+(p.mode==='full'?'pay in full to book':p.mode==='none'?'nothing upfront':(Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'% collected now')); },
+      summary:function(p){ var d=S.money.deposit||{}; var before=(d.mode==='full'?'Pay in full':d.mode==='none'?'Nothing upfront':((d.pct||0)+'% upfront')); var after=(p.mode==='full'?'Pay in full':p.mode==='none'?'Nothing upfront':(Math.max(0,Math.min(100,parseFloat(p.percent)||0))+'% upfront')); return {field:'Deposit to reserve', before:before, after:after}; },
+      validate:function(p){ if(p.mode!=='percent'&&p.mode!=='full'&&p.mode!=='none') return {ok:false,msg:'Deposit mode must be percent, full, or none.'}; if(p.mode==='percent'){ var v=parseFloat(p.percent); if(isNaN(v)||v<0||v>100) return {ok:false,msg:'Give me a deposit percent between 0 and 100.'}; } return {ok:true}; },
+      snapshot:function(){ var d=S.money.deposit||{}; return {prevMode:d.mode, prevPct:d.pct}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; setMoney('deposit.mode', p.mode); if(p.mode==='percent') setMoney('deposit.pct', Math.max(0,Math.min(100,parseFloat(p.percent)||0))); try{renderSet();}catch(e){} },
+      undo:function(snap){ setMoney('deposit.mode', snap.prevMode); setMoney('deposit.pct', snap.prevPct); try{renderSet();}catch(e){} }
+    },
+    'fees.add':{
+      params:['name','kind','value','taxable'], hint:'name is the fee name. kind is "flat" (a dollar amount) or "percent". value is the amount (dollars for flat, percent for percent). taxable is true/false (optional, default false).',
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ var k=(p.kind==='percent')?'percent':'flat'; return 'Add a fee "'+esc(String(p.name||'').trim())+'" ('+(k==='percent'?(parseFloat(p.value)||0)+'%':money(parseFloat(p.value)||0))+')'; },
+      summary:function(p){ var k=(p.kind==='percent')?'percent':'flat'; return {field:'Fees & rules', before:'(new)', after:String(p.name||'').trim()+' \u2014 '+(k==='percent'?(parseFloat(p.value)||0)+'%':money(parseFloat(p.value)||0))+(p.taxable?' \u00b7 taxable':'')}; },
+      validate:function(p){ var nm=String(p.name||'').trim(); if(!nm) return {ok:false,msg:'What should the fee be called?'}; if(nm.length>60) return {ok:false,msg:'Keep the fee name under 60 characters.'}; var k=(p.kind==='percent')?'percent':(p.kind==='flat'?'flat':null); if(!k) return {ok:false,msg:'Is that a flat $ amount or a percent?'}; var v=parseFloat(p.value); if(isNaN(v)||v<0) return {ok:false,msg:'Give me a fee amount of 0 or more.'}; if(k==='percent'&&v>100) return {ok:false,msg:'A percent fee should be 100 or less.'}; return {ok:true}; },
+      snapshot:function(){ return {newId:'r'+((S.money._rc||0)+1)}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; var id=_aioAddFeeRule(String(p.name).trim(), (p.kind==='percent'?'percent':'flat'), parseFloat(p.value)||0, !!p.taxable); if(!id) return false; try{renderSet();}catch(e){} },
+      undo:function(snap){ if(!snap.newId) return; removeRule(snap.newId); }
+    },
+    'fees.setValue':{
+      params:['name','value'], hint:function(){ return 'name matches an existing fee/rule by name. Current fees: '+((S.money.rules||[]).map(function(r){return r.name;}).join(', ')||'(none yet)')+'. value is the new amount (dollars for a flat fee, percent for a percent fee).'; },
+      cap:'pricing', money:true, tier:'confirm',
+      label:function(p){ var r=_aioFindRule(p.name); return 'Set '+esc(r?r.name:String(p.name||''))+' to '+((r&&r.kind==='percent')?(parseFloat(p.value)||0)+'%':money(parseFloat(p.value)||0)); },
+      summary:function(p){ var r=_aioFindRule(p.name); return {field:(r?r.name:String(p.name||''))+' ('+((r&&r.kind==='percent')?'%':'$')+')', before:(r?(r.kind==='percent'?r.value+'%':money(r.value)):'(not found)'), after:((r&&r.kind==='percent')?(parseFloat(p.value)||0)+'%':money(parseFloat(p.value)||0))}; },
+      validate:function(p){ var r=_aioFindRule(p.name); if(!r) return {ok:false,msg:'I do not see a fee named that. Current fees: '+((S.money.rules||[]).map(function(x){return x.name;}).join(', ')||'(none yet)')+'.'}; var v=parseFloat(p.value); if(isNaN(v)||v<0) return {ok:false,msg:'Give me a fee amount of 0 or more.'}; if(r.kind==='percent'&&v>100) return {ok:false,msg:'A percent fee should be 100 or less.'}; return {ok:true}; },
+      snapshot:function(p){ var r=_aioFindRule(p.name); return {id:r&&r.id, prevValue:r&&r.value}; },
+      apply:function(p){ if(!_canCap('pricing')) return false; var r=_aioFindRule(p.name); if(!r) return false; setRule(r.id,'value',parseFloat(p.value)||0); try{renderSet();}catch(e){} },
+      undo:function(snap){ if(!snap.id) return; setRule(snap.id,'value',snap.prevValue); try{renderSet();}catch(e){} }
+    },
+    'promo.disable':{
+      params:['code'], hint:'code is an existing, currently-active promo code.',
+      cap:'settings', money:false, tier:'confirm',
+      label:function(p){ return 'Turn off promo code "'+esc(_aioPromoCode(p.code))+'"'; },
+      summary:function(p){ var pr=_findPromo(_aioPromoCode(p.code)); return {field:'Promo '+(pr?pr.code:_aioPromoCode(p.code)), before:(pr&&pr.active)?'Active':'Off', after:'Off'}; },
+      validate:function(p){ var pr=_findPromo(_aioPromoCode(p.code)); if(!pr) return {ok:false,msg:'I do not see that promo code.'}; if(!pr.active) return {ok:false,msg:'That code is already off.'}; return {ok:true}; },
+      snapshot:function(p){ var pr=_findPromo(_aioPromoCode(p.code)); return {id:pr&&pr.id}; },
+      apply:function(p){ if(!_canMod('settings')) return false; var pr=_findPromo(_aioPromoCode(p.code)); if(!pr) return false; togglePromo(pr.id,false); },
+      undo:function(snap){ if(!snap.id) return; togglePromo(snap.id,true); }
+    },
+    'promo.add':{
+      params:['code','kind','value','minDays','cap','expiry'], hint:'code is the new promo code (letters/numbers; spaces are stripped). kind is "percent" or "amount". value is the discount (percent 0-100, or a dollar amount). minDays, cap (max uses) and expiry (YYYY-MM-DD) are optional.',
+      cap:'settings', money:true, tier:'confirm',
+      label:function(p){ var code=_aioPromoCode(p.code), k=(p.kind==='amount'?'amt':'pct'); return 'Create promo code "'+esc(code)+'" ('+(k==='pct'?(parseFloat(p.value)||0)+'% off':money(parseFloat(p.value)||0)+' off')+')'; },
+      summary:function(p){ var code=_aioPromoCode(p.code), k=(p.kind==='amount'?'amt':'pct'); var bits=[]; if(p.minDays) bits.push('min '+(parseInt(p.minDays,10)||0)+' '+_perUnit()); if(p.cap) bits.push('max '+(parseInt(p.cap,10)||0)+' uses'); if(p.expiry) bits.push('ends '+p.expiry); return {field:'Promo codes', before:'(new)', after:code+' \u2014 '+(k==='pct'?(parseFloat(p.value)||0)+'% off':money(parseFloat(p.value)||0)+' off')+(bits.length?(' \u00b7 '+bits.join(' \u00b7 ')):'')}; },
+      validate:function(p){ var code=_aioPromoCode(p.code); if(!code) return {ok:false,msg:'What code should I create?'}; if(code.length>24) return {ok:false,msg:'Keep the code under 24 characters.'}; if(_findPromo(code)) return {ok:false,msg:'The code "'+code+'" already exists.'}; var v=parseFloat(p.value); if(isNaN(v)||v<=0) return {ok:false,msg:'Give me a discount amount greater than 0.'}; var k=(p.kind==='amount')?'amt':(p.kind==='percent'?'pct':null); if(!k) return {ok:false,msg:'Is that percent off, or a dollar amount off?'}; if(k==='pct'&&v>100) return {ok:false,msg:'A percent-off code should be 100 or less.'}; if(p.expiry&&!/^\d{4}-\d{2}-\d{2}$/.test(String(p.expiry))) return {ok:false,msg:'Give the expiry as YYYY-MM-DD.'}; return {ok:true}; },
+      snapshot:function(){ return {}; },
+      apply:function(p){ if(!_canMod('settings')) return false; var id=_aioAddPromo(p); if(!id) return false; },
+      undo:function(snap,p){ var pr=_findPromo(_aioPromoCode(p.code)); if(!pr) return; S.promos=_promos().filter(function(x){return x.id!==pr.id;}); save(); try{renderSet();}catch(e){} }
     }
   };
+  // Phase 3 (deferred, not built here): nav.reorder (needs new S.nav.order state), per-asset booking
+  // min/max (which asset?), extras/protection pricing (no clean setter yet), email/announcement drafting
+  // (content generation) -- an honest "can't do that yet" from _aioValidateAction is correct for all of these.
   // Registry membership -> validate() -> RBAC. The ONLY path any action (live-planner or offline) can run
   // through; an unregistered type is always an honest "can't do that yet", never a guess.
   function _aioValidateAction(a){
@@ -6150,7 +6292,9 @@ const Atlas = (function(){
       var v=_aioValidateAction(a);
       if(!v.ok){ aioMsg('bot', esc(v.msg)); _logEvent('aio','Denied: '+String((a&&a.type)||'unknown'),{type:a&&a.type,msg:v.msg}); return; }
       var entry=v.entry, params=v.params;
-      if(entry.tier==='confirm'){
+      // Defense in depth: a money action must ALWAYS confirm, even if a future registry entry mistypes its
+      // tier -- never trust entry.tier alone for anything that touches revenue.
+      if(entry.tier==='confirm' || entry.money){
         var sum=null; try{ sum=entry.summary(params); }catch(e){}
         var id=_aioNextId(); _aioConfirmQ[id]={type:a.type, entry:entry, params:params};
         var body=_aioDiffHtml(sum)+'<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn--primary btn--sm" onclick="Atlas.aioApply(\''+id+'\')">Apply</button><button class="btn btn--ghost btn--sm" onclick="Atlas.aioCancel(\''+id+'\')">Cancel</button></div>';
@@ -6207,7 +6351,17 @@ const Atlas = (function(){
       || /\b(business hours|opening hours|hours of operation|store hours)\b/.test(s)
       || /\b(phone number|business phone|contact number)\b/.test(s)
       || /\b(contact email|business email|support email)\b/.test(s)
-      || /\bauto.?(email|reminder)|automatic (email|reminder)|reminder (email|timing|days)\b/.test(s);
+      || /\bauto.?(email|reminder)|automatic (email|reminder)|reminder (email|timing|days)\b/.test(s)
+      // Phase 2: pricing / fees / promos -- without these the new registry entries would be registered but
+      // unreachable from a typed chat message (the live planner is only ever invoked when this pre-filter
+      // matches). Never authoritative -- see the comment above _aioLooksActionable.
+      || /\b(base rate|nightly rate|daily rate|hourly rate|day rate)\b/.test(s)
+      || /\b(set|change|update|raise|lower|increase|decrease)\b[a-z' ]{0,20}\b(rate|price|pricing)\b/.test(s)
+      || /\b(weekly|monthly) discount\b/.test(s)
+      || /\bsales tax\b|\btax rate\b/.test(s)
+      || /\b(deposit|security deposit|down payment)\b/.test(s)
+      || /\b(fee|fees|surcharge)\b/.test(s)
+      || /\bpromo(tion)?s?\b|\bpromo code\b|\bcoupon\b|\bdiscount code\b/.test(s);
   }
   function _aioLooksActionable(s){
     if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
