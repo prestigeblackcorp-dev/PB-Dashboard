@@ -296,6 +296,58 @@ async function audit(env, ctx, req, action, meta) {
   } catch (e) { /* audit must never break the request */ }
 }
 
+// #253 observability (B2): server-error capture, invoked ONLY from the single top-level catch in fetch() (see the
+// end of this file) so every unhandled 5xx across the whole worker funnels through here. Mirrors audit()'s
+// defensive shape -- EVERY line guarded -- so a throw in here can never change the response the client already
+// got; the caller always returns the byte-identical err(500,'Server error.') regardless of what happens below.
+// Worker source is PUBLIC: this persists a SANITIZED, TRUNCATED message only -- never a stack trace, never a
+// request body, never anything token/email/card-shaped. Same bug (same name+normalized-message+path) dedupes onto
+// ONE platform_errors row via a sha256 `sig` with count++, so a retry storm is one growing number, not a flood.
+function _sanitizeErrMsg(s) {
+  try {
+    var m = String((s == null) ? '' : s).slice(0, 2000);
+    m = m.replace(/[A-Za-z0-9_\-]{20,}/g, '[redacted]');            // token/key/secret-shaped runs
+    m = m.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '[email]');           // email addresses
+    m = m.replace(/\b(?:\d[ -]*?){13,19}\b/g, '[card]');             // card-shaped digit runs
+    m = m.replace(/\s+/g, ' ').trim();
+    return m.slice(0, 300);
+  } catch (e) { return ''; }
+}
+function _normalizeErrMsg(s) {
+  try { return String(s || '').toLowerCase().replace(/[0-9a-f-]{8,}/g, '#').replace(/\d+/g, '#').slice(0, 200); } catch (e) { return ''; }
+}
+async function _recordError(env, req, e, path, method) {
+  try {
+    await ensurePlatformSchema(env);
+    var name = (e && e.name) ? String(e.name).slice(0, 60) : 'Error';
+    var rawMsg = (e && e.message) ? String(e.message) : String(e || '');
+    var norm = _normalizeErrMsg(rawMsg);
+    var msg = _sanitizeErrMsg(rawMsg);
+    var p = String(path || '').slice(0, 200);
+    var sig = (await _sha256Hex(name + '|' + norm + '|' + p)).slice(0, 32);
+    var now = Date.now();
+    var ip = (req && req.headers.get('CF-Connecting-IP')) || '';
+    var actor = 'anon';   // the top-level catch has no resolved session/admin identity in scope -- anonymous is the honest default
+    await env.DB.prepare('INSERT INTO platform_errors (sig,name,message,path,method,status,count,first_at,last_at,ip,actor) VALUES (?,?,?,?,?,?,1,?,?,?,?) ' +
+      'ON CONFLICT(sig) DO UPDATE SET count=count+1, last_at=?, ip=?, message=?')
+      .bind(sig, name, msg, p, String(method || '').slice(0, 10), 500, now, now, ip, actor, now, ip, msg).run();
+    // Rate-limited owner email: the count++ above ALWAYS happens; the email itself is throttled so a retry storm or
+    // a hot bug can never flood the owner's inbox. Two independent caps: per-signature (1/hr) AND a global ceiling
+    // (8/hr) across ALL signatures, so even many DIFFERENT bugs firing at once can't send more than 8 emails/hr.
+    if (env.OWNER_EMAIL) {
+      var perSigOk = await rateLimit(env, 'errmail:' + sig, 1, 3600000);
+      var globalOk = await rateLimit(env, 'errmail:_global', 8, 3600000);
+      if (perSigOk && globalOk) {
+        var body = '<h2>Atlas server error</h2>' +
+          '<p><b>' + esc(name) + '</b> on ' + esc(String(method || '')) + ' ' + esc(p) + '</p>' +
+          '<p>' + esc(msg || '(no message)') + '</p>' +
+          '<p style="color:#889">Build ' + esc(ATLAS_BUILD) + '. Rate-limited to at most 1 email/hour per distinct error, 8/hour total -- see the full list at Atlas HQ &gt; Errors.</p>';
+        try { await sendEmail(env, { to: env.OWNER_EMAIL, transactional: true, fromName: 'Atlas Rental.io', subject: 'Atlas server error - ' + p, html: body }); } catch (e2) {}
+      }
+    }
+  } catch (errRec) { /* observability must never break the request path -- the caller's own try/catch is the backstop */ }
+}
+
 // ---------------------------------------------------------------- validation
 function vEmail(s) { return typeof s === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s) && s.length <= 254; }
 function vStr(s, max) { return typeof s === 'string' && s.length > 0 && s.length <= (max || 200); }
@@ -303,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19v';
+const ATLAS_BUILD = '2026.07.19w';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1635,6 +1687,12 @@ async function ensurePlatformSchema(env) {
   // never confer it, so any pre-existing role='admin' grant is retroactively downgraded to 'gold' (no data/access
   // loss: 'gold' still means every feature, comped). Idempotent -- a no-op once every row has already migrated.
   try { await env.DB.prepare("UPDATE comp_grants SET role='gold' WHERE role='admin'").run(); } catch (e) {}
+  // #253 observability: server-error tracking (B2) + a security-log lookup index (B3). Same self-heal pattern as
+  // admin_staff above -- CREATE ... IF NOT EXISTS, each its OWN try/catch, so a paste-only worker deploy still
+  // creates these with zero separate migration step.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_errors (sig TEXT PRIMARY KEY, name TEXT, message TEXT, path TEXT, method TEXT, status INTEGER DEFAULT 500, count INTEGER DEFAULT 1, first_at INTEGER, last_at INTEGER, ip TEXT, actor TEXT, last_emailed_at INTEGER)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_perr_last ON platform_errors(last_at)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_audit_action_at ON audit_log(action, at)").run(); } catch (e) {}
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -1687,8 +1745,72 @@ async function _gmvFeeCents(env, amountCents) { const bps = parseInt(await _pcfg
 // a newly-added admin route is automatically locked down until someone deliberately opens it up). OWNER_ONLY covers
 // every destructive/config/integration action a non-owner could otherwise reach; SUPPORT_WRITE is support's one
 // narrow write exception (ticket/inbox/feedback triage). Neither regex is reachable or overridable by client input.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run))/;
+// #253: security-log + errors added to OWNER_ONLY -- both surface OTHER tenants' emails/IPs (audit_log rows /
+// platform_errors ip column), so neither is reachable by a support/analyst staff token, only the owner.
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|security-log|errors)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
+// #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
+// Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
+// sign-in/access/permission activity. Checked in JS against every fetched row (not baked into the SQL WHERE clause)
+// so a query-construction mistake can never silently under- or over-expose rows -- same fail-safe posture as the
+// OWNER_ONLY/RBAC allow-lists above.
+const SECURITY_ACTIONS = ['login', 'login_fail', 'logout', 'email_verified', 'connect.onboard', 'domain.connect', 'domain.verified', 'domain.disconnect', 'integration.connect'];
+const SECURITY_PREFIXES = ['auth.', 'mfa.', 'admin.', 'owner.', 'comp.', 'tenant.apikey.', 'tenant.webhook.'];
+function _isSecurityAction(a) {
+  a = String(a || '');
+  if (SECURITY_ACTIONS.indexOf(a) >= 0) return true;
+  for (var i = 0; i < SECURITY_PREFIXES.length; i++) if (a.indexOf(SECURITY_PREFIXES[i]) === 0) return true;
+  return false;
+}
+// Buckets a security action into one of the security-log card's filter chips (all/signin/fail/mfa/admin/denial).
+function _secCategory(a) {
+  a = String(a || '');
+  if (a === 'login' || a === 'logout') return 'signin';
+  if (a === 'login_fail' || a === 'mfa.verify_fail' || a === 'mfa.disable_fail' || a === 'auth.rate_limited') return 'fail';
+  if (a.indexOf('mfa.') === 0) return 'mfa';
+  if (a === 'admin.denied' || a === 'owner.denied' || a === 'owner.claim_blocked' || a === 'csrf.fail') return 'denial';
+  if (a.indexOf('admin.') === 0 || a.indexOf('owner.') === 0) return 'admin';
+  return 'other';
+}
+// Server-side plain-English label + severity (info|warn|alert) for one audit_log row, so admin.html never has to
+// interpret raw action strings itself.
+function _secLabel(a, m) {
+  m = m || {};
+  var known = {
+    login: { label: 'Signed in', severity: 'info' },
+    logout: { label: 'Signed out', severity: 'info' },
+    login_fail: { label: 'Failed sign-in attempt (' + (m.email || 'unknown') + ')', severity: 'warn' },
+    email_verified: { label: 'Email verified', severity: 'info' },
+    'auth.forgot_password': { label: 'Requested a password reset', severity: 'info' },
+    'auth.password_reset': { label: 'Password reset completed', severity: 'warn' },
+    'auth.rate_limited': { label: 'Rate-limited (' + (m.kind || 'auth') + ')', severity: 'warn' },
+    'mfa.verify_ok': { label: 'Two-factor code verified', severity: 'info' },
+    'mfa.verify_fail': { label: 'Two-factor code rejected', severity: 'warn' },
+    'mfa.disable_fail': { label: 'Failed attempt to disable two-factor', severity: 'warn' },
+    'mfa.totp_setup': { label: 'Started authenticator-app setup', severity: 'info' },
+    'mfa.totp_enabled': { label: 'Authenticator app enabled', severity: 'info' },
+    'mfa.email_enabled': { label: 'Email two-factor enabled', severity: 'info' },
+    'mfa.disabled': { label: 'Two-factor disabled', severity: 'warn' },
+    'admin.denied': { label: 'Admin access denied (' + (m.reason || 'denied') + ')', severity: 'warn' },
+    'owner.denied': { label: 'Owner-only action blocked', severity: 'warn' },
+    'owner.claim_blocked': { label: 'Blocked signup attempt on the reserved owner email', severity: 'alert' },
+    'csrf.fail': { label: 'CSRF token rejected', severity: 'warn' },
+    'comp.grant': { label: 'Comp access granted', severity: 'info' },
+    'comp.revoke': { label: 'Comp access revoked', severity: 'info' },
+    'integration.connect': { label: 'Integration connected (' + (m.provider || '') + ')', severity: 'info' },
+    'connect.onboard': { label: 'Started payments onboarding', severity: 'info' },
+    'domain.connect': { label: 'Custom domain connected', severity: 'info' },
+    'domain.verified': { label: 'Custom domain verified', severity: 'info' },
+    'domain.disconnect': { label: 'Custom domain disconnected', severity: 'info' }
+  };
+  if (known[a]) return known[a];
+  if (a.indexOf('admin.staff.') === 0) return { label: 'Admin staff ' + a.slice(12), severity: 'warn' };
+  if (a.indexOf('tenant.apikey.') === 0) return { label: 'Developer API key ' + a.slice(14), severity: 'info' };
+  if (a.indexOf('tenant.webhook.') === 0) return { label: 'Webhook endpoint ' + a.slice(15), severity: 'info' };
+  if (a.indexOf('admin.') === 0) return { label: 'Admin action: ' + a.slice(6), severity: 'info' };
+  if (a.indexOf('owner.') === 0) return { label: 'Owner action: ' + a.slice(6), severity: 'info' };
+  return { label: a, severity: 'info' };
+}
 async function _dumpTables(env, specs) { const out = {}; for (const s of specs) { try { const r = await env.DB.prepare('SELECT ' + s.cols + ' FROM ' + s.t + (s.where ? (' WHERE ' + s.where) : '') + ' LIMIT ' + (s.limit || 5000)).bind(...(s.binds || [])).all(); out[s.t] = r.results || []; } catch (e) { out[s.t] = []; } } return out; }
 // Record one platform (Atlas-revenue) transaction, deduped on the Stripe object id so webhook replays never double-count.
 async function recordTxn(env, o) {
@@ -1768,16 +1890,18 @@ export default {
       }
       // ---- HEALTH: pinpoint setup problems (safe: booleans only, no secrets) -
       if (path === '/api/health' && method === 'GET') {
-        const h = { ok: false, build: ATLAS_BUILD, time: Date.now(), db_bound: typeof env.DB !== 'undefined', r2: !!_r2(env), user_tables: 0, schema_loaded: false, cron_last: 0, cron_age_min: null,
+        const h = { ok: false, build: ATLAS_BUILD, time: Date.now(), db_bound: typeof env.DB !== 'undefined', r2: !!_r2(env), user_tables: 0, schema_loaded: false, cron_last: 0, cron_age_min: null, cron_fresh: false,
           secrets: { SESSION_KEY: !!env.SESSION_KEY, ENC_KEY: !!env.ENC_KEY, OWNER_EMAIL: !!env.OWNER_EMAIL, RESEND_KEY: !!env.RESEND_KEY, MAIL_FROM: !!env.MAIL_FROM, STRIPE_WEBHOOK_SECRET: !!env.STRIPE_WEBHOOK_SECRET, PLATFORM_STRIPE_KEY: !!env.PLATFORM_STRIPE_KEY, PLATFORM_STRIPE_TEST_KEY: !!env.PLATFORM_STRIPE_TEST_KEY, DYNADOT_KEY: !!env.DYNADOT_KEY, ADMIN_TOKEN: !!env.ADMIN_TOKEN, TWILIO: !!env.TWILIO_SID }, mailer: !!env.RESEND_KEY, platform_payments: !!(env.PLATFORM_STRIPE_KEY && env.STRIPE_WEBHOOK_SECRET), admin_console: !!env.ADMIN_TOKEN, ai_council: !!(env.ANTHROPIC_KEY || env.OPENAI_KEY || env.GEMINI_KEY), saas_domains: !!env.CF_API_TOKEN, registrar: !!env.DYNADOT_KEY };
         try {
           const r = await env.DB.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").first();
           h.user_tables = r ? r.n : 0;
           h.schema_loaded = h.user_tables >= 15;
           const cr = parseInt(await _pcfgGet(env, 'cron_last_run', '0'), 10) || 0; h.cron_last = cr; if (cr) h.cron_age_min = Math.round((Date.now() - cr) / 60000);
+          h.cron_fresh = (h.cron_age_min != null && h.cron_age_min < 180);   // #253 B1-L2: additive uptime signal (< 3h since the last cron tick) -- an UptimeRobot keyword monitor can watch this on top of `ok`, which never folds cron/mailer in
           h.big_rows = parseInt(await _pcfgGet(env, 'big_rows', '0'), 10) || 0;   // oversized booking rows (payload discipline)
         } catch (e) { h.db_ok = false; }   // don't leak DB internals to an unauthenticated caller
-        h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;
+        h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;   // UNCHANGED -- status.html + smoke.mjs assert on this; cron_fresh/mailer are separate, additive fields
+        if (url.searchParams.get('strict') === '1') h.ok_strict = h.ok && h.cron_fresh && h.mailer;   // #253 B1-L2 optional: a stricter combined signal for an owner who wants ONE keyword covering everything; never overloads `ok` itself
         return json(h);
       }
 
@@ -1811,7 +1935,7 @@ export default {
       // ---- AUTH: signup -----------------------------------------------------
       if (path === '/api/auth/signup' && method === 'POST') {
         const ip = req.headers.get('CF-Connecting-IP') || 'x';
-        if (!await rateLimit(env, 'signup:' + ip, 5, 3600000)) return err(429, 'Too many attempts. Try later.');
+        if (!await rateLimit(env, 'signup:' + ip, 5, 3600000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'signup_ip', key: ip }); return err(429, 'Too many attempts. Try later.'); }
         const body = await req.json().catch(() => ({}));
         if (!vEmail(body.email) || !vStr(body.password, 200) || body.password.length < 8) return err(400, 'Valid email and 8+ char password required.');
         if (!vStr(body.business, 120)) return err(400, 'Business name required.');
@@ -1821,7 +1945,7 @@ export default {
         // registers OWNER_EMAIL first would become platform admin. The real owner claims it with OWNER_SETUP_TOKEN
         // (a Worker secret set at deploy); without a matching token, the reserved email cannot be signed up.
         if (env.OWNER_EMAIL && body.email.toLowerCase() === String(env.OWNER_EMAIL).toLowerCase()) {
-          if (!env.OWNER_SETUP_TOKEN || body.setupToken !== env.OWNER_SETUP_TOKEN) return err(403, 'That email is reserved for the platform owner.');
+          if (!env.OWNER_SETUP_TOKEN || body.setupToken !== env.OWNER_SETUP_TOKEN) { await audit(env, null, req, 'owner.claim_blocked', { email: body.email.toLowerCase() }); return err(403, 'That email is reserved for the platform owner.'); }   // #253: highest-signal denial -- someone tried to register the reserved owner email
         }
         const now = Date.now();
         const tid = 't' + randId(12), uid = 'u' + randId(12);
@@ -1848,8 +1972,8 @@ export default {
         const ip = req.headers.get('CF-Connecting-IP') || 'x';
         const body = await req.json().catch(() => ({}));
         if (!vEmail(body.email) || !vStr(body.password, 200)) return err(400, 'Email and password required.');
-        if (!await rateLimit(env, 'login:' + ip, 10, 900000)) return err(429, 'Too many attempts. Try again in a few minutes.');
-        if (!await rateLimit(env, 'login:' + body.email.toLowerCase(), 8, 900000)) return err(429, 'Too many attempts for this account.');
+        if (!await rateLimit(env, 'login:' + ip, 10, 900000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'login_ip', key: ip }); return err(429, 'Too many attempts. Try again in a few minutes.'); }
+        if (!await rateLimit(env, 'login:' + body.email.toLowerCase(), 8, 900000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'login_email', key: body.email.toLowerCase() }); return err(429, 'Too many attempts for this account.'); }
         const user = await env.DB.prepare('SELECT * FROM users WHERE email=?').bind(body.email.toLowerCase()).first();
         // Always run the FULL 600k KDF (even when the email is unknown) so response time can't reveal
         // whether an account exists.
@@ -1878,11 +2002,11 @@ export default {
       if (path === '/api/auth/forgot-password' && method === 'POST') {
         const ip = req.headers.get('CF-Connecting-IP') || 'x';
         const GENERIC = { ok: true, message: 'If that email is registered, a reset link is on the way.' };
-        if (!await rateLimit(env, 'fpw:' + ip, 5, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        if (!await rateLimit(env, 'fpw:' + ip, 5, 3600000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'forgot_password_ip', key: ip }); return err(429, 'Too many attempts. Try again later.'); }
         const body = await req.json().catch(() => ({}));
         const femail = vEmail(body.email) ? body.email.toLowerCase() : '';
         if (!femail) return json(GENERIC);   // bad shape -> still the generic response, never a distinguishing error
-        if (!await rateLimit(env, 'fpwem:' + femail, 3, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        if (!await rateLimit(env, 'fpwem:' + femail, 3, 3600000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'forgot_password_email', key: femail }); return err(429, 'Too many attempts. Try again later.'); }
         try {
           if (env.SESSION_KEY) {   // no key -> a link could never be validated later; fail-soft, don't send
             const fuser = await env.DB.prepare('SELECT id,email FROM users WHERE email=?').bind(femail).first();
@@ -1937,7 +2061,7 @@ function doReset(){
         const ru = String(body.uid || '').slice(0, 64), re = String(body.e || '').toLowerCase(),
           rx = parseInt(body.exp || '0', 10) || 0, rs = String(body.s || '');
         if (!ru) return err(400, 'This reset link is invalid or has expired.');
-        if (!await rateLimit(env, 'rpw:' + ru, 10, 3600000)) return err(429, 'Too many attempts. Try again later.');
+        if (!await rateLimit(env, 'rpw:' + ru, 10, 3600000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'reset_password', key: ru }); return err(429, 'Too many attempts. Try again later.'); }
         const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _ctEq(rs, await _resetSig(env, ru, re, rx)));
         if (!rOk) return err(400, 'This reset link is invalid or has expired.');
         if (!vStr(body.password, 200) || body.password.length < 8) return err(400, 'Password must be at least 8 characters.');
@@ -1961,7 +2085,7 @@ function doReset(){
         const chal = _mfaParseChallenge(body.challenge);
         if (!chal) return err(401, 'This code entry session has expired. Please sign in again.');
         if (!await rateLimit(env, 'mfaver:' + ip, 20, 900000)) return err(429, 'Too many attempts. Try again later.');
-        if (!await rateLimit(env, 'mfaver:' + chal.uid, 15, 900000)) return err(429, 'Too many attempts. Try again later.');
+        if (!await rateLimit(env, 'mfaver:' + chal.uid, 15, 900000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'mfa_verify_uid', key: chal.uid }); return err(429, 'Too many attempts. Try again later.'); }
         const expectSig = await _mfaChallengeSig(env, chal.uid, chal.exp);
         if (!expectSig || !_ctEq(chal.sig, expectSig) || chal.exp < Date.now()) return err(401, 'This code entry session has expired. Please sign in again.');
         const user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(chal.uid).first();
@@ -2387,15 +2511,22 @@ function doReset(){
         const _aip = req.headers.get('CF-Connecting-IP') || 'noip';
         if (!await rateLimit(env, 'admhq:' + _aip, 300, 60000)) return err(429, 'Too many requests.');   // throttle the whole admin plane (incl. token brute-force / staff-token guessing) BEFORE any credential check
         const _id = await _adminIdentity(req, env);
-        if (!_id) return err(403, 'Admin key required.');
+        if (!_id) {
+          // #253: an admin.denied audit only when a credential was actually PRESENTED but didn't match -- an empty
+          // header (any anonymous scanner hitting /api/admin/*) is deliberately skipped so the log doesn't fill with
+          // background-noise probes; a present-but-wrong token is the signal worth keeping.
+          const _pt = req.headers.get('X-Admin-Token') || '';
+          if (_pt) await audit(env, null, req, 'admin.denied', { reason: 'bad_token', path: path });
+          return err(403, 'Admin key required.');
+        }
         await ensurePlatformSchema(env);   // idempotent no-op if the staff-token branch above already ran it; guarantees every table the routes below touch exists, for BOTH identity paths
         const _actor = _id.actor, _role = _id.role, _staffId = _id.staffId, _via = _id.via;
         // #264 role gate: ALLOW-LIST, fail-safe (an unlisted admin path is owner-only). Identity above is server-verified
         // (env token == owner; else a hashed/active/non-revoked admin_staff row) -- no client header can move a caller
         // between roles, and a present-but-unmatched credential already returned 403 above (never silently == owner).
         if (_role !== 'owner') {
-          if (OWNER_ONLY.test(path) && !(path === '/api/admin/config' && method === 'GET')) return err(403, 'Your admin role does not permit this action.');
-          if (method !== 'GET' && !(_role === 'support' && SUPPORT_WRITE.test(path))) return err(403, 'Your admin role is read-only.');
+          if (OWNER_ONLY.test(path) && !(path === '/api/admin/config' && method === 'GET')) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'role', role: _role, path: path }); return err(403, 'Your admin role does not permit this action.'); }
+          if (method !== 'GET' && !(_role === 'support' && SUPPORT_WRITE.test(path))) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'role', role: _role, path: path }); return err(403, 'Your admin role is read-only.'); }
         }
 
         if (path === '/api/admin/overview' && method === 'GET') {
@@ -3124,6 +3255,39 @@ function doReset(){
           return err(404, 'Unknown AI route.');
         }
 
+        // #253 B2: recent server errors (owner-only via OWNER_ONLY above -- ip/actor columns are forensic detail,
+        // not for support/analyst). Sourced from platform_errors, NEVER the public /api/health.
+        if (path === '/api/admin/errors' && method === 'GET') {
+          const _now = Date.now();
+          const _c24 = await env.DB.prepare('SELECT COUNT(*) c FROM platform_errors WHERE last_at>=?').bind(_now - 24 * 3600 * 1000).first();
+          const _rows = await env.DB.prepare('SELECT sig,name,message,path,method,status,count,first_at,last_at FROM platform_errors ORDER BY last_at DESC LIMIT 50').all();
+          return json({ ok: true, count_24h: (_c24 && _c24.c) || 0, errors: (_rows.results || []) });
+        }
+
+        // #253 B3: owner-readable security log (owner-only via OWNER_ONLY above -- rows carry OTHER tenants' emails
+        // + IPs). Fetches the date-range window ONCE, then filters to the SECURITY_ACTIONS allow-list in JS (belt
+        // and suspenders: a query-construction slip can never silently leak a non-security row) before applying the
+        // caller's filter/q/limit/offset. range reuses the same _adminRange used by every other admin-plane report.
+        if (path === '/api/admin/security-log' && method === 'GET') {
+          const _u = new URL(req.url);
+          const _range = _adminRange(_u.searchParams.get('range'));
+          const _filter = String(_u.searchParams.get('filter') || 'all').slice(0, 20);
+          const _q = String(_u.searchParams.get('q') || '').slice(0, 120).toLowerCase();
+          const _lim = Math.min(200, Math.max(1, parseInt(_u.searchParams.get('limit') || '50', 10) || 50));
+          const _off = Math.max(0, parseInt(_u.searchParams.get('offset') || '0', 10) || 0);
+          const _rows = await env.DB.prepare('SELECT tenant_id,actor,action,meta,ip,ua,at FROM audit_log WHERE at>=? AND at<? ORDER BY at DESC LIMIT 5000').bind(_range.start, _range.end).all();
+          let _events = (_rows.results || []).filter(function (r) { return _isSecurityAction(r.action); }).map(function (r) {
+            const meta = jparse(r.meta, {});
+            const info = _secLabel(r.action, meta);
+            return { at: r.at, action: r.action, actor: r.actor || 'anon', ip: r.ip || '', ua: r.ua || '', tenant_id: r.tenant_id || null, meta: meta, label: info.label, severity: info.severity, category: _secCategory(r.action) };
+          });
+          if (_filter && _filter !== 'all') _events = _events.filter(function (e) { return e.category === _filter; });
+          if (_q) _events = _events.filter(function (e) { return (String(e.actor).toLowerCase().indexOf(_q) >= 0) || (String(e.ip).toLowerCase().indexOf(_q) >= 0); });
+          const _total = _events.length;
+          _events = _events.slice(_off, _off + _lim);
+          return json({ ok: true, range: { key: _range.key, label: _range.label }, total: _total, events: _events });
+        }
+
         return err(404, 'Unknown admin route.');
       }
 
@@ -3292,7 +3456,7 @@ function doReset(){
       const ctx = await resolveSession(env, req);
 
       if (path === '/api/auth/logout' && method === 'POST') {
-        if (ctx) await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(Date.now(), ctx.session.id).run();
+        if (ctx) { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(Date.now(), ctx.session.id).run(); await audit(env, ctx, req, 'logout', {}); }
         return json({ ok: true }, 200, { 'Set-Cookie': 'atlas_sid=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0' });
       }
       if (!ctx) return err(401, 'Not signed in.');
@@ -3756,7 +3920,7 @@ function doReset(){
       // ---- admin/owner only: comp registry. 'admin' is NOT a grantable role -- owner/platform-admin authority is
       // EMAIL-ONLY (see resolveSession's isOwner calc) and can never be conferred by a comp_grants row. -------------
       if (path === '/api/admin/comp' && (method === 'POST' || method === 'DELETE')) {
-        if (!ctx.isOwner) return err(403, 'Owner only.');        // re-checked server-side, every request
+        if (!ctx.isOwner) { await audit(env, ctx, req, 'owner.denied', { path: path }); return err(403, 'Owner only.'); }        // re-checked server-side, every request
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         const body = await req.json().catch(() => ({}));
         if (!vEmail(body.email)) return err(400, 'Valid email required.');
@@ -4194,6 +4358,13 @@ function doReset(){
 
       return err(404, 'Not found.');
     } catch (e) {
+      // #253 observability (B2): best-effort error capture. This can NEVER change the response below -- every line
+      // here is guarded, and even a total failure of _recordError itself is swallowed by this try/catch, so the
+      // client still gets the exact same byte-identical error it always got.
+      try {
+        const _rp = _recordError(env, req, e, path, method);
+        if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_rp); else if (_rp && _rp.catch) _rp.catch(function () {});
+      } catch (_e2) {}
       return err(500, 'Server error.');   // never leak internals
     }
     })();
@@ -4210,11 +4381,26 @@ function doReset(){
       const now = Date.now();
       try { await ensurePlatformSchema(env); await _pcfgSet(env, 'cron_last_run', String(now)); } catch (e) {}   // heartbeat: /api/health exposes cron_age_min so an uptime monitor can alert if the cron stops running
       try { const _br = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE length(data) > 200000").first(); await _pcfgSet(env, 'big_rows', String((_br && _br.c) || 0)); } catch (e) {}   // payload discipline: count oversized booking rows nightly; /api/health surfaces it so bloat is caught early
+      // #253 observability L3: best-effort D1 dependency probe. A hard D1 failure here means cron_last_run above may
+      // not have been written either -- the L1 UptimeRobot cron_fresh watch (via /api/health) is the real safety net
+      // for a fully-dead cron; this just adds an EARLIER signal while the cron is still alive enough to run at all.
+      // Deliberately does NOT treat a missing RESEND_KEY as a failure -- an unconfigured mailer is an honest, valid
+      // owner choice (see sendEmail's no_mailer path), not a bug to alert on. Own try/catch (like the pair above) so
+      // it can never cascade into skipping the GC deletes below.
+      try {
+        const _d1Ok = await env.DB.prepare('SELECT 1 AS x').first().then(function () { return true; }).catch(function () { return false; });
+        if (!_d1Ok) {
+          const _dp = _recordError(env, null, new Error('Dependency check failed: D1 unreadable'), '/scheduled', 'CRON');
+          if (_dp && _dp.catch) _dp.catch(function () {});
+        }
+      } catch (e) {}
       await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
-      // Retain ADMIN-plane actions for a year (forensics/compliance); other audit rows GC at 90 days.
-      await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action IS NULL OR action NOT LIKE 'admin.%')").bind(now - 90 * 24 * 3600 * 1000).run();
-      await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND action LIKE 'admin.%'").bind(now - 365 * 24 * 3600 * 1000).run();
+      // Retain ADMIN- and OWNER-plane actions for a year (forensics/compliance); other audit rows GC at 90 days.
+      // #253 extended this to also spare owner.% (owner.denied / owner.claim_blocked are high-signal security rows).
+      await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action IS NULL OR (action NOT LIKE 'admin.%' AND action NOT LIKE 'owner.%'))").bind(now - 90 * 24 * 3600 * 1000).run();
+      await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action LIKE 'admin.%' OR action LIKE 'owner.%')").bind(now - 365 * 24 * 3600 * 1000).run();
+      try { await env.DB.prepare('DELETE FROM platform_errors WHERE last_at < ?').bind(now - 30 * 24 * 3600 * 1000).run(); } catch (e) {}   // #253 B2: platform_errors GC (own try/catch, mirrors the pattern above)
     } catch (e) { /* best-effort GC; a cron error must never surface */ }
     try { await _runLifecycleEmails(env, Date.now()); } catch (e) { /* lifecycle emails are best-effort */ }
     // Nightly: write the daily metric snapshot (so "vs last week" is real) + generate the AI COO morning brief if enabled.

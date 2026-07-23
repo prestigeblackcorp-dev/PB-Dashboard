@@ -46,7 +46,7 @@ function mockDB() {
 
 const env = { DB: mockDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-const EXPECT_BUILD = '2026.07.19v';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
+const EXPECT_BUILD = '2026.07.19w';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
 
 function mkReq(method, path, opts = {}) {
   return new Request('https://atlasrental.io' + path, {
@@ -88,6 +88,28 @@ ok(j.ok && j.removed === 1, 'competitor delete via query string -> removed:1 (go
 r = await worker.fetch(mkReq('GET', '/api/admin/competitors', { headers: H }), env, ctx);
 j = await r.json();
 ok((j.competitors || []).length === 0, 'competitor is gone after delete');
+
+// 4) #264 regression (deferred from build v): admin/staff must NEVER accept a bad token, same shape as the
+// competitors check above but for the staff-directory route specifically.
+r = await worker.fetch(mkReq('GET', '/api/admin/staff', { headers: { 'X-Admin-Token': 'WRONG' } }), env, ctx);
+ok(r.status === 403, 'admin/staff rejects a bad token, never 200 (got ' + r.status + ')');
+
+// 5) #253 observability: health is still ok:true (unchanged) and now additionally carries cron_fresh
+r = await worker.fetch(mkReq('GET', '/api/health'), env, ctx);
+j = await r.json();
+ok(j.ok === true, 'health ok:true (unchanged) (got ' + j.ok + ')');
+ok(typeof j.cron_fresh === 'boolean', 'health now carries a boolean cron_fresh (got ' + JSON.stringify(j.cron_fresh) + ')');
+
+// 6) #253 observability: security-log + errors are owner-only admin routes
+r = await worker.fetch(mkReq('GET', '/api/admin/security-log', { headers: H }), env, ctx);
+ok(r.status === 200, 'GET /api/admin/security-log with the owner token -> 200 (got ' + r.status + ')');
+r = await worker.fetch(mkReq('GET', '/api/admin/security-log', { headers: { 'X-Admin-Token': 'WRONG' } }), env, ctx);
+ok(r.status === 403, 'GET /api/admin/security-log rejects a bad token (got ' + r.status + ')');
+r = await worker.fetch(mkReq('GET', '/api/admin/errors', { headers: { 'X-Admin-Token': 'WRONG' } }), env, ctx);
+ok(r.status === 403, 'GET /api/admin/errors rejects a bad token (got ' + r.status + ')');
+r = await worker.fetch(mkReq('GET', '/api/admin/errors', { headers: H }), env, ctx);
+j = await r.json();
+ok(r.status === 200 && j.ok === true && typeof j.count_24h === 'number', 'GET /api/admin/errors with the owner token -> 200 + count_24h (got ' + JSON.stringify(j) + ')');
 
 if (fails) { console.error('\nSMOKE FAILED (' + fails + ' assertion' + (fails > 1 ? 's' : '') + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nSMOKE PASSED -- safe to deploy.');

@@ -276,6 +276,27 @@
     <div class="card-b pad" id="healthBody"><div class="mut">Loading&hellip;</div></div>
   </div>
 
+  <!-- SECURITY LOG (owner-only -- rows carry other tenants' emails/IPs; hidden entirely for support/analyst) -->
+  <style>.sx-item{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:7px;background:var(--surf2)}.sx-ic{flex:none;padding-top:5px}.sx-main{flex:1;min-width:0}.sx-t{font-size:13px;font-weight:700}.sx-b{font-size:11.5px;color:var(--mut);margin-top:2px}.sx-empty{font-size:13px;color:var(--mut);padding:6px 2px}</style>
+  <div class="card" id="secCard" style="display:none">
+    <div class="card-h"><h2>Security log</h2><span class="sub" id="secSub"></span><div class="sp"></div><button class="chip" onclick="loadSecurity(true)">Refresh</button></div>
+    <div class="toolbar">
+      <div class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input id="secSearch" placeholder="Search actor or IP..." oninput="secFilter()">
+      </div>
+      <div class="seg" id="secSeg">
+        <button class="on" data-f="all" onclick="setSecFilter(this)">All</button>
+        <button data-f="signin" onclick="setSecFilter(this)">Sign-ins</button>
+        <button data-f="fail" onclick="setSecFilter(this)">Failures &amp; lockouts</button>
+        <button data-f="mfa" onclick="setSecFilter(this)">MFA</button>
+        <button data-f="admin" onclick="setSecFilter(this)">Admin actions</button>
+        <button data-f="denial" onclick="setSecFilter(this)">Denials</button>
+      </div>
+    </div>
+    <div class="card-b pad" id="secBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+
   <!-- AI COMMAND CENTER -->
   <style>.ai-tools{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.ai-brief{background:rgba(128,140,160,.06);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.55}.ai-brief-h{display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12px}.ai-md{font-size:13px;line-height:1.6}@media(max-width:720px){.grid{grid-template-columns:1fr!important}}</style>
   <div class="card">
@@ -439,10 +460,11 @@ var TIER_LABEL = {starter:'Starter',pro:'Pro',enterprise:'Enterprise',business:'
 
 /* ================= state ================= */
 var _tok = '';
-var DATA = { overview:null, members:[], txns:[], bugs:[], tickets:[], aiCfg:null, visits:null, inbox:[], inboxCounts:{}, competitors:[], geo:null, purchases:null, growth:null, socialHandles:{}, socialPlatforms:{}, enterprise:{}, you:{} };
+var DATA = { overview:null, members:[], txns:[], bugs:[], tickets:[], aiCfg:null, visits:null, inbox:[], inboxCounts:{}, competitors:[], geo:null, purchases:null, growth:null, socialHandles:{}, socialPlatforms:{}, enterprise:{}, you:{}, security:null, errors:null };
 function _isOwner(){ return !!(DATA.you && DATA.you.role==='owner'); }
 var _seg = 'all', _bugSeg = 'open', _tkSeg = 'open', _timer = null, _lastFetch = 0, _prevKpi = {};
 var _range = '30d', _inboxSeg = 'new', _purKind = 'all', _purQ = '';
+var _secFilter = 'all', _secQ = '';
 
 /* ================= helpers ================= */
 function $(id){ return document.getElementById(id); }
@@ -479,8 +501,10 @@ function enter(overview){ $('gate').style.display='none'; $('app').style.display
   initCollapsible();
   loadHealth();
   loadCounsel();
+  loadSecurity();
+  loadErrors();
   if(_timer) clearInterval(_timer);
-  _timer=setInterval(function(){ loadAll(true); loadHealth(); loadCounsel(); }, REFRESH_MS);
+  _timer=setInterval(function(){ loadAll(true); loadHealth(); loadCounsel(); loadSecurity(); loadErrors(); }, REFRESH_MS);
   setInterval(tickLive, 1000);
 }
 
@@ -520,7 +544,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
   }).catch(function(){ setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700); });
 }
 function refreshNow(){ loadAll(); toast('Refreshed'); }
-function setRange(v){ _range=v; loadAll(); }
+function setRange(v){ _range=v; loadAll(); loadSecurity(); }
 function setInboxSeg(btn){ Array.prototype.forEach.call($('inboxSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _inboxSeg=btn.getAttribute('data-s'); loadAll(true); }
 function tickLive(){ $('liveTxt').textContent = _lastFetch ? ('updated '+ago(_lastFetch)) : 'live'; }
 
@@ -748,7 +772,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19v';
+var ATLAS_EXPECT_BUILD='2026.07.19w';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -794,9 +818,31 @@ function renderHealth(){ var el=$('healthBody'); if(!el) return; var h=DATA.heal
     +_hc('SaaS domains', h.saas_domains?'ok':'warn', h.saas_domains?'on':'off')
     +_hc('Registrar', h.registrar?'ok':'warn', h.registrar?'Dynadot on':'off')
     +((h.big_rows!=null)?_hc('Payload', h.big_rows>5?'warn':'ok', (h.big_rows||0)+' big rows'):'')
+    +((DATA.errors && DATA.errors.count_24h!=null)?_hc('Errors (24h)', DATA.errors.count_24h>0?'bad':'ok', String(DATA.errors.count_24h)):'')
     +'</div>';
   el.innerHTML=g;
 }
+/* ===== Errors (24h) -- sourced from the owner-only /api/admin/errors, never the public /api/health ===== */
+function loadErrors(){ return api('/api/admin/errors').then(function(r){ DATA.errors=(r.status===200&&r.json&&r.json.ok)?r.json:null; renderHealth(); }).catch(function(){}); }
+/* ===== Security log (owner-only: hidden entirely for support/analyst, who get a 403 from the server) ===== */
+function loadSecurity(manual){ if(manual&&$('secBody')) $('secBody').innerHTML='<div class="mut">Checking&hellip;</div>';
+  return api('/api/admin/security-log?filter='+encodeURIComponent(_secFilter)+'&q='+encodeURIComponent(_secQ)+'&range='+encodeURIComponent(_range)).then(function(r){
+    var card=$('secCard'); if(!card) return;
+    if(r.status===403){ card.style.display='none'; return; }
+    card.style.display='';
+    DATA.security=(r.json&&r.json.ok)?r.json:{events:[]};
+    renderSecurity();
+  }).catch(function(){ var el=$('secBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; });
+}
+function _sxDot(sev){ return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;margin-top:5px;background:'+(sev==='alert'?'#e0736f':(sev==='warn'?'#e0a94a':'#6ea8ff'))+'"></span>'; }
+function _sxItem(ev){ return '<div class="sx-item"><div class="sx-ic">'+_sxDot(ev.severity)+'</div><div class="sx-main"><div class="sx-t">'+esc(ev.label||ev.action)+'</div><div class="sx-b">'+esc(ago(ev.at))+' &middot; '+esc(ev.actor||'anon')+(ev.ip?(' &middot; '+esc(ev.ip)):'')+'</div></div></div>'; }
+function renderSecurity(){ var el=$('secBody'); if(!el) return; var d=DATA.security||{}; var items=d.events||[];
+  if($('secSub')) $('secSub').textContent=items.length+' event'+(items.length===1?'':'s');
+  if(!items.length){ el.innerHTML='<div class="sx-empty">No matching security events.</div>'; return; }
+  el.innerHTML=items.map(_sxItem).join('');
+}
+function setSecFilter(btn){ Array.prototype.forEach.call($('secSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _secFilter=btn.getAttribute('data-f'); loadSecurity(true); }
+function secFilter(){ _secQ=($('secSearch').value||'').trim(); loadSecurity(true); }
 function renderAI(){ renderBuildBanner(); var c=DATA.aiCfg||{}, on=!!c.ai_hq_enabled, hasKey=!!c.ai_available; var st=$('aiStatus'), tg=$('aiToggleBtn'), bd=$('aiBody'); if(!st) return;
   if(c.needsDeploy){ st.innerHTML='<span class="pill gray">Not deployed</span>'; tg.style.display='none'; bd.innerHTML='<div class="mut" style="padding:10px 12px">Paste the latest worker into Cloudflare to enable the AI Command Center and the new safety features (recoverable delete, working audit trail, admin rate-limit).</div>'; return; } tg.style.display='';
   st.innerHTML = on ? (hasKey?'<span class="pill active">On</span>':'<span class="pill past">On &middot; no AI key</span>') : '<span class="pill gray">Off</span>';

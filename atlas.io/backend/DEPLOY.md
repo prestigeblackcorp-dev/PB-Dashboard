@@ -60,3 +60,30 @@ banner and the CI verify step stay honest:
 - `worker.js` -> `const ATLAS_BUILD = '...'`
 - `atlas.io/admin.html` -> `var ATLAS_EXPECT_BUILD = '...'`
 - `atlas.io/backend/test/smoke.mjs` -> `const EXPECT_BUILD = '...'`
+
+## Uptime monitoring (#253) — one-time owner setup, no code
+
+CI catches a broken deploy; it does **not** catch the worker going down (or quietly degrading) hours or days
+later. [UptimeRobot](https://uptimerobot.com) (free tier) closes that gap by polling `/api/health` from the
+outside, on a schedule the worker itself has no control over.
+
+1. **Create a free UptimeRobot account**, then *Add New Monitor*.
+2. **Monitor 1 — the API, keyword-checked (not just "is it 200"):**
+   - Monitor type: **HTTPS (Keyword)**
+   - URL: `https://atlas.prestigeblackcorp.workers.dev/api/health`
+   - Keyword: `"ok":true` — alert type **"not exists"** (i.e. alert when that keyword is ABSENT)
+   - Interval: 5 minutes
+   - Why a keyword, not a plain up/down check: `/api/health` returns HTTP 200 even when something is wrong
+     (`{"ok":false,...}`) so the dashboard can read the details — a plain status-code monitor would miss a
+     degraded platform entirely. Watching for the keyword catches both fully-down AND degraded.
+3. **Monitor 2 — the public site:**
+   - Monitor type: **HTTP(s)**, URL: `https://atlasrental.io`, interval 5 minutes.
+4. **(Optional) Monitor 3 — cron freshness**, a second keyword monitor on the SAME `/api/health` URL:
+   - Keyword: `"cron_fresh":true` — alert type "not exists"
+   - This catches a cron that has silently stopped running (`scheduled()` writes the `cron_last_run` heartbeat
+     `/api/health` reads back as `cron_age_min`/`cron_fresh`) even while the request path is otherwise fine —
+     the one failure mode a request-path monitor can never see, because a dead cron doesn't fail any request.
+5. **Set the alert contact** (email/SMS/Slack — whatever UptimeRobot integration you prefer) on all monitors.
+
+That's it — no worker code, no secrets, no deploy. The dashboard's own **System health** card and the public
+`/status.html` page are for when you're already looking; UptimeRobot is what taps you on the shoulder when you're not.

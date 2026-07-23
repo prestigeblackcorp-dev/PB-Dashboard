@@ -238,6 +238,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   at            INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_tenant ON audit_log(tenant_id, at);
+CREATE INDEX IF NOT EXISTS idx_audit_action_at ON audit_log(action, at);   -- #253: speeds the security-log WHERE action IN (...) ORDER BY at DESC
 
 -- ---- Stripe webhook dedup ----------------------------------------------------
 CREATE TABLE IF NOT EXISTS webhook_events (
@@ -305,3 +306,23 @@ CREATE TABLE IF NOT EXISTS platform_installs (
   platform      TEXT,
   created_at    INTEGER
 );
+
+-- #253 observability (B2): server errors captured from the worker's single top-level catch. Sig-deduped so a
+-- repeating bug is ONE row with a rising count, not a flood — same shape as platform_transactions' stripe_id dedup
+-- above. Worker source is PUBLIC: message is SANITIZED + TRUNCATED (see worker.js _recordError) — never a stack
+-- trace, never a request body, never anything token/email/card-shaped. Owner-only (GET /api/admin/errors).
+CREATE TABLE IF NOT EXISTS platform_errors (
+  sig             TEXT PRIMARY KEY,           -- sha256(name|normalized_message|path).slice(0,32) — same bug = one row
+  name            TEXT,                       -- Error.name (e.g. TypeError)
+  message         TEXT,                       -- sanitized + truncated (~300 chars); no stack, no PII, no body
+  path            TEXT,
+  method          TEXT,
+  status          INTEGER DEFAULT 500,
+  count           INTEGER DEFAULT 1,
+  first_at        INTEGER,
+  last_at         INTEGER,
+  ip              TEXT,
+  actor           TEXT,
+  last_emailed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_perr_last ON platform_errors(last_at);

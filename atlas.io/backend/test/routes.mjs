@@ -713,5 +713,221 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(cr2.status === 200, 'comp endpoint: role=gold still accepted (got ' + cr2.status + ')');
 }
 
+// ---- #264 staff-auth regression (deferred from build v): owner env-token is the ONLY owner identity (checked
+// with NO DB access), a present-but-wrong credential fails CLOSED, a spoofed X-Admin-Actor header is completely
+// inert, staff can never mint themselves (or anyone) an 'owner' row or a row for the reserved OWNER_EMAIL, and an
+// empty/absent admin_staff table never locks the owner out. ----
+{
+  const staff = new Map();   // id -> {id,email,name,role,token_hash,token_prefix,active,created_by,created_at,last_seen_at,revoked_at}
+  function staffDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM admin_staff WHERE token_hash=\?/.test(sql)) { for (const v of staff.values()) if (v.token_hash === a[0]) return v; return null; }
+          if (/FROM admin_staff WHERE email=\?/.test(sql)) { for (const v of staff.values()) if (v.email === a[0]) return { id: v.id }; return null; }
+          if (/FROM admin_staff WHERE id=\?/.test(sql)) return staff.get(a[0]) || null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          if (/FROM platform_config/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          return null;
+        },
+        all: async () => { if (/FROM admin_staff/.test(sql)) return { results: [...staff.values()] }; return { results: [] }; },
+        run: async () => {
+          if (/INSERT INTO admin_staff/.test(sql)) { const [id, email, name, role, token_hash, token_prefix, created_by, created_at] = a; staff.set(id, { id, email, name, role, token_hash, token_prefix, active: 1, created_by, created_at, last_seen_at: null, revoked_at: null }); }
+          else if (/UPDATE admin_staff SET last_seen_at/.test(sql)) { const v = staff.get(a[1]); if (v) v.last_seen_at = a[0]; }
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const OWNER_EMAIL = 'owner@x.com';
+  const senv = { DB: staffDB(), ADMIN_TOKEN: 'realowner', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL };
+
+  // (a) owner env-token works
+  let r = await worker.fetch(mkReq('GET', '/api/admin/staff', { headers: { 'X-Admin-Token': 'realowner' } }), senv, ctx);
+  ok(r.status === 200, '#264: owner env-token -> 200 on /api/admin/staff (got ' + r.status + ')');
+
+  // (b) NO-LOCKOUT: admin_staff is empty/absent -- owner env-token still works. Uses /api/admin/config (touches
+  // only platform_config, no admin_staff/revenue tables) so this isolates exactly the no-lockout scenario.
+  ok(staff.size === 0, '#264 precondition: admin_staff is empty for the no-lockout check');
+  let r0 = await worker.fetch(mkReq('GET', '/api/admin/config', { headers: { 'X-Admin-Token': 'realowner' } }), senv, ctx);
+  ok(r0.status === 200, '#264 NO-LOCKOUT: owner env-token still 200 with admin_staff absent/empty (got ' + r0.status + ')');
+
+  // (c) no token at all -> 403
+  let r1 = await worker.fetch(mkReq('GET', '/api/admin/staff'), senv, ctx);
+  ok(r1.status === 403, '#264: no X-Admin-Token -> 403 (got ' + r1.status + ')');
+
+  // (d) a garbage atlst_-shaped token matching no row -> 403 (fails CLOSED, never silently treated as owner)
+  let r2 = await worker.fetch(mkReq('GET', '/api/admin/staff', { headers: { 'X-Admin-Token': 'atlst_garbage_no_such_token' } }), senv, ctx);
+  ok(r2.status === 403, '#264: garbage atlst_ token matching no row -> 403 (got ' + r2.status + ')');
+
+  // (e) seed a real, active 'support' staff row -- its token authenticates as role=support, and a spoofed
+  // X-Admin-Actor header claiming to be the owner is completely inert (identity comes only from the hashed row).
+  const supportSecret = 'atlst_' + crypto.randomBytes(20).toString('hex');
+  const supportHash = crypto.createHash('sha256').update(supportSecret).digest('hex');
+  staff.set('s_support1', { id: 's_support1', email: 'support@member.com', name: 'Support One', role: 'support', token_hash: supportHash, token_prefix: supportSecret.slice(0, 12), active: 1, created_by: 'owner@x.com', created_at: Date.now(), last_seen_at: null, revoked_at: null });
+  let r3 = await worker.fetch(mkReq('GET', '/api/admin/config', { headers: { 'X-Admin-Token': supportSecret, 'X-Admin-Actor': 'owner@x.com' } }), senv, ctx);
+  let j3 = await r3.json();
+  ok(r3.status === 200 && j3.you && j3.you.actor === 'support@member.com' && j3.you.role === 'support' && j3.you.via === 'staff-token', '#264: seeded support-role token authenticates as support@member.com/support/staff-token even with a spoofed X-Admin-Actor: owner@... header (got ' + JSON.stringify(j3.you) + ')');
+
+  // the same support token is still refused on an OWNER_ONLY route (e.g. /api/admin/staff itself)
+  let r4 = await worker.fetch(mkReq('GET', '/api/admin/staff', { headers: { 'X-Admin-Token': supportSecret } }), senv, ctx);
+  ok(r4.status === 403, '#264: support-role token is refused on the owner-only /api/admin/staff route (got ' + r4.status + ')');
+
+  // (f) POST /api/admin/staff role:'owner' -> 400 (no self-escalation, even attempted by the real owner)
+  let r5 = await worker.fetch(new Request('https://atlasrental.io/api/admin/staff', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Token': 'realowner' }, body: JSON.stringify({ email: 'newstaff@member.com', role: 'owner' }) }), senv, ctx);
+  ok(r5.status === 400, "#264: POST /api/admin/staff role:'owner' -> 400 (got " + r5.status + ')');
+
+  // (g) POST /api/admin/staff email===OWNER_EMAIL -> 400 (the owner's own email can never be issued a staff token)
+  let r6 = await worker.fetch(new Request('https://atlasrental.io/api/admin/staff', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Token': 'realowner' }, body: JSON.stringify({ email: OWNER_EMAIL, role: 'support' }) }), senv, ctx);
+  ok(r6.status === 400, '#264: POST /api/admin/staff email===OWNER_EMAIL -> 400 (got ' + r6.status + ')');
+}
+
+// ---- #253 observability: the single top-level catch now best-effort records the error (never changes the
+// response) + rate-limits an owner-email alert. Forces a REAL throw via a DB-fault-injection mock hitting an
+// EXISTING, unwrapped admin route (/api/admin/overview's first query has no local try/catch -- like every other
+// route, the top-level catch is the ONLY safety net, which is exactly what this exercises). ----
+{
+  const inserted = [];
+  const rl = new Map();
+  let mailSent = 0;
+  const _origFetch = globalThis.fetch;
+  globalThis.fetch = (u) => { if (String(u).indexOf('api.resend.com') >= 0) mailSent++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ id: 'm1' }) }); };
+  function errDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM platform_transactions/.test(sql)) throw new Error('sentinel boom: platform_transactions unreachable');
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rl.get(a[0]) || null;
+          if (/FROM platform_config/.test(sql)) return null;
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO platform_errors/.test(sql)) inserted.push(a);
+          else if (/INSERT INTO rate_limits/.test(sql)) rl.set(a[0], { count: 1, window_start: a[1] });
+          else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const row = rl.get(a[0]); if (row) row.count++; }
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const eenv = { DB: errDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', RESEND_KEY: 'rk_test' };
+  let waited = [];
+  const eCtx = { waitUntil(p) { waited.push(p); }, passThroughOnException() {} };
+
+  let r = await worker.fetch(mkReq('GET', '/api/admin/overview', { headers: H }), eenv, eCtx);
+  ok(r.status === 500, 'sentinel throw inside a route -> the request still gets a response, status 500 (got ' + r.status + ')');
+  let j = await r.json();
+  ok(j && j.error === 'Server error.' && Object.keys(j).length === 1, 'sentinel throw -> byte-identical {"error":"Server error."}, no stack/details leaked (got ' + JSON.stringify(j) + ')');
+  await Promise.all(waited); waited.length = 0;
+  ok(inserted.length === 1, '_recordError captured exactly one platform_errors INSERT for the thrown error (got ' + inserted.length + ')');
+  ok(mailSent === 1, '_recordError attempted exactly one owner-alert email for a new error signature (got ' + mailSent + ')');
+
+  // hit the SAME sentinel again (same name+path -> same sig): recording still happens (count++), but the
+  // per-signature rate limit (1/hr) means NO second email
+  let r2 = await worker.fetch(mkReq('GET', '/api/admin/overview', { headers: H }), eenv, eCtx);
+  ok(r2.status === 500, 'sentinel throw #2 -> still 500 (got ' + r2.status + ')');
+  await Promise.all(waited); waited.length = 0;
+  ok(inserted.length === 2, '_recordError ran again on the second throw (2nd INSERT attempt, count++ semantics) (got ' + inserted.length + ')');
+  ok(mailSent === 1, 'per-signature rate limit: the SAME error signature does not send a second email within the hour (got ' + mailSent + ')');
+
+  globalThis.fetch = _origFetch;
+}
+
+// ---- #253 observability: owner-only denials + logout are audited (owner.denied / logout) ----
+{
+  const NOW = Date.now(), SID = 'sid_secaudit', CSRF = 'csrf_secaudit', TEN = 't_secaudit', UID = 'u_secaudit';
+  const auditRows = [];
+  function auditDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'notowner@member.com', tenant_id: TEN, role: 'owner', caps: null };   // tenant-level "owner" role (owns THEIR OWN business) -- NOT the platform OWNER_EMAIL, so isOwner must still read false
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO audit_log/.test(sql)) auditRows.push({ actor: a[1], action: a[2], meta: a[3] });
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const aenv = { DB: auditDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'the-real-owner@x.com' };
+  const aReq = (method, path, body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+
+  // (a) a signed-in, non-platform-owner user hitting the owner-only /api/admin/comp -> 403 + an owner.denied audit row
+  let r = await worker.fetch(aReq('POST', '/api/admin/comp', { email: 'x@y.com', role: 'gold' }), aenv, ctx);
+  ok(r.status === 403, '#253: /api/admin/comp without the platform owner -> 403 (got ' + r.status + ')');
+  ok(auditRows.some((row) => row.action === 'owner.denied'), '#253: owner-only denial recorded an owner.denied audit row (got ' + JSON.stringify(auditRows) + ')');
+
+  // (b) POST /api/auth/logout -> a logout audit row
+  auditRows.length = 0;
+  let r2 = await worker.fetch(aReq('POST', '/api/auth/logout', {}), aenv, ctx);
+  ok(r2.status === 200, '#253: POST /api/auth/logout -> 200 (got ' + r2.status + ')');
+  ok(auditRows.some((row) => row.action === 'logout'), '#253: logout recorded a logout audit row (got ' + JSON.stringify(auditRows) + ')');
+}
+
+// ---- #253 observability: GET /api/admin/security-log -- owner-gated, allow-list filtered, filter/q narrow the result ----
+{
+  const NOW = Date.now();
+  const rows = [
+    { tenant_id: null, actor: 'a@x.com', action: 'login', meta: '{}', ip: '1.1.1.1', ua: 'UA', at: NOW - 1000 },
+    { tenant_id: null, actor: 'a@x.com', action: 'login_fail', meta: '{"email":"a@x.com"}', ip: '1.1.1.1', ua: 'UA', at: NOW - 2000 },
+    { tenant_id: null, actor: 'b@x.com', action: 'mfa.verify_fail', meta: '{}', ip: '2.2.2.2', ua: 'UA', at: NOW - 3000 },
+    { tenant_id: null, actor: 'atlas-hq', action: 'admin.denied', meta: '{"reason":"role"}', ip: '3.3.3.3', ua: 'UA', at: NOW - 4000 },
+    { tenant_id: null, actor: 'checkout', action: 'billing.checkout', meta: '{}', ip: '4.4.4.4', ua: 'UA', at: NOW - 5000 }   // NOT in the security allow-list -- must be excluded entirely
+  ];
+  function slDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => { if (/sqlite_master/.test(sql)) return { n: 30 }; if (/FROM rate_limits/.test(sql)) return null; if (/FROM platform_config/.test(sql)) return null; return null; },
+        all: async () => { if (/FROM audit_log WHERE at>=\? AND at<\?/.test(sql)) return { results: rows }; return { results: [] }; },
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const slEnv = { DB: slDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+
+  let r = await worker.fetch(mkReq('GET', '/api/admin/security-log', { headers: H }), slEnv, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.ok === true && Array.isArray(j.events), 'security-log: 200 + events array');
+  ok(!j.events.some((e) => e.action === 'billing.checkout'), 'security-log: an action outside the allow-list is excluded even if the mock DB returned it');
+  ok(j.total === 4 && j.events.length === 4, 'security-log: default filter=all returns all 4 allow-listed rows (got ' + j.events.length + ')');
+
+  r = await worker.fetch(mkReq('GET', '/api/admin/security-log?filter=fail', { headers: H }), slEnv, ctx);
+  j = await r.json();
+  ok(j.events.length === 2 && j.events.every((e) => e.action === 'login_fail' || e.action === 'mfa.verify_fail'), 'security-log: filter=fail narrows to failures/lockouts only (got ' + JSON.stringify(j.events.map((e) => e.action)) + ')');
+
+  r = await worker.fetch(mkReq('GET', '/api/admin/security-log?q=b@x.com', { headers: H }), slEnv, ctx);
+  j = await r.json();
+  ok(j.events.length === 1 && j.events[0].actor === 'b@x.com', 'security-log: q= narrows by actor substring (got ' + JSON.stringify(j.events) + ')');
+
+  r = await worker.fetch(mkReq('GET', '/api/admin/security-log', { headers: { 'X-Admin-Token': 'WRONG' } }), slEnv, ctx);
+  ok(r.status === 403, 'security-log: wrong admin token -> 403 (got ' + r.status + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
