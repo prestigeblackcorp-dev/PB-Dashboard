@@ -46,7 +46,7 @@ function mockDB() {
 
 const env = { DB: mockDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-const EXPECT_BUILD = '2026.07.19ab';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
+const EXPECT_BUILD = '2026.07.19ac';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
 
 function mkReq(method, path, opts = {}) {
   return new Request('https://atlasrental.io' + path, {
@@ -188,6 +188,39 @@ ok(r.status === 200 && j.ok === true && typeof j.count_24h === 'number', 'GET /a
   let vj = await vr.json();
   ok(vr.status === 200 && vj.ok === true, 'GET /api/admin/overview -> 200 ok:true (got ' + vr.status + ')');
   ok(typeof vj.active_now === 'number' && vj.active_now === 1, 'overview.active_now is a number reflecting the live sid visit-ping recorded (got ' + JSON.stringify(vj.active_now) + ')');
+}
+
+// 9) #280 card-required-for-trial gate: OFF by default -> a cardless tenant is completely unaffected (inert).
+// Full on/off/never-lock/unlock/independence-from-#276 coverage lives in test/routes.mjs; this is the one-line
+// CI tripwire that the flag truly defaults OFF -- if this ever fails, EVERY new signup could be locked out on deploy.
+{
+  const SID = 'sid_smoke280', CSRF = 'csrf_smoke280', TEN = 't_smoke280', UID = 'u_smoke280';
+  function cgDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'tenant@smoke280.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return { card_on_file: 0, stripe_sub: null };   // deliberately cardless
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return null;   // trial_requires_card unset -> defaults OFF
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 25 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const cgEnv = { DB: cgDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const cgReq = new Request('https://atlasrental.io/api/data/bookings', { method: 'GET', headers: { 'Content-Type': 'application/json', 'Cookie': 'atlas_sid=' + SID, 'X-CSRF-Token': CSRF, 'Origin': 'https://atlasrental.io' } });
+  const cr = await worker.fetch(cgReq, cgEnv, ctx);
+  ok(cr.status === 200, '#280: trial_requires_card unset (default OFF) -> a cardless tenant is unaffected, GET /api/data/bookings -> 200 (got ' + cr.status + ')');
 }
 
 if (fails) { console.error('\nSMOKE FAILED (' + fails + ' assertion' + (fails > 1 ? 's' : '') + ') -- deploy blocked.'); process.exit(1); }

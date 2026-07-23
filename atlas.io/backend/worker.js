@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ab';
+const ATLAS_BUILD = '2026.07.19ac';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1246,7 +1246,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState };
 
 // ===================== #201 Domain registrar (Dynadot API v3) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -1790,6 +1790,32 @@ async function _lockedTenantCount(env) {
     return (r && r.c) || 0;
   } catch (e) { return 0; }
 }
+// ---- #280 CARD-REQUIRED-FOR-TRIAL ACCESS GATING (flag-gated OFF by default via platform_config.trial_requires_card) ----
+// Pure function, no I/O -- INDEPENDENT of _billingState/#276 above: a tenant can need a card even when the #276
+// payment-delinquency gate is OFF (two separate flags, two separate checks, never conflated). Same never-lock
+// invariants as _billingState, checked FIRST: the platform owner and a comped (gold/free) account are NEVER
+// blocked; a missing tenant row fails OPEN ('ok'), never invents a lock from absent/unexpected data. Unlocks the
+// instant EITHER card_on_file is set OR a stripe_sub exists -- the trial-checkout webhook (~L2436) sets both
+// together on success, but checking either means this can never wrongly re-lock a row that only ever got one of
+// the two written to it.
+function _cardGateState(tenant, isOwner, comp) {
+  if (isOwner) return 'ok';                                    // platform owner: NEVER locked
+  if (comp === 'gold' || comp === 'free') return 'ok';          // comped account: NEVER locked
+  if (!tenant) return 'ok';                                     // no tenant row to evaluate -> fail open, never lock on absent data
+  if (tenant.card_on_file || tenant.stripe_sub) return 'ok';    // card on file (or already subscribed) -> unlocked
+  return 'needs_card';
+}
+// Shared by signup/login/mfa-verify/verify-status (no ctx yet at those call sites -- just a tenant id + email).
+// Mirrors _billingStateForTenant's exact shape/signature. Fails open ('ok') on any DB hiccup.
+async function _cardGateStateForTenant(env, tenantId, email) {
+  try {
+    const t = await env.DB.prepare('SELECT card_on_file,stripe_sub FROM tenants WHERE id=?').bind(tenantId).first();
+    const isOwner = !!(email && env.OWNER_EMAIL && email === env.OWNER_EMAIL);
+    let comp = null;
+    try { const c = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(email).first(); comp = c ? (c.role === 'admin' ? 'gold' : c.role) : null; } catch (e) {}
+    return _cardGateState(t, isOwner, comp);
+  } catch (e) { return 'ok'; }
+}
 // ---- #278 FEATURE-LEVEL PAYMENT GATING (flag-gated OFF by default via platform_config.feature_gate_enabled) ----
 // The AI website builder (hosted site) + custom domains: building/editing/previewing stays FREE on every plan;
 // only PUBLISHING (going/staying live) and connecting a custom domain require entitlement. Mirrors WEBSITE_TIERS
@@ -2059,6 +2085,11 @@ export default {
         // response is byte-identical to before the feature existed). A brand-new signup is always a fresh 7-day
         // trial, so this will read 'ok' in practice -- included for parity with login and forward-compat.
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, tid, user.email); }
+        // #280: independent card-required-for-trial check -- only evaluated when #276 above already reads 'ok'
+        // (never overrides an existing #276 lock reason) and only when this separate flag is on. A brand-new
+        // signup has no card yet, so with the flag ON this reads 'needs_card' here -- expected: this IS the
+        // funnel point that routes a fresh signup to the card gate instead of straight into onboarding.
+        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, tid, user.email); }
         return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000, ip: (req.headers.get('CF-Connecting-IP') || ''), verify: (_vSent ? 'sent' : 'skipped'), verified: (_vSent ? 0 : 1), billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
@@ -2091,6 +2122,9 @@ export default {
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'login', {});
         // #276: same flag-gated billing_state as signup above -- 'ok' with the gate OFF, always (see _billingStateForTenant).
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, user.tenant_id, user.email); }
+        // #280: same independent card-required-for-trial layer as signup above -- only when #276 reads 'ok' and
+        // only when this separate flag is on (see _cardGateState).
+        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, user.tenant_id, user.email); }
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
@@ -2200,6 +2234,10 @@ function doReset(){
         // challenge instead of a session) -- same flag-gated billing_state as login/signup, so an MFA account
         // gets the paywall immediately on auth too, not only after its first subsequent API call 402s.
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, user.tenant_id, user.email); }
+        // #280: same independent card-required-for-trial layer as signup/login above -- only when #276 reads 'ok'
+        // and only when this separate flag is on (see _cardGateState). Lets an MFA-enabled account get routed to
+        // the card gate right on auth too, not only after its first subsequent API call 402s.
+        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, user.tenant_id, user.email); }
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), trusted_device: deviceToken, billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
@@ -2989,7 +3027,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', tenants_locked: await _lockedTenantCount(env), your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -3010,7 +3048,12 @@ function doReset(){
           // _websiteEntitled/_grandfatherWebsite above). Flipping this ON is the ONLY thing that activates the 402 on
           // a NEW un-entitled publish or custom-domain connect; this route is already OWNER_ONLY.
           if (typeof b.feature_gate_enabled !== 'undefined') { await _pcfgSet(env, 'feature_gate_enabled', b.feature_gate_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { feature_gate_enabled: !!b.feature_gate_enabled }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env) };
+          // #280 card-required-for-trial gate: OFF by default (see _cardGateState/_PAYMENT_OPEN above). Flipping
+          // this ON requires a card (or an existing stripe_sub) before ANY non-owner, non-comped tenant can reach
+          // a protected endpoint -- independent of #276's payment_gate_enabled (this can be on while that is off,
+          // and vice versa). This route is already OWNER_ONLY (path starts with /api/admin/config).
+          if (typeof b.trial_requires_card !== 'undefined') { await _pcfgSet(env, 'trial_requires_card', b.trial_requires_card ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { trial_requires_card: !!b.trial_requires_card }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', tenants_locked: await _lockedTenantCount(env) };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are
@@ -3660,12 +3703,35 @@ function doReset(){
         }
       }
 
+      // ---- #280 CARD-REQUIRED-FOR-TRIAL ACCESS GATING (server-authoritative; the client card gate is UX only) ----
+      // Flag-gated OFF by default (platform_config.trial_requires_card, owner-only toggle at /api/admin/config).
+      // While OFF, this is a single cheap _pcfgGet read and NOTHING else changes -- byte-identical to before this
+      // feature existed. When ON: fires INDEPENDENTLY of the #276 gate above -- payment_gate_enabled can be OFF
+      // while this still blocks a cardless tenant, and vice versa (two separate flags, two separate checks, never
+      // conflated; see _cardGateState above). NEVER locks the platform owner or a comped (gold/free) account, and
+      // fails OPEN on any error (_cardGateStateForTenant itself never throws). ALWAYS leaves the same
+      // _PAYMENT_OPEN routes reachable (login/billing/verify-email/webhook/me/feedback) so a needs_card tenant can
+      // always sign in, see the gate, and complete the trial-card checkout to unlock (checked here BEFORE the DB
+      // read below, so an always-open route never even pays for the extra query).
+      const cardGateOn = (await _pcfgGet(env, 'trial_requires_card', '0')) === '1';
+      if (cardGateOn && !_PAYMENT_OPEN.test(path)) {
+        const _cs = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email);
+        if (_cs !== 'ok') {
+          return json({ error: 'payment_required', billing_state: _cs, tier: null }, 402);
+        }
+      }
+
       if (path === '/api/auth/me' && method === 'GET') {
         await ensurePlatformSchema(env);   // #278: this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady, see ensurePlatformSchema)
         const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,tier,website_addon,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         // #276: same flag-gated computation as login/signup -- 'ok' whenever the gate is OFF. This is the endpoint
         // the client polls on window-focus to detect a mid-session lock clearing (billing fixed -> dismiss paywall).
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = _billingState(t, ctx.isOwner, ctx.comp); }
+        // #280: same independent card-required-for-trial layer as signup/login above -- only when #276 reads 'ok'
+        // and only when this separate flag is on. This is also the endpoint _paywallMaybeRecheck polls on
+        // window-focus, so a card that just landed (Stripe webhook fired) clears the client's card gate the
+        // moment this flips back to 'ok'.
+        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email); }
         // #278: an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- only ENFORCEMENT (the 402s
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
@@ -3789,7 +3855,14 @@ function doReset(){
         await ensurePlatformSchema(env);
         const vr = await env.DB.prepare('SELECT email_verified FROM users WHERE tenant_id=? AND email=? LIMIT 1').bind(ctx.tenant_id, ctx.user.email).first();
         const vv = !vr ? 1 : (vr.email_verified == null ? 1 : (vr.email_verified ? 1 : 0));
-        return json({ ok: true, verified: vv });
+        // #280/#276: same flag-gated billing_state as /api/auth/me -- lets the client's post-verify continuation
+        // (_postVerifyProceed) route a needs_card/locked tenant to the right gate instead of straight into
+        // onboarding/dashboard. 'ok' whenever both flags are off (the overwhelming common case) -- unchanged shape
+        // otherwise (an added field, never a removed/renamed one).
+        let _bState = 'ok';
+        if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, ctx.tenant_id, ctx.user.email); }
+        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email); }
+        return json({ ok: true, verified: vv, billing_state: _bState });
       }
       if (path === '/api/auth/resend-verify' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad request.');

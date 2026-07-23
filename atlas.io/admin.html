@@ -96,6 +96,10 @@
   .kpi .k-v.money{color:var(--gold2)}
   .kpi .k-s{font-size:11.5px;color:var(--mut2);margin-top:6px}
   .kpi .k-s b{color:var(--em)}
+  /* time-basis chip: makes each KPI's window explicit -- range tiles show the selected filter (value moves with it), snapshot tiles show a live "now" dot */
+  .kpi .k-basis{font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--mut2);background:rgba(255,255,255,.045);border:1px solid var(--line);border-radius:5px;padding:1px 5px;line-height:1.6;white-space:nowrap}
+  .kpi .k-basis.now{color:var(--em);border-color:rgba(49,214,138,.32);background:rgba(49,214,138,.08)}
+  .kpi .k-basis.now::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--em);margin-right:4px;vertical-align:baseline}
   .kpi .glow{position:absolute;right:-30px;top:-30px;width:110px;height:110px;border-radius:50%;background:radial-gradient(circle,rgba(49,214,138,.14),transparent 70%);pointer-events:none}
   .kpi.gold .glow{background:radial-gradient(circle,rgba(239,201,120,.16),transparent 70%)}
 
@@ -658,17 +662,20 @@ function animateNum(el, to, fmt){ var from=_prevKpi[el.id]||0; _prevKpi[el.id]=t
   requestAnimationFrame(step); }
 
 function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.members||{}, ins=o.installs||{}, bugs=o.bugs||{}, vis=o.visits||{}; var rl=((o.range&&o.range.label)||'range').toLowerCase();
+  // Each KPI declares a `basis` -- the time window its number reflects -- rendered as a chip so the filter's reach is
+  // explicit. Range tiles (revenue, visits, signups) carry the selected range AND their VALUE tracks it; snapshot tiles
+  // (MRR, members, trials, open bugs) carry a live "now" because a date range does not apply to a point-in-time count.
   var kpis=[
-    {id:'k_rev', hero:true, gold:true, label:'Total revenue', val:rev.total_cents||0, fmt:centsUSD, sub:'<b>'+centsUSD(rev.range_cents||0)+'</b> in '+esc(rl)},
-    {id:'k_mrr', gold:true, label:'MRR', val:rev.mrr_cents||0, fmt:centsUSD, sub:'recurring / month'},
-    {id:'k_mem', label:'Members', val:mem.total||0, fmt:function(v){return nfmt(v);}, sub:'<b>'+nfmt(mem.paid||0)+'</b> paying'},
-    {id:'k_vis', label:'Website visits', val:vis.range||0, fmt:function(v){return nfmt(v);}, sub:nfmt(vis.today||0)+' today'},
-    {id:'k_signup', label:'New signups', val:o.signups||0, fmt:function(v){return nfmt(v);}, sub:esc(rl)},
-    {id:'k_trial', label:'Trials', val:mem.trials||0, fmt:function(v){return nfmt(v);}, sub:nfmt(mem.trials_with_card||0)+' with card'},
-    {id:'k_bug', label:'Open bugs', val:bugs.open||0, fmt:function(v){return nfmt(v);}, sub:nfmt(bugs.total||0)+' total'}
+    {id:'k_rev', hero:true, gold:true, label:'Revenue', basis:rl, val:rev.range_cents||0, fmt:centsUSD, sub:'<b>'+centsUSD(rev.total_cents||0)+'</b> all-time'},
+    {id:'k_mrr', gold:true, label:'MRR', basis:'now', val:rev.mrr_cents||0, fmt:centsUSD, sub:'recurring / month'},
+    {id:'k_mem', label:'Members', basis:'now', val:mem.total||0, fmt:function(v){return nfmt(v);}, sub:'<b>'+nfmt(mem.paid||0)+'</b> paying'},
+    {id:'k_vis', label:'Website visits', basis:rl, val:vis.range||0, fmt:function(v){return nfmt(v);}, sub:nfmt(vis.today||0)+' today'},
+    {id:'k_signup', label:'New signups', basis:rl, val:o.signups||0, fmt:function(v){return nfmt(v);}, sub:'new businesses'},
+    {id:'k_trial', label:'Trials', basis:'now', val:mem.trials||0, fmt:function(v){return nfmt(v);}, sub:nfmt(mem.trials_with_card||0)+' with card'},
+    {id:'k_bug', label:'Open bugs', basis:'now', val:bugs.open||0, fmt:function(v){return nfmt(v);}, sub:nfmt(bugs.total||0)+' total'}
   ];
   $('kpis').innerHTML = kpis.map(function(k){ return '<div class="kpi'+(k.hero?' hero':'')+(k.gold?' gold':'')+'" onclick="kpiDrill(\''+k.id+'\')" role="button" tabindex="0" title="Click for the detail behind this number"><div class="glow"></div>'+
-    '<div class="k-l">'+esc(k.label)+'</div><div class="k-v'+(k.gold?' money':'')+' num" id="'+k.id+'">'+(k.fmt(0))+'</div>'+
+    '<div class="k-l">'+esc(k.label)+(k.basis?'<span class="k-basis'+(k.basis==='now'?' now':'')+'">'+esc(k.basis)+'</span>':'')+'</div><div class="k-v'+(k.gold?' money':'')+' num" id="'+k.id+'">'+(k.fmt(0))+'</div>'+
     '<div class="k-s num">'+k.sub+'</div></div>'; }).join('');
   kpis.forEach(function(k){ var el=$(k.id); if(el) animateNum(el, k.val, k.fmt); });
 
@@ -875,7 +882,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19ab';
+var ATLAS_EXPECT_BUILD='2026.07.19ac';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1185,6 +1192,10 @@ function _entRenderPayments(e,owner){ var el=$('entPayBody'); if(!el) return; va
     +'<div class="mut" style="font-size:12.5px;margin-bottom:8px">'+(payTest?'Safe sandbox &mdash; only Stripe test cards (4242 4242 4242 4242), no real money moves.':'Real cards are charged real money.')+' <span class="mut">'+(e.test_key?'(PLATFORM_STRIPE_TEST_KEY set)':'(add PLATFORM_STRIPE_TEST_KEY in the worker)')+'</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px"><button class="btn ghost sm" onclick="paymentsSelftest()">Check payment readiness</button>'+((owner&&e.payments_test_mode&&e.test_key)?'<button class="btn ghost sm" onclick="payTestCharge()">Run a $49.99 test payment</button>':'')+'</div>'
     +'<div id="paySelf"></div>'
+    +'</div>'
+    +'<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line2)">'
+    +'<div class="desc" style="margin:0 0 5px"><b>Card required for trial</b> <span class="mut" style="font-weight:400">- On: every new sign-up (and any existing trial tenant without a card yet) must add a card before reaching their dashboard, which starts the 7-day free trial (no charge until it ends). Off: trial access needs no card (today\'s behavior). Uses whichever mode is set above &mdash; TEST cards while Payments is in TEST mode, real cards once you switch to LIVE.</span></div>'
+    +(owner?('<label style="display:flex;align-items:center;gap:7px;font-size:12.5px;margin:2px 0 2px"><input type="checkbox" id="trialCardToggle" '+(e.trial_requires_card?'checked':'')+' onchange="toggleTrialCard(this.checked)"> Require a card to start the free trial <span class="mut">'+(e.trial_requires_card?'(on)':'(off)')+'</span></label>'):('<div class="mut" style="font-size:12.5px;margin:2px 0 2px">Card required for trial: <b>'+(e.trial_requires_card?'on':'off')+'</b> (owner only to change)</div>'))
     +'</div>';
 }
 function _entRenderRegistrar(e){ var el=$('entRegBody'); if(!el) return;
@@ -1230,6 +1241,8 @@ function toggleDevApi(on){ api('/api/admin/config',{method:'POST',body:{dev_api_
 function toggleMfa(on){ api('/api/admin/config',{method:'POST',body:{mfa_enabled:on}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; renderEnterprise(); toast('Two-factor sign-in '+(on?'enabled':'disabled')); } else toast('Could not update'); }); }
 function togglePaymentGate(on){ if(on && !confirm('Turn ON payment gating?\n\nEvery tenant that is past-due, canceled, or trial-expired will immediately lose dashboard access until they pay (they can still sign in, see why, and pay). This does not affect active plans, active trials, comped accounts, or you.')){ renderEnterprise(); return; } api('/api/admin/config',{method:'POST',body:{payment_gate_enabled:on}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; renderEnterprise(); toast('Payment gating '+(on?'enabled':'disabled')+(r.json.enterprise.tenants_locked?(' - '+r.json.enterprise.tenants_locked+' tenant'+(r.json.enterprise.tenants_locked===1?'':'s')+' locked'):'')); } else { renderEnterprise(); toast('Could not update'); } }); }
 function toggleFeatureGate(on){ if(on && !confirm('Turn ON the paid website + domains requirement?\n\nNew publishes or custom-domain connects will require the paid add-on. Already-published sites and connected domains are grandfathered in and will not be taken down.')){ renderEnterprise(); return; } api('/api/admin/config',{method:'POST',body:{feature_gate_enabled:on}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; renderEnterprise(); toast('Paid website + domains '+(on?'enabled':'disabled')); } else { renderEnterprise(); toast('Could not update'); } }); }
+// #280: card-required-for-trial gate. Same confirm-before-turning-on posture as togglePaymentGate/toggleFeatureGate above (this can immediately lock existing cardless trial tenants, so the owner sees the effect before committing).
+function toggleTrialCard(on){ if(on && !confirm('Require a card to start the free trial?\n\nEvery new sign-up (and any existing trial tenant without a card yet) must add a card before reaching their dashboard. This starts their 7-day free trial - no charge until it ends. Uses TEST cards while Payments is in TEST mode, real cards once you switch to LIVE. Never affects you or comped accounts.')){ renderEnterprise(); return; } api('/api/admin/config',{method:'POST',body:{trial_requires_card:on}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; renderEnterprise(); toast('Card required for trial '+(on?'enabled':'disabled')); } else { renderEnterprise(); toast('Could not update'); } }); }
 function payTestCharge(){ toast('Starting a test checkout...'); api('/api/admin/payments/testcharge',{method:'POST',body:{amountCents:4999}}).then(function(r){ var j=r.json||{}; if(j.ok&&j.payUrl){ window.open(j.payUrl,'_blank'); toast('Pay with test card 4242 4242 4242 4242'); } else toast(j.message||'Could not start the test payment'); }); }
 function paymentsSelftest(){ var out=$('paySelf'); if(out) out.innerHTML='<span class="mut" style="font-size:12px">Checking Stripe (read-only)...</span>'; api('/api/admin/payments/selftest').then(function(r){ var j=r.json||{}; if(!out) return; if(r.status===404){ out.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker. Paste worker.js into Cloudflare, then reload.</div>'; return; } if(!j.ok){ out.innerHTML='<div class="mut" style="font-size:12px">'+esc((j.error)||'Could not run the check')+'</div>'; return; } out.innerHTML=_paySelfHtml(j); }).catch(function(){ if(out) out.innerHTML='<div class="mut" style="font-size:12px">Network error</div>'; }); }
 function _paySelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<div style="font-size:12.5px;display:flex;gap:8px;align-items:flex-start;padding:3px 0"><span style="color:'+(okv?'#3ecb8f':'#e0736f')+';font-weight:700;width:14px;flex:none">'+(okv?'&#10003;':'&#10007;')+'</span> <span>'+esc(label)+'</span></div>'; }

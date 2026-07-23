@@ -1414,5 +1414,235 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(r.status === 200, '#278 flag ON: a published-but-UN-ENTITLED site still serves -> 200, never taken down (got ' + r.status + ')');
 }
 
+// ---- #280 CARD-REQUIRED-FOR-TRIAL ACCESS GATING: server-authoritative 402 gate, flag-gated OFF by default,
+// INDEPENDENT of #276's payment_gate_enabled (two separate flags, two separate checks -- this fires even with
+// #276 OFF, and vice versa). Flag OFF -> byte-identical (no request behaves differently). Flag ON -> locks a
+// tenant with neither card_on_file nor a stripe_sub; NEVER locks the platform owner or a comped (gold/free)
+// account; unlocks the instant EITHER card_on_file OR stripe_sub is set; /api/auth/* + /api/billing/* stay
+// reachable even while locked. Mirrors the #276 pgEnvFor/pgReq pattern above (self-contained, own helpers). ----
+{
+  const NOW = Date.now();
+  // scn picks the tenant/user shape; cardGateOn picks platform_config.trial_requires_card for that one request.
+  function cgEnvFor(scn, cardGateOn) {
+    const SID = 'sid_cg_' + scn, CSRF = 'csrf_cg_' + scn, TEN = 't_cg_' + scn, UID = 'u_cg_' + scn;
+    const email = scn === 'owner' ? 'owner@x.com' : (scn + '@member.com');
+    const compRole = scn === 'goldcomp' ? 'gold' : null;
+    const tenantRow =
+      scn === 'has_card' ? { card_on_file: 1, stripe_sub: null } :
+      scn === 'has_sub_no_card' ? { card_on_file: 0, stripe_sub: 'sub_x' } :
+      { card_on_file: 0, stripe_sub: null };   // 'no_card', 'owner', 'goldcomp' -- the owner/comp overrides must win even though the row itself looks cardless
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: email, tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants WHERE email/.test(sql)) return compRole ? { role: compRole } : null;
+          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'trial_requires_card' && cardGateOn) ? { v: '1' } : null;   // #276's OWN flag must stay OFF throughout this block -- proves independence
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { SID, CSRF, env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' } };
+  }
+  const cgReq = (method, path, cfg, body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + cfg.SID, 'x-csrf-token': cfg.CSRF, origin: 'https://atlasrental.io' }; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+
+  // (a) flag OFF: a cardless tenant hitting a normal authenticated endpoint is completely unaffected (proves the feature is inert)
+  let cfg = cgEnvFor('no_card', false);
+  let r = await worker.fetch(cgReq('GET', '/api/data/bookings', cfg), cfg.env, ctx);
+  ok(r.status === 200, '#280 flag OFF: cardless tenant GET /api/data/bookings -> 200, byte-identical to today (got ' + r.status + ')');
+
+  // (b) flag ON, no card and no stripe_sub -> 402 payment_required billing_state=needs_card
+  cfg = cgEnvFor('no_card', true);
+  r = await worker.fetch(cgReq('GET', '/api/data/bookings', cfg), cfg.env, ctx);
+  let j = await r.json();
+  ok(r.status === 402 && j.error === 'payment_required' && j.billing_state === 'needs_card', '#280 flag ON: cardless tenant -> 402 payment_required billing_state=needs_card (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+
+  // (c) flag ON, never-lock invariants + the "OR" unlock: card_on_file alone, stripe_sub alone, a comped gold user,
+  //     and the platform owner all read 200 -- even goldcomp/owner sit on a tenant row with neither card nor sub.
+  for (const scn of ['has_card', 'has_sub_no_card', 'goldcomp', 'owner']) {
+    cfg = cgEnvFor(scn, true);
+    r = await worker.fetch(cgReq('GET', '/api/data/bookings', cfg), cfg.env, ctx);
+    ok(r.status === 200, '#280 flag ON: never-lock/unlock case "' + scn + '" -> 200 (got ' + r.status + ')');
+  }
+
+  // (d) flag ON + cardless tenant: /api/billing/checkout is never 402'd by the gate. No Stripe key configured in
+  //     this env, so a request that gets PAST the gate lands on the route's own "not configured" 400 -- proving
+  //     it reached the route at all (a 402 would only ever come from the gate, never from _platStripe).
+  cfg = cgEnvFor('no_card', true);
+  r = await worker.fetch(cgReq('POST', '/api/billing/checkout', cfg, { kind: 'trial', tier: 'pro' }), cfg.env, ctx);
+  ok(r.status === 400 && r.status !== 402, '#280 flag ON + cardless: /api/billing/checkout never 402s (reaches its own "not configured" 400 instead) (got ' + r.status + ')');
+
+  // (e) flag ON + cardless tenant: /api/auth/me (same /api/auth/ prefix as login) never 402s, and reports needs_card
+  cfg = cgEnvFor('no_card', true);
+  r = await worker.fetch(cgReq('GET', '/api/auth/me', cfg), cfg.env, ctx);
+  let jme = await r.json();
+  ok(r.status === 200 && jme.billing_state === 'needs_card', '#280 flag ON + cardless: /api/auth/me never 402s and reports billing_state (got ' + r.status + ' ' + JSON.stringify(jme) + ')');
+
+  // (f) independence from #276: with BOTH flags on, but the #276 check reading 'ok' on its own (this mock's tenant
+  //     row carries no plan/trial_ends data, so _billingState fails open), the tenant is still blocked by #280
+  //     alone -- proving the two gates are genuinely separate checks, not one piggybacking on the other.
+  function bothEnvFor(cardOn) {
+    const SID = 'sid_both280', CSRF = 'csrf_both280', TEN = 't_both280', UID = 'u_both280';
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'both@member.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/plan,trial_ends,tier,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return {};   // #276 sees no plan column at all -> fails open 'ok'
+          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return { card_on_file: 0, stripe_sub: null };
+          if (/FROM platform_config WHERE k=\?/.test(sql)) { if (a[0] === 'trial_requires_card') return cardOn ? { v: '1' } : null; if (a[0] === 'payment_gate_enabled') return { v: '1' }; return null; }
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { SID, CSRF, env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' } };
+  }
+  let bcfg = bothEnvFor(true);
+  r = await worker.fetch(cgReq('GET', '/api/data/bookings', bcfg), bcfg.env, ctx);
+  j = await r.json();
+  ok(r.status === 402 && j.billing_state === 'needs_card', '#280 independence: #276 reads ok (no plan data) but #280 still blocks a cardless tenant on its own flag (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  bcfg = bothEnvFor(false);
+  r = await worker.fetch(cgReq('GET', '/api/data/bookings', bcfg), bcfg.env, ctx);
+  ok(r.status === 200, '#280 independence: with trial_requires_card OFF, the SAME cardless tenant is unaffected even though payment_gate_enabled is ON in this env (got ' + r.status + ')');
+}
+
+// ---- #280 (cont.): the REAL /api/auth/signup + /api/auth/login path -- through actual password hashing/
+// verification, not a session mock -- carries the true (independent) card-required-for-trial billing_state, and
+// completing the trial-card checkout (webhook sets card_on_file+stripe_sub) unlocks it on the VERY NEXT login.
+// Mirrors the #276 loginDB stateful-mock pattern above (own Maps, own helpers -- this is its OWN { } block). ----
+{
+  const users = new Map(), usersByEmail = new Map(), sessions = new Map(), tenants = new Map(), rateLimits = new Map(), platformConfig = new Map();
+  function loginDB2() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM users WHERE email=\?/.test(sql)) { const id = usersByEmail.get(a[0]); return id ? users.get(id) : null; }
+          if (/id,email,tenant_id,role,caps FROM users/.test(sql)) return users.get(a[0]) || null;
+          if (/FROM users WHERE id=\?/.test(sql)) return users.get(a[0]) || null;
+          if (/FROM sessions WHERE id/.test(sql)) return sessions.get(a[0]) || null;
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return tenants.get(a[0]) || null;
+          if (/FROM tenants WHERE id/.test(sql)) return tenants.get(a[0]) || null;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) { const v = platformConfig.get(a[0]); return v === undefined ? null : { v }; }
+          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO tenants \(id,name,fleet_type,plan,trial_ends,created_at,updated_at,tz\)/.test(sql)) { const [id, name, fleet, plan, trial_ends, created_at, updated_at, tz] = a; tenants.set(id, { id, name, fleet_type: fleet, plan, trial_ends, tier: null, stripe_sub: null, card_on_file: 0, created_at, updated_at, tz }); }
+          else if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,created_at\)/.test(sql)) { const [id, email, pw_hash, pw_salt, tenant_id, role, created_at] = a; users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, caps: null }); usersByEmail.set(email, id); }
+          else if (/UPDATE users SET last_login/.test(sql)) { const u = users.get(a[1]); if (u) u.last_login = a[0]; }
+          else if (/UPDATE users SET email_verified/.test(sql)) { const u = users.get(a[1]); if (u) u.email_verified = a[0]; }
+          else if (/INSERT INTO sessions/.test(sql)) sessions.set(a[0], { id: a[0], user_id: a[1], tenant_id: a[2], csrf: a[3], created_at: a[4], idle_at: a[5], expires_at: a[6], revoked_at: null });
+          else if (/INSERT INTO platform_config/.test(sql)) platformConfig.set(a[0], a[1]);
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const loginEnv2 = { DB: loginDB2(), SESSION_KEY: 'test-session-key-not-a-real-secret', ENC_KEY: Buffer.alloc(32, 7).toString('base64'), OWNER_EMAIL: 'owner@x.com' };
+  const loginReq2 = (method, path, body, cookie) => { const headers = { 'content-type': 'application/json', origin: 'https://atlasrental.io' }; if (cookie) headers['cookie'] = cookie; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  function newestSession2() { let best = null; for (const s of sessions.values()) if (!best || s.created_at >= best.created_at) best = s; return best; }
+
+  let r = await worker.fetch(loginReq2('POST', '/api/auth/signup', { email: 'cardless@x.com', password: 'correcthorsebatterystaple', business: 'Cardless Co' }), loginEnv2, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.ok === true && j.billing_state === 'ok', '#280: signup response carries billing_state:"ok" (gate is off by default) (got ' + JSON.stringify(j) + ')');
+  const tid = j.tenant_id;
+
+  // owner turns the card gate ON; this tenant has never added a card
+  platformConfig.set('trial_requires_card', '1');
+
+  // login again with the SAME real credentials (through actual PBKDF2 password verification) -- must NOT 402
+  r = await worker.fetch(loginReq2('POST', '/api/auth/login', { email: 'cardless@x.com', password: 'correcthorsebatterystaple' }), loginEnv2, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !!j.csrf, '#280: login for a cardless tenant with the gate ON still succeeds -- never 402s (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  ok(j.billing_state === 'needs_card', '#280: that same login response carries billing_state:"needs_card" so the client shows the card gate right on auth (got ' + j.billing_state + ')');
+
+  // confirm the resulting session really IS locked for an ordinary endpoint -- proving login's carve-out is
+  // deliberate (the allow-list), not evidence the gate silently failed to engage at all
+  let cookie = 'atlas_sid=' + newestSession2().id;
+  r = await worker.fetch(loginReq2('GET', '/api/data/bookings', null, cookie), loginEnv2, ctx);
+  j = await r.json();
+  ok(r.status === 402 && j.error === 'payment_required' && j.billing_state === 'needs_card', '#280: that same locked session -> 402 needs_card on an ordinary endpoint (the gate is genuinely active) (got ' + r.status + ')');
+
+  // now simulate the real trial-checkout webhook completing (worker.js checkout.session.completed, md.billing==='trial'): card_on_file=1 + stripe_sub set
+  const t = tenants.get(tid); t.card_on_file = 1; t.stripe_sub = 'sub_new';
+
+  // login again -- unlocked, billing_state back to 'ok', and the ordinary endpoint is reachable again
+  r = await worker.fetch(loginReq2('POST', '/api/auth/login', { email: 'cardless@x.com', password: 'correcthorsebatterystaple' }), loginEnv2, ctx);
+  j = await r.json();
+  ok(j.billing_state === 'ok', '#280: after the trial-card checkout lands (card_on_file+stripe_sub), the SAME tenant logs in with billing_state:"ok" again (got ' + j.billing_state + ')');
+  cookie = 'atlas_sid=' + newestSession2().id;
+  r = await worker.fetch(loginReq2('GET', '/api/data/bookings', null, cookie), loginEnv2, ctx);
+  ok(r.status === 200, '#280: after adding a card, the same tenant reaches an ordinary endpoint again -> 200 (got ' + r.status + ')');
+}
+
+// ---- #280 admin toggle: GET/POST /api/admin/config surfaces trial_requires_card, independently of payment_gate_enabled ----
+{
+  let cardFlag = null, payFlag = null;   // null == unset (reads as default '0'/off); '1'/'0' once toggled via POST
+  function cfgDB2() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM platform_config WHERE k=\?/.test(sql)) {
+            if (a[0] === 'trial_requires_card') return cardFlag != null ? { v: cardFlag } : null;
+            if (a[0] === 'payment_gate_enabled') return payFlag != null ? { v: payFlag } : null;
+            return null;
+          }
+          if (/COUNT\(\*\) c FROM tenants/.test(sql)) return { c: 0 };
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO platform_config/.test(sql)) { if (a[0] === 'trial_requires_card') cardFlag = a[1]; else if (a[0] === 'payment_gate_enabled') payFlag = a[1]; }
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const cfgEnv2 = { DB: cfgDB2(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const cfgReq2 = (method, headers, body) => new Request('https://atlasrental.io/api/admin/config', { method, headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}), body: body !== undefined ? JSON.stringify(body) : undefined });
+
+  let r = await worker.fetch(cfgReq2('GET', H), cfgEnv2, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.enterprise.trial_requires_card === false, '#280 admin config: trial_requires_card defaults to false (got ' + JSON.stringify(j.enterprise && j.enterprise.trial_requires_card) + ')');
+
+  r = await worker.fetch(cfgReq2('POST', H, { trial_requires_card: true }), cfgEnv2, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.enterprise.trial_requires_card === true, '#280 admin config: POST trial_requires_card:true flips it on (got ' + JSON.stringify(j.enterprise && j.enterprise.trial_requires_card) + ')');
+  ok(j.enterprise.payment_gate_enabled === false, '#280 admin config: flipping trial_requires_card leaves payment_gate_enabled untouched (independent flags) (got ' + JSON.stringify(j.enterprise && j.enterprise.payment_gate_enabled) + ')');
+
+  r = await worker.fetch(cfgReq2('POST', { 'X-Admin-Token': 'WRONG' }, { trial_requires_card: false }), cfgEnv2, ctx);
+  ok(r.status === 401 || r.status === 403, '#280 admin config: a bad admin token cannot flip the gate (got ' + r.status + ')');
+  ok(cardFlag === '1', '#280 admin config: the bad-token POST above never actually wrote to platform_config (still "1" from the earlier real POST) (got ' + JSON.stringify(cardFlag) + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
