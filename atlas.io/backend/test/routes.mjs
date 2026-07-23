@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _b32decode, _hotp, _totpAt } from '../worker.js';
+import worker, { _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1902,6 +1902,157 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(r.status === 400 && j.ok !== true, 'domain-cancel: no recurring subscription on file -> clear failure, never a fake success (got ' + r.status + ' ' + JSON.stringify(j) + ')');
 
   globalThis.fetch = wcOrigFetch;
+}
+
+// ---- #286 AI-spend metering: _meterAI upserts + ACCUMULATES per (day, model); a usage-less provider response
+// records nothing and never throws; an unrecognized model falls back to the default rate rather than $0. Own
+// self-contained mock (does not reference any other block's helper). ----
+{
+  const spend = new Map();
+  function aiSpendDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => null,
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO platform_ai_spend/.test(sql)) {
+            const [day, model, inTok, outTok, costMicros] = a;
+            const key = day + '|' + model;
+            const cur = spend.get(key) || { day, model, calls: 0, input_tokens: 0, output_tokens: 0, cost_micros: 0 };
+            cur.calls += 1; cur.input_tokens += inTok; cur.output_tokens += outTok; cur.cost_micros += costMicros;
+            spend.set(key, cur);
+          }
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const aiEnv = { DB: aiSpendDB() };
+  const today = new Date().toISOString().slice(0, 10);
+
+  // (a) first claude-sonnet-5 call: 1000 input + 500 output tokens @ $3.00/$15.00 per 1M -> exact cost_micros
+  const expectA = Math.round(1000 * AI_PRICES['claude-sonnet-5'].input + 500 * AI_PRICES['claude-sonnet-5'].output);
+  await _meterAI(aiEnv, 'claude-sonnet-5', { input_tokens: 1000, output_tokens: 500 });
+  let row = spend.get(today + '|claude-sonnet-5');
+  ok(!!row && row.calls === 1 && row.input_tokens === 1000 && row.output_tokens === 500 && row.cost_micros === expectA, '#286 _meterAI: first claude-sonnet-5 call upserts the exact cost_micros=' + expectA + ' (got ' + JSON.stringify(row) + ')');
+
+  // (b) a SECOND claude-sonnet-5 call the same day ACCUMULATES (calls/tokens/cost summed), never overwrites
+  const expectB2 = Math.round(200 * AI_PRICES['claude-sonnet-5'].input + 100 * AI_PRICES['claude-sonnet-5'].output);
+  await _meterAI(aiEnv, 'claude-sonnet-5', { input_tokens: 200, output_tokens: 100 });
+  row = spend.get(today + '|claude-sonnet-5');
+  ok(!!row && row.calls === 2 && row.input_tokens === 1200 && row.output_tokens === 600 && row.cost_micros === expectA + expectB2, '#286 _meterAI: a second same-day call ACCUMULATES rather than overwriting (got ' + JSON.stringify(row) + ', expected cost_micros=' + (expectA + expectB2) + ')');
+
+  // (c) a DIFFERENT model gets its OWN row, priced at its OWN rate -- not merged with claude-sonnet-5's
+  const expectGpt = Math.round(2000 * AI_PRICES['gpt-4o'].input + 1000 * AI_PRICES['gpt-4o'].output);
+  await _meterAI(aiEnv, 'gpt-4o', { input_tokens: 2000, output_tokens: 1000 });
+  const gptRow = spend.get(today + '|gpt-4o');
+  ok(!!gptRow && gptRow.calls === 1 && gptRow.cost_micros === expectGpt, '#286 _meterAI: a different model gets its own (day,model) row at its own rate (got ' + JSON.stringify(gptRow) + ', expected cost_micros=' + expectGpt + ')');
+  ok(spend.size === 2, '#286 _meterAI: two distinct models produce two distinct rows, never merged (got ' + spend.size + ')');
+
+  // (d) an unrecognized model falls back to AI_PRICES.default (never priced at $0/silently free)
+  const expectDefault = Math.round(100 * AI_PRICES['default'].input + 100 * AI_PRICES['default'].output);
+  await _meterAI(aiEnv, 'some-future-model-xyz', { input_tokens: 100, output_tokens: 100 });
+  const unkRow = spend.get(today + '|some-future-model-xyz');
+  ok(!!unkRow && unkRow.cost_micros === expectDefault, '#286 _meterAI: an unrecognized model falls back to the default rate, never treated as free (got ' + JSON.stringify(unkRow) + ', expected cost_micros=' + expectDefault + ')');
+
+  // (e) a provider response with NO usable usage (error body) -> _aiUsageFrom normalizes to {0,0} and _meterAI
+  // records NOTHING (no phantom zero-cost row) and never throws
+  ok(JSON.stringify(_aiUsageFrom('anthropic', { error: { type: 'not_found_error' } })) === JSON.stringify({ input_tokens: 0, output_tokens: 0 }), '#286 _aiUsageFrom: an error body with no .usage normalizes to {0,0}, never guesses a nonzero count');
+  ok(JSON.stringify(_aiUsageFrom('openai', {})) === JSON.stringify({ input_tokens: 0, output_tokens: 0 }), '#286 _aiUsageFrom: an empty OpenAI body normalizes to {0,0}');
+  ok(JSON.stringify(_aiUsageFrom('gemini', {})) === JSON.stringify({ input_tokens: 0, output_tokens: 0 }), '#286 _aiUsageFrom: an empty Gemini body normalizes to {0,0}');
+  const beforeSize = spend.size;
+  let threw = false;
+  try { await _meterAI(aiEnv, 'claude-sonnet-5', _aiUsageFrom('anthropic', { error: { type: 'not_found_error' } })); } catch (e) { threw = true; }
+  ok(!threw, '#286 _meterAI: a usage-less call never throws');
+  ok(spend.size === beforeSize, '#286 _meterAI: a usage-less call records NOTHING -- no phantom zero-cost row (size unchanged, got ' + spend.size + ' vs ' + beforeSize + ')');
+
+  // (f) never throws even with a totally malformed env (defensive -- metering must NEVER surface to the AI path)
+  threw = false;
+  try { await _meterAI({}, 'claude-sonnet-5', { input_tokens: 10, output_tokens: 10 }); } catch (e) { threw = true; }
+  ok(!threw, '#286 _meterAI: never throws even with no env.DB at all');
+  threw = false;
+  try { await _meterAI(null, 'claude-sonnet-5', { input_tokens: 10, output_tokens: 10 }); } catch (e) { threw = true; }
+  ok(!threw, '#286 _meterAI: never throws even with a null env');
+}
+
+// ---- #286 GET /api/admin/pnl -- owner-gated P&L: net = revenue - (ai_spend + fixed_costs), using a mocked
+// platform_transactions/platform_ai_spend/platform_config. Own self-contained mock (does not reference any other
+// block's helper). Asserts the NET FORMULA AS AN IDENTITY against whatever the mocked sums produce (not a
+// hand-computed prorated number) since fixed-cost proration depends on wall-clock time at test-run -- the
+// deterministic parts (revenue, ai_spend, fixed_costs.monthly_total_cents, by-model breakdown) are asserted exactly. ----
+{
+  const FIXED = [{ label: 'Cloudflare', monthly_cents: 2000 }, { label: 'Resend', monthly_cents: 1000 }];
+  const BY_MODEL = [
+    { model: 'claude-sonnet-5', calls: 5, it: 3000, ot: 1500, cm: 700000 },
+    { model: 'gpt-4o', calls: 2, it: 2000, ot: 500, cm: 300000 },
+    { model: 'some-unpriced-model', calls: 1, it: 100, ot: 50, cm: 0 }
+  ];
+  function pnlDB(staffRow) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM admin_staff WHERE token_hash=\?/.test(sql)) return staffRow || null;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'platform_fixed_costs_json') ? { v: JSON.stringify(FIXED) } : null;
+          if (/MIN\(created_at\)/.test(sql)) return { m: Date.now() - 200 * 86400000 };
+          if (/amount_cents.*platform_transactions WHERE created_at>=\? AND created_at<\?/.test(sql)) return { c: 100000 };
+          if (/amount_cents.*platform_transactions WHERE created_at>=\?/.test(sql)) return { c: 150000 };
+          if (/amount_cents.*FROM platform_transactions/.test(sql) && !/WHERE/.test(sql)) return { c: 500000 };
+          if (/cost_micros.*platform_ai_spend WHERE day>=\? AND day<=\?/.test(sql)) return { cm: 1000000, it: 5000, ot: 2000 };
+          if (/cost_micros.*platform_ai_spend WHERE day>=\?/.test(sql)) return { cm: 1500000 };
+          if (/cost_micros.*FROM platform_ai_spend/.test(sql) && !/WHERE/.test(sql)) return { cm: 5000000 };
+          if (/sqlite_master/.test(sql)) return { n: 25 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          return null;
+        },
+        all: async () => { if (/GROUP BY model/.test(sql)) return { results: BY_MODEL }; return { results: [] }; },
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const pnlEnv = { DB: pnlDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+
+  let r = await worker.fetch(mkReq('GET', '/api/admin/pnl?range=30d', { headers: H }), pnlEnv, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.ok === true, 'pnl: owner token -> 200 ok (got ' + r.status + ' ' + JSON.stringify(j).slice(0, 300) + ')');
+  ok(j.revenue.range_cents === 100000 && j.revenue.month_cents === 150000 && j.revenue.total_cents === 500000, 'pnl: revenue.{range,month,total}_cents pass through the mocked platform_transactions sums exactly (got ' + JSON.stringify(j.revenue) + ')');
+  ok(j.ai_spend.range_cents === 100 && j.ai_spend.month_cents === 150 && j.ai_spend.total_cents === 500, 'pnl: ai_spend cents = cost_micros/10000 exactly (1,000,000 micros -> 100 cents) (got ' + JSON.stringify(j.ai_spend) + ')');
+  ok(j.ai_spend.tokens.input_tokens === 5000 && j.ai_spend.tokens.output_tokens === 2000, 'pnl: ai_spend.tokens passes through the range token sums (got ' + JSON.stringify(j.ai_spend.tokens) + ')');
+  ok(Array.isArray(j.ai_spend.by_model) && j.ai_spend.by_model.length === 3, 'pnl: ai_spend.by_model has one row per model (got ' + JSON.stringify(j.ai_spend.by_model) + ')');
+  const claudeRow = j.ai_spend.by_model.find((m) => m.model === 'claude-sonnet-5');
+  const unpricedRow = j.ai_spend.by_model.find((m) => m.model === 'some-unpriced-model');
+  ok(!!claudeRow && claudeRow.cost_cents === 70 && claudeRow.priced === true, 'pnl: by_model priced entry has exact cost_cents (700000 micros -> 70 cents) + priced:true (got ' + JSON.stringify(claudeRow) + ')');
+  ok(!!unpricedRow && unpricedRow.priced === false, 'pnl: by_model flags an unrecognized model with priced:false so the UI can warn (got ' + JSON.stringify(unpricedRow) + ')');
+  ok(j.fixed_costs.monthly_total_cents === 3000 && j.fixed_costs.items.length === 2, 'pnl: fixed_costs.monthly_total_cents sums the owner-entered items exactly; items pass through (got ' + JSON.stringify(j.fixed_costs.monthly_total_cents) + ', ' + j.fixed_costs.items.length + ' items)');
+  // NET FORMULA as an identity against whatever the (time-dependent) proration produced -- this is what "net =
+  // revenue - (ai + fixed)" means operationally, and it holds regardless of wall-clock time.
+  ok(j.expenses.range_cents === j.ai_spend.range_cents + j.fixed_costs.range_cents, 'pnl: expenses.range_cents = ai_spend.range_cents + fixed_costs.range_cents (got ' + JSON.stringify(j.expenses) + ')');
+  ok(j.expenses.month_cents === j.ai_spend.month_cents + j.fixed_costs.month_cents, 'pnl: expenses.month_cents = ai_spend.month_cents + fixed_costs.month_cents (got ' + JSON.stringify(j.expenses) + ')');
+  ok(j.expenses.total_cents === j.ai_spend.total_cents + j.fixed_costs.total_cents, 'pnl: expenses.total_cents = ai_spend.total_cents + fixed_costs.total_cents (got ' + JSON.stringify(j.expenses) + ')');
+  ok(j.net.range_cents === j.revenue.range_cents - j.expenses.range_cents, 'pnl: net.range_cents = revenue.range_cents - expenses.range_cents (got net=' + j.net.range_cents + ' revenue=' + j.revenue.range_cents + ' expenses=' + j.expenses.range_cents + ')');
+  ok(j.net.month_cents === j.revenue.month_cents - j.expenses.month_cents, 'pnl: net.month_cents = revenue.month_cents - expenses.month_cents (got ' + JSON.stringify(j.net) + ')');
+  ok(j.net.total_cents === j.revenue.total_cents - j.expenses.total_cents, 'pnl: net.total_cents = revenue.total_cents - expenses.total_cents (got ' + JSON.stringify(j.net) + ')');
+  ok(j.fixed_costs.range_cents >= 0 && j.fixed_costs.month_cents >= 0 && j.fixed_costs.total_cents >= 0, 'pnl: prorated fixed-cost figures are never negative (got ' + JSON.stringify({ r: j.fixed_costs.range_cents, m: j.fixed_costs.month_cents, t: j.fixed_costs.total_cents }) + ')');
+
+  // ---- owner-gate: a bad/garbage token never resolves an identity -> 403 ----
+  r = await worker.fetch(mkReq('GET', '/api/admin/pnl?range=30d', { headers: { 'X-Admin-Token': 'WRONG' } }), pnlEnv, ctx);
+  ok(r.status === 403, 'pnl: garbage admin token -> 403 (got ' + r.status + ')');
+
+  // ---- owner-gate: a VALID staff token with a non-owner role (support) resolves an identity but is still
+  // rejected -- /api/admin/pnl is OWNER_ONLY, matching how security-log/errors are gated ----
+  const staffSecret = 'atlst_' + crypto.randomBytes(20).toString('hex');
+  const staffHash = crypto.createHash('sha256').update(staffSecret).digest('hex');
+  const staffRow = { id: 's_pnl1', email: 'support@member.com', role: 'support', active: 1, revoked_at: null };
+  const pnlStaffEnv = { DB: pnlDB(staffRow), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  r = await worker.fetch(mkReq('GET', '/api/admin/pnl?range=30d', { headers: { 'X-Admin-Token': staffSecret } }), pnlStaffEnv, ctx);
+  ok(r.status === 403, 'pnl: a VALID support-role staff token still gets 403 -- pnl is OWNER_ONLY, not just any authenticated admin (got ' + r.status + ')');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }

@@ -91,9 +91,9 @@
   .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:8px 0 16px}
   .kpi{background:linear-gradient(180deg,var(--surf2),var(--surf));border:1px solid var(--line);border-radius:var(--r2);padding:14px 15px;box-shadow:var(--sh);position:relative;overflow:hidden;min-width:0}
   .kpi.hero{grid-column:span 2}
-  /* the 7 KPIs (1 hero=2 cols + 6x1 col = 8 units) fill exactly 6 cols + a dangling 2-unit row on wide screens;
-     give the trailing pair (Trials, Open bugs) 3 cols each so the last row stays flush with no empty gap */
-  @media(min-width:1081px){ .kpi:nth-child(6),.kpi:nth-child(7){grid-column:span 3} }
+  /* the 9 KPIs (1 hero=2 cols + 8x1 col = 10 units) fill exactly 6 cols (hero + 4 singles) then TWO trailing rows
+     of 2 tiles each on wide screens; give nth-child(6..9) 3 cols each so BOTH trailing rows stay flush, no gap */
+  @media(min-width:1081px){ .kpi:nth-child(6),.kpi:nth-child(7),.kpi:nth-child(8),.kpi:nth-child(9){grid-column:span 3} }
   .kpi .k-l{display:flex;align-items:center;gap:7px;flex-wrap:wrap;row-gap:3px;font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--mut);font-weight:600}
   .kpi .k-v{font-size:26px;font-weight:700;letter-spacing:-.4px;margin-top:8px;line-height:1}
   .kpi.hero .k-v{font-size:34px}
@@ -419,6 +419,13 @@
     <div class="split" id="revSplit"></div>
   </div>
 
+  <!-- EXPENSES + NET PROFIT (real metered AI-API spend + owner's fixed monthly costs vs Revenue) -->
+  <div class="card">
+    <div class="card-h"><h2>Expenses &amp; net profit</h2><span class="sub" id="pnlSub"></span></div>
+    <div class="split" id="pnlSplit"></div>
+    <div class="card-b pad" id="pnlDetail"><div class="mut">Loading&hellip;</div></div>
+  </div>
+
   <!-- PURCHASES (itemized: subscriptions, credits, websites, domains) -->
   <div class="card">
     <div class="card-h"><h2>Purchases</h2><span class="sub" id="purSub"></span><div class="sp"></div><button class="chip" onclick="purCSV()">Export CSV</button></div>
@@ -637,7 +644,8 @@ function loadAll(quiet){ _lastFetch=Date.now();
     api('/api/admin/visits-geo?range='+_range),
     api('/api/admin/purchases?range='+_range+'&limit=1000'),
     api('/api/admin/growth-data?range='+_range),
-    api('/api/admin/social')
+    api('/api/admin/social'),
+    api('/api/admin/pnl?range='+_range)
   ]).then(function(r){
     if(r[0].json&&r[0].json.ok){ DATA.overview=r[0].json; paintOverview(); }
     if(r[1].json&&r[1].json.ok){ DATA.members=r[1].json.members||[]; renderMembers(); }
@@ -652,6 +660,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
     if(r[10]&&r[10].json&&r[10].json.ok){ DATA.purchases=r[10].json; renderPurchases(); }
     if(r[11]&&r[11].json&&r[11].json.ok){ DATA.growth=r[11].json.growth||null; renderGrowth(); }
     if(r[12]&&r[12].json&&r[12].json.ok){ DATA.socialHandles=r[12].json.handles||{}; DATA.socialPlatforms=r[12].json.platforms||{}; renderSocial(); }
+    if(r[13]&&r[13].json&&r[13].json.ok){ DATA.pnl=r[13].json; paintOverview(); renderPnl(); }
     setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700);
     if((r[0].json&&r[0].json.ok)===false || r[0].status===403){ lock(); }
   }).catch(function(){ setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700); });
@@ -668,9 +677,11 @@ function animateNum(el, to, fmt){ var from=_prevKpi[el.id]||0; _prevKpi[el.id]=t
   requestAnimationFrame(step); }
 
 function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.members||{}, ins=o.installs||{}, bugs=o.bugs||{}, vis=o.visits||{}; var rl=((o.range&&o.range.label)||'range').toLowerCase();
+  var pnl=DATA.pnl||{}; var pnlNet=pnl.net||{}, pnlAi=pnl.ai_spend||{};
   // Each KPI declares a `basis` -- the time window its number reflects -- rendered as a chip so the filter's reach is
-  // explicit. Range tiles (revenue, visits, signups) carry the selected range AND their VALUE tracks it; snapshot tiles
-  // (MRR, members, trials, open bugs) carry a live "now" because a date range does not apply to a point-in-time count.
+  // explicit. Range tiles (revenue, visits, signups, net, AI spend) carry the selected range AND their VALUE tracks
+  // it; snapshot tiles (MRR, members, trials, open bugs) carry a live "now" because a date range does not apply to
+  // a point-in-time count.
   var kpis=[
     {id:'k_rev', hero:true, gold:true, label:'Revenue', basis:rl, val:rev.range_cents||0, fmt:centsUSD, sub:'<b>'+centsUSD(rev.total_cents||0)+'</b> all-time'},
     {id:'k_mrr', gold:true, label:'MRR', basis:'now', val:rev.mrr_cents||0, fmt:centsUSD, sub:'recurring / month'},
@@ -678,7 +689,9 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
     {id:'k_vis', label:'Website visits', basis:rl, val:vis.range||0, fmt:function(v){return nfmt(v);}, sub:nfmt(vis.today||0)+' today'},
     {id:'k_signup', label:'New signups', basis:rl, val:o.signups||0, fmt:function(v){return nfmt(v);}, sub:'new businesses'},
     {id:'k_trial', label:'Trials', basis:'now', val:mem.trials||0, fmt:function(v){return nfmt(v);}, sub:nfmt(mem.trials_with_card||0)+' with card'},
-    {id:'k_bug', label:'Open bugs', basis:'now', val:bugs.open||0, fmt:function(v){return nfmt(v);}, sub:nfmt(bugs.total||0)+' total'}
+    {id:'k_bug', label:'Open bugs', basis:'now', val:bugs.open||0, fmt:function(v){return nfmt(v);}, sub:nfmt(bugs.total||0)+' total'},
+    {id:'k_net', gold:(pnlNet.range_cents||0)>=0, label:'Net profit', basis:rl, val:pnlNet.range_cents||0, fmt:centsUSD, sub:(pnlNet.range_cents||0)<0?'revenue below expenses':'revenue minus expenses'},
+    {id:'k_aispend', label:'AI spend', basis:rl, val:pnlAi.range_cents||0, fmt:centsUSD, sub:nfmt(((pnlAi.tokens&&pnlAi.tokens.input_tokens)||0)+((pnlAi.tokens&&pnlAi.tokens.output_tokens)||0))+' tokens metered'}
   ];
   $('kpis').innerHTML = kpis.map(function(k){ return '<div class="kpi'+(k.hero?' hero':'')+(k.gold?' gold':'')+'" onclick="kpiDrill(\''+k.id+'\')" role="button" tabindex="0" title="Click for the detail behind this number"><div class="glow"></div>'+
     '<div class="k-l">'+esc(k.label)+(k.basis?'<span class="k-basis'+(k.basis==='now'?' now':'')+'">'+esc(k.basis)+'</span>':'')+'</div><div class="k-v'+(k.gold?' money':'')+' num" id="'+k.id+'">'+(k.fmt(0))+'</div>'+
@@ -697,6 +710,53 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
       '<div class="bar"><i style="width:'+(sub/tot*100)+'%;background:var(--gold)"></i><i style="width:'+(cr/tot*100)+'%;background:var(--em)"></i><i style="width:'+(ws/tot*100)+'%;background:var(--blue)"></i></div>'+
       '<div class="legend"><span><i style="background:var(--gold)"></i>Subs '+centsUSD0(sub)+'</span><span><i style="background:var(--em)"></i>Credits '+centsUSD0(cr)+'</span><span><i style="background:var(--blue)"></i>Websites '+centsUSD0(ws)+'</span></div></div>'+
     '<div><div class="stat-l">Members by tier</div><div style="margin-top:12px;line-height:2.1;font-size:13px">'+tierRows+'</div></div>';
+}
+
+/* ================= expenses + net profit (task #286) ================= */
+function renderPnl(){ var p=DATA.pnl||{}; var rev=p.revenue||{}, ai=p.ai_spend||{}, fc=p.fixed_costs||{}, exp=p.expenses||{}, net=p.net||{};
+  var rl=((p.range&&p.range.label)||'this range');
+  $('pnlSub').textContent = rl+', to the cent';
+  var netNeg = (net.range_cents||0)<0;
+  $('pnlSplit').innerHTML =
+    '<div><div class="stat-l">Expenses ('+esc(rl.toLowerCase())+')</div><div class="stat-v num" style="color:var(--amber)">'+centsUSD(exp.range_cents||0)+'</div>'+
+      '<div class="legend"><span><i style="background:var(--amber)"></i>AI spend '+centsUSD0(ai.range_cents||0)+'</span><span><i style="background:var(--mut2)"></i>Fixed costs '+centsUSD0(fc.range_cents||0)+'</span></div></div>'+
+    '<div><div class="stat-l">Net profit ('+esc(rl.toLowerCase())+')</div><div class="stat-v num" style="color:'+(netNeg?'var(--red)':'var(--em)')+'">'+centsUSD(net.range_cents||0)+'</div>'+
+      '<div class="mut" style="margin-top:10px;font-size:11.5px">'+centsUSD0(rev.range_cents||0)+' revenue &minus; '+centsUSD0(exp.range_cents||0)+' expenses</div></div>';
+
+  var byModel = ai.by_model||[];
+  var modelRows = byModel.length ? byModel.map(function(m){
+    var unver = m.priced ? '' : ' <span class="pill past" title="Model not in the AI_PRICES table -- verify the rate">unverified rate</span>';
+    return _dr(esc(m.model)+unver, centsUSD(m.cost_cents||0)+' <span class="mut">('+nfmt(m.calls||0)+' calls, '+nfmt((m.input_tokens||0)+(m.output_tokens||0))+' tok)</span>');
+  }).join('') : '<div class="mut" style="padding:8px 4px">No metered AI calls yet in '+esc(rl.toLowerCase())+'.</div>';
+
+  var fcItems = fc.items||[];
+  var fcRows = fcItems.length ? fcItems.map(function(it,idx){
+    return '<div class="drow"><span class="dl">'+esc(it.label)+'</span><b>'+centsUSD0(it.monthly_cents||0)+'/mo'+(_isOwner()?(' <button class="chip" style="margin-left:6px;color:#e5484d" onclick="pnlRemoveCost('+idx+')">Remove</button>'):'')+'</b></div>';
+  }).join('') : '<div class="mut" style="padding:8px 4px">No fixed costs entered yet.</div>';
+
+  $('pnlDetail').innerHTML =
+    _dsec('AI spend by model ('+esc(rl.toLowerCase())+')') + modelRows +
+    _dsec('Fixed monthly costs (owner-entered; prorated to the range above)') + fcRows +
+    (_isOwner() ? ('<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px">'+
+      '<input class="inp" id="pnlCostLabel" placeholder="Label (e.g. Cloudflare)" style="flex:1;min-width:140px">'+
+      '<input class="inp num" id="pnlCostAmt" type="number" min="0" step="0.01" placeholder="Monthly $" style="width:110px">'+
+      '<button class="btn ghost sm" onclick="pnlAddCost()">Add cost</button></div>') : '<div class="mut" style="font-size:12px;margin-top:6px">Owner only to edit.</div>');
+}
+function _pnlItems(){ return ((DATA.pnl&&DATA.pnl.fixed_costs&&DATA.pnl.fixed_costs.items)||(DATA.enterprise&&DATA.enterprise.fixed_costs)||[]).slice(); }
+function pnlAddCost(){
+  var lblEl=$('pnlCostLabel'), amtEl=$('pnlCostAmt'); if(!lblEl||!amtEl) return;
+  var lbl=(lblEl.value||'').trim(); var amt=parseFloat(amtEl.value);
+  if(!lbl){ toast('Enter a label'); return; }
+  if(!(amt>=0)){ toast('Enter a monthly amount'); return; }
+  var items=_pnlItems(); items.push({label:lbl, monthly_cents:Math.round(amt*100)});
+  pnlSaveCosts(items);
+}
+function pnlRemoveCost(idx){ var items=_pnlItems(); items.splice(idx,1); pnlSaveCosts(items); }
+function pnlSaveCosts(items){
+  api('/api/admin/config',{method:'POST',body:{fixed_costs:items}}).then(function(r){
+    if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; toast('Fixed costs saved'); loadAll(true); }
+    else toast('Could not save');
+  });
 }
 
 /* ================= members ================= */
@@ -888,7 +948,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19ae';
+var ATLAS_EXPECT_BUILD='2026.07.19af';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
