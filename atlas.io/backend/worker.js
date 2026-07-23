@@ -268,17 +268,50 @@ function _cfTelemetry(req) {
 // traffic lives. Used to LABEL trap telemetry (informational) and, in stage 3, to block anonymized PRIMARY logins.
 var _ANON_ORG_RE = /(vpn|proxy|\btor\b|datacamp|m247|nordvpn|mullvad|expressvpn|surfshark|private internet|cyberghost|ovh|hetzner|digitalocean|linode|vultr|choopa|leaseweb|\bcolo|hosting|datacenter|datacentre|\bcloud\b|amazon|\baws\b|google llc|\bazure\b|oracle|contabo|scaleway|quadranet|frantech|hostwinds)/i;
 function _isAnonEgress(asOrg) { var o = String(asOrg || ''); return o ? _ANON_ORG_RE.test(o) : false; }
+// GLOBAL VPN/proxy/Tor/hosting detection for ANY IP worldwide, via a live IP-reputation service (proxycheck.io -- HTTPS,
+// works keyless at low volume, higher limits with a free PROXYCHECK_KEY secret). Cached 1h per IP so an attacker's IP is
+// looked up once/hour (tiny volume). Falls back to the ASN-org heuristic when the service is unavailable/keyless-capped,
+// so detection degrades gracefully and NEVER fails open silently. Returns {anon, type, risk, source}. Honest limit: this
+// catches essentially all commercial VPNs/proxies/Tor/datacenter egress globally, but a private residential proxy can
+// still evade any IP-based method -- the device FINGERPRINT (beacon) is the backstop that re-identifies across IPs.
+var _ipRepCache = {};
+async function _ipReputation(env, ip, asOrg) {
+  var heur = { anon: _isAnonEgress(asOrg), type: _isAnonEgress(asOrg) ? 'datacenter/vpn (heuristic)' : '', risk: '', source: 'asn-heuristic' };
+  if (!ip) return heur;
+  var now = Date.now(), c = _ipRepCache[ip];
+  if (c && (now - c.t < 3600000)) return c.v;
+  try {
+    var url = 'https://proxycheck.io/v2/' + encodeURIComponent(ip) + '?vpn=3&risk=1&asn=0' + (env.PROXYCHECK_KEY ? ('&key=' + encodeURIComponent(env.PROXYCHECK_KEY)) : '');
+    var r = await fetch(url, { signal: AbortSignal.timeout(2500), headers: { 'Accept': 'application/json' } });
+    if (r && r.ok) {
+      var j = await r.json(), rec = j && j[ip];
+      if (rec) {
+        var anon = (String(rec.proxy || '').toLowerCase() === 'yes');
+        var v = { anon: anon || heur.anon, type: rec.type || (anon ? 'proxy/vpn' : (heur.anon ? heur.type : '')), risk: (rec.risk != null ? rec.risk : ''), source: 'proxycheck' };
+        _ipRepCache[ip] = { v: v, t: now };
+        return v;
+      }
+    }
+  } catch (e) {}
+  _ipRepCache[ip] = { v: heur, t: now };   // cache the fallback too so a service outage doesn't hammer it every request
+  return heur;
+}
 // Write one honeypot incident row (non-blocking, fail-safe). fingerprint = client device profile from the beacon; typed
 // = anything they entered into the decoy. Truncated to keep rows bounded.
 function _trapCapture(env, ectx, req, email, action, fingerprint, typed) {
-  try {
-    var t = _cfTelemetry(req), id = 'inc' + randId(14), now = Date.now();
-    var p = env.DB.prepare('INSERT INTO owner_incidents (id,target_email,ts,ip,geo,asn,as_org,ua,fingerprint,action,path,typed,is_anon,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(id, String(email).toLowerCase(), now, t.ip, JSON.stringify(t.geo), t.asn, t.as_org, t.ua,
-        fingerprint ? JSON.stringify(fingerprint).slice(0, 4000) : null, String(action || '').slice(0, 200), '',
-        typed ? String(typed).slice(0, 500) : null, _isAnonEgress(t.as_org) ? 1 : 0, now).run();
-    if (ectx && ectx.waitUntil) ectx.waitUntil(p); else if (p && p.catch) p.catch(function () {});
-  } catch (e) {}
+  var t = _cfTelemetry(req), id = 'inc' + randId(14), now = Date.now();
+  // Reputation lookup + insert both run in waitUntil so nothing delays the response the attacker sees.
+  var work = (async function () {
+    try {
+      var rep = await _ipReputation(env, t.ip, t.as_org);   // GLOBAL VPN/proxy/Tor/hosting verdict (+ heuristic fallback)
+      await env.DB.prepare('INSERT INTO owner_incidents (id,target_email,ts,ip,geo,asn,as_org,ua,fingerprint,action,path,typed,is_anon,anon_detail,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(id, String(email).toLowerCase(), now, t.ip, JSON.stringify(t.geo), t.asn, t.as_org, t.ua,
+          fingerprint ? JSON.stringify(fingerprint).slice(0, 4000) : null, String(action || '').slice(0, 200), '',
+          typed ? String(typed).slice(0, 500) : null, rep.anon ? 1 : 0,
+          JSON.stringify({ type: rep.type || '', risk: (rep.risk != null ? rep.risk : ''), src: rep.source || '' }).slice(0, 300), now).run();
+    } catch (e) {}
+  })();
+  if (ectx && ectx.waitUntil) ectx.waitUntil(work); else if (work && work.catch) work.catch(function () {});
 }
 async function resolveSession(env, req) {
   const sid = parseCookies(req).atlas_sid;
@@ -439,7 +472,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ap';
+const ATLAS_BUILD = '2026.07.19aq';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1950,6 +1983,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS owner_control (email TEXT PRIMARY KEY, frozen INTEGER DEFAULT 0, frozen_at INTEGER, frozen_by TEXT, data_locked INTEGER DEFAULT 0, trapped INTEGER DEFAULT 0, trapped_at INTEGER, trapped_by TEXT, updated_at INTEGER)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS owner_incidents (id TEXT PRIMARY KEY, target_email TEXT, ts INTEGER, ip TEXT, geo TEXT, asn TEXT, as_org TEXT, ua TEXT, fingerprint TEXT, action TEXT, path TEXT, typed TEXT, is_anon INTEGER DEFAULT 0, created_at INTEGER)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_owner_incidents_email ON owner_incidents (target_email, ts)").run(); } catch (e) {}
+  try { await env.DB.prepare("ALTER TABLE owner_incidents ADD COLUMN anon_detail TEXT").run(); } catch (e) {}   // additive: the reputation verdict {type,risk,src}; no-op if already present
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_attack_ts ON attack_log(ts)").run(); } catch (e) {}
   // ---- OWNER ALERTING: durable in-dashboard feed (see _alert/_alertWrite below) -- own independent try/catch per
   // statement, same self-heal convention as every table above: a failure here never blocks _pReady or any other
@@ -4315,8 +4349,8 @@ function doReset(){
           const _ig = _ownerMgmtGuard(env, _reqTier, _iem);
           if (!_ig.ok) return err(_ig.status, _ig.msg);
           const _ilim = Math.min(2000, Math.max(1, parseInt(new URL(req.url).searchParams.get('limit') || '500', 10) || 500));
-          const _ir = await env.DB.prepare('SELECT id,ts,ip,geo,asn,as_org,ua,fingerprint,action,typed,is_anon FROM owner_incidents WHERE target_email=? ORDER BY ts DESC LIMIT ?').bind(_iem, _ilim).all();
-          const _rows = (_ir.results || []).map(function (r) { return { id: r.id, ts: r.ts, ip: r.ip, geo: jparse(r.geo, {}), asn: r.asn, as_org: r.as_org, ua: r.ua, fingerprint: jparse(r.fingerprint, null), action: r.action, typed: r.typed, is_anon: !!r.is_anon }; });
+          const _ir = await env.DB.prepare('SELECT id,ts,ip,geo,asn,as_org,ua,fingerprint,action,typed,is_anon,anon_detail FROM owner_incidents WHERE target_email=? ORDER BY ts DESC LIMIT ?').bind(_iem, _ilim).all();
+          const _rows = (_ir.results || []).map(function (r) { return { id: r.id, ts: r.ts, ip: r.ip, geo: jparse(r.geo, {}), asn: r.asn, as_org: r.as_org, ua: r.ua, fingerprint: jparse(r.fingerprint, null), action: r.action, typed: r.typed, is_anon: !!r.is_anon, anon_detail: jparse(r.anon_detail, null) }; });
           return json({ ok: true, target: _iem, incidents: _rows, count: _rows.length });
         }
 
