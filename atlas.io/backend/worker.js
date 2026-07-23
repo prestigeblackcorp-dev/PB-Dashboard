@@ -228,6 +228,28 @@ function _excludeOwnerTenants(env, col) {
   if (!owners.length) return { clause: '', binds: [] };
   return { clause: ' AND ' + (col || 'id') + ' NOT IN (SELECT tenant_id FROM users WHERE LOWER(email) IN (' + owners.map(function () { return '?'; }).join(',') + '))', binds: owners };
 }
+// ---- TAKE CONTROL: per-owner control state (frozen/data_locked/trapped), cached 30s. Empty {} when no row -> the
+// feature is byte-identical to before for any owner who has never been acted on, and the auth hot path pays ~nothing. ----
+var _ownerCtlCache = {};
+async function _ownerControlState(env, email) {
+  if (!email) return {};
+  var k = String(email).toLowerCase(), n = Date.now(), c = _ownerCtlCache[k];
+  if (c && (n - c.t < 30000)) return c.v;
+  var v = {};
+  try { var r = await env.DB.prepare('SELECT frozen,data_locked,trapped FROM owner_control WHERE email=?').bind(k).first(); if (r) v = { frozen: !!r.frozen, data_locked: !!r.data_locked, trapped: !!r.trapped }; } catch (e) {}
+  _ownerCtlCache[k] = { v: v, t: n };
+  return v;
+}
+function _ownerControlBust(email) { if (email) delete _ownerCtlCache[String(email).toLowerCase()]; else _ownerCtlCache = {}; }
+// Take Control authorization: the actor (reqTier) may act ONLY on an owner of STRICTLY-lower tier -- never self, never
+// an equal/higher tier. Tier<2 (primary or staff) can never reach a Take-Control action. Returns {ok,tier} or {ok:false}.
+function _ownerMgmtGuard(env, reqTier, targetEmail) {
+  if (!(reqTier >= 2)) return { ok: false, status: 403, msg: 'Take Control is restricted to the super-admin.' };
+  var tt = _ownerTier(env, targetEmail);
+  if (tt <= 0) return { ok: false, status: 404, msg: 'That is not an owner account.' };
+  if (tt >= reqTier) return { ok: false, status: 403, msg: 'You cannot act on an equal or higher-tier account.' };
+  return { ok: true, tier: tt };
+}
 async function resolveSession(env, req) {
   const sid = parseCookies(req).atlas_sid;
   if (!sid) return null;
@@ -387,7 +409,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19an';
+const ATLAS_BUILD = '2026.07.19ao';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1894,6 +1916,10 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS ip_bans (ip TEXT PRIMARY KEY, reason TEXT, banned_at INTEGER, banned_by TEXT, expires_at INTEGER, hits INTEGER DEFAULT 0)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS email_bans (email TEXT PRIMARY KEY, reason TEXT, banned_at INTEGER, banned_by TEXT, hits INTEGER DEFAULT 0)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS attack_log (id TEXT PRIMARY KEY, ts INTEGER, ip TEXT, email TEXT, kind TEXT, path TEXT, method TEXT, detail TEXT, blocked INTEGER DEFAULT 0, outcome TEXT, ua TEXT)").run(); } catch (e) {}
+  // ---- TAKE CONTROL (super-admin over a lower-tier owner): per-owner control state + honeypot incident telemetry ----
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS owner_control (email TEXT PRIMARY KEY, frozen INTEGER DEFAULT 0, frozen_at INTEGER, frozen_by TEXT, data_locked INTEGER DEFAULT 0, trapped INTEGER DEFAULT 0, trapped_at INTEGER, trapped_by TEXT, updated_at INTEGER)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS owner_incidents (id TEXT PRIMARY KEY, target_email TEXT, ts INTEGER, ip TEXT, geo TEXT, asn TEXT, as_org TEXT, ua TEXT, fingerprint TEXT, action TEXT, path TEXT, typed TEXT, is_anon INTEGER DEFAULT 0, created_at INTEGER)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_owner_incidents_email ON owner_incidents (target_email, ts)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_attack_ts ON attack_log(ts)").run(); } catch (e) {}
   // ---- OWNER ALERTING: durable in-dashboard feed (see _alert/_alertWrite below) -- own independent try/catch per
   // statement, same self-heal convention as every table above: a failure here never blocks _pReady or any other
@@ -1990,7 +2016,8 @@ async function _adminIdentity(req, env) {
   try {
     const _sc = await resolveSession(env, req);
     if (_sc && _sc.isOwner && _sc.user && _isOwnerEmail(env, _sc.user.email)) {
-      return { actor: _sc.user.email, role: 'owner', via: 'owner-session', staffId: null, tier: _ownerTier(env, _sc.user.email) };
+      var _acs = await _ownerControlState(env, _sc.user.email);   // TAKE CONTROL: a FROZEN owner loses master-dash authority
+      if (!_acs.frozen) return { actor: _sc.user.email, role: 'owner', via: 'owner-session', staffId: null, tier: _ownerTier(env, _sc.user.email) };
     }
   } catch (e) { /* never let a session-lookup error open or crash admin auth */ }
   const presented = req.headers.get('X-Admin-Token') || '';
@@ -2276,7 +2303,7 @@ function _alert(env, ectx, o) {
 // platform_errors ip column), so neither is reachable by a support/analyst staff token, only the owner.
 // ABUSE-DEFENSE: bans/ban/unban/attacks added to OWNER_ONLY for the same reason -- ban rows + the attack feed carry
 // OTHER callers' emails/IPs, so none of the four routes are reachable by a support/analyst staff token either.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|pnl)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -2601,6 +2628,8 @@ export default {
         if (user) ok = await verifyPassword(body.password, user.pw_salt, user.pw_hash);
         else { await hashPassword(body.password, b64(new Uint8Array(16))); ok = false; }
         if (!user || !ok) { await audit(env, null, req, 'login_fail', { email: body.email.toLowerCase() }); return err(401, 'Wrong email or password.'); }
+        // TAKE CONTROL: a FROZEN owner account is locked out at the door (a higher-tier super-admin stripped its access).
+        try { if (_isOwnerEmail(env, user.email)) { const _lc = await _ownerControlState(env, user.email); if (_lc.frozen) { await audit(env, null, req, 'owner.login_frozen', { email: user.email }); return err(403, 'This account is suspended.'); } } } catch (e) {}
         await env.DB.prepare('UPDATE users SET last_login=? WHERE id=?').bind(Date.now(), user.id).run();
         // Transparently upgrade a legacy single-100k hash to the 600k scheme now that we hold the plaintext.
         if (pwNeedsUpgrade(user.pw_hash)) { try { const _up = await hashPassword(body.password); await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_up.hash, _up.salt, user.id).run(); } catch (e) {} }
@@ -4190,6 +4219,37 @@ function doReset(){
           await _recomputeBansActive(env);
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.unban', { type: _utype, value: _uval });
           return json({ ok: true });
+        }
+
+        // ---- TAKE CONTROL (SHQ / tier>=2 ONLY): super-admin management over a STRICTLY-lower-tier owner. OWNER_ONLY
+        // gates staff out; the explicit _reqTier>=2 gate keeps the primary (tier 1) out; _ownerMgmtGuard enforces
+        // "act only on a strictly-lower tier, never self/equal/higher". Stage 1 = list + FREEZE (fully reversible). ----
+        if (path === '/api/admin/owners' && method === 'GET') {
+          if (_reqTier < 2) return err(403, 'Take Control is restricted to the super-admin.');
+          const _slots = [[env.OWNER_EMAIL, 1], [env.OWNER_EMAIL_2, 2], [env.OWNER_EMAIL_3, 3]];
+          const _list = [];
+          for (let _oi = 0; _oi < _slots.length; _oi++) {
+            const _oe = _slots[_oi][0], _ot = _slots[_oi][1];
+            if (!_oe || _ot > _reqTier) continue;   // never reveal a higher-tier owner to a lower actor; self (== _reqTier) is shown
+            const _oel = String(_oe).toLowerCase();
+            const _cs = await _ownerControlState(env, _oel);
+            let _ur = null; try { _ur = await env.DB.prepare('SELECT id,created_at,last_login FROM users WHERE email=?').bind(_oel).first(); } catch (e) {}
+            _list.push({ email: _oel, tier: _ot, is_self: (_ot === _reqTier), manageable: (_ot < _reqTier), exists: !!_ur, created_at: _ur ? _ur.created_at : null, last_login: _ur ? _ur.last_login : null, frozen: !!_cs.frozen, data_locked: !!_cs.data_locked, trapped: !!_cs.trapped });
+          }
+          return json({ ok: true, owners: _list, your_tier: _reqTier });
+        }
+        if (path === '/api/admin/owner/freeze' && method === 'POST') {
+          const _fb = await req.json().catch(() => ({}));
+          const _fem = String(_fb.email || '').toLowerCase(), _fon = (_fb.on !== false);
+          const _fg = _ownerMgmtGuard(env, _reqTier, _fem);
+          if (!_fg.ok) return err(_fg.status, _fg.msg);
+          const _fnow = Date.now();
+          await env.DB.prepare('INSERT INTO owner_control (email,frozen,frozen_at,frozen_by,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET frozen=?,frozen_at=?,frozen_by=?,updated_at=?').bind(_fem, _fon ? 1 : 0, _fnow, _actor, _fnow, _fon ? 1 : 0, _fnow, _actor, _fnow).run();
+          _ownerControlBust(_fem);
+          // Freeze also revokes ALL of the target's live sessions so the lock-out is immediate, not next-login.
+          if (_fon) { try { const _fu = await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(_fem).first(); if (_fu) await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=?').bind(_fnow, _fu.id).run(); } catch (e) {} }
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control', { action: _fon ? 'freeze' : 'unfreeze', target: _fem, target_tier: _fg.tier });
+          return json({ ok: true, frozen: _fon });
         }
 
         // Attack-attempt feed: attack_log (hot-path blocks/probes) UNION-merged with the audit_log rows already
