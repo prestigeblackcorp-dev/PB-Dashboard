@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ah';
+const ATLAS_BUILD = '2026.07.19ai';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1845,6 +1845,14 @@ async function ensurePlatformSchema(env) {
   // before this shipped) UNLESS one already exists -- the NOT EXISTS guard makes re-running this on every cold
   // isolate a cheap no-op. Never touches platform_ai_spend itself (read-only SELECT against it).
   try { await env.DB.prepare("INSERT INTO platform_ai_spend_by_feature (day,model,source,calls,input_tokens,output_tokens,cost_micros) SELECT day,model,'other',calls,input_tokens,output_tokens,cost_micros FROM platform_ai_spend p WHERE NOT EXISTS (SELECT 1 FROM platform_ai_spend_by_feature b WHERE b.day=p.day AND b.model=p.model AND b.source='other')").run(); } catch (e) {}
+  // ---- ABUSE-DEFENSE: IP/email bans + an attack-attempt log. Additive + fail-open -- see the hot-path ban-check
+  // in fetch() and the /api/auth/signup gate, both of which stay a byte-identical no-op (one cheap _pcfgGet read)
+  // until platform_config.bans_active is actually flipped to '1' by a real ban. Each statement its own try/catch,
+  // same self-heal convention as every table above -- a failure here never blocks _pReady or any other table.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS ip_bans (ip TEXT PRIMARY KEY, reason TEXT, banned_at INTEGER, banned_by TEXT, expires_at INTEGER, hits INTEGER DEFAULT 0)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS email_bans (email TEXT PRIMARY KEY, reason TEXT, banned_at INTEGER, banned_by TEXT, hits INTEGER DEFAULT 0)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS attack_log (id TEXT PRIMARY KEY, ts INTEGER, ip TEXT, email TEXT, kind TEXT, path TEXT, method TEXT, detail TEXT, blocked INTEGER DEFAULT 0, outcome TEXT, ua TEXT)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_attack_ts ON attack_log(ts)").run(); } catch (e) {}
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -1897,6 +1905,54 @@ function _adminRange(rangeStr, nowMs) {
 // Platform config get/set (feature flags etc.). Fail-soft: a DB hiccup returns the fallback rather than throwing.
 async function _pcfgGet(env, k, fb) { try { const r = await env.DB.prepare('SELECT v FROM platform_config WHERE k=?').bind(k).first(); return (r && r.v != null) ? r.v : fb; } catch (e) { return fb; } }
 async function _pcfgSet(env, k, v) { try { await env.DB.prepare('INSERT INTO platform_config (k,v,updated_at) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=?,updated_at=?').bind(k, String(v), Date.now(), String(v), Date.now()).run(); } catch (e) {} }
+// Hot-path cache for the bans_active flag. The global ban-check runs on (almost) every request, so reading the flag
+// straight from D1 each time would add a per-request read to the busiest paths (public booking pages etc.). Cache it
+// per-isolate for 60s: when '0' (the common case -- no bans) the ban-check does ZERO extra D1 work. A newly added or
+// removed ban propagates to every isolate within 60s; the acting owner's own isolate refreshes instantly via
+// _bansActiveBust() on ban/unban, so the master dashboard reflects it immediately.
+var _bansActiveCache = { v: '0', t: 0 };
+async function _bansActive(env) { var _n = Date.now(); if (_n - _bansActiveCache.t > 60000) { _bansActiveCache.v = await _pcfgGet(env, 'bans_active', '0'); _bansActiveCache.t = _n; } return _bansActiveCache.v; }
+function _bansActiveBust() { _bansActiveCache.t = 0; }
+// ---- ABUSE-DEFENSE helpers (IP/email bans + attack-attempt log) -------------------------------------------------
+// Best-effort, deferred (waitUntil) insert into attack_log -- mirrors the _meterAI/_meterAIDeferred two-piece shape
+// used elsewhere in this file (an async do-the-write function + a sync fire-and-forget dispatcher), so a slow or
+// broken attack_log insert can NEVER delay or alter the response already in flight. Every field is length-capped so
+// a hostile/oversized path, UA, or detail string can never bloat a row. Fully self-contained try/catch -- NEVER throws.
+async function _logAttackWrite(env, o) {
+  try {
+    if (!env || !env.DB) return;
+    await ensurePlatformSchema(env);
+    o = o || {};
+    await env.DB.prepare('INSERT INTO attack_log (id,ts,ip,email,kind,path,method,detail,blocked,outcome,ua) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind('atk' + randId(12), Date.now(), String(o.ip || '').slice(0, 64), String(o.email || '').slice(0, 254), String(o.kind || '').slice(0, 40),
+        String(o.path || '').slice(0, 200), String(o.method || '').slice(0, 10), String(o.detail || '').slice(0, 300),
+        o.blocked ? 1 : 0, String(o.outcome || '').slice(0, 60), String(o.ua || '').slice(0, 240)).run();
+  } catch (e) { /* attack logging must never break the request it is observing */ }
+}
+// Fire-and-forget wrapper: same dispatch idiom as _meterAIDeferred/_fireWebhook (ectx.waitUntil when threaded
+// through, else a non-awaited .catch) so this NEVER delays the response and NEVER throws back into the caller.
+function _logAttack(env, ectx, o) {
+  try { const p = _logAttackWrite(env, o); if (ectx && ectx.waitUntil) ectx.waitUntil(p); else if (p && p.catch) p.catch(function () {}); } catch (e) {}
+}
+// Recomputes platform_config.bans_active from the two ban tables' live row counts -- called after an UNBAN (a new
+// ban just force-sets '1' directly, which is cheaper and always correct without a count). Fail-open: a DB error
+// here leaves bans_active untouched rather than guessing, so a transient failure can never silently disable
+// enforcement; the hot-path check in fetch() also fails open independently on its own DB errors regardless.
+async function _recomputeBansActive(env) {
+  try {
+    const r = await env.DB.prepare('SELECT (SELECT COUNT(*) FROM ip_bans) + (SELECT COUNT(*) FROM email_bans) AS n').first();
+    await _pcfgSet(env, 'bans_active', ((r && r.n) > 0) ? '1' : '0'); _bansActiveBust();
+  } catch (e) { /* leave bans_active as-is on error */ }
+}
+// Cheap, single-regex probe/scanner detector -- only ever tested against paths that reach the FINAL 404 fallback in
+// fetch() (every real route above it has already returned by then), so it can never match or affect a real endpoint.
+const _PROBE_PATTERN = /(wp-admin|wp-login|\.env|\.git|phpmyadmin|xmlrpc\.php|\/vendor\/|\.aws)/i;
+// Per-kind one-line recommendation surfaced in GET /api/admin/attacks. A kind that means a ban has ALREADY fired
+// (ip_ban_block, signup_blocked) is informational only; anything else (a failure that has NOT yet triggered a ban)
+// prompts the owner toward the one-click ban action.
+function _attackNextMove(kind) {
+  return (kind === 'ip_ban_block' || kind === 'signup_blocked') ? 'Already blocked' : 'Ban this IP if it repeats';
+}
 // ---- #276 PAYMENT-DELINQUENCY ACCESS GATING (flag-gated OFF by default via platform_config.payment_gate_enabled) ----
 // Pure function, no I/O: given a tenant row + the caller's owner/comp status, decide the billing state. The
 // never-lock invariants are checked FIRST and unconditionally return 'ok' -- the platform owner, a comped
@@ -2044,7 +2100,9 @@ async function _gmvFeeCents(env, amountCents) { const bps = parseInt(await _pcfg
 // narrow write exception (ticket/inbox/feedback triage). Neither regex is reachable or overridable by client input.
 // #253: security-log + errors added to OWNER_ONLY -- both surface OTHER tenants' emails/IPs (audit_log rows /
 // platform_errors ip column), so neither is reachable by a support/analyst staff token, only the owner.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|security-log|errors|pnl)/;
+// ABUSE-DEFENSE: bans/ban/unban/attacks added to OWNER_ONLY for the same reason -- ban rows + the attack feed carry
+// OTHER callers' emails/IPs, so none of the four routes are reachable by a support/analyst staff token either.
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|security-log|errors|pnl)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -2171,6 +2229,33 @@ export default {
 
     const resp = await (async () => {
     try {
+      // ---- ABUSE-DEFENSE: global IP-ban check ------------------------------------------------------------------
+      // Additive + fail-open: byte-identical to today whenever bans_active !== '1' (one cheap _pcfgGet read and
+      // nothing else -- no table scan, no per-request cost until the owner actually bans something). Placed as the
+      // very first thing in the routing chain (before the custom-domain front door, health, and every real route)
+      // so a banned IP is turned away before any tenant data is ever touched. Exempt: /api/health (monitoring must
+      // always work), the owner's own admin-token requests (adminOk -- cheap header compare, no DB), and the
+      // recovery surface (_PAYMENT_OPEN: health/auth/*/billing/*/verify-email/stripe-webhook/me/feedback) so a
+      // mistakenly-banned owner (or a shared IP that later becomes theirs) can always sign in, check status, and
+      // fix billing. A DB error on the lookup itself fails OPEN -- this must NEVER be the reason a legitimate
+      // request is blocked. Email bans are NOT checked here (no caller identity yet, pre-auth/pre-body-parse for
+      // most routes) -- they are enforced specifically at the /api/auth/signup gate below instead.
+      if (path !== '/api/health' && !_PAYMENT_OPEN.test(path) && !adminOk(req, env)) {
+        if ((await _bansActive(env)) === '1') {
+          var _banIp = req.headers.get('CF-Connecting-IP') || '';
+          if (_banIp) {
+            try {
+              const _bRow = await env.DB.prepare('SELECT ip,expires_at FROM ip_bans WHERE ip=?').bind(_banIp).first();
+              if (_bRow && (!_bRow.expires_at || _bRow.expires_at > Date.now())) {
+                const _hitP = env.DB.prepare('UPDATE ip_bans SET hits=hits+1 WHERE ip=?').bind(_banIp).run();
+                if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_hitP); else if (_hitP && _hitP.catch) _hitP.catch(function () {});
+                _logAttack(env, _ectx, { ip: _banIp, kind: 'ip_ban_block', path: path, method: method, blocked: 1, outcome: '403 blocked', ua: (req.headers.get('User-Agent') || '') });
+                return new Response('Forbidden', { status: 403 });   // neutral body -- never reveals a ban system exists
+              }
+            } catch (e) { /* fail-open: never block a request on a DB error */ }
+          }
+        }
+      }
       // ---- custom-domain FRONT DOOR: a tenant's OWN connected domain (verified live) serves THEIR booking site at the root ----
       if (method === 'GET' && path === '/' && host && host !== 'atlasrental.io' && host !== 'www.atlasrental.io' && host.indexOf('.workers.dev') < 0 && host !== 'localhost' && host !== '127.0.0.1') {
         try {
@@ -2251,6 +2336,24 @@ export default {
         // (a Worker secret set at deploy); without a matching token, the reserved email cannot be signed up.
         if (env.OWNER_EMAIL && body.email.toLowerCase() === String(env.OWNER_EMAIL).toLowerCase()) {
           if (!env.OWNER_SETUP_TOKEN || body.setupToken !== env.OWNER_SETUP_TOKEN) { await audit(env, null, req, 'owner.claim_blocked', { email: body.email.toLowerCase() }); return err(403, 'That email is reserved for the platform owner.'); }   // #253: highest-signal denial -- someone tried to register the reserved owner email
+        }
+        // ---- ABUSE-DEFENSE signup gate: additive, a no-op (one cheap _pcfgGet read) unless a ban actually exists.
+        // Checks BOTH the new account's own email and the caller's IP; either match -> the same neutral 403 (never
+        // reveals which one matched, or that a ban system exists at all). Fails OPEN on any DB error so a ban-table
+        // hiccup can never break a legitimate signup -- this must never be the reason a real signup is rejected.
+        if ((await _bansActive(env)) === '1') {
+          try {
+            const _semail = body.email.toLowerCase();
+            const _seb = await env.DB.prepare('SELECT email FROM email_bans WHERE email=?').bind(_semail).first();
+            const _sipRow = await env.DB.prepare('SELECT ip,expires_at FROM ip_bans WHERE ip=?').bind(ip).first();
+            const _sipBanned = !!(_sipRow && (!_sipRow.expires_at || _sipRow.expires_at > Date.now()));
+            if (_seb || _sipBanned) {
+              if (_seb) { const _p1 = env.DB.prepare('UPDATE email_bans SET hits=hits+1 WHERE email=?').bind(_semail).run(); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_p1); else if (_p1 && _p1.catch) _p1.catch(function () {}); }
+              if (_sipBanned) { const _p2 = env.DB.prepare('UPDATE ip_bans SET hits=hits+1 WHERE ip=?').bind(ip).run(); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_p2); else if (_p2 && _p2.catch) _p2.catch(function () {}); }
+              _logAttack(env, _ectx, { ip: ip, email: _semail, kind: 'signup_blocked', path: path, method: method, blocked: 1, outcome: '403 blocked', ua: (req.headers.get('User-Agent') || '') });
+              return err(403, 'Sign-ups are not available from this location right now.');
+            }
+          } catch (e) { /* fail-open: never block a legitimate signup on a ban-table DB error */ }
         }
         const now = Date.now();
         const tid = 't' + randId(12), uid = 'u' + randId(12);
@@ -3796,6 +3899,91 @@ function doReset(){
           return json({ ok: true, range: { key: _range.key, label: _range.label }, total: _total, events: _events });
         }
 
+        // ---- ABUSE-DEFENSE: owner-only ban management + the attack-attempt feed --------------------------------
+        // Same OWNER_ONLY gating tier as security-log/errors above (see the regex) -- a support/analyst staff token
+        // never reaches any of these four routes; the role check already ran at the top of this admin block.
+        if (path === '/api/admin/bans' && method === 'GET') {
+          const _ipR = await env.DB.prepare('SELECT ip,reason,banned_at,banned_by,expires_at,hits FROM ip_bans ORDER BY banned_at DESC LIMIT 200').all();
+          const _emR = await env.DB.prepare('SELECT email,reason,banned_at,banned_by,hits FROM email_bans ORDER BY banned_at DESC LIMIT 200').all();
+          return json({ ok: true, ip_bans: _ipR.results || [], email_bans: _emR.results || [] });
+        }
+
+        if (path === '/api/admin/ban' && method === 'POST') {
+          const b = await req.json().catch(() => ({}));
+          const _btype = (b.type === 'ip' || b.type === 'email') ? b.type : null;
+          if (!_btype) return err(400, 'type must be "ip" or "email".');
+          let _bval = String(b.value || '').trim();
+          if (!_bval) return err(400, 'value is required.');
+          if (_btype === 'ip') {
+            if (_bval.length > 64 || !/^[0-9a-fA-F.:]+$/.test(_bval)) return err(400, 'Not a valid IP address.');
+          } else {
+            _bval = _bval.toLowerCase();
+            if (_bval.length > 254 || _bval.indexOf('@') < 0) return err(400, 'Not a valid email address.');
+            if (env.OWNER_EMAIL && _bval === String(env.OWNER_EMAIL).toLowerCase()) return err(400, 'Cannot ban the platform owner.');
+          }
+          const _breason = String(b.reason || '').slice(0, 300);
+          const _bnow = Date.now();
+          const _bexpH = Number(b.expires_hours);
+          const _bexp = (_bexpH && _bexpH > 0) ? (_bnow + _bexpH * 3600000) : null;
+          if (_btype === 'ip') {
+            await env.DB.prepare('INSERT INTO ip_bans (ip,reason,banned_at,banned_by,expires_at,hits) VALUES (?,?,?,?,?,0) ON CONFLICT(ip) DO UPDATE SET reason=?,banned_at=?,banned_by=?,expires_at=?')
+              .bind(_bval, _breason, _bnow, _actor, _bexp, _breason, _bnow, _actor, _bexp).run();
+          } else {
+            await env.DB.prepare('INSERT INTO email_bans (email,reason,banned_at,banned_by,hits) VALUES (?,?,?,?,0) ON CONFLICT(email) DO UPDATE SET reason=?,banned_at=?,banned_by=?')
+              .bind(_bval, _breason, _bnow, _actor, _breason, _bnow, _actor).run();
+          }
+          await _pcfgSet(env, 'bans_active', '1'); _bansActiveBust();
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.ban', { type: _btype, value: _bval, reason: _breason, expires_hours: _bexpH || null });
+          return json({ ok: true });
+        }
+
+        if (path === '/api/admin/unban' && method === 'POST') {
+          const b = await req.json().catch(() => ({}));
+          const _utype = (b.type === 'ip' || b.type === 'email') ? b.type : null;
+          if (!_utype) return err(400, 'type must be "ip" or "email".');
+          let _uval = String(b.value || '').trim();
+          if (!_uval) return err(400, 'value is required.');
+          if (_utype === 'email') _uval = _uval.toLowerCase();
+          if (_utype === 'ip') await env.DB.prepare('DELETE FROM ip_bans WHERE ip=?').bind(_uval).run();
+          else await env.DB.prepare('DELETE FROM email_bans WHERE email=?').bind(_uval).run();
+          await _recomputeBansActive(env);
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.unban', { type: _utype, value: _uval });
+          return json({ ok: true });
+        }
+
+        // Attack-attempt feed: attack_log (hot-path blocks/probes) UNION-merged with the audit_log rows already
+        // classified as a "failure" for the security-log view above, normalized to one shared shape so the owner
+        // gets a single ranked timeline instead of two disconnected tables. recommendations surfaces IPs that have
+        // crossed a simple repeat-offender threshold and are not already banned, for a one-click ban in the console.
+        if (path === '/api/admin/attacks' && method === 'GET') {
+          const _u = new URL(req.url);
+          const _range = _adminRange(_u.searchParams.get('range'));
+          const _atR = await env.DB.prepare('SELECT ts,ip,email,kind,path,blocked,outcome FROM attack_log WHERE ts>=? AND ts<? ORDER BY ts DESC LIMIT 2000').bind(_range.start, _range.end).all();
+          const _FAIL_KINDS = ['login_fail', 'auth.rate_limited', 'admin.denied', 'owner.claim_blocked', 'csrf.fail', 'mfa.verify_fail'];   // #253's own SECURITY_ACTIONS/prefixes classify these as failures; reused here rather than re-deriving
+          const _BLOCKING_KINDS = { 'auth.rate_limited': 1, 'admin.denied': 1, 'owner.claim_blocked': 1, 'csrf.fail': 1 };   // vs. login_fail/mfa.verify_fail, which are a rejected attempt the caller can still retry
+          const _auR = await env.DB.prepare('SELECT action,meta,ip,at FROM audit_log WHERE at>=? AND at<? ORDER BY at DESC LIMIT 5000').bind(_range.start, _range.end).all();
+          let _events = (_atR.results || []).map(function (r) {
+            return { ts: r.ts, ip: r.ip || '', email: r.email || '', kind: r.kind || '', path: r.path || '', blocked: !!r.blocked, outcome: r.outcome || '', next_move: _attackNextMove(r.kind) };
+          });
+          (_auR.results || []).forEach(function (r) {
+            if (_FAIL_KINDS.indexOf(r.action) < 0) return;
+            const meta = jparse(r.meta, {});
+            const info = _secLabel(r.action, meta);
+            const _em = (r.action === 'login_fail' || r.action === 'owner.claim_blocked') ? (meta.email || '') : ((r.action === 'auth.rate_limited' && meta.key && String(meta.key).indexOf('@') >= 0) ? String(meta.key) : '');
+            _events.push({ ts: r.at, ip: r.ip || '', email: _em, kind: r.action, path: meta.path || '', blocked: !!_BLOCKING_KINDS[r.action], outcome: info.label, next_move: _attackNextMove(r.action) });
+          });
+          _events.sort(function (a, b) { return b.ts - a.ts; });
+          _events = _events.slice(0, 200);
+          const _counts = {}, _sample = {};
+          (_atR.results || []).forEach(function (r) { if (!r.ip) return; _counts[r.ip] = (_counts[r.ip] || 0) + 1; if (!_sample[r.ip]) _sample[r.ip] = r.kind; });
+          (_auR.results || []).forEach(function (r) { if (_FAIL_KINDS.indexOf(r.action) < 0 || !r.ip) return; _counts[r.ip] = (_counts[r.ip] || 0) + 1; if (!_sample[r.ip]) _sample[r.ip] = r.action; });
+          const _bannedR = await env.DB.prepare('SELECT ip FROM ip_bans').all();
+          const _bannedSet = {}; (_bannedR.results || []).forEach(function (r) { _bannedSet[r.ip] = 1; });
+          const _recs = Object.keys(_counts).filter(function (ip) { return _counts[ip] >= 5 && !_bannedSet[ip]; }).map(function (ip) { return { ip: ip, count: _counts[ip], sample_kind: _sample[ip] }; });
+          _recs.sort(function (a, b) { return b.count - a.count; });
+          return json({ ok: true, range: { key: _range.key, label: _range.label }, attacks: _events, recommendations: _recs.slice(0, 50) });
+        }
+
         return err(404, 'Unknown admin route.');
       }
 
@@ -5026,6 +5214,10 @@ function doReset(){
         }
       }
 
+      // ---- ABUSE-DEFENSE probe detector: every real route above has already returned by this point, so this can
+      // NEVER match or affect an actual endpoint -- it only ever sees a path that was going to 404 anyway. Logging
+      // is deferred/best-effort (_logAttack) and the response below is completely unchanged either way.
+      if (_PROBE_PATTERN.test(path)) _logAttack(env, _ectx, { ip: (req.headers.get('CF-Connecting-IP') || ''), kind: 'probe', path: path, method: method, blocked: 1, outcome: '404', ua: (req.headers.get('User-Agent') || '') });
       return err(404, 'Not found.');
     } catch (e) {
       // #253 observability (B2): best-effort error capture. This can NEVER change the response below -- every line

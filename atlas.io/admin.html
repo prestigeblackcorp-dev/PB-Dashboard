@@ -515,6 +515,18 @@
   </section>
 
   <section class="hqsec" data-sec="security">
+  <!-- ABUSE DEFENSE: IP/email bans + attack-attempt feed (owner-only; endpoints 403 for staff, cards stay hidden) -->
+  <div class="card" id="banCard" style="display:none">
+    <div class="card-h"><h2>Bans</h2><span class="sub" id="banSub"></span><div class="sp"></div><button class="chip" onclick="loadDefense(true)">Refresh</button></div>
+    <div class="card-b pad" id="banBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+  <div class="card" id="attackCard" style="display:none">
+    <div class="card-h"><h2>Attack attempts</h2><span class="sub" id="attackSub"></span></div>
+    <div class="card-b pad" id="attackBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+  </section>
+
+  <section class="hqsec" data-sec="security">
   <!-- STAFF ACCESS (split out of the old Enterprise & trust card) -->
   <div class="card">
     <div class="card-h"><h2>Staff access</h2><span class="sub" id="entSub"></span></div>
@@ -643,9 +655,10 @@ function enter(overview){ $('gate').style.display='none'; $('app').style.display
   loadHealth();
   loadCounsel();
   loadSecurity();
+  loadDefense();
   loadErrors();
   if(_timer) clearInterval(_timer);
-  _timer=setInterval(function(){ loadAll(true); loadHealth(); loadCounsel(); loadSecurity(); loadErrors(); }, REFRESH_MS);
+  _timer=setInterval(function(){ loadAll(true); loadHealth(); loadCounsel(); loadSecurity(); loadDefense(); loadErrors(); }, REFRESH_MS);
   setInterval(tickLive, 1000);
 }
 
@@ -687,7 +700,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
   }).catch(function(){ setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700); });
 }
 function refreshNow(){ loadAll(); toast('Refreshed'); }
-function setRange(v){ _range=v; loadAll(); loadSecurity(); }
+function setRange(v){ _range=v; loadAll(); loadSecurity(); loadDefense(); }
 function setInboxSeg(btn){ Array.prototype.forEach.call($('inboxSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _inboxSeg=btn.getAttribute('data-s'); loadAll(true); }
 function tickLive(){ $('liveTxt').textContent = _lastFetch ? ('updated '+ago(_lastFetch)) : 'live'; }
 
@@ -994,7 +1007,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19ah';
+var ATLAS_EXPECT_BUILD='2026.07.19ai';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1065,6 +1078,36 @@ function renderSecurity(){ var el=$('secBody'); if(!el) return; var d=DATA.secur
 }
 function setSecFilter(btn){ Array.prototype.forEach.call($('secSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _secFilter=btn.getAttribute('data-f'); loadSecurity(true); }
 function secFilter(){ _secQ=($('secSearch').value||'').trim(); loadSecurity(true); }
+function loadDefense(manual){ if(!$('banBody')) return;
+  if(manual) $('banBody').innerHTML='<div class="mut">Checking&hellip;</div>';
+  return Promise.all([api('/api/admin/bans'), api('/api/admin/attacks?range='+encodeURIComponent(_range))]).then(function(r){
+    var bJ=(r[0]&&r[0].json)||{}, aJ=(r[1]&&r[1].json)||{};
+    if(bJ.ok!==true){ if($('banCard'))$('banCard').style.display='none'; if($('attackCard'))$('attackCard').style.display='none'; return; }
+    if($('banCard'))$('banCard').style.display=''; if($('attackCard'))$('attackCard').style.display='';
+    DATA.bans=bJ; DATA.attacks=aJ; renderBans(); renderAttacks();
+  }).catch(function(){});
+}
+function renderBans(){ var d=DATA.bans||{}, ip=d.ip_bans||[], em=d.email_bans||[], el=$('banBody'); if(!el) return;
+  if($('banSub')) $('banSub').textContent=(ip.length+em.length)+' active';
+  function brow(kind,val,extra){ return '<div class="drow"><span class="dl">'+esc(val)+(extra?' <span class="mut">'+esc(extra)+'</span>':'')+'</span><button class="chip" style="color:#e5484d" onclick="banRemove('+_oa(kind)+','+_oa(val)+')">Remove</button></div>'; }
+  var ipRows=ip.length?ip.map(function(b){ return brow('ip',b.ip,(b.reason||'')+(b.hits?(' - '+b.hits+' hits'):'')+(b.expires_at?(' - to '+dstr(b.expires_at)):'')); }).join(''):'<div class="mut" style="padding:6px 2px">No IP bans.</div>';
+  var emRows=em.length?em.map(function(b){ return brow('email',b.email,(b.reason||'')+(b.hits?(' - '+b.hits+' hits'):'')); }).join(''):'<div class="mut" style="padding:6px 2px">No email bans.</div>';
+  el.innerHTML='<div class="desc" style="margin:0 0 8px">Banned IPs and emails are blocked at the door and can never create an account. No effect until you add one; the platform-owner account can never be banned.</div>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><input class="inp" id="banVal" placeholder="IP address or email" style="flex:1;min-width:180px"><input class="inp" id="banReason" placeholder="Reason (optional)" style="flex:1;min-width:140px"><button class="btn ghost sm" onclick="banAdd()">Ban</button></div>'+
+    _dsec('Banned IPs')+ipRows+_dsec('Banned emails')+emRows;
+}
+function banAdd(){ var e=$('banVal'); if(!e) return; var v=(e.value||'').trim(); if(!v){ toast('Enter an IP or email'); return; } var type=(v.indexOf('@')>=0)?'email':'ip', reason=(($('banReason')&&$('banReason').value)||'').trim();
+  api('/api/admin/ban',{method:'POST',body:{type:type,value:v,reason:reason}}).then(function(r){ if(r&&r.json&&r.json.ok){ toast('Banned '+v); loadDefense(true); } else toast((r&&r.json&&r.json.error)||'Could not ban'); }); }
+function banRemove(type,value){ api('/api/admin/unban',{method:'POST',body:{type:type,value:value}}).then(function(r){ if(r&&r.json&&r.json.ok){ toast('Unbanned'); loadDefense(true); } else toast('Could not unban'); }); }
+function banRecommended(ip){ api('/api/admin/ban',{method:'POST',body:{type:'ip',value:ip,reason:'repeat offender'}}).then(function(r){ if(r&&r.json&&r.json.ok){ toast('Banned '+ip); loadDefense(true); } else toast('Could not ban'); }); }
+function renderAttacks(){ var d=DATA.attacks||{}, atk=d.attacks||[], rec=d.recommendations||[], el=$('attackBody'); if(!el) return;
+  if($('attackSub')) $('attackSub').textContent=atk.length+' recorded';
+  var recHtml=rec.length?('<div class="desc" style="margin:0 0 8px"><b>Recommended bans</b> &mdash; repeat offenders in range:</div>'+rec.map(function(x){ return '<div class="drow"><span class="dl">'+esc(x.ip)+' <span class="mut">'+nfmt(x.count)+' attempts'+(x.sample_kind?(' &middot; '+esc(x.sample_kind)):'')+'</span></span><button class="chip" onclick="banRecommended('+_oa(x.ip)+')">Ban IP</button></div>'; }).join('')+'<div style="height:10px"></div>'):'';
+  var rows=atk.length?atk.map(function(a){ var badge=a.blocked?'<span class="pill" style="background:#12331f;color:#6fe3a8;border-color:transparent">blocked</span>':'<span class="pill past">allowed</span>';
+    var meta=[a.ip,a.email,a.path].filter(Boolean).map(function(x){return esc(x);}).join(' &middot; ')+(a.outcome?(' &middot; '+esc(a.outcome)):'');
+    return '<div class="sx-item"><div class="sx-main"><div class="sx-t">'+esc(a.kind||'event')+' '+badge+'</div><div class="sx-b">'+meta+'</div>'+(a.next_move?('<div class="sx-b" style="color:var(--amber)">Next: '+esc(a.next_move)+'</div>'):'')+'</div><div class="mut" style="font-size:11px;white-space:nowrap">'+ago(a.ts)+'</div></div>'; }).join(''):'<div class="sx-empty">No attack attempts recorded in this range &mdash; a good sign.</div>';
+  el.innerHTML=recHtml+rows;
+}
 function renderAI(){ renderBuildBanner(); var c=DATA.aiCfg||{}, on=!!c.ai_hq_enabled, hasKey=!!c.ai_available; var st=$('aiStatus'), tg=$('aiToggleBtn'), bd=$('aiBody'); if(!st) return;
   if(c.needsDeploy){ st.innerHTML='<span class="pill gray">Not deployed</span>'; tg.style.display='none'; bd.innerHTML='<div class="mut" style="padding:10px 12px">Paste the latest worker into Cloudflare to enable the AI Command Center and the new safety features (recoverable delete, working audit trail, admin rate-limit).</div>'; return; } tg.style.display='';
   st.innerHTML = on ? (hasKey?'<span class="pill active">On</span>':'<span class="pill past">On &middot; no AI key</span>') : '<span class="pill gray">Off</span>';
