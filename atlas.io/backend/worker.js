@@ -3409,6 +3409,39 @@ function doReset(){
         return json({ ok: true, deleted: dkey });
       }
 
+      // Self-service account deletion (the tenant OWNER deletes their own account). Deactivates + cancels billing +
+      // revokes sessions -- a SOFT-delete (reversible via the owner's admin Restore), matching the "delete only on
+      // account deletion" policy; the permanent purge stays owner-controlled. Session + CSRF + typed "DELETE" gated;
+      // staff can't do it (owner-role only) and the platform-owner account is exempt.
+      if (path === '/api/account/delete' && method === 'POST') {
+        const _actx = await resolveSession(env, req);
+        if (!_actx || !_actx.tenant_id || !_actx.user) return err(401, 'Sign in to delete your account.');
+        if (!csrfOk(req, _actx)) return err(403, 'Bad or missing CSRF token.');
+        if (_actx.user.role !== 'owner') return err(403, 'Only the account owner can delete the account.');
+        if (_isOwnerEmail(env, _actx.user.email)) return err(403, 'This account cannot be deleted here.');
+        const _ab = await req.json().catch(function () { return {}; });
+        if (String(_ab.confirm || '').trim().toUpperCase() !== 'DELETE') return err(400, 'Type DELETE to confirm.');
+        const _atid = _actx.tenant_id;
+        const _at = await env.DB.prepare('SELECT id, stripe_sub, stripe_customer FROM tenants WHERE id=?').bind(_atid).first();
+        if (!_at) return err(404, 'Account not found.');
+        // Stop billing at Stripe first so a deleted account is never charged again (plan + any domain subs + the customer).
+        try { const _apk = await _platStripe(env); if (_apk) {
+          if (_at.stripe_sub) { try { await stripeApi(_apk, 'DELETE', 'subscriptions/' + encodeURIComponent(_at.stripe_sub)); } catch (e) {} }
+          try { const _ads = await env.DB.prepare("SELECT DISTINCT stripe_sub FROM domains_sold WHERE tenant_id=? AND stripe_sub IS NOT NULL").bind(_atid).all(); const _adr = (_ads && _ads.results) || []; for (let k = 0; k < _adr.length; k++) { if (_adr[k].stripe_sub) { try { await stripeApi(_apk, 'DELETE', 'subscriptions/' + encodeURIComponent(_adr[k].stripe_sub)); } catch (e) {} } } } catch (e) {}
+          if (_at.stripe_customer) { try { await stripeApi(_apk, 'DELETE', 'customers/' + encodeURIComponent(_at.stripe_customer)); } catch (e) {} }
+        } } catch (e) {}
+        // SOFT-delete (reversible, no data loss): mark deleted + revoke sessions + tombstone every login email so the
+        // address frees for re-signup; every row + the audit_log survive for the owner's /restore (or a later purge).
+        const _astamp = Date.now();
+        try { await env.DB.prepare("UPDATE tenants SET plan='deleted', deleted_at=?, stripe_sub=NULL, updated_at=? WHERE id=?").bind(_astamp, _astamp, _atid).run(); } catch (e) {}
+        try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE tenant_id=? AND revoked_at IS NULL').bind(_astamp, _atid).run(); } catch (e) {}
+        try { const _aur = ((await env.DB.prepare('SELECT id,email FROM users WHERE tenant_id=?').bind(_atid).all()).results) || [];
+          for (let i = 0; i < _aur.length; i++) { const u = _aur[i]; if (!u.email || String(u.email).indexOf('_deleted.') === 0) continue; const tomb = ('_deleted.' + _astamp + '.' + u.email).slice(0, 254); try { await env.DB.prepare('UPDATE users SET email=? WHERE id=?').bind(tomb, u.id).run(); } catch (e) {} }
+        } catch (e) {}
+        await audit(env, { tenant_id: _atid, actor: _actx.user.email }, req, 'account.self_delete', { email: _actx.user.email });
+        return json({ ok: true, deleted: _atid });
+      }
+
       // ---- Inbound email webhook: your mail provider / forwarder (Resend, Postmark, SendGrid, generic) POSTs parsed mail
       // here and it lands in the Support Inbox. Secured by INBOUND_SECRET (header X-Inbound-Secret or ?secret=), NOT the
       // admin token. Nothing is ever auto-replied -- the owner reads, AI drafts, the owner clicks Send. ----
