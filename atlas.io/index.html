@@ -1880,7 +1880,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19r';
+  var APP_VERSION='2026.7.19s';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -7286,7 +7286,7 @@ const Atlas = (function(){
       toast((res.json&&res.json.error)||'Could not open the billing portal');
     }).catch(function(){ toast('Network error opening billing'); }); }
   function cancelPlan(){ if(!_guard('billing','Managing billing'))return;
-    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel at the end of this billing period? You keep full access and all your data until then.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel at the end of this billing period? You keep full access and all your data until then. No refund for the current period.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
     if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
   function openCredits(){
     openModal('<div class="modal__head"><h3>Atlas.io credits</h3>'+_xBtn()+'</div>'
@@ -7487,6 +7487,20 @@ const Atlas = (function(){
   function _activeAddons(){ var out=[]; if(_addons()['tracking']) out.push({key:'tracking',title:_featMeta('tracking').title,price:_addonPrice('tracking')});
     if(S&&S.websitePaid&&!_websiteIncluded()) out.push({key:'website',title:_featMeta('website').title,price:_addonPrice('website')}); return out; }
   function removeAddon(key){ if(!_guard('billing','Managing billing'))return; var nm=_featMeta(key).title.replace(/&amp;/g,'&');
+    // #280/#282: the website add-on is a REAL Stripe subscription in live mode -- cancelling it must actually cancel
+    // that subscription (at period end, no refund), never just flip local state (that was the #280 billing bug).
+    if(key==='website' && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){
+      if(!confirm('Cancel '+nm+'? You keep it until the end of your current billing period, then it stops. No refund for the current period.'))return;
+      toast('Cancelling...');
+      _api('/api/billing/website-cancel',{method:'POST',body:{}}).then(function(res){
+        var j=res.json||{};
+        if(res.status>=200&&res.status<300&&j.ok){
+          try{_logEvent('billing',nm+' add-on set to cancel at period end',{addon:key});}catch(e){}
+          toast(j.cancel_at?('Cancels on '+new Date(j.cancel_at*1000).toLocaleDateString()+' - you keep it until then.'):'Cancels at the end of your billing period - you keep it until then.');
+        } else { toast(j.error||'Could not cancel - please try again'); }
+      }).catch(function(){ toast('Network error cancelling'); });
+      return;
+    }
     if(!confirm('Cancel '+nm+'? Access ends now -- you can add it back anytime.'))return;
     if(_addons()[key]) delete _addons()[key]; if(key==='website'){ S.websitePaid=false; S.websitePlan=null; }
     save(); try{_logEvent('billing',nm+' add-on cancelled',{addon:key});}catch(e){}

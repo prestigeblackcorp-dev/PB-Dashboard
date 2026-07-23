@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ad';
+const ATLAS_BUILD = '2026.07.19ae';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1610,6 +1610,10 @@ async function ensurePlatformSchema(env) {
   // 'grandfathered' (a site that was ALREADY published before the gate could ever block it -- see _grandfatherWebsite).
   // NULL/absent = not entitled via this column alone (tier/comp/owner can still cover it, see _websiteEntitled).
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN website_addon TEXT").run(); } catch (e) { /* already exists */ }
+  // #280/#282: the monthly website-addon's OWN Stripe subscription id (nullable; a 'once' one-time purchase has none
+  // -- nothing to cancel). Distinct from tenants.stripe_sub (the tenant's PLAN subscription) so /api/billing/website-
+  // cancel can cancel_at_period_end the RIGHT subscription instead of silently doing nothing (the #280 billing bug).
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN website_sub TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_purchased INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_free INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_week INTEGER").run(); } catch (e) { /* already exists */ }
@@ -2526,7 +2530,9 @@ function doReset(){
             }
           } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
             // #278: persist the entitlement server-side (never trust the client's local S.websitePaid) -- 'once' is a lifetime purchase, 'mo' is the first month (renewals re-stamp 'mo' on invoice.paid below).
-            await env.DB.prepare("UPDATE tenants SET website_addon=?, updated_at=? WHERE id=?").bind(md.plan === 'mo' ? 'mo' : 'once', Date.now(), md.tenant).run();
+            // #280/#282: also stamp website_sub for 'mo' -- a DIFFERENT Stripe subscription than the tenant's plan (stripe_sub) -- so a later cancel can target the right one. 'once' has no subscription; website_sub stays NULL.
+            if (md.plan === 'mo') await env.DB.prepare("UPDATE tenants SET website_addon='mo', website_sub=?, updated_at=? WHERE id=?").bind(obj.subscription || null, Date.now(), md.tenant).run();
+            else await env.DB.prepare("UPDATE tenants SET website_addon='once', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
             if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
             if (md.plan !== 'mo') { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website (one-time)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
@@ -2596,7 +2602,8 @@ function doReset(){
               await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, delinquent_since=NULL, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
               if (_ptx && _ptx.new) { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }   // receipt only on a NEW txn -> idempotent on webhook replay
             } else if (im.tenant && im.billing === 'website') {
-              await env.DB.prepare("UPDATE tenants SET website_addon='mo', updated_at=? WHERE id=?").bind(Date.now(), im.tenant).run();   // #278: monthly renewal keeps the entitlement current
+              // #280/#282: COALESCE-backfill website_sub on renewal -- self-heals any 'mo' tenant that subscribed before this column existed, without ever overwriting an already-stamped id.
+              await env.DB.prepare("UPDATE tenants SET website_addon='mo', website_sub=COALESCE(website_sub,?), updated_at=? WHERE id=?").bind(obj.subscription || null, Date.now(), im.tenant).run();   // #278: monthly renewal keeps the entitlement current
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle') {
@@ -2635,7 +2642,8 @@ function doReset(){
             // that might share this tenant id by coincidence of event ordering). Never touches plan/tier/stripe_sub --
             // this is a DIFFERENT Stripe subscription than the tenant's plan (same GATE-on-billing-type posture as
             // the subscription.created/updated branch above).
-            await env.DB.prepare("UPDATE tenants SET website_addon=NULL, updated_at=? WHERE id=? AND website_addon='mo'").bind(Date.now(), md.tenant).run();
+            // #280/#282: also clear website_sub (the sub is now fully dead) so a stale id never lingers for a future cancel attempt.
+            await env.DB.prepare("UPDATE tenants SET website_addon=NULL, website_sub=NULL, updated_at=? WHERE id=? AND website_addon='mo'").bind(Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.website_cancelled', {});
           } else if (T === 'customer.subscription.trial_will_end') {
             const im = obj.metadata || {};
@@ -4423,6 +4431,62 @@ function doReset(){
         await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
         await audit(env, ctx, req, 'billing.cancel', { when: 'now' });
         return json({ ok: true, canceled: true, when: 'now' });
+      }
+
+      // ---- #280/#282: cancel the hosted-website add-on's Stripe subscription at period end. Was a client-only
+      // toggle (removeAddon flipped local state only, never called any endpoint) -- the real Stripe subscription
+      // kept billing forever. Mirrors /api/billing/cancel's guards + cancel_at_period_end posture exactly: NEVER an
+      // immediate cancel, NEVER a refund, and never reports success unless Stripe actually accepted it. ----
+      if (path === '/api/billing/website-cancel' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'bwcan:' + ctx.tenant_id, 10, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        await ensurePlatformSchema(env);
+        const trow = await env.DB.prepare('SELECT website_sub, website_addon, stripe_customer FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const addon = trow && trow.website_addon;
+        let sub = trow && trow.website_sub;
+        const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');
+        if (!sub && addon === 'mo') {
+          // FALLBACK for a monthly website sub bought before the website_sub column existed: find it on the tenant's
+          // Stripe customer by its metadata.billing tag, then persist the id so next time is a direct lookup.
+          const cust = trow && trow.stripe_customer;
+          if (cust) {
+            const ls = await stripeApi(pk, 'GET', 'subscriptions?customer=' + encodeURIComponent(cust) + '&limit=100', null);
+            const hit = (ls.ok && ls.j && Array.isArray(ls.j.data)) ? ls.j.data.find(function (s) { return s && s.metadata && s.metadata.billing === 'website'; }) : null;
+            if (hit) { sub = hit.id; try { await env.DB.prepare('UPDATE tenants SET website_sub=? WHERE id=?').bind(sub, ctx.tenant_id).run(); } catch (e) {} }
+          }
+        }
+        if (!sub) {
+          if (addon === 'once') return err(400, 'Your website was a one-time purchase - there is no recurring subscription to cancel.');
+          return err(400, 'No active website subscription found to cancel.');
+        }
+        const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), 'cancel_at_period_end=true');
+        if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
+        await audit(env, ctx, req, 'billing.website_cancel', { when: 'period_end' });
+        return json({ ok: true, canceled: true, when: 'period_end', cancel_at: (up.j && up.j.current_period_end) || null });
+      }
+
+      // ---- #282: cancel a purchased domain's yearly renewal at period end -- the tenant keeps the name through the
+      // paid year, then it lapses at the registrar; no refund. Scoped to ONE domain per call (an explicit {domain} in
+      // the body, or else the tenant's currently-connected custom_domain) -- there is no multi-domain management UI
+      // today, so this deliberately does not try to cancel every domain a tenant may have ever bought. ----
+      if (path === '/api/billing/domain-cancel' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'bdcan:' + ctx.tenant_id, 10, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        let dom = String(b.domain || '').toLowerCase().trim();
+        if (!dom) { const tr = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); dom = (tr && tr.custom_domain) || ''; }
+        if (!dom) return err(400, 'No domain found to cancel.');
+        const drow = await env.DB.prepare('SELECT stripe_sub FROM domains_sold WHERE tenant_id=? AND domain=?').bind(ctx.tenant_id, dom).first();
+        const sub = drow && drow.stripe_sub;
+        if (!sub) return err(400, 'No recurring subscription found for ' + dom + '.');
+        const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');
+        const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), 'cancel_at_period_end=true');
+        if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
+        await audit(env, ctx, req, 'billing.domain_cancel', { domain: dom, when: 'period_end' });
+        return json({ ok: true, canceled: true, when: 'period_end', domain: dom, cancel_at: (up.j && up.j.current_period_end) || null });
       }
 
       // ---- #212 Stripe Billing Portal: the tenant updates their card / views invoices / manages the subscription on Stripe's hosted page ----

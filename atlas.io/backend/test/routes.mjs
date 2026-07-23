@@ -1768,5 +1768,141 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(takedownFlag === '1', '#281 admin config: the bad-token POST above never actually wrote to platform_config (still "1" from the earlier real POST) (got ' + JSON.stringify(takedownFlag) + ')');
 }
 
+// ---- #280/#282: website-addon + domain cancel-at-period-end. Fixes the real #280 billing bug (the client "Cancel"
+// button on the hosted-website add-on never called any endpoint, so a monthly Stripe subscription kept billing
+// forever) and implements #282's universal policy (every cancel is cancel_at_period_end, never immediate, never a
+// refund). Own self-contained mock/helpers below -- does NOT reference wgEnvFor/wgReq or any other block's names.
+// AUTHORED WITHOUT A NODE RUNTIME AVAILABLE (hand-traced against worker.js only, not executed locally) -- CI's
+// `node test/routes.mjs` run is this block's first real execution. If something here mismatches, check these SQL
+// regexes first against the exact query text in /api/billing/website-cancel + /api/billing/domain-cancel. ----
+{
+  // Local Stripe mock: a single-subscription POST (cancel_at_period_end) is distinguished from the fallback
+  // LIST-by-customer GET; 'stripe_fail' simulates Stripe rejecting the cancel. Captures the last cancel POST's
+  // url+body so a test can prove the RIGHT subscription was targeted with cancel_at_period_end=true (never an
+  // immediate cancel).
+  let wcLastCancelCall = null;
+  function wcFetchMock(scenario) {
+    return async function (url, opts) {
+      const u = String(url), method = (opts && opts.method) || 'GET', body = (opts && opts.body) || '';
+      if (/\/v1\/subscriptions\?customer=/.test(u)) {
+        if (scenario === 'fallback_notfound') return { ok: true, status: 200, json: async () => ({ data: [] }) };
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: 'sub_found_fb', metadata: { billing: 'website' }, status: 'active' }] }) };
+      }
+      if (/\/v1\/subscriptions\/[^/?]+$/.test(u) && method === 'POST') {
+        wcLastCancelCall = { url: u, body: body };
+        if (scenario === 'stripe_fail') return { ok: false, status: 402, json: async () => ({ error: { message: 'Your card was declined.' } }) };
+        const id = decodeURIComponent(u.split('/').pop());
+        return { ok: true, status: 200, json: async () => ({ id: id, cancel_at_period_end: /cancel_at_period_end=true/.test(body), current_period_end: 1893456000 }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+  }
+  const wcOrigFetch = globalThis.fetch;   // restored at the end of this block -- never leaks into whatever runs after
+
+  // opts: { scn, website_sub, website_addon, stripe_customer, custom_domain, domainSub, denyCap }
+  function wcEnvFor(opts) {
+    const SID = 'sid_wc_' + opts.scn, CSRF = 'csrf_wc_' + opts.scn, TEN = 't_wc_' + opts.scn, UID = 'u_wc_' + opts.scn;
+    const tenantRow = { id: TEN, website_sub: (opts.website_sub != null ? opts.website_sub : null), website_addon: opts.website_addon || null, stripe_customer: opts.stripe_customer || null, custom_domain: opts.custom_domain || null };
+    const domainRow = opts.domainSub ? { stripe_sub: opts.domainSub } : null;
+    let websiteSubPersisted = null;
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: opts.denyCap ? 'staff@member.com' : 'owner@x.com', tenant_id: TEN, role: opts.denyCap ? 'staff' : 'owner', caps: opts.denyCap ? JSON.stringify({ caps: { billing: false } }) : null };
+          if (/FROM comp_grants WHERE email/.test(sql)) return null;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return null;   // payment_gate_enabled / trial_requires_card / payments_test_mode all read their fallback (off/live)
+          if (/SELECT website_sub, website_addon, stripe_customer FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
+          if (/SELECT custom_domain FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
+          if (/SELECT stripe_sub FROM domains_sold WHERE tenant_id=\? AND domain=\?/.test(sql)) return domainRow;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/^UPDATE tenants SET website_sub=\? WHERE id=\?$/.test(sql)) websiteSubPersisted = a[0];
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { SID: SID, CSRF: CSRF, TEN: TEN, env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com', PLATFORM_STRIPE_KEY: 'sk_live_x' }, getPersistedWebsiteSub: () => websiteSubPersisted };
+  }
+  const wcReq = (method, path, cfg, body, headerOverrides) => {
+    const headers = Object.assign({ 'content-type': 'application/json', cookie: 'atlas_sid=' + cfg.SID, 'x-csrf-token': cfg.CSRF, origin: 'https://atlasrental.io' }, headerOverrides || {});
+    return { method: method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) };
+  };
+
+  globalThis.fetch = wcFetchMock('ok');
+
+  // (a) website_sub already stored -> cancels that EXACT subscription (cancel_at_period_end=true), returns ok + cancel_at
+  let cfg = wcEnvFor({ scn: 'has_sub', website_sub: 'sub_existing123', website_addon: 'mo', stripe_customer: 'cus_abc' });
+  let r = await worker.fetch(wcReq('POST', '/api/billing/website-cancel', cfg, {}), cfg.env, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.ok === true && j.when === 'period_end', 'website-cancel: website_sub set -> 200 ok period_end (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  ok(j.cancel_at === 1893456000, 'website-cancel: returns Stripe current_period_end as cancel_at (got ' + j.cancel_at + ')');
+  ok(!!wcLastCancelCall && wcLastCancelCall.url.indexOf('sub_existing123') >= 0 && /cancel_at_period_end=true/.test(wcLastCancelCall.body), 'website-cancel: called Stripe with the stored sub id + cancel_at_period_end=true, never an immediate cancel (got ' + JSON.stringify(wcLastCancelCall) + ')');
+
+  // (b) website_sub is null but website_addon='mo' (a sub bought before this column existed) -> fallback finds it by
+  //     listing the tenant's Stripe customer's subscriptions for metadata.billing==='website', cancels it, AND
+  //     persists the id into website_sub so a future cancel is a direct lookup.
+  wcLastCancelCall = null;
+  cfg = wcEnvFor({ scn: 'fallback', website_sub: null, website_addon: 'mo', stripe_customer: 'cus_fallback' });
+  r = await worker.fetch(wcReq('POST', '/api/billing/website-cancel', cfg, {}), cfg.env, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true, 'website-cancel: fallback (no stored website_sub, addon=mo) still finds + cancels via the customer subscriptions list (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  ok(!!wcLastCancelCall && wcLastCancelCall.url.indexOf('sub_found_fb') >= 0, 'website-cancel: fallback cancels the subscription matched by metadata.billing===website (got ' + JSON.stringify(wcLastCancelCall) + ')');
+  ok(cfg.getPersistedWebsiteSub() === 'sub_found_fb', 'website-cancel: fallback persists the found sub id into website_sub for next time (got ' + cfg.getPersistedWebsiteSub() + ')');
+
+  // (c) a ONE-TIME ('once') website purchase has no subscription -> clear "nothing recurring to cancel" message,
+  //     never a fake success (this tenant keeps the site forever; there is simply nothing to cancel)
+  cfg = wcEnvFor({ scn: 'once', website_sub: null, website_addon: 'once', stripe_customer: 'cus_once' });
+  r = await worker.fetch(wcReq('POST', '/api/billing/website-cancel', cfg, {}), cfg.env, ctx);
+  j = await r.json();
+  ok(r.status === 400 && /one-time/i.test(j.error || ''), 'website-cancel: \'once\' addon -> clear nothing-recurring message, not a fake success (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+
+  // (d) guard: missing/wrong CSRF token -> 403, never reaches Stripe
+  wcLastCancelCall = null;
+  cfg = wcEnvFor({ scn: 'badcsrf', website_sub: 'sub_existing123', website_addon: 'mo', stripe_customer: 'cus_abc' });
+  r = await worker.fetch(wcReq('POST', '/api/billing/website-cancel', cfg, {}, { 'x-csrf-token': 'WRONG' }), cfg.env, ctx);
+  ok(r.status === 403, 'website-cancel: bad CSRF token -> 403 (got ' + r.status + ')');
+  ok(wcLastCancelCall === null, 'website-cancel: bad CSRF token never reaches Stripe (got ' + JSON.stringify(wcLastCancelCall) + ')');
+
+  // (e) guard: authenticated but lacking the 'billing' capability -> 403, never reaches Stripe
+  wcLastCancelCall = null;
+  cfg = wcEnvFor({ scn: 'nocap', website_sub: 'sub_existing123', website_addon: 'mo', stripe_customer: 'cus_abc', denyCap: true });
+  r = await worker.fetch(wcReq('POST', '/api/billing/website-cancel', cfg, {}), cfg.env, ctx);
+  ok(r.status === 403, 'website-cancel: caller without the billing capability -> 403 (got ' + r.status + ')');
+  ok(wcLastCancelCall === null, 'website-cancel: no-cap caller never reaches Stripe (got ' + JSON.stringify(wcLastCancelCall) + ')');
+
+  // (f) Stripe itself rejects the cancel call -> surfaces the real error and status, NEVER reports ok:true (the
+  //     SAFETY invariant: never report a cancel as succeeded unless Stripe actually accepted it)
+  globalThis.fetch = wcFetchMock('stripe_fail');
+  cfg = wcEnvFor({ scn: 'stripefail', website_sub: 'sub_existing123', website_addon: 'mo', stripe_customer: 'cus_abc' });
+  r = await worker.fetch(wcReq('POST', '/api/billing/website-cancel', cfg, {}), cfg.env, ctx);
+  j = await r.json();
+  ok(r.status === 502 && j.ok !== true && /declined/i.test(j.error || ''), 'website-cancel: a Stripe failure surfaces the real error and NEVER reports ok:true (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  globalThis.fetch = wcFetchMock('ok');
+
+  // (g) domain-cancel happy path: no {domain} in the body -> defaults to the tenant's connected custom_domain,
+  //     looks up domains_sold for that (tenant,domain), cancels that subscription at period end
+  cfg = wcEnvFor({ scn: 'domain', custom_domain: 'example.com', domainSub: 'sub_domain999' });
+  r = await worker.fetch(wcReq('POST', '/api/billing/domain-cancel', cfg, {}), cfg.env, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && j.domain === 'example.com', 'domain-cancel: defaults to the tenant\'s connected custom_domain -> 200 ok (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  ok(!!wcLastCancelCall && wcLastCancelCall.url.indexOf('sub_domain999') >= 0 && /cancel_at_period_end=true/.test(wcLastCancelCall.body), 'domain-cancel: cancels domains_sold.stripe_sub via cancel_at_period_end, never an immediate delete (got ' + JSON.stringify(wcLastCancelCall) + ')');
+
+  // (h) domain-cancel: no matching domains_sold row for that domain -> clear failure, never a fake success
+  cfg = wcEnvFor({ scn: 'domain_none', custom_domain: 'example.com', domainSub: null });
+  r = await worker.fetch(wcReq('POST', '/api/billing/domain-cancel', cfg, {}), cfg.env, ctx);
+  j = await r.json();
+  ok(r.status === 400 && j.ok !== true, 'domain-cancel: no recurring subscription on file -> clear failure, never a fake success (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+
+  globalThis.fetch = wcOrigFetch;
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
