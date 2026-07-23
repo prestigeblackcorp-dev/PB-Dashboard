@@ -1797,6 +1797,7 @@ const Atlas = (function(){
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
       if(r[2].json && typeof r[2].json.credits==='number'){ try{ var _cb=_lsGet('atlas_tenant_'+tid,null); if(_cb){ if(!_cb.credits)_cb.credits={}; _cb.credits.bal=r[2].json.credits; _lsSet('atlas_tenant_'+tid,_cb); if(typeof S!=='undefined'&&S){ if(!S.credits)S.credits={}; S.credits.bal=r[2].json.credits; } } }catch(e){} }   // adopt server-authoritative credit balance on hydrate
       if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
+      if(r[2].json && typeof r[2].json.websiteEntitled==='boolean'){ try{ var _wb=_lsGet('atlas_tenant_'+tid,null); if(_wb){ _wb.websiteEntitled=r[2].json.websiteEntitled; _lsSet('atlas_tenant_'+tid,_wb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.websiteEntitled=r[2].json.websiteEntitled; } }catch(e){} }   // #278: adopt server-authoritative website entitlement (owner/comp/tier/website_addon) on hydrate -- same pattern as credits/plan above
     }).catch(function(){}); }
   function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
     local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); } });
@@ -1879,7 +1880,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19p';
+  var APP_VERSION='2026.7.19q';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -7423,7 +7424,7 @@ const Atlas = (function(){
   var WEBSITE_TIERS=['enterprise','business','unlimited'];
   function _websiteTierName(){ return 'Enterprise'; }
   function _websiteIncluded(){ return _isActive() && WEBSITE_TIERS.indexOf(S.tier)>=0; }
-  function _canBuildSite(){ return _websiteIncluded() || !!(S&&S.websitePaid); }
+  function _canBuildSite(){ return _websiteIncluded() || !!(S&&S.websitePaid) || !!(S&&S.websiteEntitled); }   // #278: S.websiteEntitled is SERVER truth (hydrated from /api/tenant/profile + /api/auth/me) -- ORed in, never replaces the existing local checks, so this can only ever unlock MORE, never less
   // ---- Tiered paid-feature gating: a feature above the owner's plan shows LOCKED, with UPGRADE or BUY-THE-EXTRA. ----
   // Uses the pricing already defined (TIERS + per-feature add-ons). Trials + comped/owner tiers get everything.
   var GATED_FEATURES={
@@ -7498,6 +7499,7 @@ const Atlas = (function(){
     toast('Publishing\u2026');
     _api('/api/tenant/profile',{method:'PUT',body:payload}).then(function(res){
       if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var w=_web(); w.published=true; w.publishedSlug=res.json.subdomain||slug; save(); renderWebsite(); toast('Booking site published \u2014 your link is live'); }
+      else if(res.status===402 && res.json && res.json.error==='website_addon_required'){ toast('Add the website ($199 once or $19/mo) or upgrade to Enterprise to publish'); buyWebsiteAddon(); }   // #278: honest gate, same $199/$19-or-upgrade copy as _webGateHtml
       else toast((res.json&&res.json.error)||'Could not publish \u2014 please try again'); }).catch(function(){ toast('Network error while publishing'); }); }
   function _bookingSitePublished(){ return !!(ATLAS_BACKEND && _web().published); }
   function renderWebsite(){ var el=document.getElementById('webBody'); if(!el||!S) return; var w=_web();
@@ -8194,6 +8196,7 @@ const Atlas = (function(){
     if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in and go online to connect a domain'); return; }
     var st=document.getElementById('domSteps'); if(st) st.innerHTML='<div style="margin-top:14px;color:var(--muted);font-size:12.5px">Preparing your steps...</div>';
     _api('/api/domain/connect',{method:'POST',body:{domain:v}}).then(function(res){
+      if(res.status===402 && res.json && res.json.error==='website_addon_required'){ toast('Add the website ($199 once or $19/mo) or upgrade to Enterprise to connect a custom domain'); buyWebsiteAddon(); return; }   // #278
       if(!(res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not start - try again'); return; }
       w.domain.mode='custom'; w.domain.custom=res.json.domain; w.domain.status='pending'; w.domain._pending=res.json.domain; save();
       var recs=res.json.records||[];

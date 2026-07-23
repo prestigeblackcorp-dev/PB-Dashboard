@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19y';
+const ATLAS_BUILD = '2026.07.19z';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1246,7 +1246,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled };
 
 // ===================== #201 Domain registrar (Dynadot API v3) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -1601,6 +1601,10 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN custom_domain_status TEXT").run(); } catch (e) { /* already exists */ }
+  // #278 feature-level payment gating: 'once' | 'mo' (real Stripe purchase, stamped by the webhook) or
+  // 'grandfathered' (a site that was ALREADY published before the gate could ever block it -- see _grandfatherWebsite).
+  // NULL/absent = not entitled via this column alone (tier/comp/owner can still cover it, see _websiteEntitled).
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN website_addon TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_purchased INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_free INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN credits_week INTEGER").run(); } catch (e) { /* already exists */ }
@@ -1786,6 +1790,38 @@ async function _lockedTenantCount(env) {
     return (r && r.c) || 0;
   } catch (e) { return 0; }
 }
+// ---- #278 FEATURE-LEVEL PAYMENT GATING (flag-gated OFF by default via platform_config.feature_gate_enabled) ----
+// The AI website builder (hosted site) + custom domains: building/editing/previewing stays FREE on every plan;
+// only PUBLISHING (going/staying live) and connecting a custom domain require entitlement. Mirrors WEBSITE_TIERS
+// in atlas.html exactly.
+const WEBSITE_ENTITLED_TIERS = ['enterprise', 'business', 'unlimited'];
+// Pure function, no I/O -- same shape and same never-lock posture as _billingState above: the platform owner and a
+// comped (gold/free) account can NEVER be blocked. A missing tenant row fails OPEN (true) for the same reason
+// _billingState does -- this must never invent a NEW block from absent/unexpected data.
+function _websiteEntitled(tenant, isOwner, comp) {
+  if (isOwner) return true;
+  if (comp === 'gold' || comp === 'free') return true;
+  if (!tenant) return true;
+  if (tenant.website_addon) return true;   // 'once' | 'mo' (a real Stripe purchase, stamped by the webhook) | 'grandfathered' (see _grandfatherWebsite)
+  return WEBSITE_ENTITLED_TIERS.indexOf(tenant.tier) >= 0;
+}
+// NEVER-BREAK-A-LIVE-SITE grandfather: the FIRST time a tenant's site is found published (or its custom domain
+// already connected) without its own entitlement, permanently stamp website_addon='grandfathered' -- idempotent
+// (WHERE ... IS NULL, a no-op every time after). This is what lets platform_config.feature_gate_enabled flip ON
+// without instantly taking down every site that was already live before this feature existed: only a NEW publish
+// or a NEW domain connection (see /api/tenant/profile PUT + /api/domain/connect) ever needs real entitlement.
+// Mirrors the existing tz-backfill-on-touch pattern already used at tenant.profile PUT.
+async function _grandfatherWebsite(env, tenant) {
+  try { if (tenant && tenant.id && !tenant.website_addon) await env.DB.prepare("UPDATE tenants SET website_addon='grandfathered' WHERE id=? AND (website_addon IS NULL OR website_addon='')").bind(tenant.id).run(); } catch (e) {}
+}
+// Serve-time companion to the PUT-time gate: NEVER blocks an already-published site -- it only opportunistically
+// grandfathers (see above) a not-yet-entitled legacy site the first time it is actually served under the gate, so
+// the entitlement state becomes explicit/auditable going forward. Deliberately fire-and-forget at every call site
+// (same pattern as the _pvp page-view counter below) -- a public page load must never be held up by this. Flag-
+// gated: OFF -> a single cheap _pcfgGet read and nothing else, byte-identical to pre-#278 behavior.
+async function _websiteServeGrandfather(env, tenant) {
+  try { if ((await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1' && !_websiteEntitled(tenant, false, null)) await _grandfatherWebsite(env, tenant); } catch (e) {}
+}
 // Cadence gate for the 24/7 learning cron: returns true (and stamps the clock) ONLY if this named job is due (>= minMs since last run).
 // Lets the every-2h cron run CHEAP learning every tick while EXPENSIVE AI/crawls self-gate to ~once/20h -> continuous but budget-safe.
 async function _due(env, key, minMs) { try { var last = parseInt(await _pcfgGet(env, 'due_' + key, '0'), 10) || 0; if (Date.now() - last >= minMs) { await _pcfgSet(env, 'due_' + key, String(Date.now())); return true; } } catch (e) {} return false; }
@@ -1930,12 +1966,16 @@ export default {
         try {
           await ensurePlatformSchema(env);
           const hostBase = host.replace(/^www\./, '');   // www.theirsite.com and theirsite.com both route to the tenant
-          const cd = await env.DB.prepare("SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(hostBase).first();
+          const cd = await env.DB.prepare("SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(hostBase).first();
           if (cd && cd.subdomain) {
             const pr = tenantProfile(cd);
             const liveSite = pr.settings.publicSite && pr.settings.publicSite.published;
             const color = (pr.brand && pr.brand.color) || '#1E6E4E';
-            if (liveSite) return new Response(_bookPageHtml(cd.subdomain, color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+            if (liveSite) {
+              // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
+              const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
+              return new Response(_bookPageHtml(cd.subdomain, color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+            }
           }
         } catch (e) { /* fall through to normal routing */ }
       }
@@ -2196,6 +2236,8 @@ function doReset(){
 
         if (method === 'GET' && !sub) {
           if (!published) return err(404, 'This booking site is not published yet.');
+          // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
+          const _wg278 = _websiteServeGrandfather(env, trow); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
           // First-party visit count (one upsert per UTC day per tenant; no cookies/PII). Best-effort -- never blocks the page.
           const _day = new Date(Date.now()).toISOString().slice(0, 10); const _pvp = (async function () { try { await env.DB.prepare("INSERT INTO page_views (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(prof.id, _day).run();
             var _cc = (req.cf && req.cf.country) || ''; if (/^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase()).run(); } catch (e) {} })();   // best-effort, deferred (waitUntil) so the public booking page is never held up by analytics writes -- same pattern as _fireWebhook
@@ -2404,6 +2446,8 @@ function doReset(){
               await _creditAdd(env, md.tenant, parseInt(md.pack, 10) || 0);
             }
           } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
+            // #278: persist the entitlement server-side (never trust the client's local S.websitePaid) -- 'once' is a lifetime purchase, 'mo' is the first month (renewals re-stamp 'mo' on invoice.paid below).
+            await env.DB.prepare("UPDATE tenants SET website_addon=?, updated_at=? WHERE id=?").bind(md.plan === 'mo' ? 'mo' : 'once', Date.now(), md.tenant).run();
             if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
             if (md.plan !== 'mo') { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website (one-time)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
@@ -2472,6 +2516,7 @@ function doReset(){
               await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
               if (_ptx && _ptx.new) { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }   // receipt only on a NEW txn -> idempotent on webhook replay
             } else if (im.tenant && im.billing === 'website') {
+              await env.DB.prepare("UPDATE tenants SET website_addon='mo', updated_at=? WHERE id=?").bind(Date.now(), im.tenant).run();   // #278: monthly renewal keeps the entitlement current
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle') {
@@ -2504,6 +2549,14 @@ function doReset(){
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
             await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub
             await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
+          } else if (T === 'customer.subscription.deleted' && md.billing === 'website' && md.tenant) {
+            // #278: the monthly website-addon subscription was cancelled -- clear the entitlement, but ONLY if it is
+            // still exactly 'mo' (never clobber a separate one-time 'once' purchase or a 'grandfathered' legacy site
+            // that might share this tenant id by coincidence of event ordering). Never touches plan/tier/stripe_sub --
+            // this is a DIFFERENT Stripe subscription than the tenant's plan (same GATE-on-billing-type posture as
+            // the subscription.created/updated branch above).
+            await env.DB.prepare("UPDATE tenants SET website_addon=NULL, updated_at=? WHERE id=? AND website_addon='mo'").bind(Date.now(), md.tenant).run();
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.website_cancelled', {});
           } else if (T === 'customer.subscription.trial_will_end') {
             const im = obj.metadata || {};
             if (im.tenant && im.email && env.RESEND_KEY) { try { await sendEmail(env, { to: im.email, fromName: 'Atlas Rental.io',
@@ -2936,7 +2989,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -2953,7 +3006,11 @@ function doReset(){
           // this ON is the ONLY thing that activates the 402 lockout for past-due/canceled/trial-expired tenants;
           // this route is already OWNER_ONLY (path starts with /api/admin/config, matched by the OWNER_ONLY regex).
           if (typeof b.payment_gate_enabled !== 'undefined') { await _pcfgSet(env, 'payment_gate_enabled', b.payment_gate_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { payment_gate_enabled: !!b.payment_gate_enabled }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env) };
+          // #278 feature-level payment gating (website builder/hosted site/custom domains): OFF by default (see
+          // _websiteEntitled/_grandfatherWebsite above). Flipping this ON is the ONLY thing that activates the 402 on
+          // a NEW un-entitled publish or custom-domain connect; this route is already OWNER_ONLY.
+          if (typeof b.feature_gate_enabled !== 'undefined') { await _pcfgSet(env, 'feature_gate_enabled', b.feature_gate_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { feature_gate_enabled: !!b.feature_gate_enabled }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env) };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are
@@ -3418,11 +3475,13 @@ function doReset(){
       // ---- served customer pages (branded, self-contained; reachable via the existing /api/* route) ----
       const bp = path.match(/^\/api\/book\/([a-z0-9-]{1,63})$/);
       if (bp && method === 'GET') {
-        const tr = await env.DB.prepare('SELECT name,brand,settings FROM tenants WHERE subdomain=?').bind(bp[1]).first();
+        const tr = await env.DB.prepare('SELECT * FROM tenants WHERE subdomain=?').bind(bp[1]).first();   // #278: SELECT * (not named columns) -- this route never calls ensurePlatformSchema, so a newly-migrated column (website_addon) must never be named directly here or a cold isolate before the ALTER has ever run would 500 a real customer's booking page
         const pr = tr ? tenantProfile(tr) : null;
         const live = pr && pr.settings.publicSite && pr.settings.publicSite.published;
         const color = (pr && pr.brand && pr.brand.color) || '#1E6E4E';
         if (!live) return new Response(_pageDoc('Not available', color, '<div class="card"><h2>Not available yet</h2><p class="muted">This booking site has not been published.</p></div>', ''), { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
+        const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
         return new Response(_bookPageHtml(bp[1], color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend))?$/);
@@ -3602,11 +3661,15 @@ function doReset(){
       }
 
       if (path === '/api/auth/me' && method === 'GET') {
-        const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        await ensurePlatformSchema(env);   // #278: this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady, see ensurePlatformSchema)
+        const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,tier,website_addon,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         // #276: same flag-gated computation as login/signup -- 'ok' whenever the gate is OFF. This is the endpoint
         // the client polls on window-focus to detect a mid-session lock clearing (billing fixed -> dismiss paywall).
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = _billingState(t, ctx.isOwner, ctx.comp); }
-        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState });
+        // #278: an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- only ENFORCEMENT (the 402s
+        // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
+        // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
+        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp) });
       }
 
       // ---- MFA: current status for Settings (authed; per-USER, not per-tenant -- any team member manages their own) ----
@@ -3748,6 +3811,14 @@ function doReset(){
         const b = await req.json().catch(() => ({}));
         const dom = String(b.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
         if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(dom) || dom.length > 100) return err(400, 'Enter a domain like yoursite.com.');
+        // #278: same flag-gated, grandfathered posture as the publish gate above -- OFF -> inert. A tenant who
+        // ALREADY has a custom domain connected (any status -- pending or live, from before the gate existed) is
+        // never re-blocked from adjusting/reconnecting it; only a genuinely NEW connection needs entitlement.
+        if ((await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1') {
+          const _cur278d = await env.DB.prepare('SELECT id,tier,website_addon,custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          if (_cur278d && _cur278d.custom_domain) { await _grandfatherWebsite(env, _cur278d); }
+          else if (!_websiteEntitled(_cur278d, ctx.isOwner, ctx.comp)) { return json({ error: 'website_addon_required' }, 402); }
+        }
         const clash = await env.DB.prepare('SELECT id FROM tenants WHERE custom_domain=? AND id<>?').bind(dom, ctx.tenant_id).first();
         if (clash) return err(409, 'That domain is already connected to another account.');
         await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=?").bind(dom, Date.now(), ctx.tenant_id).run();
@@ -3889,8 +3960,11 @@ function doReset(){
       }
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
-          const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
-          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null });
+          await ensurePlatformSchema(env);   // #278: this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady, see ensurePlatformSchema)
+          const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          // #278: websiteEntitled is an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- see the
+          // matching note on /api/auth/me. This is the primary hydrate path (_srvHydrate -> S.websiteEntitled).
+          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false });
         }
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -3904,7 +3978,26 @@ function doReset(){
             sets.push('brand=?'); vals.push(JSON.stringify(_brand));
           }
           if (body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }
-          if (body.settings && typeof body.settings === 'object') { sets.push('settings=?'); vals.push(JSON.stringify(body.settings)); }
+          if (body.settings && typeof body.settings === 'object') {
+            // ---- #278 FEATURE-LEVEL PAYMENT GATING: server-authoritative, flag-gated OFF by default (platform_config.
+            // feature_gate_enabled). While OFF, this whole block is a single cheap _pcfgGet read and NOTHING else
+            // changes -- publishing behaves byte-identical to before this feature existed. Building/editing/previewing
+            // the site (this same PUT, with settings.publicSite.published anything other than true) is ALWAYS free --
+            // only actually GOING live requires entitlement. NEVER-BREAK-A-LIVE-SITE: reads the tenant's CURRENT
+            // (pre-update) published state first -- if it is already published, this save is allowed through
+            // unchanged no matter what (grandfather), and the entitlement column is stamped right now so the very
+            // next request never has to re-derive it (see _grandfatherWebsite).
+            const _wantsPublish = !!(body.settings.publicSite && body.settings.publicSite.published === true);
+            if (_wantsPublish && (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1') {
+              await ensurePlatformSchema(env);   // this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady)
+              const _cur278 = await env.DB.prepare('SELECT id,tier,website_addon,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+              const _curSettings278 = _cur278 ? jparse(_cur278.settings, {}) : {};
+              const _alreadyPublished278 = !!(_curSettings278.publicSite && _curSettings278.publicSite.published);
+              if (_alreadyPublished278) { await _grandfatherWebsite(env, _cur278); }
+              else if (!_websiteEntitled(_cur278, ctx.isOwner, ctx.comp)) { return json({ error: 'website_addon_required' }, 402); }
+            }
+            sets.push('settings=?'); vals.push(JSON.stringify(body.settings));
+          }
           if (vStr(body.name, 120)) { sets.push('name=?'); vals.push(body.name.slice(0, 120)); }
           if (typeof body.subdomain === 'string') {
             const sd = slugify(body.subdomain);

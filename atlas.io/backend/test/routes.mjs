@@ -1241,5 +1241,135 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   }
 }
 
+// ---- #278 FEATURE-LEVEL PAYMENT GATING: server-authoritative 402 on a NEW un-entitled publish / custom-domain
+// connect, flag-gated OFF by default (platform_config.feature_gate_enabled). Flag OFF -> byte-identical (the whole
+// gate block never even reads the tenant row). Flag ON -> NEVER locks the platform owner, a comped (gold/free)
+// account, Enterprise+ tier, or a tenant with website_addon set; and NEVER takes down a site/domain that was
+// already published/connected before the gate could ever have blocked it (grandfather). Mirrors the #276 block's
+// pgEnvFor/pgReq pattern above, adapted for an authenticated PUT + POST instead of a GET. ----
+{
+  // opts: { scn, gateOn, tier, website_addon, curSettings, custom_domain, compRole, email }
+  function wgEnvFor(opts) {
+    const SID = 'sid_wg_' + opts.scn, CSRF = 'csrf_wg_' + opts.scn, TEN = 't_wg_' + opts.scn, UID = 'u_wg_' + opts.scn;
+    const email = opts.email || (opts.scn + '@member.com');
+    const tenantRow = { id: TEN, tier: opts.tier || 'starter', website_addon: opts.website_addon || null, settings: JSON.stringify(opts.curSettings || {}), custom_domain: opts.custom_domain || null };
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: email, tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants WHERE email/.test(sql)) return opts.compRole ? { role: opts.compRole } : null;
+          // #276's OWN flag must stay OFF throughout -- only 'feature_gate_enabled' is ever driven by this helper.
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'feature_gate_enabled' && opts.gateOn) ? { v: '1' } : null;
+          if (/SELECT id,tier,website_addon,settings FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
+          if (/SELECT id,tier,website_addon,custom_domain FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
+          if (/SELECT id FROM tenants WHERE custom_domain=\? AND id<>\?/.test(sql)) return null;   // never a clash in these tests
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { SID, CSRF, TEN, env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' } };
+  }
+  const wgReq = (method, path, cfg, body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + cfg.SID, 'x-csrf-token': cfg.CSRF, origin: 'https://atlasrental.io' }; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+
+  // (a) flag OFF: an un-entitled tenant publishing for the first time still succeeds -- proves the whole feature is inert
+  let cfg = wgEnvFor({ scn: 'off', gateOn: false, tier: 'starter', website_addon: null, curSettings: {} });
+  let r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { publicSite: { published: true } } }), cfg.env, ctx);
+  ok(r.status === 200, '#278 flag OFF: un-entitled tenant PUT publish:true -> 200, byte-identical to today (got ' + r.status + ')');
+
+  // (b) flag ON, un-entitled, NOT already published -> the one real block: 402 website_addon_required
+  cfg = wgEnvFor({ scn: 'unentitled_new', gateOn: true, tier: 'starter', website_addon: null, curSettings: {} });
+  r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { publicSite: { published: true } } }), cfg.env, ctx);
+  let j = await r.json();
+  ok(r.status === 402 && j.error === 'website_addon_required', '#278 flag ON: un-entitled NEW publish -> 402 website_addon_required (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+
+  // (c) flag ON, NEVER-BREAK-A-LIVE-SITE grandfather: a tenant whose site is ALREADY published (read BEFORE this
+  // update) is let through unchanged, even with zero entitlement -- proves flipping the gate on can never take
+  // down an existing live site, only block a brand-new un-entitled publish.
+  cfg = wgEnvFor({ scn: 'grandfather', gateOn: true, tier: 'starter', website_addon: null, curSettings: { publicSite: { published: true, headline: 'old' } } });
+  r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { publicSite: { published: true, headline: 'new' } } }), cfg.env, ctx);
+  ok(r.status === 200, '#278 flag ON: already-published tenant re-saving -> still 200 (grandfathered, never taken down) (got ' + r.status + ')');
+
+  // (d) flag ON, every never-lock entitlement path -> 200: website_addon set (once-purchase), Enterprise+ tier,
+  // a comped gold account, and the platform owner -- even though none of these tenant rows have a prior publish.
+  for (const [scn, tierOverride, addonOverride, compOverride, emailOverride] of [
+    ['addon_once', 'starter', 'once', null, null],
+    ['addon_mo', 'starter', 'mo', null, null],
+    ['tier_enterprise', 'enterprise', null, null, null],
+    ['comp_gold', 'starter', null, 'gold', null],
+    ['comp_free', 'starter', null, 'free', null],
+    ['owner', 'starter', null, null, 'owner@x.com'],
+  ]) {
+    cfg = wgEnvFor({ scn: 'ent_' + scn, gateOn: true, tier: tierOverride, website_addon: addonOverride, curSettings: {}, compRole: compOverride, email: emailOverride });
+    r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { publicSite: { published: true } } }), cfg.env, ctx);
+    ok(r.status === 200, '#278 flag ON: entitled (' + scn + ') NEW publish -> 200 (got ' + r.status + ')');
+  }
+
+  // (e) building/editing/previewing (NOT publishing) is always free, flag on or off, entitled or not -- the gate
+  // only ever looks at settings.publicSite.published===true, so an ordinary settings save is untouched.
+  cfg = wgEnvFor({ scn: 'edit_only', gateOn: true, tier: 'starter', website_addon: null, curSettings: {} });
+  r = await worker.fetch(wgReq('PUT', '/api/tenant/profile', cfg, { settings: { theme: 'dark' } }), cfg.env, ctx);
+  ok(r.status === 200, '#278 flag ON: an un-entitled tenant saving unrelated settings (no publish) -> 200, never gated (got ' + r.status + ')');
+
+  // (f) custom-domain connect mirrors the same posture: OFF -> inert; ON + un-entitled + no existing domain -> 402;
+  // ON + already has a domain connected (any status, from before the gate existed) -> grandfathered through; ON +
+  // entitled -> 200.
+  cfg = wgEnvFor({ scn: 'dom_off', gateOn: false, tier: 'starter', website_addon: null, custom_domain: null });
+  r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'example.com' }), cfg.env, ctx);
+  ok(r.status === 200, '#278 flag OFF: custom-domain connect for an un-entitled tenant -> 200, inert (got ' + r.status + ')');
+
+  cfg = wgEnvFor({ scn: 'dom_new', gateOn: true, tier: 'starter', website_addon: null, custom_domain: null });
+  r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'example.com' }), cfg.env, ctx);
+  j = await r.json();
+  ok(r.status === 402 && j.error === 'website_addon_required', '#278 flag ON: un-entitled custom-domain connect (no prior domain) -> 402 (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+
+  cfg = wgEnvFor({ scn: 'dom_grandfather', gateOn: true, tier: 'starter', website_addon: null, custom_domain: 'old-domain.com' });
+  r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'new-domain.com' }), cfg.env, ctx);
+  ok(r.status === 200, '#278 flag ON: tenant with an already-connected domain reconnecting -> still 200 (grandfathered) (got ' + r.status + ')');
+
+  cfg = wgEnvFor({ scn: 'dom_entitled', gateOn: true, tier: 'starter', website_addon: 'mo', custom_domain: null });
+  r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'example.com' }), cfg.env, ctx);
+  ok(r.status === 200, '#278 flag ON: entitled tenant custom-domain connect (no prior domain) -> 200 (got ' + r.status + ')');
+}
+
+// ---- #278 (cont.): the PUBLIC served site is NEVER blocked by this feature -- only the PUBLISH/CONNECT actions
+// above ever return a 402. A published site with zero entitlement still serves (200) with the gate ON, proving
+// the grandfather posture holds end-to-end at the serve layer too, not just at the write path. ----
+{
+  function pubDB(gateOn, tenantRow) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM tenants WHERE subdomain=\?/.test(sql)) return tenantRow;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'feature_gate_enabled' && gateOn) ? { v: '1' } : null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const pubCtx = { waitUntil(p) { p.catch(function () {}); }, passThroughOnException() {} };
+  const tRow = { id: 't_pub_278', tier: 'starter', website_addon: null, settings: JSON.stringify({ publicSite: { published: true, headline: 'Hi', assets: [], config: {} } }) };
+
+  let r = await worker.fetch(mkReq('GET', '/api/public/pubslug278'), { DB: pubDB(false, tRow), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, pubCtx);
+  ok(r.status === 200, '#278 flag OFF: published site still serves -> 200 (got ' + r.status + ')');
+
+  r = await worker.fetch(mkReq('GET', '/api/public/pubslug278'), { DB: pubDB(true, tRow), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' }, pubCtx);
+  ok(r.status === 200, '#278 flag ON: a published-but-UN-ENTITLED site still serves -> 200, never taken down (got ' + r.status + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
