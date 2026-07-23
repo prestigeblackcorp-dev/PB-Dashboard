@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19aa';
+const ATLAS_BUILD = '2026.07.19ab';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3564,7 +3564,7 @@ function doReset(){
           if (b64.length > 9000000) return err(413, 'That file is too large (about 6MB max).');
           let bytes; try { bytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); }); } catch (e) { return err(400, 'Could not read that file.'); }
           const ext = mime.indexOf('pdf') >= 0 ? 'pdf' : (mime.indexOf('png') >= 0 ? 'png' : (mime.indexOf('webp') >= 0 ? 'webp' : 'jpg'));
-          const key = 't/' + brow.tenant_id + '/portal/' + brow.id + '/' + kind + '-' + randId(24) + '.' + ext;   // #260 unguessable capability key (was Date.now+Math.random -- predictable/brute-forceable)
+          const key = 'atlas/t/' + brow.tenant_id + '/portal/' + brow.id + '/' + kind + '-' + randId(24) + '.' + ext;   // #260 unguessable capability key; the 'atlas/' top-level namespace keeps Atlas files cleanly separated from PB content in a SHARED R2 bucket (e.g. pb-videos) -- every Atlas object lives under atlas/
           let encBytes; try { encBytes = await _encBytes(env, key, bytes); } catch (e) { return json({ ok: false, reason: 'store_failed', message: 'Could not save the file. Please try again.' }); }
           try { await r2.put(key, encBytes, { customMetadata: { ct: mime, enc: '1' } }); } catch (e) { return json({ ok: false, reason: 'store_failed', message: 'Could not save the file. Please try again.' }); }   // #260 ciphertext body -> real type lives in customMetadata, not httpMetadata
           const capUrl = url.origin + '/api/f/' + key;
@@ -3752,7 +3752,7 @@ function doReset(){
         let bin; try { bin = Uint8Array.from(atob(m[2]), function (c) { return c.charCodeAt(0); }); } catch (e) { return err(400, 'Bad base64.'); }
         if (bin.length > 15 * 1024 * 1024) return err(413, 'File too large (max 15MB).');
         const safe = String(b.name || 'file').replace(/[^a-zA-Z0-9._-]/g, '').slice(-40) || 'file';
-        const key = 't/' + ctx.tenant_id + '/' + randId(24) + '-' + safe;   // #260 bumped alongside the portal key hardening (was randId(16), already strong -- kept in lockstep)
+        const key = 'atlas/t/' + ctx.tenant_id + '/' + randId(24) + '-' + safe;   // #260 key hardening; 'atlas/' top-level namespace so a SHARED R2 bucket (e.g. pb-videos) cleanly separates Atlas files from PB content -- every Atlas object lives under atlas/
         let encBin; try { encBin = await _encBytes(env, key, bin); } catch (e) { return json({ ok: false, reason: 'store_failed' }); }
         try { await r2.put(key, encBin, { customMetadata: { ct: ct, enc: '1' } }); } catch (e) { return json({ ok: false, reason: 'store_failed' }); }   // #260 ciphertext body -> real type lives in customMetadata, not httpMetadata
         await audit(env, ctx, req, 'file.upload', { bytes: bin.length });
