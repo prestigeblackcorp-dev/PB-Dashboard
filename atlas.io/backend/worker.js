@@ -725,6 +725,15 @@ const HQ_QUERIES = {
   onboarding_stuck: { desc: 'Tenants older than N days with 0 assets (stuck onboarding).', params: ['days'],
     run: async function (env, p) { var days = Math.min(365, Math.max(1, parseInt(p.days, 10) || 7)); return ((await env.DB.prepare("SELECT t.id,t.name,t.plan,t.created_at,(SELECT email FROM users WHERE tenant_id=t.id AND role='owner' LIMIT 1) email,(SELECT COUNT(*) FROM assets WHERE tenant_id=t.id) assets FROM tenants t WHERE t.deleted_at IS NULL AND t.created_at<?").bind(Date.now() - days * 86400000).all()).results || []).filter(function (r) { return (r.assets || 0) === 0; }).slice(0, 100); } }
 };
+// INVISIBILITY (belt-and-suspenders): every HQ_QUERIES tool returns CUSTOMER-tenant rows for the AI Command Center
+// (brief, copilot, nl-query, churn, nudges, leaks). Wrap each tool's run so ANY platform-owner account (primary OR the
+// hidden super-admin backup) is scrubbed from EVERY tool's output at EVERY caller -- one place, no call site to miss,
+// and future callers are covered automatically. Owners are never customers, so they never belong in these lists; this
+// also guarantees the hidden backup can never surface through the AI tools to a compromised primary.
+Object.keys(HQ_QUERIES).forEach(function (k) {
+  var _origRun = HQ_QUERIES[k].run;
+  HQ_QUERIES[k].run = async function (env, p) { var rows = await _origRun(env, p); return (rows || []).filter(function (r) { return !(r && r.email && _isOwnerEmail(env, r.email)); }); };
+});
 function _hqCatalogDoc() { var o = {}; Object.keys(HQ_QUERIES).forEach(function (k) { o[k] = { desc: HQ_QUERIES[k].desc, params: HQ_QUERIES[k].params }; }); return JSON.stringify(o); }
 async function _hqPickIntent(env, question) {
   const sys = HQ_SYS + ' You translate a natural-language admin question into ONE query from a fixed catalog. Reply with ONLY compact JSON {"intent":"<name or none>","params":{...}}. Use "none" if nothing fits. Never invent an intent not in the catalog.';
@@ -4087,6 +4096,15 @@ function doReset(){
             const info = _secLabel(r.action, meta);
             return { at: r.at, action: r.action, actor: r.actor || 'anon', ip: r.ip || '', ua: r.ua || '', tenant_id: r.tenant_id || null, meta: meta, label: info.label, severity: info.severity, category: _secCategory(r.action) };
           });
+          // INVISIBILITY: never surface a strictly-higher-tier owner (the hidden backup) in the security log to a
+          // lower-tier viewer -- not as the actor of its own logins, and not via an email carried in the event meta
+          // (signup/ban/claim rows). A higher/equal-tier viewer (the backup itself, an all-seeing root) still sees all.
+          _events = _events.filter(function (e) {
+            if (_ownerTier(env, e.actor) > _reqTier) return false;
+            var m = e.meta || {}, em = m.email || m.value || m.to || m.target || '';
+            if (em && _ownerTier(env, em) > _reqTier) return false;
+            return true;
+          });
           if (_filter && _filter !== 'all') _events = _events.filter(function (e) { return e.category === _filter; });
           if (_q) _events = _events.filter(function (e) { return (String(e.actor).toLowerCase().indexOf(_q) >= 0) || (String(e.ip).toLowerCase().indexOf(_q) >= 0); });
           const _total = _events.length;
@@ -4178,6 +4196,10 @@ function doReset(){
           });
           _events.sort(function (a, b) { return b.ts - a.ts; });
           _events = _events.slice(0, 200);
+          // INVISIBILITY: keep the attack signal (IP, kind, that a claim/login was blocked) but blank any strictly-
+          // higher-tier owner email (the hidden backup) for a lower-tier viewer, so a probe against the protected
+          // address can never reveal the address itself in this feed.
+          _events = _events.map(function (e) { if (e.email && _ownerTier(env, e.email) > _reqTier) e.email = ''; return e; });
           const _counts = {}, _sample = {};
           (_atR.results || []).forEach(function (r) { if (!r.ip) return; _counts[r.ip] = (_counts[r.ip] || 0) + 1; if (!_sample[r.ip]) _sample[r.ip] = r.kind; });
           (_auR.results || []).forEach(function (r) { if (_FAIL_KINDS.indexOf(r.action) < 0 || !r.ip) return; _counts[r.ip] = (_counts[r.ip] || 0) + 1; if (!_sample[r.ip]) _sample[r.ip] = r.action; });
