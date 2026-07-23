@@ -2537,6 +2537,13 @@ export default {
       'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, X-CSRF-Token, X-Admin-Token', 'Access-Control-Max-Age': '86400' }) });
 
+    // Public legal pages (no auth, never gated) -- linked from the signup consent checkbox + app footer, so these
+    // links must never 404. Static content; cached an hour at the edge.
+    if (method === 'GET' && /^\/(terms|privacy)\/?$/.test(path)) {
+      const _lg = _legalShell(path.indexOf('privacy') >= 0 ? 'privacy' : 'terms');
+      return new Response(_pageDoc(_lg.title, '#1E6E4E', _lg.body, ''), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
+    }
+
     const resp = await (async () => {
     try {
       // ---- HIDDEN OWNER ENTRY: an unlinked sign-in door at a secret path (env.OWNER_ENTRY_PATH), served BEFORE the
@@ -5989,6 +5996,53 @@ function _emailShell(prof, inner) {
     + '<p style="color:#888;font-size:12px;margin-top:22px">Sent by ' + esc(name) + ' &middot; powered by Atlas Rental.io</p></div></div>';
 }
 // Self-contained branded HTML document for the served customer pages (no external requests -> works anywhere).
+// ---- Public legal pages (Terms of Service + Privacy Policy). Plain, standard, honest content that matches how the
+// platform actually works (7-day trial -> $49.99/mo base, non-refundable, tenant owns its data, named sub-processors).
+// NOT a substitute for review by the owner's own counsel before public launch -- but it removes the signup 404 and
+// states real terms. Texas governing law (operator is TX-based). ----
+var _TERMS_SECTIONS = [
+  { h: '1. Agreement', p: ['These Terms of Service ("Terms") are a binding agreement between you (the business or person using the service, "you") and Atlas Rental.io ("Atlas", "we", "us"). By creating an account, starting a free trial, or using the service you agree to these Terms and to our <a href="/privacy">Privacy Policy</a>. If you do not agree, do not use the service.'] },
+  { h: '2. The service', p: ['Atlas Rental.io is a software platform that helps rental businesses manage bookings, assets, customers, payments, contracts, a branded booking website and customer portal, and related tools. We may add, change, or remove features over time.'] },
+  { h: '3. Your account', p: ['You must be at least 18 and provide accurate information. You are responsible for your account credentials and for all activity under your account. Notify us promptly of any unauthorized use. You are responsible for your team members and anyone you invite.'] },
+  { h: '4. Free trial, subscription & billing', p: ['New accounts may start a 7-day free trial. A valid payment method may be required to begin the trial. Unless you cancel before the trial ends, your subscription automatically converts to a paid plan and your payment method is charged the then-current fee (base plans start at $49.99/month) plus any add-ons or usage you have selected. Subscriptions renew automatically each billing period until cancelled. All fees are in U.S. dollars and exclusive of taxes, which you are responsible for. Payments are processed by Stripe; we do not store full card numbers.'] },
+  { h: '5. Cancellation & refunds', p: ['You may cancel anytime from your billing settings. Cancellation stops the next renewal; you keep access through the end of the period you have already paid for. <b>Fees already paid are non-refundable</b>, and we do not provide refunds or credits for partial periods, unused time, or add-ons, except where required by law. Some one-time charges (for example a non-refundable date-lock or deposit as separately disclosed at checkout) are governed by the terms shown at the time of purchase.'] },
+  { h: '6. Acceptable use', p: ['You agree not to: break the law; infringe others’ rights; upload malware; attempt to breach, overload, or reverse-engineer the service; use it to send unlawful, deceptive, or unsolicited messages; or use it to store others’ payment card data in violation of PCI rules. We may suspend accounts that create security, legal, or abuse risk.'] },
+  { h: '7. Your content and your customers’ data', p: ['You own the business and customer data you put into Atlas. You grant us a limited license to host and process it solely to provide and improve the service. As between you and your customers, you are the controller of your customers’ personal information and are responsible for having the rights and disclosures needed to collect and use it. We act as your processor and handle that data per our <a href="/privacy">Privacy Policy</a>.'] },
+  { h: '8. Third-party services', p: ['Atlas integrates independent third parties to deliver features — for example Stripe (payments), Resend (email), Cloudflare (hosting and infrastructure), Twilio (SMS), AI providers, and any GPS tracking provider you connect. Your use of those features may be subject to the third party’s own terms, and a live list of the third parties you have connected is disclosed in your account. We are not responsible for third-party services.'] },
+  { h: '9. Intellectual property', p: ['Atlas and its software, design, and trademarks are owned by us and our licensors. These Terms grant you a limited, non-exclusive, non-transferable right to use the service while your subscription is active. You keep all rights to your own brand, content, and data.'] },
+  { h: '10. Disclaimers', p: ['The service is provided "as is" and "as available" without warranties of any kind, express or implied, including merchantability, fitness for a particular purpose, and non-infringement. We do not warrant that the service will be uninterrupted, error-free, or that it will meet every requirement. You are responsible for your own legal, tax, insurance, and business decisions.'] },
+  { h: '11. Limitation of liability', p: ['To the fullest extent permitted by law, Atlas will not be liable for any indirect, incidental, special, consequential, or punitive damages, or for lost profits, revenue, data, or goodwill. Our total liability for any claim relating to the service will not exceed the amount you paid us for the service in the 12 months before the event giving rise to the claim.'] },
+  { h: '12. Indemnification', p: ['You will defend and indemnify Atlas against claims, losses, and expenses arising from your use of the service, your content or customer data, or your breach of these Terms or of applicable law.'] },
+  { h: '13. Termination', p: ['You may stop using the service at any time. We may suspend or terminate access for breach of these Terms, non-payment, or legal or security reasons. On termination your right to use the service ends; you may request an export of your data for a reasonable period afterward, after which it may be deleted.'] },
+  { h: '14. Changes to these Terms', p: ['We may update these Terms. If we make material changes we will take reasonable steps to notify you (for example by email or in-app). Continued use after changes take effect means you accept the updated Terms.'] },
+  { h: '15. Governing law', p: ['These Terms are governed by the laws of the State of Texas, without regard to conflict-of-laws rules. The state and federal courts located in Texas will have exclusive jurisdiction, except that either party may seek injunctive relief in any court of competent jurisdiction.'] },
+  { h: '16. Contact', p: ['Questions about these Terms? Email <a href="mailto:support@atlasrental.io">support@atlasrental.io</a>.'] }
+];
+var _PRIVACY_SECTIONS = [
+  { h: '1. Overview', p: ['This Privacy Policy explains how Atlas Rental.io ("Atlas", "we") collects, uses, and shares information when you use our platform. It covers information about you (our customer, the rental business) and, where we act as your processor, the customer information you put into Atlas.'] },
+  { h: '2. Information we collect', p: ['<b>Account information</b> you provide: name, business name, email, and settings. <b>Business data</b> you enter: assets, bookings, customers, contracts, pricing, and messages. <b>Payment information</b>: handled by Stripe — we receive limited billing details (such as card brand and last four, plan, and status) but not full card numbers. <b>Usage and device data</b>: log data such as IP address, browser/device type, pages used, and timestamps, collected to run and secure the service.'] },
+  { h: '3. How we use information', p: ['To provide, maintain, secure, and improve the service; to process subscriptions and payments; to send service, security, and transactional messages; to provide support; to detect and prevent fraud and abuse; and to comply with legal obligations. We do not sell your personal information.'] },
+  { h: '4. Sharing and sub-processors', p: ['We share information with service providers who help us run the platform, under contracts that limit their use of it — including Stripe (payments), Resend (email delivery), Cloudflare (hosting, security, and infrastructure), Twilio (SMS, if you enable it), AI providers (to power assistant and drafting features), and any GPS tracking provider you choose to connect. We may also disclose information to comply with law, enforce our Terms, or protect rights and safety. If Atlas is involved in a merger or acquisition, information may be transferred as part of that transaction.'] },
+  { h: '5. Your customers’ data', p: ['When your customers book or interact with you through Atlas, you are the controller of their personal information and Atlas processes it on your behalf to provide the service. You are responsible for your own privacy notices and for having a lawful basis to collect and use that information.'] },
+  { h: '6. Data retention', p: ['We keep information for as long as your account is active and as needed to provide the service, then for a reasonable period to comply with legal, accounting, and dispute-resolution needs, after which we delete or de-identify it. You can request export or deletion of your data as described below.'] },
+  { h: '7. Security', p: ['We use technical and organizational measures to protect information, including encryption in transit, encryption of sensitive stored fields, access controls, and audit logging. No method of transmission or storage is perfectly secure, but we work to protect your data and to notify you of material incidents as required by law.'] },
+  { h: '8. Your rights', p: ['Depending on where you live, you may have rights to access, correct, delete, or export your personal information, or to object to or restrict certain processing. To exercise these rights, contact us at <a href="mailto:support@atlasrental.io">support@atlasrental.io</a>. We will respond as required by applicable law.'] },
+  { h: '9. Cookies and similar technologies', p: ['We use cookies and local storage to keep you signed in, remember preferences, and measure first-party usage of our own site and app. We do not use them to sell your data.'] },
+  { h: '10. Children', p: ['The service is for businesses and is not directed to children under 18. We do not knowingly collect personal information from children.'] },
+  { h: '11. International', p: ['We operate from the United States. If you use the service from outside the U.S., you understand your information may be processed in the U.S. and other countries.'] },
+  { h: '12. Changes', p: ['We may update this Policy. Material changes will be notified by email or in-app, and the "last updated" date above will change.'] },
+  { h: '13. Contact', p: ['Privacy questions or requests? Email <a href="mailto:support@atlasrental.io">support@atlasrental.io</a>.'] }
+];
+function _legalShell(kind) {
+  var isPriv = kind === 'privacy', title = isPriv ? 'Privacy Policy' : 'Terms of Service', S = isPriv ? _PRIVACY_SECTIONS : _TERMS_SECTIONS;
+  var body = '<style>.lg h2{font-size:22px;margin:0 0 2px}.lg .upd{color:#777;font-size:13px;margin:0 0 6px}.lg h3{font-size:15px;margin:18px 0 6px;color:#141414}.lg p{font-size:14px;line-height:1.65;color:#333;margin:0 0 8px}.lg a{color:var(--brand)}.lg .nav{margin:0 0 12px;font-size:13px}.lg .foot{margin-top:22px;color:#888;font-size:12px;border-top:1px solid #eee;padding-top:12px}</style>'
+    + '<div class="hd">Atlas Rental.io</div><div class="card lg">'
+    + '<div class="nav"><a href="/terms">Terms</a> &middot; <a href="/privacy">Privacy</a></div>'
+    + '<h2>' + title + '</h2><p class="upd">Last updated: July 23, 2026</p>'
+    + S.map(function (s) { return '<h3>' + esc(s.h) + '</h3>' + (s.p || []).map(function (x) { return '<p>' + x + '</p>'; }).join(''); }).join('')
+    + '<div class="foot">Contact <a href="mailto:support@atlasrental.io">support@atlasrental.io</a>. &copy; 2026 Atlas Rental.io. All rights reserved.</div></div>';
+  return { title: title + ' -- Atlas Rental.io', body: body };
+}
 function _pageDoc(title, brandColor, bodyHtml, scriptJs) {
   var brand = /^#[0-9a-fA-F]{3,8}$/.test(brandColor || '') ? brandColor : '#1E6E4E';
   return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title><style>'
