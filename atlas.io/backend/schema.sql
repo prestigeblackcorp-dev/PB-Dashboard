@@ -65,6 +65,25 @@ CREATE TABLE IF NOT EXISTS comp_grants (
   granted_at    INTEGER NOT NULL
 );
 
+-- ---- Admin staff directory (#264 -- global, owner-minted) ---------------------
+-- Per-staff admin-console logins (support|analyst), hashed at rest -- mirrors api_keys below. role is NEVER 'owner';
+-- owner authority is the env ADMIN_TOKEN only (see worker.js _adminIdentity) and is never storable in this table.
+-- Also self-healed in-worker via ensurePlatformSchema, so a paste-only worker deploy still creates this table.
+CREATE TABLE IF NOT EXISTS admin_staff (
+  id            TEXT PRIMARY KEY,
+  email         TEXT UNIQUE,
+  name          TEXT,
+  role          TEXT NOT NULL,               -- support|analyst ONLY -- enforced at mint AND at auth time
+  token_hash    TEXT,                        -- SHA-256 of the 'atlst_'-prefixed secret; the secret itself is shown ONCE
+  token_prefix  TEXT,
+  active        INTEGER DEFAULT 1,
+  created_by    TEXT,
+  created_at    INTEGER,
+  last_seen_at  INTEGER,
+  revoked_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_admin_staff_hash ON admin_staff(token_hash);
+
 -- ---- Assets (vehicles / units / booths / equipment) --------------------------
 CREATE TABLE IF NOT EXISTS assets (
   id            TEXT PRIMARY KEY,
