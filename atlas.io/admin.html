@@ -292,6 +292,11 @@
   <div id="buildBanner"></div>
   <section class="hqsec" data-sec="overview">
   <div class="kpis" id="kpis"></div>
+  <!-- OWNER ALERTS: never-miss feed (tickets, bugs, feature requests, security, traffic/user/money/usage spikes) -->
+  <div class="card" id="alertsCard" style="display:none">
+    <div class="card-h"><h2>Alerts</h2><span class="sub" id="alertsSub"></span><div class="sp"></div><button class="chip" onclick="markAlertRead('all')">Mark all read</button><button class="chip" onclick="loadAlerts(true)">Refresh</button></div>
+    <div class="card-b pad" id="alertsBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
 
   <!-- ATLAS COUNSEL: what deserves your attention today (institutional-memory feed, ranked by dollar impact) -->
   <style>
@@ -656,9 +661,10 @@ function enter(overview){ $('gate').style.display='none'; $('app').style.display
   loadCounsel();
   loadSecurity();
   loadDefense();
+  loadAlerts();
   loadErrors();
   if(_timer) clearInterval(_timer);
-  _timer=setInterval(function(){ loadAll(true); loadHealth(); loadCounsel(); loadSecurity(); loadDefense(); loadErrors(); }, REFRESH_MS);
+  _timer=setInterval(function(){ loadAll(true); loadHealth(); loadCounsel(); loadSecurity(); loadDefense(); loadAlerts(); loadErrors(); }, REFRESH_MS);
   setInterval(tickLive, 1000);
 }
 
@@ -700,7 +706,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
   }).catch(function(){ setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700); });
 }
 function refreshNow(){ loadAll(); toast('Refreshed'); }
-function setRange(v){ _range=v; loadAll(); loadSecurity(); loadDefense(); }
+function setRange(v){ _range=v; loadAll(); loadSecurity(); loadDefense(); loadAlerts(); }
 function setInboxSeg(btn){ Array.prototype.forEach.call($('inboxSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _inboxSeg=btn.getAttribute('data-s'); loadAll(true); }
 function tickLive(){ $('liveTxt').textContent = _lastFetch ? ('updated '+ago(_lastFetch)) : 'live'; }
 
@@ -1007,7 +1013,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.19ai';
+var ATLAS_EXPECT_BUILD='2026.07.19aj';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1078,6 +1084,23 @@ function renderSecurity(){ var el=$('secBody'); if(!el) return; var d=DATA.secur
 }
 function setSecFilter(btn){ Array.prototype.forEach.call($('secSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _secFilter=btn.getAttribute('data-f'); loadSecurity(true); }
 function secFilter(){ _secQ=($('secSearch').value||'').trim(); loadSecurity(true); }
+function loadAlerts(manual){ if(!$('alertsBody')) return;
+  if(manual) $('alertsBody').innerHTML='<div class="mut">Checking&hellip;</div>';
+  return api('/api/admin/alerts?range='+encodeURIComponent(_range)).then(function(r){
+    var j=(r&&r.json)||{};
+    if(j.ok!==true){ if($('alertsCard'))$('alertsCard').style.display='none'; return; }
+    if($('alertsCard'))$('alertsCard').style.display=''; DATA.alerts=j; renderAlerts();
+  }).catch(function(){});
+}
+function renderAlerts(){ var d=DATA.alerts||{}, list=d.alerts||[], el=$('alertsBody'); if(!el) return;
+  if($('alertsSub')) $('alertsSub').textContent=(d.unread||0)+' unread';
+  var CL={ticket:'Support ticket',bug:'Bug report',feature:'Feature request',security:'Security',spike_traffic:'Traffic spike',spike_users:'Signup spike',spike_money:'Revenue spike',spike_usage:'AI-usage spike'};
+  if(!list.length){ el.innerHTML='<div class="sx-empty">No alerts in this range. All quiet.</div>'; return; }
+  el.innerHTML=list.map(function(a){ var col=a.severity==='alert'?'#e0736f':(a.severity==='warn'?'#e0a94a':'#6ea8ff');
+    return '<div class="sx-item"'+(a.read?' style="opacity:.55"':'')+'><div style="width:8px;height:8px;border-radius:50%;flex:none;margin-top:6px;background:'+col+'"></div><div class="sx-main"><div class="sx-t">'+esc(a.title||CL[a.category]||'Alert')+' <span class="pill gray" style="font-size:10px">'+esc(CL[a.category]||a.category||'')+'</span></div><div class="sx-b">'+esc(a.body||'')+'</div></div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"><span class="mut" style="font-size:11px;white-space:nowrap">'+ago(a.ts)+'</span>'+(a.read?'':'<button class="chip" style="font-size:11px;padding:2px 7px" onclick="markAlertRead('+_oa(a.id)+')">Dismiss</button>')+'</div></div>';
+  }).join('');
+}
+function markAlertRead(id){ var body=(id==='all')?{all:true}:{id:id}; api('/api/admin/alerts/read',{method:'POST',body:body}).then(function(r){ if(r&&r.json&&r.json.ok) loadAlerts(true); }); }
 function loadDefense(manual){ if(!$('banBody')) return;
   if(manual) $('banBody').innerHTML='<div class="mut">Checking&hellip;</div>';
   return Promise.all([api('/api/admin/bans'), api('/api/admin/attacks?range='+encodeURIComponent(_range))]).then(function(r){

@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19ai';
+const ATLAS_BUILD = '2026.07.19aj';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1853,6 +1853,11 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS email_bans (email TEXT PRIMARY KEY, reason TEXT, banned_at INTEGER, banned_by TEXT, hits INTEGER DEFAULT 0)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS attack_log (id TEXT PRIMARY KEY, ts INTEGER, ip TEXT, email TEXT, kind TEXT, path TEXT, method TEXT, detail TEXT, blocked INTEGER DEFAULT 0, outcome TEXT, ua TEXT)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_attack_ts ON attack_log(ts)").run(); } catch (e) {}
+  // ---- OWNER ALERTING: durable in-dashboard feed (see _alert/_alertWrite below) -- own independent try/catch per
+  // statement, same self-heal convention as every table above: a failure here never blocks _pReady or any other
+  // table, and GET /api/admin/alerts degrades to an empty feed rather than a 500 if this table is somehow missing.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_alerts (id TEXT PRIMARY KEY, ts INTEGER, category TEXT, severity TEXT, title TEXT, body TEXT, meta TEXT, read INTEGER DEFAULT 0)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON platform_alerts(ts)").run(); } catch (e) {}
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -2094,6 +2099,51 @@ async function _due(env, key, minMs) { try { var last = parseInt(await _pcfgGet(
 // ---- E-tier (enterprise) helpers ----
 function _r2(env) { return env.R2 || env.FILES || env.BUCKET || null; }   // owner binds an R2 bucket named R2/FILES/BUCKET; absent -> file endpoints degrade honestly and the app keeps its inline storage
 async function _gmvFeeCents(env, amountCents) { const bps = parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0; return Math.max(0, Math.round((Number(amountCents) || 0) * bps / 10000)); }   // basis points -> cents (E2 GMV take-rate, dormant until enabled)
+
+// ==================================================================================================================
+// ---- OWNER ALERTING ENGINE: additive + best-effort + fail-safe -- NOTHING in here may ever delay or alter the ----
+// ---- request/cron it is called from. ------------------------------------------------------------------------------
+// Two-piece shape (mirrors _logAttackWrite/_logAttack + _meterAI/_meterAIDeferred above): an async do-the-work
+// function (_alertWrite) + a sync fire-and-forget dispatcher (_alert) that defers via ectx.waitUntil when threaded
+// through, else a swallowed promise. category in {ticket,bug,feature,security,spike_traffic,spike_users,
+// spike_money,spike_usage}; severity in {info|warn|alert}. The in-dashboard row (platform_alerts) is ALWAYS written
+// on a best-effort basis; the owner EMAIL on top of it is additionally gated on (a) that category being enabled
+// (platform_config.alert_cats_json, default ON) and (b) a per-category rate limit (max 1 email/10min) so a burst
+// can never flood the owner's inbox -- the dashboard feed still gets every row even when the email is suppressed.
+// Pass o.skipEmail=true at a call site that ALREADY sends its own dedicated owner email for this same event (e.g.
+// support-ticket creation) so the owner is never emailed twice for one event.
+const ALERT_CATS_DEFAULT = { ticket: true, bug: true, feature: true, security: true, spike_traffic: true, spike_users: true, spike_money: true, spike_usage: true };
+// Merges the stored per-category toggle JSON over the all-ON default so a never-configured or partially-configured
+// platform_config row still yields a complete {cat:bool} map -- fail-soft: any error returns the plain default.
+async function _alertCatsGet(env) { try { return Object.assign({}, ALERT_CATS_DEFAULT, _hqJson(await _pcfgGet(env, 'alert_cats_json', '{}'), {}) || {}); } catch (e) { return Object.assign({}, ALERT_CATS_DEFAULT); } }
+async function _alertWrite(env, o) {
+  try {
+    if (!env || !env.DB) return;
+    await ensurePlatformSchema(env);
+    o = o || {};
+    const id = 'al' + randId(12);
+    const meta = JSON.stringify(o.meta || {});
+    try {
+      await env.DB.prepare('INSERT INTO platform_alerts (id,ts,category,severity,title,body,meta,read) VALUES (?,?,?,?,?,?,?,0)')
+        .bind(id, Date.now(), String(o.category || '').slice(0, 40), String(o.severity || 'info').slice(0, 10), String(o.title || '').slice(0, 200), String(o.body || '').slice(0, 2000), meta).run();
+    } catch (e) { /* the in-dash row is itself best-effort -- a write failure here never blocks (or is blocked by) the email below */ }
+    if (o.skipEmail) return;   // this event already has its own dedicated owner email elsewhere -- never double-send
+    try {
+      if (!env.OWNER_EMAIL) return;
+      const cats = await _alertCatsGet(env);
+      if (cats[o.category] === false) return;   // explicit opt-out only -- an unrecognized/unset category defaults ON
+      if (!(await rateLimit(env, 'alertmail:' + o.category, 1, 600000))) return;   // max 1 owner email / category / 10 min -- a burst still lands in the feed above, just not the inbox
+      await sendEmail(env, { to: env.OWNER_EMAIL, fromName: 'Atlas Rental.io Alerts', transactional: true, subject: '[Atlas] ' + String(o.title || 'Platform alert'), html: '<h2 style="margin:0 0 10px">' + esc(o.title || 'Platform alert') + '</h2><p>' + esc(o.body || '').replace(/\n/g, '<br>') + '</p><p style="color:#889;font-size:12px">Category: ' + esc(o.category || '') + ' &middot; severity: ' + esc(o.severity || 'info') + '. Full history in the Atlas HQ master dashboard Alerts feed.</p>' });
+    } catch (e) { /* owner email is best-effort -- the alert row above already landed regardless */ }
+  } catch (e) { /* alerting must never break the caller */ }
+}
+// Fire-and-forget wrapper: same dispatch idiom as _meterAIDeferred/_logAttack/_fireWebhook (ectx.waitUntil when
+// threaded through, else a non-awaited .catch) so this NEVER delays the response/cron and NEVER throws back into it.
+function _alert(env, ectx, o) {
+  try { const p = _alertWrite(env, o); if (ectx && ectx.waitUntil) ectx.waitUntil(p); else if (p && p.catch) p.catch(function () {}); } catch (e) {}
+}
+// ==================================================================================================================
+
 // #264 admin role gate: an ALLOW-LIST -- any /api/admin/* path NOT named here is owner-only by default (fail-safe;
 // a newly-added admin route is automatically locked down until someone deliberately opens it up). OWNER_ONLY covers
 // every destructive/config/integration action a non-owner could otherwise reach; SUPPORT_WRITE is support's one
@@ -2102,7 +2152,7 @@ async function _gmvFeeCents(env, amountCents) { const bps = parseInt(await _pcfg
 // platform_errors ip column), so neither is reachable by a support/analyst staff token, only the owner.
 // ABUSE-DEFENSE: bans/ban/unban/attacks added to OWNER_ONLY for the same reason -- ban rows + the attack feed carry
 // OTHER callers' emails/IPs, so none of the four routes are reachable by a support/analyst staff token either.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|security-log|errors|pnl)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|pnl)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -3397,7 +3447,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000, your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -3440,7 +3490,21 @@ function doReset(){
           // Owner-tunable AI-credit cost basis (micro-USD per 1 free credit) -- drives the Plan-margins projection ONLY
           // (what one free weekly credit is ASSUMED to cost us). Clamped $0..$1/credit. Never charges any tenant.
           if (typeof b.credit_cost_micros !== 'undefined') { const _ccm = Math.max(0, Math.min(1000000, parseInt(b.credit_cost_micros, 10) || 0)); await _pcfgSet(env, 'credit_cost_micros', String(_ccm)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { credit_cost_micros: _ccm }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], credit_cost_micros: parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000 };
+          // ---- OWNER ALERTING config: per-category owner-email toggles + spike-detection multiplier/floors. All
+          // additive, validated/clamped (mirrors the fixed_costs sanitization just above) -- a bad/missing body field
+          // simply leaves that setting untouched rather than ever writing an absurd or unbounded value.
+          if (typeof b.alert_cats !== 'undefined' && b.alert_cats && typeof b.alert_cats === 'object') {
+            const _curCats = await _alertCatsGet(env);
+            Object.keys(ALERT_CATS_DEFAULT).forEach(function (k) { if (typeof b.alert_cats[k] === 'boolean') _curCats[k] = b.alert_cats[k]; });
+            await _pcfgSet(env, 'alert_cats_json', JSON.stringify(_curCats));
+            await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { alert_cats: _curCats });
+          }
+          if (typeof b.spike_mult !== 'undefined') { const _spm = Math.max(1, Math.min(50, Number(b.spike_mult) || 3)); await _pcfgSet(env, 'spike_mult', String(_spm)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_mult: _spm }); }
+          if (typeof b.spike_floor_traffic !== 'undefined') { const _sft = Math.max(0, Math.min(1000000, Math.round(Number(b.spike_floor_traffic) || 0))); await _pcfgSet(env, 'spike_floor_traffic', String(_sft)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_traffic: _sft }); }
+          if (typeof b.spike_floor_users !== 'undefined') { const _sfu = Math.max(0, Math.min(100000, Math.round(Number(b.spike_floor_users) || 0))); await _pcfgSet(env, 'spike_floor_users', String(_sfu)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_users: _sfu }); }
+          if (typeof b.spike_floor_money !== 'undefined') { const _sfm = Math.max(0, Math.min(100000000, Math.round(Number(b.spike_floor_money) || 0))); await _pcfgSet(env, 'spike_floor_money', String(_sfm)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_money: _sfm }); }
+          if (typeof b.spike_floor_usage !== 'undefined') { const _sfa = Math.max(0, Math.min(100000000, Math.round(Number(b.spike_floor_usage) || 0))); await _pcfgSet(env, 'spike_floor_usage', String(_sfa)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_usage: _sfa }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], credit_cost_micros: parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000, alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000 };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are
@@ -3982,6 +4046,33 @@ function doReset(){
           const _recs = Object.keys(_counts).filter(function (ip) { return _counts[ip] >= 5 && !_bannedSet[ip]; }).map(function (ip) { return { ip: ip, count: _counts[ip], sample_kind: _sample[ip] }; });
           _recs.sort(function (a, b) { return b.count - a.count; });
           return json({ ok: true, range: { key: _range.key, label: _range.label }, attacks: _events, recommendations: _recs.slice(0, 50) });
+        }
+
+        // ---- OWNER ALERTING: in-dashboard feed (owner-only via OWNER_ONLY above -- same gating tier as
+        // security-log/attacks/errors). unread is a GLOBAL count (not range-scoped) so a badge reflects everything
+        // outstanding regardless of whatever date range the dashboard happens to be viewing; the `alerts` list
+        // itself IS range-scoped (ts within the window), newest first, capped at 200 rows.
+        if (path === '/api/admin/alerts' && method === 'GET') {
+          await ensurePlatformSchema(env);
+          const _u = new URL(req.url);
+          const _range = _adminRange(_u.searchParams.get('range'));
+          const _rows = await env.DB.prepare('SELECT id,ts,category,severity,title,body,read FROM platform_alerts WHERE ts>=? AND ts<? ORDER BY ts DESC LIMIT 200').bind(_range.start, _range.end).all();
+          const _unreadR = await env.DB.prepare('SELECT COUNT(*) c FROM platform_alerts WHERE read=0').first();
+          return json({ ok: true, unread: (_unreadR && _unreadR.c) || 0, alerts: (_rows.results || []).map(function (r) { return { id: r.id, ts: r.ts, category: r.category, severity: r.severity, title: r.title, body: r.body, read: !!r.read }; }) });
+        }
+        if (path === '/api/admin/alerts/read' && method === 'POST') {
+          await ensurePlatformSchema(env);
+          const b = await req.json().catch(() => ({}));
+          if (b && b.all === true) {
+            await env.DB.prepare('UPDATE platform_alerts SET read=1').run();
+            await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.alerts.read', { all: true });
+          } else if (b && b.id) {
+            await env.DB.prepare('UPDATE platform_alerts SET read=1 WHERE id=?').bind(String(b.id)).run();
+            await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.alerts.read', { id: String(b.id) });
+          } else {
+            return err(400, 'id or all is required.');
+          }
+          return json({ ok: true });
         }
 
         return err(404, 'Unknown admin route.');
@@ -4671,6 +4762,7 @@ function doReset(){
         const hasUpd = (coll === 'assets' || coll === 'bookings');
         if (method === 'POST') {
           const body = await req.json().catch(() => ({}));
+          if (coll === 'charges' && vStr(body.booking_id, 40)) { const _bok = await env.DB.prepare('SELECT id FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking_id, ctx.tenant_id).first(); if (!_bok) delete body.booking_id; }   // defense-in-depth: never let a charge reference another tenant's booking id
           const { cols, vals } = patchFields(coll, body);       // whitelisted domain fields
           for (const c of (REQUIRED[coll] || [])) if (cols.indexOf(c) < 0) return err(400, 'Missing required field: ' + c);
           const now = Date.now();
@@ -4704,6 +4796,7 @@ function doReset(){
           const owns = await env.DB.prepare(`SELECT id FROM ${coll} WHERE id=? AND tenant_id=?`).bind(id, ctx.tenant_id).first();
           if (!owns) return err(404, 'Not found.');           // cross-tenant writes are denied here
           const body = await req.json().catch(() => ({}));
+          if (coll === 'charges' && vStr(body.booking_id, 40)) { const _bok = await env.DB.prepare('SELECT id FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking_id, ctx.tenant_id).first(); if (!_bok) delete body.booking_id; }   // defense-in-depth: never let a charge reference another tenant's booking id
           const { cols, vals } = patchFields(coll, body);
           if (!cols.length) return json({ ok: true });          // nothing to change
           const setCols = cols.slice(), setVals = vals.slice();
@@ -5010,6 +5103,9 @@ function doReset(){
         await env.DB.prepare("INSERT INTO platform_feedback (id,tenant_id,email,type,message,page,status,created_at) VALUES (?,?,?,?,?,?,'new',?)")
           .bind(id, ctx.tenant_id, ctx.user.email, type, msg, String(b.page || '').slice(0, 80), Date.now()).run();
         await audit(env, ctx, req, 'feedback.sent', { type: type });
+        // OWNER ALERTING: no dedicated owner email exists for feedback today -- _alert's own category-gated,
+        // rate-limited email IS the notification (never more than 1/10min per category either way).
+        _alert(env, _ectx, { category: (type === 'idea' ? 'feature' : 'bug'), severity: 'info', title: (type === 'idea' ? 'New feature request' : 'New bug report'), body: msg, meta: { id: id, tenant_id: ctx.tenant_id, type: type, page: String(b.page || '').slice(0, 80) } });
         return json({ ok: true });
       }
 
@@ -5029,6 +5125,8 @@ function doReset(){
         await env.DB.prepare("INSERT INTO support_tickets (id,tenant_id,email,subject,category,priority,status,created_at,updated_at,unread_owner,unread_tenant,messages) VALUES (?,?,?,?,?,?,?,?,?,1,0,?)")
           .bind(id, ctx.tenant_id, ctx.user.email, subject, cat, (b.priority === 'high' ? 'high' : 'normal'), 'open', now, now, JSON.stringify(thread)).run();
         try { if (env.OWNER_EMAIL) await sendEmail(env, { to: env.OWNER_EMAIL, fromName: 'Atlas Rental.io Support', subject: 'New support ticket: ' + subject, html: '<h2>New support ticket</h2><p><b>From:</b> ' + esc(ctx.user.email) + ' (' + esc(who) + ')<br><b>Category:</b> ' + esc(cat) + '</p><p><b>' + esc(subject) + '</b></p><p>' + esc(msg).replace(/\n/g, '<br>') + '</p><p style="color:#889">Reply from the Atlas HQ master dashboard.</p>' }); } catch (e) {}
+        // OWNER ALERTING: the owner is already emailed two lines up -- skipEmail so this only adds the in-dash row (never a second email).
+        _alert(env, _ectx, { category: 'ticket', severity: 'warn', title: 'New support ticket', body: subject + ' (' + cat + ') from ' + who, meta: { id: id, tenant_id: ctx.tenant_id, category: cat, priority: (b.priority === 'high' ? 'high' : 'normal') }, skipEmail: true });
         await audit(env, ctx, req, 'support.ticket_created', { id: id });
         return json({ ok: true, id: id });
       }
@@ -5299,6 +5397,87 @@ function doReset(){
     try { await _counselCompute(env, {}); } catch (e) { /* Counsel journal is best-effort */ }
     try { if (await _due(env, 'counsel_weekly', 7 * 86400000)) await _counselRollup(env, 'weekly'); } catch (e) { /* weekly rollup best-effort */ }
     try { if (await _due(env, 'counsel_monthly', 30 * 86400000)) await _counselRollup(env, 'monthly'); } catch (e) { /* monthly rollup best-effort */ }
+
+    // ---- OWNER ALERTING: security-event roll-up. The hot-path ban-check itself is deliberately NOT hooked (stays
+    // cheap); instead this counts attack_log rows + audit_log security-failure actions created since the last check
+    // (a `last_sec_alert_ts` watermark in platform_config, so the window always covers exactly the gap since last
+    // time, regardless of the cron's actual cadence -- see wrangler.toml, currently every 2h) and fires at most one
+    // alert per pass once the count crosses a small threshold. Own try/catch -- a calc error here must never break
+    // the cron (everything above/below is unaffected either way).
+    try {
+      const _secNow = Date.now();
+      const _secSince = parseInt(await _pcfgGet(env, 'last_sec_alert_ts', '0'), 10) || (_secNow - 3600000);
+      const _SEC_FAIL_ACTIONS = ['login_fail', 'auth.rate_limited', 'admin.denied', 'owner.claim_blocked', 'mfa.verify_fail'];
+      const _secAtkR = await env.DB.prepare('SELECT COUNT(*) c FROM attack_log WHERE ts>=?').bind(_secSince).first();
+      const _secAudR = await env.DB.prepare('SELECT action FROM audit_log WHERE at>=? AND at<? ORDER BY at DESC LIMIT 2000').bind(_secSince, _secNow).all();
+      const _secAudRows = (_secAudR.results || []).filter(function (r) { return _SEC_FAIL_ACTIONS.indexOf(r.action) >= 0; });
+      const _secAtkCount = (_secAtkR && _secAtkR.c) || 0;
+      const _secCount = _secAtkCount + _secAudRows.length;
+      await _pcfgSet(env, 'last_sec_alert_ts', String(_secNow));   // advance the watermark regardless of outcome -- the NEXT check only ever covers the new gap
+      if (_secCount >= 5) {
+        const _secByAction = {}; _secAudRows.forEach(function (r) { _secByAction[r.action] = (_secByAction[r.action] || 0) + 1; });
+        const _secBreakdown = Object.keys(_secByAction).map(function (k) { return k + ': ' + _secByAction[k]; }).join(', ') || 'none';
+        const _secHours = Math.max(1, Math.round((_secNow - _secSince) / 3600000));
+        _alert(env, ctx, { category: 'security', severity: 'alert', title: _secCount + ' security events in the last ' + _secHours + 'h', body: 'Blocked attack-log hits: ' + _secAtkCount + '. Audit-log failures: ' + _secBreakdown + '.', meta: { count: _secCount, attack_log: _secAtkCount, by_action: _secByAction, since: _secSince, until: _secNow } });
+      }
+    } catch (e) { /* security roll-up is best-effort -- never breaks the cron */ }
+
+    // ---- OWNER ALERTING: hourly-gated spike detection (traffic/signups/revenue/AI-spend vs trailing 7-day avg) ----
+    // _due() caps the WHOLE block to ~once/hour even though this cron only ticks every 2h (wrangler.toml), so a
+    // shortened trigger interval could never spam recomputation. Each of the 4 metrics is independently try/caught
+    // so one bad query can never suppress the others, and each fires at most once per UTC calendar day (its own
+    // `spike_fired:<cat>:<day>` _due marker at ~20h -- the same "once/day even on a 2h cron" idiom already used
+    // above for nightly_brief/dreaming/competitor). A calc error anywhere in this block must never break the cron.
+    try {
+      if (await _due(env, 'spike_check', 3600000)) {
+        const _spNow = Date.now();
+        const _spD = new Date(_spNow);
+        const _spToday = _spD.toISOString().slice(0, 10);
+        const _spTodayStartUTC = Date.UTC(_spD.getUTCFullYear(), _spD.getUTCMonth(), _spD.getUTCDate());
+        const _sp7ago = new Date(_spTodayStartUTC - 7 * 86400000).toISOString().slice(0, 10);
+        const _spMult = parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3;
+        const _spFloorTraffic = parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50;
+        const _spFloorUsers = parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5;
+        const _spFloorMoney = parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000;
+        const _spFloorUsage = parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000;
+
+        try {   // traffic: page_views SUM today vs trailing-7d daily average
+          const _tv = await env.DB.prepare('SELECT COALESCE(SUM(views),0) c FROM page_views WHERE day=?').bind(_spToday).first();
+          const _tvAvgR = await env.DB.prepare('SELECT COALESCE(SUM(views),0) c FROM page_views WHERE day>=? AND day<?').bind(_sp7ago, _spToday).first();
+          const _tvToday = (_tv && _tv.c) || 0, _tvAvg = ((_tvAvgR && _tvAvgR.c) || 0) / 7;
+          if (_tvToday > _tvAvg && _tvToday >= Math.max(_spMult * _tvAvg, _spFloorTraffic) && (await _due(env, 'spike_fired:spike_traffic:' + _spToday, 72000000))) {
+            _alert(env, ctx, { category: 'spike_traffic', severity: 'info', title: 'Traffic spike', body: 'Today ' + _tvToday + ' page views vs 7-day avg ' + _tvAvg.toFixed(1) + ' (' + (_tvAvg > 0 ? (_tvToday / _tvAvg).toFixed(1) + 'x' : 'new') + ').', meta: { today: _tvToday, avg7d: _tvAvg } });
+          }
+        } catch (e) {}
+
+        try {   // signups: tenants created today (deleted_at IS NULL) vs trailing-7d daily average from platform_daily_snapshot.signups
+          const _su = await env.DB.prepare('SELECT COUNT(*) c FROM tenants WHERE deleted_at IS NULL AND created_at>=?').bind(_spTodayStartUTC).first();
+          const _suAvgR = await env.DB.prepare('SELECT COALESCE(SUM(signups),0) c FROM platform_daily_snapshot WHERE day>=? AND day<?').bind(_sp7ago, _spToday).first();
+          const _suToday = (_su && _su.c) || 0, _suAvg = ((_suAvgR && _suAvgR.c) || 0) / 7;
+          if (_suToday > _suAvg && _suToday >= Math.max(_spMult * _suAvg, _spFloorUsers) && (await _due(env, 'spike_fired:spike_users:' + _spToday, 72000000))) {
+            _alert(env, ctx, { category: 'spike_users', severity: 'info', title: 'Signup spike', body: 'Today ' + _suToday + ' new signups vs 7-day avg ' + _suAvg.toFixed(1) + ' (' + (_suAvg > 0 ? (_suToday / _suAvg).toFixed(1) + 'x' : 'new') + ').', meta: { today: _suToday, avg7d: _suAvg } });
+          }
+        } catch (e) {}
+
+        try {   // revenue: platform_transactions today vs trailing-7d daily average from platform_daily_snapshot.rev_day_cents
+          const _rv = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=?').bind(_spTodayStartUTC).first();
+          const _rvAvgR = await env.DB.prepare('SELECT COALESCE(SUM(rev_day_cents),0) c FROM platform_daily_snapshot WHERE day>=? AND day<?').bind(_sp7ago, _spToday).first();
+          const _rvToday = (_rv && _rv.c) || 0, _rvAvg = ((_rvAvgR && _rvAvgR.c) || 0) / 7;
+          if (_rvToday > _rvAvg && _rvToday >= Math.max(_spMult * _rvAvg, _spFloorMoney) && (await _due(env, 'spike_fired:spike_money:' + _spToday, 72000000))) {
+            _alert(env, ctx, { category: 'spike_money', severity: 'info', title: 'Revenue spike', body: 'Today $' + (_rvToday / 100).toFixed(2) + ' vs 7-day avg $' + (_rvAvg / 100).toFixed(2) + ' (' + (_rvAvg > 0 ? (_rvToday / _rvAvg).toFixed(1) + 'x' : 'new') + ').', meta: { today_cents: _rvToday, avg7d_cents: _rvAvg } });
+          }
+        } catch (e) {}
+
+        try {   // AI usage: platform_ai_spend today (cost_micros -> cents-equivalent via /10000, matching spike_floor_usage/money's unit) vs trailing-7d daily average
+          const _au = await env.DB.prepare('SELECT COALESCE(SUM(cost_micros),0) c FROM platform_ai_spend WHERE day=?').bind(_spToday).first();
+          const _auAvgR = await env.DB.prepare('SELECT COALESCE(SUM(cost_micros),0) c FROM platform_ai_spend WHERE day>=? AND day<?').bind(_sp7ago, _spToday).first();
+          const _auTodayC = ((_au && _au.c) || 0) / 10000, _auAvgC = (((_auAvgR && _auAvgR.c) || 0) / 10000) / 7;
+          if (_auTodayC > _auAvgC && _auTodayC >= Math.max(_spMult * _auAvgC, _spFloorUsage) && (await _due(env, 'spike_fired:spike_usage:' + _spToday, 72000000))) {
+            _alert(env, ctx, { category: 'spike_usage', severity: 'info', title: 'AI-usage spike', body: 'Today $' + (_auTodayC / 100).toFixed(2) + ' AI spend vs 7-day avg $' + (_auAvgC / 100).toFixed(2) + ' (' + (_auAvgC > 0 ? (_auTodayC / _auAvgC).toFixed(1) + 'x' : 'new') + ').', meta: { today_cents: _auTodayC, avg7d_cents: _auAvgC } });
+          }
+        } catch (e) {}
+      }
+    } catch (e) { /* spike detection is best-effort -- a calc error must never break the cron */ }
   },
 };
 
