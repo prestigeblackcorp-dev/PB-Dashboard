@@ -1917,7 +1917,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         first: async () => null,
         all: async () => ({ results: [] }),
         run: async () => {
-          if (/INSERT INTO platform_ai_spend/.test(sql)) {
+          if (/INSERT INTO platform_ai_spend /.test(sql)) {   // trailing space: matches the real per-model INSERT ("platform_ai_spend (") but NOT the additive "platform_ai_spend_by_feature" write
             const [day, model, inTok, outTok, costMicros] = a;
             const key = day + '|' + model;
             const cur = spend.get(key) || { day, model, calls: 0, input_tokens: 0, output_tokens: 0, cost_micros: 0 };
