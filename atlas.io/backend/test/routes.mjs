@@ -713,6 +713,197 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(cr2.status === 200, 'comp endpoint: role=gold still accepted (got ' + cr2.status + ')');
 }
 
+// ---- #276 PAYMENT-DELINQUENCY ACCESS GATING: server-authoritative 402 gate, flag-gated OFF by default.
+// Flag OFF -> byte-identical (no request behaves differently). Flag ON -> locks past_due/canceled/expired-trial
+// tenants; NEVER locks the platform owner, a comped (gold/free) account, an active plan, or an active trial;
+// and /api/auth/* + /api/billing/* stay reachable even while locked (mirrors the compEnvFor pattern above). ----
+{
+  const NOW = Date.now();
+  // scn picks the tenant/user shape; gateOn picks platform_config.payment_gate_enabled for that one request.
+  function pgEnvFor(scn, gateOn) {
+    const SID = 'sid_pg_' + scn, CSRF = 'csrf_pg_' + scn, TEN = 't_pg_' + scn, UID = 'u_pg_' + scn;
+    const email = scn === 'owner' ? 'owner@x.com' : (scn + '@member.com');
+    const compRole = scn === 'goldcomp' ? 'gold' : null;
+    // 'past_due' | 'owner' | 'goldcomp' all sit on an otherwise-delinquent tenant ON PURPOSE -- proving the
+    // owner/comp overrides win even when the tenant row itself looks locked.
+    const tenantRow =
+      scn === 'active' ? { plan: 'active', trial_ends: null, tier: 'pro', stripe_sub: 'sub_x' } :
+      scn === 'trial_ok' ? { plan: 'trial', trial_ends: NOW + 7 * 24 * 3600 * 1000, tier: null, stripe_sub: null } :
+      scn === 'trial_expired' ? { plan: 'trial', trial_ends: NOW - 1000, tier: null, stripe_sub: null } :
+      scn === 'canceled' ? { plan: 'canceled', trial_ends: null, tier: 'pro', stripe_sub: null } :
+      { plan: 'past_due', trial_ends: null, tier: 'pro', stripe_sub: 'sub_x' };
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: email, tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants WHERE email/.test(sql)) return compRole ? { role: compRole } : null;
+          if (/FROM tenants WHERE id/.test(sql)) return tenantRow;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'payment_gate_enabled' && gateOn) ? { v: '1' } : null;
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { SID, CSRF, env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' } };
+  }
+  const pgReq = (method, path, cfg, body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + cfg.SID, 'x-csrf-token': cfg.CSRF, origin: 'https://atlasrental.io' }; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+
+  // (a) flag OFF: a past_due tenant hitting a normal authenticated endpoint is completely unaffected (proves the feature is inert)
+  let cfg = pgEnvFor('past_due', false);
+  let r = await worker.fetch(pgReq('GET', '/api/data/bookings', cfg), cfg.env, ctx);
+  ok(r.status === 200, '#276 flag OFF: past_due tenant GET /api/data/bookings -> 200, byte-identical to today (got ' + r.status + ')');
+
+  // (b) flag ON: each locked reason -> 402 payment_required with the matching billing_state
+  for (const [scn, expectBs] of [['past_due', 'past_due'], ['trial_expired', 'trial_expired'], ['canceled', 'canceled']]) {
+    cfg = pgEnvFor(scn, true);
+    r = await worker.fetch(pgReq('GET', '/api/data/bookings', cfg), cfg.env, ctx);
+    let j = await r.json();
+    ok(r.status === 402 && j.error === 'payment_required' && j.billing_state === expectBs, '#276 flag ON: ' + scn + ' -> 402 payment_required billing_state=' + expectBs + ' (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  }
+
+  // (c) flag ON, never-lock invariants: active plan, an ACTIVE trial, a comped gold user, and the platform owner
+  //     all still read 200 -- even the goldcomp/owner cases sit on a tenant row that otherwise looks past_due.
+  for (const scn of ['active', 'trial_ok', 'goldcomp', 'owner']) {
+    cfg = pgEnvFor(scn, true);
+    r = await worker.fetch(pgReq('GET', '/api/data/bookings', cfg), cfg.env, ctx);
+    ok(r.status === 200, '#276 flag ON: never-lock case "' + scn + '" -> 200 (got ' + r.status + ')');
+  }
+
+  // (d) flag ON + locked tenant: /api/billing/portal is never 402'd by the gate. No Stripe key is configured in
+  //     this env, so a request that gets PAST the gate lands on the route's own "not configured" 400 -- proving
+  //     it reached the route at all (a 402 would only ever come from the gate, never from _platStripe).
+  cfg = pgEnvFor('past_due', true);
+  r = await worker.fetch(pgReq('POST', '/api/billing/portal', cfg, {}), cfg.env, ctx);
+  ok(r.status === 400 && r.status !== 402, '#276 flag ON + locked: /api/billing/portal never 402s (reaches its own "not configured" 400 instead) (got ' + r.status + ')');
+
+  // (e) flag ON + locked tenant: /api/auth/me (same /api/auth/ prefix as login) never 402s, and reports the real state
+  cfg = pgEnvFor('past_due', true);
+  r = await worker.fetch(pgReq('GET', '/api/auth/me', cfg), cfg.env, ctx);
+  let jme = await r.json();
+  ok(r.status === 200 && jme.billing_state === 'past_due', '#276 flag ON + locked: /api/auth/me never 402s and reports billing_state (got ' + r.status + ' ' + JSON.stringify(jme) + ')');
+}
+
+// ---- #276 (cont.): the REAL /api/auth/signup + /api/auth/login path -- through actual password hashing/
+// verification, not a session mock -- also never 402s a locked tenant, and its 200 responses carry the true
+// billing_state (what the client paywall keys off on auth). Mirrors the MFA block's stateful-mock pattern above. ----
+{
+  const users = new Map(), usersByEmail = new Map(), sessions = new Map(), tenants = new Map(), rateLimits = new Map(), platformConfig = new Map();
+  function loginDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM users WHERE email=\?/.test(sql)) { const id = usersByEmail.get(a[0]); return id ? users.get(id) : null; }
+          if (/id,email,tenant_id,role,caps FROM users/.test(sql)) return users.get(a[0]) || null;
+          if (/FROM users WHERE id=\?/.test(sql)) return users.get(a[0]) || null;
+          if (/FROM sessions WHERE id/.test(sql)) return sessions.get(a[0]) || null;
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM tenants WHERE id/.test(sql)) return tenants.get(a[0]) || null;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) { const v = platformConfig.get(a[0]); return v === undefined ? null : { v }; }
+          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO tenants \(id,name,fleet_type,plan,trial_ends,created_at,updated_at,tz\)/.test(sql)) { const [id, name, fleet, plan, trial_ends, created_at, updated_at, tz] = a; tenants.set(id, { id, name, fleet_type: fleet, plan, trial_ends, tier: null, stripe_sub: null, created_at, updated_at, tz }); }
+          else if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,created_at\)/.test(sql)) { const [id, email, pw_hash, pw_salt, tenant_id, role, created_at] = a; users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, caps: null }); usersByEmail.set(email, id); }
+          else if (/UPDATE users SET last_login/.test(sql)) { const u = users.get(a[1]); if (u) u.last_login = a[0]; }
+          else if (/UPDATE users SET email_verified/.test(sql)) { const u = users.get(a[1]); if (u) u.email_verified = a[0]; }
+          else if (/INSERT INTO sessions/.test(sql)) sessions.set(a[0], { id: a[0], user_id: a[1], tenant_id: a[2], csrf: a[3], created_at: a[4], idle_at: a[5], expires_at: a[6], revoked_at: null });
+          else if (/INSERT INTO platform_config/.test(sql)) platformConfig.set(a[0], a[1]);
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const loginEnv = { DB: loginDB(), SESSION_KEY: 'test-session-key-not-a-real-secret', ENC_KEY: Buffer.alloc(32, 7).toString('base64'), OWNER_EMAIL: 'owner@x.com' };
+  const loginReq = (method, path, body, cookie) => { const headers = { 'content-type': 'application/json', origin: 'https://atlasrental.io' }; if (cookie) headers['cookie'] = cookie; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  function newestSession() { let best = null; for (const s of sessions.values()) if (!best || s.created_at >= best.created_at) best = s; return best; }
+
+  let r = await worker.fetch(loginReq('POST', '/api/auth/signup', { email: 'delinquent@x.com', password: 'correcthorsebatterystaple', business: 'Delinquent Co' }), loginEnv, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.ok === true && j.billing_state === 'ok', '#276: signup response carries billing_state:"ok" (gate is off by default) (got ' + JSON.stringify(j) + ')');
+  const tid = j.tenant_id;
+
+  // simulate real life: this tenant's subscription is now past_due, AND the owner has since turned the gate on
+  tenants.get(tid).plan = 'past_due';
+  platformConfig.set('payment_gate_enabled', '1');
+
+  // login again with the SAME real credentials (through actual PBKDF2 password verification) -- must NOT 402
+  r = await worker.fetch(loginReq('POST', '/api/auth/login', { email: 'delinquent@x.com', password: 'correcthorsebatterystaple' }), loginEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !!j.csrf, '#276: login for a past_due tenant with the gate ON still succeeds -- never 402s (got ' + r.status + ' ' + JSON.stringify(j) + ')');
+  ok(j.billing_state === 'past_due', '#276: that same login response carries billing_state:"past_due" so the client shows the paywall right on auth (got ' + j.billing_state + ')');
+
+  // and confirm the resulting session really IS locked for an ordinary endpoint -- proving login's carve-out is
+  // deliberate (the allow-list), not evidence the gate silently failed to engage at all
+  const cookie = 'atlas_sid=' + newestSession().id;
+  r = await worker.fetch(loginReq('GET', '/api/data/bookings', null, cookie), loginEnv, ctx);
+  j = await r.json();
+  ok(r.status === 402 && j.error === 'payment_required', '#276: that same locked session -> 402 on an ordinary endpoint (the gate is genuinely active) (got ' + r.status + ')');
+}
+
+// ---- #276 admin toggle: GET/POST /api/admin/config surfaces payment_gate_enabled + a tenants_locked count ----
+{
+  const NOWc = Date.now();
+  const tenantsC = new Map([
+    ['t_c1', { plan: 'past_due', trial_ends: null }],
+    ['t_c2', { plan: 'trial', trial_ends: NOWc - 1000 }],     // expired trial -> counts as locked
+    ['t_c3', { plan: 'trial', trial_ends: NOWc + 1000000 }],  // active trial -> does NOT count
+    ['t_c4', { plan: 'active', trial_ends: null }],           // active -> does NOT count
+    ['t_c5', { plan: 'deleted', trial_ends: null }],          // deleted -> does NOT count (handled elsewhere)
+  ]);
+  let gateFlag = null;   // null == unset (reads as default '0'/off); '1'/'0' once toggled via POST
+  function cfgDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'payment_gate_enabled' && gateFlag != null) ? { v: gateFlag } : null;
+          if (/COUNT\(\*\) c FROM tenants/.test(sql)) {
+            const now = a[0]; let n = 0;
+            for (const t of tenantsC.values()) { if (t.plan === 'deleted' || t.plan === 'active') continue; if (t.plan === 'trial' && Number(t.trial_ends) >= now) continue; n++; }
+            return { c: n };
+          }
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => { if (/INSERT INTO platform_config/.test(sql) && a[0] === 'payment_gate_enabled') gateFlag = a[1]; return { success: true, meta: { changes: 1 } }; },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const cfgEnv = { DB: cfgDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const cfgReq = (method, headers, body) => new Request('https://atlasrental.io/api/admin/config', { method, headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}), body: body !== undefined ? JSON.stringify(body) : undefined });
+
+  let r = await worker.fetch(cfgReq('GET', H), cfgEnv, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.enterprise.payment_gate_enabled === false, '#276 admin config: payment_gate_enabled defaults to false (got ' + JSON.stringify(j.enterprise && j.enterprise.payment_gate_enabled) + ')');
+  ok(j.enterprise.tenants_locked === 2, '#276 admin config: tenants_locked counts past_due + expired-trial only (t_c1+t_c2) -- not active/active-trial/deleted (got ' + j.enterprise.tenants_locked + ', want 2)');
+
+  r = await worker.fetch(cfgReq('POST', H, { payment_gate_enabled: true }), cfgEnv, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.enterprise.payment_gate_enabled === true, '#276 admin config: POST payment_gate_enabled:true flips it on (got ' + JSON.stringify(j.enterprise && j.enterprise.payment_gate_enabled) + ')');
+
+  r = await worker.fetch(cfgReq('POST', { 'X-Admin-Token': 'WRONG' }, { payment_gate_enabled: false }), cfgEnv, ctx);
+  ok(r.status === 401 || r.status === 403, '#276 admin config: a bad admin token cannot flip the gate (got ' + r.status + ')');
+}
+
 // ---- #264 staff-auth regression (deferred from build v): owner env-token is the ONLY owner identity (checked
 // with NO DB access), a present-but-wrong credential fails CLOSED, a spoofed X-Admin-Actor header is completely
 // inert, staff can never mint themselves (or anyone) an 'owner' row or a row for the reserved OWNER_EMAIL, and an

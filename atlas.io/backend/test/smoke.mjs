@@ -46,7 +46,7 @@ function mockDB() {
 
 const env = { DB: mockDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-const EXPECT_BUILD = '2026.07.19w';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
+const EXPECT_BUILD = '2026.07.19x';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
 
 function mkReq(method, path, opts = {}) {
   return new Request('https://atlasrental.io' + path, {
@@ -110,6 +110,39 @@ ok(r.status === 403, 'GET /api/admin/errors rejects a bad token (got ' + r.statu
 r = await worker.fetch(mkReq('GET', '/api/admin/errors', { headers: H }), env, ctx);
 j = await r.json();
 ok(r.status === 200 && j.ok === true && typeof j.count_24h === 'number', 'GET /api/admin/errors with the owner token -> 200 + count_24h (got ' + JSON.stringify(j) + ')');
+
+// 7) #276 payment-delinquency access gate: OFF by default -> a past_due tenant is completely unaffected (inert).
+// Full on/off/never-lock/allow-list coverage lives in test/routes.mjs; this is the one-line CI tripwire that
+// the flag truly defaults OFF -- if this ever fails, EVERY tenant on the platform could be locked out on deploy.
+{
+  const SID = 'sid_smoke276', CSRF = 'csrf_smoke276', TEN = 't_smoke276', UID = 'u_smoke276';
+  function pgDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'tenant@smoke.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM tenants WHERE id/.test(sql)) return { plan: 'past_due', trial_ends: null, tier: 'pro', stripe_sub: 'sub_x' };   // deliberately delinquent
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return null;   // payment_gate_enabled unset -> defaults OFF
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 25 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const pgEnv = { DB: pgDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const pgReq = new Request('https://atlasrental.io/api/data/bookings', { method: 'GET', headers: { 'Content-Type': 'application/json', 'Cookie': 'atlas_sid=' + SID, 'X-CSRF-Token': CSRF, 'Origin': 'https://atlasrental.io' } });
+  const pr = await worker.fetch(pgReq, pgEnv, ctx);
+  ok(pr.status === 200, '#276: payment_gate_enabled unset (default OFF) -> a past_due tenant is unaffected, GET /api/data/bookings -> 200 (got ' + pr.status + ')');
+}
 
 if (fails) { console.error('\nSMOKE FAILED (' + fails + ' assertion' + (fails > 1 ? 's' : '') + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nSMOKE PASSED -- safe to deploy.');

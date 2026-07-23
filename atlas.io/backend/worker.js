@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19w';
+const ATLAS_BUILD = '2026.07.19x';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1246,7 +1246,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState };
 
 // ===================== #201 Domain registrar (Dynadot API v3) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -1735,6 +1735,52 @@ function _adminRange(rangeStr) {
 // Platform config get/set (feature flags etc.). Fail-soft: a DB hiccup returns the fallback rather than throwing.
 async function _pcfgGet(env, k, fb) { try { const r = await env.DB.prepare('SELECT v FROM platform_config WHERE k=?').bind(k).first(); return (r && r.v != null) ? r.v : fb; } catch (e) { return fb; } }
 async function _pcfgSet(env, k, v) { try { await env.DB.prepare('INSERT INTO platform_config (k,v,updated_at) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=?,updated_at=?').bind(k, String(v), Date.now(), String(v), Date.now()).run(); } catch (e) {} }
+// ---- #276 PAYMENT-DELINQUENCY ACCESS GATING (flag-gated OFF by default via platform_config.payment_gate_enabled) ----
+// Pure function, no I/O: given a tenant row + the caller's owner/comp status, decide the billing state. The
+// never-lock invariants are checked FIRST and unconditionally return 'ok' -- the platform owner, a comped
+// (gold/free) account, an active plan, and an active trial can NEVER be locked, no matter what. A missing
+// tenant row or an unrecognized/future plan string also fails OPEN ('ok') -- this must never invent a lockout
+// from absent or unexpected data. Mirrors resolveSession's own isOwner (email-only) + comp (gold/free) shape.
+function _billingState(tenant, isOwner, comp) {
+  if (isOwner) return 'ok';                                      // platform owner: NEVER locked, on ANY tenant
+  if (comp === 'gold' || comp === 'free') return 'ok';           // comped account: NEVER locked
+  if (!tenant) return 'ok';                                       // no tenant row to evaluate -> fail open, never lock on absent data
+  const plan = tenant.plan;
+  if (plan === 'active') return 'ok';
+  if (plan === 'deleted') return 'ok';                            // deletion is handled elsewhere (owner delete/restore flow) -- don't double-gate
+  if (plan === 'trial') return (Number(tenant.trial_ends) >= Date.now()) ? 'ok' : 'trial_expired';
+  if (plan === 'past_due') return 'past_due';
+  if (plan === 'canceled' || plan === 'unpaid') return 'canceled';
+  return 'ok';                                                     // unknown/legacy plan string -> fail open, never invent a lock
+}
+// Endpoints that stay reachable even while a tenant is LOCKED, so they can always log in, see why, and pay their
+// way back in: health, the whole /api/auth/* surface (login/logout/me/MFA/password-reset/email-verify), every
+// /api/billing/* route (portal/checkout/change-plan/cancel), the public verify-email link, the Stripe webhook
+// (Stripe must always be able to reach it to mark them paid and auto-unlock), and /api/feedback.
+const _PAYMENT_OPEN = /^\/api\/(health|auth\/|billing\/|verify-email|stripe\/webhook|me$|feedback$)/;
+// Shared by /api/auth/login + /api/auth/signup (no `ctx` yet there -- just a fresh user/tenant pair) and by the
+// admin locked-tenant count below. Fails open ('ok') on any DB hiccup -- this reporting path must never be the
+// reason a login response looks locked when the enforcement gate itself would not have blocked it.
+async function _billingStateForTenant(env, tenantId, email) {
+  try {
+    const t = await env.DB.prepare('SELECT plan,trial_ends,tier,stripe_sub FROM tenants WHERE id=?').bind(tenantId).first();
+    const isOwner = !!(email && env.OWNER_EMAIL && email === env.OWNER_EMAIL);
+    let comp = null;
+    try { const c = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(email).first(); comp = c ? (c.role === 'admin' ? 'gold' : c.role) : null; } catch (e) {}
+    return _billingState(t, isOwner, comp);
+  } catch (e) { return 'ok'; }
+}
+// Admin-dashboard-only: a cheap, informational APPROXIMATION of how many tenants are locked, from the tenants
+// table alone (past_due, canceled/unpaid, or an expired trial) -- lets the owner see the blast radius before
+// flipping the gate on, and the live count after. Deliberately simple (a single indexed aggregate): it does not
+// cross-reference comp_grants or the owner's own tenant, so it can OVER-count by the few comped/owner tenants
+// that the real per-request gate (_billingState, checked exactly, every request) would still never lock.
+async function _lockedTenantCount(env) {
+  try {
+    const r = await env.DB.prepare("SELECT COUNT(*) c FROM tenants WHERE deleted_at IS NULL AND plan!='deleted' AND plan!='active' AND NOT (plan='trial' AND trial_ends>=?)").bind(Date.now()).first();
+    return (r && r.c) || 0;
+  } catch (e) { return 0; }
+}
 // Cadence gate for the 24/7 learning cron: returns true (and stamps the clock) ONLY if this named job is due (>= minMs since last run).
 // Lets the every-2h cron run CHEAP learning every tick while EXPENSIVE AI/crawls self-gate to ~once/20h -> continuous but budget-safe.
 async function _due(env, key, minMs) { try { var last = parseInt(await _pcfgGet(env, 'due_' + key, '0'), 10) || 0; if (Date.now() - last >= minMs) { await _pcfgSet(env, 'due_' + key, String(Date.now())); return true; } } catch (e) {} return false; }
@@ -1964,7 +2010,11 @@ export default {
         const user = { id: uid, email: body.email.toLowerCase(), tenant_id: tid };
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: tid, user }, req, 'signup', { email: user.email, verifyEmail: _vSent });
-        return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000, ip: (req.headers.get('CF-Connecting-IP') || ''), verify: (_vSent ? 'sent' : 'skipped'), verified: (_vSent ? 0 : 1) }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+        // #276: billing_state is only ever computed when the payment gate is ON (flag OFF -> always 'ok', so this
+        // response is byte-identical to before the feature existed). A brand-new signup is always a fresh 7-day
+        // trial, so this will read 'ok' in practice -- included for parity with login and forward-compat.
+        let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, tid, user.email); }
+        return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000, ip: (req.headers.get('CF-Connecting-IP') || ''), verify: (_vSent ? 'sent' : 'skipped'), verified: (_vSent ? 0 : 1), billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- AUTH: login ------------------------------------------------------
@@ -1994,7 +2044,9 @@ export default {
         }
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'login', {});
-        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)) }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+        // #276: same flag-gated billing_state as signup above -- 'ok' with the gate OFF, always (see _billingStateForTenant).
+        let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, user.tenant_id, user.email); }
+        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- AUTH: forgot-password (public; audit gap #17). NEVER reveals whether an email has an account --
@@ -2099,7 +2151,11 @@ function doReset(){
         let deviceToken = null;
         if (body.remember_device) { const dexp = Date.now() + 30 * 24 * 3600 * 1000; deviceToken = user.id + '.' + dexp + '.' + (await _trustedDeviceSig(env, user.id, dexp, user.mfa_method || 'off')); }
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'mfa.verify_ok', { backup: result.backup });
-        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), trusted_device: deviceToken }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+        // #276: this completes login for an MFA-enabled account (the plain /api/auth/login above returned a
+        // challenge instead of a session) -- same flag-gated billing_state as login/signup, so an MFA account
+        // gets the paywall immediately on auth too, not only after its first subsequent API call 402s.
+        let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, user.tenant_id, user.email); }
+        return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), trusted_device: deviceToken, billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- AUTH: resend the MFA email code (public; gated by the SAME challenge token, not a session -- also how
@@ -2395,6 +2451,7 @@ function doReset(){
               const st = String(obj.status || '');
               if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
               else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
+              else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'.
               else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
             }
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
@@ -2416,7 +2473,14 @@ function doReset(){
             if (tid) await audit(env, { tenant_id: tid }, req, 'billing.refunded', { cents: amt });
           } else if (T === 'invoice.payment_failed') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || {};
-            if (im.tenant) await audit(env, { tenant_id: im.tenant }, req, 'billing.payment_failed', {});
+            if (im.tenant) {
+              await audit(env, { tenant_id: im.tenant }, req, 'billing.payment_failed', {});
+              // #276: a real subscriber whose charge failed is delinquent -> mark past_due so the (flag-gated) payment
+              // gate can lock them until they fix their card, and so the master-dash past_due list + MRR stop counting
+              // them as paid. ONLY a real subscriber (stripe_sub set) -- never a comped or manually-managed account.
+              // Auto-recovers: a later invoice.paid on a successful retry flips them back to plan='active'.
+              try { await env.DB.prepare("UPDATE tenants SET plan='past_due', updated_at=? WHERE id=? AND stripe_sub IS NOT NULL AND plan!='deleted'").bind(Date.now(), im.tenant).run(); } catch (e) {}
+            }
           }
         } catch (e) {}
         return json({ ok: true, received: true });
@@ -2816,7 +2880,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -2829,7 +2893,11 @@ function doReset(){
           // MFA kill switch (default '1' == the feature is available to any user who opts in). Setting it to '0' is
           // the emergency escape hatch: EVERY tenant's login skips the MFA branch platform-wide until it's set back.
           if (typeof b.mfa_enabled !== 'undefined') { await _pcfgSet(env, 'mfa_enabled', b.mfa_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { mfa_enabled: !!b.mfa_enabled }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1' };
+          // #276 payment-delinquency access gate: OFF by default (see _billingState/_PAYMENT_OPEN above). Flipping
+          // this ON is the ONLY thing that activates the 402 lockout for past-due/canceled/trial-expired tenants;
+          // this route is already OWNER_ONLY (path starts with /api/admin/config, matched by the OWNER_ONLY regex).
+          if (typeof b.payment_gate_enabled !== 'undefined') { await _pcfgSet(env, 'payment_gate_enabled', b.payment_gate_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { payment_gate_enabled: !!b.payment_gate_enabled }); }
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env) };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are
@@ -3461,9 +3529,28 @@ function doReset(){
       }
       if (!ctx) return err(401, 'Not signed in.');
 
+      // ---- #276 PAYMENT-DELINQUENCY ACCESS GATING (server-authoritative; the client paywall is UX only) ----
+      // Flag-gated OFF by default (platform_config.payment_gate_enabled, owner-only toggle at /api/admin/config).
+      // While OFF, this is a single cheap _pcfgGet read and NOTHING else changes -- every request below behaves
+      // byte-identical to before this feature existed. When ON: NEVER locks the platform owner, a comped
+      // (gold/free) account, an active plan, or an active trial (see _billingState above); ALWAYS leaves login,
+      // billing, verify-email and the Stripe webhook reachable (see _PAYMENT_OPEN above) so a locked tenant can
+      // always sign in, see why, and pay their way back in.
+      const gateOn = (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1';
+      if (gateOn) {
+        const _t = await env.DB.prepare('SELECT plan,trial_ends,tier,stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const _bs = _billingState(_t, ctx.isOwner, ctx.comp);
+        if (_bs !== 'ok' && !_PAYMENT_OPEN.test(path)) {
+          return json({ error: 'payment_required', billing_state: _bs, tier: (_t && _t.tier) || null }, 402);
+        }
+      }
+
       if (path === '/api/auth/me' && method === 'GET') {
         const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
-        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf });
+        // #276: same flag-gated computation as login/signup -- 'ok' whenever the gate is OFF. This is the endpoint
+        // the client polls on window-focus to detect a mid-session lock clearing (billing fixed -> dismiss paywall).
+        let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = _billingState(t, ctx.isOwner, ctx.comp); }
+        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState });
       }
 
       // ---- MFA: current status for Settings (authed; per-USER, not per-tenant -- any team member manages their own) ----

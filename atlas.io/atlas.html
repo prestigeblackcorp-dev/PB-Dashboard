@@ -594,6 +594,8 @@ table.tbl{width:100%;border-collapse:collapse}
 .verify-card h2{font-size:21px;margin:0 0 8px;color:var(--ink,#182420)}
 .verify-card p{color:var(--muted,#5c6b63);font-size:14.5px;margin:0 0 18px;line-height:1.5}
 .verify-hint{font-size:12.5px;margin:14px 0 0!important}
+.pay-gate{background:rgba(12,20,16,.92)}
+.pay-ic{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;background:#FBEAEA;color:#C0392B;display:grid;place-items:center}
 .tk-row{display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--line,#e5e1d8);border-radius:11px;margin-bottom:8px;cursor:pointer;background:var(--surface,#fff)}
 .tk-row:hover{border-color:var(--brand,#1E6E4E)}
 .tk-row.tk-unread{border-color:var(--brand,#1E6E4E);background:var(--surface-2,#f4f2ec)}
@@ -1718,7 +1720,12 @@ const Atlas = (function(){
   function _api(path,opts){ opts=opts||{}; var h={'Content-Type':'application/json'};
     if(_apiCsrf && opts.method && opts.method!=='GET') h['X-CSRF-Token']=_apiCsrf;
     return fetch(ATLAS_API+path,{method:opts.method||'GET',headers:h,credentials:'include',body:opts.body?JSON.stringify(opts.body):undefined})
-      .then(function(r){ return r.json().catch(function(){return{};}).then(function(j){ return {status:r.status,json:j}; }); }); }
+      .then(function(r){ return r.json().catch(function(){return{};}).then(function(j){
+        // #276: central 402 interception -- ANY authenticated call (every caller goes through this one function) can
+        // surface a mid-session lock (e.g. a card declined while the tab was already open); the worker is the real
+        // gate, this just reflects it. Login/signup/billing/etc. are server-side allow-listed and never 402 here.
+        if(r.status===402 && j && j.error==='payment_required'){ try{ showPaywall(j.billing_state); }catch(e){} }
+        return {status:r.status,json:j}; }); }); }
   // Server-authoritative signup/login -> the server assigns tenant_id + a CSRF token (held in memory).
   function _srvAuth(mode,email,pass){
     // A remembered device sends back its trusted_device token (see mfaSubmit) so the server can skip a repeat
@@ -1727,7 +1734,7 @@ const Atlas = (function(){
              : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars'};
     return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
       if(res.json && res.json.mfa_required){ return {mfa:true, method:res.json.method, challenge:res.json.challenge}; }
-      if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; if(res.json.ip) _clientIp=res.json.ip; return {ok:true,tenant_id:res.json.tenant_id,verify:res.json.verify,verified:res.json.verified}; }
+      if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; if(res.json.ip) _clientIp=res.json.ip; return {ok:true,tenant_id:res.json.tenant_id,verify:res.json.verify,verified:res.json.verified,billing_state:res.json.billing_state}; }
       return {err:(res.json&&res.json.error)||'Could not sign in.'}; })
     .catch(function(){ return {err:'Network error \u2014 check your connection.'}; }); }
   // ===== dashboard cross-device sync (flag-gated OFF; LOSSLESS via each collection's data/info blob) =====
@@ -1853,7 +1860,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19n';
+  var APP_VERSION='2026.7.19o';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2558,6 +2565,7 @@ const Atlas = (function(){
     S=load();
     if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
     if(ATLAS_BACKEND && (r.verify==='sent' || r.verified===0)){ showVerifyGate(email); return; }       // email confirmation gate: hold the account until the link is clicked (if the mailer is off the server auto-verifies -> this is skipped)
+    if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){ showPaywall(r.billing_state); return; }   // #276: server-computed billing state ('ok' unless the owner turned the payment gate ON) -- replaces the dashboard with the paywall instead of building it
     if(_authMode==='signup'){ startTrial(); return; }                        // new account -> guided onboarding
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }           // returning -> resume exactly where they were
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
@@ -2596,6 +2604,45 @@ const Atlas = (function(){
       else { toast('Could not resend'+((res.json&&res.json.reason)?(' ('+res.json.reason+')'):'')+'.'); }
     }).catch(function(){ toast('Network error - try again.'); }); }
   function verifyStartOver(){ hideVerifyGate(); try{ logout(); }catch(e){} }
+  /* ---- #276 payment-delinquency paywall: full-screen, blocks the dashboard until billing is fixed. The WORKER
+     is the real gate (a 402 on any protected call); this overlay is UX only -- same mechanism as the email
+     verify-gate above (a fixed full-viewport card appended to body), shown: (a) right after auth when the
+     login/signup/MFA response carries a non-'ok' billing_state, or (b) centrally from _api() the instant ANY
+     authenticated call 402s payment_required mid-session (e.g. a card declined while the tab was open). Uses
+     a more opaque backdrop (.pay-gate) than the verify-gate -- this is a harder stop, not a "check your inbox". ---- */
+  var _paywallReason='', _paywallFocusBound=false;
+  function _paywallCopy(reason){
+    if(reason==='past_due') return {h:'Your payment didn&rsquo;t go through', plan:'Choose a plan'};
+    if(reason==='canceled') return {h:'Your subscription is inactive', plan:'Reactivate'};
+    return {h:'Your free trial has ended', plan:'Choose a plan'};   // trial_expired, plus any unrecognized reason -- fail toward the most common, least-alarming copy
+  }
+  function showPaywall(reason){
+    _paywallReason = (reason==='past_due'||reason==='canceled') ? reason : 'trial_expired';
+    var c=_paywallCopy(_paywallReason);
+    var e=document.getElementById('paywallGate');
+    if(!e){ e=document.createElement('div'); e.id='paywallGate'; e.className='verify-gate pay-gate'; document.body.appendChild(e); }
+    e.innerHTML='<div class="verify-card">'
+      +'<div class="pay-ic"><svg viewBox="0 0 24 24" width="26" height="26" fill="none"><rect x="3" y="6" width="18" height="13" rx="2.2" stroke="currentColor" stroke-width="1.6"/><path d="M3 10h18" stroke="currentColor" stroke-width="1.6"/></svg></div>'
+      +'<h2>'+c.h+'</h2>'
+      +'<p>You&rsquo;ll get your dashboard back the moment your payment is sorted.</p>'
+      +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.paywallUpdatePayment()">Update payment method</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallChoosePlan()">'+c.plan+'</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:6px" onclick="Atlas.logout()">Sign out</button>'
+      +'<p class="verify-hint">Already paid? Switch back to this tab and we&rsquo;ll recheck automatically.</p></div>';
+    e.classList.add('on');
+    if(!_paywallFocusBound){ _paywallFocusBound=true; window.addEventListener('focus', _paywallMaybeRecheck); document.addEventListener('visibilitychange', _paywallMaybeRecheck); }
+  }
+  function hidePaywall(){ var e=document.getElementById('paywallGate'); if(e) e.classList.remove('on'); }
+  function paywallUpdatePayment(){ billingPortal(); }
+  function paywallChoosePlan(){ openPlans(); }
+  // Only ever polls while the gate is actually up (mirrors _verifyMaybeRecheck) -- a fine, unlocked session never pays this cost.
+  function _paywallMaybeRecheck(){
+    var e=document.getElementById('paywallGate'); if(!e||!e.classList.contains('on')||document.hidden) return;
+    _api('/api/auth/me',{method:'GET'}).then(function(res){
+      var bs = res.json && res.json.billing_state;
+      if(res.status>=200 && res.status<300 && (!bs || bs==='ok')){ hidePaywall(); _postVerifyProceed(); }
+    }).catch(function(){});
+  }
   /* ---- forgot password: emails a signed, time-limited reset link (server never reveals whether the address has an account) ---- */
   function forgotPassword(){
     var pre=(document.getElementById('authEmail')||{}).value||'';
@@ -2657,7 +2704,7 @@ const Atlas = (function(){
       if(j.trusted_device) _mfaSaveDeviceToken(_mfaEmailCur, j.trusted_device);
       mfaCancel();
       await _srvAuthSettle(_mfaEmailCur, j.tenant_id);
-      await _afterAuthSuccess(_mfaEmailCur, {tenant_id:j.tenant_id, verify:'', verified:j.verified});
+      await _afterAuthSuccess(_mfaEmailCur, {tenant_id:j.tenant_id, verify:'', verified:j.verified, billing_state:j.billing_state});
     } else {
       _mfaErr((j&&j.error)||'Incorrect code.');
     }
@@ -8381,7 +8428,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,authTogglePass,logout,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,
+    goAuth,authSubmit,authTogglePass,logout,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
