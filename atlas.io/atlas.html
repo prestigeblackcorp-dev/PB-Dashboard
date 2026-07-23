@@ -1726,6 +1726,25 @@ const Atlas = (function(){
         // gate, this just reflects it. Login/signup/billing/etc. are server-side allow-listed and never 402 here.
         if(r.status===402 && j && j.error==='payment_required'){ try{ showPaywall(j.billing_state); }catch(e){} }
         return {status:r.status,json:j}; }); }); }
+  // #274: first-party, no-cookie visit ping for the master-dashboard "Website visits" KPI + world map (they only
+  // ever saw a WORKER-SERVED tenant booking page -- this app is served by GitHub Pages and never hit the worker
+  // at all, so real traffic here was invisible). vsid is a random id kept in localStorage ONLY -- never a cookie,
+  // never sent automatically to any other site -- so a repeat visit does not look like a brand-new person; the
+  // worker records country only (from its own edge request), nothing precise is read here. Wrapped in try/catch
+  // and fire-and-forget end to end: a tracking failure must never affect the app.
+  function _vpingId(){ try{ var k='atlas_vsid_app', v=localStorage.getItem(k);
+      if(!v){ v=Date.now().toString(36)+Math.random().toString(36).slice(2,12); localStorage.setItem(k,v); }
+      return v; }catch(e){ return ''; } }
+  function _vping(){ try{
+      var vsid=_vpingId(); if(!vsid) return;
+      var body=JSON.stringify({src:'app',sid:vsid});
+      if(navigator.sendBeacon) navigator.sendBeacon(ATLAS_API+'/api/visit-ping', new Blob([body],{type:'application/json'}));
+      else { var img=new Image(); img.src=ATLAS_API+'/api/visit-ping?src=app&sid='+encodeURIComponent(vsid); }
+    }catch(e){ /* best-effort only -- never throw from a tracking call */ } }
+  document.addEventListener('DOMContentLoaded',function(){ try{
+      _vping();
+      setInterval(function(){ try{ if(!document.hidden) _vping(); }catch(e){} }, 60000);   // heartbeat while the tab is visible, so "active now" ages out naturally when a visitor leaves/hides the tab
+    }catch(e){} });
   // Server-authoritative signup/login -> the server assigns tenant_id + a CSRF token (held in memory).
   function _srvAuth(mode,email,pass){
     // A remembered device sends back its trusted_device token (see mfaSubmit) so the server can skip a repeat
@@ -1860,7 +1879,7 @@ const Atlas = (function(){
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19o';
+  var APP_VERSION='2026.7.19p';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',

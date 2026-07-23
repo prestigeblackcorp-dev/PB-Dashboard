@@ -355,7 +355,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19x';
+const ATLAS_BUILD = '2026.07.19y';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1645,6 +1645,11 @@ async function ensurePlatformSchema(env) {
   // Visit geography: aggregate views per ISO-2 country per UTC day (from Cloudflare's edge geo, req.cf.country). No IPs, no PII.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS visit_geo (day TEXT, country TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(day, country))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_vg_day ON visit_geo(day)").run(); } catch (e) {}
+  // #274 live presence: which sids pinged recently, for the master-dashboard "N online now" pill (/api/visit-ping
+  // upserts this; the cron GC below drops rows once they go stale). sid is the PRIMARY KEY so a browser's repeat
+  // 60s heartbeat is one cheap UPSERT, never a growing table. No IPs, no PII -- country only, same as visit_geo.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS active_now (sid TEXT PRIMARY KEY, last_at INTEGER, src TEXT, country TEXT)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activenow_last ON active_now(last_at)").run(); } catch (e) {}
   // Competitor watchlist (platform-level, owner-managed). The cron fetches each URL, snapshots it, and the AI brief
   // diffs today's snapshot vs last -> real "what changed" instead of model guesses. last_json = extracted signal.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS competitor_watch (id TEXT PRIMARY KEY, url TEXT, label TEXT, last_json TEXT, prev_json TEXT, last_fetch INTEGER, last_status INTEGER, added_at INTEGER)").run(); } catch (e) {}
@@ -2306,6 +2311,48 @@ function doReset(){
         }
       }
 
+      // #274: first-party visit ping (public; no auth; no cookie). The master-dashboard "Website visits" KPI +
+      // world map previously only ever saw a WORKER-SERVED tenant booking page (the block just above, prof.id
+      // keyed) -- atlasrental.io's own landing page (index.html) and app (atlas.html) are served by GitHub Pages
+      // and never hit this worker at all, so real site traffic was invisible. This feeds the SAME page_views /
+      // visit_geo counters under two RESERVED, non-tenant ids ('_site'/'_app' -- tenant ids are randId()-based
+      // and never start with '_', so these can never collide with a real tenant), plus a tiny live-presence
+      // table for "N online now". sid is a random id the client keeps in localStorage -- never a cookie, never
+      // anything a browser sends automatically to another site. Country comes from Cloudflare's own edge geo
+      // (req.cf.country); no path, no referrer, no IP is ever stored here. Best-effort in every direction: a
+      // bad/missing body, an unrecognized src, or a rate-limit hit all just return 204 with nothing recorded --
+      // this endpoint must NEVER error or block the page that called it.
+      if (path === '/api/visit-ping' && (method === 'POST' || method === 'GET')) {
+        try {
+          const vip = req.headers.get('CF-Connecting-IP') || 'x';
+          let vsrc = '', vsid = '';
+          if (method === 'GET') {
+            vsrc = String(url.searchParams.get('src') || '');
+            vsid = String(url.searchParams.get('sid') || '');
+          } else {
+            const vb = await req.json().catch(function () { return {}; });
+            vsrc = String((vb && vb.src) || ''); vsid = String((vb && vb.sid) || '');
+          }
+          vsrc = (vsrc === 'site' || vsrc === 'app') ? vsrc : '';           // allow-list: anything else is silently ignored
+          vsid = vsid.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);          // bound + sanitize the client id (belt-and-suspenders; binds below are already parameterized)
+          if (vsrc && vsid && await rateLimit(env, 'vping:' + vip, 6, 10000)) {   // ~1/10s per IP, generous for the 60s heartbeat; over the limit -> just skip the write, still 204 below
+            await ensurePlatformSchema(env);   // idempotent no-op once warm; guarantees active_now exists even on a cold isolate right after this ships
+            const vtid = '_' + vsrc;   // '_site' | '_app'
+            const vday = new Date(Date.now()).toISOString().slice(0, 10);
+            const vcc = ((req.cf && req.cf.country) || '').toUpperCase();
+            const vpp = (async function () {
+              try {
+                await env.DB.prepare("INSERT INTO page_views (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(vtid, vday).run();
+                if (/^[A-Z]{2}$/.test(vcc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(vday, vcc).run();
+                await env.DB.prepare("INSERT INTO active_now (sid,last_at,src,country) VALUES (?,?,?,?) ON CONFLICT(sid) DO UPDATE SET last_at=?,src=?,country=?").bind(vsid, Date.now(), vsrc, vcc, Date.now(), vsrc, vcc).run();
+              } catch (e) { /* best-effort analytics write; never surfaces */ }
+            })();
+            if (_ectx && _ectx.waitUntil) _ectx.waitUntil(vpp); else vpp.catch(function () {});   // deferred -- same pattern as the booking-page counter above + _fireWebhook, so this never holds up the response
+          }
+        } catch (e) { /* never let a tracking failure reach the caller */ }
+        return new Response(null, { status: 204 });
+      }
+
       // ---- STRIPE webhook (public, signature-verified): the ONLY place a booking/charge flips to paid ----
       if (path === '/api/stripe/webhook' && method === 'POST') {
         const raw = await req.text();
@@ -2614,6 +2661,10 @@ function doReset(){
           const vRange = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views WHERE day>=? AND day<=?').bind(range.startDay, range.endDay).first();
           const vToday = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views WHERE day=?').bind(new Date(now).toISOString().slice(0, 10)).first();
           const vTot = await env.DB.prepare('SELECT COALESCE(SUM(views),0) AS c FROM page_views').first();
+          // #274: live-presence count for the "N online now" pill. active_now rows are upserted by /api/visit-ping
+          // on every heartbeat (~60s while a tab is visible) and GC'd by the cron once stale -- this is a rough
+          // "right now" gauge (a 5-min window), not an exact concurrent-user count.
+          const activeNow = await env.DB.prepare('SELECT COUNT(*) AS c FROM active_now WHERE last_at>?').bind(now - 5 * 60000).first();
           const inst = await env.DB.prepare('SELECT COUNT(*) AS c FROM platform_installs').first();
           const bo = await env.DB.prepare("SELECT COUNT(*) AS c FROM platform_feedback WHERE status!='resolved'").first();
           const bt = await env.DB.prepare('SELECT COUNT(*) AS c FROM platform_feedback').first();
@@ -2624,6 +2675,7 @@ function doReset(){
             members: { total: total, paid: paid, comped: comped, trials: trials, trials_with_card: twc, by_tier: by_tier },
             signups: (signups && signups.c) || 0,
             visits: { range: (vRange && vRange.c) || 0, today: (vToday && vToday.c) || 0, total: (vTot && vTot.c) || 0 },
+            active_now: (activeNow && activeNow.c) || 0,
             installs: { total: (inst && inst.c) || 0 }, bugs: { open: (bo && bo.c) || 0, total: (bt && bt.c) || 0 }, inbox: { new: (inbox && inbox.c) || 0 },
             recent: (recent.results || []) });
         }
@@ -2632,7 +2684,11 @@ function doReset(){
           const range = _adminRange(new URL(req.url).searchParams.get('range'));
           const rows = await env.DB.prepare('SELECT day, COALESCE(SUM(views),0) AS views FROM page_views WHERE day>=? AND day<=? GROUP BY day ORDER BY day').bind(range.startDay, range.endDay).all();
           const top = await env.DB.prepare("SELECT pv.tenant_id, t.name, SUM(pv.views) AS views FROM page_views pv LEFT JOIN tenants t ON t.id=pv.tenant_id WHERE pv.day>=? AND pv.day<=? GROUP BY pv.tenant_id ORDER BY views DESC LIMIT 10").bind(range.startDay, range.endDay).all();
-          return json({ ok: true, range: { key: range.key, label: range.label }, series: (rows.results || []), top: (top.results || []) });
+          // #274: '_site'/'_app' are the reserved, non-tenant ids /api/visit-ping writes for the landing page + the
+          // app (neither has a `tenants` row, so the LEFT JOIN above leaves name NULL for them) -- give them a
+          // friendly label instead of surfacing the raw internal id in the dashboard.
+          const topFriendly = (top.results || []).map(function (r) { if (r.tenant_id === '_site') r.name = 'Atlas marketing site'; else if (r.tenant_id === '_app') r.name = 'App / dashboard'; return r; });
+          return json({ ok: true, range: { key: range.key, label: range.label }, series: (rows.results || []), top: topFriendly });
         }
         // Website visits by country (for the master-dashboard world map). ISO-2 codes -> the client resolves names from world-geo.
         if (path === '/api/admin/visits-geo' && method === 'GET') {
@@ -4488,6 +4544,7 @@ function doReset(){
       await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action IS NULL OR (action NOT LIKE 'admin.%' AND action NOT LIKE 'owner.%'))").bind(now - 90 * 24 * 3600 * 1000).run();
       await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action LIKE 'admin.%' OR action LIKE 'owner.%')").bind(now - 365 * 24 * 3600 * 1000).run();
       try { await env.DB.prepare('DELETE FROM platform_errors WHERE last_at < ?').bind(now - 30 * 24 * 3600 * 1000).run(); } catch (e) {}   // #253 B2: platform_errors GC (own try/catch, mirrors the pattern above)
+      try { await env.DB.prepare('DELETE FROM active_now WHERE last_at < ?').bind(now - 30 * 60000).run(); } catch (e) {}   // #274: presence rows are meaningless after 30 min of silence (own try/catch, same pattern)
     } catch (e) { /* best-effort GC; a cron error must never surface */ }
     try { await _runLifecycleEmails(env, Date.now()); } catch (e) { /* lifecycle emails are best-effort */ }
     // Nightly: write the daily metric snapshot (so "vs last week" is real) + generate the AI COO morning brief if enabled.

@@ -46,7 +46,7 @@ function mockDB() {
 
 const env = { DB: mockDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-const EXPECT_BUILD = '2026.07.19x';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
+const EXPECT_BUILD = '2026.07.19y';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
 
 function mkReq(method, path, opts = {}) {
   return new Request('https://atlasrental.io' + path, {
@@ -142,6 +142,52 @@ ok(r.status === 200 && j.ok === true && typeof j.count_24h === 'number', 'GET /a
   const pgReq = new Request('https://atlasrental.io/api/data/bookings', { method: 'GET', headers: { 'Content-Type': 'application/json', 'Cookie': 'atlas_sid=' + SID, 'X-CSRF-Token': CSRF, 'Origin': 'https://atlasrental.io' } });
   const pr = await worker.fetch(pgReq, pgEnv, ctx);
   ok(pr.status === 200, '#276: payment_gate_enabled unset (default OFF) -> a past_due tenant is unaffected, GET /api/data/bookings -> 200 (got ' + pr.status + ')');
+}
+
+// 8) #274 visit tracking: POST /api/visit-ping records page_views + active_now under the reserved '_site' id
+// (never a real tenant); GET /api/admin/overview then surfaces that as a numeric active_now live-presence count.
+// waitUntil is captured (not the shared no-op ctx above) so the deferred, best-effort write can be awaited before
+// asserting on it -- same pattern test/routes.mjs already uses for other waitUntil-deferred writes.
+{
+  const pv = new Map(), an = new Map();
+  function vpingDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sqlite_master/.test(sql)) return { n: 25 };
+          if (/FROM rate_limits/.test(sql)) return null;      // always "first time" -> rateLimit allows
+          if (/FROM platform_config/.test(sql)) return null;
+          if (/COUNT\(\*\) AS c FROM active_now WHERE last_at>\?/.test(sql)) { let c = 0; an.forEach(function (row) { if (row.last_at > a[0]) c++; }); return { c: c }; }
+          if (/AS c FROM/.test(sql)) return { c: 0 };          // every other admin-overview aggregate (revenue/signups/etc.) -- not under test here, but must not be null (the handler dereferences .c directly on a few of these)
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => {
+          if (/INSERT INTO page_views/.test(sql)) pv.set(a[0], (pv.get(a[0]) || 0) + 1);
+          else if (/INSERT INTO active_now/.test(sql)) an.set(a[0], { last_at: a[1], src: a[2] });
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const vpEnv = { DB: vpingDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  let waited = [];
+  const vpCtx = { waitUntil(p) { waited.push(p); }, passThroughOnException() {} };
+
+  let vr = await worker.fetch(mkReq('POST', '/api/visit-ping', { body: { src: 'site', sid: 'sid_smoke_1' } }), vpEnv, vpCtx);
+  ok(vr.status === 204, 'POST /api/visit-ping -> 204 (got ' + vr.status + ')');
+  await Promise.all(waited); waited.length = 0;
+  ok(pv.get('_site') === 1, 'visit-ping recorded page_views under the reserved _site id, never a real tenant (got ' + JSON.stringify([...pv]) + ')');
+  ok(an.has('sid_smoke_1'), 'visit-ping recorded an active_now row for the sid (got ' + JSON.stringify([...an]) + ')');
+
+  vr = await worker.fetch(mkReq('GET', '/api/admin/overview', { headers: H }), vpEnv, ctx);
+  let vj = await vr.json();
+  ok(vr.status === 200 && vj.ok === true, 'GET /api/admin/overview -> 200 ok:true (got ' + vr.status + ')');
+  ok(typeof vj.active_now === 'number' && vj.active_now === 1, 'overview.active_now is a number reflecting the live sid visit-ping recorded (got ' + JSON.stringify(vj.active_now) + ')');
 }
 
 if (fails) { console.error('\nSMOKE FAILED (' + fails + ' assertion' + (fails > 1 ? 's' : '') + ') -- deploy blocked.'); process.exit(1); }

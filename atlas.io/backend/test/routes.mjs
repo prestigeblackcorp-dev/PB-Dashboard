@@ -1120,5 +1120,126 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(r.status === 403, 'security-log: wrong admin token -> 403 (got ' + r.status + ')');
 }
 
+// ---- #274 visit tracking: POST /api/visit-ping (+ its GET pixel fallback) records page_views + active_now under
+// the reserved '_site'/'_app' ids (never a real tenant); rate-limit-over-cap still returns 204 and writes nothing
+// (never errors, never blocks the caller); /api/admin/overview + /api/admin/visits surface the results ----
+{
+  // -- part A: the rate limit (6 per 10s per IP) actually engages, and even then the endpoint stays 204 --
+  {
+    const pv = new Map(), an = new Map(), rl = new Map();
+    function rlDB() {
+      function stmt(sql) {
+        let a = [];
+        const api = {
+          bind: (...x) => { a = x; return api; },
+          first: async () => {
+            if (/FROM sqlite_master/.test(sql)) return { n: 30 };
+            if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rl.get(a[0]) || null;
+            if (/FROM platform_config/.test(sql)) return null;
+            return null;
+          },
+          all: async () => ({ results: [] }),
+          run: async () => {
+            if (/INSERT INTO page_views/.test(sql)) pv.set(a[0], (pv.get(a[0]) || 0) + 1);
+            else if (/INSERT INTO active_now/.test(sql)) an.set(a[0], { last_at: a[1], src: a[2] });
+            else if (/INSERT INTO rate_limits/.test(sql)) rl.set(a[0], { count: 1, window_start: a[1] });
+            else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const row = rl.get(a[0]); if (row) row.count++; }
+            return { success: true, meta: { changes: 1 } };
+          },
+        };
+        return api;
+      }
+      return { prepare: stmt };
+    }
+    const rlEnv = { DB: rlDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+    let waited = [];
+    const rlCtx = { waitUntil(p) { waited.push(p); }, passThroughOnException() {} };
+    const vpReq = (body) => new Request('https://atlasrental.io/api/visit-ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+    // 6 distinct visitors from the same (unset -> 'x') IP all fit under the 6/10s cap
+    for (let i = 1; i <= 6; i++) {
+      const rr = await worker.fetch(vpReq({ src: 'site', sid: 'sid_rl_' + i }), rlEnv, rlCtx);
+      ok(rr.status === 204, 'visit-ping #' + i + ' within the rate limit -> 204 (got ' + rr.status + ')');
+    }
+    await Promise.all(waited); waited.length = 0;
+    ok(pv.get('_site') === 6, 'all 6 within-limit pings recorded a page_views bump under _site (got ' + pv.get('_site') + ')');
+    ok(an.size === 6, 'all 6 within-limit pings recorded a distinct active_now row (got ' + an.size + ')');
+
+    // an unrecognized src is silently ignored -- no DB write AT ALL (never consumes a rate-limit unit), still 204
+    let rr = await worker.fetch(vpReq({ src: 'evil', sid: 'sid_rl_bogus' }), rlEnv, rlCtx);
+    ok(rr.status === 204, 'visit-ping with an unrecognized src -> still 204, never an error (got ' + rr.status + ')');
+    await Promise.all(waited); waited.length = 0;
+    ok(pv.get('_site') === 6 && !an.has('sid_rl_bogus'), 'an unrecognized src writes nothing (page_views unchanged, no active_now row) (got pv=' + pv.get('_site') + ', an has bogus=' + an.has('sid_rl_bogus') + ')');
+
+    // the 7th VALID visitor is over the cap -> rate-limited -> still 204, but nothing new is recorded
+    rr = await worker.fetch(vpReq({ src: 'site', sid: 'sid_rl_7' }), rlEnv, rlCtx);
+    ok(rr.status === 204, 'visit-ping #7 (over the rate limit) -> still 204, NEVER an error/block (got ' + rr.status + ')');
+    await Promise.all(waited); waited.length = 0;
+    ok(pv.get('_site') === 6, 'the rate-limited 7th ping did not bump page_views (still 6, got ' + pv.get('_site') + ')');
+    ok(!an.has('sid_rl_7'), 'the rate-limited 7th ping did not create an active_now row (got ' + an.has('sid_rl_7') + ')');
+  }
+
+  // -- part B: 'site' and 'app' are tracked separately, the GET pixel fallback works, and the admin reads surface it --
+  {
+    const pv = new Map(), an = new Map();
+    function vbDB() {
+      function stmt(sql) {
+        let a = [];
+        const api = {
+          bind: (...x) => { a = x; return api; },
+          first: async () => {
+            if (/FROM sqlite_master/.test(sql)) return { n: 30 };
+            if (/FROM rate_limits/.test(sql)) return null;   // not under test here -- always allow
+            if (/FROM platform_config/.test(sql)) return null;
+            if (/COUNT\(\*\) AS c FROM active_now WHERE last_at>\?/.test(sql)) { let c = 0; an.forEach(function (row) { if (row.last_at > a[0]) c++; }); return { c: c }; }
+            if (/AS c FROM/.test(sql)) return { c: 0 };   // every other admin-overview aggregate -- not under test here, but must not be null
+            return null;
+          },
+          all: async () => {
+            // /api/admin/visits "top" query (aliased pv./t. -- the LEFT JOIN leaves name NULL for _site/_app since neither has a tenants row)
+            if (/pv\.tenant_id/.test(sql)) return { results: [...pv.keys()].map(function (tid) { return { tenant_id: tid, name: null, views: pv.get(tid) }; }) };
+            return { results: [] };
+          },
+          run: async () => {
+            if (/INSERT INTO page_views/.test(sql)) pv.set(a[0], (pv.get(a[0]) || 0) + 1);
+            else if (/INSERT INTO active_now/.test(sql)) an.set(a[0], { last_at: a[1], src: a[2] });
+            return { success: true, meta: { changes: 1 } };
+          },
+        };
+        return api;
+      }
+      return { prepare: stmt };
+    }
+    const vbEnv = { DB: vbDB(), ADMIN_TOKEN: 'k', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+    let waited = [];
+    const vbCtx = { waitUntil(p) { waited.push(p); }, passThroughOnException() {} };
+    const vpReq = (body) => new Request('https://atlasrental.io/api/visit-ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+    let r2 = await worker.fetch(vpReq({ src: 'site', sid: 'sid_vb_site' }), vbEnv, vbCtx);
+    ok(r2.status === 204, 'visit-ping src=site -> 204 (got ' + r2.status + ')');
+    r2 = await worker.fetch(vpReq({ src: 'app', sid: 'sid_vb_app' }), vbEnv, vbCtx);
+    ok(r2.status === 204, 'visit-ping src=app -> 204 (got ' + r2.status + ')');
+    // the GET pixel/sendBeacon-fallback shape (query string, not a JSON body) is accepted too
+    r2 = await worker.fetch(mkReq('GET', '/api/visit-ping?src=site&sid=sid_vb_pixel'), vbEnv, vbCtx);
+    ok(r2.status === 204, 'visit-ping GET pixel fallback -> 204 (got ' + r2.status + ')');
+    await Promise.all(waited); waited.length = 0;
+    ok(pv.get('_site') === 2 && pv.get('_app') === 1, '_site and _app are tracked as SEPARATE reserved ids, never colliding with each other or a real tenant (got ' + JSON.stringify([...pv]) + ')');
+    ok(an.size === 3, 'three distinct sids each landed their own active_now row (got ' + an.size + ')');
+
+    let r3 = await worker.fetch(mkReq('GET', '/api/admin/overview', { headers: H }), vbEnv, ctx);
+    let j3 = await r3.json();
+    ok(r3.status === 200 && j3.ok === true, 'GET /api/admin/overview -> 200 ok:true (got ' + r3.status + ')');
+    ok(typeof j3.active_now === 'number' && j3.active_now === 3, 'overview.active_now is a number reflecting all 3 live sids (got ' + JSON.stringify(j3.active_now) + ')');
+
+    let r4 = await worker.fetch(mkReq('GET', '/api/admin/visits', { headers: H }), vbEnv, ctx);
+    let j4 = await r4.json();
+    const top = j4.top || [];
+    const siteRow = top.filter(function (t) { return t.tenant_id === '_site'; })[0];
+    const appRow = top.filter(function (t) { return t.tenant_id === '_app'; })[0];
+    ok(siteRow && siteRow.name === 'Atlas marketing site', "visits.top gives '_site' a friendly name instead of the raw id (got " + JSON.stringify(siteRow) + ')');
+    ok(appRow && appRow.name === 'App / dashboard', "visits.top gives '_app' a friendly name instead of the raw id (got " + JSON.stringify(appRow) + ')');
+  }
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

@@ -326,3 +326,14 @@ CREATE TABLE IF NOT EXISTS platform_errors (
   last_emailed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_perr_last ON platform_errors(last_at);
+
+-- #274: live-presence rows for the master-dashboard "N online now" pill. Upserted by the public /api/visit-ping
+-- beacon (landing page + app, ~60s heartbeat while the tab is visible) and GC'd by the cron once stale (30 min).
+-- sid is a random id the client keeps in localStorage only -- no cookie, no IP, no path/referrer stored.
+CREATE TABLE IF NOT EXISTS active_now (
+  sid       TEXT PRIMARY KEY,
+  last_at   INTEGER,
+  src       TEXT,                                -- 'site' (landing) | 'app' (dashboard)
+  country   TEXT                                  -- ISO-2, from Cloudflare's edge geo -- no precise location
+);
+CREATE INDEX IF NOT EXISTS idx_activenow_last ON active_now(last_at);
