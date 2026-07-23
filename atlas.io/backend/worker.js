@@ -241,6 +241,46 @@ async function _ownerControlState(env, email) {
   return v;
 }
 function _ownerControlBust(email) { if (email) delete _ownerCtlCache[String(email).toLowerCase()]; else _ownerCtlCache = {}; }
+// ---- TAKE CONTROL decoy: plausible-but-FAKE platform numbers served to a TRAPPED owner (an attacker under active
+// monitoring) so they never see the real book while we watch + record them. Deterministic per UTC-hour (stable across
+// their polling so nothing flickers, drifts slowly so it looks alive); NOTHING here touches the database. Same shape as
+// the real /api/admin/overview payload so their dashboard renders normally. Gated by `trapped` (already a deliberate,
+// super-admin-only, tier-1-only state) + kill-switch flag `trap_decoy` (default ON); fail-open to real data on any error. ----
+function _seedRand(seed) { var s = (Math.abs(seed | 0) % 2147483647); if (s <= 0) s += 2147483646; return function () { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; }
+var _DECOY_CO = ['Summit Auto Collective', 'Harbor Point Rentals', 'Vireo Mobility', 'Northgate Fleet Co', 'Cedar & Vale Motors', 'Lakeshore Exotics', 'Ironwood Rentals', 'Meridian Drive Club', 'Solano Ride Group', 'Kestrel Leasing', 'Bayline Auto', 'Fifth Avenue Motorworks', 'Grove Street Garage', 'Atlas Peak Rentals', 'Cobalt Car Club'];
+function _decoyOverview(now, range) {
+  var hourSeed = Math.floor(now / 3600000), R = _seedRand(hourSeed);
+  var members = 62 + Math.floor(R() * 86);                                  // ~62-148 tenants
+  var paid = Math.floor(members * (0.54 + R() * 0.18));
+  var trials = Math.floor((members - paid) * (0.45 + R() * 0.3));
+  var comped = Math.max(0, members - paid - trials), twc = Math.floor(trials * (0.4 + R() * 0.4));
+  var tiers = ['starter', 'pro', 'fleet', 'enterprise'], split = [0.42, 0.31, 0.19, 0.08], by_tier = {}, left = paid;
+  tiers.forEach(function (t, i) { var n = (i === tiers.length - 1) ? left : Math.min(left, Math.round(paid * split[i])); by_tier[t] = n; left -= n; });
+  var planPx = { starter: 4999, pro: 9999, fleet: 19999, enterprise: 49999 }, mrr = 0;
+  Object.keys(by_tier).forEach(function (t) { mrr += (planPx[t] || 0) * by_tier[t]; });
+  var monthRev = Math.round(mrr * (0.82 + R() * 0.5)), totalRev = Math.round(mrr * (11 + R() * 9));
+  var rangeMul = { today: 0.05, yesterday: 0.05, '7d': 0.28, '30d': 1, month: 1, year: 6.8, all: (totalRev / Math.max(1, monthRev)) };
+  var rangeRev = Math.round(monthRev * (rangeMul[range && range.key] != null ? rangeMul[range.key] : 1));
+  var kinds = ['subscription', 'credits', 'website', 'domain'], packs = { credits: 'Credit pack', website: 'Website add-on', domain: 'Domain' };
+  var recent = [], nR = 8 + Math.floor(R() * 5);
+  for (var i = 0; i < nR; i++) {
+    var co = _DECOY_CO[Math.floor(R() * _DECOY_CO.length)], k = kinds[Math.floor(R() * (R() > 0.45 ? 1 : kinds.length))];
+    var tier = tiers[Math.floor(R() * tiers.length)];
+    var amt = k === 'subscription' ? (planPx[tier] || 4999) : (k === 'credits' ? [2500, 5000, 10000][Math.floor(R() * 3)] : (k === 'website' ? 1900 : 1299));
+    recent.push({ id: 'tx_' + hourSeed.toString(36) + i, tenant_id: 't_' + (1000 + Math.floor(R() * 8999)), email: co.toLowerCase().replace(/[^a-z]+/g, '.').replace(/^\.|\.$/g, '') + '@example.com', kind: k, tier: k === 'subscription' ? tier : '', pack: packs[k] || '', amount_cents: amt, created_at: now - Math.floor(R() * 82800000) - i * 900000 });
+  }
+  recent.sort(function (a, b) { return b.created_at - a.created_at; });
+  var by_kind = { subscription: Math.round(rangeRev * 0.78), credits: Math.round(rangeRev * 0.08), website: Math.round(rangeRev * 0.09), trial: 0 };
+  var visRange = 400 + Math.floor(R() * 2600);
+  return { ok: true, ts: now, range: { key: (range && range.key) || '30d', label: (range && range.label) || 'Last 30 days' },
+    revenue: { total_cents: totalRev, month_cents: monthRev, range_cents: rangeRev, mrr_cents: mrr, by_kind: by_kind },
+    members: { total: members, paid: paid, comped: comped, trials: trials, trials_with_card: twc, by_tier: by_tier },
+    signups: 3 + Math.floor(R() * 22),
+    visits: { range: visRange, today: 30 + Math.floor(R() * 240), total: 40000 + Math.floor(R() * 90000) },
+    active_now: Math.floor(R() * 9),
+    installs: { total: 20 + Math.floor(R() * 70) }, bugs: { open: Math.floor(R() * 4), total: 8 + Math.floor(R() * 30) }, inbox: { new: Math.floor(R() * 5) },
+    recent: recent, _decoy: true };   // _decoy flag is server-side proof-of-intent; harmless to the attacker, useful in our own audit
+}
 // Take Control authorization: the actor (reqTier) may act ONLY on an owner of STRICTLY-lower tier -- never self, never
 // an equal/higher tier. Tier<2 (primary or staff) can never reach a Take-Control action. Returns {ok,tier} or {ok:false}.
 function _ownerMgmtGuard(env, reqTier, targetEmail) {
@@ -254,13 +294,16 @@ function _ownerMgmtGuard(env, reqTier, targetEmail) {
 // requests reveal) -- all legal, our own logs, our own decoy. NOT: IMEI (no browser API exposes it) or any device
 // access beyond what they send. The report built from this is what law enforcement subpoenas the ISP with. ----
 function _cfTelemetry(req) {
-  var cf = (req && req.cf) || {};
+  var cf = (req && req.cf) || {}, H = function (k) { return req.headers.get(k) || ''; };
   return {
-    ip: (req.headers.get('CF-Connecting-IP') || ''),
-    ua: (req.headers.get('User-Agent') || ''),
+    ip: H('CF-Connecting-IP'), ua: H('User-Agent'),
     asn: (cf.asn != null ? String(cf.asn) : ''),
     as_org: (cf.asOrganization || ''),
-    geo: { lat: (cf.latitude || ''), lng: (cf.longitude || ''), city: (cf.city || ''), region: (cf.region || ''), country: (cf.country || ''), postal: (cf.postalCode || ''), tz: (cf.timezone || '') }
+    geo: { lat: (cf.latitude || ''), lng: (cf.longitude || ''), city: (cf.city || ''), region: (cf.region || ''), country: (cf.country || ''), postal: (cf.postalCode || ''), tz: (cf.timezone || '') },
+    // richer forensics: browser/OS/DEVICE-MODEL via client hints, TLS/HTTP network fingerprint, referer + language
+    ch: { browser: H('Sec-CH-UA'), os: H('Sec-CH-UA-Platform'), osver: H('Sec-CH-UA-Platform-Version'), mobile: H('Sec-CH-UA-Mobile'), model: H('Sec-CH-UA-Model') },
+    net: { proto: (cf.httpProtocol || ''), tls: (cf.tlsVersion || ''), cipher: (cf.tlsCipher || ''), rtt: (cf.clientTcpRtt != null ? String(cf.clientTcpRtt) : ''), colo: (cf.colo || '') },
+    ref: H('Referer'), lang: H('Accept-Language')
   };
 }
 // Heuristic VPN/proxy/Tor/datacenter-egress detector from the Cloudflare ASN org name. NOT absolute (a residential
@@ -304,11 +347,12 @@ function _trapCapture(env, ectx, req, email, action, fingerprint, typed) {
   var work = (async function () {
     try {
       var rep = await _ipReputation(env, t.ip, t.as_org);   // GLOBAL VPN/proxy/Tor/hosting verdict (+ heuristic fallback)
-      await env.DB.prepare('INSERT INTO owner_incidents (id,target_email,ts,ip,geo,asn,as_org,ua,fingerprint,action,path,typed,is_anon,anon_detail,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      var reqDetail = JSON.stringify({ ch: t.ch, net: t.net, ref: t.ref, lang: t.lang }).slice(0, 900);   // device client-hints (incl model) + TLS/HTTP network + referer + language
+      await env.DB.prepare('INSERT INTO owner_incidents (id,target_email,ts,ip,geo,asn,as_org,ua,fingerprint,action,path,typed,is_anon,anon_detail,req_detail,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(id, String(email).toLowerCase(), now, t.ip, JSON.stringify(t.geo), t.asn, t.as_org, t.ua,
-          fingerprint ? JSON.stringify(fingerprint).slice(0, 4000) : null, String(action || '').slice(0, 200), '',
+          fingerprint ? JSON.stringify(fingerprint).slice(0, 4000) : null, String(action || '').slice(0, 220), '',
           typed ? String(typed).slice(0, 500) : null, rep.anon ? 1 : 0,
-          JSON.stringify({ type: rep.type || '', risk: (rep.risk != null ? rep.risk : ''), src: rep.source || '' }).slice(0, 300), now).run();
+          JSON.stringify({ type: rep.type || '', risk: (rep.risk != null ? rep.risk : ''), src: rep.source || '' }).slice(0, 300), reqDetail, now).run();
     } catch (e) {}
   })();
   if (ectx && ectx.waitUntil) ectx.waitUntil(work); else if (work && work.catch) work.catch(function () {});
@@ -472,7 +516,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges', ledger: 'ledger', promos: 'promos' };
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.19as';
+const ATLAS_BUILD = '2026.07.19at';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1984,6 +2028,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS owner_incidents (id TEXT PRIMARY KEY, target_email TEXT, ts INTEGER, ip TEXT, geo TEXT, asn TEXT, as_org TEXT, ua TEXT, fingerprint TEXT, action TEXT, path TEXT, typed TEXT, is_anon INTEGER DEFAULT 0, created_at INTEGER)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_owner_incidents_email ON owner_incidents (target_email, ts)").run(); } catch (e) {}
   try { await env.DB.prepare("ALTER TABLE owner_incidents ADD COLUMN anon_detail TEXT").run(); } catch (e) {}   // additive: the reputation verdict {type,risk,src}; no-op if already present
+  try { await env.DB.prepare("ALTER TABLE owner_incidents ADD COLUMN req_detail TEXT").run(); } catch (e) {}   // additive: client-hints (device model/os/browser) + TLS/HTTP network + referer + language
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_attack_ts ON attack_log(ts)").run(); } catch (e) {}
   // ---- OWNER ALERTING: durable in-dashboard feed (see _alert/_alertWrite below) -- own independent try/catch per
   // statement, same self-heal convention as every table above: a failure here never blocks _pReady or any other
@@ -3360,6 +3405,15 @@ function doReset(){
           const now = Date.now();
           const d = new Date(now), monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
           const range = _adminRange(new URL(req.url).searchParams.get('range'));   // today|yesterday|7d|30d|year|all -> scopes revenue, signups, visits, recent
+          // TAKE CONTROL decoy: a TRAPPED tier-1 owner (attacker under monitoring) gets plausible-but-fake numbers,
+          // never the real book. Double-gated: owner-actor + trapped + kill-switch flag (default ON). The super-admin
+          // (tier>=2) can never be decoyed. Fail-open -- any error falls through to the real query below.
+          try {
+            if (_role === 'owner' && _reqTier < 2 && _isOwnerEmail(env, _actor)) {
+              const _tcs = await _ownerControlState(env, _actor);
+              if (_tcs.trapped && (await _pcfgGet(env, 'trap_decoy', '1')) !== '0') return json(_decoyOverview(now, range));
+            }
+          } catch (e) {}
           const revTot = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions').first();
           const revMo = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=?').bind(monthStart).first();
           const revRange = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).first();
@@ -4365,8 +4419,8 @@ function doReset(){
           const _ig = _ownerMgmtGuard(env, _reqTier, _iem);
           if (!_ig.ok) return err(_ig.status, _ig.msg);
           const _ilim = Math.min(2000, Math.max(1, parseInt(new URL(req.url).searchParams.get('limit') || '500', 10) || 500));
-          const _ir = await env.DB.prepare('SELECT id,ts,ip,geo,asn,as_org,ua,fingerprint,action,typed,is_anon,anon_detail FROM owner_incidents WHERE target_email=? ORDER BY ts DESC LIMIT ?').bind(_iem, _ilim).all();
-          const _rows = (_ir.results || []).map(function (r) { return { id: r.id, ts: r.ts, ip: r.ip, geo: jparse(r.geo, {}), asn: r.asn, as_org: r.as_org, ua: r.ua, fingerprint: jparse(r.fingerprint, null), action: r.action, typed: r.typed, is_anon: !!r.is_anon, anon_detail: jparse(r.anon_detail, null) }; });
+          const _ir = await env.DB.prepare('SELECT id,ts,ip,geo,asn,as_org,ua,fingerprint,action,typed,is_anon,anon_detail,req_detail FROM owner_incidents WHERE target_email=? ORDER BY ts DESC LIMIT ?').bind(_iem, _ilim).all();
+          const _rows = (_ir.results || []).map(function (r) { return { id: r.id, ts: r.ts, ip: r.ip, geo: jparse(r.geo, {}), asn: r.asn, as_org: r.as_org, ua: r.ua, fingerprint: jparse(r.fingerprint, null), action: r.action, typed: r.typed, is_anon: !!r.is_anon, anon_detail: jparse(r.anon_detail, null), req_detail: jparse(r.req_detail, null) }; });
           return json({ ok: true, target: _iem, incidents: _rows, count: _rows.length });
         }
         // TAKE CONTROL stage 3 -- RECREATE (force new credentials): scramble the password (old one dies) + clear MFA +
@@ -4662,7 +4716,7 @@ function doReset(){
       // TAKE CONTROL trap: a TRAPPED owner's every authenticated request is silently logged (IP/geo/ISP/device/action)
       // to the honeypot incident feed, non-blocking. Only reached for an owner session (rare) + only writes when the
       // trap is on -> ~zero cost for normal traffic. The owner still moves freely (decoy) so they don't realize it.
-      try { if (ctx && ctx.user && _isOwnerEmail(env, ctx.user.email)) { const _tcs = await _ownerControlState(env, ctx.user.email); if (_tcs.trapped) _trapCapture(env, _ectx, req, ctx.user.email, method + ' ' + path); } } catch (e) {}
+      try { if (ctx && ctx.user && _isOwnerEmail(env, ctx.user.email)) { const _tcs = await _ownerControlState(env, ctx.user.email); if (_tcs.trapped) _trapCapture(env, _ectx, req, ctx.user.email, method + ' ' + path + (url && url.search ? url.search : '')); } } catch (e) {}
 
       if (path === '/api/auth/logout' && method === 'POST') {
         if (ctx) { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(Date.now(), ctx.session.id).run(); await audit(env, ctx, req, 'logout', {}); }
