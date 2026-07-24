@@ -3423,9 +3423,14 @@ function doReset(){
           const comms = prof.settings.comms || {};
           const vars = { name: String(b.name).split(' ')[0], business: prof.name, asset: assetName, periods: periods, unit: cfg.unit || 'day', total: money2(q.totalCents), deposit: money2(q.depositCents), ref: bref };
           const cTpl = (comms.autos && comms.autos.confirm) || {};
+          vars.link = _portalUrl;   // {link} token for the owner's composed confirm body
+          const _cBtn = '<p style="margin:18px 0"><a href="' + esc(_portalUrl) + '" style="display:inline-block;background:' + esc((prof.brand && prof.brand.color) || '#1E6E4E') + ';color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:600">Sign &amp; manage your booking</a></p><p style="color:#888;font-size:12px">Or open: ' + esc(_portalUrl) + '</p>';
+          // G3 FIX: use the owner's COMPOSED confirm body when set (rendered + escaped + newline-safe); else the built-in default. The portal button is always appended so the customer always has the actionable link.
+          const _cBody = cTpl.body ? ('<p>' + renderTpl(cTpl.body, vars).split('\n').map(function (l) { return esc(l); }).join('<br>') + '</p>')
+            : ('<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p>' + (cfg.terms ? ('<p style="color:#666;font-size:13px"><b>Cancellation policy:</b> ' + esc(cfg.terms) + '</p>') : '') + '<p>' + esc(prof.name) + ' will confirm with you shortly.</p>');
           const custMail = await sendEmail(env, { to: b.email, tenant: prof.id, transactional: true, fromName: comms.fromName || prof.name, replyTo: comms.replyTo,
             subject: renderTpl(cTpl.subject || 'Your booking with {business} is received', vars),
-            html: _emailShell(prof, '<h2>Thanks, ' + esc(vars.name) + '!</h2><p>We received your booking request for <b>' + esc(assetName) + '</b> (' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + ').</p><p>Estimated total <b>' + money2(q.totalCents) + '</b>' + (q.depositCents ? ', deposit <b>' + money2(q.depositCents) + '</b>' : '') + '. Reference <b>' + esc(bref) + '</b>.</p>' + (cfg.terms ? ('<p style="color:#666;font-size:13px"><b>Cancellation policy:</b> ' + esc(cfg.terms) + '</p>') : '') + '<p>' + esc(prof.name) + ' will confirm with you shortly.</p>' + '<p style="margin:18px 0"><a href="' + esc(_portalUrl) + '" style="display:inline-block;background:' + esc((prof.brand && prof.brand.color) || '#1E6E4E') + ';color:#fff;text-decoration:none;padding:11px 20px;border-radius:8px;font-weight:600">Sign &amp; manage your booking</a></p><p style="color:#888;font-size:12px">Or open: ' + esc(_portalUrl) + '</p>') });
+            html: _emailShell(prof, _cBody + _cBtn) });
           const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
           if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
             subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
@@ -5501,13 +5506,13 @@ function doReset(){
       // get created, listed, re-scoped, and removed. Guardrails: tenant-scoped everywhere; NEVER invite/promote to
       // 'owner'; NEVER touch the owner row or your own access; removing a member revokes their live sessions at once. ----
       if (path === '/api/team' && method === 'GET') {
-        if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage the team.');
+        if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to manage the team.');   // teamManage, NOT settings: a manager has the Settings module but is configured WITHOUT team management (client preset caps.teamManage=false), so gating on 'settings' over-granted team admin. Owner-only unless a custom role is explicitly granted teamManage.
         const rows = (await env.DB.prepare("SELECT id,email,role,caps,status,created_at,last_login FROM users WHERE tenant_id=? ORDER BY (role='owner') DESC, created_at").bind(ctx.tenant_id).all()).results || [];
         return json({ ok: true, team: rows.map(function (u) { return { id: u.id, email: u.email, role: u.role, caps: jparse(u.caps, null), status: u.status || 'active', pending: u.status === 'invited', isOwner: u.role === 'owner', self: u.id === ctx.user.id, created_at: u.created_at, last_login: u.last_login || null }; }) });
       }
       if (path === '/api/team/invite' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
-        if (!_can(ctx, 'settings')) return err(403, 'Only an owner or manager can invite teammates.');
+        if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to invite teammates.');   // teamManage cap (owner-only by default) -- see the GET note above
         await ensurePlatformSchema(env);
         if (!await rateLimit(env, 'teaminv:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before inviting more people.');
         const body = await req.json().catch(() => ({}));
@@ -5534,7 +5539,7 @@ function doReset(){
       }
       if (path === '/api/team' && (method === 'PUT' || method === 'DELETE')) {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
-        if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage the team.');
+        if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to manage the team.');   // teamManage cap (owner-only by default) -- see the GET note above
         const body = method === 'PUT' ? await req.json().catch(() => ({})) : {};
         const tid = method === 'PUT' ? String(body.id || '') : (url.searchParams.get('id') || '');
         if (!tid) return err(400, 'Which teammate?');
@@ -6982,7 +6987,7 @@ function doReset(){
 async function _runLifecycleEmails(env, now) {
   if (!env.RESEND_KEY) return;
   const DAY = 86400000;
-  const rows = await env.DB.prepare('SELECT id,tenant_id,data,starts,ends FROM bookings WHERE (starts BETWEEN ? AND ?) OR (ends BETWEEN ? AND ?) LIMIT 500')
+  const rows = await env.DB.prepare('SELECT id,tenant_id,data,starts,ends,portal_token FROM bookings WHERE (starts BETWEEN ? AND ?) OR (ends BETWEEN ? AND ?) LIMIT 500')
     .bind(now, now + 7 * DAY, now - 40 * DAY, now).all();
   const list = (rows && rows.results) || []; const tcache = {};
   for (let i = 0; i < list.length; i++) {
@@ -6990,9 +6995,16 @@ async function _runLifecycleEmails(env, now) {
     if (tcache[b.tenant_id] === undefined) { const tr = await env.DB.prepare('SELECT name,brand,settings FROM tenants WHERE id=?').bind(b.tenant_id).first(); tcache[b.tenant_id] = tr ? tenantProfile(tr) : null; }
     const pr = tcache[b.tenant_id]; if (!pr) continue;
     const comms = (pr.settings && pr.settings.comms) || {}; const autos = comms.autos || {}; const sent = d.autoSent || {};
-    const vars = { name: String(d.cust || 'there').split(' ')[0], business: pr.name, asset: d.asset || '', ref: b.id };
+    const _origin = env.APP_ORIGIN || 'https://atlasrental.io';
+    const _q = _quoteCents(d.quote || {});
+    const vars = { name: String(d.cust || 'there').split(' ')[0], business: pr.name, asset: d.asset || '', ref: b.id,
+      link: (b.portal_token ? (_origin + '/api/portal/' + b.portal_token) : _origin),   // {link} -> the customer's portal (sign/pay/manage)
+      total: money2(Number(_q.totalCents) || 0),
+      dates: (b.starts ? new Date(Number(b.starts)).toISOString().slice(0, 10) : '') + (b.ends ? (' to ' + new Date(Number(b.ends)).toISOString().slice(0, 10)) : '') };
     const fromName = comms.fromName || pr.name; const reply = comms.replyTo; let changed = false;
-    const send = function (a, subjD, inner, transactional) { return sendEmail(env, { to: d.custEmail, tenant: b.tenant_id, transactional: !!transactional, fromName: fromName, replyTo: reply, subject: renderTpl((a && a.subject) || subjD, vars), html: _emailShell(pr, inner) }); };
+    // G3 FIX: send the owner's COMPOSED body when they have one (rendered with {name}/{business}/{asset}/{dates}/{total}/{link},
+    // newline-safe + escaped); else the built-in default `inner`. Before this, every lifecycle email discarded the owner's body.
+    const send = function (a, subjD, inner, transactional) { var _bd = (a && a.body) ? ('<p>' + renderTpl(a.body, vars).split('\n').map(function (l) { return esc(l); }).join('<br>') + '</p>') : inner; return sendEmail(env, { to: d.custEmail, tenant: b.tenant_id, transactional: !!transactional, fromName: fromName, replyTo: reply, subject: renderTpl((a && a.subject) || subjD, vars), html: _emailShell(pr, _bd) }); };
     if (autos.reminder && autos.reminder.on && b.starts && !sent.reminder && now >= b.starts - ((autos.reminder.days || 1) * DAY) && now < b.starts) {
       await send(autos.reminder, 'Your booking with {business} is coming up', '<h2>See you soon, ' + esc(vars.name) + '</h2><p>A reminder about your booking <b>' + esc(d.asset || '') + '</b> (ref ' + esc(b.id) + ').</p>', true); sent.reminder = now; changed = true;
     }
