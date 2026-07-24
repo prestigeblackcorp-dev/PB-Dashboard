@@ -3315,6 +3315,13 @@ function doReset(){
           if (Number(_pa.minLen) > 0 && periods < Number(_pa.minLen)) return err(400, 'This option needs at least ' + _pa.minLen + ' ' + _unit + (Number(_pa.minLen) > 1 ? 's' : '') + '.');
           if (Number(_pa.maxLen) > 0 && periods > Number(_pa.maxLen)) return err(400, 'This option allows at most ' + _pa.maxLen + ' ' + _unit + (Number(_pa.maxLen) > 1 ? 's' : '') + '.');
           if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : Date.parse((bl && (bl.start || bl.from)) || '')); var e = Number(bl && bl.endTs != null ? bl.endTs : Date.parse((bl && (bl.end || bl.to)) || '')); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return err(409, 'Those dates are unavailable for this option. Please choose different dates.');
+          try {   // #298 IDEMPOTENCY: a double-tapped submit repeats the EXACT same booking (same asset + dates + customer) -> return the existing
+            // one instead of creating a duplicate. Keyed on existing columns (no migration): tenant + starts + ends within a 10-min window, then asset + email.
+            const _rec = await env.DB.prepare("SELECT id, portal_token, data FROM bookings WHERE tenant_id=? AND starts=? AND ends=? AND created_at > ?").bind(prof.id, startTs, endTs, now - 600000).all();
+            const _em0 = b.email.toLowerCase();
+            const _hit = (_rec.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return d && d.asset === assetName && String(d.custEmail || '').toLowerCase() === _em0; })[0];
+            if (_hit) return json({ ok: true, ref: _hit.id, portal: url.origin + '/api/portal/' + _hit.portal_token, deduped: true, message: 'Your booking request was already received.' });
+          } catch (e) {}
           try {   // double-booking guard: overlap vs this tenant's active bookings (match asset name in data; asset_id column is null for dashboard-synced rows)
             const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed')").bind(prof.id).all();
             const _clash = (_act.results || []).some(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return d && d.asset === assetName && Number(r.starts) < endTs && Number(r.ends) > startTs; });
@@ -3353,6 +3360,13 @@ function doReset(){
             await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
           } catch (e) { return err(500, 'Could not save your booking. Please try again.'); }
+          try {   // #297 DOUBLE-BOOKING RACE (TOCTOU close): the pre-check above can be raced by a concurrent submit that also passed it. After
+            // inserting, re-check for an overlapping ACTIVE booking of the SAME asset (a DIFFERENT row); a deterministic tie-break (earliest
+            // created_at, then smallest id) keeps exactly ONE -- the loser deletes its own row + 409s, BEFORE any email / webhook / charge below.
+            const _post = await env.DB.prepare("SELECT id, created_at, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed') AND id != ? AND starts < ? AND ends > ?").bind(prof.id, bref, endTs, startTs).all();
+            const _lost = (_post.results || []).some(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} if (!d || d.asset !== assetName) return false; var rc = Number(r.created_at) || 0; return (rc < now) || (rc === now && String(r.id) < String(bref)); });
+            if (_lost) { try { await env.DB.prepare('DELETE FROM bookings WHERE id=?').bind(bref).run(); } catch (e) {} return err(409, 'Those dates were just taken by another guest. Please choose different dates.'); }
+          } catch (e) {}
           if (_bumpPromo) { try { await _promoBump(env, prof.id, _bumpPromo); } catch (e) {} }   // count the redemption only after the booking actually saved
           const _portalUrl = url.origin + '/api/portal/' + token;   // the tokenized link the customer signs + pays + manages from
           const comms = prof.settings.comms || {};
@@ -5114,6 +5128,18 @@ function doReset(){
         const tr = await env.DB.prepare('SELECT name,brand,settings,money FROM tenants WHERE id=?').bind(brow.tenant_id).first();
         const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
         const d = jparse(brow.data, {});
+        // #300 PORTAL LINK EXPIRY + REVOCATION: a link is valid from creation through the trip end + a 90-day grace (so receipts stay
+        // reachable), then expires; an owner/system can revoke it early via d.portalRevoked. Stops an old leaked link exposing customer
+        // data or allowing sign/pay forever. The owner's OWN dashboard view is unaffected (it never uses the portal token).
+        {
+          const _pExpMs = Math.max(0, parseInt(env.PORTAL_GRACE_DAYS, 10) || 90) * 86400000;
+          const _pEnds = Number(brow.ends) || 0, _pRevoked = !!(d && d.portalRevoked);
+          const _pExpired = _pEnds > 0 && Date.now() > _pEnds + _pExpMs;
+          if (_pRevoked || _pExpired) {
+            if (psub) return err(410, _pRevoked ? 'This booking link has been revoked.' : 'This booking link has expired.');
+            return new Response(_pageDoc('Link expired', (pr.brand.color || '#1E6E4E'), '<div class="card"><h2>This link ' + (_pRevoked ? 'was revoked' : 'has expired') + '</h2><p class="muted">For security, a booking link expires after the rental is complete. Contact ' + esc(pr.name) + ' if you still need access.</p></div>', ''), { status: 410, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+          }
+        }
         const _agrText = (pr.settings && pr.settings.legal && pr.settings.legal.agreement && pr.settings.legal.agreement.text) ||
           (pr.name + ' - Rental Agreement.\n\nBy signing below, the renter agrees to rent the item in this booking; to return it on time and in the same condition; to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage; and to the owner\'s posted cancellation policy. The renter is responsible for the item during the rental and represents they carry valid, applicable coverage. This agreement is governed by the laws of the owner\'s jurisdiction.');
         if (psub === 'data' && method === 'GET') {
@@ -5138,6 +5164,11 @@ function doReset(){
           // 'security' = the SEPARATE refundable deposit -- authorize a hold ($0 fee to release) unless the tenant set it to
           // charge. Security is never part of the total, so paying the balance never includes it.
           var amt, _secHold = (q.securityHold !== false);
+          // #301 A card AUTHORIZATION (hold) is only valid ~7 days. If this rental's RETURN is more than ~6.5 days out, a hold placed now
+          // would EXPIRE before you could capture it at return -> so for a long rental the refundable security deposit is CHARGED now
+          // (captured) and refunded at return, instead of held. Short rentals keep the $0-fee hold. Prevents a silently-dead hold.
+          var _holdWouldExpire = (Number(brow.ends || 0) - Date.now()) > 6.5 * 86400000;
+          if (kind === 'security' && _secHold && _holdWouldExpire) _secHold = false;
           if (kind === 'balance') amt = Math.max(0, (Number(q.totalCents) || 0) - (Number(q.depositCents) || 0));
           else if (kind === 'security') amt = Number(q.securityCents) || 0;
           else amt = (Number(q.depositCents) || Number(q.totalCents) || 0);
@@ -5146,7 +5177,7 @@ function doReset(){
             capture: (kind === 'security' && _secHold) ? 'manual' : 'automatic',
             successUrl: url.origin + '/api/portal/' + token + '?paid=1', cancelUrl: url.origin + '/api/portal/' + token,
             metadata: { booking: brow.id, tenant: brow.tenant_id, kind: kind, hold: (kind === 'security' && _secHold) ? '1' : '0' } });
-          return co.ok ? json({ ok: true, payUrl: co.url }) : json({ ok: false, reason: co.reason, message: 'Could not start checkout.' });
+          return co.ok ? json({ ok: true, payUrl: co.url, charged: (kind === 'security' && !_secHold), message: (kind === 'security' && !_secHold && _holdWouldExpire) ? 'Because this rental runs longer than a card hold can last, your refundable deposit is charged now and refunded at return.' : '' }) : json({ ok: false, reason: co.reason, message: 'Could not start checkout.' });
         }
         // #205 remote e-signature with a server-captured legal trail: real IP (CF-Connecting-IP) + user-agent + server timestamp +
         // a SHA-256 fingerprint of the exact agreement text signed. None of these can be spoofed by the client, so it's defensible.
@@ -5902,6 +5933,9 @@ function doReset(){
         const body = await req.json().catch(() => ({}));
         const origin = env.APP_ORIGIN || 'https://atlasrental.io';
         const kind = String(body.kind || '');
+        // #299 DUPLICATE-CHECKOUT GUARD: a fast double-click could open two checkouts -> two subscriptions. A short 1-per-6s lock blocks the
+        // accidental double-tap (a genuine retry a few seconds later still works). The 20/hr limit above is too coarse to catch a double-click.
+        if (!await rateLimit(env, 'bco1:' + ctx.tenant_id, 1, 6000)) return err(429, 'A checkout is already opening -- please wait a few seconds and try again.');
         let name, amountCents, mode = 'payment', interval, meta = { tenant: ctx.tenant_id, email: ctx.user.email };
         if (kind === 'plan' || kind === 'trial') { await ensurePlatformSchema(env); const _ex = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); if (_ex && _ex.stripe_sub) return err(409, 'You already have a subscription - use Change plan to switch tiers.'); }   // backstop: never open a 2nd (duplicate) subscription
         if (kind === 'plan') {
