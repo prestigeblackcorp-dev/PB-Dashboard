@@ -3678,6 +3678,21 @@ function doReset(){
               else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
               else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(Date.now(), obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'. #281: stamp delinquent_since ONCE (COALESCE) so a repeat past_due webhook never resets the 3-day takedown grace clock. (dunning_invoice/dunning_next are stamped by invoice.payment_failed, not here -- this event alone carries no invoice id to chase.)
               else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // PART A4: stop dunning a subscription that no longer exists in this state. LAUNCH-FIX (sweep): also clear delinquent_since so a lapsed->cancelled tenant's public site is never left taken down under a stale timestamp.
+            } else if (md.tenant && md.billing === 'asset_unlock') {
+              // DELINQUENCY RELOCK: the $11.99/mo per-asset unlock sub went terminal-unpaid (Stripe exhausted its
+              // retries) -> relock that specific over-cap asset now (drop it by SUB id, survives an asset rename). An
+              // 'active'/'trialing' update is a no-op; 'past_due' keeps the asset live through Stripe's short retry
+              // grace (mirrors the plan's dunning posture) and only relocks once the state is terminal. This is the
+              // companion to subscription.deleted below -- covers Stripe configs that mark a sub 'unpaid' without deleting it.
+              const _ast = String(obj.status || '');
+              if (['unpaid', 'canceled', 'incomplete_expired'].indexOf(_ast) >= 0) {
+                await ensurePlatformSchema(env);
+                const _uprow = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(md.tenant).first();
+                let _upul = _hqJson(_uprow && _uprow.asset_unlocks, []) || [];
+                const _upbefore = _upul.length;
+                _upul = _upul.filter(function (u) { return !(u && u.sub === obj.id); });
+                if (_upul.length !== _upbefore) { await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_upul), Date.now(), md.tenant).run(); await audit(env, { tenant_id: md.tenant }, req, 'billing.asset_unlock_delinquent', { sub: obj.id, status: _ast }); }
+              }
             }
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
             await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub. PART A4: also stop dunning -- a deleted subscription can never be paid via the old invoice again. LAUNCH-FIX (sweep): also clear delinquent_since so a lapsed->cancelled tenant's public site isn't left taken down under a stale timestamp.
@@ -3964,7 +3979,7 @@ function doReset(){
           const revMo = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=?').bind(monthStart).first();
           const revRange = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).first();
           const byKind = await env.DB.prepare('SELECT kind, COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<? GROUP BY kind').bind(range.start, range.end).all();
-          const by_kind = { subscription: 0, credits: 0, website: 0, trial: 0 };
+          const by_kind = { subscription: 0, credits: 0, website: 0, asset_unlock: 0, domain: 0, trial: 0 };
           (byKind.results || []).forEach(function (r) { const k = (r.kind === 'plan') ? 'subscription' : r.kind; by_kind[k] = (by_kind[k] || 0) + (r.c || 0); });
           // SQL-aggregated (was: fetch EVERY tenant row + bucket in JS). Same bucketing rules, now scales with result
           // size not tenant count; parity with the old JS loop verified on a mock dataset before this shipped.
