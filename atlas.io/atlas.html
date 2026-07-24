@@ -2714,10 +2714,12 @@ const Atlas = (function(){
           +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.paywallStartTrial()">'+c.plan+'</button>'
           +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.logout()">Sign out</button>'
           +'<p class="verify-hint">Already added a card? Switch back to this tab and we&rsquo;ll recheck automatically.</p>')
-        : ('<p>You&rsquo;ll get your dashboard back the moment your payment is sorted.</p>'
-          +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.paywallUpdatePayment()">Update payment method</button>'
-          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallChoosePlan()">'+c.plan+'</button>'
-          +'<button class="btn btn--ghost btn--full" style="margin-top:6px" onclick="Atlas.logout()">Sign out</button>'
+        : ('<p>Update your card or switch to a plan that fits &mdash; you&rsquo;ll be back in instantly. We keep your data safe either way.</p>'
+          +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.paywallUpdatePayment()">Pay now</button>'
+          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallRetryPayment()">Retry payment</button>'
+          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallChoosePlan()">Switch to a cheaper plan</button>'
+          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallCancelPlan()">Cancel my plan</button>'
+          +'<p style="margin-top:14px"><span class="link" style="cursor:pointer;font-size:13px" onclick="Atlas.logout()">Sign out</span></p>'
           +'<p class="verify-hint">Already paid? Switch back to this tab and we&rsquo;ll recheck automatically.</p>'))
       +'</div>';
     e.classList.add('on');
@@ -2726,6 +2728,26 @@ const Atlas = (function(){
   function hidePaywall(){ var e=document.getElementById('paywallGate'); if(e) e.classList.remove('on'); }
   function paywallUpdatePayment(){ billingPortal(); }
   function paywallChoosePlan(){ openPlans(); }
+  // PART B4: "Retry payment" -- for after the tenant already fixed their card via paywallUpdatePayment (billingPortal)
+  // and wants back in NOW rather than waiting for the next dunning cron pass. Worker: POST /api/billing/retry-now
+  // (reachable while locked -- _PAYMENT_OPEN allows the whole /api/billing/ prefix). On success, Stripe's invoice.paid
+  // webhook has already flipped billing_state back to 'ok' by the time this returns, so _paywallMaybeRecheck's GET
+  // /api/auth/me immediately confirms it and dismisses the gate.
+  function paywallRetryPayment(){
+    toast('Retrying payment...');
+    _api('/api/billing/retry-now',{method:'POST'}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ toast('Payment succeeded - welcome back!'); _paywallMaybeRecheck(); }
+      else { toast((res.json&&res.json.error)||'Could not retry payment yet - try updating your card.'); }
+    }).catch(function(){ toast('Network error retrying payment'); });
+  }
+  // PART B4: "Cancel my plan" -- the 3rd owner-specified unlock path off the payment paywall. Reuses the existing
+  // _billingCancel() (worker: POST /api/billing/cancel) exactly as-is; only a confirm is new here.
+  function paywallCancelPlan(){
+    // From the payment paywall the tenant is already past-due (the current period is UNPAID), so there is no paid-through
+    // time left -- canceling ends access now. No refund (nothing was paid for this period). Data is always kept.
+    if(!confirm('Cancel your plan?\n\nNo further charges will be made and your data is kept. Because your current period is unpaid, access ends now -- you can resubscribe anytime. No refund is issued.')) return;
+    _billingCancel();
+  }
   // #280: primary action on the needs_card gate -- same hosted-Stripe-checkout helper the rest of billing already
   // uses; the trial-card webhook (worker.js checkout.session.completed, md.billing==='trial') sets card_on_file+
   // stripe_sub, which is exactly what flips this tenant's billing_state back to 'ok'.
@@ -7675,7 +7697,7 @@ const Atlas = (function(){
       toast((res.json&&res.json.error)||'Could not open the billing portal');
     }).catch(function(){ toast('Network error opening billing'); }); }
   function cancelPlan(){ if(!_guard('billing','Managing billing'))return;
-    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel at the end of this billing period? You keep full access and all your data until then. No refund for the current period.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel your plan?\n\nYour next cycle will not be charged and you keep full access through the end of the period you have already paid for. No refund or credit is issued for unused time. Your data is kept.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
     if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
   function openCredits(){
     openModal('<div class="modal__head"><h3>Atlas.io credits</h3>'+_xBtn()+'</div>'
@@ -8882,7 +8904,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,showSignupPlans,_hideSignupPlans,_signupPickPlan,
+    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
