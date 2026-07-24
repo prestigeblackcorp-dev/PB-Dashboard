@@ -967,6 +967,31 @@ async function _hqBuildBrief(env) {
 // ===== Atlas Counsel: institutional memory. Appends a DATED, impact-ranked "what deserves attention" list to counsel_journal
 // once/day (force to re-run). DETERMINISTIC scoring from real data -> works with the AI key OFF; AI only adds a narrative line.
 // A re-run refreshes the un-acted rows but PRESERVES what the owner already marked done/dismissed (the feedback loop). =====
+// #256 MES-A5 nightly continuous-improvement self-audit: extends Counsel from BUSINESS findings (churn/tickets/revenue) to
+// the PLATFORM's OWN health -- runtime errors, security/intrusion signals, webhook dead-letters (#257), payload bloat, and
+// missing secrets. 100% DETERMINISTIC (cheap D1 counts; works with the AI key OFF -> adds ZERO AI cost + never touches the
+// nightly dreaming). Returns raw findings that _counselCompute folds into the SAME impact-ranked "attention today" list, so
+// engineering/ops regressions surface in the card the owner already reads, at layer 'L0' (platform health ranks above biz).
+async function _counselSelfAudit(env, ctx) {
+  ctx = ctx || {}; const now = ctx.now || Date.now(); const avg = ctx.avg || 4999; const out = []; const H24 = now - 24 * 3600000;
+  try { const er = ((await env.DB.prepare('SELECT COUNT(*) sigs, COALESCE(SUM(count),0) hits FROM platform_errors WHERE last_at>=?').bind(H24).first()) || {});
+    const sigs = er.sigs || 0, hits = er.hits || 0;
+    if (sigs > 0) { const top = await env.DB.prepare('SELECT name,message,path,count FROM platform_errors WHERE last_at>=? ORDER BY count DESC LIMIT 1').bind(H24).first();
+      out.push({ layer: 'L0', kind: 'ops_errors', sev: (hits >= 50 || sigs >= 8) ? 'high' : 'med', impact: Math.round(avg / 2) + hits * 40, title: sigs + ' error type' + (sigs > 1 ? 's' : '') + ' hit ' + hits + 'x in 24h', body: top ? ('Most frequent: ' + String(top.name || 'Error') + ' at ' + String(top.path || '?') + ' (' + (top.count || 0) + 'x) -- ' + String(top.message || '').slice(0, 120)) : 'Runtime errors are accumulating.', action: 'Open the error log in the master dash and fix the top signature -- it is the highest-leverage bug right now.', tid: null }); }
+  } catch (e) {}
+  try { const at = ((await env.DB.prepare('SELECT COUNT(*) c FROM attack_log WHERE ts>=?').bind(H24).first()) || {}).c || 0;
+    let inc = 0; try { inc = ((await env.DB.prepare('SELECT COUNT(*) c FROM owner_incidents WHERE ts>=?').bind(H24).first()) || {}).c || 0; } catch (e) {}
+    if (inc > 0) out.push({ layer: 'L0', kind: 'security_incident', sev: 'high', impact: avg * 4 + inc * 200, title: inc + ' owner-account intrusion attempt' + (inc > 1 ? 's' : '') + ' in 24h', body: 'The break-glass honeypot recorded ' + inc + ' attempt(s) against a protected owner account in the last day.', action: 'Review Take Control incidents now; confirm the real owner accounts are safe and rotate anything that looks real.', tid: null });
+    else if (at >= 40) out.push({ layer: 'L0', kind: 'security_attacks', sev: 'med', impact: Math.round(avg / 3) + at, title: at + ' blocked attack attempts in 24h', body: 'Elevated blocked traffic (rate-limit / bad-auth / SSRF probes) in the last day.', action: 'Skim the attack log for a pattern; ban an IP or email if one source dominates.', tid: null });
+  } catch (e) {}
+  try { const dl = ((await env.DB.prepare("SELECT COUNT(*) c FROM webhook_deliveries WHERE status='dead' AND updated_at>=?").bind(H24).first()) || {}).c || 0;
+    if (dl > 0) out.push({ layer: 'L0', kind: 'reliability_webhooks', sev: 'med', impact: Math.round(avg / 2) + dl * 60, title: dl + ' webhook deliver' + (dl > 1 ? 'ies' : 'y') + ' gave up after every retry', body: 'A tenant webhook receiver stayed down through the full backoff schedule -- events are being lost for them.', action: 'Tell the affected tenant their endpoint is failing; have them fix/replace the URL, then re-enable it.', tid: null });
+  } catch (e) {}
+  try { const br = parseInt(await _pcfgGet(env, 'big_rows', '0'), 10) || 0; if (br >= 5) out.push({ layer: 'L0', kind: 'ops_bloat', sev: 'low', impact: Math.round(avg / 5) + br * 20, title: br + ' oversized booking rows (>200KB)', body: 'Large rows slow sync + reads and inflate storage -- usually inline photos/signatures that should be offloaded.', action: 'Offload inline images to R2 for those bookings (or trim the payload) to keep reads fast at scale.', tid: null }); } catch (e) {}
+  try { const miss = []; ['SESSION_KEY', 'ENC_KEY', 'STRIPE_WEBHOOK_SECRET', 'OWNER_EMAIL'].forEach(function (k) { if (!env[k]) miss.push(k); });
+    if (miss.length) out.push({ layer: 'L0', kind: 'ops_config', sev: 'high', impact: avg * 5, title: 'Missing platform secret' + (miss.length > 1 ? 's' : '') + ': ' + miss.join(', '), body: 'A required Worker secret is unset -- sessions, encryption, Stripe verification, or owner alerts may be silently degraded.', action: 'Set the missing secret(s) in the Cloudflare Worker settings and redeploy.', tid: null }); } catch (e) {}
+  return out;
+}
 async function _counselCompute(env, opts) {
   opts = opts || {};
   try { await ensurePlatformSchema(env); } catch (e) {}
@@ -1006,6 +1031,9 @@ async function _counselCompute(env, opts) {
     if (decliningN >= 2) add('L1', 'revenue_decline', 'high', decliningN * avg * 6, decliningN + ' tenants with revenue down >30% vs the prior period', 'A cluster of declining accounts is an early churn + support signal across the base.', 'Reach out proactively; look for a shared cause (seasonality, a broken flow, pricing).', null);
     if (overdueN >= 2) add('L2', 'overdue', 'med', overdueN * Math.round(avg / 2), overdueN + ' tenants have overdue returns right now', 'Overdue returns tie up assets and risk disputes across the platform.', 'Nudge those tenants to run the overdue-return flow.', null);
   } catch (e) {}
+  // #256: fold the nightly PLATFORM-HEALTH self-audit (errors / security / webhook dead-letters / bloat / secrets) into the
+  // same feedback-weighted list -> engineering + ops regressions surface in "attention today", not just business ones.
+  try { (await _counselSelfAudit(env, { now: now, avg: avg, yr: yr })).forEach(function (x) { add(x.layer || 'L0', x.kind, x.sev, x.impact, x.title, x.body, x.action, x.tid); }); } catch (e) {}
   F.sort(function (a, b) { return (b.impact_score || 0) - (a.impact_score || 0); });
   var narrative = '';
   try {
