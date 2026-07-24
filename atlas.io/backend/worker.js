@@ -967,11 +967,46 @@ async function _hqBuildBrief(env) {
 // ===== Atlas Counsel: institutional memory. Appends a DATED, impact-ranked "what deserves attention" list to counsel_journal
 // once/day (force to re-run). DETERMINISTIC scoring from real data -> works with the AI key OFF; AI only adds a narrative line.
 // A re-run refreshes the un-acted rows but PRESERVES what the owner already marked done/dismissed (the feedback loop). =====
-// #256 MES-A5 nightly continuous-improvement self-audit: extends Counsel from BUSINESS findings (churn/tickets/revenue) to
-// the PLATFORM's OWN health -- runtime errors, security/intrusion signals, webhook dead-letters (#257), payload bloat, and
-// missing secrets. 100% DETERMINISTIC (cheap D1 counts; works with the AI key OFF -> adds ZERO AI cost + never touches the
-// nightly dreaming). Returns raw findings that _counselCompute folds into the SAME impact-ranked "attention today" list, so
-// engineering/ops regressions surface in the card the owner already reads, at layer 'L0' (platform health ranks above biz).
+// #288 CONTINUOUS-LEARNING ENGINE (direction: UPWARD only). The master-dash Counsel learns from what tenants' Atlas.io AI
+// actually DID -- which actions stick (applied = good) vs get reverted (undone/failed = bad), and what they use it for --
+// aggregated across the whole fleet from the ai_events telemetry. It records action TYPES + outcomes ONLY (never request
+// text, never a tenant's identity in the surfaced result), so it is privacy-safe AND costs nothing (no AI, no credits).
+// NOTHING flows the other way: cross-fleet data is NEVER pushed down into a tenant's AI. A tenant's own AI learns ONLY
+// from its OWN history (see _tenantAiSelfLearn). Owner constraint, verbatim: "learn from tenants ai requests things done
+// good/bad etc not other way around" + "tenants ai learns from tenant ai". Recomputed daily by the cron -> platform_config.
+async function _aioLearnings(env) {
+  try {
+    await ensurePlatformSchema(env);
+    const now = Date.now(); const since = now - 30 * 86400000;
+    let byKind = {}, total = 0;
+    try { (((await env.DB.prepare('SELECT kind, COUNT(*) c FROM ai_events WHERE ts>=? GROUP BY kind').bind(since).all()).results) || []).forEach(function (r) { byKind[r.kind] = r.c || 0; total += r.c || 0; }); } catch (e) {}
+    const applied = byKind.applied || 0, undone = byKind.undone || 0, failed = byKind.failed || 0, cancelled = byKind.cancelled || 0, asks = byKind.ask || 0;
+    let topUsed = [], highUndo = [];
+    try { topUsed = (((await env.DB.prepare("SELECT action_type t, COUNT(*) c FROM ai_events WHERE ts>=? AND kind IN ('applied','proposed') AND action_type<>'' GROUP BY action_type ORDER BY c DESC LIMIT 6").bind(since).all()).results) || []).map(function (r) { return { type: r.t, n: r.c || 0 }; }); } catch (e) {}
+    // actions users keep REVERTING = the AI is likely proposing them wrong (or the flow confuses people) -> a real quality signal the owner can fix.
+    try { highUndo = (((await env.DB.prepare("SELECT action_type t, SUM(CASE WHEN kind='applied' THEN 1 ELSE 0 END) ap, SUM(CASE WHEN kind='undone' THEN 1 ELSE 0 END) un FROM ai_events WHERE ts>=? AND action_type<>'' GROUP BY action_type HAVING ap>=4 AND un>0 ORDER BY (CAST(un AS REAL)/ap) DESC LIMIT 4").bind(since).all()).results) || []).map(function (r) { return { type: r.t, applied: r.ap || 0, undone: r.un || 0, rate: Math.round((r.un || 0) / Math.max(1, r.ap || 0) * 100) }; }); } catch (e) {}
+    const out = { computed_at: now, window_days: 30, total: total, applied: applied, undone: undone, failed: failed, cancelled: cancelled, asks: asks, undo_rate: applied ? Math.round(undone / applied * 100) : 0, top_used: topUsed, high_undo: highUndo };
+    try { await _pcfgSet(env, 'aio_learnings', JSON.stringify(out)); } catch (e) {}
+    return out;
+  } catch (e) { return null; }
+}
+// #288 SELF-LOOP: a tenant's OWN Atlas.io AI learns from that SAME tenant's past AI activity -- what they use it for, and
+// (crucially) what they REVERTED -- so it stops re-proposing changes they already rejected and leans into what works for
+// THEM. Reads only this tenant's ai_events (their own data), deterministic, no AI cost. Folded into the planner context on
+// the next call. NEVER mixes in any other tenant's data -- "tenants ai learns from tenant ai".
+async function _tenantAiSelfLearn(env, tid) {
+  try {
+    if (!tid) return null;
+    await ensurePlatformSchema(env);
+    const since = Date.now() - 60 * 86400000;
+    let used = [], reverted = [], asks = 0;
+    try { used = (((await env.DB.prepare("SELECT action_type t, COUNT(*) c FROM ai_events WHERE tenant_id=? AND ts>=? AND kind='applied' AND action_type<>'' GROUP BY action_type ORDER BY c DESC LIMIT 5").bind(tid, since).all()).results) || []).map(function (r) { return { type: r.t, n: r.c || 0 }; }); } catch (e) {}
+    try { reverted = (((await env.DB.prepare("SELECT action_type t, COUNT(*) c FROM ai_events WHERE tenant_id=? AND ts>=? AND kind='undone' AND action_type<>'' GROUP BY action_type ORDER BY c DESC LIMIT 5").bind(tid, since).all()).results) || []).map(function (r) { return { type: r.t, n: r.c || 0 }; }); } catch (e) {}
+    try { asks = ((await env.DB.prepare("SELECT COUNT(*) c FROM ai_events WHERE tenant_id=? AND ts>=? AND kind='ask'").bind(tid, since).first()) || {}).c || 0; } catch (e) {}
+    if (!used.length && !reverted.length && !asks) return null;
+    return { used: used, reverted: reverted, asks: asks, window_days: 60 };
+  } catch (e) { return null; }
+}
 async function _counselSelfAudit(env, ctx) {
   ctx = ctx || {}; const now = ctx.now || Date.now(); const avg = ctx.avg || 4999; const out = []; const H24 = now - 24 * 3600000;
   try { const er = ((await env.DB.prepare('SELECT COUNT(*) sigs, COALESCE(SUM(count),0) hits FROM platform_errors WHERE last_at>=?').bind(H24).first()) || {});
@@ -1034,6 +1069,22 @@ async function _counselCompute(env, opts) {
   // #256: fold the nightly PLATFORM-HEALTH self-audit (errors / security / webhook dead-letters / bloat / secrets) into the
   // same feedback-weighted list -> engineering + ops regressions surface in "attention today", not just business ones.
   try { (await _counselSelfAudit(env, { now: now, avg: avg, yr: yr })).forEach(function (x) { add(x.layer || 'L0', x.kind, x.sev, x.impact, x.title, x.body, x.action, x.tid); }); } catch (e) {}
+  // #288: Counsel learns UPWARD from what the fleet's Atlas.io AI actually did -- (1) the actions tenants keep REVERTING
+  // (a quality/bug signal the owner can fix) and (2) what they use the AI for most (where to invest). Already computed by
+  // the daily cron into platform_config -> a plain read here, NO AI, free. Nothing is pushed back down to any tenant.
+  try {
+    const _al = _hqJson(await _pcfgGet(env, 'aio_learnings', 'null'), null);
+    if (_al && (_al.total || 0) >= 10) {
+      if (Array.isArray(_al.high_undo) && _al.high_undo.length) {
+        const h = _al.high_undo[0];
+        add('L2', 'ai_quality', h.rate >= 50 ? 'high' : 'med', avg * 2 + h.undone * 60, 'Atlas.io action "' + h.type + '" gets reverted ' + h.rate + '% of the time', 'Tenants applied it ' + h.applied + 'x and undid it ' + h.undone + 'x in 30 days -- the AI is likely proposing this one wrong, or the flow behind it confuses people.', 'Review how the AI proposes "' + h.type + '"; tighten its prompt/validation or fix the underlying flow so tenants stop reverting it.', null);
+      }
+      if (Array.isArray(_al.top_used) && _al.top_used.length) {
+        const u = _al.top_used.slice(0, 3).map(function (x) { return x.type + ' (' + x.n + ')'; }).join(', ');
+        add('L3', 'ai_usage', 'low', Math.round(avg / 2), 'Atlas.io: tenants most use it for "' + (_al.top_used[0].type || 'actions') + '"', 'Across the fleet in 30 days: ' + _al.applied + ' AI actions applied, ' + _al.undo_rate + '% undone, ' + _al.asks + ' questions asked. Top: ' + u + '.', 'Lean into what tenants already trust the AI to do -- feature these in onboarding and expand them first.', null);
+      }
+    }
+  } catch (e) {}
   F.sort(function (a, b) { return (b.impact_score || 0) - (a.impact_score || 0); });
   var narrative = '';
   try {
@@ -2101,6 +2152,13 @@ async function ensurePlatformSchema(env) {
   // before this shipped) UNLESS one already exists -- the NOT EXISTS guard makes re-running this on every cold
   // isolate a cheap no-op. Never touches platform_ai_spend itself (read-only SELECT against it).
   try { await env.DB.prepare("INSERT INTO platform_ai_spend_by_feature (day,model,source,calls,input_tokens,output_tokens,cost_micros) SELECT day,model,'other',calls,input_tokens,output_tokens,cost_micros FROM platform_ai_spend p WHERE NOT EXISTS (SELECT 1 FROM platform_ai_spend_by_feature b WHERE b.day=p.day AND b.model=p.model AND b.source='other')").run(); } catch (e) {}
+  // #288 AI-activity telemetry: one tiny row per Atlas.io AI OUTCOME (applied/undone/failed/cancelled/proposed/ask/...),
+  // written fire-and-forget by /api/aio/event. Stores the action TYPE + outcome ONLY -- never request text, never PII.
+  // Feeds the master-dash Counsel's UPWARD learning (_aioLearnings, aggregate) AND each tenant's own AI self-loop
+  // (_tenantAiSelfLearn, that tenant's rows only). Pruned to 90 days by the daily cron. No AI, no credits -> free.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS ai_events (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL, action_type TEXT DEFAULT '', outcome TEXT DEFAULT 'neutral')").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_events_ts ON ai_events(ts)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ai_events_tenant ON ai_events(tenant_id, ts)").run(); } catch (e) {}
   // ---- ABUSE-DEFENSE: IP/email bans + an attack-attempt log. Additive + fail-open -- see the hot-path ban-check
   // in fetch() and the /api/auth/signup gate, both of which stay a byte-identical no-op (one cheap _pcfgGet read)
   // until platform_config.bans_active is actually flipped to '1' by a real ban. Each statement its own try/catch,
@@ -5843,13 +5901,14 @@ function doReset(){
       // ---- Atlas.io council: Claude + GPT + Gemini in concert, one synthesis --
       if (path === '/api/aio/insights' && method === 'GET') {
         await ensurePlatformSchema(env);
+        const _self = await _tenantAiSelfLearn(env, ctx.tenant_id);   // #288: this tenant's AI learns from ITS OWN past AI activity (per-tenant self-loop; NO cross-fleet data, NO AI cost)
         try {
           const row = await env.DB.prepare('SELECT json,at FROM tenant_insights WHERE tenant_id=?').bind(ctx.tenant_id).first();
-          if (row && (Date.now() - (row.at || 0) < 26 * 3600000)) return json({ ok: true, insights: _hqJson(row.json, { findings: [] }), at: row.at, fresh: false });
+          if (row && (Date.now() - (row.at || 0) < 26 * 3600000)) return json({ ok: true, insights: _hqJson(row.json, { findings: [] }), at: row.at, fresh: false, selfLearn: _self });
           const ins = await _computeTenantInsights(env, ctx.tenant_id);
           try { const s = JSON.stringify(ins.json); await env.DB.prepare('INSERT INTO tenant_insights (tenant_id,json,md,at) VALUES (?,?,?,?) ON CONFLICT(tenant_id) DO UPDATE SET json=?,md=?,at=?').bind(ctx.tenant_id, s, '', Date.now(), s, '', Date.now()).run(); } catch (e) {}
-          return json({ ok: true, insights: ins.json, at: Date.now(), fresh: true });
-        } catch (e) { return json({ ok: true, insights: { findings: [] }, at: Date.now() }); }
+          return json({ ok: true, insights: ins.json, at: Date.now(), fresh: true, selfLearn: _self });
+        } catch (e) { return json({ ok: true, insights: { findings: [] }, at: Date.now(), selfLearn: _self }); }
       }
       if (path === '/api/aio' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -5923,6 +5982,26 @@ function doReset(){
         }
       }
 
+      // ---- #288 AI-activity telemetry sink: the client reports each Atlas.io AI OUTCOME (applied / undone / failed /
+      // cancelled / proposed / ask / ...) so BOTH the master-dash Counsel (aggregate, upward) AND this tenant's own AI
+      // (self-loop) can learn from real usage. Records the action TYPE + outcome ONLY -- never the request text, never
+      // PII. Fire-and-forget: no AI, no credit spend, best-effort insert; always returns fast so it can never stall the
+      // chat UI. Rate-capped per tenant so a loop can't flood the table. --
+      if (path === '/api/aio/event' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!ctx.tenant_id) return err(401, 'Sign in first.');
+        const _eday = new Date().toISOString().slice(0, 10);
+        if (!await rateLimit(env, 'aioevt:' + ctx.tenant_id + ':' + _eday, 600, 86400000)) return json({ ok: true });   // silently drop past the daily cap -- never error the chat
+        const _eb = await req.json().catch(() => ({}));
+        const _EK = { proposed: 1, applied: 1, failed: 1, undone: 1, cancelled: 1, denied: 1, diagnose: 1, content: 1, ask: 1 };
+        const _ekind = (typeof _eb.kind === 'string' && _EK[_eb.kind]) ? _eb.kind : '';
+        if (!_ekind) return json({ ok: false });
+        const _eat = (typeof _eb.actionType === 'string' ? _eb.actionType : '').slice(0, 60).replace(/[^a-zA-Z0-9._-]/g, '');   // allow-listed action ids only; strips anything that isn't an identifier
+        const _eout = ({ good: 1, bad: 1, neutral: 1 }[_eb.outcome]) ? _eb.outcome : (_ekind === 'applied' ? 'good' : ((_ekind === 'undone' || _ekind === 'failed') ? 'bad' : 'neutral'));
+        try { await ensurePlatformSchema(env); await env.DB.prepare('INSERT INTO ai_events (tenant_id,ts,kind,action_type,outcome) VALUES (?,?,?,?,?)').bind(ctx.tenant_id, Date.now(), _ekind, _eat, _eout).run(); } catch (e) {}
+        return json({ ok: true });
+      }
+
       // ---- Atlas.io real-actions planner (Phase 1): the AI PROPOSES structured, allow-listed actions; it never
       // touches tenant data itself. The client applies each action by calling the SAME setter a manual click
       // calls (registry validate -> RBAC -> existing setter), so this endpoint's only job is a reliable
@@ -5943,12 +6022,25 @@ function doReset(){
         const allowed = Array.isArray(pbody.allowed) ? pbody.allowed.slice(0, 40) : [];
         const _cr = await _creditOp(env, ctx.tenant_id, null, 1);   // server-authoritative: spend 1 credit for a live plan call
         if (!_cr.ok) return json({ live: true, ok: false, error: 'out_of_credits', actions: [], unsupported: [], clarify: [], credits: 0 });
+        // #288 SELF-LOOP: ground THIS owner's planner in THIS owner's own past AI activity (their ai_events only -- never any
+        // other tenant's) so it leans into what has worked for them and stops re-proposing what they already reverted.
+        let _selfNote = '';
+        try {
+          const _self = await _tenantAiSelfLearn(env, ctx.tenant_id);
+          if (_self) {
+            const _u = (_self.used || []).slice(0, 4).map(function (x) { return x.type; }).join(', ');
+            const _rv = (_self.reverted || []).slice(0, 4).map(function (x) { return x.type; }).join(', ');
+            if (_u) _selfNote += ' For context, this same owner most often applies these actions: ' + _u + ' -- lean toward what already works for them.';
+            if (_rv) _selfNote += ' They have previously REVERTED (undone) these: ' + _rv + ' -- do not re-propose those unless they clearly ask again.';
+          }
+        } catch (e) {}
         const sys = 'You are Atlas.io, translating a rental-business owner\'s plain-language request into STRUCTURED actions for their OWN dashboard. Output STRICT JSON ONLY - no prose, no markdown fences. '
           + 'You may ONLY use these exact action types, each with ONLY its listed params (any other field is ignored): ' + JSON.stringify(allowed).slice(0, 4000) + '. '
           + 'Never invent a type or a param name that is not listed above. If the owner asks for something these actions cannot do, describe it in plain English in "unsupported" instead of forcing a nearest-match action. '
           + 'If a request is ambiguous (which tab, what value), ask one short clarifying question in "clarify" instead of guessing. '
           + 'Return exactly: {"reply":"<one short sentence for the owner>","actions":[{"type":"<allow-listed type>","params":{},"because":"<why, one short clause>"}],"unsupported":["..."],"clarify":["..."]}. '
-          + 'Never propose an action that charges money, sends a message, or changes billing/team/plan - none of those are in your allow-list and none ever will be through this endpoint.';
+          + 'Never propose an action that charges money, sends a message, or changes billing/team/plan - none of those are in your allow-list and none ever will be through this endpoint.'
+          + _selfNote;
         try {
           let raw = await askClaudeSchedule(env.ANTHROPIC_KEY, sys, q + (context ? ('\n\nBusiness context:\n' + context) : ''), env, _ectx, 'aio_plan');
           raw = String(raw || '').replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim();
@@ -6015,6 +6107,7 @@ function doReset(){
       await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
       try { const _wr = await _whRetrySweep(env); await _pcfgSet(env, 'wh_retry_last', String(_wr) + '@' + now); } catch (e) {}   // #257: retry queued failed webhook deliveries with exponential backoff (own try/catch -- never blocks the GC below)
+      try { if (await _due(env, 'aio_learnings', 20 * 3600000)) { await _aioLearnings(env); try { await env.DB.prepare('DELETE FROM ai_events WHERE ts < ?').bind(Date.now() - 90 * 86400000).run(); } catch (e) {} } } catch (e) {}   // #288: recompute the master-dash Counsel's AI-activity learnings once/day (no AI -> free) + prune telemetry older than 90d
       try { await env.DB.prepare("DELETE FROM webhook_deliveries WHERE status IN ('delivered','dead') AND updated_at < ?").bind(now - 30 * 24 * 3600 * 1000).run(); } catch (e) {}   // #257: GC finished deliveries after 30 days so the queue table stays small
       // NOTE: NO automatic/time-based deletion of customer records or uploaded files. Owner policy = retain everything
       // for records + logs; the ONLY thing that deletes a tenant's data + files is the deliberate two-step account

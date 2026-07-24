@@ -6135,6 +6135,11 @@ const Atlas = (function(){
       return p.join('. ');
     }catch(e){ return ''; }
   }
+  // #288 AI-activity telemetry (fire-and-forget): report each Atlas.io AI OUTCOME so the master-dash Counsel (aggregate,
+  // upward) and this tenant's OWN AI self-loop can learn from real usage. Guarded on a live backend session (_apiCsrf) so
+  // demo / offline never emits; records the action TYPE + outcome ONLY (no request text, no PII); never throws, never
+  // blocks the chat. The tenant's planner receives its own history back server-side (/api/aio/plan) -- learns from itself.
+  function _aioEmit(kind,actionType,outcome){ try{ if(!(ATLAS_BACKEND && _apiCsrf)) return; _api('/api/aio/event',{method:'POST',body:{kind:kind,actionType:actionType||'',outcome:outcome||''}}).catch(function(){}); }catch(e){} }
   var _AIO_COLORS={ 'Claude':'#C96442','GPT-4o':'#10A37F','Gemini':'#4285F4' };
   function _councilCardsHtml(models){
     return '<div class="cx-grid">'+models.map(function(m){ return '<div class="cx-card"><div class="cx-card__h"><span class="cx-badge" style="background:'+m.c+'">'+esc(m.n[0])+'</span>'+esc(m.n)+'</div><div class="cx-card__b">'+m.a+'</div></div>'; }).join('')+'</div>';
@@ -6214,6 +6219,7 @@ const Atlas = (function(){
       return;
     }
     _aioPending=null;   // any fresh (non-affirmative) message supersedes a stale offer
+    _aioEmit('ask','','neutral');   // #288 telemetry: a real question was asked (no text captured -- privacy-safe)
     if(_aioWantsDiagnose(_low)){ aioDiagnose(); return; }   // Phase 3: deterministic launch-readiness (free -- read-only, no credit spend)
     if(_aioWantsContent(_low)){ aioWriteCopy(); return; }   // Phase 3: deterministic starter site-copy (free -- generation is templated; applying goes through the reversible webEdit action)
     // Real-actions (Phase 1, flag-gated): an actionable-looking message routes to the structured planner
@@ -6257,13 +6263,13 @@ const Atlas = (function(){
       { ok:!!pay.provider, key:'pay', label:'Connect payments', detail:pay.provider?('Connected'):('Connect Stripe so you actually get paid, not just quoted.') },
       { ok:sitePub, key:'site', label:'Publish your booking site', detail:sitePub?('Live'):('Your public booking link is not live yet -- publish to start taking bookings.') }
     ]; }
-  function aioFix(k){ try{ closeAio(); }catch(e){}
+  function aioFix(k){ try{ closeAio(); }catch(e){} _aioEmit('applied','diagnose.'+String(k||''),'good');   // #288: owner acted on a diagnosed gap = a good outcome
     if(k==='fleet'){ try{ go('fleet'); }catch(e){} }
     else if(k==='site'){ try{ if(typeof openWebsite==='function') openWebsite(); else go('website'); }catch(e){} }
     else if(k==='brand'){ try{ goSettings('brand'); }catch(e){} }
     else if(k==='pay'){ try{ goSettings('integrations'); }catch(e){} }
     else { try{ goSettings('money'); }catch(e){} } }
-  function aioDiagnose(){ var checks=_aioDiagnose(); var done=checks.filter(function(c){return c.ok;}).length, tot=checks.length; var gaps=tot-done;
+  function aioDiagnose(){ _aioEmit('diagnose','','neutral'); var checks=_aioDiagnose(); var done=checks.filter(function(c){return c.ok;}).length, tot=checks.length; var gaps=tot-done;
     var head=gaps===0 ? ('<b>You are launch-ready.</b> All '+tot+' essentials are set &mdash; nice work.') : ('<b>You are '+done+' of '+tot+' launch-ready.</b> '+gaps+' thing'+(gaps>1?'s':'')+' left before customers can book you:');
     var rows=checks.map(function(c){
       var ic=c.ok ? '<span style="color:#1E8E4E;font-weight:800">&#10003;</span>' : '<span style="color:#C9A24B;font-weight:800">&#9679;</span>';
@@ -6283,7 +6289,7 @@ const Atlas = (function(){
     var about=('Welcome to '+name+'. '+lead+(city?(' in '+city):'')+', book online in minutes, and manage every reservation in one place. Clear pricing, a secure deposit and a signed agreement come standard, so you can rent with confidence. Have a question or a special request? Reach out any time \u2014 we are glad to help.').slice(0,1000);
     return { headline:headline, about:about }; }
   function aioWriteCopy(){ if(!_canCap||!_canCap('webEdit')){ aioMsg('bot','You do not have access to edit the website copy.'); return; }
-    var c=_aioGenContent();
+    var c=_aioGenContent(); _aioEmit('content','','neutral');
     aioMsg('bot','Here is starter copy for your booking site, written from your own details &mdash; review both and apply together, or edit after:');
     _aioProposeActions([{type:'profile.setHeadline',params:{value:c.headline}},{type:'profile.setAbout',params:{value:c.about}}]); }
   // Safety policy that travels to the real model server-side once Atlas.io is wired to a live LLM (documented, enforced there + a moderation pass).
@@ -6664,7 +6670,7 @@ const Atlas = (function(){
     if((actions||[]).length>=2){ _aioProposeBundle(actions); return; }   // #271 pt2: a multi-step plan applies as ONE reviewed, reversible bundle
     (actions||[]).forEach(function(a){
       var v=_aioValidateAction(a);
-      if(!v.ok){ aioMsg('bot', esc(v.msg)); _logEvent('aio','Denied: '+String((a&&a.type)||'unknown'),{type:a&&a.type,msg:v.msg}); return; }
+      if(!v.ok){ aioMsg('bot', esc(v.msg)); _logEvent('aio','Denied: '+String((a&&a.type)||'unknown'),{type:a&&a.type,msg:v.msg}); _aioEmit('denied',(a&&a.type)||'','bad'); return; }
       var entry=v.entry, params=v.params;
       // Defense in depth: a money action must ALWAYS confirm, even if a future registry entry mistypes its
       // tier -- never trust entry.tier alone for anything that touches revenue.
@@ -6673,14 +6679,14 @@ const Atlas = (function(){
         var id=_aioNextId(); _aioConfirmQ[id]={type:a.type, entry:entry, params:params};
         var body=_aioDiffHtml(sum)+'<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn--primary btn--sm" onclick="Atlas.aioApply(\''+id+'\')">Apply</button><button class="btn btn--ghost btn--sm" onclick="Atlas.aioCancel(\''+id+'\')">Cancel</button></div>';
         aioMsg('bot','<div class="cx-card" id="'+id+'"><div class="cx-card__h">'+entry.label(params)+'</div><div class="cx-card__b">'+body+'</div></div>');
-        _logEvent('aio','Proposed: '+entry.label(params),{type:a.type,params:params});
+        _logEvent('aio','Proposed: '+entry.label(params),{type:a.type,params:params}); _aioEmit('proposed',a.type,'neutral');
       } else {
         var res=_aioRunAction(entry, params);
-        if(!res.ok){ aioMsg('bot','I could not do that \u2014 '+esc(res.msg||'')); _logEvent('aio','Failed: '+entry.label(params),{type:a.type,msg:res.msg}); return; }
+        if(!res.ok){ aioMsg('bot','I could not do that \u2014 '+esc(res.msg||'')); _logEvent('aio','Failed: '+entry.label(params),{type:a.type,msg:res.msg}); _aioEmit('failed',a.type,'bad'); return; }
         var uid=_aioPushUndo(a.type, params, res.snap, entry.label(params));
         var body=_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+uid+'\')">Undo</button></div>';
         aioMsg('bot','<div class="cx-card" id="'+uid+'"><div class="cx-card__h">Done \u2014 '+entry.label(params)+'</div><div class="cx-card__b">'+body+'</div></div>');
-        _logEvent('aio','Applied: '+entry.label(params),{type:a.type,params:params});
+        _logEvent('aio','Applied: '+entry.label(params),{type:a.type,params:params}); _aioEmit('applied',a.type,'good');
       }
     });
   }
@@ -6689,16 +6695,16 @@ const Atlas = (function(){
     delete _aioConfirmQ[id];
     var res=_aioRunAction(pend.entry, pend.params);
     var card=document.getElementById(id);
-    if(!res.ok){ if(card) card.innerHTML='<div class="cx-card__h">Could not apply</div><div class="cx-card__b">'+esc(res.msg||'')+'</div>'; _logEvent('aio','Failed: '+pend.entry.label(pend.params),{type:pend.type,msg:res.msg}); return; }
+    if(!res.ok){ if(card) card.innerHTML='<div class="cx-card__h">Could not apply</div><div class="cx-card__b">'+esc(res.msg||'')+'</div>'; _logEvent('aio','Failed: '+pend.entry.label(pend.params),{type:pend.type,msg:res.msg}); _aioEmit('failed',pend.type,'bad'); return; }
     _aioPushUndo(pend.type, pend.params, res.snap, pend.entry.label(pend.params), id);
     if(card) card.innerHTML='<div class="cx-card__h">Done \u2014 '+pend.entry.label(pend.params)+'</div><div class="cx-card__b">'+_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+id+'\')">Undo</button></div></div>';
-    _logEvent('aio','Applied: '+pend.entry.label(pend.params),{type:pend.type,params:pend.params});
+    _logEvent('aio','Applied: '+pend.entry.label(pend.params),{type:pend.type,params:pend.params}); _aioEmit('applied',pend.type,'good');
   }
   function aioCancel(id){
     var pend=_aioConfirmQ[id]; if(!pend){ toast('That was already handled.'); return; }
     delete _aioConfirmQ[id];
     var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Cancelled \u2014 '+pend.entry.label(pend.params)+'</div>';
-    _logEvent('aio','Cancelled: '+pend.entry.label(pend.params),{type:pend.type});
+    _logEvent('aio','Cancelled: '+pend.entry.label(pend.params),{type:pend.type}); _aioEmit('cancelled',pend.type,'neutral');
   }
   function aioUndo(id){
     var idx=-1; for(var i=0;i<_aioUndoStack.length;i++){ if(_aioUndoStack[i].id===id){ idx=i; break; } }
@@ -6708,6 +6714,7 @@ const Atlas = (function(){
       var okN=0; for(var b=item.bundle.length-1;b>=0;b--){ var st=item.bundle[b]; var e2=AIO_ACTIONS[st.type]; if(!e2||!e2.undo) continue; try{ e2.undo(st.snap, st.params); okN++; }catch(e){} }
       _aioUndoStack.splice(idx,1);
       var cardB=document.getElementById(id); if(cardB) cardB.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+okN+' change'+(okN===1?'':'s')+' reverted</div>';
+      try{ (item.bundle||[]).forEach(function(st){ _aioEmit('undone',st.type,'bad'); }); }catch(e){}
       _logEvent('aio','Undid bundle: '+okN,{}); toast('Undone'); return;
     }
     var entry=AIO_ACTIONS[item.type];
@@ -6715,7 +6722,7 @@ const Atlas = (function(){
     try{ entry.undo(item.snap, item.params); }catch(e){ toast('Could not undo that.'); return; }
     _aioUndoStack.splice(idx,1);
     var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+esc(item.label||'')+'</div>';
-    _logEvent('aio','Undid: '+item.label,{type:item.type});
+    _logEvent('aio','Undid: '+item.label,{type:item.type}); _aioEmit('undone',item.type,'bad');
     toast('Undone');
   }
   /* ===== ATLASIO PHASE 3 (agentic) -- BUNDLES: a plan with 2+ actions applies as ONE reviewed, reversible step. Every
@@ -6735,11 +6742,12 @@ const Atlas = (function(){
     var body=rows+(anyMoney?'<div style="font-size:11px;color:var(--muted);margin-top:6px">Includes a money change &mdash; review each line above.</div>':'')+'<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn--primary btn--sm" onclick="Atlas.aioBundleApply(\''+id+'\')">Apply all '+steps.length+'</button><button class="btn btn--ghost btn--sm" onclick="Atlas.aioBundleCancel(\''+id+'\')">Cancel</button></div>';
     aioMsg('bot','<div class="cx-card" id="'+id+'"><div class="cx-card__h">Apply these '+steps.length+' changes together?</div><div class="cx-card__b">'+body+'</div></div>');
     _logEvent('aio','Proposed bundle: '+steps.length+' actions',{types:steps.map(function(s){return s.type;})});
+    try{ steps.forEach(function(s){ _aioEmit('proposed',s.type,'neutral'); }); }catch(e){}
   }
   function aioBundleApply(id){
     var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id];
     var applied=[], failed=null;
-    for(var i=0;i<b.steps.length;i++){ var s=b.steps[i]; var res=_aioRunAction(s.entry, s.params); if(!res.ok){ failed={label:s.entry.label(s.params), msg:res.msg}; break; } applied.push({type:s.type, params:s.params, snap:res.snap, label:s.entry.label(s.params)}); }
+    for(var i=0;i<b.steps.length;i++){ var s=b.steps[i]; var res=_aioRunAction(s.entry, s.params); if(!res.ok){ failed={label:s.entry.label(s.params), msg:res.msg, type:s.type}; break; } applied.push({type:s.type, params:s.params, snap:res.snap, label:s.entry.label(s.params)}); }
     if(applied.length) _aioUndoStack.push({id:id, bundle:applied, label:b.label});
     var doneRows=applied.map(function(a){ return '<div style="font-size:12px;color:var(--muted)">\u2713 '+esc(a.label)+'</div>'; }).join('');
     var failRow=failed?('<div style="font-size:12px;color:var(--danger);margin-top:4px">Stopped at "'+esc(failed.label)+'" &mdash; '+esc(failed.msg||'could not apply')+'. The steps above were applied and can be undone.</div>'):'';
@@ -6747,8 +6755,9 @@ const Atlas = (function(){
     var html='<div class="cx-card__h">'+(failed?('Applied '+applied.length+' of '+b.steps.length):('Done \u2014 '+applied.length+' change'+(applied.length===1?'':'s')+' applied'))+'</div><div class="cx-card__b">'+doneRows+failRow+undoBtn+'</div>';
     var card=document.getElementById(id); if(card) card.innerHTML=html; else aioMsg('bot','<div class="cx-card" id="'+id+'">'+html+'</div>');
     _logEvent('aio','Applied bundle: '+applied.length+'/'+b.steps.length,{applied:applied.map(function(a){return a.type;})});
+    try{ applied.forEach(function(a){ _aioEmit('applied',a.type,'good'); }); if(failed) _aioEmit('failed',failed.type||'','bad'); }catch(e){}
   }
-  function aioBundleCancel(id){ var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id]; var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Cancelled \u2014 '+b.steps.length+' changes</div>'; _logEvent('aio','Cancelled bundle',{n:b.steps.length}); }
+  function aioBundleCancel(id){ var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id]; var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Cancelled \u2014 '+b.steps.length+' changes</div>'; _logEvent('aio','Cancelled bundle',{n:b.steps.length}); try{ (b.steps||[]).forEach(function(s){ _aioEmit('cancelled',s.type,'neutral'); }); }catch(e){} }
   // Cheap local pre-filter: is this message worth routing to the structured planner at all? Never
   // authoritative -- worst case a message that should have matched just gets the normal helpful reply.
   function _aioLooksActionableNoNav(s){
