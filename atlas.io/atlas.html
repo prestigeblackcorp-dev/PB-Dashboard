@@ -1728,6 +1728,7 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" style="margin:0 0 14px">'+what+' are managed on your Atlas website so the app stays free of app-store fees. Open atlasrental.io to make changes &mdash; same account, and everything syncs right back here.</div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.closeModal();Atlas._openWeb(\'/?manage=1\')">Open atlasrental.io</button></div>'); }
   var _apiCsrf=null;
+  var _bootSync=false;   // GAP-1: true only during the on-boot re-hydrate, so a boot-race profile edit can't push a stale whole-profile blob over newer server data before the merge lands
   function setBackend(on){ ATLAS_BACKEND=!!on; }
   function _api(path,opts){ opts=opts||{}; var h={'Content-Type':'application/json'};
     if(_apiCsrf && opts.method && opts.method!=='GET') h['X-CSRF-Token']=_apiCsrf;
@@ -1786,7 +1787,7 @@ const Atlas = (function(){
   function _srvMirror(kind,item){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
     _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ if(res.status===404) _api('/api/data/'+kind,{method:'POST',body:body}).catch(function(){}); }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
-  function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
+  function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
     // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
     if(settings.trackers){ var _tk={}; for(var _a in settings.trackers) _tk[_a]=settings.trackers[_a]; delete _tk.apiKey; settings.trackers=_tk; }
     if(settings.comms){ var _cm={}; for(var _b in settings.comms) _cm[_b]=settings.comms[_b]; delete _cm.resendKey; settings.comms=_cm; }
@@ -1898,8 +1899,21 @@ const Atlas = (function(){
   function _grantOwnerIfNeeded(){ if(!S) return; var email=_sessEmail();
     if(email===OWNER_EMAIL){ if(S.tier!=='diamond'||S.plan!=='active'){ S.tier='diamond'; S.plan='active'; if(S.credits) S.credits.free=Infinity; save(); } return; }
     var g=_compGrantFor(email); if(!g) return;
-    if(g==='gold'){ if(S.tier!=='gold'||S.plan!=='active'){ S.tier='gold'; S.plan='active'; save(); } }         // permanent early-tester comp -- never auto-expires or downgrades
+    if(g==='gold'){ if(S.tier!=='gold'||S.plan!=='active'){ S.tier='gold'; S.plan='active'; save(); }
+      if(!S.goldWelcomeSeen){ S.goldWelcomeSeen=true; save(); setTimeout(function(){ try{ _showGoldWelcome(); }catch(e){} }, 500); } }   // #293: permanent Gold comp -- never a card, tier LOCKED to Gold, all features, 1000 Atlas.io credits/wk (TIERS gold.credits); one-time welcome popup
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
+  // #293: comped (Gold/Free) and owner accounts have NO billing to manage -- the plan/upgrade/card UI is locked for them.
+  function _isComp(){ return !!S && (S.tier==='gold' || S.tier==='freecomp' || S.tier==='diamond'); }
+  // #293: one-time Gold-member welcome. Shown exactly once (gated on S.goldWelcomeSeen in _grantOwnerIfNeeded).
+  function _showGoldWelcome(){ if(document.getElementById('goldWelcome')) return;
+    var e=document.createElement('div'); e.id='goldWelcome'; e.className='verify-gate'; e.style.cssText='align-items:center';
+    e.innerHTML='<div style="max-width:440px;width:100%;margin:auto;text-align:center;background:var(--surface,#fff);border:1.5px solid var(--brand);border-radius:18px;padding:30px 24px;box-shadow:0 24px 70px rgba(0,0,0,.32)">'
+      +'<div style="font-size:46px;line-height:1;margin-bottom:6px">\u2b50</div>'
+      +'<h2 style="font-size:23px;margin:0 0 8px;color:var(--ink)">Welcome, Gold member</h2>'
+      +'<p style="font-size:14px;color:var(--muted);line-height:1.6;margin:0 0 18px">Your account has <b style="color:var(--brand)">complimentary Gold access</b> &mdash; every feature unlocked, <b>no card ever required</b>, and it never expires. You also get <b>1,000 Atlas.io AI credits every week</b>, included. Enjoy building your business.</p>'
+      +'<button class="btn btn--primary btn--full" onclick="(function(){var x=document.getElementById(\'goldWelcome\');if(x)x.remove();})()">Let\u2019s go</button>'
+      +'</div>';
+    document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
   var APP_VERSION='2026.7.19t';
@@ -2619,7 +2633,7 @@ const Atlas = (function(){
     if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){
       // NEW funnel: a fresh signup that needs a card picks a PLAN FIRST (the plan picker collects the card via checkout).
       // The plain card-only paywall stays for RETURNING sessions that hit the gate mid-use.
-      if(_authMode==='signup' && SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && !_isDemoTenant() && !_isNativeApp() && r.billing_state==='needs_card'){ showSignupPlans(); return; }
+      if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && !_isDemoTenant() && !_isNativeApp() && r.billing_state==='needs_card'){ showSignupPlans(); return; }   // #291: show the plan PICKER for ANY not-yet-carded user (fresh signup OR a returning / verify-on-a-different-device login) -- never silently drop them into onboarding at the default tier
       showPaywall(r.billing_state); return;   // #276/#280: server-computed billing state -- replaces the dashboard with the paywall/card gate instead of building it
     }
     if(_authMode==='signup'){
@@ -2771,19 +2785,19 @@ const Atlas = (function(){
     var tiers=TIERS.filter(function(t){ return !t.owner && !t.comp; });
     var endStr=_signupTrialEndStr();
     var incl=FEATURES.map(function(f){ return '<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 9px;margin:0 6px 6px 0"><svg viewBox="0 0 20 20" width="12" height="12" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="var(--brand)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+f[1]+'</span>'; }).join('');
-    var cards=tiers.map(function(t){ var feat=(t.id==='pro');
+    var cards=tiers.map(function(t){ var feat=(t.id==='pro'); var chosen=!!(S && S.chosenPlan===t.id);   // #291: the plan they already picked (persists cross-device via the settings mirror) -- highlight it so they are brought back to their choice
       var price=(t.price%1===0)?t.price:t.price.toFixed(2);
       var unlocks=(typeof _tierUnlocks==='function' && _tierUnlocks(t.id))?_tierUnlocks(t.id):'';
       var web=(typeof WEBSITE_TIERS!=='undefined' && WEBSITE_TIERS.indexOf(t.id)>=0);
-      return '<div style="border:1.5px solid '+(feat?'var(--brand)':'var(--line)')+';border-radius:14px;padding:15px 16px;margin-bottom:12px;position:relative;background:var(--surface,#fff)">'
-        +(feat?'<div style="position:absolute;top:-10px;left:16px;background:var(--brand);color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px">Most popular</div>':'')
+      return '<div style="border:1.5px solid '+((chosen||feat)?'var(--brand)':'var(--line)')+';border-radius:14px;padding:15px 16px;margin-bottom:12px;position:relative;background:var(--surface,#fff)">'
+        +(chosen?'<div style="position:absolute;top:-10px;left:16px;background:var(--brand);color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px">Your pick</div>':(feat?'<div style="position:absolute;top:-10px;left:16px;background:var(--brand);color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px">Most popular</div>':''))
         +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">'
           +'<div style="min-width:0"><div style="font-size:16.5px;font-weight:800;color:var(--ink)">'+t.name+(web?' <span class="chip chip--brand" style="margin-left:4px;vertical-align:middle">Website included</span>':'')+'</div>'
           +'<div style="font-size:12.5px;color:var(--muted);margin-top:2px">'+_tierCap(t)+' &middot; '+t.credits.toLocaleString()+' Atlas.io credits/week</div>'
           +(unlocks?'<div style="font-size:11.5px;color:var(--brand);font-weight:600;margin-top:4px">'+unlocks+'</div>':'')+'</div>'
           +'<div style="text-align:right;flex:none"><div style="font-size:22px;font-weight:850;color:var(--ink)" class="tnum">$'+price+(t.id==='unlimited'?'+':'')+'</div><div style="font-size:11px;color:var(--muted)">/month after trial</div></div>'
         +'</div>'
-        +'<button class="btn '+(feat?'btn--primary':'btn--ghost')+' btn--full btn--sm" style="margin-top:12px" onclick="Atlas._signupPickPlan(\''+t.id+'\')">Start 7-day free trial</button>'
+        +'<button class="btn '+((chosen||feat)?'btn--primary':'btn--ghost')+' btn--full btn--sm" style="margin-top:12px" onclick="Atlas._signupPickPlan(\''+t.id+'\')">'+(chosen?'Continue with '+t.name:'Start 7-day free trial')+'</button>'
       +'</div>'; }).join('');
     var e=document.getElementById('planGate');
     if(!e){ e=document.createElement('div'); e.id='planGate'; e.className='verify-gate pay-gate'; e.style.cssText='align-items:flex-start;overflow-y:auto'; document.body.appendChild(e); }
@@ -2800,7 +2814,8 @@ const Atlas = (function(){
   }
   function _hideSignupPlans(){ var e=document.getElementById('planGate'); if(e) e.classList.remove('on'); }
   function _signupPickPlan(tierId){ var t=_tier(tierId); if(!t) return;
-    if(S){ S.tier=t.id; save(); }   // carry the chosen plan across the Stripe redirect (persisted in localStorage)
+    if(S){ S.tier=t.id; S.chosenPlan=t.id; save(); }   // #291: carry the chosen plan across the Stripe redirect (localStorage) AND remember it as their explicit pick
+    if(ATLAS_BACKEND && _apiCsrf){ _api('/api/tenant/profile',{method:'PUT',body:{settings:{chosenPlan:t.id}}}).catch(function(){}); }   // #291: persist the pick server-side immediately (not only via the debounced sync) so ANY device / device type brings them back to it
     _hideSignupPlans();
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp()){ _billingCheckout('trial',{tier:t.id}); return; }   // card on file -> 7-day trial priced at this plan -> Stripe auto-charges on day 7
     if(S){ S.plan='trial'; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }   // demo/offline/native fallback: local trial, onboard now
@@ -2879,7 +2894,7 @@ const Atlas = (function(){
     }).catch(function(){ toast('Network error'); });
   }
   function _postVerifyProceed(bs){ S=load();
-    if(bs && bs!=='ok'){ showPaywall(bs); return; }   // #280/#276: a needs_card/locked tenant must not reach onboarding/dashboard here either -- same gate as _afterAuthSuccess
+    if(bs && bs!=='ok'){ if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && bs==='needs_card'){ showSignupPlans(); return; } showPaywall(bs); return; }   // #291: after email verify (often on a DIFFERENT device), a not-yet-carded user goes to the plan PICKER (their prior pick is highlighted), not the bare card gate. #280/#276: other locked states still hit the paywall.
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
     else { startTrial(); } }
@@ -7653,6 +7668,7 @@ const Atlas = (function(){
       else { toast((res.json&&res.json.error)||'Could not cancel - please try again'); }
     }).catch(function(){ toast('Network error cancelling'); }); }
   function openPlans(){
+    if(_isComp()){ toast('You have complimentary '+(S&&S.tier==='gold'?'Gold':'full')+' access -- every feature is unlocked and there is no billing to change.'); return; }   // #293: comp / owner tier is LOCKED -- no plan changes
     openModal('<div class="modal__head"><h3>Choose your plan</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body" style="padding-top:10px">'+TIERS.filter(function(t){return !t.owner && !t.comp;}).map(function(t){ var cur=_isActive()&&S.tier===t.id;
         return '<div style="display:flex;align-items:center;gap:12px;border:1px solid '+(cur?'var(--brand)':'var(--line)')+';border-radius:12px;padding:13px 15px;margin-bottom:10px">'
@@ -7662,7 +7678,8 @@ const Atlas = (function(){
         +'</div>'; }).join('')
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Higher plans lift your caps + unlock premium features &middot; free weekly Atlas.io credits &middot; cancel anytime.</p></div>');
   }
-  function subscribe(tierId){ var t=_tier(tierId); var sameTier=_isActive()&&!!S&&S.tier===t.id;   // fix: same active tier means this is a card-only update, not a plan change
+  function subscribe(tierId){ if(_isComp()){ toast('Your complimentary access is locked to '+(S&&S.tier==='gold'?'Gold':'your comped tier')+' -- no card or plan change needed.'); return; }   // #293: comp / owner cannot change tier
+    var t=_tier(tierId); var sameTier=_isActive()&&!!S&&S.tier===t.id;   // fix: same active tier means this is a card-only update, not a plan change
     // No raw card number/CVC is ever collected in-app (that would put Atlas in PCI scope). Real card billing runs
     // through Stripe hosted Checkout at go-live; until PAYMENTS_LIVE, activating a plan just sets it up with no charge.
     var _cardBlock='<div class="bk-lenhint" style="margin:0 0 12px">'+(PAYMENTS_LIVE?'You will enter your card on Stripe\'s secure checkout - Atlas never sees your card number. Cancel anytime, keep your data.':'Your plan activates now so you can set everything up. <b>No card is collected in-app and nothing is charged</b> \u2014 secure card billing turns on through Stripe hosted checkout at go-live (see GO-LIVE steps).')+'</div>';
@@ -8902,6 +8919,19 @@ const Atlas = (function(){
         var old=S.money; S.money=defaultMoney();
         S.money.rateModel=old.rateModel||'day'; S.money.baseRate=old.baseRate||150; S.money.tax=old.tax||0;
         save();
+      }
+      // GAP-1 FIX (cross-device data safety): on EVERY boot with a saved session -- reload, PWA cold-start, reopen --
+      // re-mint the CSRF token via cookie auth and re-hydrate from the server. Without this _apiCsrf stays null after a
+      // reload, so ALL sync silently stops: edits made in a reloaded session never push (lost when the tenant opens
+      // another device) and other devices' changes never pull in. Local-first paint below stays instant; this refreshes
+      // to server truth a moment later. Profile PUSH is held (_bootSync) until the hydrate merge lands, then the app
+      // re-renders with the merged data.
+      if(ATLAS_BACKEND && store.session()){ _bootSync=true; var _bootTid=store.session().tenantId;
+        _api('/api/auth/me',{method:'GET'}).then(function(res){
+          if(res && res.json && res.json.csrf){ _apiCsrf=res.json.csrf; if(res.json.ip)_clientIp=res.json.ip; return _srvHydrate(_bootTid); }
+        }).catch(function(){}).then(function(){ _bootSync=false;
+          try{ var _s2=load(); if(_s2){ S=_s2; var _ap=document.getElementById('app'); if(S.onboarded && _ap && _ap.classList.contains('on')){ applyBrand(); buildApp(); } } }catch(e){}
+        });
       }
       if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _billingReturn(); _kickLiveTour(); }
       else if(S && S.onboardStarted){ _billingReturn(); applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }  // resume setup exactly where they left off
