@@ -1774,6 +1774,14 @@ const Atlas = (function(){
   // Local-first stays the instant render; the server MERGES newest-wins per record on login (never blind-overwrite,
   // never drops a local-only or newer local record). Customers are derived from bookings, so they ride along for free.
   var _pushedHash={}; var _syncTimer=null;
+  // #294 CROSS-DEVICE DATA SAFETY. Monotonic sync clock: never emit a timestamp <= the highest we have seen (locally OR
+  // from the server), so a device with a skewed/slow clock can't stamp a stale edit that then wins a newest-wins merge.
+  // Per-key profile timestamps (_pushedKeys + S._kt) make the profile merge FIELD-LEVEL instead of whole-blob, so two
+  // devices editing DIFFERENT settings never clobber each other. _profileHydrated gates the first profile push behind a
+  // verified server read so a fresh/unhydrated device can't overwrite the real server profile with an empty one.
+  var _lastSyncT=0, _pushedKeys={}, _profileHydrated=false;
+  function _monoNow(){ var n=Date.now(); if(n<=_lastSyncT) n=_lastSyncT+1; _lastSyncT=n; return n; }
+  function _seenT(t){ t=Number(t)||0; if(t>_lastSyncT) _lastSyncT=t; }
   function _srvSyncSoon(){ if(!ATLAS_BACKEND||!_apiCsrf||_syncTimer) return; _syncTimer=setTimeout(function(){ _syncTimer=null; try{ _srvSyncPush(); }catch(e){} }, 1500); }
   // Shape a rich client object into the worker's row (full fidelity in the JSON blob: bookings/customers->data, assets->info).
   function _srvShape(kind,item){
@@ -1784,8 +1792,15 @@ const Atlas = (function(){
     if(kind==='assets'){ var i=row.info; var o=i?(typeof i==='string'?JSON.parse(i):i):null; return o||{id:row.id,name:row.name,type:row.type,status:row.status,rate:(row.day_rate_cents||0)/100}; }
     var d=row.data; var b=d?(typeof d==='string'?JSON.parse(d):d):null; return b||{id:row.id,status:row.status};
   }catch(e){ return {id:row.id}; } }
-  function _srvMirror(kind,item){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
-    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ if(res.status===404) _api('/api/data/'+kind,{method:'POST',body:body}).catch(function(){}); }).catch(function(){}); }
+  function _srvMirror(kind,item,hk,hv){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
+    // #294 Gap 4: record the "synced" hash ONLY after the server actually accepted the write. If the PUT/POST fails
+    // (network, or a too-large row rejected by D1), _pushedHash stays stale so the very next sync retries it -- instead
+    // of the old behaviour where the hash was set optimistically and a failed write silently dropped the record forever.
+    function _ok(){ if(hk) _pushedHash[hk]=hv; }
+    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){
+      if(res && res.status===404){ _api('/api/data/'+kind,{method:'POST',body:body}).then(function(r2){ if(r2&&r2.status>=200&&r2.status<300) _ok(); }).catch(function(){}); }
+      else if(res && res.status>=200 && res.status<300){ _ok(); }
+    }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
   function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
     // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
@@ -1797,10 +1812,18 @@ const Atlas = (function(){
     var cols={ bookings:(typeof _bookings==='function'?_bookings():[]), assets:(typeof DATA!=='undefined'&&DATA.assets)||[] };
     var seen={};
     Object.keys(cols).forEach(function(kind){ (cols[kind]||[]).forEach(function(it){ if(!it||!it.id) return; var key=kind+':'+it.id; seen[key]=1;
-      if(_pushedHash[key]!==JSON.stringify(it)){ it._t=Date.now(); _pushedHash[key]=JSON.stringify(it); _srvMirror(kind,it); } }); });
-    Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); var kind=key.slice(0,p); if(cols[kind]) _srvDelete(kind,key.slice(p+1)); });
-    var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; } var ph=JSON.stringify({b:S.brand,m:S.money,s:settings});
-    if(_pushedHash['__profile']!==ph){ S._t=Date.now(); settings._t=S._t; _pushedHash['__profile']=JSON.stringify({b:S.brand,m:S.money,s:settings}); _srvMirrorProfile(); }
+      if(_pushedHash[key]!==JSON.stringify(it)){ it._t=_monoNow(); _srvMirror(kind,it,key,JSON.stringify(it)); } }); });   // #294: monotonic stamp; _pushedHash set on server-accept inside _srvMirror
+    Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); if(p<0) return; var kind=key.slice(0,p); if(cols[kind]) _srvDelete(kind,key.slice(p+1)); });
+    // #294 Gap 6: don't push the profile until the server's copy is verified this session (or the user genuinely onboarded
+    // locally) -> a fresh device that hasn't hydrated can never overwrite the real server profile with an empty one.
+    if(!(S&&(S.onboarded||_profileHydrated))) return;
+    // #294 Gap 2: FIELD-LEVEL change detection -- stamp a per-key timestamp only for the keys whose value actually changed
+    // since the last successful push, so the merge keeps each device's newest edit per key (no whole-blob clobber).
+    if(!S._kt||typeof S._kt!=='object') S._kt={};
+    var parts={ brand:S.brand, money:S.money }; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_kt'&&k!=='_t') parts[k]=S[k]; }
+    var nowT=_monoNow(), changed=false;
+    for(var pk in parts){ var pjs=JSON.stringify(parts[pk]===undefined?null:parts[pk]); if(_pushedKeys[pk]!==pjs){ S._kt[pk]=nowT; _pushedKeys[pk]=pjs; changed=true; } }
+    if(changed){ S._t=nowT; _srvMirrorProfile(); }
   }
   // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
   function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
@@ -1823,15 +1846,35 @@ const Atlas = (function(){
   function policyAccept(){ if(!(ATLAS_BACKEND&&_apiCsrf)){ _hidePolicyBanner(); return; }
     _api('/api/policy/accept',{method:'POST',body:{}}).then(function(res){ if(res.json&&res.json.ok){ _hidePolicyBanner(); try{ var tid=store.session()&&store.session().tenantId; var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb){ _tb.tosVersion=res.json.version; _lsSet('atlas_tenant_'+tid,_tb); } }catch(e){} toast('Thank you -- your acceptance is recorded'); } else { toast('Could not record acceptance'); } }).catch(function(){ toast('Network error - please try again'); }); }
   function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
-    local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); } });
-    rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; var loc=byId[srv.id];
+    local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); if(x._t) _seenT(x._t); } });
+    rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; _seenT(srv._t); var loc=byId[srv.id];   // #294: feed the monotonic clock so our next local stamp is after the server's newest
       if(!loc){ byId[srv.id]=srv; order.push(srv.id); } else if((srv._t||0)>(loc._t||0)){ byId[srv.id]=srv; }
       _pushedHash[kind+':'+srv.id]=JSON.stringify(byId[srv.id]); });
     _lsSet(lsKey, order.map(function(id){ return byId[id]; })); }
-  function _srvMergeProfile(tid,prof){ var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var srvT=(prof.settings&&prof.settings._t)||0; var locT=(loc&&loc._t)||0;
-    if(!(srvT>locT || !loc.onboarded)) return;                       // keep local if it is newer / already set up
-    var merged={}; var s=prof.settings||{}; for(var k in s) merged[k]=s[k]; if(prof.brand)merged.brand=prof.brand; if(prof.money)merged.money=prof.money;
-    _lsSet('atlas_tenant_'+tid, merged); _pushedHash['__profile']=JSON.stringify({b:merged.brand,m:merged.money,s:s}); }
+  function _srvMergeProfile(tid,prof){ _profileHydrated=true;   // #294 Gap 6: a valid server profile was received -> the profile push is now safe to run
+    var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var s=(prof&&prof.settings)||{};
+    var srvKt=(s&&s._kt&&typeof s._kt==='object')?s._kt:null; var locKt=(loc&&loc._kt&&typeof loc._kt==='object')?loc._kt:{};
+    _seenT(s._t); _seenT(loc._t); if(srvKt){ for(var _z in srvKt) _seenT(srvKt[_z]); } for(var _y in locKt) _seenT(locKt[_y]);
+    var merged={}; for(var lk in loc) merged[lk]=loc[lk];   // #294 Gap 2: START from LOCAL so a local-only key is NEVER dropped by a merge
+    var srvParts={}; if(prof&&prof.brand!==undefined) srvParts.brand=prof.brand; if(prof&&prof.money!==undefined) srvParts.money=prof.money; for(var sk in s){ if(sk!=='_kt'&&sk!=='_t') srvParts[sk]=s[sk]; }
+    if(srvKt){
+      // FIELD-LEVEL newest-wins: adopt the server's value for a key ONLY when its per-key stamp is newer than local's (or
+      // local lacks the key). Otherwise keep local -> two devices editing DIFFERENT keys both survive (no whole-blob clobber).
+      for(var k in srvParts){ var st=Number(srvKt[k]||0), lt=Number((locKt&&locKt[k])||0); if(!(k in loc) || st>lt) merged[k]=srvParts[k]; }
+      var mk={}; for(var a in locKt) mk[a]=Number(locKt[a]||0); for(var b in srvKt){ if(Number(srvKt[b]||0)>(mk[b]||0)) mk[b]=Number(srvKt[b]||0); } merged._kt=mk;
+    } else {
+      // BACK-COMPAT (server has no per-key stamps yet): whole-blob newest-wins, but still START FROM LOCAL (preserve
+      // local-only keys) and only overwrite when the server blob is genuinely newer, or local isn't set up yet.
+      if(Number(s._t||0)>Number(loc._t||0) || !loc.onboarded){ for(var k2 in srvParts) merged[k2]=srvParts[k2]; }
+    }
+    merged._t=Math.max(Number(s._t||0),Number(loc._t||0));
+    // #294 Gap 3: provider secrets are stripped from the wire (server never stores them) -> graft the local values back so
+    // a merge can never wipe a connected tracker/mailer key on the device that holds it.
+    try{ if(loc.trackers&&loc.trackers.apiKey){ if(!merged.trackers||typeof merged.trackers!=='object') merged.trackers={}; if(!merged.trackers.apiKey) merged.trackers.apiKey=loc.trackers.apiKey; } }catch(e){}
+    try{ if(loc.comms&&loc.comms.resendKey){ if(!merged.comms||typeof merged.comms!=='object') merged.comms={}; if(!merged.comms.resendKey) merged.comms.resendKey=loc.comms.resendKey; } }catch(e){}
+    _lsSet('atlas_tenant_'+tid, merged);
+    // refresh the per-key push snapshot so the freshly-merged state is not immediately echoed back as a local change
+    try{ _pushedKeys={}; var pp={brand:merged.brand,money:merged.money}; for(var x in merged){ if(x!=='brand'&&x!=='money'&&x!=='_kt'&&x!=='_t') pp[x]=merged[x]; } for(var q in pp) _pushedKeys[q]=JSON.stringify(pp[q]===undefined?null:pp[q]); }catch(e){} }
   const FLEET_TYPES=[
     {id:'cars',emoji:'\u{1F697}',label:'Cars & Exotics',noun:'vehicle',nouns:'vehicles',sample:['2023 Corvette C8','BMW M3 Competition','Porsche Macan','Range Rover Sport','Tesla Model S','Mercedes G-Wagon']},
     {id:'property',emoji:'\u{1F3E0}',label:'Rental Properties',noun:'property',nouns:'properties',sample:['Beachfront Villa','Downtown Loft','Mountain Cabin','Lakeside Cottage','City Penthouse','Desert Retreat']},
