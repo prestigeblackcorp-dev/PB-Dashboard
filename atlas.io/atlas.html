@@ -6645,6 +6645,7 @@ const Atlas = (function(){
   // is re-validated here regardless of where it came from -- the AI only ever NAMES a type; this decides
   // whether it actually runs.
   function _aioProposeActions(actions){
+    if((actions||[]).length>=2){ _aioProposeBundle(actions); return; }   // #271 pt2: a multi-step plan applies as ONE reviewed, reversible bundle
     (actions||[]).forEach(function(a){
       var v=_aioValidateAction(a);
       if(!v.ok){ aioMsg('bot', esc(v.msg)); _logEvent('aio','Denied: '+String((a&&a.type)||'unknown'),{type:a&&a.type,msg:v.msg}); return; }
@@ -6686,7 +6687,14 @@ const Atlas = (function(){
   function aioUndo(id){
     var idx=-1; for(var i=0;i<_aioUndoStack.length;i++){ if(_aioUndoStack[i].id===id){ idx=i; break; } }
     if(idx<0){ toast('Already undone.'); return; }
-    var item=_aioUndoStack[idx]; var entry=AIO_ACTIONS[item.type];
+    var item=_aioUndoStack[idx];
+    if(item.bundle){   // #271 pt2: reverse the whole bundle, last change first (so dependent changes unwind cleanly)
+      var okN=0; for(var b=item.bundle.length-1;b>=0;b--){ var st=item.bundle[b]; var e2=AIO_ACTIONS[st.type]; if(!e2||!e2.undo) continue; try{ e2.undo(st.snap, st.params); okN++; }catch(e){} }
+      _aioUndoStack.splice(idx,1);
+      var cardB=document.getElementById(id); if(cardB) cardB.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+okN+' change'+(okN===1?'':'s')+' reverted</div>';
+      _logEvent('aio','Undid bundle: '+okN,{}); toast('Undone'); return;
+    }
+    var entry=AIO_ACTIONS[item.type];
     if(!entry){ toast('Could not undo that.'); return; }
     try{ entry.undo(item.snap, item.params); }catch(e){ toast('Could not undo that.'); return; }
     _aioUndoStack.splice(idx,1);
@@ -6694,6 +6702,37 @@ const Atlas = (function(){
     _logEvent('aio','Undid: '+item.label,{type:item.type});
     toast('Undone');
   }
+  /* ===== ATLASIO PHASE 3 (agentic) -- BUNDLES: a plan with 2+ actions applies as ONE reviewed, reversible step. Every
+     action is still validated + snapshotted individually (a money step still shows its own before/after), but the owner
+     confirms ONCE and undoes the whole set with ONE tap (reverse order). Safety is unchanged -- a bundle can only hold
+     registered, RBAC-checked actions; it batches the review + the undo, never the guardrails. ===== */
+  var _aioBundleQ={};   // id -> {label, steps:[{type,entry,params,sum}]}
+  function _aioProposeBundle(actions){
+    var steps=[], denied=[];
+    (actions||[]).forEach(function(a){ var v=_aioValidateAction(a); if(!v.ok){ denied.push(v.msg); return; } var sum=null; try{ sum=v.entry.summary(v.params); }catch(e){} steps.push({type:a.type, entry:v.entry, params:v.params, sum:sum}); });
+    denied.forEach(function(m){ aioMsg('bot', esc(m)); });
+    if(!steps.length) return;
+    if(steps.length===1){ _aioProposeActions([{type:steps[0].type, params:steps[0].params}]); return; }   // one survivor -> normal single-action path (auto-tier can apply immediately)
+    var id=_aioNextId(); _aioBundleQ[id]={label:steps.length+' changes', steps:steps};
+    var rows=steps.map(function(s,i){ return '<div style="padding:5px 0;border-top:1px solid var(--line)"><div style="font-size:12.5px;font-weight:600">'+(i+1)+'. '+s.entry.label(s.params)+'</div>'+(s.sum?('<div style="font-size:11px;color:var(--muted)">'+esc(String(s.sum.field))+': '+esc(String(s.sum.before))+' \u2192 '+esc(String(s.sum.after))+'</div>'):'')+'</div>'; }).join('');
+    var anyMoney=steps.some(function(s){return s.entry.money;});
+    var body=rows+(anyMoney?'<div style="font-size:11px;color:var(--muted);margin-top:6px">Includes a money change &mdash; review each line above.</div>':'')+'<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn--primary btn--sm" onclick="Atlas.aioBundleApply(\''+id+'\')">Apply all '+steps.length+'</button><button class="btn btn--ghost btn--sm" onclick="Atlas.aioBundleCancel(\''+id+'\')">Cancel</button></div>';
+    aioMsg('bot','<div class="cx-card" id="'+id+'"><div class="cx-card__h">Apply these '+steps.length+' changes together?</div><div class="cx-card__b">'+body+'</div></div>');
+    _logEvent('aio','Proposed bundle: '+steps.length+' actions',{types:steps.map(function(s){return s.type;})});
+  }
+  function aioBundleApply(id){
+    var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id];
+    var applied=[], failed=null;
+    for(var i=0;i<b.steps.length;i++){ var s=b.steps[i]; var res=_aioRunAction(s.entry, s.params); if(!res.ok){ failed={label:s.entry.label(s.params), msg:res.msg}; break; } applied.push({type:s.type, params:s.params, snap:res.snap, label:s.entry.label(s.params)}); }
+    if(applied.length) _aioUndoStack.push({id:id, bundle:applied, label:b.label});
+    var doneRows=applied.map(function(a){ return '<div style="font-size:12px;color:var(--muted)">\u2713 '+esc(a.label)+'</div>'; }).join('');
+    var failRow=failed?('<div style="font-size:12px;color:var(--danger);margin-top:4px">Stopped at "'+esc(failed.label)+'" &mdash; '+esc(failed.msg||'could not apply')+'. The steps above were applied and can be undone.</div>'):'';
+    var undoBtn=applied.length?('<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+id+'\')">Undo all</button></div>'):'';
+    var html='<div class="cx-card__h">'+(failed?('Applied '+applied.length+' of '+b.steps.length):('Done \u2014 '+applied.length+' change'+(applied.length===1?'':'s')+' applied'))+'</div><div class="cx-card__b">'+doneRows+failRow+undoBtn+'</div>';
+    var card=document.getElementById(id); if(card) card.innerHTML=html; else aioMsg('bot','<div class="cx-card" id="'+id+'">'+html+'</div>');
+    _logEvent('aio','Applied bundle: '+applied.length+'/'+b.steps.length,{applied:applied.map(function(a){return a.type;})});
+  }
+  function aioBundleCancel(id){ var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id]; var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Cancelled \u2014 '+b.steps.length+' changes</div>'; _logEvent('aio','Cancelled bundle',{n:b.steps.length}); }
   // Cheap local pre-filter: is this message worth routing to the structured planner at all? Never
   // authoritative -- worst case a message that should have matched just gets the normal helpful reply.
   function _aioLooksActionableNoNav(s){
@@ -8744,7 +8783,7 @@ const Atlas = (function(){
   return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
-    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioDiagnose,aioFix,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
+    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
