@@ -1286,10 +1286,26 @@ function tenantProfile(t) {
 // protection / promos stay owner-confirmed in the dashboard; this is the honest estimate + deposit the customer pays.
 // Deposit the customer pays to reserve. Understands the client's {mode:'full'|'percent'|'none', pct} shape
 // AND legacy numeric (money.deposit dollars / money.depositPct). Was reading Number({...})=NaN -> $0 on every live booking.
+// #290: the RESERVE / down-payment to book -- a CAPTURED portion of the rental total (counts as revenue, reduces the
+// balance). mode 'full' | 'percent' (of total) | 'fixed' ($ amount) | 'none'. Never exceeds the total. Returns dollars.
 function depositFor(money, total) {
   var d = money && money.deposit;
-  if (d && typeof d === 'object') return d.mode === 'full' ? total : (d.mode === 'percent' ? total * (Number(d.pct) || 0) / 100 : 0);
-  return Number(d) > 0 ? Number(d) : (Number(money && money.depositPct) > 0 ? total * Number(money.depositPct) / 100 : 0);
+  if (d && typeof d === 'object') {
+    if (d.mode === 'full') return total;
+    if (d.mode === 'percent') return Math.min(total, total * (Number(d.pct) || 0) / 100);
+    if (d.mode === 'fixed') return Math.min(total, Math.max(0, Number(d.amount) || 0));   // #290: flat-$ reserve
+    return 0;   // 'none'
+  }
+  return Number(d) > 0 ? Number(d) : (Number(money && money.depositPct) > 0 ? total * Number(money.depositPct) / 100 : 0);   // legacy number / depositPct shapes
+}
+// #290: the SEPARATE refundable SECURITY / damage deposit (money.hold) -- NOT part of the rental total, NOT revenue
+// unless later captured for damage. type 'fixed' ($ value) | 'percent' (of the rental total) | 'none'. Returns dollars.
+function securityFor(money, total) {
+  var h = money && money.hold;
+  if (!h || typeof h !== 'object') return 0;
+  if (h.type === 'fixed') return Math.max(0, Number(h.value) || 0);
+  if (h.type === 'percent') return Math.max(0, total * (Number(h.value) || 0) / 100);
+  return 0;
 }
 function priceQuote(money, publishedAssets, assetName, periods) {
   var p = Math.max(1, Math.min(3650, parseInt(periods, 10) || 1));
@@ -1319,6 +1335,9 @@ function _reprice(money, q) {
   var c = function (x) { return Math.round((Number(x) || 0) * 100); };
   q.feeCents = c(fees); q.taxCents = c(tax); q.totalCents = c(total);
   q.depositCents = Math.min(q.totalCents, c(depositFor(money, total)));
+  q.securityCents = c(securityFor(money, total));   // #290: separate refundable security deposit (NOT part of total, NOT revenue)
+  q.securityHold = !(money && money.hold && money.hold.collect === 'charge');   // #290: authorize (hold, $0 fee to release) unless the tenant chose to CHARGE it (capture + refund later)
+  q.securityWhen = (money && money.hold && money.hold.when === 'booking') ? 'booking' : 'pickup';   // #290: collected online at booking, or at pickup (default)
   return q;
 }
 // The dashboard/analytics/receipts/tax-export read DOLLAR-named fields (total/subtotal/disc/taxAmt/dueNow/gross/hold); the worker
@@ -1333,7 +1352,8 @@ function _quoteDollars(q) {
   q.dueNow = (q.depositCents || 0) / 100;
   q.deposit = (q.depositCents || 0) / 100;
   q.balance = Math.max(0, q.total - q.dueNow);
-  q.hold = 0;   // the refundable hold is an owner-side money rule, not collected on the public path
+  q.security = (q.securityCents || 0) / 100;   // #290: refundable security deposit amount (separate line; hold or charge per q.securityHold)
+  q.hold = q.security;   // #290: also expose as `hold` (the dashboard/portal "refundable hold" field) so it displays; collected SEPARATELY, never folded into q.total or charged at public booking
   return q;
 }
 
@@ -3317,7 +3337,7 @@ function doReset(){
             if (sk) {
               const co = await stripeCheckout(sk, { amountCents: q.depositCents, name: prof.name + ' deposit - ' + assetName, email: b.email,
                 successUrl: url.origin + '/api/portal/' + token + '?paid=1', cancelUrl: url.origin + '/api/portal/' + token,
-                capture: (cfg.depositHold ? 'manual' : 'automatic'), metadata: { booking: bref, tenant: prof.id, kind: 'deposit' } });
+                capture: 'automatic', metadata: { booking: bref, tenant: prof.id, kind: 'deposit' } });   // #290: the reserve down-payment is ALWAYS captured (it IS revenue, part of the total). The refundable security deposit is a SEPARATE money.hold collected via the portal/owner -- never conflated with the reserve.
               if (co.ok) payUrl = co.url;
             }
           }
@@ -3387,8 +3407,17 @@ function doReset(){
             if (row) {
               const d = jparse(row.data, {}); const amt = Math.round(Number(obj.amount_total || obj.amount || 0));
               const pi = obj.payment_intent || (obj.object === 'payment_intent' ? obj.id : '');   // needed for capture/release/refund
-              d.paid = d.paid || {}; d.paid[md.kind || 'payment'] = { at: Date.now(), amountCents: amt, stripe: obj.id || '', pi: pi, hold: (md.kind === 'deposit') };   // a deposit is a manual-capture hold until captured (session.status isn't the PI status)
-              const rev = (md.kind === 'deposit') ? (Number(row.revenue_cents) || 0) : amt;
+              // #290 FIX: the RESERVE down-payment ('deposit') and the balance are CAPTURED revenue -- they were being
+              // wrongly excluded (a full-deposit booking recorded $0) AND the old code OVERWROTE revenue with a single
+              // payment instead of summing. ONLY a refundable SECURITY deposit ('security') is held out of revenue (a
+              // refundable liability until captured for damage). Recompute revenue as the SUM of every captured (non-hold,
+              // non-security) payment on the booking -- deterministic + idempotent (a webhook redelivery just re-sets the
+              // same d.paid[kind], so the sum is unchanged, and no payment is ever double-counted).
+              d.paid = d.paid || {};
+              var _isSec = (md.kind === 'security');
+              d.paid[md.kind || 'payment'] = { at: Date.now(), amountCents: amt, stripe: obj.id || '', pi: pi, hold: (_isSec && md.hold === '1') };
+              var _revSum = 0; for (var _pk in d.paid) { var _pp = d.paid[_pk]; if (_pp && !_pp.hold && _pk !== 'security') _revSum += (Number(_pp.amountCents) || 0); }
+              const rev = _revSum;
               await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?')
                 .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant).run();
               const tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(md.tenant).first();
@@ -5015,17 +5044,24 @@ function doReset(){
           const sk = await tenantStripeKey(env, brow.tenant_id);
           if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Online payment is not enabled yet - the owner will arrange payment with you.' });
           const q = d.quote || {}; const body = await req.json().catch(function () { return {}; });
-          const kind = body.kind === 'balance' ? 'balance' : 'deposit';
+          const kind = (body.kind === 'balance') ? 'balance' : (body.kind === 'security') ? 'security' : 'deposit';
           // LAUNCH-FIX (sweep): idempotency guard -- refuse to open a 2nd Checkout for a payment KIND already recorded paid
           // (the Stripe-signature-verified webhook writes d.paid[kind]). Without this, a re-click / two open tabs / a network
           // retry each started a fresh Checkout for the same amount, so a customer could be charged twice -- and the 2nd
           // webhook silently overwrote d.paid[kind], hiding the double charge. Mirrors the 'sign' route's signedAt guard below.
-          if (d.paid && d.paid[kind] && (Number(d.paid[kind].amountCents) || 0) > 0) return json({ ok: false, reason: 'already_paid', message: 'Your ' + kind + ' has already been paid - thank you.' });
-          const amt = kind === 'balance' ? Math.max(0, (Number(q.totalCents) || 0) - (Number(q.depositCents) || 0)) : (Number(q.depositCents) || Number(q.totalCents) || 0);
+          if (d.paid && d.paid[kind] && (Number(d.paid[kind].amountCents) || 0) > 0) return json({ ok: false, reason: 'already_paid', message: 'Your ' + (kind === 'security' ? 'security deposit' : kind) + ' has already been ' + ((kind === 'security' && q.securityHold !== false) ? 'authorized' : 'paid') + ' - thank you.' });
+          // #290: three payment kinds. 'deposit' = the CAPTURED reserve down-payment; 'balance' = the rest of the total;
+          // 'security' = the SEPARATE refundable deposit -- authorize a hold ($0 fee to release) unless the tenant set it to
+          // charge. Security is never part of the total, so paying the balance never includes it.
+          var amt, _secHold = (q.securityHold !== false);
+          if (kind === 'balance') amt = Math.max(0, (Number(q.totalCents) || 0) - (Number(q.depositCents) || 0));
+          else if (kind === 'security') amt = Number(q.securityCents) || 0;
+          else amt = (Number(q.depositCents) || Number(q.totalCents) || 0);
           if (amt < 50) return json({ ok: false, reason: 'nothing_due', message: 'Nothing is due online right now.' });
-          const co = await stripeCheckout(sk, { amountCents: amt, name: pr.name + ' - ' + kind + ' - ' + (d.asset || ''), email: d.custEmail,
+          const co = await stripeCheckout(sk, { amountCents: amt, name: pr.name + ' - ' + (kind === 'security' ? 'refundable security deposit' : kind) + ' - ' + (d.asset || ''), email: d.custEmail,
+            capture: (kind === 'security' && _secHold) ? 'manual' : 'automatic',
             successUrl: url.origin + '/api/portal/' + token + '?paid=1', cancelUrl: url.origin + '/api/portal/' + token,
-            metadata: { booking: brow.id, tenant: brow.tenant_id, kind: kind } });
+            metadata: { booking: brow.id, tenant: brow.tenant_id, kind: kind, hold: (kind === 'security' && _secHold) ? '1' : '0' } });
           return co.ok ? json({ ok: true, payUrl: co.url }) : json({ ok: false, reason: co.reason, message: 'Could not start checkout.' });
         }
         // #205 remote e-signature with a server-captured legal trail: real IP (CF-Connecting-IP) + user-agent + server timestamp +
@@ -6704,9 +6740,11 @@ function _receiptBodyHtml(pr, brow, d, q, paid, got, due) {
   if (q.discountCents) rows += '<div class="rowr"><span>Discount</span><span>-' + _m(q.discountCents) + '</span></div>';
   if (q.taxCents) rows += '<div class="rowr"><span>Tax</span><span>' + _m(q.taxCents) + '</span></div>';
   var pl = '';
-  if (paid.deposit) pl += '<div class="rowr"><span>Deposit paid</span><span>' + _m(paid.deposit.amountCents || 0) + '</span></div>';
+  if (paid.deposit) pl += '<div class="rowr"><span>Reserve paid (down-payment)</span><span>' + _m(paid.deposit.amountCents || 0) + '</span></div>';
   if (paid.balance) pl += '<div class="rowr"><span>Balance paid</span><span>' + _m(paid.balance.amountCents || 0) + '</span></div>';
   if (paid.payment) pl += '<div class="rowr"><span>Payment</span><span>' + _m(paid.payment.amountCents || 0) + '</span></div>';
+  // #290: the refundable SECURITY deposit is a separate line -- NOT part of the rental total or "paid to date" (got excludes it); returned after the rental unless kept for a claim.
+  if (paid.security) pl += '<div class="rowr"><span>Refundable security deposit (' + (paid.security.hold ? 'held' : 'charged') + ', returned after return)</span><span>' + _m(paid.security.amountCents || 0) + '</span></div>';
   return '<h1>' + esc(pr.name) + '</h1><div class="mut">Receipt &middot; Booking ' + esc(brow.id) + ' &middot; ' + esc(brow.status || '') + '</div><div class="bar"></div>' + rows + '<div class="totr"><span>Total</span><span>' + _m(q.totalCents || 0) + '</span></div>' + (pl ? ('<h3>Payments</h3>' + pl + '<div class="rowr"><span>Paid to date</span><span>' + _m(got) + '</span></div>') : '') + '<div class="totr"><span>Balance due</span><span>' + _m(due) + '</span></div><p class="mut" style="margin-top:18px">Thank you for booking with ' + esc(pr.name) + '.</p>';
 }
 function _agreementBodyHtml(pr, brow, d, agr, signed) {
