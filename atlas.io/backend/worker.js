@@ -3259,7 +3259,13 @@ function doReset(){
         const prof = tenantProfile(trow);
         const pubSite = (prof.settings && prof.settings.publicSite) || {};
         const published = !!pubSite.published;
-        const pubAssets = pubSite.assets || [];
+        // PLAN-CAP DOWNGRADE LOCK: a tenant may PUBLISH at most their current plan's asset cap. If a downgrade left more published assets
+        // than the new plan allows, the excess are LOCKED -- kept (never deleted), but NOT bookable on the public site. Deterministic
+        // first-N (as ordered) stay live; the rest hide until they upgrade or remove others. Mirrors the create-time cap (_assetCapFor)
+        // so a downgrade can't leave over-limit inventory bookable. cap 0 = uncapped (unlimited/comped) -> no change.
+        const _fullPubAssets = pubSite.assets || [];
+        const _acap = await _assetCapFor(env, trow.id);
+        const pubAssets = (_acap > 0 && _fullPubAssets.length > _acap) ? _fullPubAssets.slice(0, _acap) : _fullPubAssets;
         const cfg = pubSite.config || {};
 
         if (method === 'GET' && !sub) {
