@@ -2192,6 +2192,12 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_pending_enc TEXT").run(); } catch (e) { /* already exists -- secret generated at /totp/setup, not yet proven with a real code from the app */ }
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_backup_json TEXT").run(); } catch (e) { /* already exists -- JSON [{h:sha256hex,used:bool}] x10, hashed at rest, shown to the owner ONCE in plaintext at setup */ }
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_enabled_at INTEGER").run(); } catch (e) { /* already exists */ }
+  // ---- real multi-user (team): the server RBAC (_can/_roleCaps) is already enforced at every mutating route; these
+  // columns are simply what lets a NON-owner user exist + set a password. Additive, all nullable. ----
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN caps TEXT").run(); } catch (e) { /* per-user capability JSON override (null -> role default); read by _can. Usually already present. */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN invite_token TEXT").run(); } catch (e) { /* single-use set-password token for an invited teammate; NULLed the moment they set a password */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN invited_by TEXT").run(); } catch (e) { /* email of the owner/manager who sent the invite (forensics) */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN status TEXT").run(); } catch (e) { /* 'invited' until they accept + set a password, then 'active' */ }
   // Soft-delete tombstone: set on /api/admin/delete, cleared on /api/admin/restore. Keeps every row + the audit_log
   // (a real revert path + forensics) instead of the old one-click irreversible 16-table wipe.
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN deleted_at INTEGER").run(); } catch (e) { /* already exists */ }
@@ -3244,6 +3250,27 @@ function doReset(){
         // the card gate right on auth too, not only after its first subsequent API call 402s.
         if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, user.tenant_id, user.email); }
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), trusted_device: deviceToken, billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
+      }
+
+      // ---- TEAM: accept a teammate invite -- set a password and get a real session (PUBLIC: the invitee has no
+      // session yet). The token was minted by POST /api/team/invite and emailed as /?invite=<token>. Single-use:
+      // the token is consumed (NULLed) on the first success, so the link cannot be replayed. ----
+      if (path === '/api/auth/accept-invite' && method === 'POST') {
+        const ip = req.headers.get('CF-Connecting-IP') || 'x';
+        if (!await rateLimit(env, 'invite:' + ip, 12, 900000)) return err(429, 'Too many attempts. Try again in a few minutes.');
+        await ensurePlatformSchema(env);
+        const body = await req.json().catch(() => ({}));
+        const token = vStr(body.token, 80) ? String(body.token).trim() : '';
+        const pw = typeof body.password === 'string' ? body.password : '';
+        if (!token) return err(400, 'This invite link is missing its token. Ask your owner to resend it.');
+        if (pw.length < 8) return err(400, 'Choose a password of at least 8 characters.');
+        const u = await env.DB.prepare("SELECT * FROM users WHERE invite_token=?").bind(token).first();
+        if (!u) return err(404, 'This invite is invalid or has already been used. Ask your owner to resend it.');
+        const h = await hashPassword(pw);
+        await env.DB.prepare("UPDATE users SET pw_hash=?, pw_salt=?, invite_token=NULL, status='active', email_verified=1, last_login=? WHERE id=?").bind(h.hash, h.salt, Date.now(), u.id).run();
+        const sess = await createSession(env, u, req);
+        await audit(env, { tenant_id: u.tenant_id, user: { id: u.id, email: u.email } }, req, 'team.accept_invite', { email: u.email, role: u.role });
+        return json({ ok: true, csrf: sess.csrf, tenant_id: u.tenant_id, email: u.email, role: u.role, verified: 1 }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
       // ---- AUTH: resend the MFA email code (public; gated by the SAME challenge token, not a session -- also how
@@ -5466,6 +5493,68 @@ function doReset(){
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
         return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), assetCap: await _assetCapFor(env, ctx.tenant_id), assetUnlockCents: ASSET_UNLOCK_CENTS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+      }
+
+      // ============================================================ TEAM (real multi-user)
+      // The server-side RBAC is ALREADY enforced at every mutating route above (_can(ctx,cap) on /api/data writes per
+      // collection, billing, webEdit, settings; viewer = read-only). These routes are simply how real NON-owner users
+      // get created, listed, re-scoped, and removed. Guardrails: tenant-scoped everywhere; NEVER invite/promote to
+      // 'owner'; NEVER touch the owner row or your own access; removing a member revokes their live sessions at once. ----
+      if (path === '/api/team' && method === 'GET') {
+        if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage the team.');
+        const rows = (await env.DB.prepare("SELECT id,email,role,caps,status,created_at,last_login FROM users WHERE tenant_id=? ORDER BY (role='owner') DESC, created_at").bind(ctx.tenant_id).all()).results || [];
+        return json({ ok: true, team: rows.map(function (u) { return { id: u.id, email: u.email, role: u.role, caps: jparse(u.caps, null), status: u.status || 'active', pending: u.status === 'invited', isOwner: u.role === 'owner', self: u.id === ctx.user.id, created_at: u.created_at, last_login: u.last_login || null }; }) });
+      }
+      if (path === '/api/team/invite' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'settings')) return err(403, 'Only an owner or manager can invite teammates.');
+        await ensurePlatformSchema(env);
+        if (!await rateLimit(env, 'teaminv:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before inviting more people.');
+        const body = await req.json().catch(() => ({}));
+        const email = vEmail(body.email) ? String(body.email).trim().toLowerCase() : '';
+        if (!email) return err(400, 'Enter a valid email address.');
+        const role = ['manager', 'ops', 'desk', 'viewer'].indexOf(String(body.role || '')) >= 0 ? body.role : 'desk';   // NEVER 'owner' via invite
+        const caps = (body.caps && typeof body.caps === 'object' && !Array.isArray(body.caps)) ? JSON.stringify(body.caps) : null;
+        const existing = await env.DB.prepare("SELECT id,tenant_id FROM users WHERE lower(email)=?").bind(email).first();
+        if (existing) return err(409, existing.tenant_id === ctx.tenant_id ? 'That person is already on your team.' : 'That email already has an Atlas account.');
+        const uid = 'U' + randId(14), token = randId(28), now = Date.now();
+        await env.DB.prepare("INSERT INTO users (id,email,pw_hash,pw_salt,tenant_id,role,caps,invite_token,invited_by,status,email_verified,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+          .bind(uid, email, null, null, ctx.tenant_id, role, caps, token, ctx.user.email, 'invited', 1, now).run();
+        await audit(env, ctx, req, 'team.invite', { email: email, role: role });
+        const origin = env.APP_ORIGIN || 'https://atlasrental.io';
+        const link = origin + '/?invite=' + token;
+        let emailed = false;
+        try {
+          const tr = await env.DB.prepare('SELECT name FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          const bname = (tr && tr.name) ? tr.name : 'your team';
+          const r = await sendEmail(env, { to: email, transactional: true, fromName: 'Atlas Rental.io', subject: 'You are invited to ' + bname + ' on Atlas', html: _atlasEmailShell('<h2>Join ' + esc(bname) + ' on Atlas Rental.io</h2><p>' + esc(ctx.user.email) + ' added you to the team as <b>' + esc(role) + '</b>. Set your password to get started -- this link is single-use:</p><p style="text-align:center;margin:22px 0"><a href="' + esc(link) + '" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">Accept invite &amp; set password</a></p><p style="color:#8a8a8a;font-size:12px;word-break:break-all">Or paste this link into your browser: ' + esc(link) + '</p>') });
+          emailed = !!(r && r.sent);
+        } catch (e) { /* email is best-effort; the owner still gets the copyable link below */ }
+        return json({ ok: true, id: uid, email: email, role: role, emailed: emailed, link: link });   // link returned so the owner can copy/share it when the mailer is off or the invite bounces
+      }
+      if (path === '/api/team' && (method === 'PUT' || method === 'DELETE')) {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage the team.');
+        const body = method === 'PUT' ? await req.json().catch(() => ({})) : {};
+        const tid = method === 'PUT' ? String(body.id || '') : (url.searchParams.get('id') || '');
+        if (!tid) return err(400, 'Which teammate?');
+        const target = await env.DB.prepare("SELECT id,role FROM users WHERE id=? AND tenant_id=?").bind(tid, ctx.tenant_id).first();
+        if (!target) return err(404, 'Teammate not found.');
+        if (target.role === 'owner') return err(403, 'The owner account cannot be changed here.');
+        if (target.id === ctx.user.id) return err(403, 'You cannot change your own access.');
+        if (method === 'DELETE') {
+          await env.DB.prepare("UPDATE sessions SET revoked_at=? WHERE user_id=?").bind(Date.now(), tid).run();   // kick any live session for this user immediately
+          await env.DB.prepare("DELETE FROM users WHERE id=? AND tenant_id=? AND role!='owner'").bind(tid, ctx.tenant_id).run();
+          await audit(env, ctx, req, 'team.remove', { id: tid });
+          return json({ ok: true, removed: tid });
+        }
+        const role = ['manager', 'ops', 'desk', 'viewer'].indexOf(String(body.role || '')) >= 0 ? body.role : target.role;   // NEVER promote to owner
+        const hasCaps = body.caps && typeof body.caps === 'object' && !Array.isArray(body.caps);
+        if (hasCaps) await env.DB.prepare("UPDATE users SET role=?, caps=? WHERE id=? AND tenant_id=? AND role!='owner'").bind(role, JSON.stringify(body.caps), tid, ctx.tenant_id).run();
+        else if (body.caps === null) await env.DB.prepare("UPDATE users SET role=?, caps=NULL WHERE id=? AND tenant_id=? AND role!='owner'").bind(role, tid, ctx.tenant_id).run();
+        else await env.DB.prepare("UPDATE users SET role=? WHERE id=? AND tenant_id=? AND role!='owner'").bind(role, tid, ctx.tenant_id).run();
+        await audit(env, ctx, req, 'team.update', { id: tid, role: role });
+        return json({ ok: true, id: tid, role: role });
       }
 
       // ---- MFA: current status for Settings (authed; per-USER, not per-tenant -- any team member manages their own) ----
