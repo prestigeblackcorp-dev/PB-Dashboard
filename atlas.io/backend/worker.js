@@ -5610,7 +5610,21 @@ function doReset(){
             // resending the trimmed settings.promos array, or hiding a nav item via settings.nav, both still overwrite
             // exactly as before) -- only keys ABSENT from body.settings change behavior, from silently-deleted to
             // preserved.
-            const _mergedSettings279 = Object.assign({}, _curSettings279, body.settings);
+            // #294 CROSS-DEVICE CLOBBER FIX: per-key newest-wins merge using the client-supplied per-key timestamp map
+            // (_kt). For each incoming settings key, keep the CURRENT server value when the server's stamp for that key is
+            // NEWER than the incoming one -> a concurrent push from a device that had not yet seen another device's edit
+            // can no longer clobber the newer value; the _kt map itself is merged per-key (max). BACK-COMPAT: when the body
+            // carries no _kt (older client, or the #279 partial-write callers), every incoming key is taken -- byte-
+            // identical to the previous Object.assign shallow-merge.
+            const _mergedSettings279 = Object.assign({}, _curSettings279);
+            const _curKt279 = (_curSettings279._kt && typeof _curSettings279._kt === 'object') ? _curSettings279._kt : {};
+            const _inKt279 = (body.settings._kt && typeof body.settings._kt === 'object') ? body.settings._kt : {};
+            for (const _ik in body.settings) { if (_ik === '_kt' || _ik === '_t') continue;
+              const _its = Number(_inKt279[_ik] || 0), _cts = Number(_curKt279[_ik] || 0);
+              if (!(_ik in _curSettings279) || _its >= _cts) _mergedSettings279[_ik] = body.settings[_ik]; }
+            const _mk279 = {}; for (const _a in _curKt279) _mk279[_a] = Number(_curKt279[_a] || 0); for (const _b in _inKt279) { if (Number(_inKt279[_b] || 0) > (_mk279[_b] || 0)) _mk279[_b] = Number(_inKt279[_b] || 0); }
+            if (Object.keys(_mk279).length) _mergedSettings279._kt = _mk279;
+            const _mt279 = Math.max(Number(_curSettings279._t || 0), Number(body.settings._t || 0)); if (_mt279) _mergedSettings279._t = _mt279;
             sets.push('settings=?'); vals.push(JSON.stringify(_mergedSettings279));
           }
           if (vStr(body.name, 120)) { sets.push('name=?'); vals.push(body.name.slice(0, 120)); }
