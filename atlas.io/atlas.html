@@ -4447,6 +4447,7 @@ const Atlas = (function(){
       a+='<button class="btn btn--sm btn--danger" onclick="Atlas.bkCancelFlow(\''+b.id+'\')">Cancel</button>';
     } else { a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button><button class="btn btn--sm btn--danger" onclick="Atlas.deleteBooking(\''+b.id+'\')">Delete</button>'; }
     a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkRepeat(\''+b.id+'\')"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M3 8a5 5 0 019-3M13 8a5 5 0 01-9 3M11 2v3H8M5 14v-3h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Repeat</button>';
+    a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')" title="Copy this customer\'s signing + payment link"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M6.6 9.4l2.8-2.8M7 4.6l.8-.8a2.4 2.4 0 013.4 3.4l-.8.8M9 11.4l-.8.8a2.4 2.4 0 01-3.4-3.4l.8-.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg> Portal link</button>';
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
     openModal('<div class="modal__head"><h3>'+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar">'+esc((b.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(b.cust)+'</b><div style="font-size:12.5px;color:var(--muted)">'+contact+'</div></div>'+statusChip(b.status)+'</div>'
@@ -4533,7 +4534,20 @@ const Atlas = (function(){
     if(fee>0) _charges(b).push({id:_chId(), label:'Cancellation fee', amount:fee, at:Date.now(), paidAt:null});
     _upsertBooking(b); _logEvent('booking','Booking '+b.id+' cancelled'+(fee?(' -- kept '+money(fee)):' (full refund)'),{booking:b.id}); save(); closeModal();
     renderOverview(); renderBookings(); renderCustomers(); var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length;   // fix: refresh Customers panel live
-    toast(fee?('Cancelled -- kept '+money(fee)+' fee'):'Cancelled -- full refund'); try{ setTimeout(function(){ _waitSurface(b.asset); }, 900); }catch(e){} }
+    // CORE-LOOP: issue the REAL Stripe refund (keep the policy fee, refund the rest of what was captured; release any deposit hold) -- was local-only, so "full refund" refunded nothing.
+    if(ATLAS_BACKEND && _apiCsrf && !_isDemoTenant()){
+      toast(fee?('Cancelling \u2014 keeping '+money(fee)+'\u2026'):'Cancelling \u2014 refunding\u2026');
+      _api('/api/bookings/'+encodeURIComponent(b.id)+'/cancel',{method:'POST',body:{keepCents:Math.round(fee*100)}}).then(function(res){
+        if(res.json&&res.json.ok){ var rc=(res.json.refundedCents||0)/100; toast(rc>0?('Cancelled \u2014 '+money(rc)+' refunded'+(res.json.released?' + deposit hold released':'')):(res.json.released?'Cancelled \u2014 deposit hold released':(fee?('Cancelled \u2014 kept '+money(fee)+' fee'):'Cancelled'))); }
+        else toast((res.json&&(res.json.message||res.json.error))||'Cancelled here \u2014 refund could not be issued, check Stripe'); }).catch(function(){ toast('Cancelled here \u2014 network error issuing the refund'); });
+    } else { toast(fee?('Cancelled -- kept '+money(fee)+' fee'):'Cancelled -- full refund'); }
+    try{ setTimeout(function(){ _waitSurface(b.asset); }, 900); }catch(e){} }
+  // CORE-LOOP: fetch (mint-if-absent) THIS booking's real tokenized portal link so a phone/walk-in customer can sign + pay online.
+  function bkPortalLink(id){ if(!ATLAS_BACKEND||!_apiCsrf){ toast('Connect your Atlas backend to share a portal link.'); return; }
+    toast('Getting portal link\u2026');
+    _api('/api/bookings/'+encodeURIComponent(id)+'/portal-link',{method:'POST',body:{}}).then(function(res){
+      if(res.json&&res.json.url){ try{ navigator.clipboard.writeText(res.json.url); }catch(e){} toast('Portal link copied \u2014 signing + payment for this booking'); }
+      else toast((res.json&&(res.json.error||res.json.message))||'Could not get the portal link'); }).catch(function(){ toast('Network error'); }); }
   // ---- Recurring / subscription rentals: clone a booking into a future series ----
   function bkRepeat(id){ if(!_guard('bookEdit','Creating bookings'))return; var b=_getBooking(id); if(!b)return;
     openModal('<div class="modal__head"><h3>Repeat this booking</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -9094,7 +9108,7 @@ const Atlas = (function(){
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkPortalLink,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,

@@ -5889,7 +5889,7 @@ function doReset(){
         const sk = await tenantStripeKey(env, ctx.tenant_id);
         if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Connect Stripe to capture, release or refund payments.' });
         const d = jparse(row.data, {});
-        const kind = (op === 'refund') ? (vStr(body.kind, 20) ? body.kind : 'balance') : 'deposit';
+        const kind = vStr(body.kind, 20) ? body.kind : (op === 'refund' ? 'balance' : 'security');   // CORE-FIX: the manual-capture HOLD lives under d.paid.security (not 'deposit', which is an auto-captured reserve) -> capture/release must target it by default
         const p = (d.paid && d.paid[kind]) || null;
         if (!p || !p.pi) return json({ ok: false, reason: 'no_payment', message: 'No ' + kind + ' payment on file to ' + op + '.' });
         let r2;
@@ -5905,6 +5905,47 @@ function doReset(){
             html: _emailShell(pr, '<h2>' + (op === 'refund' ? 'Refund issued' : 'Your deposit hold was released') + '</h2><p>Booking <b>' + esc(body.booking) + '</b>' + (op === 'refund' ? (' &mdash; ' + money2(body.amountCents || p.amountCents) + ' refunded to your card.') : ' &mdash; the authorization hold has been released.') + '</p>') });
         }
         return json({ ok: true, op: op });
+      }
+
+      // ---- CORE-LOOP: mint-if-absent the tokenized customer-portal link for ANY booking (owner-created bookings had
+      // no token, so phone/walk-in customers could never sign/pay/upload). Returns the real /api/portal/<token> URL. ----
+      const plm = path.match(/^\/api\/bookings\/([\w-]+)\/portal-link$/);
+      if (plm && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'bookEdit')) return err(403, 'Permission required.');
+        const row = await env.DB.prepare('SELECT id, portal_token FROM bookings WHERE id=? AND tenant_id=?').bind(plm[1], ctx.tenant_id).first();
+        if (!row) return err(404, 'Booking not found.');
+        let tok = row.portal_token;
+        if (!tok) { tok = randId(24); await env.DB.prepare('UPDATE bookings SET portal_token=?, updated_at=? WHERE id=? AND tenant_id=?').bind(tok, Date.now(), plm[1], ctx.tenant_id).run(); }
+        return json({ ok: true, url: (env.APP_ORIGIN || 'https://atlasrental.io') + '/api/portal/' + tok, token: tok });
+      }
+
+      // ---- CORE-LOOP: cancel a booking WITH a REAL Stripe refund per the owner's policy. keepCents = fee retained;
+      // refunds captured money above that, releases any authorized security hold, books the kept fee as the only
+      // revenue (fixes "full refund" that refunded nothing + revenue that never reversed). ----
+      const cxm = path.match(/^\/api\/bookings\/([\w-]+)\/cancel$/);
+      if (cxm && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'bookEdit')) return err(403, 'Permission required.');
+        const body = await req.json().catch(function () { return {}; });
+        const keepCents = Math.max(0, Math.round(Number(body.keepCents) || 0));
+        const row = await env.DB.prepare('SELECT id,data FROM bookings WHERE id=? AND tenant_id=?').bind(cxm[1], ctx.tenant_id).first();
+        if (!row) return err(404, 'Booking not found.');
+        const d = jparse(row.data, {}); d.paid = d.paid || {};
+        const sk = await tenantStripeKey(env, ctx.tenant_id);
+        let refundedCents = 0, released = false;
+        if (sk) {
+          const caps = []; for (const k in d.paid) { const p = d.paid[k]; if (p && p.pi && !p.hold && k !== 'security' && !p.refunded) caps.push(p); }
+          let captured = 0; caps.forEach(function (p) { captured += (Number(p.amountCents) || 0); });
+          let toRefund = Math.max(0, captured - keepCents);   // keep the policy fee, refund the rest of what was actually captured
+          for (const p of caps) { if (toRefund <= 0) break; const amt = Math.min(Number(p.amountCents) || 0, toRefund); if (amt <= 0) continue; const rr = await stripePost(sk, '/refunds', { payment_intent: p.pi, amount: amt }); if (rr.ok) { p.refunded = { at: Date.now(), amountCents: amt }; refundedCents += amt; toRefund -= amt; } }
+          const sec = d.paid.security; if (sec && sec.pi && sec.hold) { const rc = await stripePost(sk, '/payment_intents/' + sec.pi + '/cancel', {}); if (rc.ok) { sec.released = { at: Date.now() }; delete sec.hold; released = true; } }   // release the refundable-deposit hold on cancel
+        }
+        d.status = 'Cancelled'; d.cancelledAt = Date.now(); d.cancelFee = keepCents / 100; d._t = Date.now();
+        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), keepCents, 'cancelled', Date.now(), cxm[1], ctx.tenant_id).run();
+        await audit(env, ctx, req, 'booking.cancel', { booking: cxm[1], keepCents: keepCents, refundedCents: refundedCents, released: released });
+        if (d.custEmail && (refundedCents > 0 || released)) { try { const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); const pr = tenantProfile(tr || { name: 'Atlas Rental.io' }); await sendEmail(env, { to: d.custEmail, fromName: pr.name, subject: 'Booking cancelled - ' + pr.name, html: _emailShell(pr, '<h2>Your booking was cancelled</h2><p>Booking <b>' + esc(cxm[1]) + '</b>.' + (refundedCents > 0 ? (' A refund of ' + money2(refundedCents) + ' was issued to your card.') : '') + (released ? ' Your deposit hold was released.' : '') + '</p>') }); } catch (e) {} }
+        return json({ ok: true, refundedCents: refundedCents, released: released });
       }
 
       // ---- generic tenant-scoped collection CRUD (the store seam) -----------
