@@ -4642,8 +4642,10 @@ const Atlas = (function(){
       +(st==='authorized'?'<button class="btn btn--ghost btn--sm" style="color:var(--brand)" onclick="Atlas.holdRelease(\''+b.id+'\')">Release (clean)</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.holdCapture(\''+b.id+'\')">Capture (damage)</button>':'')+'</div>'; }
   function holdAuth(id){ var b=_getBooking(id); if(!b)return; var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var amt=_r2(q.hold||0);
     if(amt<=0){ toast('Set a deposit hold in Settings > Money rules first'); return; }
-    b.hold={amount:amt, status:'authorized', at:Date.now()}; _upsertBooking(b); _logEvent('booking','Authorized '+money(amt)+' refundable hold on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Hold authorized ('+money(amt)+') -- $0 in fees until you capture'); }
-  function holdRelease(id){ var b=_getBooking(id); if(!b||!b.hold)return; b.hold.status='released'; b.hold.releasedAt=Date.now(); _upsertBooking(b); _logEvent('booking','Released the hold on '+b.id+' -- clean return',{booking:b.id}); save(); openBooking(id); toast('Hold released -- nothing charged'); }
+    b.hold={amount:amt, status:'authorized', at:Date.now()}; _upsertBooking(b); _logEvent('booking','Marked '+money(amt)+' refundable hold on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Deposit hold noted ('+money(amt)+') \u2014 the customer authorizes it when they pay the refundable deposit in their portal (send the Portal link)'); }
+  function holdRelease(id){ var b=_getBooking(id); if(!b||!b.hold)return; b.hold.status='released'; b.hold.releasedAt=Date.now(); _upsertBooking(b); _logEvent('booking','Released the hold on '+b.id+' -- clean return',{booking:b.id}); save(); openBooking(id);
+    if(ATLAS_BACKEND && _apiCsrf && !_isDemoTenant()){ _api('/api/pay/release',{method:'POST',body:{booking:id,kind:'security'}}).then(function(res){ toast((res.json&&res.json.ok)?'Deposit hold released \u2014 nothing charged':('Released here \u2014 '+((res.json&&(res.json.message||res.json.reason))||'no online hold found'))); }).catch(function(){ toast('Released here \u2014 network error'); }); }
+    else toast('Hold released -- nothing charged'); }
   function holdCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var max=b.hold.amount;
     openModal('<div class="modal__head"><h3>Capture from hold</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 12px">Keep part or all of the '+money(max)+' hold for damage, fuel or cleaning. The rest is released.</div>'
@@ -4652,7 +4654,9 @@ const Atlas = (function(){
   function doCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var cap=Math.min(b.hold.amount, _r2(parseFloat(val('hcAmt'))||0)); if(cap<=0){ closeModal(); return holdRelease(id); }
     b.hold.status='captured'; b.hold.captured=cap; b.hold.capturedAt=Date.now();
     _charges(b).push({id:_chId(), label:'Deposit captured (damage/fuel)', amount:cap, at:Date.now(), paidAt:Date.now()});
-    _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); closeModal(); try{ renderOverview(); renderBookings(); }catch(e){} openBooking(id); toast('Captured '+money(cap)+' from the hold'); }
+    _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); closeModal(); try{ renderOverview(); renderBookings(); }catch(e){} openBooking(id);
+    if(ATLAS_BACKEND && _apiCsrf && !_isDemoTenant()){ _api('/api/pay/capture',{method:'POST',body:{booking:id,kind:'security',amountCents:Math.round(cap*100)}}).then(function(res){ toast((res.json&&res.json.ok)?('Captured '+money(cap)+' from the deposit'):('Recorded here \u2014 '+((res.json&&(res.json.message||res.json.reason))||'no online deposit hold to capture'))); }).catch(function(){ toast('Recorded here \u2014 network error'); }); }
+    else toast('Captured '+money(cap)+' from the hold'); }
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
   function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':(S.money.rateModel==='month'?'month':'day')); }
