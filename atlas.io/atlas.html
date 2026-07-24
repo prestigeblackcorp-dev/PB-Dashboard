@@ -9098,7 +9098,23 @@ const Atlas = (function(){
         else startTrial();
       }
       else { store.logout(); show('landing'); }   // dangling session, no tenant
-    } else { if((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true){ goAuth('login'); } else { show('landing'); } }   // #PWA: a home-screen (standalone) launch opens straight to sign-in, not the marketing landing -- it should feel like an app, not the website
+    } else {
+      // #PWA session restore: the installed home-screen app has its OWN localStorage, so a returning owner who signed in
+      // via the browser lands here with NO local session and was dropped on the login screen. But the httpOnly cookie
+      // session is same-origin (shared), so probe /api/auth/me: if a real session exists, rebuild the local session and
+      // reload -> the normal restore path opens their DASHBOARD (feels like their app), not login. Fall back to login
+      // (standalone) or the marketing landing (browser). A once-per-launch sessionStorage guard prevents a reload loop.
+      var _standalone=(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true;
+      var _fallback=function(){ if(_standalone) goAuth('login'); else show('landing'); };
+      var _tried=false; try{ _tried=sessionStorage.getItem('atlas_pwa_restore')==='1'; }catch(e){}
+      if(ATLAS_BACKEND && !_tried){
+        try{ sessionStorage.setItem('atlas_pwa_restore','1'); }catch(e){}
+        _api('/api/auth/me',{method:'GET'}).then(function(res){
+          if(res&&res.json&&res.json.user&&res.json.tenant&&res.json.tenant.id){ _lsSet(SK,{email:_emailKey(res.json.user.email),tenantId:res.json.tenant.id}); location.reload(); return; }
+          _fallback();
+        }).catch(_fallback);
+      } else { _fallback(); }
+    }
     // Deep-link: ?film / ?watch / #watch auto-plays the 30-second commercial (a shareable "watch it" link).
     try{ if(/[?&](film|watch|commercial|tour)\b/i.test(location.search) || /#(watch|film|commercial|tour)/i.test(location.hash)){ setTimeout(function(){ try{ playFilm(); }catch(e){} }, 450); } }catch(e){}
   }
