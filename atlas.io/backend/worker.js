@@ -75,6 +75,11 @@ function _sanitizeEmailHtml(h) {
 // To raise the count later WITHOUT locking anyone out: make verifyPassword read the per-row pw_algo iteration count,
 // write the true count on new/changed passwords, and let the existing pwNeedsUpgrade() re-hash on next login.
 const PBKDF2_ITERS = 100000;
+// #254 Compliance -- proof-of-consent: the currently-published version of the Terms of Service + Privacy Policy. Bump
+// this string whenever the legal copy in _TERMS_SECTIONS / _PRIVACY_SECTIONS materially changes; every tenant is then
+// re-prompted to accept the new version (client re-accept banner -> POST /api/policy/accept). Acceptance is stamped per
+// tenant (version + timestamp + edge IP) at signup, giving an auditable record of who agreed to what, when.
+const POLICY_VERSION = '2026-07-23';
 const PBKDF2_ROUNDS = 6;               // 6 x 100k = 600k effective
 async function _pbkdf2(materialBytes, salt) {
   const key = await crypto.subtle.importKey('raw', materialBytes, 'PBKDF2', false, ['deriveBits']);
@@ -1914,6 +1919,9 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN deleted_at INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN delete_reason TEXT").run(); } catch (e) { /* churn reason captured when the owner self-deletes; shown in the master-dash Deleted list, cleared on restore */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN deleted_by TEXT").run(); } catch (e) { /* 'self' (owner self-deleted) vs 'admin' (platform removed) -- lets the master dash flag self-deletions */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tos_version TEXT").run(); } catch (e) { /* #254: the POLICY_VERSION this tenant last accepted (ToS + Privacy) -- proof-of-consent */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tos_accepted_at INTEGER").run(); } catch (e) { /* #254: epoch ms of that acceptance */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tos_accepted_ip TEXT").run(); } catch (e) { /* #254: edge IP captured at acceptance time */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tz TEXT").run(); } catch (e) { /* already exists -- IANA time zone from Cloudflare edge geo (req.cf.timezone), captured at signup + backfilled on profile save */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_connect_acct TEXT").run(); } catch (e) { /* E2 Stripe Connect: the tenant's connected-account id (GMV take-rate path, flag-gated OFF; live charge path is untouched until the owner enables it) */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN connect_charges_enabled INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -2753,6 +2761,7 @@ export default {
         // Email confirmation: send a verification link and hold the account 'unverified' until it's clicked.
         // If the mailer is unavailable, auto-verify so a mail outage can never lock a brand-new owner out of their own account.
         await ensurePlatformSchema(env);
+        try { await env.DB.prepare('UPDATE tenants SET tos_version=?, tos_accepted_at=?, tos_accepted_ip=? WHERE id=?').bind(POLICY_VERSION, now, ip, tid).run(); } catch (e) {}   // #254: record proof-of-consent (client signup gates the button on the "I agree to the Terms + Privacy Policy" checkbox)
         let _vSent = false;
         try { const _vm = await _sendVerifyEmail(env, uid, body.email.toLowerCase()); _vSent = !!(_vm && _vm.sent); } catch (e) {}
         try { await env.DB.prepare('UPDATE users SET email_verified=? WHERE id=?').bind(_vSent ? 0 : 1, uid).run(); } catch (e) {}
@@ -3445,6 +3454,19 @@ function doReset(){
         return json({ ok: true, deleted: _atid });
       }
 
+      // #254 Compliance: record that the signed-in tenant accepted the CURRENT policy version. Used by the client
+      // re-accept banner, which appears whenever the tenant's stored tos_version != POLICY_VERSION (a policy update).
+      // Session + CSRF gated; stamps version + timestamp + edge IP; audited. Idempotent (re-accepting is a no-op UPDATE).
+      if (path === '/api/policy/accept' && method === 'POST') {
+        const _pctx = await resolveSession(env, req);
+        if (!_pctx || !_pctx.tenant_id) return err(401, 'Sign in first.');
+        if (!csrfOk(req, _pctx)) return err(403, 'Bad or missing CSRF token.');
+        const _pip = req.headers.get('CF-Connecting-IP') || 'x';
+        try { await env.DB.prepare('UPDATE tenants SET tos_version=?, tos_accepted_at=?, tos_accepted_ip=? WHERE id=?').bind(POLICY_VERSION, Date.now(), _pip, _pctx.tenant_id).run(); } catch (e) {}
+        await audit(env, { tenant_id: _pctx.tenant_id, actor: _pctx.user && _pctx.user.email }, req, 'policy.accept', { version: POLICY_VERSION });
+        return json({ ok: true, version: POLICY_VERSION });
+      }
+
       // ---- Inbound email webhook: your mail provider / forwarder (Resend, Postmark, SendGrid, generic) POSTs parsed mail
       // here and it lands in the Support Inbox. Secured by INBOUND_SECRET (header X-Inbound-Secret or ?secret=), NOT the
       // admin token. Nothing is ever auto-replied -- the owner reads, AI drafts, the owner clicks Send. ----
@@ -3701,7 +3723,7 @@ function doReset(){
 
         if (path === '/api/admin/members' && method === 'GET') {
           const rows = await env.DB.prepare(
-            "SELECT t.id AS tenant_id, t.name, t.plan, t.tier, t.created_at, t.trial_ends, t.card_on_file, " +
+            "SELECT t.id AS tenant_id, t.name, t.plan, t.tier, t.created_at, t.trial_ends, t.card_on_file, t.tos_version, t.tos_accepted_at, " +
             "(SELECT email FROM users WHERE tenant_id=t.id AND role='owner' ORDER BY created_at LIMIT 1) AS email, " +
             "(SELECT COUNT(*) FROM customers WHERE tenant_id=t.id) AS customers, " +
             "(SELECT COUNT(*) FROM bookings WHERE tenant_id=t.id) AS bookings, " +
@@ -3715,7 +3737,7 @@ function doReset(){
           // the per-row _ownerTier check is cheap. This is the itemized-list half of "never known"; aggregate COUNTS
           // (overview) still include it -- a +1 in a total reveals no address.
           const members = (rows.results || []).filter(function (m) { return !_isOwnerEmail(env, m.email); }).map(function (m) { m.comp = m.email ? (cmap[(m.email || '').toLowerCase()] || null) : null; return m; });   // owners are operators, not customers -- excluded from the members list for EVERY viewer (managed on the separate owner-accounts panel)
-          return json({ ok: true, members: members });
+          return json({ ok: true, members: members, policy_current: POLICY_VERSION });
         }
 
         if (path === '/api/admin/transactions' && method === 'GET') {
@@ -4855,7 +4877,7 @@ function doReset(){
 
       if (path === '/api/auth/me' && method === 'GET') {
         await ensurePlatformSchema(env);   // #278: this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady, see ensurePlatformSchema)
-        const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,tier,website_addon,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,tier,website_addon,brand,money,settings,tos_version,tos_accepted_at FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         // #276: same flag-gated computation as login/signup -- 'ok' whenever the gate is OFF. This is the endpoint
         // the client polls on window-focus to detect a mid-session lock clearing (billing fixed -> dismiss paywall).
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = _billingState(t, ctx.isOwner, ctx.comp); }
@@ -4867,7 +4889,7 @@ function doReset(){
         // #278: an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- only ENFORCEMENT (the 402s
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
-        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp) });
+        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
       }
 
       // ---- MFA: current status for Settings (authed; per-USER, not per-tenant -- any team member manages their own) ----
@@ -5166,10 +5188,10 @@ function doReset(){
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
           await ensurePlatformSchema(env);   // #278: this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady, see ensurePlatformSchema)
-          const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings,tos_version FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
           // #278: websiteEntitled is an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- see the
           // matching note on /api/auth/me. This is the primary hydrate path (_srvHydrate -> S.websiteEntitled).
-          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false });
+          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
         }
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
