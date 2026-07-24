@@ -1924,27 +1924,110 @@ async function _cfDeleteHostname(env, hostname) {
   } catch (e) {}
 }
 
+// ---- PART F: ONE canonical cancellation/refund policy string, reused verbatim on the receipt footer, the
+// cancellation-notice email, and (matching wording) the client cancel-confirm + ToS section 8. Keeps the policy
+// identical in every place a customer can see it. Matches the served Terms of Service ("8. Cancellation; no refunds").
+const CANCEL_POLICY = 'Cancellations stop future renewals -- your next cycle is not charged. You keep full access through the end of the period you have already paid for. No refunds or account credits are issued for unused time. If a refund is ever issued, you receive a credit note.';
+// ---- PART C1: platform legal identity for the receipt footer -- read with safe defaults; the owner sets real
+// values via /api/admin/config (platform_legal_name/platform_legal_address/platform_tax_id). NEVER invents an
+// address or tax id -- _atlasReceiptHtml only renders those lines when actually set (see C3 below).
+async function _platIdentity(env) {
+  return {
+    legal: (await _pcfgGet(env, 'platform_legal_name', 'Atlas Rental.io')) || 'Atlas Rental.io',
+    addr: (await _pcfgGet(env, 'platform_legal_address', '')) || '',
+    taxid: (await _pcfgGet(env, 'platform_tax_id', '')) || '',
+    email: env.MAIL_FROM || 'hello@atlasrental.io'
+  };
+}
+// Small shared helpers for the receipt call sites (C4): tenant display name + (best-effort) card last4 from a
+// Stripe charge id. Both are read-only, own try/catch, and return '' on ANY failure -- callers simply omit the
+// field rather than ever risking the receipt/webhook itself.
+async function _tenantName(env, tid) { try { const r = await env.DB.prepare('SELECT name FROM tenants WHERE id=?').bind(tid).first(); return (r && r.name) || ''; } catch (e) { return ''; } }
+async function _card4FromCharge(env, pk, chargeId) {
+  try {
+    if (!pk || !chargeId) return '';
+    const r = await stripeApi(pk, 'GET', 'charges/' + encodeURIComponent(chargeId), null);
+    return (r && r.ok && r.j && r.j.payment_method_details && r.j.payment_method_details.card && r.j.payment_method_details.card.last4) || '';
+  } catch (e) { return ''; }
+}
+// Service-period label for a recurring invoice, derived from Stripe's own line-item period when present (e.g. a
+// prorated change mid-cycle) so the receipt never shows a misleading date range; falls back to a plain default.
+function _rcptPeriod(obj, fallback) {
+  try {
+    const ln = obj && obj.lines && obj.lines.data && obj.lines.data[0];
+    const p = ln && ln.period;
+    if (p && p.start && p.end) {
+      const f = function (s) { return new Date(s * 1000).toISOString().slice(0, 10); };
+      return f(p.start) + ' to ' + f(p.end);
+    }
+  } catch (e) {}
+  return fallback || '1 month';
+}
 // ---- ATLAS-branded itemized receipt emailed to the USER (tenant) when they pay ATLAS for a subscription / credits / website / domain. ----
+// PART C3: richer + legal. `o` may carry: ref (receipt no.), to/email (recipient), business (tenant name),
+// items:[{label,amount}] OR the single label+amount (both supported, alongside the original lineLabel/amountStr
+// every EXISTING call site already passes -- fully backward compatible, nothing upstream needs to change shape),
+// tax/taxStr, total/totalStr, period (service period string), card4 (last4), credit (true -> renders as a
+// refund/credit-note instead of a receipt), identity ({legal,addr,taxid,email} from _platIdentity).
 function _atlasReceiptHtml(o) {
+  o = o || {};
   const row = function (a, b, strong) { return '<tr><td style="padding:9px 0;color:' + (strong ? '#0b1a12;font-weight:800' : '#33443c') + ';font-size:14px' + (strong ? ';border-top:1px solid #e4ebe7' : '') + '">' + a + '</td><td style="padding:9px 0;text-align:right;font-variant-numeric:tabular-nums;color:' + (strong ? '#0b1a12;font-weight:800' : '#0b1a12') + ';font-size:14px' + (strong ? ';border-top:1px solid #e4ebe7' : '') + '">' + b + '</td></tr>'; };
+  const fmtAmt = function (v) { return (v == null || v === '') ? '' : (typeof v === 'number' ? money2(v) : String(v)); };
+  const items = (Array.isArray(o.items) && o.items.length)
+    ? o.items.map(function (it) { return { label: (it && it.label) || '', amount: (it && it.amountStr != null) ? it.amountStr : fmtAmt(it && it.amount) }; })
+    : [{ label: o.lineLabel || o.label || 'Atlas Rental.io', amount: (o.amountStr != null ? o.amountStr : fmtAmt(o.amount)) }];
+  const taxStr = (o.taxStr != null && o.taxStr !== '') ? o.taxStr : (o.tax ? fmtAmt(o.tax) : '');
+  const totalStr = (o.totalStr != null && o.totalStr !== '') ? o.totalStr : (o.total != null ? fmtAmt(o.total) : ((items[0] && items[0].amount) || ''));
+  const recipient = o.to || o.email || '';
+  const idn = o.identity || {};
+  const rowsHtml = items.map(function (it) { return row(esc(it.label), esc(it.amount)); }).join('')
+    + (o.period ? row('Service period', esc(o.period)) : '')
+    + (taxStr ? row('Sales tax', esc(taxStr)) : '')
+    + row(o.credit ? 'Total credited' : 'Total paid', esc(totalStr), true);
   return '<div style="max-width:520px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0b1a12">'
     + '<div style="display:flex;align-items:center;gap:11px;padding:2px 0 14px;border-bottom:2px solid #1E6E4E">'
     + '<div style="width:36px;height:36px;border-radius:9px;background:#1E6E4E;display:flex;align-items:center;justify-content:center;flex:none"><svg viewBox="0 0 24 24" width="21" height="21" fill="none"><path d="M12 3 3 20h4l5-10 5 10h4L12 3Z" fill="#eafff4"/></svg></div>'
-    + '<div style="flex:1"><div style="font-size:16px;font-weight:800;letter-spacing:.2px">Atlas Rental.io</div><div style="font-size:12px;color:#5c6f66">Receipt ' + esc(o.ref || '') + '</div></div>'
-    + '<div style="font-size:12px;color:#5c6f66">' + esc(o.dateStr || '') + '</div></div>'
-    + '<div style="padding:14px 0;font-size:13px;color:#33443c">Billed to <b>' + esc(o.to || '') + '</b>' + (o.business ? (' &middot; ' + esc(o.business)) : '') + '</div>'
+    + '<div style="flex:1"><div style="font-size:16px;font-weight:800;letter-spacing:.2px">Atlas Rental.io</div><div style="font-size:12px;color:#5c6f66">' + (o.credit ? 'Refund -- Credit note ' : 'Receipt ') + esc(o.ref || '') + '</div></div>'
+    + '<div style="text-align:right;flex:none"><div style="font-size:11px;color:#5c6f66">' + esc(_rcptTs()) + '</div><div style="display:inline-block;margin-top:5px;padding:3px 10px;background:#eafff4;color:#177350;font-size:10px;font-weight:800;letter-spacing:.04em;border-radius:999px">' + (o.credit ? 'REFUNDED' : 'PAID') + '</div></div>'
+    + '</div>'
+    + '<div style="padding:14px 0;font-size:13px;color:#33443c">Billed to <b>' + esc(recipient) + '</b>' + (o.business ? (' &middot; ' + esc(o.business)) : '') + '</div>'
     + '<table style="width:100%;border-collapse:collapse">'
-    + row(esc(o.lineLabel || 'Atlas Rental.io'), esc(o.amountStr || ''))
-    + (o.taxStr ? row('Sales tax', esc(o.taxStr)) : '')
-    + row('Total paid', esc(o.totalStr || o.amountStr || ''), true)
+    + rowsHtml
     + '</table>'
-    + '<div style="margin-top:16px;padding:11px 13px;background:#eef6f1;border-radius:9px;font-size:12.5px;color:#2d4438"><b>Paid</b> &middot; thank you for building on Atlas Rental.io.' + (o.note ? (' ' + esc(o.note)) : '') + '</div>'
-    + '<div style="margin-top:18px;font-size:11.5px;color:#8a9a92;text-align:center">Atlas Rental.io &middot; atlasrental.io &middot; The Digital Headquarters for Rental Businesses</div></div>';
+    + (o.card4 ? '<div style="margin-top:10px;font-size:12px;color:#5c6f66">Paid with card ending ' + esc(o.card4) + '</div>' : '')
+    + '<div style="margin-top:16px;padding:11px 13px;background:#eef6f1;border-radius:9px;font-size:12.5px;color:#2d4438"><b>' + (o.credit ? 'Refunded' : 'Paid') + '</b> &middot; thank you for building on Atlas Rental.io.' + (o.note ? (' ' + esc(o.note)) : '') + '</div>'
+    + '<div style="margin-top:14px;font-size:10.5px;color:#9aa8a1;text-align:center;line-height:1.6">' + (o.credit ? 'Credit note for a refund issued to your original payment method.' : 'Fees are non-refundable. Cancel anytime to stop future renewals; access continues through the end of your paid period.') + '</div>'
+    + '<div style="margin-top:10px;font-size:11.5px;color:#8a9a92;text-align:center;line-height:1.6">' + esc(idn.legal || 'Atlas Rental.io') + (idn.addr ? (' &middot; ' + esc(idn.addr)) : '') + (idn.taxid ? (' &middot; Tax ID: ' + esc(idn.taxid)) : '') + '<br>' + esc(idn.email || 'hello@atlasrental.io') + ' &middot; atlasrental.io &middot; The Digital Headquarters for Rental Businesses</div></div>';
 }
+// PART C4: fetch platform identity once + stamp an Atlas-controlled receipt number (ATL- prefix over whatever
+// Stripe-derived ref the caller passed, so every receipt has a stable, Atlas-numbered id even if the Stripe ref
+// is ever missing/short). Still fully best-effort -- receipts must never affect the webhook/cron that triggered them.
 async function _sendAtlasReceipt(env, o) {
-  try { if (!env.RESEND_KEY || !o || !o.to) return; await sendEmail(env, { to: o.to, fromName: 'Atlas Rental.io', subject: 'Your Atlas Rental.io receipt' + (o.ref ? (' ' + o.ref) : ''), html: _atlasReceiptHtml(o) }); } catch (e) { /* receipts are best-effort */ }
+  try {
+    if (!env.RESEND_KEY || !o || !o.to) return;
+    o.identity = await _platIdentity(env);
+    o.ref = 'ATL-' + (o.ref || randId(8).toUpperCase());
+    const subject = (o.credit ? 'Your Atlas Rental.io refund -- Credit note ' : 'Your Atlas Rental.io receipt ') + o.ref;
+    await sendEmail(env, { to: o.to, fromName: 'Atlas Rental.io', subject: subject, html: _atlasReceiptHtml(o) });
+  } catch (e) { /* receipts are best-effort */ }
 }
 function _rcptDate() { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } }
+// PART C2: full timestamp (date + HH:MM UTC) for the receipt header -- _atlasReceiptHtml calls this directly, so
+// every EXISTING call site's dateStr:_rcptDate() argument keeps working (still bound/passed, just no longer the
+// value rendered) and nothing upstream needs to change.
+function _rcptTs() { try { const d = new Date(); return d.toISOString().slice(0, 10) + ' ' + d.toISOString().slice(11, 16) + ' UTC'; } catch (e) { return ''; } }
+// ---- Shared Atlas-branded email shell for PLATFORM-level transactional mail to a tenant OWNER (dunning notices,
+// trial welcome, ...) -- distinct from _emailShell below (which brands an email FROM a tenant TO their own
+// customer). Same visual language as the receipt header (triangle mark + name) so every Atlas-to-owner email
+// looks like one consistent, trustworthy system. `inner` is caller-authored HTML (already esc()'d where needed).
+function _atlasEmailShell(inner) {
+  return '<div style="max-width:520px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0b1a12">'
+    + '<div style="display:flex;align-items:center;gap:11px;padding:2px 0 14px;border-bottom:2px solid #1E6E4E">'
+    + '<div style="width:36px;height:36px;border-radius:9px;background:#1E6E4E;display:flex;align-items:center;justify-content:center;flex:none"><svg viewBox="0 0 24 24" width="21" height="21" fill="none"><path d="M12 3 3 20h4l5-10 5 10h4L12 3Z" fill="#eafff4"/></svg></div>'
+    + '<div style="font-size:16px;font-weight:800;letter-spacing:.2px">Atlas Rental.io</div></div>'
+    + '<div style="padding:18px 0 4px">' + inner + '</div>'
+    + '<div style="margin-top:18px;font-size:11.5px;color:#8a9a92;text-align:center">Atlas Rental.io &middot; atlasrental.io &middot; The Digital Headquarters for Rental Businesses</div></div>';
+}
 
 // ---- Atlas.io CREDITS, server-authoritative. Weekly free allotment per tier + persistent purchased packs; spent 1 per live AI council call. ----
 const TIER_CREDITS = { starter: 300, pro: 1000, enterprise: 3000, business: 4500, unlimited: 10000, gold: 1000, freecomp: 1000 };   // weekly AI credits per tier -- MUST match the client TIERS credits (atlas.html). Owner-set allotments 2026-07-23. gold=1000 tester cap, freecomp=1000.
@@ -2047,6 +2130,15 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tz TEXT").run(); } catch (e) { /* already exists -- IANA time zone from Cloudflare edge geo (req.cf.timezone), captured at signup + backfilled on profile save */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_connect_acct TEXT").run(); } catch (e) { /* E2 Stripe Connect: the tenant's connected-account id (GMV take-rate path, flag-gated OFF; live charge path is untouched until the owner enables it) */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN connect_charges_enabled INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
+  // PART A1 -- dunning retry engine columns (additive; NULL/0 on every existing row until the first failed-payment
+  // webhook stamps them -- see /api/stripe/webhook invoice.payment_failed + _runDunning). dunning_invoice = the open
+  // Stripe invoice id we're chasing; dunning_next = when the cron should next attempt it; dunning_attempts = retry
+  // count (safety-capped in _runDunning); dunning_last = last attempt timestamp (belt-and-suspenders max-1/day).
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN dunning_invoice TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN dunning_next INTEGER").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN dunning_attempts INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN dunning_last INTEGER").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tenants_dunning ON tenants(plan, dunning_next)").run(); } catch (e) {}
   // Platform key/value config (feature flags like ai_hq_enabled live here; edited from the admin console).
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_config (k TEXT PRIMARY KEY, v TEXT, updated_at INTEGER)").run(); } catch (e) {}
   // MFA email codes: uid is the PRIMARY KEY, so a resend / a fresh login challenge simply UPSERTs (ON CONFLICT) --
@@ -2178,6 +2270,11 @@ async function ensurePlatformSchema(env) {
   // table, and GET /api/admin/alerts degrades to an empty feed rather than a 500 if this table is somehow missing.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_alerts (id TEXT PRIMARY KEY, ts INTEGER, category TEXT, severity TEXT, title TEXT, body TEXT, meta TEXT, read INTEGER DEFAULT 0)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON platform_alerts(ts)").run(); } catch (e) {}
+  // PART B1 -- enable the payment-delinquency gate ONCE (owner policy: "no payment, no dashboard access"). Guarded
+  // by its OWN one-time flag (payment_gate_init) so this only ever WRITES payment_gate_enabled='1' the very first
+  // time this runs after deploy -- if the owner later flips it back OFF at /api/admin/config, this never flips it
+  // back on again on a subsequent cold start (the init flag stays '1' forever once set).
+  try { if (!(await _pcfgGet(env, 'payment_gate_init', ''))) { await _pcfgSet(env, 'payment_gate_enabled', '1'); await _pcfgSet(env, 'payment_gate_init', '1'); } } catch (e) {}
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.
@@ -3309,14 +3406,37 @@ function doReset(){
             await audit(env, { tenant_id: md.tenant }, req, 'billing.subscribed', { tier: md.tier });
           } else if (T === 'checkout.session.completed' && md.billing === 'trial' && md.tenant) {
             // free trial with a card on file: no charge today, first invoice fires at trial end.
-            await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind(md.tier || null, Date.now() + 7 * 24 * 3600 * 1000, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
-            await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
+            const _trialEnds = Date.now() + 7 * 24 * 3600 * 1000;
+            await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind(md.tier || null, _trialEnds, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
+            const _trtx = await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.trial_card', { tier: md.tier });
+            // PART D -- idempotent trial welcome + "hidden gems" email: only on the FIRST delivery of this event
+            // (recordTxn.new), so a Stripe webhook replay never re-sends it. Guarded on RESEND_KEY presence (skip
+            // silently with no mailer configured); own try/catch -- must never affect this webhook's 200 response.
+            if (_trtx && _trtx.new && md.email && env.RESEND_KEY) {
+              try {
+                const _trialEndsStr = new Date(_trialEnds).toISOString().slice(0, 10);
+                await sendEmail(env, { to: md.email, fromName: 'Atlas Rental.io', transactional: true,
+                  subject: 'Welcome to Atlas Rental.io -- your 7-day trial is live',
+                  html: _atlasEmailShell('<h2>Welcome to Atlas Rental.io</h2>'
+                    + '<p>Your <b>' + esc(_planLabel(md.tier || '')) + '</b> plan 7-day free trial is live. Your card is on file and safe &mdash; you will not be charged until <b>' + esc(_trialEndsStr) + '</b>. Change or cancel anytime before then, no questions asked.</p>'
+                    + '<h3 style="margin:22px 0 8px;font-size:15px;color:#0b1a12">Hidden gems + quick wins</h3>'
+                    + '<ul style="padding-left:18px;color:#33443c;font-size:14px;line-height:1.8;margin:0">'
+                    + '<li>Atlas.io AI can rebuild your dashboard by voice: try "hide the tracking tab" or "set my weekend rate to $150".</li>'
+                    + '<li>Your booking site + branded member portal publish in one click from <b>Website</b>.</li>'
+                    + '<li>Turn on a refundable deposit hold in <b>Money rules</b> &mdash; $0 in fees until you capture it.</li>'
+                    + '<li>The AI drafts win-back + reminder emails automatically from <b>Dreaming</b>.</li>'
+                    + '<li>Every contract is e-signable with a legal timestamp + IP.</li>'
+                    + '<li>Add teammates with exact per-tab permissions in <b>Team</b>.</li>'
+                    + '</ul>'
+                    + '<p style="text-align:center;margin-top:22px"><a href="https://atlasrental.io/?manage=1" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:10px">Finish setting up</a></p>') });
+              } catch (e) {}
+            }
           } else if (T === 'checkout.session.completed' && md.billing === 'credits' && md.tenant) {
             const _ctxn = await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'credits', pack: md.pack });
             if (_ctxn.new) {   // only grant + receipt on the FIRST delivery of this event (a Stripe replay must not re-grant free credits)
-              const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: (md.pack || '') + ' Atlas.io credits', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); const _biz = await _tenantName(env, md.tenant); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), business: _biz, lineLabel: (md.pack || '') + ' Atlas.io credits', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
               await _creditAdd(env, md.tenant, parseInt(md.pack, 10) || 0);
             }
           } else if (T === 'checkout.session.completed' && md.billing === 'website' && md.tenant) {
@@ -3326,11 +3446,12 @@ function doReset(){
             else await env.DB.prepare("UPDATE tenants SET website_addon='once', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
             if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
-            if (md.plan !== 'mo') { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website (one-time)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
+            if (md.plan !== 'mo') { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); const _biz = await _tenantName(env, md.tenant); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), business: _biz, lineLabel: 'Atlas Rental.io hosted website (one-time)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
           } else if (T === 'checkout.session.completed' && md.billing === 'domain' && md.tenant) {
             await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'domain', pack: md.domain || '', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
             const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0);
+            const _biz = await _tenantName(env, md.tenant);   // C4: fetched once here, reused by both receipt call sites below (registered / pending_registrar)
             await ensurePlatformSchema(env);
             // IDEMPOTENCY (concurrency-safe): atomically CLAIM this (tenant,domain) via INSERT OR IGNORE on the unique index BEFORE registering.
             // A duplicate/concurrent Stripe delivery loses the claim (changes=0) and does nothing -> no double-register, no bogus "refunded" email.
@@ -3369,7 +3490,7 @@ function doReset(){
                 if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, md.domain); await _cfAddHostname(env, 'www.' + md.domain); } catch (e) {} }
                 try { await _registrarSetDns(env, md.domain, _tgt); } catch (e) {}
                 try { await env.DB.prepare("UPDATE domains_sold SET status='registered', paid_cents=? WHERE id=?").bind(_tt, _rowId).run(); } catch (e) {}
-                await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration - ' + md.domain + ' (yearly)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+                await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: '1 year', lineLabel: 'Domain registration - ' + md.domain + ' (yearly)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
                 await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
               } else if (md.domain && env.DYNADOT_KEY) {
                 // registration genuinely failed -> release the claim, REAL refund (subscription: pull charge off the first invoice) + cancel the yearly sub.
@@ -3381,7 +3502,7 @@ function doReset(){
                 // no registrar connected yet: mark the claim PENDING (not a permanent 'registering') so a later delivery -- once the owner
                 // wires Dynadot and Stripe re-sends the event -- takes it over and finishes registration. Payment stands, honest receipt + audit.
                 try { await env.DB.prepare("UPDATE domains_sold SET status='pending_registrar' WHERE id=?").bind(_rowId).run(); } catch (e) {}
-                await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+                await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: '1 year', lineLabel: 'Domain registration' + (md.domain ? (' - ' + md.domain) : ''), amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
                 await audit(env, { tenant_id: md.tenant }, req, 'domain.pending_registrar', { domain: md.domain });
               }
             }
@@ -3390,13 +3511,23 @@ function doReset(){
             if (im.tenant && (im.billing === 'plan' || im.billing === 'trial') && Number(obj.amount_paid || 0) > 0) {   // ignore the $0 subscription_create invoice at trial start -- only a REAL charge (trial->paid conversion or a renewal) books revenue, flips to active, and emails a receipt. A trialing tenant stays 'trial' with a card on file until the first real charge.
               const _ptx = await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               // #281: THE back-to-active transition for a recovered past_due tenant -- clear delinquent_since in the SAME statement so the public-site takedown (_siteTakenDown) lifts instantly, with no separate step.
-              await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, delinquent_since=NULL, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
-              if (_ptx && _ptx.new) { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }   // receipt only on a NEW txn -> idempotent on webhook replay
+              // PART A4: also clear dunning in this SAME statement -- a successful charge (first-try or a recovered
+              // past_due retry) means there is nothing left to dun, regardless of which path got them here.
+              await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
+              if (_ptx && _ptx.new) {
+                const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
+                const _biz = await _tenantName(env, im.tenant);
+                let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
+                await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: _rcptPeriod(obj, '1 month'), card4: _c4, lineLabel: 'Atlas Rental.io ' + _planLabel(im.tier || '') + ' plan - monthly subscription', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              }   // receipt only on a NEW txn -> idempotent on webhook replay
             } else if (im.tenant && im.billing === 'website') {
               // #280/#282: COALESCE-backfill website_sub on renewal -- self-heals any 'mo' tenant that subscribed before this column existed, without ever overwriting an already-stamped id.
               await env.DB.prepare("UPDATE tenants SET website_addon='mo', website_sub=COALESCE(website_sub,?), updated_at=? WHERE id=?").bind(obj.subscription || null, Date.now(), im.tenant).run();   // #278: monthly renewal keeps the entitlement current
               await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
-              { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
+              { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
+                const _biz = await _tenantName(env, im.tenant);
+                let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
+                await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: _rcptPeriod(obj, '1 month'), card4: _c4, lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
             } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle') {
               // YEARLY DOMAIN RENEWAL only (the initial year is registered + recorded by checkout.session.completed).
               let _rnOk = true, _rnReason = 'no_registrar';
@@ -3405,7 +3536,10 @@ function doReset(){
                 try { await ensurePlatformSchema(env); await env.DB.prepare("UPDATE domains_sold SET status=? WHERE domain=? AND tenant_id=?").bind(rn.ok ? 'registered' : 'renew_failed', im.domain, im.tenant).run(); } catch (e) {} }
               if (_rnOk) {   // only book revenue + a receipt when the domain actually renewed
                 await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'domain', pack: im.domain || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
-                const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0); await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), lineLabel: 'Domain renewal' + (im.domain ? (' - ' + im.domain) : '') + ' (1 year)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+                const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
+                const _biz = await _tenantName(env, im.tenant);
+                let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
+                await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: _rcptPeriod(obj, '1 year'), card4: _c4, lineLabel: 'Domain renewal' + (im.domain ? (' - ' + im.domain) : '') + ' (1 year)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
               } else {   // renewal failed at the registrar -> refund this year's charge + cancel the sub so we never charge again for a lapsed name
                 const _pk = ((evt && evt.livemode === false && env.PLATFORM_STRIPE_TEST_KEY) ? env.PLATFORM_STRIPE_TEST_KEY : (env.PLATFORM_STRIPE_KEY || '')); const _rpi = obj.payment_intent || '';   // refund with the key matching the event's mode
                 if (_pk && _rpi) { try { await stripePost(_pk, '/refunds', { payment_intent: _rpi }); } catch (e) {} }
@@ -3419,13 +3553,13 @@ function doReset(){
             // subscription (same customer, different metadata.billing) must NEVER flip the plan or clobber the plan's stripe_sub.
             if (md.tenant && (md.billing === 'plan' || md.billing === 'trial')) {
               const st = String(obj.status || '');
-              if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #281: belt-and-suspenders clear alongside invoice.paid's (this can fire first/instead on some recoveries)
+              if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #281: belt-and-suspenders clear alongside invoice.paid's (this can fire first/instead on some recoveries). PART A4: dunning cleared here too -- this can be the FIRST signal of a recovery on some retries.
               else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
-              else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(Date.now(), obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'. #281: stamp delinquent_since ONCE (COALESCE) so a repeat past_due webhook never resets the 3-day takedown grace clock.
-              else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
+              else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(Date.now(), obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'. #281: stamp delinquent_since ONCE (COALESCE) so a repeat past_due webhook never resets the 3-day takedown grace clock. (dunning_invoice/dunning_next are stamped by invoice.payment_failed, not here -- this event alone carries no invoice id to chase.)
+              else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', dunning_invoice=NULL, dunning_next=NULL, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // PART A4: stop dunning a subscription that no longer exists in this state
             }
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
-            await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub
+            await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, dunning_invoice=NULL, dunning_next=NULL, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub. PART A4: also stop dunning -- a deleted subscription can never be paid via the old invoice again.
             await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
           } else if (T === 'customer.subscription.deleted' && md.billing === 'website' && md.tenant) {
             // #278: the monthly website-addon subscription was cancelled -- clear the entitlement, but ONLY if it is
@@ -3448,8 +3582,18 @@ function doReset(){
             let tid = md.tenant || '';
             if (!tid && obj.customer) { const pr = await env.DB.prepare('SELECT id FROM tenants WHERE stripe_customer=?').bind(obj.customer).first(); if (pr) tid = pr.id; }
             const amt = rf ? Number(rf.amount) : Number(obj.amount_refunded || 0);
-            if (amt > 0) await recordTxn(env, { tenant: tid || null, email: md.email || (obj.billing_details && obj.billing_details.email) || '', kind: 'refund', amount_cents: -Math.abs(amt), stripe_id: 'refund:' + (rf ? rf.id : (sid + ':' + amt)) });   // fallback key includes the cumulative amount so distinct partial refunds don't collide-dedup
+            let _rfTxn = null;
+            if (amt > 0) _rfTxn = await recordTxn(env, { tenant: tid || null, email: md.email || (obj.billing_details && obj.billing_details.email) || '', kind: 'refund', amount_cents: -Math.abs(amt), stripe_id: 'refund:' + (rf ? rf.id : (sid + ':' + amt)) });   // fallback key includes the cumulative amount so distinct partial refunds don't collide-dedup
             if (tid) await audit(env, { tenant_id: tid }, req, 'billing.refunded', { cents: amt });
+            // PART C5: branded credit-note/refund receipt to the tenant OWNER -- idempotent on the refund txn's OWN
+            // dedup (.new), so a replayed charge.refunded webhook never re-sends. Own try/catch, best-effort; never
+            // touches the ledger logic above regardless of outcome.
+            if (amt > 0 && tid && _rfTxn && _rfTxn.new) {
+              try {
+                const _tinfo = await env.DB.prepare("SELECT name, (SELECT email FROM users WHERE tenant_id=tenants.id AND role='owner' LIMIT 1) AS owner_email FROM tenants WHERE id=?").bind(tid).first();
+                if (_tinfo && _tinfo.owner_email) await _sendAtlasReceipt(env, { to: _tinfo.owner_email, business: _tinfo.name || '', credit: true, lineLabel: 'Atlas Rental.io refund', amountStr: money2(amt), totalStr: money2(amt) });
+              } catch (e) {}
+            }
           } else if (T === 'invoice.payment_failed') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || {};
             if (im.tenant) {
@@ -3459,7 +3603,37 @@ function doReset(){
               // them as paid. ONLY a real subscriber (stripe_sub set) -- never a comped or manually-managed account.
               // Auto-recovers: a later invoice.paid on a successful retry flips them back to plan='active'.
               // #281: stamp delinquent_since ONCE (COALESCE) -- a repeat payment_failed webhook for the same lapse must never reset the 3-day public-site takedown grace clock.
-              try { await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), updated_at=? WHERE id=? AND stripe_sub IS NOT NULL AND plan!='deleted'").bind(Date.now(), Date.now(), im.tenant).run(); } catch (e) {}
+              // PART A2 (dunning): capture the open invoice + schedule the first auto-retry at +2 days (_runDunning
+              // then retries every 4 days, max once/day, until paid/canceled/capped). Take manual control of the
+              // invoice (auto_advance=false) so Stripe's OWN retry schedule never competes with ours. Email once per
+              // NEW lapse -- guarded on the PRE-update state so a duplicate/replayed webhook for the SAME still-open
+              // invoice never re-sends. Every new call below is its own try/catch -- none of this may ever change
+              // this webhook's 200 response.
+              let _before = null;
+              try { _before = await env.DB.prepare("SELECT plan, dunning_invoice FROM tenants WHERE id=?").bind(im.tenant).first(); } catch (e) {}
+              const _now = Date.now();
+              try { await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), dunning_invoice=?, dunning_next=?, dunning_attempts=0, dunning_last=NULL, updated_at=? WHERE id=? AND stripe_sub IS NOT NULL AND plan!='deleted'").bind(_now, obj.id || null, _now + 2 * 86400000, _now, im.tenant).run(); } catch (e) {}
+              try { const _pk = await _platStripe(env); if (_pk && obj.id) await stripeApi(_pk, 'POST', 'invoices/' + obj.id, 'auto_advance=false'); } catch (e) {}
+              const _wasPastDue = !!(_before && _before.plan === 'past_due');
+              const _sameInvoice = !!(_before && _before.dunning_invoice && obj.id && _before.dunning_invoice === obj.id);
+              if (_before && !(_wasPastDue && _sameInvoice)) {
+                try {
+                  const _tinfo = await env.DB.prepare("SELECT name, (SELECT email FROM users WHERE tenant_id=tenants.id AND role='owner' LIMIT 1) AS owner_email FROM tenants WHERE id=?").bind(im.tenant).first();
+                  if (_tinfo && _tinfo.owner_email) {
+                    await sendEmail(env, { to: _tinfo.owner_email, fromName: 'Atlas Rental.io', transactional: true,
+                      subject: "Your Atlas payment didn't go through -- we'll try again",
+                      html: _atlasEmailShell('<h2>We could not process your payment</h2>'
+                        + '<p>A recent charge for ' + esc(_tinfo.name || 'your Atlas Rental.io subscription') + ' did not go through. We will automatically retry your card over the next few weeks &mdash; but you do not have to wait. Here are three ways to fix it right now:</p>'
+                        + '<ul style="padding-left:18px;color:#33443c;font-size:14px;line-height:1.7;margin:12px 0">'
+                        + '<li><b>Update your card</b> and we will retry immediately.</li>'
+                        + '<li><b>Switch to a cheaper plan</b> that fits your budget.</li>'
+                        + '<li><b>Cancel</b> any time &mdash; no hard feelings.</li>'
+                        + '</ul>'
+                        + '<p style="text-align:center;margin-top:20px"><a href="https://atlasrental.io/?manage=1" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:10px">Manage billing</a></p>'
+                        + '<p style="font-size:12.5px;color:#5c6f66;margin-top:18px">Your data is safe either way.</p>') });
+                  }
+                } catch (e) {}
+              }
             }
           }
         } catch (e) {}
@@ -4058,6 +4232,11 @@ function doReset(){
           // a protected endpoint -- independent of #276's payment_gate_enabled (this can be on while that is off,
           // and vice versa). This route is already OWNER_ONLY (path starts with /api/admin/config).
           if (typeof b.trial_requires_card !== 'undefined') { await _pcfgSet(env, 'trial_requires_card', b.trial_requires_card ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { trial_requires_card: !!b.trial_requires_card }); }
+          // PART C1: platform legal identity for the branded receipt footer (_platIdentity) -- honest-by-default:
+          // rendered on a receipt ONLY when actually set here, never invented. This route is already OWNER_ONLY.
+          if (typeof b.platform_legal_name !== 'undefined') { const _pln = String(b.platform_legal_name || '').slice(0, 200); await _pcfgSet(env, 'platform_legal_name', _pln); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { platform_legal_name: _pln }); }
+          if (typeof b.platform_legal_address !== 'undefined') { const _pla = String(b.platform_legal_address || '').slice(0, 300); await _pcfgSet(env, 'platform_legal_address', _pla); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { platform_legal_address: _pla }); }
+          if (typeof b.platform_tax_id !== 'undefined') { const _ptid = String(b.platform_tax_id || '').slice(0, 100); await _pcfgSet(env, 'platform_tax_id', _ptid); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { platform_tax_id_set: !!_ptid }); }
           if (typeof b.primary_no_anon !== 'undefined' && _reqTier >= 2) { await _pcfgSet(env, 'primary_no_anon', b.primary_no_anon ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { primary_no_anon: !!b.primary_no_anon }); }   // TAKE CONTROL: super-admin-only (a compromised primary can't disable its own VPN block)
           // #286: owner-entered fixed monthly platform costs (Cloudflare, Resend, Twilio, ...) -- feeds the P&L
           // Expenses block. Sanitized + capped (max 50 rows, label <=80 chars, monthly_cents clamped to a sane
@@ -4996,7 +5175,13 @@ function doReset(){
       // _PAYMENT_OPEN routes reachable (login/billing/verify-email/webhook/me/feedback) so a needs_card tenant can
       // always sign in, see the gate, and complete the trial-card checkout to unlock (checked here BEFORE the DB
       // read below, so an always-open route never even pays for the extra query).
-      const cardGateOn = (await _pcfgGet(env, 'trial_requires_card', '0')) === '1';
+      // PART E: the owner's "once live, a trial won't start without a legit payment method" guarantee -- in LIVE
+      // Stripe mode this gate is ALWAYS on, independent of the manual trial_requires_card toggle (which still
+      // works in TEST mode so the owner can rehearse the gate before flipping payments live). Both flags are cheap
+      // _pcfgGet reads; everything below (the _cardGateStateForTenant call + its owner/comp fail-open posture) is
+      // untouched -- only genuine no-card, non-owner, non-comped tenants are ever gated.
+      const _liveModeE = (await _pcfgGet(env, 'payments_test_mode', '0')) !== '1';
+      const cardGateOn = _liveModeE || ((await _pcfgGet(env, 'trial_requires_card', '0')) === '1');
       if (cardGateOn && !_PAYMENT_OPEN.test(path)) {
         const _cs = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email);
         if (_cs !== 'ok') {
@@ -5612,7 +5797,7 @@ function doReset(){
         await ensurePlatformSchema(env);
         const cb = await req.json().catch(() => ({}));
         const tier = String(cb.tier || ''); const cents = PLAN_PRICE_CENTS[tier]; if (!cents) return err(400, 'Unknown plan.');
-        const trow = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const trow = await env.DB.prepare('SELECT stripe_sub, plan, dunning_invoice FROM tenants WHERE id=?').bind(ctx.tenant_id).first();   // PART B2: plan+dunning_invoice widened in so a past_due tenant changing plan can be unlocked below
         const sub = trow && trow.stripe_sub;
         const origin = env.APP_ORIGIN || 'https://atlasrental.io';
         if (!sub) {   // no live subscription yet -> just start one via checkout
@@ -5635,7 +5820,17 @@ function doReset(){
         const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), form);
         if (!up.ok) return err(502, 'Could not change your plan: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
         const _wasTrial = !!(gi.j && gi.j.status === 'trialing');   // changing a tier during the trial must NOT flip them to paid early
-        await env.DB.prepare(_wasTrial ? "UPDATE tenants SET tier=?, updated_at=? WHERE id=?" : "UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?").bind(tier, Date.now(), ctx.tenant_id).run();
+        // PART B2: downgrading (or any plan change) out of a failed-payment lockout is one of the owner's 3 unlock
+        // paths -- unlock immediately (plan='active' -> _billingState 'ok') AND stop dunning, since the OLD
+        // (higher, now-superseded) invoice amount is forgiven by the plan change the tenant just paid for.
+        const _wasPastDue = !!(trow && trow.plan === 'past_due');
+        if (_wasPastDue && trow.dunning_invoice) {
+          try { const _pk2 = await _platStripe(env); if (_pk2) await stripeApi(_pk2, 'POST', 'invoices/' + trow.dunning_invoice + '/void', null); } catch (e) {}
+        }
+        const _planSql = _wasTrial ? "UPDATE tenants SET tier=?, updated_at=? WHERE id=?"
+          : (_wasPastDue ? "UPDATE tenants SET plan='active', tier=?, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?"
+                         : "UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?");
+        await env.DB.prepare(_planSql).bind(tier, Date.now(), ctx.tenant_id).run();
         await audit(env, ctx, req, 'billing.change_plan', { tier: tier });
         return json({ ok: true, changed: true, tier: tier });
       }
@@ -5652,11 +5847,45 @@ function doReset(){
           const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), 'cancel_at_period_end=true');
           if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
           await audit(env, ctx, req, 'billing.cancel', { when: 'period_end' });
+          // PART F: send a branded cancellation notice / credit-note documenting exactly what happens -- next cycle not
+          // charged, access kept through the paid-through date, NO refund for unused time (the CANCEL_POLICY fine print).
+          // Best-effort: own try/catch, guarded on RESEND_KEY -- must never change the 200 the client relies on.
+          try {
+            if (env.RESEND_KEY) {
+              const _pe = (up.j && up.j.current_period_end) ? new Date(up.j.current_period_end * 1000).toISOString().slice(0, 10) : '';
+              const _ti = await env.DB.prepare("SELECT name, (SELECT email FROM users WHERE tenant_id=tenants.id AND role='owner' LIMIT 1) AS owner_email FROM tenants WHERE id=?").bind(ctx.tenant_id).first();
+              if (_ti && _ti.owner_email) {
+                await sendEmail(env, { to: _ti.owner_email, fromName: 'Atlas Rental.io', transactional: true,
+                  subject: 'Your Atlas Rental.io plan is set to cancel',
+                  html: _atlasEmailShell('<h2>Your plan will cancel' + (_pe ? ' on ' + esc(_pe) : ' at your period end') + '</h2>'
+                    + '<p>We have scheduled ' + esc(_ti.name || 'your Atlas Rental.io subscription') + ' to cancel. Your next cycle will not be charged, and you keep full access' + (_pe ? ' through <b>' + esc(_pe) + '</b>' : ' until the end of your current paid period') + '. Your data stays safe.</p>'
+                    + '<p style="font-size:12.5px;color:#5c6f66;margin-top:16px">' + esc(CANCEL_POLICY) + '</p>'
+                    + '<p style="text-align:center;margin-top:18px"><a href="https://atlasrental.io/?manage=1" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:10px">Manage or resume</a></p>') });
+              }
+            }
+          } catch (e) {}
           return json({ ok: true, canceled: true, when: 'period_end' });
         }
         await env.DB.prepare("UPDATE tenants SET plan='trial', updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run();
         await audit(env, ctx, req, 'billing.cancel', { when: 'now' });
         return json({ ok: true, canceled: true, when: 'now' });
+      }
+
+      // ---- PART B3: immediate retry for the paywall's "Retry payment" action (after the tenant updates their card
+      // via billingPortal). Must stay reachable while locked -- already true, _PAYMENT_OPEN allows the whole
+      // /api/billing/ prefix. On success, Stripe fires invoice.paid, which flips plan='active' and clears dunning
+      // (see the webhook above) -- this endpoint itself never touches tenants.plan.
+      if (path === '/api/billing/retry-now' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'brty:' + ctx.tenant_id, 20, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        await ensurePlatformSchema(env);
+        const t = await env.DB.prepare("SELECT dunning_invoice FROM tenants WHERE id=?").bind(ctx.tenant_id).first();
+        if (!t || !t.dunning_invoice) return json({ ok: false, error: 'nothing_due' });
+        const pk = await _platStripe(env); if (!pk) return json({ ok: false, error: 'not_configured' });
+        const r = await stripeApi(pk, 'POST', 'invoices/' + t.dunning_invoice + '/pay', null);
+        await audit(env, ctx, req, 'billing.retry_now', { ok: !!(r && r.ok) });
+        return json({ ok: !!(r && r.ok) });
       }
 
       // ---- #280/#282: cancel the hosted-website add-on's Stripe subscription at period end. Was a client-only
@@ -6121,6 +6350,7 @@ function doReset(){
       try { await env.DB.prepare('DELETE FROM active_now WHERE last_at < ?').bind(now - 30 * 60000).run(); } catch (e) {}   // #274: presence rows are meaningless after 30 min of silence (own try/catch, same pattern)
     } catch (e) { /* best-effort GC; a cron error must never surface */ }
     try { await _runLifecycleEmails(env, Date.now()); } catch (e) { /* lifecycle emails are best-effort */ }
+    try { await _runDunning(env, Date.now()); } catch (e) { /* PART A3: dunning sweep is best-effort -- must never break the cron */ }
     // Nightly: write the daily metric snapshot (so "vs last week" is real) + generate the AI COO morning brief if enabled.
     try {
       await ensurePlatformSchema(env);
@@ -6265,6 +6495,38 @@ async function _runLifecycleEmails(env, now) {
     }
     if (changed) { d.autoSent = sent; await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), now, b.id, b.tenant_id).run(); }
   }
+}
+
+// PART A3 -- dunning retry sweep. Gated to ~once/day (_due, 20h) even though the cron ticks every 2h; combined
+// with each tenant's own dunning_next this yields the owner's spec: first retry at +2 days after the failed
+// charge, then every 4 days, max once/day, until the invoice is paid, the tenant unlocks another way (change-plan
+// void / cancel), or the attempt cap below is hit. Stripe's invoice.paid webhook remains the ONLY thing that ever
+// flips a tenant back to plan='active' -- this function only ever *attempts* a charge; it never sets plan itself.
+async function _runDunning(env, now) {
+  try {
+    if (!(await _due(env, 'dunning', 20 * 3600000))) return;
+    const rows = ((await env.DB.prepare(
+      "SELECT id, stripe_sub, dunning_invoice, dunning_attempts, dunning_last FROM tenants " +
+      "WHERE plan='past_due' AND dunning_invoice IS NOT NULL AND dunning_next IS NOT NULL AND dunning_next<=? " +
+      "AND (plan IS NULL OR plan!='deleted') LIMIT 100").bind(now).all()).results) || [];
+    const pk = await _platStripe(env);
+    for (const t of rows) {
+      if (t.dunning_last && (now - t.dunning_last) < 20 * 3600000) continue;   // belt-and-suspenders max 1/day
+      const attempts = (t.dunning_attempts || 0);
+      if (attempts >= 10) {   // SAFETY CAP: ~40+ days of every-4-day retries; stop auto-retrying (owner can still pay/downgrade/cancel manually) to avoid Stripe card-testing flags. Leaves the tenant locked.
+        try { await env.DB.prepare("UPDATE tenants SET dunning_next=NULL WHERE id=?").bind(t.id).run(); } catch (e) {}
+        continue;
+      }
+      let ok = false;
+      try { if (pk && t.dunning_invoice) { const r = await stripeApi(pk, 'POST', 'invoices/' + t.dunning_invoice + '/pay', null); ok = !!(r && r.ok); } } catch (e) {}
+      if (ok) {
+        // success -> Stripe fires invoice.paid, which flips plan='active' + sends the receipt + clears dunning (see webhook). Just stamp last-attempt here.
+        try { await env.DB.prepare("UPDATE tenants SET dunning_last=? WHERE id=?").bind(now, t.id).run(); } catch (e) {}
+      } else {
+        try { await env.DB.prepare("UPDATE tenants SET dunning_next=?, dunning_attempts=?, dunning_last=? WHERE id=?").bind(now + 4 * 86400000, attempts + 1, now, t.id).run(); } catch (e) {}
+      }
+    }
+  } catch (e) { /* dunning sweep is best-effort -- must never break the cron */ }
 }
 
 // Branded HTML email body (inline styles; renders in any inbox).
