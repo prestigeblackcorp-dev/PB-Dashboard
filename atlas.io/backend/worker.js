@@ -6015,18 +6015,28 @@ function doReset(){
         const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), form);
         if (!up.ok) return err(502, 'Could not change your plan: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
         const _wasTrial = !!(gi.j && gi.j.status === 'trialing');   // changing a tier during the trial must NOT flip them to paid early
-        // PART B2: downgrading (or any plan change) out of a failed-payment lockout is one of the owner's 3 unlock
-        // paths -- unlock immediately (plan='active' -> _billingState 'ok') AND stop dunning, since the OLD
-        // (higher, now-superseded) invoice amount is forgiven by the plan change the tenant just paid for.
+        // LAUNCH-SWEEP FIX: a past_due tenant changing plan must NOT escape the unpaid invoice. Previously the open invoice was VOIDED
+        // (forgiven, no collection) and the tenant unlocked -> a delinquent could dodge their bill by switching plans. Now we COLLECT it
+        // (attempt payment on the current card) instead. Only UNLOCK if it actually gets paid; otherwise the tier change still applies
+        // (they bill at the new, likely cheaper, rate going forward) but they stay GATED until the outstanding balance is settled.
         const _wasPastDue = !!(trow && trow.plan === 'past_due');
-        if (_wasPastDue && trow.dunning_invoice) {
-          try { const _pk2 = await _platStripe(env); if (_pk2) await stripeApi(_pk2, 'POST', 'invoices/' + trow.dunning_invoice + '/void', null); } catch (e) {}
+        let _settled = !_wasPastDue, _stillOwedCents = 0;   // nothing to settle for a normal/trial change
+        if (_wasPastDue) {
+          if (trow.dunning_invoice) {
+            try {
+              const _payr = await stripeApi(pk, 'POST', 'invoices/' + encodeURIComponent(trow.dunning_invoice) + '/pay', null);   // charge the OUTSTANDING invoice on the default card
+              _settled = !!(_payr.ok && _payr.j && (_payr.j.status === 'paid' || _payr.j.paid === true));
+              if (!_settled && _payr.j && _payr.j.amount_due != null) _stillOwedCents = Number(_payr.j.amount_due) || 0;
+            } catch (e) {}
+          } else { _settled = true; }   // past_due with no tracked invoice to chase -> nothing collectible; let the change unlock (edge)
         }
         const _planSql = _wasTrial ? "UPDATE tenants SET tier=?, updated_at=? WHERE id=?"
-          : (_wasPastDue ? "UPDATE tenants SET plan='active', tier=?, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?"
-                         : "UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?");
+          : ((_wasPastDue && _settled) ? "UPDATE tenants SET plan='active', tier=?, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?"
+             : _wasPastDue ? "UPDATE tenants SET tier=?, updated_at=? WHERE id=?"   // collection failed -> change the tier but STAY past_due (still gated); the unpaid balance stands
+             : "UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?");
         await env.DB.prepare(_planSql).bind(tier, Date.now(), ctx.tenant_id).run();
-        await audit(env, ctx, req, 'billing.change_plan', { tier: tier });
+        await audit(env, ctx, req, 'billing.change_plan', { tier: tier, was_past_due: _wasPastDue, settled: _settled });
+        if (_wasPastDue && !_settled) return json({ ok: true, changed: true, tier: tier, past_due: true, message: 'Your plan was changed to ' + _planLabel(tier) + ', but there is still an unpaid balance on your previous invoice' + (_stillOwedCents ? (' ($' + (_stillOwedCents / 100).toFixed(2) + ')') : '') + '. Please update your card to settle it and restore full access.' });
         return json({ ok: true, changed: true, tier: tier });
       }
 
