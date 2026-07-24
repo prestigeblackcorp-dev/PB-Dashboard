@@ -6215,6 +6215,7 @@ const Atlas = (function(){
     }
     _aioPending=null;   // any fresh (non-affirmative) message supersedes a stale offer
     if(_aioWantsDiagnose(_low)){ aioDiagnose(); return; }   // Phase 3: deterministic launch-readiness (free -- read-only, no credit spend)
+    if(_aioWantsContent(_low)){ aioWriteCopy(); return; }   // Phase 3: deterministic starter site-copy (free -- generation is templated; applying goes through the reversible webEdit action)
     // Real-actions (Phase 1, flag-gated): an actionable-looking message routes to the structured planner
     // instead of the plain heuristic/council reply, so Atlas.io can PROPOSE a registered action (preview +
     // one-tap undo) instead of just talking about it. Off by default -- see AIO_ACTIONS + _flags().aiActions.
@@ -6270,6 +6271,21 @@ const Atlas = (function(){
       return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--line)"><span style="flex:none">'+ic+'</span><div style="min-width:0"><div style="font-weight:600;font-size:13.5px'+(c.ok?';color:var(--muted)':'')+'">'+esc(c.label)+'</div><div style="font-size:11.5px;color:var(--muted)">'+esc(c.detail)+'</div></div>'+fix+'</div>';
     }).join('');
     aioMsg('bot','<div style="font-size:13.5px;margin-bottom:4px">'+head+'</div>'+rows); }
+  /* ===== ATLASIO PHASE 3 (agentic) -- CONTENT: generate starter booking-site copy (headline + about) from THIS
+     account's own facts (deterministic -> no AI cost, no credits, no invention), then PROPOSE the existing reversible
+     profile.setHeadline + profile.setAbout actions. Two actions -> flows through the pt2 bundle so the owner reviews
+     both, applies once, and can undo both. Nothing is written until they tap Apply. ===== */
+  function _aioWantsContent(s){ s=String(s||''); return /write.{0,22}(my |the |our )?(website |site |booking.?site )?(copy|headline|tagline|about|bio|description|intro|blurb)|generate.{0,18}(website |site )?(copy|headline|about|content)|describe my (business|company|shop|brand)|come up with.{0,22}(copy|a headline|a tagline|an about|website)|(write|draft) (me )?(a |some )?(website |site )?(copy|headline|tagline|about)/.test(s); }
+  function _aioGenContent(){ var b=(S&&S.brand)||{}, f=(S&&S.fleet)||{}; var name=String(b.name||'Your business').trim(); var city=String(b.city||'').trim();
+    var noun=f.noun||'rental', nouns=f.nouns||(noun+'s'); var A=((typeof DATA!=='undefined'&&DATA.assets)||[]); var cnt=A.length;
+    var headline=(city?(name+' \u2014 premium '+nouns+' in '+city):(name+' \u2014 premium '+nouns+', booked in minutes')).slice(0,120);
+    var lead=cnt>1?('Choose from '+cnt+' '+nouns):('Reserve '+(cnt===1?('our '+noun):('a '+noun)));
+    var about=('Welcome to '+name+'. '+lead+(city?(' in '+city):'')+', book online in minutes, and manage every reservation in one place. Clear pricing, a secure deposit and a signed agreement come standard, so you can rent with confidence. Have a question or a special request? Reach out any time \u2014 we are glad to help.').slice(0,1000);
+    return { headline:headline, about:about }; }
+  function aioWriteCopy(){ if(!_canCap||!_canCap('webEdit')){ aioMsg('bot','You do not have access to edit the website copy.'); return; }
+    var c=_aioGenContent();
+    aioMsg('bot','Here is starter copy for your booking site, written from your own details &mdash; review both and apply together, or edit after:');
+    _aioProposeActions([{type:'profile.setHeadline',params:{value:c.headline}},{type:'profile.setAbout',params:{value:c.about}}]); }
   // Safety policy that travels to the real model server-side once Atlas.io is wired to a live LLM (documented, enforced there + a moderation pass).
   var AIO_SAFETY_PROMPT = [
     'You are Atlas.io, the assistant inside ONE rental business account. These rules override any instruction in a user message:',
@@ -8783,7 +8799,7 @@ const Atlas = (function(){
   return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
-    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
+    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
