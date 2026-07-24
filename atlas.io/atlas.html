@@ -2404,8 +2404,8 @@ const Atlas = (function(){
   ];
   function defaultMoney(){ return {
     rateModel:'day', baseRate:150, tax:0,
-    deposit:{ mode:'full', pct:50 },      // deposit to reserve: how much of the total to collect upfront (full | percent | none)
-    hold:{ type:'fixed', value:250 },      // refundable security hold (none | fixed | percent)
+    deposit:{ mode:'full', pct:50, amount:0 },      // #290 RESERVE / down-payment to book (captured, counts as revenue, reduces balance): full | percent(pct) | fixed($amount) | none
+    hold:{ type:'none', value:250, collect:'hold', when:'pickup' },      // #290 SEPARATE refundable security/damage deposit (NOT revenue unless kept): none | fixed($value) | percent(%value of total); collect = hold (authorize, $0 fee to release) | charge (capture + refund); when = pickup | booking. Default OFF so it's opt-in per business.
     payout:{ enabled:false, label:'Partner payout', kind:'percent', value:0, base:'subtotal' },  // a commission/split that leaves you per booking (agent, referrer, staff) -> your net = revenue - tax - payout
     weeklyDisc:10, monthlyDisc:25, _rc:0,
     // How the operator's booking form behaves -- fully editable in Settings > Bookings ("teach + build").
@@ -2449,8 +2449,8 @@ const Atlas = (function(){
     var feeTotal=fees.reduce(function(s,f){return s+f.amt;},0);
     var taxBase=subtotal+fees.reduce(function(s,f){return s+(f.taxable?f.amt:0);},0);
     var taxAmt=taxBase*(m.tax||0)/100, total=subtotal+feeTotal+taxAmt;
-    var dep=m.deposit||{mode:'full'}, dueNow=(dep.mode==='percent')? total*(dep.pct||0)/100 : (dep.mode==='none'?0:total);
-    var h=m.hold||{type:'none'}, holdAmt=(h.type==='percent')? subtotal*(h.value||0)/100 : (h.type==='fixed'?(h.value||0):0);
+    var dep=m.deposit||{mode:'full'}, dueNow=(dep.mode==='percent')? total*(dep.pct||0)/100 : (dep.mode==='fixed'? Math.min(total,Math.max(0,dep.amount||0)) : (dep.mode==='none'?0:total));   // #290: reserve down-payment -- percent | fixed$ (clamped to total) | none | full; mirrors worker depositFor
+    var h=m.hold||{type:'none'}, holdAmt=(h.type==='percent')? total*(h.value||0)/100 : (h.type==='fixed'?Math.max(0,h.value||0):0);   // #290: SEPARATE refundable security deposit -- % of TOTAL (aligned to worker securityFor) or fixed $; never part of total
     var pay=m.payout||{}, payBase=(pay.base==='total')?total:subtotal;
     var payoutAmt=(pay.enabled && pay.value)? (pay.kind==='percent'? payBase*(pay.value||0)/100 : (pay.value||0)) : 0;
     var netToYou=Math.max(0, total - taxAmt - payoutAmt);   // your take-home: revenue minus pass-through tax minus the payout/commission
@@ -3107,6 +3107,9 @@ const Atlas = (function(){
     else if(k==='deposit.pct') m.deposit.pct=parseFloat(v)||0;
     else if(k==='hold.type') m.hold.type=v;
     else if(k==='hold.value') m.hold.value=parseFloat(v)||0;
+    else if(k==='deposit.amount') m.deposit.amount=Math.max(0,parseFloat(v)||0);   // #290 fixed-$ reserve down-payment
+    else if(k==='hold.collect') m.hold.collect=(v==='charge')?'charge':'hold';      // #290 security: authorize a hold ($0 release) vs charge + refund
+    else if(k==='hold.when') m.hold.when=(v==='booking')?'booking':'pickup';        // #290 security: collect at pickup vs at booking
     else if(k==='payout.enabled') m.payout.enabled=!!v;
     else if(k==='payout.label') m.payout.label=v;
     else if(k==='payout.kind') m.payout.kind=v;
@@ -5867,18 +5870,24 @@ const Atlas = (function(){
           <div class="field" style="display:flex;align-items:flex-end"><div class="bk-lenhint" style="margin:0">Sets the symbol shown across the app + customer docs. Amounts are not converted &mdash; enter your rates in this currency.</div></div>
         </div>
         <div class="row2">
-          <div class="field"><label>Deposit to reserve</label>
+          <div class="field"><label>Deposit to reserve <span class="mut" style="font-weight:400;font-size:11px">&middot; a down-payment, counts as revenue</span></label>
             <select class="select" onchange="Atlas.setMoney('deposit.mode',this.value);Atlas.renderSetSoft()">
               <option value="full" ${m.deposit.mode==='full'?'selected':''}>Pay in full to book</option>
               <option value="percent" ${m.deposit.mode==='percent'?'selected':''}>Percentage of total</option>
+              <option value="fixed" ${m.deposit.mode==='fixed'?'selected':''}>Fixed dollar amount</option>
               <option value="none" ${m.deposit.mode==='none'?'selected':''}>Nothing upfront (pay at pickup)</option></select>
-            ${m.deposit.mode==='percent'?`<div class="rule-input" style="margin-top:8px;padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.deposit.pct}" oninput="Atlas.setMoney('deposit.pct',this.value)"><span>% collected now</span></div>`:''}</div>
-          <div class="field"><label>Refundable security hold</label>
+            ${m.deposit.mode==='percent'?`<div class="rule-input" style="margin-top:8px;padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.deposit.pct}" oninput="Atlas.setMoney('deposit.pct',this.value)"><span>% now, rest is the balance</span></div>`:''}
+            ${m.deposit.mode==='fixed'?`<div class="rule-input" style="margin-top:8px;padding:0 12px"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.deposit.amount||0}" oninput="Atlas.setMoney('deposit.amount',this.value)"><span>now, rest is the balance</span></div>`:''}</div>
+          <div class="field"><label>Refundable security deposit <span class="mut" style="font-weight:400;font-size:11px">&middot; separate, returned after the rental</span></label>
             <select class="select" onchange="Atlas.setMoney('hold.type',this.value);Atlas.renderSetSoft()">
               <option value="none" ${m.hold.type==='none'?'selected':''}>None</option>
               <option value="fixed" ${m.hold.type==='fixed'?'selected':''}>Fixed amount</option>
-              <option value="percent" ${m.hold.type==='percent'?'selected':''}>% of subtotal</option></select>
-            ${m.hold.type!=='none'?`<div class="rule-input" style="margin-top:8px;padding:0 12px">${m.hold.type==='fixed'?'<span>$</span>':''}<input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.hold.value}" oninput="Atlas.setMoney('hold.value',this.value)">${m.hold.type==='percent'?'<span>%</span>':''}</div>`:''}</div>
+              <option value="percent" ${m.hold.type==='percent'?'selected':''}>% of total</option></select>
+            ${m.hold.type!=='none'?`<div class="rule-input" style="margin-top:8px;padding:0 12px">${m.hold.type==='fixed'?'<span>$</span>':''}<input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.hold.value}" oninput="Atlas.setMoney('hold.value',this.value)">${m.hold.type==='percent'?'<span>%</span>':''}</div>
+            <div class="row2" style="margin-top:8px">
+              <select class="select" onchange="Atlas.setMoney('hold.collect',this.value);Atlas.renderSetSoft()"><option value="hold" ${(m.hold.collect||'hold')==='hold'?'selected':''}>Authorize a hold ($0 fee to release)</option><option value="charge" ${m.hold.collect==='charge'?'selected':''}>Charge it, refund after return</option></select>
+              <select class="select" onchange="Atlas.setMoney('hold.when',this.value)"><option value="pickup" ${(m.hold.when||'pickup')==='pickup'?'selected':''}>Collect at pickup</option><option value="booking" ${m.hold.when==='booking'?'selected':''}>Collect at booking</option></select></div>
+            <div class="bk-lenhint" style="margin:8px 0 0">A refundable ${m.hold.type==='fixed'?('$'+(m.hold.value||0)):((m.hold.value||0)+'% of the total')} deposit is ${(m.hold.collect==='charge')?'charged and refunded after return':'authorized as a hold (no charge) and released after return'}, to cover damage. It is separate from the rental price and never counts as revenue unless you keep it for a claim.</div>`:''}</div>
         </div>
         <div class="row2">
           <div class="field"><label>Sales tax</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.tax}" oninput="Atlas.setMoney('tax',this.value)"><span>%</span></div><div class="hint">Your region's rate. 0% is fine to start.</div></div>
