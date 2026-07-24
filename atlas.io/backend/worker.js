@@ -402,28 +402,66 @@ const WEBHOOK_EVENTS = ['booking.created', 'booking.paid'];
 async function _whSignHex(secret, body) { try { const key = await crypto.subtle.importKey('raw', enc(String(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const s = await crypto.subtle.sign('HMAC', key, enc(String(body))); return Array.prototype.map.call(new Uint8Array(s), function (x) { return ('0' + x.toString(16)).slice(-2); }).join(''); } catch (e) { return ''; } }
 function _whUrlOk(u) { let _u; try { _u = new URL(String(u || '').trim()); } catch (e) { return false; } if (_u.protocol !== 'https:') return false; const h = _u.hostname.toLowerCase(); if (h === 'localhost' || h === '::1' || h.indexOf('.') < 0 || h.indexOf('metadata') >= 0 || /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(h) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h)) return false; return true; }
 function _whWants(eventsJson, event) { try { if (!eventsJson || eventsJson === '*') return true; const arr = JSON.parse(eventsJson); if (!Array.isArray(arr) || !arr.length) return true; return arr.indexOf(event) >= 0 || arr.indexOf('*') >= 0; } catch (e) { return true; } }
-async function _whSendOne(env, ep, event, data) {
-  const ts = Date.now(), id = 'evt_' + randId(20);
-  const body = JSON.stringify({ id: id, event: event, created: Math.floor(ts / 1000), data: data || {} });
-  let status = 0;
+const WH_MAX_ATTEMPTS = 8;   // #257: give up (mark 'dead') after this many total delivery attempts
+function _whBackoffMs(attempts) { const s = [60000, 300000, 1800000, 7200000, 21600000, 86400000]; return s[Math.min(Math.max(1, attempts) - 1, s.length - 1)]; }   // 1m,5m,30m,2h,6h,24h (cron is hourly, so sub-hour delays land on the next tick)
+// POST one already-built body to an endpoint + record the endpoint's health. Returns {ok,status,error}. Shared by the
+// first attempt AND every backoff retry, so a retry is byte-identical (same body, same X-Atlas-Delivery id, same signature).
+async function _whAttempt(env, ep, event, body, id) {
+  const ts = Date.now(); let status = 0, errTxt = '';
   try { const sig = await _whSignHex(ep.secret, body);
     const resp = await _fetchTimeout(ep.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Atlas-Webhooks/1.0', 'X-Atlas-Event': event, 'X-Atlas-Delivery': id, 'X-Atlas-Signature': 'sha256=' + sig }, body: body }, 12000);
     status = (resp && resp.status) || 0;
-  } catch (e) { status = 0; }
+  } catch (e) { status = 0; errTxt = String((e && e.message) || e || 'error').slice(0, 200); }
   const ok = status >= 200 && status < 300;
   try { const nf = ok ? 0 : (Number(ep.fail_count) || 0) + 1;
     await env.DB.prepare('UPDATE webhook_endpoints SET last_status=?, last_attempt_at=?, fail_count=?' + (nf >= 15 ? ', active=0' : '') + ' WHERE id=?').bind(status, ts, nf, ep.id).run();
   } catch (e) {}
-  return { ok: ok, status: status, id: id };
+  return { ok: ok, status: status, error: errTxt };
+}
+async function _whSendOne(env, ep, event, data) {
+  const ts = Date.now(), id = 'evt_' + randId(20);
+  const body = JSON.stringify({ id: id, event: event, created: Math.floor(ts / 1000), data: data || {} });
+  const res = await _whAttempt(env, ep, event, body, id);
+  return { ok: res.ok, status: res.status, id: id, body: body, error: res.error };
+}
+// #257: persist a failed delivery so the hourly cron retries it with backoff instead of dropping the event.
+async function _whEnqueue(env, ep, event, body, id, status, error) {
+  try { const now = Date.now();
+    await env.DB.prepare("INSERT INTO webhook_deliveries (id,endpoint_id,tenant_id,event,body,attempts,next_at,status,last_status,last_error,created_at,updated_at) VALUES (?,?,?,?,?,1,?,'pending',?,?,?,?)")
+      .bind('whd_' + randId(18), ep.id, ep.tenant_id || null, event, body, now + _whBackoffMs(1), status || 0, String(error || '').slice(0, 200), now, now).run();
+  } catch (e) {}
 }
 async function _dispatchWebhooks(env, tenantId, event, data) {
   try {
     if (!tenantId) return;
     if ((await _pcfgGet(env, 'dev_api_enabled', '0')) !== '1') return;   // same platform switch as the read API; OFF by default
-    const r = await env.DB.prepare('SELECT id,url,secret,events,fail_count FROM webhook_endpoints WHERE tenant_id=? AND active=1').bind(tenantId).all();
+    const r = await env.DB.prepare('SELECT id,tenant_id,url,secret,events,fail_count FROM webhook_endpoints WHERE tenant_id=? AND active=1').bind(tenantId).all();
     const eps = (r && r.results) || [];
-    for (const ep of eps) { if (_whWants(ep.events, event)) { try { await _whSendOne(env, ep, event, data); } catch (e) {} } }
+    for (const ep of eps) { if (_whWants(ep.events, event)) { try { const res = await _whSendOne(env, ep, event, data); if (!res.ok) await _whEnqueue(env, ep, event, res.body, res.id, res.status, res.error); } catch (e) {} } }
   } catch (e) {}
+}
+// #257: hourly retry sweep -- re-deliver every pending delivery whose next_at has passed, with exponential backoff, until it
+// succeeds ('delivered') or hits WH_MAX_ATTEMPTS ('dead'). A deleted/paused endpoint retires the delivery. Gated by
+// dev_api_enabled; bounded 200/run so a large backlog can never run the cron long. Returns how many it processed.
+async function _whRetrySweep(env) {
+  try {
+    if ((await _pcfgGet(env, 'dev_api_enabled', '0')) !== '1') return 0;
+    const now = Date.now();
+    const due = ((await env.DB.prepare("SELECT * FROM webhook_deliveries WHERE status='pending' AND next_at<=? ORDER BY next_at ASC LIMIT 200").bind(now).all()).results) || [];
+    let done = 0;
+    for (const d of due) {
+      const ep = await env.DB.prepare('SELECT id,tenant_id,url,secret,events,fail_count,active FROM webhook_endpoints WHERE id=?').bind(d.endpoint_id).first();
+      if (!ep || !ep.active) { try { await env.DB.prepare("UPDATE webhook_deliveries SET status='dead', last_error=?, updated_at=? WHERE id=?").bind(ep ? 'endpoint paused' : 'endpoint deleted', Date.now(), d.id).run(); } catch (e) {} done++; continue; }
+      let evId = d.id; try { evId = JSON.parse(d.body).id || d.id; } catch (e) {}
+      const res = await _whAttempt(env, ep, d.event, d.body, evId);
+      const attempts = (Number(d.attempts) || 1) + 1;
+      if (res.ok) { try { await env.DB.prepare("UPDATE webhook_deliveries SET status='delivered', attempts=?, last_status=?, updated_at=? WHERE id=?").bind(attempts, res.status, Date.now(), d.id).run(); } catch (e) {} }
+      else if (attempts >= WH_MAX_ATTEMPTS) { try { await env.DB.prepare("UPDATE webhook_deliveries SET status='dead', attempts=?, last_status=?, last_error=?, updated_at=? WHERE id=?").bind(attempts, res.status, String(res.error || 'failed').slice(0, 200), Date.now(), d.id).run(); } catch (e) {} }
+      else { try { await env.DB.prepare("UPDATE webhook_deliveries SET attempts=?, next_at=?, last_status=?, last_error=?, updated_at=? WHERE id=?").bind(attempts, Date.now() + _whBackoffMs(attempts), res.status, String(res.error || 'failed').slice(0, 200), Date.now(), d.id).run(); } catch (e) {} }
+      done++;
+    }
+    return done;
+  } catch (e) { return 0; }
 }
 // Schedule a dispatch AFTER the response returns (waitUntil) so a booking/payment is never held up; falls back to a swallowed promise if no exec-context.
 function _fireWebhook(ectx, env, tenantId, event, data) { try { const p = _dispatchWebhooks(env, tenantId, event, data); if (ectx && ectx.waitUntil) ectx.waitUntil(p); else if (p && p.catch) p.catch(function () {}); } catch (e) {} }
@@ -1883,6 +1921,11 @@ async function ensurePlatformSchema(env) {
     // Developer platform pt.3: per-tenant outbound webhook endpoints. Each holds its own signing secret (used only to HMAC our POSTs).
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS webhook_endpoints (id TEXT PRIMARY KEY, tenant_id TEXT, url TEXT, secret TEXT, events TEXT, active INTEGER DEFAULT 1, created_at INTEGER, last_status INTEGER, last_attempt_at INTEGER, fail_count INTEGER DEFAULT 0)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_webhooks_tenant ON webhook_endpoints(tenant_id, created_at)").run();
+    // #257 Webhook delivery retry/backoff queue: a failed delivery is persisted here and retried on the hourly cron with
+    // exponential backoff (1m,5m,30m,2h,6h,24h) up to WH_MAX_ATTEMPTS, then marked 'dead'. Stores the EXACT body + id so a
+    // retry POSTs a byte-identical, identically-signed payload (the receiver can dedup on X-Atlas-Delivery). Additive.
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS webhook_deliveries (id TEXT PRIMARY KEY, endpoint_id TEXT, tenant_id TEXT, event TEXT, body TEXT, attempts INTEGER DEFAULT 1, next_at INTEGER, status TEXT DEFAULT 'pending', last_status INTEGER, last_error TEXT, created_at INTEGER, updated_at INTEGER)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_whdeliv_due ON webhook_deliveries(status, next_at)").run();
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -5152,7 +5195,8 @@ function doReset(){
       if (path === '/api/tenant/webhooks') {
         if (method === 'GET') {
           const r = await env.DB.prepare('SELECT id,url,events,active,created_at,last_status,last_attempt_at,fail_count FROM webhook_endpoints WHERE tenant_id=? ORDER BY created_at DESC').bind(ctx.tenant_id).all();
-          return json({ ok: true, hooks: (r.results || []), available_events: WEBHOOK_EVENTS, enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1' });
+          let _wq = { pending: 0, dead: 0 }; try { const _wqr = ((await env.DB.prepare("SELECT status, COUNT(*) c FROM webhook_deliveries WHERE tenant_id=? AND status IN ('pending','dead') GROUP BY status").bind(ctx.tenant_id).all()).results) || []; _wqr.forEach(function (x) { if (x.status === 'pending') _wq.pending = x.c; else if (x.status === 'dead') _wq.dead = x.c; }); } catch (e) {}   // #257: retry-queue visibility (queued-for-retry + permanently-failed)
+          return json({ ok: true, hooks: (r.results || []), available_events: WEBHOOK_EVENTS, enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', queue: _wq });
         }
         if (method === 'POST') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -5942,6 +5986,8 @@ function doReset(){
       } catch (e) {}
       await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').bind(now, now - 7 * 24 * 3600 * 1000).run();
       await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 24 * 3600 * 1000).run();
+      try { const _wr = await _whRetrySweep(env); await _pcfgSet(env, 'wh_retry_last', String(_wr) + '@' + now); } catch (e) {}   // #257: retry queued failed webhook deliveries with exponential backoff (own try/catch -- never blocks the GC below)
+      try { await env.DB.prepare("DELETE FROM webhook_deliveries WHERE status IN ('delivered','dead') AND updated_at < ?").bind(now - 30 * 24 * 3600 * 1000).run(); } catch (e) {}   // #257: GC finished deliveries after 30 days so the queue table stays small
       // NOTE: NO automatic/time-based deletion of customer records or uploaded files. Owner policy = retain everything
       // for records + logs; the ONLY thing that deletes a tenant's data + files is the deliberate two-step account
       // deletion (soft-delete -> purge), which also clears their R2 objects. (A previous flag-gated retention sweep was
