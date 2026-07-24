@@ -1525,6 +1525,10 @@ body.trk-fs-on .trk-fs-exit{display:grid}
             <div class="card__head"><h3>Income &amp; Expenses</h3><span style="font-size:11px;color:var(--muted)">tap any figure to drill in</span></div>
             <div class="card__body" id="ledgerBody"></div>
           </div>
+          <div class="card" style="margin-top:18px">
+            <div class="card__head"><h3>Profit &amp; Loss</h3><div id="pnlControls" style="display:flex;gap:6px;flex-wrap:wrap"></div></div>
+            <div class="card__body" id="pnlBody"></div>
+          </div>
           <div class="grid-2">
             <div class="card"><div class="card__head"><h3>Revenue by Source</h3></div><div class="card__body"><canvas class="chartbox" id="srcChart" style="cursor:pointer" onclick="Atlas.drillKpi('anaRev')"></canvas></div></div>
             <div class="card"><div class="card__head"><h3>Top Performers</h3></div><div class="card__body" id="topList"></div></div>
@@ -3264,6 +3268,7 @@ const Atlas = (function(){
     _renderNavs();
     // data + panels
     try{ _dreamStart(); }catch(e){}   // dreaming begins the moment the dashboard loads (stamps S.dream.since)
+    try{ _materializeRecurring(); }catch(e){}   // catch a tenant up on any recurring expenses due since their last visit, even if they never open Analytics this session
     seedData(); renderOverview(); renderFleet(); renderBookings(); renderCustomers(); renderAnalytics(); renderWebsite(); renderTeam(); buildSettings(); buildAio();
     // greet
     const h=new Date().getHours(); const g=h<12?'Good morning':h<18?'Good afternoon':'Good evening';
@@ -3404,8 +3409,9 @@ const Atlas = (function(){
     return 'Up to '+t.vehicles+' '+n+(t.locations>=90?', multiple locations':''); }
   /* ============ Interactive drill-downs + income/expense ledger + blocked days ============ */
   function _ledger(){ if(!S.ledger) S.ledger={incomes:[],expenses:[]}; if(!S.ledger.incomes)S.ledger.incomes=[]; if(!S.ledger.expenses)S.ledger.expenses=[]; return S.ledger; }
+  function _activeExpenses(){ return _ledger().expenses.filter(function(x){return !x._deleted;}); }   // soft-deleted (pruned recurring) rows are never real money -- every expense sum routes through this
   function _otherIncome(){ return _ledger().incomes.reduce(function(s,x){return s+(x.amount||0);},0); }
-  function _totalExpenses(){ return _ledger().expenses.reduce(function(s,x){return s+(x.amount||0);},0); }
+  function _totalExpenses(){ return _activeExpenses().reduce(function(s,x){return s+(x.amount||0);},0); }
   function _payoutLabel(){ return (S.money&&S.money.payout&&S.money.payout.label)||'Partner payout'; }
   function _totalPayouts(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+((b.quote&&b.quote.payoutAmt)||0); },0); }   // commission/split that leaves the owner on each booking -- a real deduction from take-home
   function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarned(b);},0); }   // rental + collected add-on charges (owner chose: count charges as income everywhere)
@@ -3413,6 +3419,11 @@ const Atlas = (function(){
   function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts(); }   // take-home now subtracts partner payouts (the settings copy promises net "in analytics")
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
+    if(opts.total!=null){   // reconciliation guard: an itemized drill with an explicit total always foots -- a hidden data gap reads as a real number instead of a silent math error
+      var _rowSum=rows.reduce(function(s,r){ return s+(typeof r.amt==='number'?(r.neg?-r.amt:r.amt):0); },0);
+      var _diff=_r2(opts.total-_rowSum);
+      if(Math.abs(_diff)>0.02) rows=rows.concat([{label:'Other / adjustments',sub:'balances to the total',amt:Math.abs(_diff),neg:(_diff<0)}]);
+    }
     var tot = (opts.total!=null) ? opts.total : rows.reduce(function(s,r){return s+(typeof r.amt==='number'?r.amt:0);},0);
     var body = rows.length ? rows.map(function(r){ var click=r.onClick?(' onclick="'+r.onClick+'" style="cursor:pointer"'):'';
       return '<div class="mp-row"'+click+'><span style="min-width:0">'+r.label+(r.sub?' <span style="font-size:11.5px;color:var(--muted)">'+r.sub+'</span>':'')+'</span>'
@@ -3434,10 +3445,11 @@ const Atlas = (function(){
     else if(which==='avg'){ _drill('Average '+_fterm('book'), 'The average is the mean of these', _bkList(nc).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total'}); }
     else if(which==='repeat'){ var by={}; (DATA.bookings||[]).filter(nc).forEach(function(b){ (by[b.cust]=by[b.cust]||[]).push(b); });
       _drill('Repeat customers', 'Customers with 2 or more '+_fterm('books'), Object.keys(by).filter(function(c){return by[c].length>=2;}).map(function(c){return {n:by[c].length,name:c};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }   // fix: list only repeat customers (n>=2) to match the heading
-    else if(which==='net'){ var _pay=_totalPayouts(); var _nrows=[
+    else if(which==='net'){ var _pay=_totalPayouts(), _cf=_cancelledFeeIncome(); var _nrows=[
       {label:'<b>Booking revenue</b>',sub:'earned '+_fterm('books'),amt:_bookingRevenue(),onClick:"Atlas.drillKpi('rev')"},
-      {label:'<b>Other income</b>',sub:_ledger().incomes.length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"},
-      {label:'<b>Expenses</b>',sub:_ledger().expenses.length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"}];
+      {label:'<b>Other income</b>',sub:_ledger().incomes.length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"}];
+      if(_cf>0) _nrows.push({label:'<b>Cancellation fees kept</b>',sub:'collected on cancelled '+_fterm('books'),amt:_cf,onClick:"Atlas.drillLedger('income')"});
+      _nrows.push({label:'<b>Expenses</b>',sub:_activeExpenses().length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"});
       if(_pay>0) _nrows.push({label:'<b>'+esc(_payoutLabel())+'</b>',sub:'commission on '+_fterm('books'),amt:_pay,neg:true,onClick:"Atlas.drillKpi('payout')"});
       _drill('Net Profit', 'Booking revenue, plus other income, minus expenses'+(_pay>0?' and payouts':''), _nrows, {total:_netProfit(), totalLabel:'Net Profit'}); }
     else if(which==='payout'){ _drill(_payoutLabel(), 'The commission or split that leaves you on each '+_fterm('book'), (DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&((b.quote&&b.quote.payoutAmt)||0)>0;}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:((b.quote&&b.quote.payoutAmt)||0), neg:true, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total payout', empty:'No payouts yet -- turn on a payout/commission in Settings > Money rules.'}); } }
@@ -3446,38 +3458,179 @@ const Atlas = (function(){
     var _it=[{label:'<b>'+esc(e.text||'')+'</b>'}, _rw('Type',e.type||'event'), _rw('When',_stamp(e.t)+(_iso?(' - '+_iso):'')), _rw('Performed by',(e.by||'Owner')+(e.role?(' - '+e.role):'')), _rw('IP address',e.ip||'not captured on this device'), _rw('Device',e.dev||'Web')];
     if(e.meta) _it.push(_rw('Reference',typeof e.meta==='object'?JSON.stringify(e.meta):String(e.meta)));
     _drill('Activity record', 'Timestamped and attributed - your exact record for this action.', _it, {showTotal:false}); }
-  function drillLedger(kind){ var items=(kind==='income'?_ledger().incomes:_ledger().expenses).slice().sort(function(a,b){return (b.date||0)-(a.date||0);});
-    _drill(kind==='income'?'Other income':'Expenses', kind==='income'?'Income beyond bookings':'Costs you have logged', items.map(function(x){ return {label:'<b>'+esc(x.label)+'</b>',sub:(x.category?esc(x.category)+' &middot; ':'')+_csvDate(x.date),amt:x.amount,neg:(kind==='expense'),chip:'<button class="btn btn--ghost btn--sm" style="padding:2px 7px" onclick="Atlas.editLedger(\''+kind+'\',\''+x.id+'\')">Edit</button> <button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.rmLedger(\''+kind+'\',\''+x.id+'\')">Remove</button>'};}), {totalLabel:kind==='income'?'Total income':'Total expenses', empty:'None logged yet.', foot:'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.logLedger(\''+kind+'\')">+ Log '+(kind==='income'?'income':'an expense')+'</button>'}); }
+  var EXP_CATS=['Loan/Lease Payment','Insurance','Fuel & Charging','Maintenance & Repairs','Cleaning & Detailing','Storage & Parking','Marketing & Advertising','Platform & Software Fees','Supplies & Equipment','Taxes & Licenses','Staff & Payroll','Utilities','Other'];
+  var _ldPhoto=null;
+  function _ldPhotoPrevHtml(){ return _ldPhoto?('<div style="display:flex;align-items:center;gap:8px"><img src="'+_ldPhoto+'" style="width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"><button type="button" class="btn btn--ghost btn--sm" onclick="Atlas._ldPhotoClear()">Remove</button></div>') : ''; }
+  function _ldPhotoPick(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader();   // receipt photo -- downscaled like every other photo picker in the app so the saved record stays light
+    r.onload=function(e){ _downscaleImg(String(e.target.result||''),1100,0.6,function(d){ _ldPhoto=d; var p=document.getElementById('ldPhotoPrev'); if(p) p.innerHTML=_ldPhotoPrevHtml(); }); }; r.readAsDataURL(f); }
+  function _ldPhotoClear(){ _ldPhoto=null; var p=document.getElementById('ldPhotoPrev'); if(p) p.innerHTML=''; var inp=document.getElementById('ldPhoto'); if(inp) inp.value=''; }
+  function _ldRecToggle(){ var c=document.getElementById('ldRec'), f=document.getElementById('ldRecFields'); if(f) f.style.display=(c&&c.checked)?'grid':'none'; }
+  function drillLedger(kind){ var items=(kind==='income'?_ledger().incomes:_activeExpenses()).slice().sort(function(a,b){return (b.date||0)-(a.date||0);});
+    _drill(kind==='income'?'Other income':'Expenses', kind==='income'?'Income beyond bookings':'Costs you have logged', items.map(function(x){
+      var _as=x.assetId?(DATA.assets||[]).filter(function(a){return a.id===x.assetId;})[0]:null;
+      var bits=[]; if(x.category) bits.push(esc(x.category)); if(_as) bits.push(esc(_as.name)); bits.push(_csvDate(x.date)); if(x.recurring) bits.push('Repeats '+esc(x.recurring).toLowerCase()); if(x._auto) bits.push('Auto');
+      return {label:'<b>'+esc(x.label)+'</b>'+(x.photo?' <span title="Has a receipt photo">&#128247;</span>':''),sub:bits.join(' &middot; '),amt:x.amount,neg:(kind==='expense'),chip:'<button class="btn btn--ghost btn--sm" style="padding:2px 7px" onclick="Atlas.editLedger(\''+kind+'\',\''+x.id+'\')">Edit</button> <button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.rmLedger(\''+kind+'\',\''+x.id+'\')">Remove</button>'};}),
+      {totalLabel:kind==='income'?'Total income':'Total expenses', empty:'None logged yet.', foot:'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.logLedger(\''+kind+'\')">+ Log '+(kind==='income'?'income':'an expense')+'</button>'}); }
   function logLedger(kind){ if(!_canMod('analytics')&&!_canMod('settings')){ toast('You do not have access to this'); return; }
+    _ldPhoto=null; var isExp=(kind==='expense');
     openModal('<div class="modal__head"><h3>Log '+(kind==='income'?'income':'an expense')+'</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="field"><label>Description</label><input class="input" id="ldLabel" placeholder="'+(kind==='income'?'e.g. Merchandise sale, tips, add-on service':'e.g. Insurance, fuel, cleaning, repair')+'"></div>'
-      +(kind==='expense'?'<div class="field"><label>Category</label><input class="input" id="ldCat" placeholder="e.g. Insurance, Maintenance, Marketing"></div>':'')
-      +'<div class="row2"><div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="ldAmt" style="width:auto;flex:1;text-align:left" placeholder="0.00"></div></div>'
+      +'<div class="row2"><div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="ldAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left;font-size:21px;font-weight:800" placeholder="0.00"></div></div>'
       +'<div class="field"><label>Date</label><input class="input" type="date" id="ldDate" value="'+_todayStr()+'"></div></div>'
-      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:6px" onclick="Atlas.saveLedger(\''+kind+'\')">Save</button></div>'); }
-  function saveLedger(kind){ var label=(val('ldLabel')||'').trim(), amt=parseFloat(val('ldAmt'))||0;
-    if(!label){ toast('Add a description'); return; } if(amt<=0){ toast('Enter an amount'); return; }
+      +(isExp?('<div class="field"><label>Category</label><select class="select" id="ldCat"><option value="">Choose a category&hellip;</option>'+EXP_CATS.map(function(c){return '<option>'+esc(c)+'</option>';}).join('')+'</select></div>'):'')
+      +'<div class="field"><label>Description</label><input class="input" id="ldLabel" placeholder="'+(kind==='income'?'e.g. Merchandise sale, tips, add-on service':'e.g. Insurance, fuel, cleaning, repair')+'"></div>'
+      +(isExp?('<div class="field"><label>'+esc(cap(S.fleet.noun||'asset'))+' (optional)</label><select class="select" id="ldAsset"><option value="">General / not '+esc(S.fleet.noun||'asset')+'-specific</option>'+(DATA.assets||[]).map(function(a){return '<option value="'+esc(a.id)+'">'+esc(a.name)+' ('+esc(_kindOfAsset(a))+')</option>';}).join('')+'</select></div>'):'')
+      +(isExp?('<div class="field"><label>Receipt (optional)</label><input type="file" accept="image/*" capture="environment" id="ldPhoto" style="display:none" onchange="Atlas._ldPhotoPick(this)"><button type="button" class="btn btn--ghost btn--sm" onclick="document.getElementById(\'ldPhoto\').click()">&#128247; Snap or attach receipt</button><div id="ldPhotoPrev" style="margin-top:8px"></div></div>'):'')
+      +(isExp?('<div class="field"><label class="cfg-check" style="margin-bottom:0"><input type="checkbox" id="ldRec" onchange="Atlas._ldRecToggle()">This repeats on a schedule</label>'
+        +'<div id="ldRecFields" class="row2" style="display:none;margin-top:10px"><div class="field" style="margin:0"><label>Frequency</label><select class="select" id="ldFreq"><option value="Monthly">Monthly</option><option value="Yearly">Yearly</option><option value="Weekly">Weekly</option><option value="Daily">Daily</option></select></div><div class="field" style="margin:0"><label>Ends (optional)</label><input class="input" type="date" id="ldRecEnd"></div></div></div>'):'')
+      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:6px" onclick="Atlas.saveLedger(\''+kind+'\')">Save</button></div>');
+    setTimeout(function(){ var el=document.getElementById('ldAmt'); if(el) el.focus(); },60); }
+  function saveLedger(kind){ var amt=parseFloat(val('ldAmt'))||0; if(amt<=0){ toast('Enter an amount'); return; }
+    var cat=(kind==='expense')?(val('ldCat')||'').trim():'';
+    var label=(val('ldLabel')||'').trim()||cat||(kind==='income'?'Income':'Expense');
     var d=val('ldDate'), ts=d?new Date(d+'T12:00:00').getTime():Date.now();
-    var rec={id:kind.charAt(0)+Date.now(), label:label, amount:amt, date:ts}; if(kind==='expense') rec.category=(val('ldCat')||'').trim();
-    _ledger()[kind==='income'?'incomes':'expenses'].unshift(rec); save();
+    var rec={id:kind.charAt(0)+Date.now(), label:label, amount:_r2(amt), date:ts, _t:Date.now()};
+    if(kind==='expense'){
+      if(cat) rec.category=cat;
+      var aid=val('ldAsset'); if(aid){ var _a=(DATA.assets||[]).filter(function(x){return x.id===aid;})[0]; if(_a){ rec.assetId=aid; rec.assetKind=_kindOfAsset(_a); } }
+      if(_ldPhoto) rec.photo=_ldPhoto;
+      var _rc=document.getElementById('ldRec'); if(_rc&&_rc.checked){ rec.recurring=val('ldFreq')||'Monthly'; var re=val('ldRecEnd'); rec.recurringEnd=re?new Date(re+'T12:00:00').getTime():0; }
+    }
+    _ledger()[kind==='income'?'incomes':'expenses'].unshift(rec); if(rec.recurring) _materializeRecurring(); save();
     _logEvent(kind==='income'?'income':'expense', (kind==='income'?'Income logged: ':'Expense logged: ')+label+' '+money(amt),{amount:amt});
-    closeModal(); if(document.getElementById('anaKpis')) renderAnalytics(); toast((kind==='income'?'Income':'Expense')+' logged'); }
+    _ldPhoto=null; closeModal(); if(document.getElementById('anaKpis')) renderAnalytics(); toast((kind==='income'?'Income':'Expense')+' logged'); }
   function rmLedger(kind,id){ var arr=_ledger()[kind==='income'?'incomes':'expenses']; var i=arr.map(function(x){return x.id;}).indexOf(id); if(i>=0){ arr.splice(i,1); save(); if(document.getElementById('anaKpis')) renderAnalytics(); drillLedger(kind); } }
   function editLedger(kind,id){ if(!_canMod('analytics')&&!_canMod('settings')){ toast('You do not have access to this'); return; }
     var rec=(_ledger()[kind==='income'?'incomes':'expenses']||[]).filter(function(x){return x.id===id;})[0]; if(!rec){ toast('Entry not found'); return; }
+    _ldPhoto=rec.photo||null; var isExp=(kind==='expense');
     var dstr=(function(){ try{ var d=new Date(rec.date||Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }catch(e){ return _todayStr(); } })();
+    var recEndStr=(function(){ if(!rec.recurringEnd) return ''; try{ var d=new Date(rec.recurringEnd); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }catch(e){ return ''; } })();
     openModal('<div class="modal__head"><h3>Edit '+(kind==='income'?'income':'expense')+'</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="field"><label>Description</label><input class="input" id="ldLabel" value="'+esc(rec.label||'')+'"></div>'
-      +(kind==='expense'?'<div class="field"><label>Category</label><input class="input" id="ldCat" value="'+esc(rec.category||'')+'"></div>':'')
-      +'<div class="row2"><div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="ldAmt" style="width:auto;flex:1;text-align:left" value="'+(rec.amount||0)+'"></div></div>'
+      +'<div class="row2"><div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="ldAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left;font-size:21px;font-weight:800" value="'+(rec.amount||0)+'"></div></div>'
       +'<div class="field"><label>Date</label><input class="input" type="date" id="ldDate" value="'+esc(dstr)+'"></div></div>'
-      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:6px" onclick="Atlas.saveLedgerEdit(\''+kind+'\',\''+id+'\')">Save changes</button></div>'); }
+      +(isExp?('<div class="field"><label>Category</label><select class="select" id="ldCat"><option value="">Choose a category&hellip;</option>'+EXP_CATS.map(function(c){return '<option'+(rec.category===c?' selected':'')+'>'+esc(c)+'</option>';}).join('')+((rec.category&&EXP_CATS.indexOf(rec.category)<0)?('<option selected>'+esc(rec.category)+'</option>'):'')+'</select></div>'):'')
+      +'<div class="field"><label>Description</label><input class="input" id="ldLabel" value="'+esc(rec.label||'')+'"></div>'
+      +(isExp?('<div class="field"><label>'+esc(cap(S.fleet.noun||'asset'))+' (optional)</label><select class="select" id="ldAsset"><option value="">General / not '+esc(S.fleet.noun||'asset')+'-specific</option>'+(DATA.assets||[]).map(function(a){return '<option value="'+esc(a.id)+'"'+(rec.assetId===a.id?' selected':'')+'>'+esc(a.name)+' ('+esc(_kindOfAsset(a))+')</option>';}).join('')+'</select></div>'):'')
+      +(isExp?('<div class="field"><label>Receipt (optional)</label><input type="file" accept="image/*" capture="environment" id="ldPhoto" style="display:none" onchange="Atlas._ldPhotoPick(this)"><button type="button" class="btn btn--ghost btn--sm" onclick="document.getElementById(\'ldPhoto\').click()">&#128247; '+(rec.photo?'Replace receipt':'Snap or attach receipt')+'</button><div id="ldPhotoPrev" style="margin-top:8px">'+_ldPhotoPrevHtml()+'</div></div>'):'')
+      +(isExp?('<div class="field"><label class="cfg-check" style="margin-bottom:0"><input type="checkbox" id="ldRec" '+(rec.recurring?'checked':'')+' onchange="Atlas._ldRecToggle()">This repeats on a schedule</label>'
+        +'<div id="ldRecFields" class="row2" style="display:'+(rec.recurring?'grid':'none')+';margin-top:10px"><div class="field" style="margin:0"><label>Frequency</label><select class="select" id="ldFreq"><option value="Monthly"'+((!rec.recurring||rec.recurring==='Monthly')?' selected':'')+'>Monthly</option><option value="Yearly"'+(rec.recurring==='Yearly'?' selected':'')+'>Yearly</option><option value="Weekly"'+(rec.recurring==='Weekly'?' selected':'')+'>Weekly</option><option value="Daily"'+(rec.recurring==='Daily'?' selected':'')+'>Daily</option></select></div><div class="field" style="margin:0"><label>Ends (optional)</label><input class="input" type="date" id="ldRecEnd" value="'+esc(recEndStr)+'"></div></div>'
+        +(rec._auto?'<div class="bk-lenhint" style="margin:8px 0 0">Auto-generated from a recurring expense &mdash; editing it only changes this one occurrence.</div>':'')+'</div>'):'')
+      +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:6px" onclick="Atlas.saveLedgerEdit(\''+kind+'\',\''+id+'\')">Save changes</button></div>');
+    setTimeout(function(){ var el=document.getElementById('ldAmt'); if(el) el.focus(); },60); }
   function saveLedgerEdit(kind,id){ var rec=(_ledger()[kind==='income'?'incomes':'expenses']||[]).filter(function(x){return x.id===id;})[0]; if(!rec){ toast('Entry not found'); return; }
-    var label=(val('ldLabel')||'').trim(), amt=parseFloat(val('ldAmt'))||0;
-    if(!label){ toast('Add a description'); return; } if(amt<=0){ toast('Enter an amount'); return; }
+    var amt=parseFloat(val('ldAmt'))||0; if(amt<=0){ toast('Enter an amount'); return; }
+    var cat=(kind==='expense')?(val('ldCat')||'').trim():'';
+    var label=(val('ldLabel')||'').trim()||cat||rec.label||(kind==='income'?'Income':'Expense');
     var d=val('ldDate'), ts=d?new Date(d+'T12:00:00').getTime():(rec.date||Date.now());
-    rec.label=label; rec.amount=amt; rec.date=ts; if(kind==='expense') rec.category=(val('ldCat')||'').trim();
-    save(); closeModal(); if(document.getElementById('anaKpis')) renderAnalytics(); drillLedger(kind); toast((kind==='income'?'Income':'Expense')+' updated'); }
+    rec.label=label; rec.amount=_r2(amt); rec.date=ts; rec._t=Date.now();
+    if(kind==='expense'){
+      rec.category=cat;
+      var aid=val('ldAsset');
+      if(aid){ var _a=(DATA.assets||[]).filter(function(x){return x.id===aid;})[0]; if(_a){ rec.assetId=aid; rec.assetKind=_kindOfAsset(_a); } }
+      else { delete rec.assetId; delete rec.assetKind; }
+      if(_ldPhoto) rec.photo=_ldPhoto; else delete rec.photo;
+      var _rc=document.getElementById('ldRec');
+      if(_rc&&_rc.checked){ rec.recurring=val('ldFreq')||'Monthly'; var re=val('ldRecEnd'); rec.recurringEnd=re?new Date(re+'T12:00:00').getTime():0; }
+      else { delete rec.recurring; delete rec.recurringEnd; }
+    }
+    _materializeRecurring(); save(); _ldPhoto=null; closeModal(); if(document.getElementById('anaKpis')) renderAnalytics(); drillLedger(kind); toast((kind==='income'?'Income':'Expense')+' updated'); }
+  // ---- Recurring expenses: auto-generate future occurrences from a template row; prune the ones that fall stale/orphaned ----
+  function _recurStep(d, freq, origDay){ var nd=new Date(d.getTime());
+    if(freq==='Yearly'){ nd.setFullYear(nd.getFullYear()+1); return nd; }
+    if(freq==='Weekly') return new Date(d.getTime()+7*86400000);
+    if(freq==='Daily') return new Date(d.getTime()+86400000);
+    var y=nd.getFullYear(), m=nd.getMonth(), ny=y+(m===11?1:0), nm=(m+1)%12, last=new Date(ny,nm+1,0).getDate();   // monthly, clamped to month end (Jan 31 -> Feb 28/29, not Mar rollover)
+    return new Date(ny,nm,Math.min(origDay,last),nd.getHours(),nd.getMinutes(),nd.getSeconds()); }
+  function _recurKey(ms){ var d=new Date(ms); return d.getFullYear()+('0'+(d.getMonth()+1)).slice(-2)+('0'+d.getDate()).slice(-2); }
+  function _recurOccurrences(src, boundary){ var out=[]; if(!src||!src.recurring||!src.date) return out;
+    var origDay=new Date(src.date).getDate(), cur=new Date(src.date), guard=0;
+    while(guard++<1200){ cur=_recurStep(cur,src.recurring,origDay); var ms=cur.getTime(); if(ms>boundary) break; out.push({ms:ms,key:_recurKey(ms)}); }
+    return out; }
+  function _materializeRecurring(){ var exps=_ledger().expenses, changed=false, now=Date.now();
+    var srcById={}; exps.forEach(function(s){ if(s&&s.recurring&&!s._auto&&!s._deleted&&s.date) srcById[s.id]=s; });
+    var haveId={}; exps.forEach(function(e){ haveId[e.id]=true; });
+    Object.keys(srcById).forEach(function(sid){ var src=srcById[sid], boundary=Math.min(now, src.recurringEnd||now);
+      _recurOccurrences(src,boundary).forEach(function(o){ var cid='rg'+src.id+'_'+o.key;
+        if(!haveId[cid]){ exps.push({id:cid,label:src.label,amount:src.amount,date:o.ms,category:src.category,assetId:src.assetId,assetKind:src.assetKind,_auto:true,_srcId:src.id,_t:Date.now()}); haveId[cid]=true; changed=true; } }); });
+    exps.forEach(function(e){ if(!e||!e._auto||e._deleted) return; var src=srcById[e._srcId];
+      if(!src){ e._deleted=true; changed=true; return; }
+      var boundary=Math.min(now, src.recurringEnd||now), valid={}; _recurOccurrences(src,boundary).forEach(function(o){ valid[o.key]=true; });
+      var myKey=String(e.id).slice(('rg'+src.id+'_').length);
+      if(!valid[myKey]){ e._deleted=true; changed=true; } });
+    if(changed) save(); }
+  // ---- Profit & Loss: period + asset-type breakdown. Built from the SAME components as _netProfit() (booking revenue,
+  // other income, cancelled-fee income, expenses, payouts) so the all-time/all-type summary reconciles to the cent by construction.
+  var _pnlPeriod='month', _pnlKind='all';
+  var _PNL_RANGES=[['month','This month'],['year','This year'],['12mo','Last 12 months'],['all','All time']];
+  function _pnlBounds(k){ var now=Date.now();
+    if(k==='month'){ var d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return {from:d.getTime(),to:now,label:'This month'}; }
+    if(k==='year') return {from:new Date(new Date().getFullYear(),0,1).getTime(),to:now,label:'This year'};
+    if(k==='12mo') return {from:now-365*86400000,to:now,label:'Last 12 months'};
+    return {from:0,to:Infinity,label:'All time'}; }
+  function _expInRange(e,B){ return !!e && !e._deleted && e.date>=B.from && e.date<=B.to; }
+  function _bDate(b){ return (b&&(b.startTs||b.createdAt))||0; }   // same date basis as _inOvRange -- every P&L bucket agrees with the rest of the app
+  function _bkInRange(b,B){ if(!_isCommitted(b)) return false; var t=_bDate(b); return t>=B.from && t<=B.to; }
+  function _kindOfAsset(a){ if(!a) return 'Other'; return cap(_typeNoun(a.type||(S.fleet&&S.fleet.id)||'cars'))||'Other'; }   // asset "kind" = this fleet's type noun (Vehicle/Vessel/Aircraft/...); a.type is only set on multi-type fleets, else every asset shares the tenant's one type
+  function _assetKindByName(name){ return _kindOfAsset((DATA.assets||[]).filter(function(x){return x.name===name;})[0]); }
+  function _pnlKinds(){ var seen={}, out=[]; (DATA.assets||[]).forEach(function(a){ var k=_kindOfAsset(a); if(!seen[k]){ seen[k]=1; out.push(k); } }); return out; }
+  function _pnlSummary(B,kind){ var all=(kind==='all');
+    var bks=(DATA.bookings||[]).filter(function(b){ return _bkInRange(b,B) && (all||_assetKindByName(b.asset)===kind); });
+    var rev=bks.reduce(function(s,b){return s+_bkEarned(b);},0);
+    var income = all ? _ledger().incomes.reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0) : 0;
+    var cancelFee=(DATA.bookings||[]).filter(function(b){ var t=_bDate(b); return b&&b.status==='Cancelled'&&t>=B.from&&t<=B.to&&(all||_assetKindByName(b.asset)===kind); }).reduce(function(s,b){return s+_collectedCharges(b);},0);
+    var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
+    var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
+    var base=rev+income+cancelFee, net=base-exp-payout;
+    return {rev:rev,income:income,cancelFee:cancelFee,exp:exp,payout:payout,net:net,margin:(base>0?Math.round(net/base*1000)/10:0)}; }
+  function _pnlByKind(B){ var kinds=_pnlKinds(), known={}; kinds.forEach(function(k){known[k]=1;});
+    var rows=kinds.map(function(k){ var s=_pnlSummary(B,k); return {kind:k,rev:_r2(s.rev+s.cancelFee),exp:_r2(s.exp),net:_r2(s.net),margin:s.margin}; });
+    // General / shared: other income (not tied to any asset) + expenses with no assetKind, PLUS any booking/expense whose
+    // asset no longer resolves to a known kind (renamed/deleted asset) -- so this table always foots to the all-kind total.
+    var incomeInRange=_ledger().incomes.reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0);
+    var genExp=_ledger().expenses.reduce(function(s,e){ if(!_expInRange(e,B)) return s; var ek=e.assetKind||''; return s+((!ek||!known[ek])?(e.amount||0):0); },0);
+    var strayRev=0, strayPay=0;
+    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarned(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); });
+    (DATA.bookings||[]).forEach(function(b){ var t=_bDate(b); if(!b||b.status!=='Cancelled'||t<B.from||t>B.to) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_collectedCharges(b); });
+    var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay);
+    rows.push({kind:'General / shared',rev:gRev,exp:gExp,net:gNet,margin:(gRev>0?Math.round(gNet/gRev*1000)/10:0)});
+    return rows; }
+  function _pnlMonthLabel(d){ try{ return d.toLocaleDateString('en-US',{month:'short',year:'numeric'}); }catch(e){ return (d.getMonth()+1)+'/'+d.getFullYear(); } }
+  function _pnlByMonth(kind){ var all=(kind==='all'), now=new Date(), out=[];
+    for(var i=11;i>=0;i--){ var d=new Date(now.getFullYear(),now.getMonth()-i,1);
+      var B={from:d.getTime(), to:new Date(d.getFullYear(),d.getMonth()+1,1).getTime()-1};
+      var bks=(DATA.bookings||[]).filter(function(b){ return _bkInRange(b,B)&&(all||_assetKindByName(b.asset)===kind); });
+      var rev=bks.reduce(function(s,b){return s+_bkEarned(b);},0);
+      var cancelFee=(DATA.bookings||[]).filter(function(b){ var t=_bDate(b); return b&&b.status==='Cancelled'&&t>=B.from&&t<=B.to&&(all||_assetKindByName(b.asset)===kind); }).reduce(function(s,b){return s+_collectedCharges(b);},0);
+      var income=all?_ledger().incomes.reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0):0;
+      var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
+      var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
+      var totalRev=_r2(rev+cancelFee+income);
+      out.push({label:_pnlMonthLabel(d),rev:totalRev,exp:_r2(exp),net:_r2(totalRev-exp-payout)}); }
+    return out; }
+  function _pnlCardHtml(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind);
+    var revTotal=_r2(s.rev+s.cancelFee+s.income), netNeg=(s.net<0), kindLabel=(_pnlKind==='all')?'All types':_pnlKind;
+    var byKind=_pnlByKind(B), byMonth=_pnlByMonth(_pnlKind);
+    return '<div class="kpi-row" style="margin-bottom:12px">'
+      +'<div class="kpi kpi--clk" onclick="Atlas.drillKpi(\'rev\')"><div class="kpi__top"><span class="kpi__label">Revenue</span></div><div class="kpi__val tnum">'+money(revTotal)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
+      +'<div class="kpi kpi--clk" onclick="Atlas.drillLedger(\'expense\')"><div class="kpi__top"><span class="kpi__label">Expenses</span></div><div class="kpi__val tnum" style="color:var(--danger)">'+money(s.exp)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
+      +'<div class="kpi kpi--clk" onclick="Atlas.drillKpi(\'net\')"><div class="kpi__top"><span class="kpi__label">'+(netNeg?'Net Loss':'Net Profit')+'</span></div><div class="kpi__val tnum"'+(netNeg?' style="color:var(--danger)"':'')+'>'+money(s.net)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
+      +'<div class="kpi"><div class="kpi__top"><span class="kpi__label">Margin</span></div><div class="kpi__val tnum">'+(s.margin||0)+'%</div></div>'
+      +'</div>'
+      +(s.payout>0?('<div style="font-size:12px;color:var(--muted);margin:-4px 0 12px">Net already subtracts '+money(s.payout)+' in '+esc(_payoutLabel().toLowerCase())+'.</div>'):'')
+      +'<div style="font-size:12px;color:var(--muted);margin-bottom:14px">'+esc(B.label)+' &middot; '+esc(kindLabel)+'</div>'
+      +'<div style="overflow-x:auto;margin-bottom:18px"><table class="tbl"><thead><tr><th>Type</th><th>Revenue</th><th>Expenses</th><th>Net</th><th>Margin</th></tr></thead><tbody>'
+      +byKind.map(function(r){ var neg=(r.net<0), clk=(r.kind!=='General / shared');
+        return '<tr'+(clk?(' style="cursor:pointer" onclick="Atlas.pnlSetKind(\''+r.kind.replace(/'/g,"\\'")+'\')"'):'')+'><td><b>'+esc(r.kind)+'</b></td><td class="tnum">'+money(r.rev)+'</td><td class="tnum">'+money(r.exp)+'</td><td class="tnum"'+(neg?' style="color:var(--danger)"':'')+'><b>'+money(r.net)+'</b></td><td class="tnum">'+(r.margin||0)+'%</td></tr>'; }).join('')
+      +'</tbody></table></div>'
+      +'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Month</th><th>Revenue</th><th>Expenses</th><th>Net</th></tr></thead><tbody>'
+      +byMonth.map(function(m){ var neg=(m.net<0); return '<tr><td>'+esc(m.label)+'</td><td class="tnum">'+money(m.rev)+'</td><td class="tnum">'+money(m.exp)+'</td><td class="tnum" style="color:'+(neg?'var(--danger)':'var(--ok)')+'"><b>'+money(m.net)+'</b></td></tr>'; }).join('')
+      +'</tbody></table></div>'; }
+  function renderPnl(){ var cc=document.getElementById('pnlControls');
+    if(cc){ var kinds=_pnlKinds();
+      cc.innerHTML=_PNL_RANGES.map(function(r){ return '<button class="bk-chip'+(_pnlPeriod===r[0]?' active':'')+'" onclick="Atlas.pnlSetPeriod(\''+r[0]+'\')">'+r[1]+'</button>'; }).join('')
+        +'<select class="select" style="width:auto;font-size:12.5px;padding:6px 22px 6px 8px" onchange="Atlas.pnlSetKind(this.value)"><option value="all"'+(_pnlKind==='all'?' selected':'')+'>All types</option>'+kinds.map(function(k){ return '<option value="'+esc(k)+'"'+(_pnlKind===k?' selected':'')+'>'+esc(k)+'</option>'; }).join('')+'</select>'; }
+    var pb=document.getElementById('pnlBody'); if(pb) pb.innerHTML=_pnlCardHtml(); }
+  function pnlSetPeriod(k){ _pnlPeriod=k; renderPnl(); }
+  function pnlSetKind(k){ _pnlKind=k; renderPnl(); }
   function logIncome(){ logLedger('income'); }
   function logExpense(){ logLedger('expense'); }
   function _ledgerCardHtml(){ var inc=_otherIncome(), exp=_totalExpenses(), rev=_bookingRevenue(), pay=_totalPayouts();
@@ -4666,7 +4819,8 @@ const Atlas = (function(){
     ];
     if(nav==='analytics') return [
       {sel:'#anaKpis', title:'The full picture', body:"Revenue, profit and utilization across your website, portal and bookings &mdash; reconciled to the exact same numbers as your Overview."},
-      {sel:'#ledgerBody', title:'Income &amp; Expenses', body:"Log costs and extra income; tap any figure to drill into exactly what makes it up."},
+      {sel:'#ledgerBody', title:'Log expenses in seconds', body:"Log every cost and any extra income &mdash; pick a category, tag the "+noun+" it belongs to, even snap a receipt photo. Anything that repeats (insurance, a loan payment) can be set to recur monthly, yearly, weekly or daily and Atlas logs each one for you. Tap any figure to see exactly what makes it up."},
+      {sel:'#pnlBody', title:'Your real Profit &amp; Loss', body:"Revenue minus expenses &mdash; your true net profit, or a loss shown in red &mdash; broken out month by month and year by year. Filter by time period and by "+noun+" type to see which part of your business actually earns. Every number is tappable for the full breakdown behind it."},
       {sel:'#repBody', title:'Reports &amp; Tax Documents', body:"Pick a period and download clean CSVs for your bookkeeper or taxes &mdash; bookings, income and activity."},
       {sel:'#logBody', title:'Activity Log', body:"A timestamped record of everything that happens in your account, exportable any time."}
     ];
@@ -4767,6 +4921,7 @@ const Atlas = (function(){
   }
   function renderAnalytics(){
     if(!document.getElementById('anaKpis')) return;   // only when the Analytics panel is mounted
+    try{ _materializeRecurring(); }catch(e){}   // generate any recurring expenses due, prune stale/orphaned ones, before anything on this panel reads the ledger
     // All derived from real bookings + your ledger -- reconciles with Overview + Reports (no hardcoded figures).
     var _nc=(DATA.bookings||[]).filter(_isCommitted);   // earned bookings -- revenue, count + avg all share this basis so they reconcile
     var _rev=_nc.reduce((s,b)=>s+_bkEarned(b),0), _cnt=_nc.length, _avg=_cnt?_r2(_rev/_cnt):0;
@@ -4780,6 +4935,7 @@ const Atlas = (function(){
       <div class="util-row__t"><b>${i+1}. ${esc(o.a.name)}</b><small>${money(o.rev)} booked &middot; ${o.a.util}% ${_fterm('occ')}</small><div class="bar"><i style="width:${o.a.util}%"></i></div></div>
       <span class="util-row__pct tnum">${o.a.util}%</span></div>`).join('');
     var _lb=document.getElementById('ledgerBody'); if(_lb) _lb.innerHTML=_ledgerCardHtml();
+    renderPnl();
     var _fcCard=document.getElementById('anaForecastCard'); if(_fcCard){ if(_flags().betaForecast){ _fcCard.style.display=''; var _fb=document.getElementById('anaForecast'); if(_fb)_fb.innerHTML=_forecastHtml(); } else _fcCard.style.display='none'; }   // betaForecast owner flag now drives a real projection
     renderReports(); renderLog(); renderReviews();
     setTimeout(()=>drawSrcChart(),30);
@@ -4815,13 +4971,16 @@ const Atlas = (function(){
     var gross=0,disc=0,fees=0,tax=0,total=0; bks.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b), cct=_collectedChargeTax(b); gross+=(q.gross||q.subtotal||q.total||0)+(cc-cct); disc+=(q.disc||0); fees+=(q.feeTotal||0); tax+=(q.taxAmt||0)+cct; total+=(q.total||0)+cc; });   // include collected add-on charges so the card ties to the Tax CSV + Overview (earned basis)
     el.innerHTML='<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>Bookings</span><span class="tnum">'+bks.length+'</span></div>'
-      +'<div class="mp-row"><span>Gross revenue (pre-tax)</span><span class="tnum">'+money(gross)+'</span></div>'
+      +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Gross revenue (pre-tax)</span><span class="tnum">'+money(gross)+'</span></div>'
       +'<div class="mp-row mp-ok"><span>Discounts given</span><span class="tnum">&minus;'+money(disc)+'</span></div>'
-      +(fees?'<div class="mp-row"><span>Fees</span><span class="tnum">'+money(fees)+'</span></div>':'')
-      +'<div class="mp-row"><span>Tax collected</span><span class="tnum">'+money(tax)+'</span></div>'
-      +'<div class="mp-row mp-total"><span>Total collected</span><span class="tnum">'+money(total)+'</span></div></div>'
+      +(fees?'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillReportRow(\'fees\')"><span>Fees</span><span class="tnum">'+money(fees)+'</span></div>':'')
+      +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillReportRow(\'tax\')"><span>Tax collected</span><span class="tnum">'+money(tax)+'</span></div>'
+      +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Total collected</span><span class="tnum">'+money(total)+'</span></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'bookings\')">Bookings CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'tax\')">Tax Summary CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'events\')">Activity Log CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'accounting\')">QuickBooks / Xero</button></div>'
       +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card, Bookings CSV and Tax CSV all tie to the same bookings.</div>'; }
+  function drillReportRow(kind){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && (b.createdAt||b.startTs||0)>=r.from; });
+    if(kind==='fees'){ _drill('Fees', r.label+' &middot; fees charged on top of the rental', bks.filter(function(b){return ((b.quote&&b.quote.feeTotal)||0)>0;}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:(b.quote&&b.quote.feeTotal)||0, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total fees', empty:'No fees charged '+r.label.toLowerCase()+'.'}); }
+    else { _drill('Tax collected', r.label+' &middot; sales tax collected on bookings + taxable charges', bks.filter(function(b){return (((b.quote&&b.quote.taxAmt)||0)+_collectedChargeTax(b))>0;}).map(function(b){ var t=((b.quote&&b.quote.taxAmt)||0)+_collectedChargeTax(b); return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:t, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total tax', empty:'No tax collected '+r.label.toLowerCase()+'.'}); } }
   var _logFilterBy='', _logSearch='';
   function setLogFilter(v){ _logFilterBy=v||''; renderLog(); }
   function setLogSearch(v){ _logSearch=(v||'').toLowerCase(); renderLog(); }
@@ -8556,6 +8715,7 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
+    _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,renderPnl,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
@@ -8564,7 +8724,7 @@ const Atlas = (function(){
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
     setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
-    applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
+    applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,drillReportRow,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
