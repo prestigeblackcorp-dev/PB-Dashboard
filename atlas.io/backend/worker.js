@@ -5512,7 +5512,12 @@ function doReset(){
           const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings,tos_version FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
           // #278: websiteEntitled is an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- see the
           // matching note on /api/auth/me. This is the primary hydrate path (_srvHydrate -> S.websiteEntitled).
-          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+          // #282: a domain BOUGHT through us bills yearly on its OWN Stripe subscription (domains_sold.stripe_sub) -- surface
+          // the newest still-billing one so the client can offer a period-end self-cancel (parity with the website add-on).
+          // Rows already scheduled to lapse are stamped status='canceling' by /api/billing/domain-cancel and excluded here.
+          let _domRenew282 = null;
+          try { const _dr282 = await env.DB.prepare("SELECT domain FROM domains_sold WHERE tenant_id=? AND stripe_sub IS NOT NULL AND status NOT IN ('canceling','canceled','renew_failed') ORDER BY created_at DESC LIMIT 1").bind(ctx.tenant_id).first(); if (_dr282 && _dr282.domain) _domRenew282 = _dr282.domain; } catch (e) {}
+          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
         }
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -5946,6 +5951,7 @@ function doReset(){
         const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');
         const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), 'cancel_at_period_end=true');
         if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
+        try { await env.DB.prepare("UPDATE domains_sold SET status='canceling' WHERE tenant_id=? AND domain=?").bind(ctx.tenant_id, dom).run(); } catch (e) {}   // #282: hide the client 'Cancel renewal' control now that this domain is scheduled to lapse at period end (does NOT affect serving -- the public-site path keys off tenants.custom_domain, not this status)
         await audit(env, ctx, req, 'billing.domain_cancel', { domain: dom, when: 'period_end' });
         return json({ ok: true, canceled: true, when: 'period_end', domain: dom, cancel_at: (up.j && up.j.current_period_end) || null });
       }
