@@ -1693,7 +1693,7 @@ async function _ddV2(env, method, pathAndQuery, body) {
   var mutating = (method !== 'GET' && method !== 'HEAD');
   var headers = { 'Authorization': 'Bearer ' + (env.DYNADOT_KEY || ''), 'Accept': 'application/json' };
   if (mutating) headers['Content-Type'] = 'application/json';
-  if (env.DYNADOT_SECRET) {   // sign whenever we can (v2 signs even GETs like /accounts/info); REQUIRED for transactional commands
+  if (mutating && env.DYNADOT_SECRET) {   // sign ONLY transactional (POST/PUT) commands. Per Dynadot's v2 docs, GET commands use Bearer only -- adding an X-Signature to a GET makes it 400 "Bad Request".
     var xrid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : randId(24);
     headers['X-Request-Id'] = xrid;
     headers['X-Signature'] = await _hmacB64(env.DYNADOT_SECRET, (env.DYNADOT_KEY || '') + '\n' + pathAndQuery + '\n' + xrid + '\n' + bodyStr);
@@ -1701,12 +1701,12 @@ async function _ddV2(env, method, pathAndQuery, body) {
   var r = await _fetchTimeout('https://' + host + pathAndQuery, { method: method, headers: headers, body: mutating ? (bodyStr || '{}') : undefined }, 25000);
   var j = await r.json().catch(function () { return {}; });
   var code = (j && j.code != null) ? j.code : r.status;
-  return { ok: (Number(code) === 200), status: r.status, code: code, message: (j && j.message) || '', data: (j && j.data) || {}, raw: j };
+  return { ok: (Number(code) === 200), status: r.status, code: code, message: (j && j.message) || '', error: (j && j.error) || '', data: (j && j.data) || {}, raw: j };
 }
 async function _registrarSearch(env, domain) {
   if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
   try {
-    var res = await _ddV2(env, 'GET', '/restful/v2/domains/' + encodeURIComponent(domain) + '/search?showPrice=yes&currency=USD', null);
+    var res = await _ddV2(env, 'GET', '/restful/v2/domains/' + encodeURIComponent(domain) + '/search?show_price=yes&currency=USD', null);   // v2 uses snake_case params
     var d = res.data || {};
     if (res.ok) {
       // v2 `data` field names for availability + price are not fully documented -> parse defensively across the likely shapes.
@@ -1720,7 +1720,8 @@ async function _registrarSearch(env, domain) {
     }
     // The API answered but code!==200 -> surface Dynadot's OWN message + the envelope shape so the owner (and the self-test) can
     // tell a wrong/retail key vs a missing X-Signature secret vs a genuine failure -- instead of a bare "no_result". Read-only.
-    return { ok: false, reason: res.message ? 'api_error' : 'no_result', apiError: String(res.message || '').slice(0, 240), code: String(res.code || res.status || ''), respKeys: Object.keys(res.raw || {}).slice(0, 10), dataKeys: Object.keys(d).slice(0, 12), status: res.status };
+    var _em = String(res.message || ''); var _ee = res.error ? (typeof res.error === 'string' ? res.error : JSON.stringify(res.error)) : '';
+    return { ok: false, reason: (res.message || res.error) ? 'api_error' : 'no_result', apiError: (_em + (_ee ? (' | ' + _ee) : '')).slice(0, 320), code: String(res.code || res.status || ''), respKeys: Object.keys(res.raw || {}).slice(0, 10), dataKeys: Object.keys(d).slice(0, 12), status: res.status };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 async function _registrarRegister(env, domain, years) {
