@@ -779,13 +779,13 @@ function renderMargin(){ var p=DATA.pnl||{}, pm=p.plan_margins, el=$('marginBox'
     (_isOwner()?('<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><label style="font-size:12px;color:var(--mut2)">Assumed cost per credit (USD)</label><input class="inp" id="marginBasis" type="number" min="0" max="1" step="0.0005" value="'+basisUsd.toFixed(4)+'" style="width:120px"><button class="btn ghost sm" onclick="saveMarginBasis()">Save</button><span class="mut" style="font-size:11px">Tune to your real cost/call so the projection matches what you pay.</span></div>'):'');
 }
 function saveMarginBasis(){ var el=$('marginBasis'); if(!el) return; var usd=Math.max(0,Math.min(1,parseFloat(el.value)||0)); api('/api/admin/config',{method:'POST',body:{credit_cost_micros:Math.round(usd*1000000)}}).then(function(r){ if(r&&r.json&&r.json.ok){ toast('Credit cost basis saved'); loadAll(); } else toast('Save failed'); }); }
-function renderPnl(){ var p=DATA.pnl||{}; var rev=p.revenue||{}, ai=p.ai_spend||{}, fc=p.fixed_costs||{}, exp=p.expenses||{}, net=p.net||{};
+function renderPnl(){ var p=DATA.pnl||{}; var rev=p.revenue||{}, ai=p.ai_spend||{}, fc=p.fixed_costs||{}, exp=p.expenses||{}, net=p.net||{}, dc=p.domain_cogs||{};
   var rl=((p.range&&p.range.label)||'this range');
   $('pnlSub').textContent = rl+', to the cent';
   var netNeg = (net.range_cents||0)<0;
   $('pnlSplit').innerHTML =
     '<div><div class="stat-l">Expenses ('+esc(rl.toLowerCase())+')</div><div class="stat-v num" style="color:var(--amber)">'+centsUSD(exp.range_cents||0)+'</div>'+
-      '<div class="legend"><span><i style="background:var(--amber)"></i>AI spend '+centsUSD0(ai.range_cents||0)+'</span><span><i style="background:var(--mut2)"></i>Fixed costs '+centsUSD0(fc.range_cents||0)+'</span></div></div>'+
+      '<div class="legend"><span><i style="background:var(--amber)"></i>AI spend '+centsUSD0(ai.range_cents||0)+'</span><span><i style="background:var(--mut2)"></i>Fixed costs '+centsUSD0(fc.range_cents||0)+'</span>'+((dc.range_cents||0)>0?('<span><i style="background:var(--mut2)"></i>Domain wholesale '+centsUSD0(dc.range_cents||0)+'</span>'):'')+'</div></div>'+
     '<div><div class="stat-l">Net profit ('+esc(rl.toLowerCase())+')</div><div class="stat-v num" style="color:'+(netNeg?'var(--red)':'var(--em)')+'">'+centsUSD(net.range_cents||0)+'</div>'+
       '<div class="mut" style="margin-top:10px;font-size:11.5px">'+centsUSD0(rev.range_cents||0)+' revenue &minus; '+centsUSD0(exp.range_cents||0)+' expenses</div></div>';
 
@@ -810,6 +810,7 @@ function renderPnl(){ var p=DATA.pnl||{}; var rev=p.revenue||{}, ai=p.ai_spend||
     _dsec('AI spend by model ('+esc(rl.toLowerCase())+')') + modelRows +
     _dsec('AI spend by feature ('+esc(rl.toLowerCase())+')') + featRows +
     _dsec('Fixed monthly costs (owner-entered; prorated to the range above)') + fcRows +
+    ((dc.range_cents||0)>0 ? (_dsec('Domain resale -- registrar wholesale (COGS, '+esc(rl.toLowerCase())+')') + _dr('Wholesale paid to the registrar on resold domains', centsUSD(dc.range_cents||0))) : '') +
     (_isOwner() ? ('<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px">'+
       '<input class="inp" id="pnlCostLabel" placeholder="Label (e.g. Cloudflare)" style="flex:1;min-width:140px">'+
       '<input class="inp num" id="pnlCostAmt" type="number" min="0" step="0.01" placeholder="Monthly $" style="width:110px">'+
@@ -1509,14 +1510,14 @@ function renderPurchases(){ var p=DATA.purchases||{}; var byk=p.by_kind||{};
   var pt=$('purTotals'); if(pt) pt.innerHTML=chips.join('')||'<span class="mut" style="font-size:12px">No purchases in this window.</span>';
   var rows=_purFiltered(); var shown=rows.reduce(function(s,r){return s+(r.amount_cents||0);},0); var tbl=$('purTbl'); if(!tbl) return;
   if(!rows.length){ tbl.innerHTML='<tbody><tr><td class="mut" style="padding:16px">No purchases match this filter. Every subscription, credit pack, website and domain purchase is itemized here as it happens.</td></tr></tbody>'; return; }
-  tbl.innerHTML='<thead><tr><th>Date (CT)</th><th>Account</th><th>Item</th><th style="text-align:right">Amount</th></tr></thead><tbody>'+rows.map(function(r){ return '<tr class="row"><td class="num" style="white-space:nowrap"><div>'+esc(tsCT(r.created_at))+'</div>'+(r.tz?('<div class="mut" style="font-size:11px" title="'+esc(r.tz)+'">'+esc(tsTheir(r.created_at,r.tz))+'</div>'):'')+'</td><td><div class="m-name"><b>'+esc(r.email||r.tenant_id||'-')+'</b></div></td><td>'+esc(_purDesc(r))+'</td><td class="money num" style="text-align:right">'+centsUSD(r.amount_cents||0)+'</td></tr>'; }).join('')+'</tbody><tfoot><tr><td colspan="3" class="mut" style="text-align:right;padding:10px 12px">'+nfmt(rows.length)+' shown'+((p.count>=1000)?' (latest 1000)':'')+'</td><td class="money num" style="text-align:right;padding:10px 12px">'+centsUSD(shown)+'</td></tr></tfoot>';
+  tbl.innerHTML='<thead><tr><th>Date (CT)</th><th>Account</th><th>Item</th><th style="text-align:right">Amount</th></tr></thead><tbody>'+rows.map(function(r){ var _isDom=(r.kind==='domain'); var _buyer=(_isDom&&r.buyer_name)?('<div class="mut" style="font-size:11px">'+esc(r.buyer_name)+'</div>'):''; var _cm=(_isDom&&r.cost_cents!=null)?('<div class="mut" style="font-size:11px">cost '+centsUSD(r.cost_cents||0)+' &middot; margin '+centsUSD(r.margin_cents||0)+'</div>'):''; return '<tr class="row"><td class="num" style="white-space:nowrap"><div>'+esc(tsCT(r.created_at))+'</div>'+(r.tz?('<div class="mut" style="font-size:11px" title="'+esc(r.tz)+'">'+esc(tsTheir(r.created_at,r.tz))+'</div>'):'')+'</td><td><div class="m-name"><b>'+esc(r.email||r.tenant_id||'-')+'</b></div>'+_buyer+'</td><td>'+esc(_purDesc(r))+'</td><td class="money num" style="text-align:right">'+centsUSD(r.amount_cents||0)+_cm+'</td></tr>'; }).join('')+'</tbody><tfoot><tr><td colspan="3" class="mut" style="text-align:right;padding:10px 12px">'+nfmt(rows.length)+' shown'+((p.count>=1000)?' (latest 1000)':'')+'</td><td class="money num" style="text-align:right;padding:10px 12px">'+centsUSD(shown)+'</td></tr></tfoot>';
 }
 function setPurKind(btn){ Array.prototype.forEach.call($('purSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _purKind=btn.getAttribute('data-k'); renderPurchases(); }
 function purFilter(){ _purQ=($('purSearch').value||'').trim(); renderPurchases(); }
 function _csv(v){ v=String(v==null?'':v); return /[",\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
 function purCSV(){ var rows=_purFiltered(); if(!rows.length){ toast('Nothing to export'); return; }
-  var head=['Central Time','Account','Account TZ','Account Local Time','Kind','Detail','Amount USD','Currency','Txn ID'];
-  var lines=[head.join(',')].concat(rows.map(function(r){ return [tsCT(r.created_at),(r.email||r.tenant_id||''),(r.tz||''),(r.tz?tsTheir(r.created_at,r.tz):''),_purNorm(r),(r.tier||r.pack||''),((r.amount_cents||0)/100).toFixed(2),(r.currency||'usd'),r.id].map(_csv).join(','); }));
+  var head=['Central Time','Account','Account TZ','Account Local Time','Kind','Detail','Amount USD','Buyer','Our Cost USD','Margin USD','Currency','Txn ID'];
+  var lines=[head.join(',')].concat(rows.map(function(r){ var _d=(r.kind==='domain'); return [tsCT(r.created_at),(r.email||r.tenant_id||''),(r.tz||''),(r.tz?tsTheir(r.created_at,r.tz):''),_purNorm(r),(r.tier||r.pack||''),((r.amount_cents||0)/100).toFixed(2),(_d?(r.buyer_name||''):''),(_d&&r.cost_cents!=null?((r.cost_cents||0)/100).toFixed(2):''),(_d&&r.margin_cents!=null?((r.margin_cents||0)/100).toFixed(2):''),(r.currency||'usd'),r.id].map(_csv).join(','); }));
   var a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(lines.join('\n')); a.download='atlas-purchases-'+_range+'.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); toast('CSV exported'); }
 
 /* ================= growth & social (AI marketing brain) ================= */

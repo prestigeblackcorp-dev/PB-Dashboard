@@ -2127,6 +2127,9 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_installs (id TEXT PRIMARY KEY, tenant_id TEXT, platform TEXT, created_at INTEGER)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS domains_sold (id TEXT PRIMARY KEY, tenant_id TEXT, domain TEXT, buyer_email TEXT, paid_cents INTEGER, status TEXT DEFAULT 'registered', created_at INTEGER)").run();
     try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN stripe_sub TEXT").run(); } catch (e) { /* already exists */ }   // the yearly domain subscription id (for renewals)
+    try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN cost_cents INTEGER DEFAULT 0").run(); } catch (e) {}      // what WE paid Dynadot (wholesale/COGS)
+    try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN margin_cents INTEGER DEFAULT 0").run(); } catch (e) {}    // our profit = retail (ex-tax) - wholesale
+    try { await env.DB.prepare("ALTER TABLE domains_sold ADD COLUMN buyer_name TEXT").run(); } catch (e) {}                   // orderer name (the tenant's business name) for the order record
     try { await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_dsold_td ON domains_sold(tenant_id, domain)").run(); } catch (e) {}   // claim-before-register idempotency (one row per tenant+domain)
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS signatures (id TEXT PRIMARY KEY, tenant_id TEXT, booking_id TEXT, doc_hash TEXT, doc_text TEXT, signer_name TEXT, sig TEXT, ip TEXT, ua TEXT, signed_at INTEGER)").run();   // #205 e-signature legal trail
     try { await env.DB.prepare("ALTER TABLE signatures ADD COLUMN doc_text TEXT").run(); } catch (e) {}   // store the EXACT agreement text signed -> the hash stays reproducible/verifiable even after the owner edits their template
@@ -3518,13 +3521,15 @@ function doReset(){
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
             const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0);
             const _biz = await _tenantName(env, md.tenant);   // C4: fetched once here, reused by both receipt call sites below (registered / pending_registrar)
+            const _dcost = Math.max(0, Math.round(Number(md.cost) || 0));   // what we paid Dynadot wholesale (from the checkout metadata)
+            const _dmargin = (_tt - _tx) - _dcost;   // our profit on the resale = retail (ex-tax) - wholesale; stored on the order + netted in the platform P&L
             await ensurePlatformSchema(env);
             // IDEMPOTENCY (concurrency-safe): atomically CLAIM this (tenant,domain) via INSERT OR IGNORE on the unique index BEFORE registering.
             // A duplicate/concurrent Stripe delivery loses the claim (changes=0) and does nothing -> no double-register, no bogus "refunded" email.
             const _dmId = 'dm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
             let _claimed = false, _rowId = _dmId, _takeover = false;
             if (md.domain) { try {
-              const _ci = await env.DB.prepare("INSERT OR IGNORE INTO domains_sold (id,tenant_id,domain,buyer_email,paid_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?)").bind(_dmId, md.tenant, md.domain, md.email || '', _tt, 'registering', obj.subscription || null, Date.now()).run();
+              const _ci = await env.DB.prepare("INSERT OR IGNORE INTO domains_sold (id,tenant_id,domain,buyer_email,buyer_name,paid_cents,cost_cents,margin_cents,status,stripe_sub,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").bind(_dmId, md.tenant, md.domain, md.email || '', _biz || '', _tt, _dcost, _dmargin, 'registering', obj.subscription || null, Date.now()).run();
               _claimed = !!(_ci && _ci.meta && _ci.meta.changes);
               if (!_claimed) {
                 // a row already exists for this (tenant,domain). A genuine duplicate/concurrent delivery is left alone; but a STRANDED
@@ -3555,7 +3560,7 @@ function doReset(){
                 try { await env.DB.prepare("UPDATE tenants SET custom_domain=?, custom_domain_status='pending', updated_at=? WHERE id=? AND (custom_domain IS NULL OR custom_domain=?)").bind(md.domain, Date.now(), md.tenant, md.domain).run(); } catch (e) {}   // never black out a domain the tenant already has live
                 if (env.CF_API_TOKEN) { try { await _cfAddHostname(env, md.domain); await _cfAddHostname(env, 'www.' + md.domain); } catch (e) {} }
                 try { await _registrarSetDns(env, md.domain, _tgt); } catch (e) {}
-                try { await env.DB.prepare("UPDATE domains_sold SET status='registered', paid_cents=? WHERE id=?").bind(_tt, _rowId).run(); } catch (e) {}
+                try { await env.DB.prepare("UPDATE domains_sold SET status='registered', paid_cents=?, cost_cents=?, margin_cents=?, buyer_name=COALESCE(NULLIF(buyer_name,''),?) WHERE id=?").bind(_tt, _dcost, _dmargin, _biz || '', _rowId).run(); } catch (e) {}   // book the final retail/cost/margin + orderer on the registered order
                 await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: '1 year', lineLabel: 'Domain registration - ' + md.domain + ' (yearly)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
                 await audit(env, { tenant_id: md.tenant }, req, 'domain.registered', { domain: md.domain });
               } else if (md.domain && env.DYNADOT_KEY) {
@@ -3972,7 +3977,7 @@ function doReset(){
           const kind = String(u.get('kind') || '').toLowerCase().slice(0, 20);
           const q = String(u.get('q') || '').toLowerCase().slice(0, 80).trim();
           const lim = Math.min(1000, Math.max(1, parseInt(u.get('limit'), 10) || 300));
-          let sql = 'SELECT pt.id, pt.tenant_id, pt.email, pt.kind, pt.tier, pt.pack, pt.amount_cents, pt.currency, pt.created_at, t.tz AS tz FROM platform_transactions pt LEFT JOIN tenants t ON t.id=pt.tenant_id WHERE pt.created_at>=? AND pt.created_at<?';
+          let sql = "SELECT pt.id, pt.tenant_id, pt.email, pt.kind, pt.tier, pt.pack, pt.amount_cents, pt.currency, pt.created_at, t.tz AS tz, ds.cost_cents AS cost_cents, ds.margin_cents AS margin_cents, ds.buyer_name AS buyer_name FROM platform_transactions pt LEFT JOIN tenants t ON t.id=pt.tenant_id LEFT JOIN domains_sold ds ON pt.kind='domain' AND ds.tenant_id=pt.tenant_id AND ds.domain=pt.pack WHERE pt.created_at>=? AND pt.created_at<?";
           const binds = [range.start, range.end];
           if (kind && kind !== 'all') { if (kind === 'subscription') sql += " AND pt.kind IN ('plan','subscription')"; else { sql += ' AND pt.kind=?'; binds.push(kind); } }
           if (q) { sql += ' AND (LOWER(pt.email) LIKE ? OR LOWER(pt.pack) LIKE ? OR LOWER(pt.tier) LIKE ?)'; binds.push('%' + q + '%', '%' + q + '%', '%' + q + '%'); }
@@ -3997,6 +4002,13 @@ function doReset(){
           const revRangeR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).first();
           const revMonthR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=?').bind(monthStart).first();
           const revTotalR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions').first();
+          // ---- Domain resale COGS: what we paid the registrar (Dynadot) WHOLESALE for domains registered in the window. The retail
+          // revenue above includes this real cash cost (drawn from the prepaid registrar balance), so net profit must subtract it ->
+          // then Net reflects the true resale MARGIN, not gross. Defensive (table may predate a domain sale) -> 0. ----
+          const _dcog = async function (sql, binds) { try { const r = await env.DB.prepare(sql).bind(...binds).first(); return (r && r.c) || 0; } catch (e) { return 0; } };
+          const domCogsRange = await _dcog("SELECT COALESCE(SUM(cost_cents),0) c FROM domains_sold WHERE status='registered' AND created_at>=? AND created_at<?", [range.start, range.end]);
+          const domCogsMonth = await _dcog("SELECT COALESCE(SUM(cost_cents),0) c FROM domains_sold WHERE status='registered' AND created_at>=?", [monthStart]);
+          const domCogsTotal = await _dcog("SELECT COALESCE(SUM(cost_cents),0) c FROM domains_sold WHERE status='registered'", []);
           // ---- AI spend: platform_ai_spend keyed by UTC day string, same convention as page_views/visit_geo ----
           const aiRangeR = await env.DB.prepare('SELECT COALESCE(SUM(cost_micros),0) cm, COALESCE(SUM(input_tokens),0) it, COALESCE(SUM(output_tokens),0) ot FROM platform_ai_spend WHERE day>=? AND day<=?').bind(range.startDay, range.endDay).first();
           const aiMonthR = await env.DB.prepare('SELECT COALESCE(SUM(cost_micros),0) cm FROM platform_ai_spend WHERE day>=?').bind(new Date(monthStart).toISOString().slice(0, 10)).first();
@@ -4027,7 +4039,8 @@ function doReset(){
           const aiSpend = { range_cents: micros2cents(aiRangeR.cm), month_cents: micros2cents(aiMonthR.cm), total_cents: micros2cents(aiTotalR.cm), tokens: { input_tokens: aiRangeR.it || 0, output_tokens: aiRangeR.ot || 0 }, by_model: byModel };
           aiSpend.by_feature = byFeature;   // #286f additive: per-feature spend breakdown alongside the existing by_model; every prior field on ai_spend is unchanged
           const fixedCosts = { items: fixedItems, monthly_total_cents: monthlyTotalCents, range_cents: fixedRangeCents, month_cents: prorate(monthDays), total_cents: prorate(platformAgeDays) };
-          const expenses = { range_cents: aiSpend.range_cents + fixedCosts.range_cents, month_cents: aiSpend.month_cents + fixedCosts.month_cents, total_cents: aiSpend.total_cents + fixedCosts.total_cents };
+          const domainCogs = { range_cents: domCogsRange, month_cents: domCogsMonth, total_cents: domCogsTotal };   // registrar wholesale paid on resold domains -> a real COGS line
+          const expenses = { range_cents: aiSpend.range_cents + fixedCosts.range_cents + domainCogs.range_cents, month_cents: aiSpend.month_cents + fixedCosts.month_cents + domainCogs.month_cents, total_cents: aiSpend.total_cents + fixedCosts.total_cents + domainCogs.total_cents };
           const net = { range_cents: revenue.range_cents - expenses.range_cents, month_cents: revenue.month_cents - expenses.month_cents, total_cents: revenue.total_cents - expenses.total_cents };
           // ---- Per-tier free-AI-credit margin: even if a tenant burns 100% of their free weekly credits, does the plan stay profitable? ----
           // basis = owner-assumed micro-USD cost of 1 free credit (tunable via /api/admin/config credit_cost_micros). Computed from the
@@ -4041,7 +4054,7 @@ function doReset(){
           });
           const callAgg = await env.DB.prepare('SELECT COALESCE(SUM(cost_micros),0) cm, COALESCE(SUM(calls),0) c FROM platform_ai_spend').first();
           const planMargins = { basis_micros: basisMicros, metered_cost_per_call_micros: (callAgg && callAgg.c) ? Math.round(callAgg.cm / callAgg.c) : 0, metered_calls: (callAgg && callAgg.c) || 0, tiers: marginTiers };
-          return json({ ok: true, range: { key: range.key, label: range.label }, revenue: revenue, ai_spend: aiSpend, fixed_costs: fixedCosts, expenses: expenses, net: net, plan_margins: planMargins });
+          return json({ ok: true, range: { key: range.key, label: range.label }, revenue: revenue, ai_spend: aiSpend, fixed_costs: fixedCosts, domain_cogs: domainCogs, expenses: expenses, net: net, plan_margins: planMargins });
         }
         // Growth substrate: real day-by-day data + fleet mix + geo (the day-by-day comparison + growth AI read from this).
         if (path === '/api/admin/growth-data' && method === 'GET') {
@@ -5491,7 +5504,7 @@ function doReset(){
         return json({ ok: true });
       }
 
-      // ---- #201 real domain availability + wholesale price (registrar). HONEST: no registrar key -> {live:false} so the client shows an estimate, never a fake "available". ----
+      // ---- #201 real domain availability + our RETAIL price (registrar). HONEST: no registrar key -> {live:false} so the client shows an estimate, never a fake "available". ----
       if (path === '/api/domain/quote' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
@@ -5502,8 +5515,12 @@ function doReset(){
         if (!dom || dom.indexOf('.') < 1) return err(400, 'Enter a domain like name.com');
         const s = await _registrarSearch(env, dom);
         if (!s.ok) return json({ ok: true, live: true, available: false, reason: s.reason });
+        // PRIVACY (owner directive): the buyer must NEVER see our wholesale cost or margin -- return ONLY the RETAIL price we charge,
+        // computed with the SAME floor as the real checkout (cost + DOMAIN_MARKUP_PCT, min +$1) so the quote always equals the charge.
+        const _mkq = Math.max(0, Math.min(500, Number(env.DOMAIN_MARKUP_PCT) || 65));
+        const _priceCents = s.available ? Math.max(Math.ceil((s.costCents || 0) * (1 + _mkq / 100)), (s.costCents || 0) + 100) : 0;
         await audit(env, ctx, req, 'domain.quote', { domain: dom, available: s.available });
-        return json({ ok: true, live: true, available: s.available, costCents: s.costCents, domain: dom });
+        return json({ ok: true, live: true, available: s.available, priceCents: _priceCents, domain: dom });   // NOTE: costCents is intentionally NOT returned to the tenant/browser
       }
 
       // ---- #202 real GPS positions from the tenant's connected provider (Bouncie / Samsara / Traccar). HONEST: no provider -> {live:false} so the client stays in labeled preview. ----
@@ -5872,18 +5889,20 @@ function doReset(){
           const _dom = String(body.domain || '').toLowerCase().replace(/[^a-z0-9.-]/g, '').slice(0, 80);
           if (!_dom || _dom.indexOf('.') < 1) return err(400, 'Enter a valid domain.');
           let dcents = Math.round(Number(body.amountCents) || 0);
+          let _domCost = 0;
           if (env.DYNADOT_KEY) {   // SECURITY: never trust the browser's price. Re-quote server-side + floor at cost+markup so a $1 checkout can't register a $70 name against our balance.
             const _s = await _registrarSearch(env, _dom);
             if (!_s.ok) return err(502, 'Could not price that domain right now - please try again.');
             if (!_s.available) return err(409, 'That domain is no longer available.');
+            _domCost = Math.max(0, Math.round(_s.costCents || 0));   // our wholesale cost -> carried in metadata so the webhook books COGS + margin
             const _mk = Math.max(0, Math.min(500, Number(env.DOMAIN_MARKUP_PCT) || 65));
-            const _floor = Math.max(Math.ceil((_s.costCents || 0) * (1 + _mk / 100)), (_s.costCents || 0) + 100);   // cost+markup, never below wholesale+$1
+            const _floor = Math.max(Math.ceil(_domCost * (1 + _mk / 100)), _domCost + 100);   // cost+markup, never below wholesale+$1
             dcents = Math.max(dcents, _floor);
           }
           if (dcents < 100 || dcents > 500000) return err(400, 'Invalid domain price.');
           amountCents = dcents; name = 'Domain - ' + _dom + ' (billed yearly)';
           mode = 'subscription'; interval = 'year';   // domains renew EVERY YEAR -> yearly subscription (never one-time "lifetime")
-          meta.billing = 'domain'; meta.domain = _dom;
+          meta.billing = 'domain'; meta.domain = _dom; meta.cost = String(_domCost);
         } else { return err(400, 'Unknown purchase kind.'); }
         const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
           successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : ''),
