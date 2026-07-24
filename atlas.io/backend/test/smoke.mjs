@@ -207,7 +207,7 @@ ok(r.status === 200 && j.ok === true && typeof j.count_24h === 'number', 'GET /a
           if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
           if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'tenant@smoke280.com', tenant_id: TEN, role: 'owner', caps: null };
           if (/FROM comp_grants/.test(sql)) return null;
-          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return { card_on_file: 0, stripe_sub: null };   // deliberately cardless
+          if (/card_on_file,stripe_sub(?:,plan)? FROM tenants WHERE id=\?/.test(sql)) return { card_on_file: 0, stripe_sub: null, plan: 'trial' };   // deliberately cardless (trialing -> still card-gated)
           if (/FROM platform_config WHERE k=\?/.test(sql)) return (payTestMode && a[0] === 'payments_test_mode') ? { v: '1' } : null;   // TEST mode when asked; trial_requires_card + payment_gate_enabled stay unset (OFF)
           if (/FROM rate_limits/.test(sql)) return null;
           if (/sqlite_master/.test(sql)) return { n: 25 };

@@ -1439,7 +1439,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
           if (/FROM users WHERE id/.test(sql)) return { id: UID, email: email, tenant_id: TEN, role: 'owner', caps: null };
           if (/FROM comp_grants WHERE email/.test(sql)) return compRole ? { role: compRole } : null;
-          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
+          if (/card_on_file,stripe_sub(?:,plan)? FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
           if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'trial_requires_card' && cardGateOn) ? { v: '1' } : null;   // #276's OWN flag must stay OFF throughout this block -- proves independence
           if (/FROM rate_limits/.test(sql)) return null;
           if (/sqlite_master/.test(sql)) return { n: 30 };
@@ -1500,7 +1500,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'both@member.com', tenant_id: TEN, role: 'owner', caps: null };
           if (/FROM comp_grants/.test(sql)) return null;
           if (/plan,trial_ends,tier,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return {};   // #276 sees no plan column at all -> fails open 'ok'
-          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return { card_on_file: 0, stripe_sub: null };
+          if (/card_on_file,stripe_sub(?:,plan)? FROM tenants WHERE id=\?/.test(sql)) return { card_on_file: 0, stripe_sub: null };
           if (/FROM platform_config WHERE k=\?/.test(sql)) { if (a[0] === 'trial_requires_card') return cardOn ? { v: '1' } : null; if (a[0] === 'payment_gate_enabled') return { v: '1' }; if (a[0] === 'payments_test_mode') return { v: '1' }; return null; }   // TEST mode so Part E's live-mode card gate stays off -> this isolates the #280 trial_requires_card FLAG independence from #276
           if (/FROM rate_limits/.test(sql)) return null;
           if (/sqlite_master/.test(sql)) return { n: 30 };
@@ -1539,7 +1539,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM users WHERE id=\?/.test(sql)) return users.get(a[0]) || null;
           if (/FROM sessions WHERE id/.test(sql)) return sessions.get(a[0]) || null;
           if (/FROM comp_grants/.test(sql)) return null;
-          if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return tenants.get(a[0]) || null;
+          if (/card_on_file,stripe_sub(?:,plan)? FROM tenants WHERE id=\?/.test(sql)) return tenants.get(a[0]) || null;
           if (/FROM tenants WHERE id/.test(sql)) return tenants.get(a[0]) || null;
           if (/FROM platform_config WHERE k=\?/.test(sql)) { const v = platformConfig.get(a[0]); return v === undefined ? null : { v }; }
           if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;

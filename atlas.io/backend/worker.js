@@ -2550,6 +2550,7 @@ function _cardGateState(tenant, isOwner, comp) {
   if (isOwner) return 'ok';                                    // platform owner: NEVER locked
   if (comp === 'gold' || comp === 'free') return 'ok';          // comped account: NEVER locked
   if (!tenant) return 'ok';                                     // no tenant row to evaluate -> fail open, never lock on absent data
+  if (tenant.plan === 'active') return 'ok';                    // LAUNCH-FIX (sweep): an ACTIVE tenant (converted/paying, OR one the owner set active off-Stripe via a master-dash tier grant) is PAST the trial -> never demand a trial card. Mirrors _billingState treating 'active' as ok; without it an owner-granted-active tenant with no card/sub is 402-bricked whenever the card gate is on (the recommended launch config).
   if (tenant.card_on_file || tenant.stripe_sub) return 'ok';    // card on file (or already subscribed) -> unlocked
   return 'needs_card';
 }
@@ -2557,7 +2558,7 @@ function _cardGateState(tenant, isOwner, comp) {
 // Mirrors _billingStateForTenant's exact shape/signature. Fails open ('ok') on any DB hiccup.
 async function _cardGateStateForTenant(env, tenantId, email) {
   try {
-    const t = await env.DB.prepare('SELECT card_on_file,stripe_sub FROM tenants WHERE id=?').bind(tenantId).first();
+    const t = await env.DB.prepare('SELECT card_on_file,stripe_sub,plan FROM tenants WHERE id=?').bind(tenantId).first();
     const isOwner = _isOwnerEmail(env, email);
     let comp = null;
     try { const c = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(email).first(); comp = c ? (c.role === 'admin' ? 'gold' : c.role) : null; } catch (e) {}
@@ -3531,8 +3532,12 @@ function doReset(){
                 const _biz = await _tenantName(env, im.tenant);
                 let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
                 await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: _rcptPeriod(obj, '1 month'), card4: _c4, lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
-            } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle') {
+            } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle' && !(await env.DB.prepare('SELECT 1 FROM platform_transactions WHERE stripe_id=? LIMIT 1').bind(sid).first())) {
               // YEARLY DOMAIN RENEWAL only (the initial year is registered + recorded by checkout.session.completed).
+              // LAUNCH-FIX (sweep): the `&& !(already-recorded)` guard above makes this whole branch idempotent. Stripe delivers
+              // invoice.paid at-least-once and may REDELIVER after a 200; without the guard a redelivery re-ran _registrarRenew
+              // (a real Dynadot charge) + re-emailed the receipt. recordTxn dedupes revenue on the unique stripe_id, but the
+              // registrar call runs BEFORE it -- so gating the whole branch on the already-recorded txn is what prevents the double renew.
               let _rnOk = true, _rnReason = 'no_registrar';
               if (im.domain && env.DYNADOT_KEY) { const rn = await _registrarRenew(env, im.domain, 1); _rnOk = rn.ok; _rnReason = rn.reason;
                 await audit(env, { tenant_id: im.tenant }, req, rn.ok ? 'domain.renewed' : 'domain.renew_failed', { domain: im.domain, reason: rn.reason });
@@ -3559,10 +3564,10 @@ function doReset(){
               if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #281: belt-and-suspenders clear alongside invoice.paid's (this can fire first/instead on some recoveries). PART A4: dunning cleared here too -- this can be the FIRST signal of a recovery on some retries.
               else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
               else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(Date.now(), obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'. #281: stamp delinquent_since ONCE (COALESCE) so a repeat past_due webhook never resets the 3-day takedown grace clock. (dunning_invoice/dunning_next are stamped by invoice.payment_failed, not here -- this event alone carries no invoice id to chase.)
-              else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', dunning_invoice=NULL, dunning_next=NULL, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // PART A4: stop dunning a subscription that no longer exists in this state
+              else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // PART A4: stop dunning a subscription that no longer exists in this state. LAUNCH-FIX (sweep): also clear delinquent_since so a lapsed->cancelled tenant's public site is never left taken down under a stale timestamp.
             }
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
-            await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, dunning_invoice=NULL, dunning_next=NULL, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub. PART A4: also stop dunning -- a deleted subscription can never be paid via the old invoice again.
+            await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub. PART A4: also stop dunning -- a deleted subscription can never be paid via the old invoice again. LAUNCH-FIX (sweep): also clear delinquent_since so a lapsed->cancelled tenant's public site isn't left taken down under a stale timestamp.
             await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
           } else if (T === 'customer.subscription.deleted' && md.billing === 'website' && md.tenant) {
             // #278: the monthly website-addon subscription was cancelled -- clear the entitlement, but ONLY if it is
@@ -5011,6 +5016,11 @@ function doReset(){
           if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Online payment is not enabled yet - the owner will arrange payment with you.' });
           const q = d.quote || {}; const body = await req.json().catch(function () { return {}; });
           const kind = body.kind === 'balance' ? 'balance' : 'deposit';
+          // LAUNCH-FIX (sweep): idempotency guard -- refuse to open a 2nd Checkout for a payment KIND already recorded paid
+          // (the Stripe-signature-verified webhook writes d.paid[kind]). Without this, a re-click / two open tabs / a network
+          // retry each started a fresh Checkout for the same amount, so a customer could be charged twice -- and the 2nd
+          // webhook silently overwrote d.paid[kind], hiding the double charge. Mirrors the 'sign' route's signedAt guard below.
+          if (d.paid && d.paid[kind] && (Number(d.paid[kind].amountCents) || 0) > 0) return json({ ok: false, reason: 'already_paid', message: 'Your ' + kind + ' has already been paid - thank you.' });
           const amt = kind === 'balance' ? Math.max(0, (Number(q.totalCents) || 0) - (Number(q.depositCents) || 0)) : (Number(q.depositCents) || Number(q.totalCents) || 0);
           if (amt < 50) return json({ ok: false, reason: 'nothing_due', message: 'Nothing is due online right now.' });
           const co = await stripeCheckout(sk, { amountCents: amt, name: pr.name + ' - ' + kind + ' - ' + (d.asset || ''), email: d.custEmail,
@@ -5852,12 +5862,21 @@ function doReset(){
         if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
         if (!await rateLimit(env, 'bcan:' + ctx.tenant_id, 10, 3600000)) return err(429, 'Please wait a moment before trying again.');
         await ensurePlatformSchema(env);
-        const trow = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const trow = await env.DB.prepare('SELECT stripe_sub, plan, dunning_invoice FROM tenants WHERE id=?').bind(ctx.tenant_id).first();   // LAUNCH-FIX (sweep): plan+dunning_invoice widened in so a PAST_DUE tenant who cancels also stops dunning + unlocks
         const sub = trow && trow.stripe_sub; const pk = await _platStripe(env);   // test mode -> test key; off -> live, unchanged
+        const _cxPastDue = !!(trow && trow.plan === 'past_due');
         if (sub && pk) {
           const up = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(sub), 'cancel_at_period_end=true');
           if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
-          await audit(env, ctx, req, 'billing.cancel', { when: 'period_end' });
+          // LAUNCH-FIX (sweep): a PAST_DUE tenant cancelling must ALSO stop dunning (void the open invoice + clear the
+          // dunning columns) and lift the lock/takedown -- otherwise the dunning cron keeps retrying a card the customer
+          // was told would not be charged (charge-after-cancel) and the paywall stays stuck. ACTIVE-tenant cancel is
+          // unchanged (no dunning columns set). Mirrors change-plan's past_due unlock (~L5838).
+          if (_cxPastDue) {
+            if (trow.dunning_invoice) { try { await stripeApi(pk, 'POST', 'invoices/' + trow.dunning_invoice + '/void', null); } catch (e) {} }
+            try { await env.DB.prepare("UPDATE tenants SET plan='trial', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), ctx.tenant_id).run(); } catch (e) {}
+          }
+          await audit(env, ctx, req, 'billing.cancel', { when: _cxPastDue ? 'now' : 'period_end', past_due: _cxPastDue });
           // PART F: send a branded cancellation notice / credit-note documenting exactly what happens -- next cycle not
           // charged, access kept through the paid-through date, NO refund for unused time (the CANCEL_POLICY fine print).
           // Best-effort: own try/catch, guarded on RESEND_KEY -- must never change the 200 the client relies on.
