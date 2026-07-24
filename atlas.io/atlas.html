@@ -1711,6 +1711,12 @@ const Atlas = (function(){
   // nothing moved. Flip to true ONLY in lockstep with the real backend going live (see GO-LIVE.md).
   var EMAIL_LIVE=true;                  // LIVE 2026-07-18: Resend domain verified + API key (full access) + MAIL_FROM=hello@ on the worker; confirm delivery via Settings > Email > Send test
   var PAYMENTS_LIVE=true;               // LIVE 2026-07-18: PLATFORM_STRIPE_KEY + STRIPE_WEBHOOK_SECRET set (health platform_payments:true); owner chose go-live. REAL charges/holds. Revert = set false + redeploy.
+  // NEW signup funnel: after sign-up, the owner picks a PLAN (all tiers + full features/inclusions) -> card on file via
+  // Stripe hosted checkout (7-day trial priced at THAT plan) -> guided onboarding -> Stripe auto-charges the chosen plan
+  // on day 7 (invoice.paid -> plan active). Reuses the EXISTING _billingCheckout('trial') + webhook path, so it is
+  // client-only (no worker change) and works in BOTH test + live Stripe modes. Revert = set false (restores the old
+  // signup -> onboarding-first flow). Only engages when live billing is truly available (not demo/offline/native).
+  var SIGNUP_PLAN_FIRST=true;
   // APP-STORE COMPLIANCE: the store-packaged app (PWABuilder) launches with ?atlas_app=ios|android in its start URL; we persist it so
   // DIGITAL purchases (plan/credits/domain/website) route to the WEB instead of in-app Stripe (Apple 3.1.1 / Google Play Billing).
   // Customer RENTAL payments (deposits/balances) are physical services -> Stripe is allowed and untouched.
@@ -2609,8 +2615,18 @@ const Atlas = (function(){
     S=load();
     if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
     if(ATLAS_BACKEND && (r.verify==='sent' || r.verified===0)){ showVerifyGate(email); return; }       // email confirmation gate: hold the account until the link is clicked (if the mailer is off the server auto-verifies -> this is skipped)
-    if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){ showPaywall(r.billing_state); return; }   // #276/#280: server-computed billing state ('ok' unless the owner turned on the payment gate and/or the card-required-for-trial gate) -- replaces the dashboard with the paywall/card gate instead of building it
-    if(_authMode==='signup'){ startTrial(); return; }                        // new account -> guided onboarding
+    if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){
+      // NEW funnel: a fresh signup that needs a card picks a PLAN FIRST (the plan picker collects the card via checkout).
+      // The plain card-only paywall stays for RETURNING sessions that hit the gate mid-use.
+      if(_authMode==='signup' && SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && !_isDemoTenant() && !_isNativeApp() && r.billing_state==='needs_card'){ showSignupPlans(); return; }
+      showPaywall(r.billing_state); return;   // #276/#280: server-computed billing state -- replaces the dashboard with the paywall/card gate instead of building it
+    }
+    if(_authMode==='signup'){
+      // NEW funnel: pick a plan (full features) -> card on file (7-day trial at that plan) -> onboarding -> day-7 auto-charge.
+      // Demo/offline/native fall through to the original onboarding-first flow. Already-carded (returning mid-funnel) skips ahead.
+      if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && !(S && S.card && S.card.onFile)){ showSignupPlans(); return; }
+      startTrial(); return;                        // new account -> guided onboarding
+    }
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }           // returning -> resume exactly where they were
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
     else { startTrial(); }
@@ -2721,6 +2737,51 @@ const Atlas = (function(){
       var bs = res.json && res.json.billing_state;
       if(res.status>=200 && res.status<300 && (!bs || bs==='ok')){ hidePaywall(); _postVerifyProceed(); }
     }).catch(function(){});
+  }
+  /* ===== NEW SIGNUP FUNNEL (flag SIGNUP_PLAN_FIRST) -- step 1: choose a plan. A full-screen gate shown right after
+     sign-up: all sellable tiers with their full features + inclusions, "Every plan includes" summary, and a collapsible
+     full comparison. Selecting a plan carries the chosen tier and opens Stripe hosted checkout for a card-on-file 7-day
+     trial priced at that plan (worker: /api/billing/checkout kind='trial'); Stripe auto-charges it on day 7 (invoice.paid
+     -> plan active). Client-only, reuses the existing billing path, works in both test + live Stripe modes. ===== */
+  function _signupTrialEndStr(){ try{ return _fmtDate(Date.now()+7*86400000); }catch(e){ return 'in 7 days'; } }
+  function showSignupPlans(){
+    var tiers=TIERS.filter(function(t){ return !t.owner && !t.comp; });
+    var endStr=_signupTrialEndStr();
+    var incl=FEATURES.map(function(f){ return '<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 9px;margin:0 6px 6px 0"><svg viewBox="0 0 20 20" width="12" height="12" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="var(--brand)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+f[1]+'</span>'; }).join('');
+    var cards=tiers.map(function(t){ var feat=(t.id==='pro');
+      var price=(t.price%1===0)?t.price:t.price.toFixed(2);
+      var unlocks=(typeof _tierUnlocks==='function' && _tierUnlocks(t.id))?_tierUnlocks(t.id):'';
+      var web=(typeof WEBSITE_TIERS!=='undefined' && WEBSITE_TIERS.indexOf(t.id)>=0);
+      return '<div style="border:1.5px solid '+(feat?'var(--brand)':'var(--line)')+';border-radius:14px;padding:15px 16px;margin-bottom:12px;position:relative;background:var(--surface,#fff)">'
+        +(feat?'<div style="position:absolute;top:-10px;left:16px;background:var(--brand);color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px">Most popular</div>':'')
+        +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+          +'<div style="min-width:0"><div style="font-size:16.5px;font-weight:800;color:var(--ink)">'+t.name+(web?' <span class="chip chip--brand" style="margin-left:4px;vertical-align:middle">Website included</span>':'')+'</div>'
+          +'<div style="font-size:12.5px;color:var(--muted);margin-top:2px">'+_tierCap(t)+' &middot; '+t.credits.toLocaleString()+' Atlas.io credits/week</div>'
+          +(unlocks?'<div style="font-size:11.5px;color:var(--brand);font-weight:600;margin-top:4px">'+unlocks+'</div>':'')+'</div>'
+          +'<div style="text-align:right;flex:none"><div style="font-size:22px;font-weight:850;color:var(--ink)" class="tnum">$'+price+(t.id==='unlimited'?'+':'')+'</div><div style="font-size:11px;color:var(--muted)">/month after trial</div></div>'
+        +'</div>'
+        +'<button class="btn '+(feat?'btn--primary':'btn--ghost')+' btn--full btn--sm" style="margin-top:12px" onclick="Atlas._signupPickPlan(\''+t.id+'\')">Start 7-day free trial</button>'
+      +'</div>'; }).join('');
+    var e=document.getElementById('planGate');
+    if(!e){ e=document.createElement('div'); e.id='planGate'; e.className='verify-gate pay-gate'; e.style.cssText='align-items:flex-start;overflow-y:auto'; document.body.appendChild(e); }
+    e.innerHTML='<div style="max-width:680px;width:100%;margin:auto">'
+      +'<div style="text-align:center;margin-bottom:6px"><h2 style="font-size:23px;margin:0 0 6px;color:var(--ink,#182420)">Choose your plan</h2>'
+      +'<p style="font-size:13.5px;color:var(--muted);margin:0 auto;max-width:520px;line-height:1.5">Start with a <b>7-day free trial</b>. Add a card now to reserve your plan &mdash; you will not be charged until <b>'+endStr+'</b>, and you can change or cancel anytime before then.</p></div>'
+      +'<div style="margin:16px 0 6px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface,#fff)"><div style="font-size:12px;font-weight:700;color:var(--ink);margin-bottom:8px">Every plan includes</div><div style="display:flex;flex-wrap:wrap">'+incl+'</div></div>'
+      +cards
+      +'<details style="margin:6px 0 4px"><summary style="cursor:pointer;font-size:13px;color:var(--brand);font-weight:600;text-align:center;list-style:none;padding:6px">See the full feature comparison</summary><div style="margin-top:12px">'+((typeof _priceCompareHtml==='function')?_priceCompareHtml():'')+'</div></details>'
+      +'<div style="text-align:center;margin-top:10px"><button class="btn btn--ghost btn--sm" onclick="Atlas._hideSignupPlans();Atlas.logout()">Sign out</button></div>'
+      +'<p style="font-size:11.5px;color:var(--muted);text-align:center;margin-top:8px;line-height:1.5">Secure card entry on Stripe &middot; Atlas never sees your card number &middot; cancel anytime, keep your data.</p>'
+      +'</div>';
+    e.classList.add('on');
+  }
+  function _hideSignupPlans(){ var e=document.getElementById('planGate'); if(e) e.classList.remove('on'); }
+  function _signupPickPlan(tierId){ var t=_tier(tierId); if(!t) return;
+    if(S){ S.tier=t.id; save(); }   // carry the chosen plan across the Stripe redirect (persisted in localStorage)
+    _hideSignupPlans();
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp()){ _billingCheckout('trial',{tier:t.id}); return; }   // card on file -> 7-day trial priced at this plan -> Stripe auto-charges on day 7
+    if(S){ S.plan='trial'; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }   // demo/offline/native fallback: local trial, onboard now
+    startTrial();
   }
   /* ---- forgot password: emails a signed, time-limited reset link (server never reveals whether the address has an account) ---- */
   function forgotPassword(){
@@ -7524,9 +7585,15 @@ const Atlas = (function(){
       el.innerHTML='<b>Atlas Rental.io '+esc(t.name)+'</b><small>Active &middot; '+c.toLocaleString()+' Atlas.io credits</small><button class="btn btn--ghost btn--sm btn--full" style="margin-top:10px" onclick="Atlas.goSettings(\'billing\')">Manage plan</button>';
     } else {
       var d=_trialDaysLeft();
-      el.innerHTML = (d>0)
-        ? '<b>Free trial &middot; '+d+' day'+(d===1?'':'s')+' left</b><small>'+c.toLocaleString()+' Atlas.io credits this week</small><button class="btn btn--primary btn--sm btn--full" onclick="Atlas.openPlans()">Choose a plan</button>'
-        : '<b>Trial ended</b><small>Pick a plan to keep running your business.</small><button class="btn btn--primary btn--sm btn--full" onclick="Atlas.openPlans()">See plans</button>';
+      var carded=!!(S.card && S.card.onFile);
+      if(carded && d>0){   // NEW funnel: plan chosen + card on file -> show which plan starts when, not "choose a plan"
+        var _end=(S.trialStartedAt||Date.now())+(S.trialDays||7)*86400000;
+        el.innerHTML='<b>Free trial &middot; '+d+' day'+(d===1?'':'s')+' left</b><small>'+esc(t.name)+' starts '+_fmtDate(_end)+' &middot; card on file &middot; '+c.toLocaleString()+' credits</small><button class="btn btn--ghost btn--sm btn--full" style="margin-top:10px" onclick="Atlas.goSettings(\'billing\')">Manage plan</button>';
+      } else {
+        el.innerHTML = (d>0)
+          ? '<b>Free trial &middot; '+d+' day'+(d===1?'':'s')+' left</b><small>'+c.toLocaleString()+' Atlas.io credits this week</small><button class="btn btn--primary btn--sm btn--full" onclick="Atlas.openPlans()">Choose a plan</button>'
+          : '<b>Trial ended</b><small>Pick a plan to keep running your business.</small><button class="btn btn--primary btn--sm btn--full" onclick="Atlas.openPlans()">See plans</button>';
+      }
     }
   }
   function _xBtn(){ return '<button class="icon-btn" aria-label="Close" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>'; }   // fix: a11y name on the modal close X (used ~48x)
@@ -7544,7 +7611,7 @@ const Atlas = (function(){
       if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
       else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); } }
       else if(kind==='website'){ S.websitePaid=true; save(); }
-      else if(kind==='trial'){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }
+      else if(kind==='trial'){ if(tier){ var _tt=_tier(tier); if(_tt) S.tier=_tt.id; } if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }   // NEW funnel: lock in the chosen plan + card-on-file; day-7 invoice.paid flips plan to active server-side
       try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){}
       setTimeout(function(){ toast(kind==='trial'?'Your free trial is active - card saved, no charge today.':'Payment received - thank you! You are all set.'); }, 500);
     }
@@ -8797,7 +8864,12 @@ const Atlas = (function(){
       }
       if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _billingReturn(); _kickLiveTour(); }
       else if(S && S.onboardStarted){ _billingReturn(); applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }  // resume setup exactly where they left off
-      else if(S){ _billingReturn(); applyBrand(); startTrial(); }   // #280: a fresh signup gated pre-onboarding (needs_card) returns from Stripe checkout here -- _billingReturn marks the card on file before startTrial() shows onboarding
+      else if(S){ _billingReturn(); applyBrand();   // #280: a fresh signup gated pre-onboarding returns from Stripe checkout here -- _billingReturn marks the card on file
+        // NEW funnel: a fresh signup that has not put a card on file yet is re-shown the plan picker on reload (so it cannot be
+        // skipped by refreshing). Returning from the Stripe trial checkout, _billingReturn set card.onFile above -> onboarding.
+        if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && !(S.card && S.card.onFile)){ showSignupPlans(); }
+        else startTrial();
+      }
       else { store.logout(); show('landing'); }   // dangling session, no tenant
     } else { show('landing'); }
     // Deep-link: ?film / ?watch / #watch auto-plays the 30-second commercial (a shareable "watch it" link).
@@ -8810,7 +8882,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,
+    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
