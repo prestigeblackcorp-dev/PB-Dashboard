@@ -1410,7 +1410,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       <h2 id="authTitle" style="text-align:center;font-size:24px;letter-spacing:-.02em">Create your account</h2>
       <p id="authLead" style="text-align:center;color:var(--muted);font-size:14px;margin:8px 0 24px">Start your 7-day free trial. No charge for 7 days - cancel anytime.</p>
       <div id="authErr" style="display:none;background:var(--danger-bg);color:var(--danger);font-size:13px;font-weight:600;border-radius:9px;padding:10px 12px;margin-bottom:14px"></div>
-      <div class="field"><label>Email address</label><input class="input" id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
+      <div class="field" id="authEmailField"><label>Email address</label><input class="input" id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
       <div class="field"><label>Password</label><div style="position:relative;display:flex;align-items:center"><input class="input" id="authPass" type="password" placeholder="At least 8 characters" autocomplete="current-password" style="padding-right:60px" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"><button type="button" id="authPassEye" onclick="Atlas.authTogglePass()" style="position:absolute;right:8px;background:none;border:0;color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;padding:6px;line-height:1">Show</button></div></div>
       <p id="authForgot" style="text-align:right;margin:-6px 0 10px;display:none"><a onclick="Atlas.forgotPassword();return false" style="color:var(--muted);font-size:12.5px;cursor:pointer;text-decoration:underline">Forgot password?</a></p>
       <div id="authConsent" style="margin:2px 0 6px"><label class="cfg-check" style="align-items:flex-start;gap:9px;font-size:12px;color:var(--muted);text-align:left"><input type="checkbox" id="authAgree" style="margin-top:2px;flex:none"><span>I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Terms</a> &amp; <a href="/privacy" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Privacy Policy</a>. My 7-day free trial converts to $49.99/mo after the trial unless I cancel &mdash; cancel anytime.</span></label></div>
@@ -2056,7 +2056,7 @@ const Atlas = (function(){
   };
   function _roleLabel(r){ return (ROLE_PRESETS[r]&&ROLE_PRESETS[r].label)||'Custom'; }
   // The current ACTOR: null = you (account holder, full access); otherwise the team member being previewed / logged in.
-  function _actor(){ if(!S||!S._actAs) return null; return (S.team||[]).filter(function(m){return m.id===S._actAs;})[0]||null; }
+  function _actor(){ if(S&&S._actAs){ var m=(S.team||[]).filter(function(x){return x.id===S._actAs;})[0]; if(m) return m; } return _selfActor; }   // owner previewing -> that member; real non-owner login -> _selfActor; owner -> null (full access)
   function _canMod(m){ var a=_actor(); return !a || !!(a.perms&&a.perms.mods&&a.perms.mods[m]); }
   function _canCap(c){ var a=_actor(); return !a || !!(a.perms&&a.perms.caps&&a.perms.caps[c]); }
   function _guard(cap,label){ if(_canCap(cap)) return true; toast((label||'That')+' is not in your access'); return false; }
@@ -2655,6 +2655,14 @@ const Atlas = (function(){
   /* ============================== ONBOARDING ============================== */
   let step=0; const STEPS=['welcome','identity','fleet','money','connect','asset','invite','done'];
   var _authMode='signup';
+  var _inviteToken='';                 // set when arriving via /?invite=<token> (teammate accepting an invite)
+  var _selfActor=null;                 // RUNTIME-ONLY (never persisted to the shared tenant blob): the gating actor for a logged-in NON-owner. null = owner / full access.
+  // Build a permission actor for a logged-in teammate from their server role. Mirrors previewAs so the SAME _canMod/_canCap gating applies live.
+  function _selfActorFor(role, email){ var r=(['manager','ops','desk','viewer'].indexOf(String(role))>=0)?role:'desk'; return { id:'self', name:(email||'You'), email:(email||''), role:r, perms:(ROLE_PRESETS[r]?ROLE_PRESETS[r].make():_permsAll(false)) }; }
+  // Adopt (or clear) the self-actor from an /api/auth/me user payload. Owner (role==='owner' or platform isOwner) => null => full access, unchanged path.
+  function _applySelfRole(user){ try{ if(user && user.role && user.role!=='owner' && !user.isOwner){ _selfActor=_selfActorFor(user.role, user.email); } else { _selfActor=null; } }catch(e){} }
+  // Show the set-password screen for a teammate accepting an invite (reuses the auth card).
+  function showAcceptInvite(token){ _inviteToken=String(token||''); _authMode='invite'; renderAuth(); show('auth'); var e=document.getElementById('authPass'); if(e) setTimeout(function(){e.focus();},60); }
   /* ---- 2FA (MFA) login challenge state + trusted-device token storage. Off by default: this code path only runs
      when the server's login response actually says mfa_required (see _srvAuth above). ---- */
   var _mfaChallengeTok='', _mfaEmailCur='', _mfaMethodCur='email', _mfaBackupMode=false, _mfaPendingCodes=[];
@@ -2664,6 +2672,20 @@ const Atlas = (function(){
   function goAuth(mode){ try{ _demoTeardown(); }catch(e){} _authMode=(mode==='login')?'login':'signup'; renderAuth(); show('auth'); var e=document.getElementById('authEmail'); if(e) setTimeout(function(){e.focus();},60); }
   function _demoTeardown(){ if(_demo){ _demo.on=false; clearTimeout(_demo.timer); } var c=document.getElementById('dcoach'); if(c) c.classList.remove('on'); var x=document.getElementById('demoExit'); if(x) x.classList.remove('on'); }
   function renderAuth(){
+    var _ef=document.getElementById('authEmailField');
+    if(_authMode==='invite'){
+      document.getElementById('authTitle').textContent='Set your password';
+      document.getElementById('authLead').textContent='You have been invited to a team on Atlas Rental.io. Choose a password to join.';
+      document.getElementById('authBtn').textContent='Join the team';
+      document.getElementById('authSwitch').innerHTML='';
+      if(_ef) _ef.style.display='none';                       // the invite token identifies the account -- no email needed
+      var _cwi=document.getElementById('authConsent'); if(_cwi) _cwi.style.display='none';
+      var _fwi=document.getElementById('authForgot'); if(_fwi) _fwi.style.display='none';
+      var _pwi=document.getElementById('authPass'); if(_pwi){ _pwi.type='password'; _pwi.setAttribute('autocomplete','new-password'); _pwi.placeholder='At least 8 characters'; }
+      var _pei=document.getElementById('authPassEye'); if(_pei) _pei.textContent='Show';
+      _authErr(''); return;
+    }
+    if(_ef) _ef.style.display='';                             // restore the email field for login/signup
     var login=_authMode==='login';
     document.getElementById('authTitle').textContent = login?'Welcome back':'Create your account';
     document.getElementById('authLead').textContent = login?'Sign in to your Atlas Rental.io dashboard.':'Start your 7-day free trial. No charge for 7 days - cancel anytime.';
@@ -2684,6 +2706,7 @@ const Atlas = (function(){
   var _authBusy=false;   // guards repeat taps: a non-technical user on a slow connection saw no instant change + re-tapped -> each tap fired another /api/auth/login until the per-account rate limit tripped ("Too many attempts for this account")
   async function authSubmit(){
     if(_authBusy) return;                                                  // a request is already in flight -- swallow the extra taps that used to burn the login rate-limit
+    if(_authMode==='invite') return _acceptInviteSubmit();
     var email=(document.getElementById('authEmail')||{}).value||'', pass=(document.getElementById('authPass')||{}).value||'';
     if(_authMode==='signup'){ var _ag=document.getElementById('authAgree'); if(_ag && !_ag.checked){ _authErr('Please agree to the Terms & Privacy Policy to create your account.'); return; } }
     // Friendly, instant checks BEFORE the server round-trip -- a non-technical user sees exactly what to fix (and the real 8-char rule) without a confusing "rejected" bounce. Trim stray spaces they often paste into the email.
@@ -2708,11 +2731,35 @@ const Atlas = (function(){
         if(r.err){ _authErr(r.err); return; }
       }
       await _afterAuthSuccess(email, r);
+      if(_authMode==='login' && ATLAS_BACKEND) _refreshSelfRole();       // a non-owner teammate signing in normally -> gate their UI to their role (server enforces regardless)
     } finally {
       _authBusy=false;                                                    // always release -- whether we navigated to the dashboard/verify/paywall (button now hidden, restore is harmless) or are showing an error for the user to retry
       if(_btn){ _btn.disabled=false; _btn.classList.remove('is-loading'); _btn.textContent=_btnTxt; }
     }
   }
+  // Teammate accepting an invite: set a password (token identifies the account), get a real session, land straight in the dashboard.
+  async function _acceptInviteSubmit(){
+    var pass=(document.getElementById('authPass')||{}).value||'';
+    if(pass.length<8){ _authErr('Choose a password of at least 8 characters.'); return; }
+    var _btn=document.getElementById('authBtn'), _bt=_btn?_btn.textContent:'';
+    _authBusy=true; _authErr(''); if(_btn){ _btn.disabled=true; _btn.classList.add('is-loading'); _btn.textContent='Joining...'; }
+    try{
+      var ir=await _api('/api/auth/accept-invite',{method:'POST',body:{token:_inviteToken, password:pass}});
+      if(!(ir.json&&ir.json.ok)){ _authErr((ir.json&&ir.json.error)||'This invite is invalid or has already been used. Ask your owner to resend it.'); return; }
+      if(ir.json.csrf) _apiCsrf=ir.json.csrf;
+      try{ history.replaceState(null,'',location.pathname); }catch(e){}                 // drop ?invite so a reload cannot re-trigger the used token
+      _lsSet(SK,{email:_emailKey(ir.json.email||''), tenantId:ir.json.tenant_id});
+      if(!_lsGet('atlas_tenant_'+ir.json.tenant_id, null)) _lsSet('atlas_tenant_'+ir.json.tenant_id, fresh());
+      await _srvHydrate(ir.json.tenant_id);
+      _selfActor=_selfActorFor(ir.json.role, ir.json.email);                             // gate the UI to their role immediately
+      S=load(); if(S){ S.onboarded=true; save(); }                                       // joining an already-onboarded business -> straight to the dashboard, never re-onboard
+      _authMode='login'; _inviteToken='';
+      applyBrand(); buildApp(); show('app'); toast('Welcome to the team');
+    } catch(e){ _authErr('Network error. Please try again.'); }
+    finally{ _authBusy=false; if(_btn){ _btn.disabled=false; _btn.classList.remove('is-loading'); _btn.textContent=_bt; } }
+  }
+  // Re-fetch the logged-in user's role and adopt/clear the self-actor (UI gating). Server enforcement is the real backstop; this keeps the UI honest.
+  function _refreshSelfRole(){ if(!ATLAS_BACKEND) return Promise.resolve(); return _api('/api/auth/me',{method:'GET'}).then(function(res){ if(res&&res.json&&res.json.user){ var was=!!_selfActor; _applySelfRole(res.json.user); if(_selfActor||was){ try{ var ap=document.getElementById('view-app'); if(S&&S.onboarded&&ap&&!ap.classList.contains('hidden')) buildApp(); }catch(e){} } } }).catch(function(){}); }
   // Shared with the post-2FA success path (mfaSubmit): local session pointer + seed + server hydrate.
   async function _srvAuthSettle(email, tenantId){
     _lsSet(SK, {email:_emailKey(email), tenantId:tenantId});
@@ -5603,16 +5650,23 @@ const Atlas = (function(){
       +'<div class="n3d-card" id="n3dCard"></div>'; document.body.appendChild(d); }
   function _permCount(p){ var mo=PERM_MODS.filter(function(m){return p.mods&&p.mods[m[0]];}).length, ca=PERM_CAPS.filter(function(c){return p.caps&&p.caps[c[0]];}).length; return {mo:mo,ca:ca}; }
   function _permSummary(p){ var c=_permCount(p); return c.mo+' of '+PERM_MODS.length+' areas &middot; '+(c.ca?(c.ca+' action'+(c.ca===1?'':'s')):'view-only'); }
-  function renderTeam(){
+  function renderTeam(){ _renderTeamRows();
+    if(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf && !renderTeam._busy){ renderTeam._busy=true; _srvTeamLoad().then(function(){ renderTeam._busy=false; _renderTeamRows(); }).catch(function(){ renderTeam._busy=false; }); }   // paint from cache instantly, then refresh from server truth
+  }
+  function _renderTeamRows(){
+    var tbl=document.getElementById('teamTbl'); if(!tbl)return;
+    var okChip='<span class="chip" style="background:#dcfce7;color:#166534">Active</span>';
     var you='<tr><td><div class="cust"><span class="avatar">'+esc((S.owner||'Y')[0])+'</span><b>'+esc(_ownerName('You'))+' <span style="color:var(--muted);font-weight:500">(you)</span></b></div></td>'
-      +'<td style="color:var(--muted)">'+esc(store.session()?store.session().email:'')+'</td><td><span class="chip chip--brand">Owner</span></td><td style="color:var(--muted)">Full access to everything</td><td></td></tr>';
+      +'<td style="color:var(--muted)">'+esc(store.session()?store.session().email:'')+'</td><td><span class="chip chip--brand">Owner</span></td><td style="color:var(--muted)">Full access to everything</td><td>'+okChip+'</td><td></td></tr>';
     var rows=(S.team||[]).map(function(m){ var s=_permSummary(m.perms||_permsAll(false));
-      return '<tr><td><div class="cust"><span class="avatar">'+esc((m.name||'?')[0])+'</span><b>'+esc(m.name)+'</b></div></td>'
+      var st=m.pending?'<span class="chip" style="background:#fef3c7;color:#92400e">Invite pending</span>':okChip;
+      return '<tr><td><div class="cust"><span class="avatar">'+esc((m.name||m.email||'?')[0])+'</span><b>'+esc(m.name||_nameFromEmail(m.email))+'</b></div></td>'
         +'<td style="color:var(--muted)">'+esc(m.email||'')+'</td>'
         +'<td><span class="chip chip--info">'+esc(_roleLabel(m.role))+'</span></td>'
         +'<td style="color:var(--muted);font-size:12.5px">'+s+'</td>'
-        +'<td style="white-space:nowrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.openPerm(\''+m.id+'\')">Edit access</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.previewAs(\''+m.id+'\')">Preview</button></td></tr>'; }).join('');
-    document.getElementById('teamTbl').innerHTML='<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>'+you+rows+'</tbody>';
+        +'<td>'+st+'</td>'
+        +'<td style="white-space:nowrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.openPerm(\''+m.id+'\')">Edit access</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.previewAs(\''+m.id+'\')">Preview</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.removeMember(\''+m.id+'\')">Remove</button></td></tr>'; }).join('');
+    tbl.innerHTML='<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th>Status</th><th></th></tr></thead><tbody>'+you+rows+'</tbody>';
   }
   // ---- Staff scheduling / shifts: assign shifts across the week, weekly hours per person ----
   function _shifts(){ if(!S.shifts) S.shifts=[]; return S.shifts; }
@@ -5794,26 +5848,61 @@ const Atlas = (function(){
       +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:16px" onclick="Atlas.closeModal();Atlas.toast(\'Access updated\')">Done</button>'
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.removeMember(\''+id+'\')">Remove from team</button></div>');
   }
-  function setRolePreset(id,role){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.role=role; if(role!=='custom'&&ROLE_PRESETS[role]) m.perms=ROLE_PRESETS[role].make(); save(); renderTeam(); renderSet(); openPerm(id); }   // fix: renderSet() refreshes the Settings>Team subsection too
-  function setPerm(id,kind,key,val){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.perms=m.perms||_permsAll(false); m.perms[kind]=m.perms[kind]||{}; m.perms[kind][key]=!!val; m.role='custom'; save(); renderTeam(); renderSet();   // fix: refresh Settings>Team subsection
+  function setRolePreset(id,role){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.role=role; if(role!=='custom'&&ROLE_PRESETS[role]) m.perms=ROLE_PRESETS[role].make(); save(); _srvTeamPut(m); renderTeam(); renderSet(); openPerm(id); }   // fix: renderSet() refreshes the Settings>Team subsection too; _srvTeamPut keeps server enforcement in sync
+  function setPerm(id,kind,key,val){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.perms=m.perms||_permsAll(false); m.perms[kind]=m.perms[kind]||{}; m.perms[kind][key]=!!val; m.role='custom'; save(); _srvTeamPut(m); renderTeam(); renderSet();   // fix: refresh Settings>Team subsection; _srvTeamPut keeps server enforcement in sync
     var sel=document.querySelector('#modal select'); if(sel) sel.value='custom'; }
   function inviteMember(){ if(!_guard('teamManage','Managing team'))return;
-    openModal('<div class="modal__head"><h3>Add a teammate</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="row2"><div class="field"><label>Name</label><input class="input" id="tmName" placeholder="Taylor Reed"></div><div class="field"><label>Email</label><input class="input" id="tmEmail" placeholder="taylor@email.com"></div></div>'
-      +'<div class="field"><label>Start with role</label><select class="select" id="tmRole">'+Object.keys(ROLE_PRESETS).filter(function(k){return k!=='custom';}).map(function(k){return '<option value="'+k+'"'+(k==='desk'?' selected':'')+'>'+ROLE_PRESETS[k].label+'</option>';}).join('')+'</select><div class="hint">You can fine-tune exactly what they see and do after adding.</div></div>'
-      +'<div class="hint" style="margin:-2px 0 12px">Adds them to your team and sets their permissions here. Separate teammate sign-in is coming soon.</div>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveInvite()">Add teammate</button></div>');
+    openModal('<div class="modal__head"><h3>Invite a teammate</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="row2"><div class="field"><label>Name <span style="color:var(--muted);font-weight:400">(optional)</span></label><input class="input" id="tmName" placeholder="Taylor Reed"></div><div class="field"><label>Email</label><input class="input" id="tmEmail" type="email" placeholder="taylor@email.com" autocomplete="off"></div></div>'
+      +'<div class="field"><label>Start with role</label><select class="select" id="tmRole">'+Object.keys(ROLE_PRESETS).filter(function(k){return k!=='custom';}).map(function(k){return '<option value="'+k+'"'+(k==='desk'?' selected':'')+'>'+ROLE_PRESETS[k].label+'</option>';}).join('')+'</select><div class="hint">You can fine-tune exactly what they see and do after inviting.</div></div>'
+      +'<div class="hint" style="margin:-2px 0 12px">They get a single-use link to set their own password and sign in. Their access is limited to the role you choose &mdash; the server enforces it.</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveInvite()">Send invite</button></div>');
   }
-  function saveInvite(){ if(!_guard('teamManage'))return; var name=(val('tmName')||'').trim(); if(!name){ toast('Enter a name'); return; }
+  function saveInvite(){ if(!_guard('teamManage'))return; var name=(val('tmName')||'').trim();
     var role=val('tmRole')||'desk', email=(val('tmEmail')||'').trim(), perms=(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false));
+    if(ATLAS_BACKEND && !_isDemoTenant()){   // REAL invite: create a server user + email/copy a single-use set-password link. Enforcement lives on the server.
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ toast('Enter a valid email to invite them'); return; }
+      _api('/api/team/invite',{method:'POST',body:{email:email, role:role, caps:perms}}).then(function(res){
+        if(!(res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not send the invite'); return; }
+        closeModal(); _srvTeamLoad().then(function(){ renderTeam(); renderSet(); }); _inviteSentModal(email, res.json.link, res.json.emailed);
+      }).catch(function(){ toast('Network error - please try again'); });
+      return;
+    }
+    if(!name){ toast('Enter a name'); return; }   // demo/offline: local-only roster (no server user)
     S.team=S.team||[];
     var dup=email?S.team.filter(function(x){return String(x.email||'').trim().toLowerCase()===email.toLowerCase();})[0]:null;   // fix: a same-email invite updates the existing member instead of creating a duplicate row
     if(dup){ dup.name=name; dup.role=role; dup.perms=perms; }
     else { S.team.push({ id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:name, email:email, role:role, perms:perms }); }
-    save(); closeModal(); renderTeam(); renderSet(); toast(name+' added to your team');   // honest: adds a team member + their permissions locally; teammate SIGN-IN is a separate feature not yet wired
+    save(); closeModal(); renderTeam(); renderSet(); toast(name+' added to your team');
   }
+  // Confirmation with a copyable single-use link (works whether or not the mailer is on).
+  function _inviteSentModal(email, link, emailed){
+    openModal('<div class="modal__head"><h3>Invite sent</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<p style="font-size:13.5px;line-height:1.6;margin:0 0 12px">'+(emailed?('We emailed <b>'+esc(email)+'</b> a link to set their password and join your team.'):('Email sending is off, so copy this single-use link and send it to <b>'+esc(email)+'</b> yourself:'))+'</p>'
+      +'<div class="field"><label>Invite link (single-use)</label><input class="input" id="invLink" readonly value="'+esc(link||'')+'" onclick="this.select()" style="font-size:12.5px"></div>'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn--ghost btn--sm" onclick="Atlas.closeModal()">Done</button><button class="btn btn--primary btn--sm" onclick="Atlas.copyInviteLink()">Copy link</button></div>'
+      +'<p class="hint" style="margin-top:12px">They set their own password, then sign in at your Atlas login. You can fine-tune exactly what they see and do any time under <b>Edit access</b>.</p>'
+      +'</div>');
+  }
+  function copyInviteLink(){ var i=document.getElementById('invLink'); if(!i)return; try{ i.select(); }catch(e){} try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(i.value).then(function(){ toast('Link copied'); },function(){ try{document.execCommand('copy');}catch(e){} toast('Link copied'); }); return; } }catch(e){} try{ document.execCommand('copy'); toast('Link copied'); }catch(e2){ toast('Select and copy the link'); } }
+  function _nameFromEmail(e){ var s=String(e||'').split('@')[0].replace(/[._-]+/g,' ').trim(); return s?s.replace(/\b\w/g,function(c){return c.toUpperCase();}):'Teammate'; }
+  // Load the real team roster from the server and reconcile it into S.team (server is authoritative for id/email/role/status; keep any local display name).
+  function _srvTeamLoad(){ if(!(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf)) return Promise.resolve();
+    return _api('/api/team',{method:'GET'}).then(function(res){ if(!(res.json&&res.json.team))return;
+      var srv=res.json.team.filter(function(u){return !u.isOwner;});   // the owner is rendered separately (the "you" row)
+      var byId={},byEmail={}; (S.team||[]).forEach(function(m){ if(m.id)byId[m.id]=m; if(m.email)byEmail[String(m.email).toLowerCase()]=m; });
+      S.team=srv.map(function(u){ var ex=byId[u.id]||byEmail[String(u.email||'').toLowerCase()]||{};
+        var perms=(u.caps&&(u.caps.caps||u.caps.mods))?u.caps:(ROLE_PRESETS[u.role]?ROLE_PRESETS[u.role].make():_permsAll(false));
+        return { id:u.id, name:ex.name||_nameFromEmail(u.email), email:u.email, role:u.role, perms:perms, status:u.status, pending:!!u.pending }; });
+      save();
+    }).catch(function(){});
+  }
+  // Persist a role/caps change to the server so enforcement matches the UI (best-effort; server clamps role, never to owner).
+  function _srvTeamPut(m){ if(!(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf && m && m.id))return; var role=(['manager','ops','desk','viewer'].indexOf(m.role)>=0)?m.role:'desk'; try{ _api('/api/team',{method:'PUT',body:{id:m.id, role:role, caps:m.perms}}).catch(function(){}); }catch(e){} }
   function removeMember(id){ if(!_guard('teamManage'))return; if(!confirm('Remove this teammate and their access?'))return;
-    if(S._actAs===id) exitPreview(); S.team=(S.team||[]).filter(function(x){return x.id!==id;}); save(); closeModal(); renderTeam(); renderSet(); toast('Teammate removed'); }   // fix: renderSet() refreshes Settings>Team
+    if(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf){ _api('/api/team?id='+encodeURIComponent(id),{method:'DELETE'}).then(function(res){ if(!(res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not remove'); return; } _finishRemove(id); }).catch(function(){ toast('Network error - please try again'); }); return; }
+    _finishRemove(id); }
+  function _finishRemove(id){ if(S._actAs===id) exitPreview(); S.team=(S.team||[]).filter(function(x){return x.id!==id;}); save(); closeModal(); renderTeam(); renderSet(); toast('Teammate removed'); }   // fix: renderSet() refreshes Settings>Team
   function setMemberField(id,field,v){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; v=(v||'').trim();   // fix: rename a teammate / correct their email in place, leaving role + perms untouched
     if(field==='name'){ if(!v){ toast('Name cannot be empty'); renderTeam(); return; } m.name=v; } else if(field==='email'){ m.email=v; } else return;
     save(); renderTeam(); renderSet(); toast('Teammate updated'); }
@@ -5821,7 +5910,7 @@ const Atlas = (function(){
   function _firstMod(){ var f=NAV.filter(function(n){return _canMod(n[0]);})[0]; return f?f[0]:'overview'; }
   function previewAs(id){ if(!_guard('teamManage','Managing team'))return; if(!_member(id))return; S._actAs=id; save(); closeModal&&closeModal(); buildApp(); go(_firstMod()); toast('Previewing as this teammate'); }
   function exitPreview(){ S._actAs=null; save(); buildApp(); go('team'); }
-  function _renderPreviewBar(){ var el=document.getElementById('previewBar'); if(!el)return; var a=_actor();
+  function _renderPreviewBar(){ var el=document.getElementById('previewBar'); if(!el)return; var a=(S&&S._actAs)?_actor():null;   // only the owner's PREVIEW shows this bar; a real teammate login is gated silently (no "exit preview")
     if(!a){ el.style.display='none'; el.innerHTML=''; return; }
     el.style.display='flex';
     el.innerHTML='<span><svg viewBox="0 0 18 18" fill="none" style="width:15px;height:15px;vertical-align:-2px;margin-right:6px"><path d="M9 3.5C5 3.5 2 9 2 9s3 5.5 7 5.5S16 9 16 9 13 3.5 9 3.5zM9 11.4A2.4 2.4 0 109 6.6a2.4 2.4 0 000 4.8z" stroke="currentColor" stroke-width="1.4"/></svg>Previewing as <b>'+esc(a.name)+'</b> &middot; '+esc(_roleLabel(a.role))+' &mdash; they only see and do what you granted.</span><button class="btn btn--sm" style="background:#fff;color:var(--brand-700)" onclick="Atlas.exitPreview()">Exit preview</button>';
@@ -9068,6 +9157,7 @@ const Atlas = (function(){
     _applyTheme();   // honor the saved light/dark choice on every load, before anything renders
     _initPWA();
     buildLanding();
+    try{ var _inv=new URLSearchParams(location.search).get('invite'); if(_inv){ showAcceptInvite(_inv); return; } }catch(e){}   // teammate accepting an invite link -> set-password screen (takes priority over any stale local session)
     if(store.session()){
       S=load();
       // migrate any pre-existing tenant saved with the old money shape (deposit as a number)
@@ -9084,6 +9174,7 @@ const Atlas = (function(){
       // re-renders with the merged data.
       if(ATLAS_BACKEND && store.session()){ _bootSync=true; var _bootTid=store.session().tenantId;
         _api('/api/auth/me',{method:'GET'}).then(function(res){
+          if(res&&res.json&&res.json.user) _applySelfRole(res.json.user);   // adopt/clear teammate gating on every boot (server role is authoritative)
           if(res && res.json && res.json.csrf){ _apiCsrf=res.json.csrf; if(res.json.ip)_clientIp=res.json.ip; return _srvHydrate(_bootTid); }
         }).catch(function(){}).then(function(){ _bootSync=false;
           try{ var _s2=load(); if(_s2){ S=_s2; var _ap=document.getElementById('app'); if(S.onboarded && _ap && _ap.classList.contains('on')){ applyBrand(); buildApp(); } } }catch(e){}
@@ -9140,7 +9231,7 @@ const Atlas = (function(){
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
     renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
-    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
+    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
