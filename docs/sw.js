@@ -1,4 +1,4 @@
-const CACHE = 'pb-v281';
+const CACHE = 'pb-v282';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js'];
 
 self.addEventListener('install', function(e) {
@@ -32,8 +32,18 @@ self.addEventListener('fetch', function(e) {
   var req = fresh ? new Request(e.request.url, { cache: 'no-store' }) : e.request;
   e.respondWith(
     fetch(req).then(function(res){
-      var clone = res.clone();
-      caches.open(CACHE).then(function(c){ c.put(e.request, clone); }).catch(function(){});
+      // A GitHub Pages redeploy (every push to main) briefly returns 404 for pages that DO exist.
+      // Do NOT surface that 404/5xx to the app and do NOT cache it -- for a navigation/code request
+      // serve the last-good cached copy instead, so a deploy window never shows a 404. Only OK
+      // responses get cached.
+      if(res && res.ok){
+        var clone = res.clone();
+        caches.open(CACHE).then(function(c){ c.put(e.request, clone); }).catch(function(){});
+        return res;
+      }
+      if(fresh){
+        return caches.match(e.request).then(function(m){ return m || res; });
+      }
       return res;
     }).catch(function(){
       // NEVER return undefined here -> that throws "Returned response is null". Cached copy, else error.
