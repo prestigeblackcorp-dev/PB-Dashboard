@@ -1356,6 +1356,19 @@ function _quoteDollars(q) {
   q.hold = q.security;   // #290: also expose as `hold` (the dashboard/portal "refundable hold" field) so it displays; collected SEPARATELY, never folded into q.total or charged at public booking
   return q;
 }
+// CORE-LOOP: OWNER-created (manual) bookings store a DOLLAR-shaped quote from the client calcQuote (total/dueNow/hold/...),
+// but the customer portal reads ONLY *Cents. Back-fill the cents fields from the dollars when absent so a manual booking is
+// actually PAYABLE in the portal (was $0 / "all settled" / no pay button). No-op for website bookings (they carry both shapes).
+function _quoteCents(q) {
+  if (!q || typeof q !== 'object') return q;
+  var d2c = function (v) { return Math.round((Number(v) || 0) * 100); };
+  if (q.totalCents == null && q.total != null) q.totalCents = d2c(q.total);
+  if (q.depositCents == null && (q.dueNow != null || q.deposit != null)) q.depositCents = d2c(q.dueNow != null ? q.dueNow : q.deposit);   // reserve/down-payment due now
+  if (q.securityCents == null && (q.security != null || q.hold != null)) q.securityCents = d2c(q.security != null ? q.security : q.hold);   // separate refundable deposit
+  if (q.subtotalCents == null && q.subtotal != null) q.subtotalCents = d2c(q.subtotal);
+  if (q.taxCents == null && q.taxAmt != null) q.taxCents = d2c(q.taxAmt);
+  return q;
+}
 
 // Resend mailer. HONEST: no RESEND_KEY -> {sent:false,reason:'no_mailer'} so a caller records "not sent", never "delivered".
 async function sendEmail(env, msg) {
@@ -5227,7 +5240,7 @@ function doReset(){
         if (psub === 'data' && method === 'GET') {
           return json({ ok: true, business: pr.name, brand: { color: pr.brand.color || '', logo: pr.brand.logo || '' },
             ref: brow.id, status: brow.status, asset: d.asset || '', periods: d.periods || 1,
-            quote: d.quote || null, paid: d.paid || {}, cust: d.cust || '',
+            quote: d.quote ? _quoteCents(d.quote) : null, paid: d.paid || {}, cust: d.cust || '',
             agreement: _agrText, signed: !!(d.portal && d.portal.signedAt), signerName: (d.portal && d.portal.signerName) || '', signedAt: (d.portal && d.portal.signedAt) || 0,
             uploads: (((d.portal && d.portal.uploads) || []).map(function (u) { return { kind: u.kind, url: u.url, at: u.at }; })), requests: ((d.portal && d.portal.requests) || []), storage: !!_r2(env) });
         }
@@ -5235,7 +5248,7 @@ function doReset(){
           if (!await rateLimit(env, 'ppay:' + token, 20, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
           const sk = await tenantStripeKey(env, brow.tenant_id);
           if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Online payment is not enabled yet - the owner will arrange payment with you.' });
-          const q = d.quote || {}; const body = await req.json().catch(function () { return {}; });
+          const q = _quoteCents(d.quote || {}); const body = await req.json().catch(function () { return {}; });
           const kind = (body.kind === 'balance') ? 'balance' : (body.kind === 'security') ? 'security' : 'deposit';
           // LAUNCH-FIX (sweep): idempotency guard -- refuse to open a 2nd Checkout for a payment KIND already recorded paid
           // (the Stripe-signature-verified webhook writes d.paid[kind]). Without this, a re-click / two open tabs / a network
@@ -5290,7 +5303,7 @@ function doReset(){
         }
         // D2 portal 2.0: downloadable receipt + agreement, pickup/condition/ID uploads (owner-viewable), and self-service extend/add-on requests (owner confirms; never auto-charges).
         if (psub === 'receipt' && method === 'GET') {
-          const q = d.quote || {}; const paid = d.paid || {};
+          const q = _quoteCents(d.quote || {}); const paid = d.paid || {};
           const got = ((paid.deposit && paid.deposit.amountCents) || 0) + ((paid.balance && paid.balance.amountCents) || 0) + ((paid.payment && paid.payment.amountCents) || 0);
           const due = Math.max(0, (Number(q.totalCents) || 0) - got);
           return new Response(_portalDocHtml(pr, 'Receipt - ' + brow.id, _receiptBodyHtml(pr, brow, d, q, paid, got, due)), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
@@ -5897,7 +5910,11 @@ function doReset(){
         else if (op === 'release') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/cancel', {}); if (r2.ok) { p.released = { at: Date.now() }; delete p.hold; } }
         else { const rp = { payment_intent: p.pi }; if (vInt(body.amountCents) && body.amountCents > 0) rp.amount = body.amountCents; r2 = await stripePost(sk, '/refunds', rp); if (r2.ok) { p.refunded = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; } }
         if (!r2.ok) return json({ ok: false, reason: r2.reason });
-        await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), Date.now(), body.booking, ctx.tenant_id).run();
+        // CORE-LOOP: bump d._t so the capture/release/refund propagates to the owner's dashboard + other devices (the client
+        // merges newest-wins on data._t), and net refunds out of revenue_cents so a refunded booking stops counting as revenue.
+        d._t = Date.now();
+        var _payRev = 0; for (var _rk in d.paid) { var _rp = d.paid[_rk]; if (_rp && !_rp.hold && _rk !== 'security') _payRev += (Number(_rp.amountCents) || 0) - ((_rp.refunded && Number(_rp.refunded.amountCents)) || 0); }
+        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), Math.max(0, _payRev), Date.now(), body.booking, ctx.tenant_id).run();
         await audit(env, ctx, req, 'pay.' + op, { booking: body.booking, kind: kind });
         if ((op === 'refund' || op === 'release') && d.custEmail) {
           const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
