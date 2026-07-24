@@ -4572,16 +4572,24 @@ function doReset(){
           const cap = Math.max(100, parseInt(env.DOMAIN_TESTBUY_CAP_CENTS, 10) || 800);   // hard ceiling so a test can NEVER overspend
           let dom = String(b.domain || '').toLowerCase().replace(/[^a-z0-9.-]/g, '').slice(0, 80);
           let picked = null, s = null;
+          // A search failure here is almost always Dynadot's TEMPORARY 429 IP rate-limit from setup lookups (self-clears
+          // in ~15-60 min, nothing charged) -- surface THAT honestly instead of a misleading "no cheap name"/"error".
+          const _is429 = function (e) { return /429|too many|rate.?limit|ip.*block|blocked/i.test(String(e || '')); };
+          const _rlMsg = 'The registrar is temporarily rate-limiting this IP (429) from setup/testing lookups -- this is NOT a key, secret, or charge problem. Wait ~15-60 minutes and try again; the block clears on its own and nothing was charged.';
           if (dom && dom.indexOf('.') > 0) {
             s = await _registrarSearch(env, dom);
-            if (!s.ok) return json({ ok: false, message: 'Could not price ' + dom + ': ' + (s.apiError || s.reason || 'error') });
+            if (!s.ok) return json({ ok: false, message: _is429(s.apiError || s.reason) ? _rlMsg : ('Could not price ' + dom + ': ' + (s.apiError || s.reason || 'error') + ' (nothing was charged -- try again shortly).') });
             if (!s.available) return json({ ok: false, message: dom + ' is taken -- try another name.' });
             picked = dom;
           } else {
             const CHEAP = ['xyz', 'click', 'link'];   // reliably cheap TLDs; auto-pick the first available under the cap (kept short to avoid re-tripping Dynadot rate limits)
             const rnd = 'atlastest' + String(randId(6)).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
-            for (let i = 0; i < CHEAP.length && !picked; i++) { const cand = rnd + '.' + CHEAP[i]; const cs = await _registrarSearch(env, cand); if (cs.ok && cs.available && (cs.costCents || 0) <= cap) { picked = cand; s = cs; } }
-            if (!picked) return json({ ok: false, message: 'Could not find a cheap available test name under $' + (cap / 100).toFixed(2) + ' right now -- type a .xyz name instead.' });
+            let _lastErr = null;
+            for (let i = 0; i < CHEAP.length && !picked; i++) { const cand = rnd + '.' + CHEAP[i]; const cs = await _registrarSearch(env, cand); if (cs.ok && cs.available && (cs.costCents || 0) <= cap) { picked = cand; s = cs; } else if (!cs.ok) { _lastErr = cs.apiError || cs.reason || null; } }
+            if (!picked) {
+              if (_lastErr) return json({ ok: false, message: _is429(_lastErr) ? _rlMsg : ('Could not reach the registrar to price a test name: ' + String(_lastErr).slice(0, 160) + '. Nothing was charged -- try again shortly.') });   // every auto-search errored (usually the 429) -> report the real reason, not "no cheap name"
+              return json({ ok: false, message: 'Could not find a cheap available test name under $' + (cap / 100).toFixed(2) + ' right now -- type a .xyz name instead.' });   // searches succeeded but names were taken/over cap
+            }
           }
           if ((s.costCents || 0) > cap) return json({ ok: false, message: picked + ' costs $' + ((s.costCents || 0) / 100).toFixed(2) + ', over the $' + (cap / 100).toFixed(2) + ' test cap. Type a cheaper .xyz/.click name, or raise DOMAIN_TESTBUY_CAP_CENTS.' });
           const _cost = Math.max(0, Math.round(s.costCents || 0));
