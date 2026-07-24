@@ -5180,7 +5180,10 @@ function doReset(){
       // works in TEST mode so the owner can rehearse the gate before flipping payments live). Both flags are cheap
       // _pcfgGet reads; everything below (the _cardGateStateForTenant call + its owner/comp fail-open posture) is
       // untouched -- only genuine no-card, non-owner, non-comped tenants are ever gated.
-      const _liveModeE = (await _pcfgGet(env, 'payments_test_mode', '0')) !== '1';
+      // Live mode = NOT in test mode AND a real platform Stripe key is actually configured. The PLATFORM_STRIPE_KEY
+      // guard means we never demand a card for a trial we cannot even charge (a mis-/un-configured platform, or the
+      // test harness) -- so this only bites once the owner is genuinely live. Mirrors _platStripe's own key selection.
+      const _liveModeE = ((await _pcfgGet(env, 'payments_test_mode', '0')) !== '1') && !!env.PLATFORM_STRIPE_KEY;
       const cardGateOn = _liveModeE || ((await _pcfgGet(env, 'trial_requires_card', '0')) === '1');
       if (cardGateOn && !_PAYMENT_OPEN.test(path)) {
         const _cs = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email);

@@ -1501,7 +1501,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM comp_grants/.test(sql)) return null;
           if (/plan,trial_ends,tier,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return {};   // #276 sees no plan column at all -> fails open 'ok'
           if (/card_on_file,stripe_sub FROM tenants WHERE id=\?/.test(sql)) return { card_on_file: 0, stripe_sub: null };
-          if (/FROM platform_config WHERE k=\?/.test(sql)) { if (a[0] === 'trial_requires_card') return cardOn ? { v: '1' } : null; if (a[0] === 'payment_gate_enabled') return { v: '1' }; return null; }
+          if (/FROM platform_config WHERE k=\?/.test(sql)) { if (a[0] === 'trial_requires_card') return cardOn ? { v: '1' } : null; if (a[0] === 'payment_gate_enabled') return { v: '1' }; if (a[0] === 'payments_test_mode') return { v: '1' }; return null; }   // TEST mode so Part E's live-mode card gate stays off -> this isolates the #280 trial_requires_card FLAG independence from #276
           if (/FROM rate_limits/.test(sql)) return null;
           if (/sqlite_master/.test(sql)) return { n: 30 };
           return null;
