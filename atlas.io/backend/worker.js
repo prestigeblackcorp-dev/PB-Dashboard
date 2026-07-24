@@ -1926,6 +1926,7 @@ async function _assetCapFor(env, tid) {
 }
 const CREDIT_PACK_CENTS = { '500': 2500, '2000': 8000, '5000': 17500 };
 const WEBSITE_ADDON_CENTS = { once: 19900, mo: 1900 };
+const ASSET_UNLOCK_CENTS = 1199;   // per-asset unlock: a downgraded tenant pays $11.99/mo per specific over-cap asset to keep it live/bookable instead of upgrading (owner directive) -- one independent Stripe subscription each, so their receipt names exactly which asset each charge is for
 function _planLabel(t) { return ({ starter: 'Starter', pro: 'Pro', enterprise: 'Enterprise', business: 'Business', unlimited: 'Enterprise Unlimited' })[t] || String(t || ''); }
 // DNS-over-HTTPS CNAME lookup (Cloudflare 1.1.1.1 JSON API) -> a REAL check that a tenant pointed their domain at us (not a cosmetic flag).
 async function _dohCname(name) {
@@ -2197,6 +2198,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN dunning_next INTEGER").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN dunning_attempts INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN dunning_last INTEGER").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN asset_unlocks TEXT").run(); } catch (e) { /* per-asset paid unlocks after a plan DOWNGRADE: JSON array [{name, sub, at, canceling}] -- each entry is its OWN $11.99/mo Stripe subscription that keeps that ONE over-cap asset live/bookable without upgrading. NULL/'[]' = none. */ }
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tenants_dunning ON tenants(plan, dunning_next)").run(); } catch (e) {}
   // Platform key/value config (feature flags like ai_hq_enabled live here; edited from the admin console).
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_config (k TEXT PRIMARY KEY, v TEXT, updated_at INTEGER)").run(); } catch (e) {}
@@ -3265,7 +3267,10 @@ function doReset(){
         // so a downgrade can't leave over-limit inventory bookable. cap 0 = uncapped (unlimited/comped) -> no change.
         const _fullPubAssets = pubSite.assets || [];
         const _acap = await _assetCapFor(env, trow.id);
-        const pubAssets = (_acap > 0 && _fullPubAssets.length > _acap) ? _fullPubAssets.slice(0, _acap) : _fullPubAssets;
+        const _unlockedNames = (_hqJson(trow.asset_unlocks, []) || []).map(function (u) { return u && u.name; }).filter(Boolean);   // per-asset paid unlocks ($11.99/mo each) -> these specific over-cap assets stay live/bookable (a `canceling` entry still counts until its sub actually ends)
+        const pubAssets = (_acap > 0 && _fullPubAssets.length > _acap)
+          ? _fullPubAssets.filter(function (a, i) { return i < _acap || (a && a.name && _unlockedNames.indexOf(a.name) >= 0); })
+          : _fullPubAssets;
         const cfg = pubSite.config || {};
 
         if (method === 'GET' && !sub) {
@@ -3597,6 +3602,17 @@ function doReset(){
                 await audit(env, { tenant_id: md.tenant }, req, 'domain.pending_registrar', { domain: md.domain });
               }
             }
+          } else if (T === 'checkout.session.completed' && md.billing === 'asset_unlock' && md.tenant && md.asset) {
+            // PER-ASSET UNLOCK started: record which over-cap asset this $11.99/mo subscription keeps live (keyed by name).
+            // Idempotent on a webhook replay AND on a re-unlock: upsert by name, (re)stamp the sub id, clear any `canceling`.
+            // The first month + every renewal BOOKS on invoice.paid below (mirrors website 'mo') -> no revenue txn here.
+            await ensurePlatformSchema(env);
+            const _aurow = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(md.tenant).first();
+            let _aul = _hqJson(_aurow && _aurow.asset_unlocks, []) || [];
+            if (_aul.some(function (u) { return u && u.name === md.asset; })) _aul = _aul.map(function (u) { return (u && u.name === md.asset) ? Object.assign({}, u, { sub: obj.subscription || u.sub, canceling: false }) : u; });
+            else _aul.push({ name: md.asset, sub: obj.subscription || null, at: Date.now() });
+            await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_aul), Date.now(), md.tenant).run();
+            await audit(env, { tenant_id: md.tenant }, req, 'billing.asset_unlock', { asset: md.asset });
           } else if (T === 'invoice.paid') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
             if (im.tenant && (im.billing === 'plan' || im.billing === 'trial') && Number(obj.amount_paid || 0) > 0) {   // ignore the $0 subscription_create invoice at trial start -- only a REAL charge (trial->paid conversion or a renewal) books revenue, flips to active, and emails a receipt. A trialing tenant stays 'trial' with a card on file until the first real charge.
@@ -3619,6 +3635,16 @@ function doReset(){
                 const _biz = await _tenantName(env, im.tenant);
                 let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
                 await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: _rcptPeriod(obj, '1 month'), card4: _c4, lineLabel: 'Atlas Rental.io hosted website - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
+            } else if (im.tenant && im.billing === 'asset_unlock' && Number(obj.amount_paid || 0) > 0) {
+              // PER-ASSET UNLOCK: the first month AND every monthly renewal book here (each invoice has a unique
+              // stripe_id -> recordTxn dedupes on webhook replay; receipt guarded on .new so a replay never re-emails).
+              const _autx = await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'asset_unlock', pack: im.asset || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              if (_autx && _autx.new) {
+                const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
+                const _biz = await _tenantName(env, im.tenant);
+                let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
+                await _sendAtlasReceipt(env, { to: im.email, ref: String(obj.number || sid || '').slice(-12).toUpperCase(), dateStr: _rcptDate(), business: _biz, period: _rcptPeriod(obj, '1 month'), card4: _c4, lineLabel: 'Atlas Rental.io asset unlock' + (im.asset ? (' - ' + im.asset) : '') + ' - monthly', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
+              }
             } else if (im.tenant && im.billing === 'domain' && obj.billing_reason === 'subscription_cycle' && !(await env.DB.prepare('SELECT 1 FROM platform_transactions WHERE stripe_id=? LIMIT 1').bind(sid).first())) {
               // YEARLY DOMAIN RENEWAL only (the initial year is registered + recorded by checkout.session.completed).
               // LAUNCH-FIX (sweep): the `&& !(already-recorded)` guard above makes this whole branch idempotent. Stripe delivers
@@ -3665,6 +3691,15 @@ function doReset(){
             // #280/#282: also clear website_sub (the sub is now fully dead) so a stale id never lingers for a future cancel attempt.
             await env.DB.prepare("UPDATE tenants SET website_addon=NULL, website_sub=NULL, updated_at=? WHERE id=? AND website_addon='mo'").bind(Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.website_cancelled', {});
+          } else if (T === 'customer.subscription.deleted' && md.billing === 'asset_unlock' && md.tenant) {
+            // a per-asset unlock subscription ended (owner relocked at period end, OR Stripe cancelled it after failed
+            // payment retries) -> drop that entry so the over-cap asset relocks. Match by SUB id (survives an asset rename).
+            await ensurePlatformSchema(env);
+            const _delrow = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(md.tenant).first();
+            let _dul = _hqJson(_delrow && _delrow.asset_unlocks, []) || [];
+            const _dbefore = _dul.length;
+            _dul = _dul.filter(function (u) { return !(u && u.sub === obj.id); });
+            if (_dul.length !== _dbefore) { await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_dul), Date.now(), md.tenant).run(); await audit(env, { tenant_id: md.tenant }, req, 'billing.asset_unlock_ended', { sub: obj.id }); }
           } else if (T === 'customer.subscription.trial_will_end') {
             const im = obj.metadata || {};
             if (im.tenant && im.email && env.RESEND_KEY) { try { await sendEmail(env, { to: im.email, fromName: 'Atlas Rental.io',
@@ -5364,7 +5399,7 @@ function doReset(){
 
       if (path === '/api/auth/me' && method === 'GET') {
         await ensurePlatformSchema(env);   // #278: this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady, see ensurePlatformSchema)
-        const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,tier,website_addon,brand,money,settings,tos_version,tos_accepted_at FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        const t = await env.DB.prepare('SELECT id,name,fleet_type,plan,trial_ends,tier,website_addon,asset_unlocks,brand,money,settings,tos_version,tos_accepted_at FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         // #276: same flag-gated computation as login/signup -- 'ok' whenever the gate is OFF. This is the endpoint
         // the client polls on window-focus to detect a mid-session lock clearing (billing fixed -> dismiss paywall).
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = _billingState(t, ctx.isOwner, ctx.comp); }
@@ -5376,7 +5411,7 @@ function doReset(){
         // #278: an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- only ENFORCEMENT (the 402s
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
-        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), assetCap: await _assetCapFor(env, ctx.tenant_id), assetUnlockCents: ASSET_UNLOCK_CENTS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
       }
 
       // ---- MFA: current status for Settings (authed; per-USER, not per-tenant -- any team member manages their own) ----
@@ -5680,7 +5715,7 @@ function doReset(){
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
           await ensurePlatformSchema(env);   // #278: this route never called it before -- guarantee the newly-migrated website_addon column exists before naming it below (cheap no-op once _pReady, see ensurePlatformSchema)
-          const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,brand,money,settings,tos_version FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan,tier,website_addon,asset_unlocks,brand,money,settings,tos_version FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
           // #278: websiteEntitled is an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- see the
           // matching note on /api/auth/me. This is the primary hydrate path (_srvHydrate -> S.websiteEntitled).
           // #282: a domain BOUGHT through us bills yearly on its OWN Stripe subscription (domains_sold.stripe_sub) -- surface
@@ -5688,7 +5723,7 @@ function doReset(){
           // Rows already scheduled to lapse are stamped status='canceling' by /api/billing/domain-cancel and excluded here.
           let _domRenew282 = null;
           try { const _dr282 = await env.DB.prepare("SELECT domain FROM domains_sold WHERE tenant_id=? AND stripe_sub IS NOT NULL AND status NOT IN ('canceling','canceled','renew_failed') ORDER BY created_at DESC LIMIT 1").bind(ctx.tenant_id).first(); if (_dr282 && _dr282.domain) _domRenew282 = _dr282.domain; } catch (e) {}
-          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, assetCap: t ? await _assetCapFor(env, ctx.tenant_id) : null, assetUnlocks: t ? (_hqJson(t.asset_unlocks, []) || []) : [], assetUnlockCents: ASSET_UNLOCK_CENTS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
         }
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -5980,6 +6015,24 @@ function doReset(){
           amountCents = dcents; name = 'Domain - ' + _dom + ' (billed yearly)';
           mode = 'subscription'; interval = 'year';   // domains renew EVERY YEAR -> yearly subscription (never one-time "lifetime")
           meta.billing = 'domain'; meta.domain = _dom; meta.cost = String(_domCost);
+        } else if (kind === 'asset_unlock') {
+          // PER-ASSET UNLOCK ($11.99/mo): after a plan DOWNGRADE, keep ONE specific over-cap asset live/bookable
+          // without upgrading. Each unlock is its OWN monthly subscription (metadata carries the asset name) so the
+          // owner's receipts + Stripe name exactly which asset each charge is for, and Relock cancels exactly that one.
+          await ensurePlatformSchema(env);
+          const _an = String(body.asset || '').trim().slice(0, 120);
+          if (!_an) return err(400, 'Which asset do you want to unlock?');
+          const _tu = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          const _ul = _hqJson(_tu && _tu.asset_unlocks, []) || [];
+          if (_ul.some(function (u) { return u && u.name === _an; })) return err(409, 'That asset is already unlocked.');   // no 2nd sub for the same asset (a `canceling` one still counts until it ends -> use Resume, not a new checkout)
+          const _cap = await _assetCapFor(env, ctx.tenant_id);
+          const _cntRow = await env.DB.prepare('SELECT COUNT(*) c FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).first();
+          const _total = (_cntRow && _cntRow.c) || 0;
+          if (_cap === 0 || _total <= _cap) return err(400, 'Your plan already covers all your assets - no unlock needed.');   // cheap over-cap guard (total count; publish order decides exactly which are hidden, but this blocks a pointless charge)
+          const _exists = await env.DB.prepare('SELECT 1 FROM assets WHERE tenant_id=? AND name=? LIMIT 1').bind(ctx.tenant_id, _an).first();
+          if (!_exists) return err(404, 'That asset was not found.');
+          amountCents = ASSET_UNLOCK_CENTS; name = 'Atlas Rental.io asset unlock - ' + _an; mode = 'subscription'; interval = 'month';
+          meta.billing = 'asset_unlock'; meta.asset = _an;
         } else { return err(400, 'Unknown purchase kind.'); }
         const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
           successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : ''),
@@ -5987,6 +6040,30 @@ function doReset(){
         if (!co.ok) return err(502, 'Could not start checkout: ' + co.reason);
         await audit(env, ctx, req, 'billing.checkout', { kind: kind, tier: body.tier, pack: body.pack });
         return json({ ok: true, url: co.url });
+      }
+
+      // ---- RELOCK (or RESUME) a per-asset unlock: cancel_at_period_end on that ONE asset's $11.99/mo subscription.
+      // Policy #282 (keep access to the paid-through date, no refund): the asset stays live until the period ends, then
+      // relocks when Stripe fires subscription.deleted. resume:true un-cancels it. No new charge either way. ----
+      if (path === '/api/billing/asset-relock' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'billing')) return err(403, 'Billing permission required.');
+        if (!await rateLimit(env, 'brelk:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');
+        await ensurePlatformSchema(env);
+        const cb = await req.json().catch(() => ({}));
+        const _an = String(cb.asset || '').trim().slice(0, 120);
+        const _resume = cb.resume === true || cb.resume === '1';
+        const _t = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        let _ul = _hqJson(_t && _t.asset_unlocks, []) || [];
+        const _e = _ul.filter(function (u) { return u && u.name === _an; })[0];
+        if (!_e || !_e.sub) return json({ ok: true, message: 'That asset is not unlocked.' });   // idempotent: nothing to cancel
+        const _r = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(_e.sub), 'cancel_at_period_end=' + (_resume ? 'false' : 'true'));
+        if (!_r.ok) return err(502, 'Could not update the unlock right now - please try again.');
+        _ul = _ul.map(function (u) { return (u && u.name === _an) ? Object.assign({}, u, { canceling: !_resume }) : u; });
+        await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_ul), Date.now(), ctx.tenant_id).run();
+        await audit(env, ctx, req, _resume ? 'billing.asset_unlock_resumed' : 'billing.asset_relock', { asset: _an });
+        return json({ ok: true, canceling: !_resume, message: _resume ? 'This asset will stay unlocked - billing continues.' : 'Done. This asset stays live until the current paid period ends, then relocks. No further charges.' });
       }
 
       // ---- upgrade / downgrade an EXISTING subscription IN PLACE (proration) so a plan change never creates a duplicate subscription ----
@@ -6042,6 +6119,24 @@ function doReset(){
              : "UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?");
         await env.DB.prepare(_planSql).bind(tier, Date.now(), ctx.tenant_id).run();
         await audit(env, ctx, req, 'billing.change_plan', { tier: tier, was_past_due: _wasPastDue, settled: _settled });
+        // UPGRADE RECONCILE: if the NEW plan now covers EVERY asset, the per-asset unlock subscriptions are redundant --
+        // cancel each at period end (no further $11.99 charges; the asset stays live, now covered by the plan cap). The
+        // subscription.deleted webhook drops the entries when they end. Best-effort; never blocks the plan-change response.
+        try {
+          const _ncap = await _assetCapFor(env, ctx.tenant_id);   // reads the tier just written above
+          const _ur = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          let _uul = _hqJson(_ur && _ur.asset_unlocks, []) || [];
+          if (_uul.length) {
+            const _cntU = await env.DB.prepare('SELECT COUNT(*) c FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).first();
+            const _totU = (_cntU && _cntU.c) || 0;
+            if (_ncap === 0 || _totU <= _ncap) {   // fully covered -> stop every per-asset charge
+              for (var _i = 0; _i < _uul.length; _i++) { if (_uul[_i] && _uul[_i].sub && !_uul[_i].canceling) { try { await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(_uul[_i].sub), 'cancel_at_period_end=true'); } catch (e) {} } }
+              _uul = _uul.map(function (u) { return u ? Object.assign({}, u, { canceling: true }) : u; });
+              await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_uul), Date.now(), ctx.tenant_id).run();
+              await audit(env, ctx, req, 'billing.asset_unlocks_reconciled', { tier: tier, count: _uul.length });
+            }
+          }
+        } catch (e) {}
         if (_wasPastDue && !_settled) return json({ ok: true, changed: true, tier: tier, past_due: true, message: 'Your plan was changed to ' + _planLabel(tier) + ', but there is still an unpaid balance on your previous invoice' + (_stillOwedCents ? (' ($' + (_stillOwedCents / 100).toFixed(2) + ')') : '') + '. Please update your card to settle it and restore full access.' });
         return json({ ok: true, changed: true, tier: tier });
       }
