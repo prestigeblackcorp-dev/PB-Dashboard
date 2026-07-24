@@ -1830,7 +1830,17 @@ const Atlas = (function(){
   }
   function _srvUnshape(kind,row){ try{
     if(kind==='assets'){ var i=row.info; var o=i?(typeof i==='string'?JSON.parse(i):i):null; return o||{id:row.id,name:row.name,type:row.type,status:row.status,rate:(row.day_rate_cents||0)/100}; }
-    var d=row.data; var b=d?(typeof d==='string'?JSON.parse(d):d):null; return b||{id:row.id,status:row.status};
+    var d=row.data; var b=d?(typeof d==='string'?JSON.parse(d):d):null; if(!b||typeof b!=='object') b={id:row.id,status:row.status};
+    if(kind==='bookings'){   // CORE-LOOP FIX: the worker stores a booking's id/starts/ends/status/created as D1 COLUMNS; a WEBSITE-origin booking's data blob omits them, so graft them on -> otherwise _srvMergeColl drops the row on a falsy .id and every "book on your site" reservation vanishes from the dashboard/calendar/KPIs.
+      if(b.id==null && row.id!=null) b.id=row.id;
+      if(b.startTs==null && Number.isFinite(row.starts)) b.startTs=row.starts;
+      if(b.endTs==null && Number.isFinite(row.ends)) b.endTs=row.ends;
+      if(b.createdAt==null && Number.isFinite(row.created_at)) b.createdAt=row.created_at;
+      if(!b.status && row.status) b.status=row.status;
+      if(!b.phone && b.custPhone) b.phone=b.custPhone;                       // website intake stores custPhone; the owner view reads b.phone
+      if(b._t==null && Number.isFinite(row.updated_at)) b._t=row.updated_at; // let the newest-wins merge see a server timestamp
+    }
+    return b;
   }catch(e){ return {id:row.id}; } }
   function _srvMirror(kind,item,hk,hv){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
     // #294 Gap 4: record the "synced" hash ONLY after the server actually accepted the write. If the PUT/POST fails
@@ -1875,6 +1885,7 @@ const Atlas = (function(){
       if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
       if(r[2].json && typeof r[2].json.websiteEntitled==='boolean'){ try{ var _wb=_lsGet('atlas_tenant_'+tid,null); if(_wb){ _wb.websiteEntitled=r[2].json.websiteEntitled; _lsSet('atlas_tenant_'+tid,_wb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.websiteEntitled=r[2].json.websiteEntitled; } }catch(e){} }   // #278: adopt server-authoritative website entitlement (owner/comp/tier/website_addon) on hydrate -- same pattern as credits/plan above
       if(r[2].json && ('domainRenewal' in r[2].json)){ try{ var _dvR=r[2].json.domainRenewal||null; var _dwb=_lsGet('atlas_tenant_'+tid,null); if(_dwb){ _dwb.domainRenewal=_dvR; _lsSet('atlas_tenant_'+tid,_dwb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.domainRenewal=_dvR; } }catch(e){} }   // #282: adopt server-authoritative billed-domain (self-cancellable yearly renewal); null once cancelled -> Add-ons control clears on next hydrate
+      if(r[2].json){ try{ if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ if('assetCap' in r[2].json) S.assetCap=r[2].json.assetCap; if(typeof r[2].json.assetUnlockCents==='number') S.assetUnlockCents=r[2].json.assetUnlockCents; if(Array.isArray(r[2].json.assetUnlocks)) S.assetUnlocks=r[2].json.assetUnlocks; if(typeof renderFleet==='function' && document.getElementById('assetGrid')) renderFleet(); } }catch(e){} }   // per-asset unlock: adopt server plan cap + $11.99/mo unlocks so the Fleet lock UI is authoritative; re-render if the fleet is open
       try{ var _pc=r[2].json&&r[2].json.policyCurrent, _pa=r[2].json&&r[2].json.policyAccepted; if(_pc && _pa!==_pc){ _showPolicyBanner(_pc); } else { _hidePolicyBanner(); } }catch(e){}   // #254: re-prompt acceptance whenever the published policy version moved past what this tenant last accepted
     }).catch(function(){}); }
   // #254 Compliance: dismissible re-accept banner shown when the tenant's accepted ToS/Privacy version != the current one.
@@ -4102,13 +4113,48 @@ const Atlas = (function(){
       return '<div class="doc-log-row"><div style="min-width:0"><b style="color:var(--ink);font-size:13.5px">'+esc(a.name)+'</b><div style="font-size:12px;color:var(--muted)">'+esc((a.tenant&&a.tenant.name)||ag.to||'-')+' &middot; '+when+'</div></div><div style="display:flex;gap:8px;align-items:center;flex:none">'+st+act+'</div></div>';
     }).join(''); }
     return '<div class="set-block"><h3>Signed documents &amp; activity</h3><div class="desc">Every agreement you send is tracked here &mdash; sent, opened and signed, each timestamped, saved and downloadable.</div>'+body+'</div>'; }
+  // ---- Per-asset unlock ($11.99/mo each): after a plan DOWNGRADE a tenant keeps SPECIFIC over-cap assets live on their
+  // booking site without upgrading. Mirrors the worker public-path cap (first _acap by publish order stay live; the rest
+  // hide unless individually unlocked). Server is authoritative -- assetCap/assetUnlocks arrive via /api/tenant/profile. ----
+  var _fleetOverCapSet={}, _fleetUnlockMap={};
+  function _assetCapNum(){ if(typeof S!=='undefined'&&S&&typeof S.assetCap==='number') return S.assetCap; var v=(typeof _vehCap==='function')?_vehCap():0; return v===Infinity?0:v; }   // server cap wins; 0 = unlimited
+  function _assetUnlocks(){ return (typeof S!=='undefined'&&S&&Array.isArray(S.assetUnlocks))?S.assetUnlocks:[]; }
+  function _assetUnlockMap(){ var m={}; _assetUnlocks().forEach(function(u){ if(u&&u.name) m[u.name]=u; }); return m; }
+  function _assetUnlockPrice(){ var c=(typeof S!=='undefined'&&S&&S.assetUnlockCents)||1199; return '$'+(c/100).toFixed(2); }
+  function _overCapNames(){ var cap=_assetCapNum(); if(!cap||cap<=0) return []; var pub=(typeof _publicSiteAssets==='function')?_publicSiteAssets():[]; if(pub.length<=cap) return []; var um=_assetUnlockMap(), out=[]; pub.forEach(function(a,i){ if(i>=cap && !um[a.name]) out.push(a.name); }); return out; }
+  function _assetCardLock(a){ if(!a) return '';
+    var uEnt=_fleetUnlockMap[a.name];
+    if(uEnt){ var canc=!!uEnt.canceling;
+      return '<div onclick="event.stopPropagation()" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 12px;border-top:1px solid var(--line);background:rgba(30,110,78,.08);font-size:11px;font-weight:700;color:var(--brand-700)">'
+        +'<span>&#10003; Unlocked'+(canc?' <span style="color:var(--muted);font-weight:600">&middot; relocks at period end</span>':' <span style="color:var(--muted);font-weight:600">&middot; '+_assetUnlockPrice()+'/mo</span>')+'</span>'
+        +'<a onclick="Atlas.relockAsset(\''+a.id+'\','+(canc?'true':'false')+')" style="color:'+(canc?'var(--brand-700)':'var(--muted)')+';text-decoration:underline;cursor:pointer;white-space:nowrap">'+(canc?'Keep unlocked':'Relock')+'</a></div>'; }
+    if(_fleetOverCapSet[a.name]){
+      return '<div onclick="event.stopPropagation();Atlas.unlockAsset(\''+a.id+'\')" title="Over your plan cap - hidden from your public booking site" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 12px;border-top:1px solid var(--line);background:rgba(180,83,9,.10);font-size:11px;font-weight:700;color:#9a3412;cursor:pointer">'
+        +'<span>&#128274; Hidden &middot; over plan cap</span>'
+        +'<span style="background:var(--brand-700);color:#fff;padding:3px 9px;border-radius:999px;white-space:nowrap">Unlock '+_assetUnlockPrice()+'/mo</span></div>'; }
+    return ''; }
+  function unlockAsset(id){ if(!_guard('billing','Managing billing'))return; var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a){ toast('That '+_fterm('noun')+' was not found'); return; }
+    if(!ATLAS_BACKEND||!_apiCsrf){ toast('Connect your Atlas backend to unlock '+S.fleet.nouns+'.'); return; }
+    if(!confirm('Unlock "'+a.name+'" for '+_assetUnlockPrice()+'/month?\n\nThis keeps this specific '+_fterm('noun')+' live on your booking site without upgrading your plan. Relock anytime \u2014 you keep it through the period you paid for, no refund.')) return;
+    _billingCheckout('asset_unlock',{asset:a.name}); }   // reuses the native-app-safe checkout redirect
+  function relockAsset(id,resume){ if(!_guard('billing','Managing billing'))return; var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a||!ATLAS_BACKEND||!_apiCsrf) return;
+    if(!resume && !confirm('Relock "'+a.name+'"?\n\nIt stays live until the current paid period ends, then hides from your booking site. No further charges.')) return;
+    toast(resume?'Resuming\u2026':'Updating\u2026');
+    _api('/api/billing/asset-relock',{method:'POST',body:{asset:a.name,resume:!!resume}}).then(function(res){
+      if(res.json&&res.json.ok){ toast(res.json.message||'Updated'); var tid=store.session()&&store.session().tenantId; _srvHydrate(tid).then(function(){ if(typeof renderFleet==='function' && document.getElementById('assetGrid')) renderFleet(); }); }
+      else toast((res.json&&(res.json.error||res.json.message))||'Could not update \u2014 please try again'); }).catch(function(){ toast('Network error'); }); }
   function _assetCard(a){ var ten=a.tenant&&a.tenant.name;
     return `<div class="asset" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
       <div class="asset__img"${a.photo?` style="background-image:url('${_cssUrl(a.photo)}');background-size:cover;background-position:center"`:''}>${a.photo?'':`<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`}
       <span class="chip chip--${a.status==='Available'?'ok':a.status==='Maintenance'?'warn':'info'}" style="position:absolute;top:10px;left:10px"><span class="dot"></span>${a.status}</span></div>
-      <div class="asset__body"><b>${esc(a.name)}</b>${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(_fterm('book')==='reservation'?'Tenant':'Renter')}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div></div>`; }
+      <div class="asset__body"><b>${esc(a.name)}</b>${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(_fterm('book')==='reservation'?'Tenant':'Renter')}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div>${_assetCardLock(a)}</div>`; }
   function renderFleet(){
     var capN=_vehCap(), capTxt=(capN===Infinity)?'unlimited':capN, n=DATA.assets.length, avail=DATA.assets.filter(function(a){return a.status==='Available';}).length;
+    _fleetUnlockMap=_assetUnlockMap(); _fleetOverCapSet={}; _overCapNames().forEach(function(nm){ _fleetOverCapSet[nm]=1; });   // per-asset unlock: which over-cap assets are hidden from the booking site (server-authoritative cap)
+    var _lockedCt=Object.keys(_fleetOverCapSet).length;
+    var _lockBanner=(_lockedCt>0)?('<div style="grid-column:1/-1;display:flex;gap:6px 12px;align-items:center;flex-wrap:wrap;background:rgba(180,83,9,.10);color:#7c2d12;border:1px solid rgba(180,83,9,.28);border-radius:12px;padding:10px 13px;font-size:12.5px;margin-bottom:2px">'
+      +'<b style="font-weight:800">&#128274; '+_lockedCt+' '+esc(_lockedCt===1?S.fleet.noun:S.fleet.nouns)+' hidden from your booking site</b>'
+      +'<span style="color:#9a3412">over your '+esc(_curTier().name)+' plan cap. Unlock the ones you need at '+_assetUnlockPrice()+'/mo each, or <a onclick="Atlas.promptUpgrade(\'vehicles\')" style="color:#7c2d12;text-decoration:underline;cursor:pointer;font-weight:700">upgrade your plan</a>.</span></div>'):'';
     var locs=_assetLocs(), locsEl=document.getElementById('fleetLocs'), grid=document.getElementById('assetGrid');
     if(locs){ var names=Object.keys(locs);
       document.getElementById('fleetSub').textContent=`${n} ${S.fleet.nouns} across ${names.length} ${_fterm(names.length===1?'loc':'locs')} on ${_curTier().name} \u00b7 ${avail} available now`;
@@ -4119,13 +4165,13 @@ const Atlas = (function(){
           <div class="bar"><i style="width:${occ}%"></i></div></div>`; }).join('')+'</div>';
       var list=_fleetLocFilter?DATA.assets.filter(function(a){return a.loc===_fleetLocFilter;}):DATA.assets;
       var shown=list.slice(0,24), more=list.length-shown.length;
-      grid.innerHTML='<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(S.fleet.nouns)))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+list.length+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+esc(_fleetLocFilter).replace(/'/g,"\\'")+'\')">Show all</button>':'')+'</div>'
+      grid.innerHTML=_lockBanner+'<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(S.fleet.nouns)))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+list.length+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+esc(_fleetLocFilter).replace(/'/g,"\\'")+'\')">Show all</button>':'')+'</div>'
         +shown.map(_assetCard).join('')
         +(more>0?'<div style="grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:10px">+ '+more+' more '+esc(S.fleet.nouns)+(_fleetLocFilter?'':' \u2014 tap a '+_fterm('loc')+' above to filter')+'</div>':'');
     } else {
       locsEl.innerHTML='';
       document.getElementById('fleetSub').textContent=`${n} of ${capTxt} ${S.fleet.nouns} on ${_curTier().name} \u00b7 ${avail} available now`;
-      grid.innerHTML=DATA.assets.length?DATA.assets.map(_assetCard).join(''):'<div class="empty" style="grid-column:1/-1"><div class="empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13l2-5h14l2 5v5H3zM7 18a2 2 0 100-4 2 2 0 000 4zM17 18a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div><h3>No '+esc(S.fleet.nouns)+' yet</h3><p>Add your first '+esc(S.fleet.noun)+' to start taking bookings &mdash; you can bulk-import the rest later.</p><button class="btn btn--primary" onclick="Atlas.addVehicle()">Add your first '+esc(S.fleet.noun)+'</button></div>';
+      grid.innerHTML=DATA.assets.length?(_lockBanner+DATA.assets.map(_assetCard).join('')):'<div class="empty" style="grid-column:1/-1"><div class="empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13l2-5h14l2 5v5H3zM7 18a2 2 0 100-4 2 2 0 000 4zM17 18a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div><h3>No '+esc(S.fleet.nouns)+' yet</h3><p>Add your first '+esc(S.fleet.noun)+' to start taking bookings &mdash; you can bulk-import the rest later.</p><button class="btn btn--primary" onclick="Atlas.addVehicle()">Add your first '+esc(S.fleet.noun)+'</button></div>';
     }
   }
   /* ---- Bookings module (persisted per-tenant collection, priced by the money engine) ---- */
@@ -6449,7 +6495,7 @@ const Atlas = (function(){
     return [
       { ok:A>0, key:'fleet', label:'Add your first '+esc(noun), detail:A>0?(A+' in your fleet'):('Your fleet is empty -- customers can only book what you list.') },
       { ok:(Number(m.baseRate)||0)>0, key:'money', label:'Set your pricing', detail:(Number(m.baseRate)||0)>0?('Base rate is set'):('No base rate yet -- Atlas needs to know what you charge to quote a booking.') },
-      { ok:(Number(m.deposit)||0)>0||!!m.protection, key:'money', label:'Turn on a deposit or protection', detail:((Number(m.deposit)||0)>0||m.protection)?('Covered'):('No security deposit or damage protection -- this is your safety net.') },
+      { ok:(m.deposit&&m.deposit.mode&&m.deposit.mode!=='none')||!!m.protection, key:'money', label:'Turn on a deposit or protection', detail:((m.deposit&&m.deposit.mode&&m.deposit.mode!=='none')||m.protection)?('Covered'):('No security deposit or damage protection -- this is your safety net.') },
       { ok:!!b.logo, key:'brand', label:'Upload your logo', detail:b.logo?('Set'):('No logo -- your brand shows on your site, portal and receipts.') },
       { ok:!!pay.provider, key:'pay', label:'Connect payments', detail:pay.provider?('Connected'):('Connect Stripe so you actually get paid, not just quoted.') },
       { ok:sitePub, key:'site', label:'Publish your booking site', detail:sitePub?('Live'):('Your public booking link is not live yet -- publish to start taking bookings.') }
@@ -9054,7 +9100,7 @@ const Atlas = (function(){
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
-    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,openWebsite,
+    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,

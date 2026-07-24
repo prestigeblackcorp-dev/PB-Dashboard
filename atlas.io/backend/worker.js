@@ -3479,6 +3479,18 @@ function doReset(){
               d.paid[md.kind || 'payment'] = { at: Date.now(), amountCents: amt, stripe: obj.id || '', pi: pi, hold: (_isSec && md.hold === '1') };
               var _revSum = 0; for (var _pk in d.paid) { var _pp = d.paid[_pk]; if (_pp && !_pp.hold && _pk !== 'security') _revSum += (Number(_pp.amountCents) || 0); }
               const rev = _revSum;
+              // CORE-LOOP FIX: reflect the payment in the OWNER'S dashboard, not just the D1 columns. The client reads
+              // paid-state from d.portal.*PaidAt + d.status and adopts a server row only when d._t is newer -- so update
+              // the BLOB (not only the columns) and bump _t, otherwise a real online payment shows as "unpaid" forever.
+              if (!(_isSec && md.hold === '1')) {   // an authorized (uncaptured) security HOLD is not captured money
+                d.portal = d.portal || {};
+                const _pkind = md.kind || 'payment';
+                if (_pkind === 'balance') d.portal.balancePaidAt = d.portal.balancePaidAt || Date.now();
+                else if (_pkind === 'security') d.portal.depositPaidAt = d.portal.depositPaidAt || Date.now();   // captured refundable deposit
+                else d.portal.reservePaidAt = d.portal.reservePaidAt || Date.now();   // deposit/reserve down-payment or generic payment
+                if (_pkind !== 'security') d.status = 'Confirmed';   // a real reserve/balance/payment confirms the booking; a security-deposit capture alone does not
+              }
+              d._t = Date.now();
               await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?')
                 .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant).run();
               const tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(md.tenant).first();
@@ -3741,7 +3753,13 @@ function doReset(){
             }
           } else if (T === 'invoice.payment_failed') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || {};
-            if (im.tenant) {
+            // CORE-FIX: gate delinquency to the PLAN/TRIAL subscription only. A failed $11.99 asset-unlock, $19 website,
+            // or domain-renewal invoice must NOT flip the whole tenant to past_due / start dunning / send the "your
+            // payment didn't go through -- switch to a cheaper plan" email; those ancillary subs relock or expire via
+            // their own customer.subscription.updated/deleted handlers. Without this gate, once the launch paywall +
+            // site-takedown flags are ON, a declined add-on charge would lock the dashboard AND take the public booking
+            // site offline for a tenant whose PLAN is fully paid. (metadata.billing rides on every sub via subscription_data[metadata].)
+            if (im.tenant && (im.billing === 'plan' || im.billing === 'trial')) {
               await audit(env, { tenant_id: im.tenant }, req, 'billing.payment_failed', {});
               // #276: a real subscriber whose charge failed is delinquent -> mark past_due so the (flag-gated) payment
               // gate can lock them until they fix their card, and so the master-dash past_due list + MRR stop counting
@@ -5940,6 +5958,11 @@ function doReset(){
             const _cap = await _assetCapFor(env, ctx.tenant_id);
             if (_cap > 0) { const _cnt = await env.DB.prepare('SELECT COUNT(*) AS n FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).first(); if (_cnt && _cnt.n >= _cap) return err(402, 'Your plan allows up to ' + _cap + ' items - upgrade to add more.'); }
           }
+          // CORE-LOOP FIX: mint a portal_token for owner-created bookings too (website bookings already get one at
+          // intake). Without it, /api/portal/<token> is unreachable for phone / walk-in / admin-entered bookings, so
+          // the customer can never sign, pay a balance, or upload ID online -- the branded portal only worked for
+          // web-originated bookings. Additive: a re-POST of an existing id already returned via the UPDATE branch above.
+          if (coll === 'bookings' && cols.indexOf('portal_token') < 0) { cols.push('portal_token'); vals.push(randId(24)); }
           // ONE atomic insert: base columns + all provided fields (respects NOT NULL constraints)
           const allCols = ['id', 'tenant_id', 'created_at'].concat(hasUpd ? ['updated_at'] : []).concat(cols);
           const allVals = [rid, ctx.tenant_id, now].concat(hasUpd ? [now] : []).concat(vals);
