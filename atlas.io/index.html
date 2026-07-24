@@ -7,6 +7,7 @@
 <link rel="manifest" href="atlas-manifest.json">
 <meta name="theme-color" content="#1E6E4E">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Atlas">
 <link rel="icon" href="atlas-icon.svg" type="image/svg+xml">
@@ -595,6 +596,21 @@ table.tbl{width:100%;border-collapse:collapse}
 .verify-card p{color:var(--muted,#5c6b63);font-size:14.5px;margin:0 0 18px;line-height:1.5}
 .verify-hint{font-size:12.5px;margin:14px 0 0!important}
 .pay-gate{background:rgba(12,20,16,.92)}
+/* ===== FUNNEL app-feel on phones: auth / verify / plan-picker / onboarding go FULL-BLEED and clear the notch + home-indicator (safe-area), so signing up and building the first dashboard feels like a native app -- not a website floating a card. Phones only (<=640px); tablets keep the centered card since it reads well on a big screen. ===== */
+@media(max-width:640px){
+  .auth-wrap{align-items:stretch;padding:0;background:var(--paper)}
+  .auth-card{max-width:none;min-height:100vh;min-height:100dvh;border:0;border-radius:0;box-shadow:none;display:flex;flex-direction:column;padding:calc(20px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom))}
+  .auth-card h2{font-size:25px}
+  .auth-card .btn--lg{padding:16px 24px}
+  .verify-gate{padding:0}
+  .verify-card{max-width:none;min-height:100vh;min-height:100dvh;border:0;border-radius:0;box-shadow:none;display:flex;flex-direction:column;justify-content:center;padding:calc(26px + env(safe-area-inset-top)) 22px calc(26px + env(safe-area-inset-bottom))}
+  .pay-gate{padding:0}
+  .pay-gate>div{padding:calc(18px + env(safe-area-inset-top)) 16px calc(22px + env(safe-area-inset-bottom))}
+  .ob-top{padding:calc(14px + env(safe-area-inset-top)) 15px 12px}
+  .ob-wrap{padding:10px 15px calc(88px + env(safe-area-inset-bottom))}
+  .ob-card{border:0;border-radius:0;box-shadow:none;padding:6px 2px;background:transparent}
+  .ob-card h2{font-size:23px}
+}
 .pay-ic{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;background:#FBEAEA;color:#C0392B;display:grid;place-items:center}
 .tk-row{display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--line,#e5e1d8);border-radius:11px;margin-bottom:8px;cursor:pointer;background:var(--surface,#fff)}
 .tk-row:hover{border-color:var(--brand,#1E6E4E)}
@@ -1728,6 +1744,7 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" style="margin:0 0 14px">'+what+' are managed on your Atlas website so the app stays free of app-store fees. Open atlasrental.io to make changes &mdash; same account, and everything syncs right back here.</div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.closeModal();Atlas._openWeb(\'/?manage=1\')">Open atlasrental.io</button></div>'); }
   var _apiCsrf=null;
+  var _bootSync=false;   // GAP-1: true only during the on-boot re-hydrate, so a boot-race profile edit can't push a stale whole-profile blob over newer server data before the merge lands
   function setBackend(on){ ATLAS_BACKEND=!!on; }
   function _api(path,opts){ opts=opts||{}; var h={'Content-Type':'application/json'};
     if(_apiCsrf && opts.method && opts.method!=='GET') h['X-CSRF-Token']=_apiCsrf;
@@ -1773,7 +1790,39 @@ const Atlas = (function(){
   // Local-first stays the instant render; the server MERGES newest-wins per record on login (never blind-overwrite,
   // never drops a local-only or newer local record). Customers are derived from bookings, so they ride along for free.
   var _pushedHash={}; var _syncTimer=null;
-  function _srvSyncSoon(){ if(!ATLAS_BACKEND||!_apiCsrf||_syncTimer) return; _syncTimer=setTimeout(function(){ _syncTimer=null; try{ _srvSyncPush(); }catch(e){} }, 1500); }
+  // #294 CROSS-DEVICE DATA SAFETY. Monotonic sync clock: never emit a timestamp <= the highest we have seen (locally OR
+  // from the server), so a device with a skewed/slow clock can't stamp a stale edit that then wins a newest-wins merge.
+  // Per-key profile timestamps (_pushedKeys + S._kt) make the profile merge FIELD-LEVEL instead of whole-blob, so two
+  // devices editing DIFFERENT settings never clobber each other. _profileHydrated gates the first profile push behind a
+  // verified server read so a fresh/unhydrated device can't overwrite the real server profile with an empty one.
+  var _lastSyncT=0, _pushedKeys={}, _profileHydrated=false;
+  function _monoNow(){ var n=Date.now(); if(n<=_lastSyncT) n=_lastSyncT+1; _lastSyncT=n; return n; }
+  function _seenT(t){ t=Number(t)||0; if(t>_lastSyncT) _lastSyncT=t; }
+  function _srvSyncSoon(){ if(!ATLAS_BACKEND||!_apiCsrf||_syncTimer) return; _syncTimer=setTimeout(function(){ _syncTimer=null; try{ _offloadThenPush(); }catch(e){ try{_srvSyncPush();}catch(_){} } }, 1500); }   // #295: offload big inline blobs to R2 BEFORE pushing, so the row stays small and always syncs
+  // #295 BIG-BLOB OFFLOAD: keep D1 rows small (and always syncable) by moving large inline base64 photos / signatures /
+  // PDFs out to R2 and storing the capability URL instead. Runs opportunistically before each push -- once a blob is a
+  // URL it is skipped, so each file uploads exactly once. Degrades safely: a failed/absent upload leaves the base64 in
+  // place (still works locally + retries next sync), so a photo is NEVER lost. Only the worker's MIME allow-list types
+  // (jpg/png/webp/pdf) are offloaded; anything else stays inline.
+  var _OFFLOAD_MIN=60000, _offloading=false;   // ~45KB binary; smaller stays inline (icons / tiny thumbnails)
+  function _isBigDataUri(v){ return typeof v==='string' && v.length>_OFFLOAD_MIN && /^data:(image\/(jpe?g|png|webp)|application\/pdf);base64,/i.test(v); }
+  function _uploadBlob(dataUri,name){ return _api('/api/files',{method:'POST',body:{data:dataUri,name:(name||'file')}}).then(function(res){ return (res&&res.json&&res.json.ok&&res.json.url)?res.json.url:null; }).catch(function(){ return null; }); }
+  async function _offloadObj(obj){ var changed=false;
+    async function walk(o){ if(!o||typeof o!=='object') return; var keys=Object.keys(o);
+      for(var i=0;i<keys.length;i++){ var k=keys[i], v=o[k];
+        if(_isBigDataUri(v)){ var u=await _uploadBlob(v,String(k)); if(u){ o[k]=u; changed=true; } }
+        else if(v&&typeof v==='object'){ await walk(v); } } }
+    await walk(obj); return changed; }
+  async function _offloadThenPush(){ if(!(ATLAS_BACKEND&&_apiCsrf)) return; if(_offloading){ try{_srvSyncPush();}catch(e){} return; } _offloading=true;
+    try{
+      var bs=(typeof _bookings==='function'?_bookings():[])||[]; var as=(typeof DATA!=='undefined'&&DATA.assets)||[]; var chg=false;
+      for(var i=0;i<bs.length;i++){ if(await _offloadObj(bs[i])) chg=true; }
+      for(var j=0;j<as.length;j++){ if(await _offloadObj(as[j])) chg=true; }
+      if(S&&S.brand&&_isBigDataUri(S.brand.logo)){ var lu=await _uploadBlob(S.brand.logo,'logo'); if(lu){ S.brand.logo=lu; chg=true; } }
+      if(chg){ var s=store.session(); if(s){ if(bs.length)_lsSet('atlas_bookings_'+s.tenantId,bs); if(as.length)_lsSet('atlas_assets_'+s.tenantId,as); if(S)_lsSet('atlas_tenant_'+s.tenantId,S); } }   // persist slimmed rows locally WITHOUT re-triggering sync
+    }catch(e){}
+    _offloading=false; try{ _srvSyncPush(); }catch(e){}
+  }
   // Shape a rich client object into the worker's row (full fidelity in the JSON blob: bookings/customers->data, assets->info).
   function _srvShape(kind,item){
     if(kind==='assets') return { id:item.id, name:item.name||('Item '+item.id), type:item.type||undefined, status:item.status||undefined, day_rate_cents:(Math.round((Number(item.rate)||0)*100))||undefined, info:item };
@@ -1783,10 +1832,17 @@ const Atlas = (function(){
     if(kind==='assets'){ var i=row.info; var o=i?(typeof i==='string'?JSON.parse(i):i):null; return o||{id:row.id,name:row.name,type:row.type,status:row.status,rate:(row.day_rate_cents||0)/100}; }
     var d=row.data; var b=d?(typeof d==='string'?JSON.parse(d):d):null; return b||{id:row.id,status:row.status};
   }catch(e){ return {id:row.id}; } }
-  function _srvMirror(kind,item){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
-    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ if(res.status===404) _api('/api/data/'+kind,{method:'POST',body:body}).catch(function(){}); }).catch(function(){}); }
+  function _srvMirror(kind,item,hk,hv){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
+    // #294 Gap 4: record the "synced" hash ONLY after the server actually accepted the write. If the PUT/POST fails
+    // (network, or a too-large row rejected by D1), _pushedHash stays stale so the very next sync retries it -- instead
+    // of the old behaviour where the hash was set optimistically and a failed write silently dropped the record forever.
+    function _ok(){ if(hk) _pushedHash[hk]=hv; }
+    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){
+      if(res && res.status===404){ _api('/api/data/'+kind,{method:'POST',body:body}).then(function(r2){ if(r2&&r2.status>=200&&r2.status<300) _ok(); }).catch(function(){}); }
+      else if(res && res.status>=200 && res.status<300){ _ok(); }
+    }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
-  function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
+  function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
     // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
     if(settings.trackers){ var _tk={}; for(var _a in settings.trackers) _tk[_a]=settings.trackers[_a]; delete _tk.apiKey; settings.trackers=_tk; }
     if(settings.comms){ var _cm={}; for(var _b in settings.comms) _cm[_b]=settings.comms[_b]; delete _cm.resendKey; settings.comms=_cm; }
@@ -1796,10 +1852,18 @@ const Atlas = (function(){
     var cols={ bookings:(typeof _bookings==='function'?_bookings():[]), assets:(typeof DATA!=='undefined'&&DATA.assets)||[] };
     var seen={};
     Object.keys(cols).forEach(function(kind){ (cols[kind]||[]).forEach(function(it){ if(!it||!it.id) return; var key=kind+':'+it.id; seen[key]=1;
-      if(_pushedHash[key]!==JSON.stringify(it)){ it._t=Date.now(); _pushedHash[key]=JSON.stringify(it); _srvMirror(kind,it); } }); });
-    Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); var kind=key.slice(0,p); if(cols[kind]) _srvDelete(kind,key.slice(p+1)); });
-    var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; } var ph=JSON.stringify({b:S.brand,m:S.money,s:settings});
-    if(_pushedHash['__profile']!==ph){ S._t=Date.now(); settings._t=S._t; _pushedHash['__profile']=JSON.stringify({b:S.brand,m:S.money,s:settings}); _srvMirrorProfile(); }
+      if(_pushedHash[key]!==JSON.stringify(it)){ it._t=_monoNow(); _srvMirror(kind,it,key,JSON.stringify(it)); } }); });   // #294: monotonic stamp; _pushedHash set on server-accept inside _srvMirror
+    Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); if(p<0) return; var kind=key.slice(0,p); if(cols[kind]) _srvDelete(kind,key.slice(p+1)); });
+    // #294 Gap 6: don't push the profile until the server's copy is verified this session (or the user genuinely onboarded
+    // locally) -> a fresh device that hasn't hydrated can never overwrite the real server profile with an empty one.
+    if(!(S&&(S.onboarded||_profileHydrated))) return;
+    // #294 Gap 2: FIELD-LEVEL change detection -- stamp a per-key timestamp only for the keys whose value actually changed
+    // since the last successful push, so the merge keeps each device's newest edit per key (no whole-blob clobber).
+    if(!S._kt||typeof S._kt!=='object') S._kt={};
+    var parts={ brand:S.brand, money:S.money }; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_kt'&&k!=='_t') parts[k]=S[k]; }
+    var nowT=_monoNow(), changed=false;
+    for(var pk in parts){ var pjs=JSON.stringify(parts[pk]===undefined?null:parts[pk]); if(_pushedKeys[pk]!==pjs){ S._kt[pk]=nowT; _pushedKeys[pk]=pjs; changed=true; } }
+    if(changed){ S._t=nowT; _srvMirrorProfile(); }
   }
   // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
   function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
@@ -1810,6 +1874,7 @@ const Atlas = (function(){
       if(r[2].json && typeof r[2].json.credits==='number'){ try{ var _cb=_lsGet('atlas_tenant_'+tid,null); if(_cb){ if(!_cb.credits)_cb.credits={}; _cb.credits.bal=r[2].json.credits; _lsSet('atlas_tenant_'+tid,_cb); if(typeof S!=='undefined'&&S){ if(!S.credits)S.credits={}; S.credits.bal=r[2].json.credits; } } }catch(e){} }   // adopt server-authoritative credit balance on hydrate
       if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
       if(r[2].json && typeof r[2].json.websiteEntitled==='boolean'){ try{ var _wb=_lsGet('atlas_tenant_'+tid,null); if(_wb){ _wb.websiteEntitled=r[2].json.websiteEntitled; _lsSet('atlas_tenant_'+tid,_wb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.websiteEntitled=r[2].json.websiteEntitled; } }catch(e){} }   // #278: adopt server-authoritative website entitlement (owner/comp/tier/website_addon) on hydrate -- same pattern as credits/plan above
+      if(r[2].json && ('domainRenewal' in r[2].json)){ try{ var _dvR=r[2].json.domainRenewal||null; var _dwb=_lsGet('atlas_tenant_'+tid,null); if(_dwb){ _dwb.domainRenewal=_dvR; _lsSet('atlas_tenant_'+tid,_dwb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.domainRenewal=_dvR; } }catch(e){} }   // #282: adopt server-authoritative billed-domain (self-cancellable yearly renewal); null once cancelled -> Add-ons control clears on next hydrate
       try{ var _pc=r[2].json&&r[2].json.policyCurrent, _pa=r[2].json&&r[2].json.policyAccepted; if(_pc && _pa!==_pc){ _showPolicyBanner(_pc); } else { _hidePolicyBanner(); } }catch(e){}   // #254: re-prompt acceptance whenever the published policy version moved past what this tenant last accepted
     }).catch(function(){}); }
   // #254 Compliance: dismissible re-accept banner shown when the tenant's accepted ToS/Privacy version != the current one.
@@ -1821,15 +1886,35 @@ const Atlas = (function(){
   function policyAccept(){ if(!(ATLAS_BACKEND&&_apiCsrf)){ _hidePolicyBanner(); return; }
     _api('/api/policy/accept',{method:'POST',body:{}}).then(function(res){ if(res.json&&res.json.ok){ _hidePolicyBanner(); try{ var tid=store.session()&&store.session().tenantId; var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb){ _tb.tosVersion=res.json.version; _lsSet('atlas_tenant_'+tid,_tb); } }catch(e){} toast('Thank you -- your acceptance is recorded'); } else { toast('Could not record acceptance'); } }).catch(function(){ toast('Network error - please try again'); }); }
   function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
-    local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); } });
-    rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; var loc=byId[srv.id];
+    local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); if(x._t) _seenT(x._t); } });
+    rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; _seenT(srv._t); var loc=byId[srv.id];   // #294: feed the monotonic clock so our next local stamp is after the server's newest
       if(!loc){ byId[srv.id]=srv; order.push(srv.id); } else if((srv._t||0)>(loc._t||0)){ byId[srv.id]=srv; }
       _pushedHash[kind+':'+srv.id]=JSON.stringify(byId[srv.id]); });
     _lsSet(lsKey, order.map(function(id){ return byId[id]; })); }
-  function _srvMergeProfile(tid,prof){ var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var srvT=(prof.settings&&prof.settings._t)||0; var locT=(loc&&loc._t)||0;
-    if(!(srvT>locT || !loc.onboarded)) return;                       // keep local if it is newer / already set up
-    var merged={}; var s=prof.settings||{}; for(var k in s) merged[k]=s[k]; if(prof.brand)merged.brand=prof.brand; if(prof.money)merged.money=prof.money;
-    _lsSet('atlas_tenant_'+tid, merged); _pushedHash['__profile']=JSON.stringify({b:merged.brand,m:merged.money,s:s}); }
+  function _srvMergeProfile(tid,prof){ _profileHydrated=true;   // #294 Gap 6: a valid server profile was received -> the profile push is now safe to run
+    var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var s=(prof&&prof.settings)||{};
+    var srvKt=(s&&s._kt&&typeof s._kt==='object')?s._kt:null; var locKt=(loc&&loc._kt&&typeof loc._kt==='object')?loc._kt:{};
+    _seenT(s._t); _seenT(loc._t); if(srvKt){ for(var _z in srvKt) _seenT(srvKt[_z]); } for(var _y in locKt) _seenT(locKt[_y]);
+    var merged={}; for(var lk in loc) merged[lk]=loc[lk];   // #294 Gap 2: START from LOCAL so a local-only key is NEVER dropped by a merge
+    var srvParts={}; if(prof&&prof.brand!==undefined) srvParts.brand=prof.brand; if(prof&&prof.money!==undefined) srvParts.money=prof.money; for(var sk in s){ if(sk!=='_kt'&&sk!=='_t') srvParts[sk]=s[sk]; }
+    if(srvKt){
+      // FIELD-LEVEL newest-wins: adopt the server's value for a key ONLY when its per-key stamp is newer than local's (or
+      // local lacks the key). Otherwise keep local -> two devices editing DIFFERENT keys both survive (no whole-blob clobber).
+      for(var k in srvParts){ var st=Number(srvKt[k]||0), lt=Number((locKt&&locKt[k])||0); if(!(k in loc) || st>lt) merged[k]=srvParts[k]; }
+      var mk={}; for(var a in locKt) mk[a]=Number(locKt[a]||0); for(var b in srvKt){ if(Number(srvKt[b]||0)>(mk[b]||0)) mk[b]=Number(srvKt[b]||0); } merged._kt=mk;
+    } else {
+      // BACK-COMPAT (server has no per-key stamps yet): whole-blob newest-wins, but still START FROM LOCAL (preserve
+      // local-only keys) and only overwrite when the server blob is genuinely newer, or local isn't set up yet.
+      if(Number(s._t||0)>Number(loc._t||0) || !loc.onboarded){ for(var k2 in srvParts) merged[k2]=srvParts[k2]; }
+    }
+    merged._t=Math.max(Number(s._t||0),Number(loc._t||0));
+    // #294 Gap 3: provider secrets are stripped from the wire (server never stores them) -> graft the local values back so
+    // a merge can never wipe a connected tracker/mailer key on the device that holds it.
+    try{ if(loc.trackers&&loc.trackers.apiKey){ if(!merged.trackers||typeof merged.trackers!=='object') merged.trackers={}; if(!merged.trackers.apiKey) merged.trackers.apiKey=loc.trackers.apiKey; } }catch(e){}
+    try{ if(loc.comms&&loc.comms.resendKey){ if(!merged.comms||typeof merged.comms!=='object') merged.comms={}; if(!merged.comms.resendKey) merged.comms.resendKey=loc.comms.resendKey; } }catch(e){}
+    _lsSet('atlas_tenant_'+tid, merged);
+    // refresh the per-key push snapshot so the freshly-merged state is not immediately echoed back as a local change
+    try{ _pushedKeys={}; var pp={brand:merged.brand,money:merged.money}; for(var x in merged){ if(x!=='brand'&&x!=='money'&&x!=='_kt'&&x!=='_t') pp[x]=merged[x]; } for(var q in pp) _pushedKeys[q]=JSON.stringify(pp[q]===undefined?null:pp[q]); }catch(e){} }
   const FLEET_TYPES=[
     {id:'cars',emoji:'\u{1F697}',label:'Cars & Exotics',noun:'vehicle',nouns:'vehicles',sample:['2023 Corvette C8','BMW M3 Competition','Porsche Macan','Range Rover Sport','Tesla Model S','Mercedes G-Wagon']},
     {id:'property',emoji:'\u{1F3E0}',label:'Rental Properties',noun:'property',nouns:'properties',sample:['Beachfront Villa','Downtown Loft','Mountain Cabin','Lakeside Cottage','City Penthouse','Desert Retreat']},
@@ -1897,8 +1982,21 @@ const Atlas = (function(){
   function _grantOwnerIfNeeded(){ if(!S) return; var email=_sessEmail();
     if(email===OWNER_EMAIL){ if(S.tier!=='diamond'||S.plan!=='active'){ S.tier='diamond'; S.plan='active'; if(S.credits) S.credits.free=Infinity; save(); } return; }
     var g=_compGrantFor(email); if(!g) return;
-    if(g==='gold'){ if(S.tier!=='gold'||S.plan!=='active'){ S.tier='gold'; S.plan='active'; save(); } }         // permanent early-tester comp -- never auto-expires or downgrades
+    if(g==='gold'){ if(S.tier!=='gold'||S.plan!=='active'){ S.tier='gold'; S.plan='active'; save(); }
+      if(!S.goldWelcomeSeen){ S.goldWelcomeSeen=true; save(); setTimeout(function(){ try{ _showGoldWelcome(); }catch(e){} }, 500); } }   // #293: permanent Gold comp -- never a card, tier LOCKED to Gold, all features, 1000 Atlas.io credits/wk (TIERS gold.credits); one-time welcome popup
     else if(g==='free'){ if(S.tier!=='freecomp'||S.plan!=='active'){ S.tier='freecomp'; S.plan='active'; save(); } } }
+  // #293: comped (Gold/Free) and owner accounts have NO billing to manage -- the plan/upgrade/card UI is locked for them.
+  function _isComp(){ return !!S && (S.tier==='gold' || S.tier==='freecomp' || S.tier==='diamond'); }
+  // #293: one-time Gold-member welcome. Shown exactly once (gated on S.goldWelcomeSeen in _grantOwnerIfNeeded).
+  function _showGoldWelcome(){ if(document.getElementById('goldWelcome')) return;
+    var e=document.createElement('div'); e.id='goldWelcome'; e.className='verify-gate'; e.style.cssText='align-items:center';
+    e.innerHTML='<div style="max-width:440px;width:100%;margin:auto;text-align:center;background:var(--surface,#fff);border:1.5px solid var(--brand);border-radius:18px;padding:30px 24px;box-shadow:0 24px 70px rgba(0,0,0,.32)">'
+      +'<div style="font-size:46px;line-height:1;margin-bottom:6px">\u2b50</div>'
+      +'<h2 style="font-size:23px;margin:0 0 8px;color:var(--ink)">Welcome, Gold member</h2>'
+      +'<p style="font-size:14px;color:var(--muted);line-height:1.6;margin:0 0 18px">Your account has <b style="color:var(--brand)">complimentary Gold access</b> &mdash; every feature unlocked, <b>no card ever required</b>, and it never expires. You also get <b>1,000 Atlas.io AI credits every week</b>, included. Enjoy building your business.</p>'
+      +'<button class="btn btn--primary btn--full" onclick="(function(){var x=document.getElementById(\'goldWelcome\');if(x)x.remove();})()">Let\u2019s go</button>'
+      +'</div>';
+    document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
   var APP_VERSION='2026.7.19t';
@@ -2389,8 +2487,8 @@ const Atlas = (function(){
   ];
   function defaultMoney(){ return {
     rateModel:'day', baseRate:150, tax:0,
-    deposit:{ mode:'full', pct:50 },      // deposit to reserve: how much of the total to collect upfront (full | percent | none)
-    hold:{ type:'fixed', value:250 },      // refundable security hold (none | fixed | percent)
+    deposit:{ mode:'full', pct:50, amount:0 },      // #290 RESERVE / down-payment to book (captured, counts as revenue, reduces balance): full | percent(pct) | fixed($amount) | none
+    hold:{ type:'none', value:250, collect:'hold', when:'pickup' },      // #290 SEPARATE refundable security/damage deposit (NOT revenue unless kept): none | fixed($value) | percent(%value of total); collect = hold (authorize, $0 fee to release) | charge (capture + refund); when = pickup | booking. Default OFF so it's opt-in per business.
     payout:{ enabled:false, label:'Partner payout', kind:'percent', value:0, base:'subtotal' },  // a commission/split that leaves you per booking (agent, referrer, staff) -> your net = revenue - tax - payout
     weeklyDisc:10, monthlyDisc:25, _rc:0,
     // How the operator's booking form behaves -- fully editable in Settings > Bookings ("teach + build").
@@ -2434,8 +2532,8 @@ const Atlas = (function(){
     var feeTotal=fees.reduce(function(s,f){return s+f.amt;},0);
     var taxBase=subtotal+fees.reduce(function(s,f){return s+(f.taxable?f.amt:0);},0);
     var taxAmt=taxBase*(m.tax||0)/100, total=subtotal+feeTotal+taxAmt;
-    var dep=m.deposit||{mode:'full'}, dueNow=(dep.mode==='percent')? total*(dep.pct||0)/100 : (dep.mode==='none'?0:total);
-    var h=m.hold||{type:'none'}, holdAmt=(h.type==='percent')? subtotal*(h.value||0)/100 : (h.type==='fixed'?(h.value||0):0);
+    var dep=m.deposit||{mode:'full'}, dueNow=(dep.mode==='percent')? total*(dep.pct||0)/100 : (dep.mode==='fixed'? Math.min(total,Math.max(0,dep.amount||0)) : (dep.mode==='none'?0:total));   // #290: reserve down-payment -- percent | fixed$ (clamped to total) | none | full; mirrors worker depositFor
+    var h=m.hold||{type:'none'}, holdAmt=(h.type==='percent')? total*(h.value||0)/100 : (h.type==='fixed'?Math.max(0,h.value||0):0);   // #290: SEPARATE refundable security deposit -- % of TOTAL (aligned to worker securityFor) or fixed $; never part of total
     var pay=m.payout||{}, payBase=(pay.base==='total')?total:subtotal;
     var payoutAmt=(pay.enabled && pay.value)? (pay.kind==='percent'? payBase*(pay.value||0)/100 : (pay.value||0)) : 0;
     var netToYou=Math.max(0, total - taxAmt - payoutAmt);   // your take-home: revenue minus pass-through tax minus the payout/commission
@@ -2618,7 +2716,7 @@ const Atlas = (function(){
     if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){
       // NEW funnel: a fresh signup that needs a card picks a PLAN FIRST (the plan picker collects the card via checkout).
       // The plain card-only paywall stays for RETURNING sessions that hit the gate mid-use.
-      if(_authMode==='signup' && SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && !_isDemoTenant() && !_isNativeApp() && r.billing_state==='needs_card'){ showSignupPlans(); return; }
+      if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && !_isDemoTenant() && !_isNativeApp() && r.billing_state==='needs_card'){ showSignupPlans(); return; }   // #291: show the plan PICKER for ANY not-yet-carded user (fresh signup OR a returning / verify-on-a-different-device login) -- never silently drop them into onboarding at the default tier
       showPaywall(r.billing_state); return;   // #276/#280: server-computed billing state -- replaces the dashboard with the paywall/card gate instead of building it
     }
     if(_authMode==='signup'){
@@ -2714,10 +2812,12 @@ const Atlas = (function(){
           +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.paywallStartTrial()">'+c.plan+'</button>'
           +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.logout()">Sign out</button>'
           +'<p class="verify-hint">Already added a card? Switch back to this tab and we&rsquo;ll recheck automatically.</p>')
-        : ('<p>You&rsquo;ll get your dashboard back the moment your payment is sorted.</p>'
-          +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.paywallUpdatePayment()">Update payment method</button>'
-          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallChoosePlan()">'+c.plan+'</button>'
-          +'<button class="btn btn--ghost btn--full" style="margin-top:6px" onclick="Atlas.logout()">Sign out</button>'
+        : ('<p>Update your card or switch to a plan that fits &mdash; you&rsquo;ll be back in instantly. We keep your data safe either way.</p>'
+          +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.paywallUpdatePayment()">Pay now</button>'
+          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallRetryPayment()">Retry payment</button>'
+          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallChoosePlan()">Switch to a cheaper plan</button>'
+          +'<button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="Atlas.paywallCancelPlan()">Cancel my plan</button>'
+          +'<p style="margin-top:14px"><span class="link" style="cursor:pointer;font-size:13px" onclick="Atlas.logout()">Sign out</span></p>'
           +'<p class="verify-hint">Already paid? Switch back to this tab and we&rsquo;ll recheck automatically.</p>'))
       +'</div>';
     e.classList.add('on');
@@ -2726,6 +2826,26 @@ const Atlas = (function(){
   function hidePaywall(){ var e=document.getElementById('paywallGate'); if(e) e.classList.remove('on'); }
   function paywallUpdatePayment(){ billingPortal(); }
   function paywallChoosePlan(){ openPlans(); }
+  // PART B4: "Retry payment" -- for after the tenant already fixed their card via paywallUpdatePayment (billingPortal)
+  // and wants back in NOW rather than waiting for the next dunning cron pass. Worker: POST /api/billing/retry-now
+  // (reachable while locked -- _PAYMENT_OPEN allows the whole /api/billing/ prefix). On success, Stripe's invoice.paid
+  // webhook has already flipped billing_state back to 'ok' by the time this returns, so _paywallMaybeRecheck's GET
+  // /api/auth/me immediately confirms it and dismisses the gate.
+  function paywallRetryPayment(){
+    toast('Retrying payment...');
+    _api('/api/billing/retry-now',{method:'POST'}).then(function(res){
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ toast('Payment succeeded - welcome back!'); _paywallMaybeRecheck(); }
+      else { toast((res.json&&res.json.error)||'Could not retry payment yet - try updating your card.'); }
+    }).catch(function(){ toast('Network error retrying payment'); });
+  }
+  // PART B4: "Cancel my plan" -- the 3rd owner-specified unlock path off the payment paywall. Reuses the existing
+  // _billingCancel() (worker: POST /api/billing/cancel) exactly as-is; only a confirm is new here.
+  function paywallCancelPlan(){
+    // From the payment paywall the tenant is already past-due (the current period is UNPAID), so there is no paid-through
+    // time left -- canceling ends access now. No refund (nothing was paid for this period). Data is always kept.
+    if(!confirm('Cancel your plan?\n\nNo further charges will be made and your data is kept. Because your current period is unpaid, access ends now -- you can resubscribe anytime. No refund is issued.')) return;
+    _billingCancel();
+  }
   // #280: primary action on the needs_card gate -- same hosted-Stripe-checkout helper the rest of billing already
   // uses; the trial-card webhook (worker.js checkout.session.completed, md.billing==='trial') sets card_on_file+
   // stripe_sub, which is exactly what flips this tenant's billing_state back to 'ok'.
@@ -2748,19 +2868,19 @@ const Atlas = (function(){
     var tiers=TIERS.filter(function(t){ return !t.owner && !t.comp; });
     var endStr=_signupTrialEndStr();
     var incl=FEATURES.map(function(f){ return '<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 9px;margin:0 6px 6px 0"><svg viewBox="0 0 20 20" width="12" height="12" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="var(--brand)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+f[1]+'</span>'; }).join('');
-    var cards=tiers.map(function(t){ var feat=(t.id==='pro');
+    var cards=tiers.map(function(t){ var feat=(t.id==='pro'); var chosen=!!(S && S.chosenPlan===t.id);   // #291: the plan they already picked (persists cross-device via the settings mirror) -- highlight it so they are brought back to their choice
       var price=(t.price%1===0)?t.price:t.price.toFixed(2);
       var unlocks=(typeof _tierUnlocks==='function' && _tierUnlocks(t.id))?_tierUnlocks(t.id):'';
       var web=(typeof WEBSITE_TIERS!=='undefined' && WEBSITE_TIERS.indexOf(t.id)>=0);
-      return '<div style="border:1.5px solid '+(feat?'var(--brand)':'var(--line)')+';border-radius:14px;padding:15px 16px;margin-bottom:12px;position:relative;background:var(--surface,#fff)">'
-        +(feat?'<div style="position:absolute;top:-10px;left:16px;background:var(--brand);color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px">Most popular</div>':'')
+      return '<div style="border:1.5px solid '+((chosen||feat)?'var(--brand)':'var(--line)')+';border-radius:14px;padding:15px 16px;margin-bottom:12px;position:relative;background:var(--surface,#fff)">'
+        +(chosen?'<div style="position:absolute;top:-10px;left:16px;background:var(--brand);color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px">Your pick</div>':(feat?'<div style="position:absolute;top:-10px;left:16px;background:var(--brand);color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px">Most popular</div>':''))
         +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">'
           +'<div style="min-width:0"><div style="font-size:16.5px;font-weight:800;color:var(--ink)">'+t.name+(web?' <span class="chip chip--brand" style="margin-left:4px;vertical-align:middle">Website included</span>':'')+'</div>'
           +'<div style="font-size:12.5px;color:var(--muted);margin-top:2px">'+_tierCap(t)+' &middot; '+t.credits.toLocaleString()+' Atlas.io credits/week</div>'
           +(unlocks?'<div style="font-size:11.5px;color:var(--brand);font-weight:600;margin-top:4px">'+unlocks+'</div>':'')+'</div>'
           +'<div style="text-align:right;flex:none"><div style="font-size:22px;font-weight:850;color:var(--ink)" class="tnum">$'+price+(t.id==='unlimited'?'+':'')+'</div><div style="font-size:11px;color:var(--muted)">/month after trial</div></div>'
         +'</div>'
-        +'<button class="btn '+(feat?'btn--primary':'btn--ghost')+' btn--full btn--sm" style="margin-top:12px" onclick="Atlas._signupPickPlan(\''+t.id+'\')">Start 7-day free trial</button>'
+        +'<button class="btn '+((chosen||feat)?'btn--primary':'btn--ghost')+' btn--full btn--sm" style="margin-top:12px" onclick="Atlas._signupPickPlan(\''+t.id+'\')">'+(chosen?'Continue with '+t.name:'Start 7-day free trial')+'</button>'
       +'</div>'; }).join('');
     var e=document.getElementById('planGate');
     if(!e){ e=document.createElement('div'); e.id='planGate'; e.className='verify-gate pay-gate'; e.style.cssText='align-items:flex-start;overflow-y:auto'; document.body.appendChild(e); }
@@ -2777,7 +2897,8 @@ const Atlas = (function(){
   }
   function _hideSignupPlans(){ var e=document.getElementById('planGate'); if(e) e.classList.remove('on'); }
   function _signupPickPlan(tierId){ var t=_tier(tierId); if(!t) return;
-    if(S){ S.tier=t.id; save(); }   // carry the chosen plan across the Stripe redirect (persisted in localStorage)
+    if(S){ S.tier=t.id; S.chosenPlan=t.id; save(); }   // #291: carry the chosen plan across the Stripe redirect (localStorage) AND remember it as their explicit pick
+    if(ATLAS_BACKEND && _apiCsrf){ _api('/api/tenant/profile',{method:'PUT',body:{settings:{chosenPlan:t.id}}}).catch(function(){}); }   // #291: persist the pick server-side immediately (not only via the debounced sync) so ANY device / device type brings them back to it
     _hideSignupPlans();
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp()){ _billingCheckout('trial',{tier:t.id}); return; }   // card on file -> 7-day trial priced at this plan -> Stripe auto-charges on day 7
     if(S){ S.plan='trial'; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }   // demo/offline/native fallback: local trial, onboard now
@@ -2856,7 +2977,7 @@ const Atlas = (function(){
     }).catch(function(){ toast('Network error'); });
   }
   function _postVerifyProceed(bs){ S=load();
-    if(bs && bs!=='ok'){ showPaywall(bs); return; }   // #280/#276: a needs_card/locked tenant must not reach onboarding/dashboard here either -- same gate as _afterAuthSuccess
+    if(bs && bs!=='ok'){ if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && bs==='needs_card'){ showSignupPlans(); return; } showPaywall(bs); return; }   // #291: after email verify (often on a DIFFERENT device), a not-yet-carded user goes to the plan PICKER (their prior pick is highlighted), not the bare card gate. #280/#276: other locked states still hit the paywall.
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
     else { startTrial(); } }
@@ -3069,6 +3190,9 @@ const Atlas = (function(){
     else if(k==='deposit.pct') m.deposit.pct=parseFloat(v)||0;
     else if(k==='hold.type') m.hold.type=v;
     else if(k==='hold.value') m.hold.value=parseFloat(v)||0;
+    else if(k==='deposit.amount') m.deposit.amount=Math.max(0,parseFloat(v)||0);   // #290 fixed-$ reserve down-payment
+    else if(k==='hold.collect') m.hold.collect=(v==='charge')?'charge':'hold';      // #290 security: authorize a hold ($0 release) vs charge + refund
+    else if(k==='hold.when') m.hold.when=(v==='booking')?'booking':'pickup';        // #290 security: collect at pickup vs at booking
     else if(k==='payout.enabled') m.payout.enabled=!!v;
     else if(k==='payout.label') m.payout.label=v;
     else if(k==='payout.kind') m.payout.kind=v;
@@ -5829,18 +5953,24 @@ const Atlas = (function(){
           <div class="field" style="display:flex;align-items:flex-end"><div class="bk-lenhint" style="margin:0">Sets the symbol shown across the app + customer docs. Amounts are not converted &mdash; enter your rates in this currency.</div></div>
         </div>
         <div class="row2">
-          <div class="field"><label>Deposit to reserve</label>
+          <div class="field"><label>Deposit to reserve <span class="mut" style="font-weight:400;font-size:11px">&middot; a down-payment, counts as revenue</span></label>
             <select class="select" onchange="Atlas.setMoney('deposit.mode',this.value);Atlas.renderSetSoft()">
               <option value="full" ${m.deposit.mode==='full'?'selected':''}>Pay in full to book</option>
               <option value="percent" ${m.deposit.mode==='percent'?'selected':''}>Percentage of total</option>
+              <option value="fixed" ${m.deposit.mode==='fixed'?'selected':''}>Fixed dollar amount</option>
               <option value="none" ${m.deposit.mode==='none'?'selected':''}>Nothing upfront (pay at pickup)</option></select>
-            ${m.deposit.mode==='percent'?`<div class="rule-input" style="margin-top:8px;padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.deposit.pct}" oninput="Atlas.setMoney('deposit.pct',this.value)"><span>% collected now</span></div>`:''}</div>
-          <div class="field"><label>Refundable security hold</label>
+            ${m.deposit.mode==='percent'?`<div class="rule-input" style="margin-top:8px;padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.deposit.pct}" oninput="Atlas.setMoney('deposit.pct',this.value)"><span>% now, rest is the balance</span></div>`:''}
+            ${m.deposit.mode==='fixed'?`<div class="rule-input" style="margin-top:8px;padding:0 12px"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.deposit.amount||0}" oninput="Atlas.setMoney('deposit.amount',this.value)"><span>now, rest is the balance</span></div>`:''}</div>
+          <div class="field"><label>Refundable security deposit <span class="mut" style="font-weight:400;font-size:11px">&middot; separate, returned after the rental</span></label>
             <select class="select" onchange="Atlas.setMoney('hold.type',this.value);Atlas.renderSetSoft()">
               <option value="none" ${m.hold.type==='none'?'selected':''}>None</option>
               <option value="fixed" ${m.hold.type==='fixed'?'selected':''}>Fixed amount</option>
-              <option value="percent" ${m.hold.type==='percent'?'selected':''}>% of subtotal</option></select>
-            ${m.hold.type!=='none'?`<div class="rule-input" style="margin-top:8px;padding:0 12px">${m.hold.type==='fixed'?'<span>$</span>':''}<input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.hold.value}" oninput="Atlas.setMoney('hold.value',this.value)">${m.hold.type==='percent'?'<span>%</span>':''}</div>`:''}</div>
+              <option value="percent" ${m.hold.type==='percent'?'selected':''}>% of total</option></select>
+            ${m.hold.type!=='none'?`<div class="rule-input" style="margin-top:8px;padding:0 12px">${m.hold.type==='fixed'?'<span>$</span>':''}<input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.hold.value}" oninput="Atlas.setMoney('hold.value',this.value)">${m.hold.type==='percent'?'<span>%</span>':''}</div>
+            <div class="row2" style="margin-top:8px">
+              <select class="select" onchange="Atlas.setMoney('hold.collect',this.value);Atlas.renderSetSoft()"><option value="hold" ${(m.hold.collect||'hold')==='hold'?'selected':''}>Authorize a hold ($0 fee to release)</option><option value="charge" ${m.hold.collect==='charge'?'selected':''}>Charge it, refund after return</option></select>
+              <select class="select" onchange="Atlas.setMoney('hold.when',this.value)"><option value="pickup" ${(m.hold.when||'pickup')==='pickup'?'selected':''}>Collect at pickup</option><option value="booking" ${m.hold.when==='booking'?'selected':''}>Collect at booking</option></select></div>
+            <div class="bk-lenhint" style="margin:8px 0 0">A refundable ${m.hold.type==='fixed'?('$'+(m.hold.value||0)):((m.hold.value||0)+'% of the total')} deposit is ${(m.hold.collect==='charge')?'charged and refunded after return':'authorized as a hold (no charge) and released after return'}, to cover damage. It is separate from the rental price and never counts as revenue unless you keep it for a claim.</div>`:''}</div>
         </div>
         <div class="row2">
           <div class="field"><label>Sales tax</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.tax}" oninput="Atlas.setMoney('tax',this.value)"><span>%</span></div><div class="hint">Your region's rate. 0% is fine to start.</div></div>
@@ -7630,6 +7760,7 @@ const Atlas = (function(){
       else { toast((res.json&&res.json.error)||'Could not cancel - please try again'); }
     }).catch(function(){ toast('Network error cancelling'); }); }
   function openPlans(){
+    if(_isComp()){ toast('You have complimentary '+(S&&S.tier==='gold'?'Gold':'full')+' access -- every feature is unlocked and there is no billing to change.'); return; }   // #293: comp / owner tier is LOCKED -- no plan changes
     openModal('<div class="modal__head"><h3>Choose your plan</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body" style="padding-top:10px">'+TIERS.filter(function(t){return !t.owner && !t.comp;}).map(function(t){ var cur=_isActive()&&S.tier===t.id;
         return '<div style="display:flex;align-items:center;gap:12px;border:1px solid '+(cur?'var(--brand)':'var(--line)')+';border-radius:12px;padding:13px 15px;margin-bottom:10px">'
@@ -7639,7 +7770,8 @@ const Atlas = (function(){
         +'</div>'; }).join('')
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Higher plans lift your caps + unlock premium features &middot; free weekly Atlas.io credits &middot; cancel anytime.</p></div>');
   }
-  function subscribe(tierId){ var t=_tier(tierId); var sameTier=_isActive()&&!!S&&S.tier===t.id;   // fix: same active tier means this is a card-only update, not a plan change
+  function subscribe(tierId){ if(_isComp()){ toast('Your complimentary access is locked to '+(S&&S.tier==='gold'?'Gold':'your comped tier')+' -- no card or plan change needed.'); return; }   // #293: comp / owner cannot change tier
+    var t=_tier(tierId); var sameTier=_isActive()&&!!S&&S.tier===t.id;   // fix: same active tier means this is a card-only update, not a plan change
     // No raw card number/CVC is ever collected in-app (that would put Atlas in PCI scope). Real card billing runs
     // through Stripe hosted Checkout at go-live; until PAYMENTS_LIVE, activating a plan just sets it up with no charge.
     var _cardBlock='<div class="bk-lenhint" style="margin:0 0 12px">'+(PAYMENTS_LIVE?'You will enter your card on Stripe\'s secure checkout - Atlas never sees your card number. Cancel anytime, keep your data.':'Your plan activates now so you can set everything up. <b>No card is collected in-app and nothing is charged</b> \u2014 secure card billing turns on through Stripe hosted checkout at go-live (see GO-LIVE steps).')+'</div>';
@@ -7675,7 +7807,7 @@ const Atlas = (function(){
       toast((res.json&&res.json.error)||'Could not open the billing portal');
     }).catch(function(){ toast('Network error opening billing'); }); }
   function cancelPlan(){ if(!_guard('billing','Managing billing'))return;
-    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel at the end of this billing period? You keep full access and all your data until then. No refund for the current period.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ if(!confirm('Cancel your plan?\n\nYour next cycle will not be charged and you keep full access through the end of the period you have already paid for. No refund or credit is issued for unused time. Your data is kept.')) return; _billingCancel(); return; }   // live: actually cancel the Stripe subscription (period-end)
     if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
   function openCredits(){
     openModal('<div class="modal__head"><h3>Atlas.io credits</h3>'+_xBtn()+'</div>'
@@ -7874,8 +8006,12 @@ const Atlas = (function(){
   // Turn a paid a-la-carte add-on back OFF -- the real "cancel anytime" behind the billing panel + the website "cancel anytime" promise.
   function _addonPrice(key){ var f=GATED_FEATURES[key]; if(key==='website') return (S.websitePlan==='once'?('$'+((f&&f.addon&&f.addon.once)||199)+' one-time'):('$'+((f&&f.addon&&f.addon.mo)||19)+'/mo')); return f&&f.addon&&f.addon.mo?('$'+f.addon.mo+'/mo'):(f&&f.addon&&f.addon.once?('$'+f.addon.once+' one-time'):''); }
   function _activeAddons(){ var out=[]; if(_addons()['tracking']) out.push({key:'tracking',title:_featMeta('tracking').title,price:_addonPrice('tracking')});
-    if(S&&S.websitePaid&&!_websiteIncluded()) out.push({key:'website',title:_featMeta('website').title,price:_addonPrice('website')}); return out; }
-  function removeAddon(key){ if(!_guard('billing','Managing billing'))return; var nm=_featMeta(key).title.replace(/&amp;/g,'&');
+    if(S&&S.websitePaid&&!_websiteIncluded()) out.push({key:'website',title:_featMeta('website').title,price:_addonPrice('website')});
+    if(S&&S.domainRenewal) out.push({key:'domain',title:'Custom domain ('+S.domainRenewal+')',price:'Billed yearly'});   // #282: a domain bought through us -- its Cancel routes to /api/billing/domain-cancel (period-end, no refund)
+    return out; }
+  function removeAddon(key){ if(!_guard('billing','Managing billing'))return;
+    if(key==='domain'){ return _cancelDomainRenewal(); }   // #282: domains bill on a separate yearly Stripe sub (not in _addons) -- route to their own period-end cancel
+    var nm=_featMeta(key).title.replace(/&amp;/g,'&');
     // #280/#282: the website add-on is a REAL Stripe subscription in live mode -- cancelling it must actually cancel
     // that subscription (at period end, no refund), never just flip local state (that was the #280 billing bug).
     if(key==='website' && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){
@@ -7895,6 +8031,20 @@ const Atlas = (function(){
     save(); try{_logEvent('billing',nm+' add-on cancelled',{addon:key});}catch(e){}
     if(typeof renderSet==='function') renderSet(); var ap=document.querySelector('.panel.active'); if(ap){ var nav=ap.dataset.panel; if(nav==='tracking')renderTracking(); else if(nav==='website')renderWebsite(); }
     toast(nm+' add-on cancelled'); }
+  // #282: cancel a bought domain's yearly renewal at period end (parity with the website add-on). The domain keeps
+  // working through the paid year, then lapses at the registrar; no refund. The server (/api/billing/domain-cancel)
+  // is authoritative -- it only reports ok when Stripe accepted, and stamps the row 'canceling' so this control clears.
+  function _cancelDomainRenewal(){ var dom=(S&&S.domainRenewal)||''; if(!dom){ toast('No domain renewal to cancel'); return; }
+    if(!ATLAS_BACKEND){ toast('Connect an account to manage billing'); return; }
+    if(!confirm('Cancel the yearly renewal for '+dom+'? You keep '+dom+' through the end of the period you have already paid for, then it lapses. No refund for the current period.'))return;
+    toast('Cancelling...');
+    _api('/api/billing/domain-cancel',{method:'POST',body:{domain:dom}}).then(function(res){ var j=res.json||{};
+      if(res.status>=200&&res.status<300&&j.ok){ try{_logEvent('billing','Domain renewal set to cancel at period end',{domain:dom});}catch(e){}
+        try{ var _tid=store.session()&&store.session().tenantId; S.domainRenewal=null; var _db=_lsGet('atlas_tenant_'+_tid,null); if(_db){ _db.domainRenewal=null; _lsSet('atlas_tenant_'+_tid,_db); } }catch(e){}
+        toast(j.cancel_at?('Renewal cancels '+new Date(j.cancel_at*1000).toLocaleDateString()+' -- you keep '+dom+' until then.'):('Renewal cancelled -- you keep '+dom+' until the period ends.'));
+        if(typeof renderSet==='function') renderSet();
+      } else { toast(j.error||'Could not cancel -- please try again'); }
+    }).catch(function(){ toast('Network error cancelling'); }); }
   function _addonsBillingHtml(){ var as=_activeAddons(); if(!as.length) return '';
     return '<div class="set-block"><h3>Add-ons</h3><div class="desc">Extra features on your account. Cancel anytime.</div>'
       +as.map(function(a){ return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">'+a.title+'</b><div style="font-size:12.5px;color:var(--muted)">'+esc(a.price)+' &middot; active</div></div><button class="btn btn--sm btn--danger" onclick="Atlas.removeAddon(\''+a.key+'\')">Cancel</button></div>'; }).join('')+'</div>'; }
@@ -8862,6 +9012,19 @@ const Atlas = (function(){
         S.money.rateModel=old.rateModel||'day'; S.money.baseRate=old.baseRate||150; S.money.tax=old.tax||0;
         save();
       }
+      // GAP-1 FIX (cross-device data safety): on EVERY boot with a saved session -- reload, PWA cold-start, reopen --
+      // re-mint the CSRF token via cookie auth and re-hydrate from the server. Without this _apiCsrf stays null after a
+      // reload, so ALL sync silently stops: edits made in a reloaded session never push (lost when the tenant opens
+      // another device) and other devices' changes never pull in. Local-first paint below stays instant; this refreshes
+      // to server truth a moment later. Profile PUSH is held (_bootSync) until the hydrate merge lands, then the app
+      // re-renders with the merged data.
+      if(ATLAS_BACKEND && store.session()){ _bootSync=true; var _bootTid=store.session().tenantId;
+        _api('/api/auth/me',{method:'GET'}).then(function(res){
+          if(res && res.json && res.json.csrf){ _apiCsrf=res.json.csrf; if(res.json.ip)_clientIp=res.json.ip; return _srvHydrate(_bootTid); }
+        }).catch(function(){}).then(function(){ _bootSync=false;
+          try{ var _s2=load(); if(_s2){ S=_s2; var _ap=document.getElementById('app'); if(S.onboarded && _ap && _ap.classList.contains('on')){ applyBrand(); buildApp(); } } }catch(e){}
+        });
+      }
       if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _billingReturn(); _kickLiveTour(); }
       else if(S && S.onboardStarted){ _billingReturn(); applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }  // resume setup exactly where they left off
       else if(S){ _billingReturn(); applyBrand();   // #280: a fresh signup gated pre-onboarding returns from Stripe checkout here -- _billingReturn marks the card on file
@@ -8871,7 +9034,7 @@ const Atlas = (function(){
         else startTrial();
       }
       else { store.logout(); show('landing'); }   // dangling session, no tenant
-    } else { show('landing'); }
+    } else { if((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true){ goAuth('login'); } else { show('landing'); } }   // #PWA: a home-screen (standalone) launch opens straight to sign-in, not the marketing landing -- it should feel like an app, not the website
     // Deep-link: ?film / ?watch / #watch auto-plays the 30-second commercial (a shareable "watch it" link).
     try{ if(/[?&](film|watch|commercial|tour)\b/i.test(location.search) || /#(watch|film|commercial|tour)/i.test(location.hash)){ setTimeout(function(){ try{ playFilm(); }catch(e){} }, 450); } }catch(e){}
   }
@@ -8882,7 +9045,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,showSignupPlans,_hideSignupPlans,_signupPickPlan,
+    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,

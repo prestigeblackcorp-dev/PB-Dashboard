@@ -7,6 +7,7 @@
 <link rel="manifest" href="atlas-manifest.json">
 <meta name="theme-color" content="#1E6E4E">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Atlas">
 <link rel="icon" href="atlas-icon.svg" type="image/svg+xml">
@@ -595,6 +596,21 @@ table.tbl{width:100%;border-collapse:collapse}
 .verify-card p{color:var(--muted,#5c6b63);font-size:14.5px;margin:0 0 18px;line-height:1.5}
 .verify-hint{font-size:12.5px;margin:14px 0 0!important}
 .pay-gate{background:rgba(12,20,16,.92)}
+/* ===== FUNNEL app-feel on phones: auth / verify / plan-picker / onboarding go FULL-BLEED and clear the notch + home-indicator (safe-area), so signing up and building the first dashboard feels like a native app -- not a website floating a card. Phones only (<=640px); tablets keep the centered card since it reads well on a big screen. ===== */
+@media(max-width:640px){
+  .auth-wrap{align-items:stretch;padding:0;background:var(--paper)}
+  .auth-card{max-width:none;min-height:100vh;min-height:100dvh;border:0;border-radius:0;box-shadow:none;display:flex;flex-direction:column;padding:calc(20px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom))}
+  .auth-card h2{font-size:25px}
+  .auth-card .btn--lg{padding:16px 24px}
+  .verify-gate{padding:0}
+  .verify-card{max-width:none;min-height:100vh;min-height:100dvh;border:0;border-radius:0;box-shadow:none;display:flex;flex-direction:column;justify-content:center;padding:calc(26px + env(safe-area-inset-top)) 22px calc(26px + env(safe-area-inset-bottom))}
+  .pay-gate{padding:0}
+  .pay-gate>div{padding:calc(18px + env(safe-area-inset-top)) 16px calc(22px + env(safe-area-inset-bottom))}
+  .ob-top{padding:calc(14px + env(safe-area-inset-top)) 15px 12px}
+  .ob-wrap{padding:10px 15px calc(88px + env(safe-area-inset-bottom))}
+  .ob-card{border:0;border-radius:0;box-shadow:none;padding:6px 2px;background:transparent}
+  .ob-card h2{font-size:23px}
+}
 .pay-ic{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;background:#FBEAEA;color:#C0392B;display:grid;place-items:center}
 .tk-row{display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--line,#e5e1d8);border-radius:11px;margin-bottom:8px;cursor:pointer;background:var(--surface,#fff)}
 .tk-row:hover{border-color:var(--brand,#1E6E4E)}
@@ -1782,7 +1798,31 @@ const Atlas = (function(){
   var _lastSyncT=0, _pushedKeys={}, _profileHydrated=false;
   function _monoNow(){ var n=Date.now(); if(n<=_lastSyncT) n=_lastSyncT+1; _lastSyncT=n; return n; }
   function _seenT(t){ t=Number(t)||0; if(t>_lastSyncT) _lastSyncT=t; }
-  function _srvSyncSoon(){ if(!ATLAS_BACKEND||!_apiCsrf||_syncTimer) return; _syncTimer=setTimeout(function(){ _syncTimer=null; try{ _srvSyncPush(); }catch(e){} }, 1500); }
+  function _srvSyncSoon(){ if(!ATLAS_BACKEND||!_apiCsrf||_syncTimer) return; _syncTimer=setTimeout(function(){ _syncTimer=null; try{ _offloadThenPush(); }catch(e){ try{_srvSyncPush();}catch(_){} } }, 1500); }   // #295: offload big inline blobs to R2 BEFORE pushing, so the row stays small and always syncs
+  // #295 BIG-BLOB OFFLOAD: keep D1 rows small (and always syncable) by moving large inline base64 photos / signatures /
+  // PDFs out to R2 and storing the capability URL instead. Runs opportunistically before each push -- once a blob is a
+  // URL it is skipped, so each file uploads exactly once. Degrades safely: a failed/absent upload leaves the base64 in
+  // place (still works locally + retries next sync), so a photo is NEVER lost. Only the worker's MIME allow-list types
+  // (jpg/png/webp/pdf) are offloaded; anything else stays inline.
+  var _OFFLOAD_MIN=60000, _offloading=false;   // ~45KB binary; smaller stays inline (icons / tiny thumbnails)
+  function _isBigDataUri(v){ return typeof v==='string' && v.length>_OFFLOAD_MIN && /^data:(image\/(jpe?g|png|webp)|application\/pdf);base64,/i.test(v); }
+  function _uploadBlob(dataUri,name){ return _api('/api/files',{method:'POST',body:{data:dataUri,name:(name||'file')}}).then(function(res){ return (res&&res.json&&res.json.ok&&res.json.url)?res.json.url:null; }).catch(function(){ return null; }); }
+  async function _offloadObj(obj){ var changed=false;
+    async function walk(o){ if(!o||typeof o!=='object') return; var keys=Object.keys(o);
+      for(var i=0;i<keys.length;i++){ var k=keys[i], v=o[k];
+        if(_isBigDataUri(v)){ var u=await _uploadBlob(v,String(k)); if(u){ o[k]=u; changed=true; } }
+        else if(v&&typeof v==='object'){ await walk(v); } } }
+    await walk(obj); return changed; }
+  async function _offloadThenPush(){ if(!(ATLAS_BACKEND&&_apiCsrf)) return; if(_offloading){ try{_srvSyncPush();}catch(e){} return; } _offloading=true;
+    try{
+      var bs=(typeof _bookings==='function'?_bookings():[])||[]; var as=(typeof DATA!=='undefined'&&DATA.assets)||[]; var chg=false;
+      for(var i=0;i<bs.length;i++){ if(await _offloadObj(bs[i])) chg=true; }
+      for(var j=0;j<as.length;j++){ if(await _offloadObj(as[j])) chg=true; }
+      if(S&&S.brand&&_isBigDataUri(S.brand.logo)){ var lu=await _uploadBlob(S.brand.logo,'logo'); if(lu){ S.brand.logo=lu; chg=true; } }
+      if(chg){ var s=store.session(); if(s){ if(bs.length)_lsSet('atlas_bookings_'+s.tenantId,bs); if(as.length)_lsSet('atlas_assets_'+s.tenantId,as); if(S)_lsSet('atlas_tenant_'+s.tenantId,S); } }   // persist slimmed rows locally WITHOUT re-triggering sync
+    }catch(e){}
+    _offloading=false; try{ _srvSyncPush(); }catch(e){}
+  }
   // Shape a rich client object into the worker's row (full fidelity in the JSON blob: bookings/customers->data, assets->info).
   function _srvShape(kind,item){
     if(kind==='assets') return { id:item.id, name:item.name||('Item '+item.id), type:item.type||undefined, status:item.status||undefined, day_rate_cents:(Math.round((Number(item.rate)||0)*100))||undefined, info:item };
@@ -8994,7 +9034,7 @@ const Atlas = (function(){
         else startTrial();
       }
       else { store.logout(); show('landing'); }   // dangling session, no tenant
-    } else { show('landing'); }
+    } else { if((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true){ goAuth('login'); } else { show('landing'); } }   // #PWA: a home-screen (standalone) launch opens straight to sign-in, not the marketing landing -- it should feel like an app, not the website
     // Deep-link: ?film / ?watch / #watch auto-plays the 30-second commercial (a shareable "watch it" link).
     try{ if(/[?&](film|watch|commercial|tour)\b/i.test(location.search) || /#(watch|film|commercial|tour)/i.test(location.hash)){ setTimeout(function(){ try{ playFilm(); }catch(e){} }, 450); } }catch(e){}
   }
