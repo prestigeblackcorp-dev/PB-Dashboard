@@ -1810,6 +1810,7 @@ const Atlas = (function(){
       if(r[2].json && typeof r[2].json.credits==='number'){ try{ var _cb=_lsGet('atlas_tenant_'+tid,null); if(_cb){ if(!_cb.credits)_cb.credits={}; _cb.credits.bal=r[2].json.credits; _lsSet('atlas_tenant_'+tid,_cb); if(typeof S!=='undefined'&&S){ if(!S.credits)S.credits={}; S.credits.bal=r[2].json.credits; } } }catch(e){} }   // adopt server-authoritative credit balance on hydrate
       if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
       if(r[2].json && typeof r[2].json.websiteEntitled==='boolean'){ try{ var _wb=_lsGet('atlas_tenant_'+tid,null); if(_wb){ _wb.websiteEntitled=r[2].json.websiteEntitled; _lsSet('atlas_tenant_'+tid,_wb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.websiteEntitled=r[2].json.websiteEntitled; } }catch(e){} }   // #278: adopt server-authoritative website entitlement (owner/comp/tier/website_addon) on hydrate -- same pattern as credits/plan above
+      if(r[2].json && ('domainRenewal' in r[2].json)){ try{ var _dvR=r[2].json.domainRenewal||null; var _dwb=_lsGet('atlas_tenant_'+tid,null); if(_dwb){ _dwb.domainRenewal=_dvR; _lsSet('atlas_tenant_'+tid,_dwb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.domainRenewal=_dvR; } }catch(e){} }   // #282: adopt server-authoritative billed-domain (self-cancellable yearly renewal); null once cancelled -> Add-ons control clears on next hydrate
       try{ var _pc=r[2].json&&r[2].json.policyCurrent, _pa=r[2].json&&r[2].json.policyAccepted; if(_pc && _pa!==_pc){ _showPolicyBanner(_pc); } else { _hidePolicyBanner(); } }catch(e){}   // #254: re-prompt acceptance whenever the published policy version moved past what this tenant last accepted
     }).catch(function(){}); }
   // #254 Compliance: dismissible re-accept banner shown when the tenant's accepted ToS/Privacy version != the current one.
@@ -7896,8 +7897,12 @@ const Atlas = (function(){
   // Turn a paid a-la-carte add-on back OFF -- the real "cancel anytime" behind the billing panel + the website "cancel anytime" promise.
   function _addonPrice(key){ var f=GATED_FEATURES[key]; if(key==='website') return (S.websitePlan==='once'?('$'+((f&&f.addon&&f.addon.once)||199)+' one-time'):('$'+((f&&f.addon&&f.addon.mo)||19)+'/mo')); return f&&f.addon&&f.addon.mo?('$'+f.addon.mo+'/mo'):(f&&f.addon&&f.addon.once?('$'+f.addon.once+' one-time'):''); }
   function _activeAddons(){ var out=[]; if(_addons()['tracking']) out.push({key:'tracking',title:_featMeta('tracking').title,price:_addonPrice('tracking')});
-    if(S&&S.websitePaid&&!_websiteIncluded()) out.push({key:'website',title:_featMeta('website').title,price:_addonPrice('website')}); return out; }
-  function removeAddon(key){ if(!_guard('billing','Managing billing'))return; var nm=_featMeta(key).title.replace(/&amp;/g,'&');
+    if(S&&S.websitePaid&&!_websiteIncluded()) out.push({key:'website',title:_featMeta('website').title,price:_addonPrice('website')});
+    if(S&&S.domainRenewal) out.push({key:'domain',title:'Custom domain ('+S.domainRenewal+')',price:'Billed yearly'});   // #282: a domain bought through us -- its Cancel routes to /api/billing/domain-cancel (period-end, no refund)
+    return out; }
+  function removeAddon(key){ if(!_guard('billing','Managing billing'))return;
+    if(key==='domain'){ return _cancelDomainRenewal(); }   // #282: domains bill on a separate yearly Stripe sub (not in _addons) -- route to their own period-end cancel
+    var nm=_featMeta(key).title.replace(/&amp;/g,'&');
     // #280/#282: the website add-on is a REAL Stripe subscription in live mode -- cancelling it must actually cancel
     // that subscription (at period end, no refund), never just flip local state (that was the #280 billing bug).
     if(key==='website' && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){
@@ -7917,6 +7922,20 @@ const Atlas = (function(){
     save(); try{_logEvent('billing',nm+' add-on cancelled',{addon:key});}catch(e){}
     if(typeof renderSet==='function') renderSet(); var ap=document.querySelector('.panel.active'); if(ap){ var nav=ap.dataset.panel; if(nav==='tracking')renderTracking(); else if(nav==='website')renderWebsite(); }
     toast(nm+' add-on cancelled'); }
+  // #282: cancel a bought domain's yearly renewal at period end (parity with the website add-on). The domain keeps
+  // working through the paid year, then lapses at the registrar; no refund. The server (/api/billing/domain-cancel)
+  // is authoritative -- it only reports ok when Stripe accepted, and stamps the row 'canceling' so this control clears.
+  function _cancelDomainRenewal(){ var dom=(S&&S.domainRenewal)||''; if(!dom){ toast('No domain renewal to cancel'); return; }
+    if(!ATLAS_BACKEND){ toast('Connect an account to manage billing'); return; }
+    if(!confirm('Cancel the yearly renewal for '+dom+'? You keep '+dom+' through the end of the period you have already paid for, then it lapses. No refund for the current period.'))return;
+    toast('Cancelling...');
+    _api('/api/billing/domain-cancel',{method:'POST',body:{domain:dom}}).then(function(res){ var j=res.json||{};
+      if(res.status>=200&&res.status<300&&j.ok){ try{_logEvent('billing','Domain renewal set to cancel at period end',{domain:dom});}catch(e){}
+        try{ var _tid=store.session()&&store.session().tenantId; S.domainRenewal=null; var _db=_lsGet('atlas_tenant_'+_tid,null); if(_db){ _db.domainRenewal=null; _lsSet('atlas_tenant_'+_tid,_db); } }catch(e){}
+        toast(j.cancel_at?('Renewal cancels '+new Date(j.cancel_at*1000).toLocaleDateString()+' -- you keep '+dom+' until then.'):('Renewal cancelled -- you keep '+dom+' until the period ends.'));
+        if(typeof renderSet==='function') renderSet();
+      } else { toast(j.error||'Could not cancel -- please try again'); }
+    }).catch(function(){ toast('Network error cancelling'); }); }
   function _addonsBillingHtml(){ var as=_activeAddons(); if(!as.length) return '';
     return '<div class="set-block"><h3>Add-ons</h3><div class="desc">Extra features on your account. Cancel anytime.</div>'
       +as.map(function(a){ return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">'+a.title+'</b><div style="font-size:12.5px;color:var(--muted)">'+esc(a.price)+' &middot; active</div></div><button class="btn btn--sm btn--danger" onclick="Atlas.removeAddon(\''+a.key+'\')">Cancel</button></div>'; }).join('')+'</div>'; }
