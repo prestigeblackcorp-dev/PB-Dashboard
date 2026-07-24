@@ -1611,9 +1611,10 @@ function saveReceiptLegal(){ var n=$('rlName'); if(!n) return; var a=$('rlAddr')
     if(r&&r.json&&r.json.ok){ toast('Receipt details saved'); loadAll(); } else toast('Save failed'); }).catch(function(){ toast('Save failed'); }); }
 function _entRenderRegistrar(e){ var el=$('entRegBody'); if(!el) return;
   el.innerHTML=
-    '<div class="desc" style="margin:0 0 5px">Dynadot buy/renew for tenant domains (read-only test; never buys).</div>'
+    '<div class="desc" style="margin:0 0 5px">Dynadot buy/renew for tenant domains. The key test is read-only (never buys); the owner-only test registration below spends a few dollars once to confirm real purchases work.</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px"><button class="btn ghost sm" onclick="registrarSelftest()">Test registrar key (no charge)</button><span class="mut" style="font-size:12px">'+(e.registrar?('key set'+(e.registrar_sandbox?' &middot; sandbox':'')):'add DYNADOT_KEY in the worker')+'</span></div>'
-    +'<div id="regSelf"></div>';
+    +'<div id="regSelf"></div>'
+    +(_isOwner()?('<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0 4px;padding-top:12px;border-top:1px solid var(--line)"><input class="inp" id="regTestDom" placeholder="domain to test (blank = cheapest .xyz)" style="flex:1;min-width:180px;font-size:13px"><button class="btn ghost sm" style="color:var(--amber)" onclick="registrarTestBuy()">Register a REAL test domain</button></div><div class="mut" style="font-size:11.5px;margin:0 0 4px">Owner only. Spends a few $ from your Dynadot balance ONCE (hard-capped ~$8) to prove real registration end-to-end. It shows in Payments + the audit log.</div><div id="regTestBuy"></div>'):'');
 }
 function _entRenderToggles(e,owner){ var el=$('entTogglesBody'); if(!el) return; var h='';
   h+='<div class="desc" style="margin:0 0 5px"><b>Developer API</b> <span class="mut" style="font-weight:400">- read-only /api/v1 (bookings, assets, customers). Each tenant creates their own keys; this is the platform-wide on/off. Off by default. Off: existing tenant API keys + webhooks stop working until you turn it back on.</span></div>';
@@ -1680,6 +1681,17 @@ function _paySelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<
   return h;
 }
 function registrarSelftest(){ var out=$('regSelf'); if(out) out.innerHTML='<span class="mut" style="font-size:12px">Checking Dynadot (read-only)...</span>'; api('/api/admin/domains/selftest').then(function(r){ var j=r.json||{}; if(!out) return; if(r.status===404){ out.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker. Paste worker.js into Cloudflare, then reload.</div>'; return; } if(!j.ok){ out.innerHTML='<div class="mut" style="font-size:12px">'+esc((j.error)||'Could not run the check')+'</div>'; return; } out.innerHTML=_regSelfHtml(j); }).catch(function(){ if(out) out.innerHTML='<div class="mut" style="font-size:12px">Network error</div>'; }); }
+// Owner-only REAL test registration -- confirms a real domain purchase end-to-end (spends the prepaid balance ONCE, hard-capped).
+function registrarTestBuy(){
+  var dom=(($('regTestDom')&&$('regTestDom').value)||'').trim();
+  if(!confirm('This registers a REAL domain and spends a few dollars from your Dynadot balance -- once, capped ~$8. Continue?')) return;
+  var out=$('regTestBuy'); if(out) out.innerHTML='<span class="mut" style="font-size:12px">Registering a real test domain (this actually buys one)...</span>';
+  api('/api/admin/domains/testregister',{method:'POST',body:{confirm:true,domain:dom}}).then(function(r){ var j=r.json||{}; if(!out) return;
+    if(r.status===404){ out.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker.</div>'; return; }
+    if(!j.ok){ out.innerHTML='<div style="font-size:12.5px;color:var(--amber)">'+esc(j.message||'Could not run the test registration')+'</div>'; return; }
+    if(j.registered){ out.innerHTML='<div style="font-size:12.5px;color:var(--em)"><b>&#10003; '+esc(j.domain)+'</b> registered ('+centsUSD(j.cost_cents||0)+'). '+esc(j.message||'')+'</div>'; }
+    else { out.innerHTML='<div style="font-size:12.5px;color:#e5484d"><b>Not registered.</b> '+esc(j.message||j.reason||'')+'</div>'; }
+  }).catch(function(){ if(out) out.innerHTML='<div class="mut" style="font-size:12px">Network error</div>'; }); }
 function _regSelfHtml(j){ var c=j.checks||{}; function row(okv,label){ return '<div style="font-size:12.5px;display:flex;gap:8px;align-items:flex-start;padding:3px 0"><span style="color:'+(okv?'#3ecb8f':'#e0736f')+';font-weight:700;width:14px;flex:none">'+(okv?'&#10003;':'&#10007;')+'</span> <span>'+esc(label)+'</span></div>'; }
   var ready=j.ready?'<span class="pill active">key live</span>':'<span class="pill past">not verified</span>';
   var sb=j.sandbox?' <span class="pill gray">sandbox</span>':'';

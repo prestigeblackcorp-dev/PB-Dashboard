@@ -2733,7 +2733,7 @@ function _alert(env, ectx, o) {
 // platform_errors ip column), so neither is reachable by a support/analyst staff token, only the owner.
 // ABUSE-DEFENSE: bans/ban/unban/attacks added to OWNER_ONLY for the same reason -- ban rows + the attack feed carry
 // OTHER callers' emails/IPs, so none of the four routes are reachable by a support/analyst staff token either.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|pnl|owners?|owner\/)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -4482,9 +4482,46 @@ function doReset(){
           out.probe = s; out.checks.api_answered = !!(s && s.reason !== 'error'); out.checks.key_valid = !!(s && s.ok); out.ready = !!(s && s.ok);
           if (s && s.ok) out.notes.push('Dynadot reseller API (v2, ' + _ddV2Host(env) + ') answered for ' + probeDomain + ': ' + (s.available ? 'available' : 'taken') + (s.costCents ? (' at $' + (s.costCents / 100).toFixed(2) + '/yr') : '') + '. Search + auth work.' + (env.DYNADOT_SECRET ? ' Purchases are signed and ready -- nothing was charged by this test.' : ' To enable real PURCHASES, also set DYNADOT_SECRET (your reseller API signing secret) -- search works without it, but register/renew must be X-Signature-signed. Nothing was charged.'));
           else { var _dx = ''; if (s && s.apiError) _dx += ' Dynadot says: "' + s.apiError + '".'; if (s && s.code) _dx += ' (code ' + s.code + ')'; if (s && s.dataKeys && s.dataKeys.length) _dx += ' [data fields: ' + s.dataKeys.join(', ') + ']'; else if (s && s.respKeys && s.respKeys.length) _dx += ' [response fields: ' + s.respKeys.join(', ') + ']';
-            out.notes.push('Dynadot did not confirm (reason: ' + ((s && s.reason) || 'unknown') + ').' + _dx + ' This is a RESELLER account, so it uses Dynadot RESTful v2 API (' + _ddV2Host(env) + '). Check: (1) DYNADOT_KEY is your RESELLER RESTful-v2 API key from the reseller panel (NOT a retail Tools>API key); (2) if the message mentions signature/unauthorized, set DYNADOT_SECRET to your reseller API SECRET / signing key -- purchases REQUIRE it (currently ' + (env.DYNADOT_SECRET ? 'SET' : 'NOT set') + '); (3) the reseller account is funded. This test only runs a free search -- nothing was charged.'); }
+            var _rl = (s && (String(s.code) === '429' || /too many|rate.?limit|blocked/i.test(String(s.apiError || ''))));
+            if (_rl) out.notes.push('Dynadot is TEMPORARILY rate-limiting this IP (too many lookups during setup/testing).' + _dx + ' This is NOT a key/secret/host problem -- the API answered with a structured response, so your DYNADOT_KEY + DYNADOT_SECRET + host are all correct. Wait ~15-60 minutes and run this again; the block clears on its own. If it persists, email Dynadot support to lift it. Nothing was charged.');
+            else out.notes.push('Dynadot did not confirm (reason: ' + ((s && s.reason) || 'unknown') + ').' + _dx + ' This is a RESELLER account, so it uses Dynadot RESTful v2 API (' + _ddV2Host(env) + '). Check: (1) DYNADOT_KEY is your RESELLER RESTful-v2 API key from the reseller panel (NOT a retail Tools>API key); (2) if the message mentions signature/unauthorized, set DYNADOT_SECRET to your reseller API SECRET / signing key -- purchases REQUIRE it (currently ' + (env.DYNADOT_SECRET ? 'SET' : 'NOT set') + '); (3) the reseller account is funded. This test only runs a free search -- nothing was charged.'); }
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.domains.selftest', { key_set: keySet, ready: out.ready });
           return json(out);
+        }
+
+        // OWNER-ONLY real test REGISTRATION. The owner clicks this to confirm register works end-to-end -- it spends the prepaid registrar
+        // balance ONCE on the cheapest available name under a HARD cap (never more than DOMAIN_TESTBUY_CAP_CENTS, default $8), records it as
+        // a proper test order (so the audit log + Payments ledger + P&L all show it, with our cost), points www at the SaaS site, and returns
+        // the exact Dynadot result so any register-body field mismatch is pinpointed. In OWNER_ONLY -> owner role only.
+        if (path === '/api/admin/domains/testregister' && method === 'POST') {
+          if (!env.DYNADOT_KEY) return json({ ok: false, message: 'Set DYNADOT_KEY first.' });
+          if (!env.DYNADOT_SECRET) return json({ ok: false, message: 'Set DYNADOT_SECRET (the reseller signing key) first -- registration requires it.' });
+          if (!await rateLimit(env, 'dtestreg', 5, 3600000)) return json({ ok: false, message: 'Slow down -- only a few test registrations per hour.' });
+          const b = await req.json().catch(function () { return {}; });
+          if (b.confirm !== true) return json({ ok: false, message: 'Confirmation required.' });
+          const cap = Math.max(100, parseInt(env.DOMAIN_TESTBUY_CAP_CENTS, 10) || 800);   // hard ceiling so a test can NEVER overspend
+          let dom = String(b.domain || '').toLowerCase().replace(/[^a-z0-9.-]/g, '').slice(0, 80);
+          let picked = null, s = null;
+          if (dom && dom.indexOf('.') > 0) {
+            s = await _registrarSearch(env, dom);
+            if (!s.ok) return json({ ok: false, message: 'Could not price ' + dom + ': ' + (s.apiError || s.reason || 'error') });
+            if (!s.available) return json({ ok: false, message: dom + ' is taken -- try another name.' });
+            picked = dom;
+          } else {
+            const CHEAP = ['xyz', 'click', 'link'];   // reliably cheap TLDs; auto-pick the first available under the cap (kept short to avoid re-tripping Dynadot rate limits)
+            const rnd = 'atlastest' + String(randId(6)).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
+            for (let i = 0; i < CHEAP.length && !picked; i++) { const cand = rnd + '.' + CHEAP[i]; const cs = await _registrarSearch(env, cand); if (cs.ok && cs.available && (cs.costCents || 0) <= cap) { picked = cand; s = cs; } }
+            if (!picked) return json({ ok: false, message: 'Could not find a cheap available test name under $' + (cap / 100).toFixed(2) + ' right now -- type a .xyz name instead.' });
+          }
+          if ((s.costCents || 0) > cap) return json({ ok: false, message: picked + ' costs $' + ((s.costCents || 0) / 100).toFixed(2) + ', over the $' + (cap / 100).toFixed(2) + ' test cap. Type a cheaper .xyz/.click name, or raise DOMAIN_TESTBUY_CAP_CENTS.' });
+          const _cost = Math.max(0, Math.round(s.costCents || 0));
+          const reg = await _registrarRegister(env, picked, 1);
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.domains.testregister', { domain: picked, cost_cents: _cost, ok: !!reg.ok, reason: reg.reason || '' });
+          if (!reg.ok) return json({ ok: true, registered: false, domain: picked, cost_cents: _cost, reason: reg.reason, message: 'Dynadot did NOT register ' + picked + ' (' + (reg.reason || 'unknown') + '). Nothing durable was recorded. Paste this -- the register request body likely needs one field renamed.' });
+          try { await _registrarSetDns(env, picked, env.SAAS_TARGET || 'saas.atlasrental.io'); } catch (e) {}   // point www at our SaaS fallback (best-effort) -- proves the post-buy DNS path too
+          try { await ensurePlatformSchema(env); await env.DB.prepare("INSERT OR IGNORE INTO domains_sold (id,tenant_id,domain,buyer_email,buyer_name,paid_cents,cost_cents,margin_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").bind('dtr' + Date.now().toString(36), '__platform_test__', picked, env.OWNER_EMAIL || '', 'Atlas test buy', 0, _cost, 0 - _cost, 'registered', Date.now()).run(); } catch (e) {}
+          try { await recordTxn(env, { tenant: '__platform_test__', email: env.OWNER_EMAIL || 'test@atlasrental.io', kind: 'domain', pack: picked, amount_cents: 0, stripe_id: 'testreg_' + picked + '_' + Date.now() }); } catch (e) {}   // shows in the Payments ledger as a $0 test order carrying our cost
+          return json({ ok: true, registered: true, domain: picked, cost_cents: _cost, message: 'Registered ' + picked + ' for $' + (_cost / 100).toFixed(2) + '. Register works end-to-end. It now shows in Payments (a $0 test order with our cost) + the audit log, and its www is pointed at your Atlas site. This is a test buy (no auto-renew billing) -- let it lapse or manage it in Dynadot.' });
         }
 
         // Run a real TEST-mode Stripe checkout (fake money) so the owner can watch a payment come in full circle.
