@@ -1674,70 +1674,81 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // REAL implementation instead of a hand-rolled copy.
 export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES };
 
-// ===================== #201 Domain registrar (Dynadot API v3) =====================
+// ===================== #201 Domain registrar (Dynadot RESTful v2 -- RESELLER API) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
-// The envelope is inconsistent across commands (success is "ResponseCode" OR "SuccessCode", sometimes under a {Cmd}Header child),
-// so _ddOk() checks every known shape + the Status string. Auth is a ?key= query param (no header/signature) drawing on prepaid balance.
-function _dynadotUrl(env, params) {
-  var base = (env.DYNADOT_SANDBOX ? 'https://api-sandbox.dynadot.com' : 'https://api.dynadot.com') + '/api3.json';
-  var q = 'key=' + encodeURIComponent(env.DYNADOT_KEY || '');
-  for (var k in params) { if (params[k] != null) q += '&' + k + '=' + encodeURIComponent(params[k]); }
-  return base + '?' + q;
-}
-function _ddOk(resp, cmd) {
-  try {
-    var r = resp[cmd + 'Response'] || resp; var hdr = r[cmd + 'Header'] || r;
-    var code = (hdr.ResponseCode != null ? hdr.ResponseCode : (hdr.SuccessCode != null ? hdr.SuccessCode : (r.ResponseCode != null ? r.ResponseCode : r.SuccessCode)));
-    var status = String(hdr.Status || r.Status || '').toLowerCase();
-    return { ok: (String(code) === '0') || status === 'success', code: code, status: status, error: hdr.Error || r.Error || '', r: r };
-  } catch (e) { return { ok: false, error: 'parse' }; }
+// The owner's account is a Dynadot RESELLER, which uses the RESTful v2 API (host reseller-api.dynadot.com, paths /restful/v2/...),
+// NOT the old retail api3.json (key=... query param). v2 auth = `Authorization: Bearer <DYNADOT_KEY>`; every response is
+// { code, message, data } with code===200 on success. TRANSACTIONAL commands (register / renew / DNS / nameserver -- anything that
+// spends the prepaid balance or mutates) ALSO require an `X-Signature` header = base64(HMAC-SHA256(DYNADOT_SECRET,
+// `apiKey\nfullPathAndQuery\nX-Request-Id\nbody`)) plus the matching `X-Request-Id`. So a purchase needs BOTH secrets:
+// DYNADOT_KEY (the reseller API key) AND DYNADOT_SECRET (the reseller API secret / signing key) -- BOTH from the RESELLER panel,
+// not retail Tools>API. DYNADOT_API_HOST overrides the host (e.g. a sandbox); DYNADOT_SANDBOX flips to the sandbox host.
+function _ddV2Host(env) { return env.DYNADOT_API_HOST || (env.DYNADOT_SANDBOX ? 'api-sandbox.dynadot.com' : 'reseller-api.dynadot.com'); }
+async function _hmacB64(secret, msg) { try { const key = await crypto.subtle.importKey('raw', enc(String(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const s = await crypto.subtle.sign('HMAC', key, enc(String(msg))); return b64(s); } catch (e) { return ''; } }
+// One authed (and, when a secret is set, signed) request to the reseller v2 API. `pathAndQuery` MUST start with /restful/v2/...
+// and is the EXACT string signed -- single source of truth so the signature always matches the URL we actually request.
+async function _ddV2(env, method, pathAndQuery, body) {
+  var host = _ddV2Host(env);
+  var bodyStr = (body != null) ? JSON.stringify(body) : '';
+  var mutating = (method !== 'GET' && method !== 'HEAD');
+  var headers = { 'Authorization': 'Bearer ' + (env.DYNADOT_KEY || ''), 'Accept': 'application/json' };
+  if (mutating) headers['Content-Type'] = 'application/json';
+  if (env.DYNADOT_SECRET) {   // sign whenever we can (v2 signs even GETs like /accounts/info); REQUIRED for transactional commands
+    var xrid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : randId(24);
+    headers['X-Request-Id'] = xrid;
+    headers['X-Signature'] = await _hmacB64(env.DYNADOT_SECRET, (env.DYNADOT_KEY || '') + '\n' + pathAndQuery + '\n' + xrid + '\n' + bodyStr);
+  }
+  var r = await _fetchTimeout('https://' + host + pathAndQuery, { method: method, headers: headers, body: mutating ? (bodyStr || '{}') : undefined }, 25000);
+  var j = await r.json().catch(function () { return {}; });
+  var code = (j && j.code != null) ? j.code : r.status;
+  return { ok: (Number(code) === 200), status: r.status, code: code, message: (j && j.message) || '', data: (j && j.data) || {}, raw: j };
 }
 async function _registrarSearch(env, domain) {
   if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
   try {
-    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'search', domain0: domain, show_price: '1', currency: 'USD' }), {}, 12000);
-    var j = await r.json().catch(function () { return {}; });
-    var sr = (j.SearchResponse && j.SearchResponse.SearchResults) || j.SearchResults || [];
-    var row = Array.isArray(sr) ? sr[0] : sr;
-    if (!row) {
-      // The API answered but gave no result row. Surface Dynadot's OWN error text + the envelope shape so the owner can tell an
-      // invalid/incomplete key vs an IP-allow-list block vs disabled API vs a genuine empty result -- instead of a bare "no_result".
-      // Read-only + additive: the ok:true success path above is unchanged; callers only ever read .ok / .available / .costCents.
-      var _sr = j.SearchResponse || {}, _hdr = _sr.SearchHeader || _sr;
-      var _apiErr = String(_hdr.Error || _sr.Error || j.Error || '').slice(0, 240);
-      var _code = String(_hdr.ResponseCode != null ? _hdr.ResponseCode : (_sr.ResponseCode != null ? _sr.ResponseCode : (j.ResponseCode != null ? j.ResponseCode : ''))) || '';
-      return { ok: false, reason: _apiErr ? 'api_error' : 'no_result', apiError: _apiErr, code: _code, respKeys: Object.keys(j || {}).slice(0, 10), status: r.status };
+    var res = await _ddV2(env, 'GET', '/restful/v2/domains/' + encodeURIComponent(domain) + '/search?showPrice=yes&currency=USD', null);
+    var d = res.data || {};
+    if (res.ok) {
+      // v2 `data` field names for availability + price are not fully documented -> parse defensively across the likely shapes.
+      var availRaw = (d.available != null ? d.available : (d.availability != null ? d.availability : (d.isAvailable != null ? d.isAvailable : d.status)));
+      var availStr = String(availRaw == null ? '' : availRaw).toLowerCase();
+      var avail = (availRaw === true) || availStr === 'yes' || availStr === 'available' || availStr === 'true';
+      var priceStr = String(d.price != null ? d.price : (d.registerPrice != null ? d.registerPrice : (d.currentPrice != null ? d.currentPrice : (d.priceUsd != null ? d.priceUsd : ''))));
+      if (!priceStr && d.priceList) { try { priceStr = JSON.stringify(d.priceList); } catch (e) {} }
+      var m = priceStr.match(/([0-9]+(?:\.[0-9]+)?)/); var cost = m ? Math.round(parseFloat(m[1]) * 100) : 0;
+      return { ok: true, available: avail, costCents: cost, domain: domain, data: d };
     }
-    var avail = String(row.Available || '').toLowerCase() === 'yes';
-    var m = String(row.Price || '').match(/([0-9]+(?:\.[0-9]+)?)/); var cost = m ? Math.round(parseFloat(m[1]) * 100) : 0;
-    return { ok: true, available: avail, costCents: cost, domain: domain };
+    // The API answered but code!==200 -> surface Dynadot's OWN message + the envelope shape so the owner (and the self-test) can
+    // tell a wrong/retail key vs a missing X-Signature secret vs a genuine failure -- instead of a bare "no_result". Read-only.
+    return { ok: false, reason: res.message ? 'api_error' : 'no_result', apiError: String(res.message || '').slice(0, 240), code: String(res.code || res.status || ''), respKeys: Object.keys(res.raw || {}).slice(0, 10), dataKeys: Object.keys(d).slice(0, 12), status: res.status };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 async function _registrarRegister(env, domain, years) {
   if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
+  if (!env.DYNADOT_SECRET) return { ok: false, reason: 'no_secret' };   // register is a SIGNED transactional command -> no secret, no purchase (never a fake buy)
   try {
-    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'register', domain: domain, duration: String(years || 1), currency: 'USD' }), {}, 25000);
-    var j = await r.json().catch(function () { return {}; });
-    var v = _ddOk(j, 'Register'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || ('code_' + v.code)) };
+    var res = await _ddV2(env, 'POST', '/restful/v2/domains/' + encodeURIComponent(domain) + '/register', { duration: String(years || 1), currency: 'USD' });
+    return { ok: res.ok, reason: res.ok ? 'ok' : (String(res.message || ('code_' + res.code)) || 'register_fail'), code: String(res.code || '') };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 // Renew an existing domain for another year (called on the yearly Stripe renewal so "auto-renews yearly" is real, not a one-time charge).
 async function _registrarRenew(env, domain, years) {
   if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
+  if (!env.DYNADOT_SECRET) return { ok: false, reason: 'no_secret' };
   try {
-    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'renew', domain: domain, duration: String(years || 1), currency: 'USD' }), {}, 25000);
-    var j = await r.json().catch(function () { return {}; });
-    var v = _ddOk(j, 'Renew'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || ('code_' + v.code)) };
+    var res = await _ddV2(env, 'POST', '/restful/v2/domains/' + encodeURIComponent(domain) + '/renew', { duration: String(years || 1), currency: 'USD' });
+    return { ok: res.ok, reason: res.ok ? 'ok' : (String(res.message || ('code_' + res.code)) || 'renew_fail'), code: String(res.code || '') };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
-// Point a bought domain's www subdomain at our SaaS fallback via the registrar's DNS (set_dns2), so it serves the tenant's site with
-// no customer DNS step. The apex is covered by Cloudflare-for-SaaS + www. Best-effort; needs a live test against the account like the rest.
+// Point a bought domain's www subdomain at our SaaS fallback via the registrar's DNS, so it serves the tenant's site with no customer
+// DNS step. The apex is covered by Cloudflare-for-SaaS + www. v2 DNS body field names are best-effort per the documented pattern --
+// the first live call's `message` confirms them. Best-effort; failure never blocks the purchase (the tenant can still point DNS).
 async function _registrarSetDns(env, domain, target) {
   if (!env.DYNADOT_KEY || !target) return { ok: false, reason: 'no_registrar' };
+  if (!env.DYNADOT_SECRET) return { ok: false, reason: 'no_secret' };
   try {
-    var r = await _fetchTimeout(_dynadotUrl(env, { command: 'set_dns2', domain: domain, subdomain0: 'www', sub_record_type0: 'cname', sub_record0: target }), {}, 15000);
-    var j = await r.json().catch(function () { return {}; });
-    var v = _ddOk(j, 'SetDns'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || 'dns_fail') };
+    var res = await _ddV2(env, 'POST', '/restful/v2/domains/' + encodeURIComponent(domain) + '/dns', { subdomains: [{ subhost: 'www', recordType: 'cname', value: target }] });
+    return { ok: res.ok, reason: res.ok ? 'ok' : (String(res.message || 'dns_fail')) };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 // A domain checkout is a SUBSCRIPTION (session.payment_intent is null), so a failure refund must pull the charge off the first invoice
@@ -1754,10 +1765,10 @@ async function _domainFailRefund(env, pk, subId) {
 }
 async function _registrarSetNs(env, domain, nsList) {
   if (!env.DYNADOT_KEY || !nsList || !nsList.length) return { ok: false, reason: 'no_ns' };
+  if (!env.DYNADOT_SECRET) return { ok: false, reason: 'no_secret' };
   try {
-    var params = { command: 'set_ns', domain: domain }; nsList.slice(0, 13).forEach(function (ns, i) { params['ns' + i] = ns; });
-    var r = await _fetchTimeout(_dynadotUrl(env, params), {}, 15000); var j = await r.json().catch(function () { return {}; });
-    var v = _ddOk(j, 'SetNs'); return { ok: v.ok, reason: v.ok ? 'ok' : (v.error || 'ns_fail') };
+    var res = await _ddV2(env, 'PUT', '/restful/v2/domains/' + encodeURIComponent(domain) + '/nameserver', { nameServers: nsList.slice(0, 13) });
+    return { ok: res.ok, reason: res.ok ? 'ok' : (String(res.message || 'ns_fail')) };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 
@@ -4438,13 +4449,14 @@ function doReset(){
         // A real 'register' spends the prepaid balance; this runs only 'search' (free), so the owner can verify the key full-circle safely.
         if (path === '/api/admin/domains/selftest' && method === 'GET') {
           const keySet = !!env.DYNADOT_KEY;
-          const out = { ok: true, key_set: keySet, sandbox: !!env.DYNADOT_SANDBOX, checks: { key_set: keySet, api_answered: false, key_valid: false }, probe: null, notes: [], ready: false };
+          const out = { ok: true, key_set: keySet, secret_set: !!env.DYNADOT_SECRET, host: _ddV2Host(env), sandbox: !!env.DYNADOT_SANDBOX, checks: { key_set: keySet, secret_set: !!env.DYNADOT_SECRET, api_answered: false, key_valid: false }, probe: null, notes: [], ready: false };
           if (!keySet) { out.notes.push('Set the worker secret DYNADOT_KEY (Cloudflare > Workers > atlas > Settings > Variables > Add secret) to enable real domain search + purchase. Until then the site shows price estimates only and never buys.'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.domains.selftest', { key_set: false, ready: false }); return json(out); }
           const probeDomain = 'atlas-registrar-selftest-check.com';   // fixed, harmless probe -- search only, never registered
           const s = await _registrarSearch(env, probeDomain);
           out.probe = s; out.checks.api_answered = !!(s && s.reason !== 'error'); out.checks.key_valid = !!(s && s.ok); out.ready = !!(s && s.ok);
-          if (s && s.ok) out.notes.push('Dynadot answered for ' + probeDomain + ': ' + (s.available ? 'available' : 'taken') + (s.costCents ? (' at $' + (s.costCents / 100).toFixed(2) + '/yr') : '') + '. Your key is live -- purchases draw on your prepaid balance. Nothing was charged by this test.');
-          else { var _dx = ''; if (s && s.apiError) _dx += ' Dynadot says: "' + s.apiError + '".'; if (s && s.code) _dx += ' (code ' + s.code + ')'; if (s && s.respKeys && s.respKeys.length) _dx += ' [response fields: ' + s.respKeys.join(', ') + ']'; out.notes.push('Dynadot did not confirm (reason: ' + ((s && s.reason) || 'unknown') + ').' + _dx + ' Check, in order: (1) the DYNADOT_KEY value is exact + complete (no spaces/truncation); (2) in Dynadot, Tools > API is enabled AND the API IP allow-list either includes Cloudflare or is turned OFF -- Workers call from rotating IPs, so an allow-list will block them; (3) the account has prepaid funds. This test only runs a free search -- nothing was charged.'); }
+          if (s && s.ok) out.notes.push('Dynadot reseller API (v2, ' + _ddV2Host(env) + ') answered for ' + probeDomain + ': ' + (s.available ? 'available' : 'taken') + (s.costCents ? (' at $' + (s.costCents / 100).toFixed(2) + '/yr') : '') + '. Search + auth work.' + (env.DYNADOT_SECRET ? ' Purchases are signed and ready -- nothing was charged by this test.' : ' To enable real PURCHASES, also set DYNADOT_SECRET (your reseller API signing secret) -- search works without it, but register/renew must be X-Signature-signed. Nothing was charged.'));
+          else { var _dx = ''; if (s && s.apiError) _dx += ' Dynadot says: "' + s.apiError + '".'; if (s && s.code) _dx += ' (code ' + s.code + ')'; if (s && s.dataKeys && s.dataKeys.length) _dx += ' [data fields: ' + s.dataKeys.join(', ') + ']'; else if (s && s.respKeys && s.respKeys.length) _dx += ' [response fields: ' + s.respKeys.join(', ') + ']';
+            out.notes.push('Dynadot did not confirm (reason: ' + ((s && s.reason) || 'unknown') + ').' + _dx + ' This is a RESELLER account, so it uses Dynadot RESTful v2 API (' + _ddV2Host(env) + '). Check: (1) DYNADOT_KEY is your RESELLER RESTful-v2 API key from the reseller panel (NOT a retail Tools>API key); (2) if the message mentions signature/unauthorized, set DYNADOT_SECRET to your reseller API SECRET / signing key -- purchases REQUIRE it (currently ' + (env.DYNADOT_SECRET ? 'SET' : 'NOT set') + '); (3) the reseller account is funded. This test only runs a free search -- nothing was charged.'); }
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.domains.selftest', { key_set: keySet, ready: out.ready });
           return json(out);
         }
