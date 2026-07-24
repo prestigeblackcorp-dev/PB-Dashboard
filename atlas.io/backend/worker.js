@@ -1698,7 +1698,16 @@ async function _registrarSearch(env, domain) {
     var r = await _fetchTimeout(_dynadotUrl(env, { command: 'search', domain0: domain, show_price: '1', currency: 'USD' }), {}, 12000);
     var j = await r.json().catch(function () { return {}; });
     var sr = (j.SearchResponse && j.SearchResponse.SearchResults) || j.SearchResults || [];
-    var row = Array.isArray(sr) ? sr[0] : sr; if (!row) return { ok: false, reason: 'no_result' };
+    var row = Array.isArray(sr) ? sr[0] : sr;
+    if (!row) {
+      // The API answered but gave no result row. Surface Dynadot's OWN error text + the envelope shape so the owner can tell an
+      // invalid/incomplete key vs an IP-allow-list block vs disabled API vs a genuine empty result -- instead of a bare "no_result".
+      // Read-only + additive: the ok:true success path above is unchanged; callers only ever read .ok / .available / .costCents.
+      var _sr = j.SearchResponse || {}, _hdr = _sr.SearchHeader || _sr;
+      var _apiErr = String(_hdr.Error || _sr.Error || j.Error || '').slice(0, 240);
+      var _code = String(_hdr.ResponseCode != null ? _hdr.ResponseCode : (_sr.ResponseCode != null ? _sr.ResponseCode : (j.ResponseCode != null ? j.ResponseCode : ''))) || '';
+      return { ok: false, reason: _apiErr ? 'api_error' : 'no_result', apiError: _apiErr, code: _code, respKeys: Object.keys(j || {}).slice(0, 10), status: r.status };
+    }
     var avail = String(row.Available || '').toLowerCase() === 'yes';
     var m = String(row.Price || '').match(/([0-9]+(?:\.[0-9]+)?)/); var cost = m ? Math.round(parseFloat(m[1]) * 100) : 0;
     return { ok: true, available: avail, costCents: cost, domain: domain };
@@ -4433,9 +4442,9 @@ function doReset(){
           if (!keySet) { out.notes.push('Set the worker secret DYNADOT_KEY (Cloudflare > Workers > atlas > Settings > Variables > Add secret) to enable real domain search + purchase. Until then the site shows price estimates only and never buys.'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.domains.selftest', { key_set: false, ready: false }); return json(out); }
           const probeDomain = 'atlas-registrar-selftest-check.com';   // fixed, harmless probe -- search only, never registered
           const s = await _registrarSearch(env, probeDomain);
-          out.probe = s; out.checks.api_answered = !!s; out.checks.key_valid = !!(s && s.ok); out.ready = !!(s && s.ok);
+          out.probe = s; out.checks.api_answered = !!(s && s.reason !== 'error'); out.checks.key_valid = !!(s && s.ok); out.ready = !!(s && s.ok);
           if (s && s.ok) out.notes.push('Dynadot answered for ' + probeDomain + ': ' + (s.available ? 'available' : 'taken') + (s.costCents ? (' at $' + (s.costCents / 100).toFixed(2) + '/yr') : '') + '. Your key is live -- purchases draw on your prepaid balance. Nothing was charged by this test.');
-          else out.notes.push('Dynadot did not confirm (reason: ' + ((s && s.reason) || 'unknown') + '). Re-check the DYNADOT_KEY value and that the account is funded.');
+          else { var _dx = ''; if (s && s.apiError) _dx += ' Dynadot says: "' + s.apiError + '".'; if (s && s.code) _dx += ' (code ' + s.code + ')'; if (s && s.respKeys && s.respKeys.length) _dx += ' [response fields: ' + s.respKeys.join(', ') + ']'; out.notes.push('Dynadot did not confirm (reason: ' + ((s && s.reason) || 'unknown') + ').' + _dx + ' Check, in order: (1) the DYNADOT_KEY value is exact + complete (no spaces/truncation); (2) in Dynadot, Tools > API is enabled AND the API IP allow-list either includes Cloudflare or is turned OFF -- Workers call from rotating IPs, so an allow-list will block them; (3) the account has prepaid funds. This test only runs a free search -- nothing was charged.'); }
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.domains.selftest', { key_set: keySet, ready: out.ready });
           return json(out);
         }
