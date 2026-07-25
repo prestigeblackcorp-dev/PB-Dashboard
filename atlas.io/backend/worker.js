@@ -3377,7 +3377,8 @@ export default {
               if (await _siteTakenDown(env, cd)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
               // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
               const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
-              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname), pr), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+              const _revSumA = await _publicReviewSummary(env, cd.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
+              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname), pr, _revSumA), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
             }
           }
         } catch (e) { /* fall through to normal routing */ }
@@ -3788,6 +3789,8 @@ function doReset(){
             var _cc = (req.cf && req.cf.country) || ''; if (/^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo (day,country,views) VALUES (?,?,1) ON CONFLICT(day,country) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase()).run();
             var _rg = (req.cf && (req.cf.regionCode || req.cf.region)) || ''; if (_rg && /^[A-Za-z]{2}$/.test(_cc)) await env.DB.prepare("INSERT INTO visit_geo_region (day,country,region,views) VALUES (?,?,?,1) ON CONFLICT(day,country,region) DO UPDATE SET views=views+1").bind(_day, _cc.toUpperCase(), String(_rg).slice(0, 60)).run(); } catch (e) {} })();   // best-effort, deferred (waitUntil) so the public booking page is never held up by analytics writes -- same pattern as _fireWebhook. #287: region (regionCode, fallback region name) is additive-only -- absent region -> zero extra writes, byte-identical to before.
           if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_pvp); else _pvp.catch(function () {});
+          const _revSummary = await _publicReviewSummary(env, prof.id);   // P0-1: aggregated public reviews (count/avg/recent) for API consumers + the served page
+          const _pubSecOn = function (k) { var v = (cfg[k] !== undefined) ? cfg[k] : pubSite[k]; return v !== false; };   // section toggles: default ON, explicit false hides (mirrors owner preview)
           return json({ ok: true, business: prof.name, subdomain: slug,
             brand: { color: prof.brand.color || '', logo: prof.brand.logo || '', initial: prof.brand.initial || (prof.name || 'A')[0] },
             headline: pubSite.headline || '', about: pubSite.about || '',
@@ -3797,6 +3800,7 @@ function doReset(){
             config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false, collectDelivery: !!(cfg.collectDelivery || (cfg.fields && cfg.fields.delivery)), rateModel: prof.money.rateModel || 'day', weeklyDisc: Number(prof.money.weeklyDisc) || 0, monthlyDisc: Number(prof.money.monthlyDisc) || 0, rules: (prof.money.rules || []).filter(function (r) { return r && r.on; }).map(function (r) { return { name: String(r.name || 'Fee').slice(0, 40), kind: r.kind === 'percent' ? 'percent' : 'flat', value: Number(r.value) || 0, taxable: !!r.taxable }; }) },
             promos: (function () { var _t = new Date().toISOString().slice(0, 10); return ((prof.settings && prof.settings.promos) || []).filter(function (p) { return p && p.active !== false && !p.personal && !p.customer && !p.cust && !(p.expiry && _t > p.expiry) && !(p.cap && (p.used || 0) >= p.cap); }).map(function (p) { return { code: String(p.code || '').toUpperCase(), type: p.type === 'pct' ? 'pct' : 'amt', value: Number(p.value) || 0, minDays: Number(p.minDays) || 0 }; }); })(),
             analytics: { ga: String((cfg.analytics && cfg.analytics.ga) || '').slice(0, 40), pixel: String((cfg.analytics && cfg.analytics.pixel) || '').slice(0, 40) },
+            sections: { fleet: _pubSecOn('showFleet'), about: _pubSecOn('showAbout'), reviews: _pubSecOn('showReviews'), contact: _pubSecOn('showContact') }, tagline: pubSite.tagline || '', reviews: _revSummary,   // P0-1: section toggles + tagline + aggregated reviews summary (all additive; the byte-identical booking form ignores unknown fields)
             locations: Array.isArray(prof.settings && prof.settings.locations) ? prof.settings.locations.slice(0, 50).map(function (x) { return String(x && x.name || x || '').slice(0, 80); }).filter(Boolean) : [],   // X4: tenant's configured locations (names only) published for the booking form. Additive; the client authors settings.locations + the form UI separately.
             capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } });
         }
@@ -5843,7 +5847,8 @@ function doReset(){
         if (await _siteTakenDown(env, tr)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
         // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
         const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
-        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname), pr), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+        const _revSumB = await _publicReviewSummary(env, tr.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
+        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname), pr, _revSumB), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend|prefs))?$/);
       if (ptp) {
@@ -8249,15 +8254,102 @@ function _bookHeadTags(prof, canonicalUrl) {
     + '<p><a href="' + esc(canon || '/') + '">Book ' + esc(nounPl) + ' online</a></p></div></noscript>';
   return { title: title, head: head, noscript: noscript };
 }
+// Aggregate a tenant's PUBLIC customer reviews (verified, non-hidden) for the served site + /api/public. Reviews live
+// inside booking data blobs (d.review = {rating,text,by,at,hidden}); owner-hidden ones are moderated OUT (mirrors the
+// atlas.html owner preview _siteReviewsHtml). Never throws -- any error yields an EMPTY summary so the page/JSON stays
+// byte-identical to "no reviews yet". Bounded scan (LIMIT 5000, same discipline as other per-tenant booking scans).
+async function _publicReviewSummary(env, tenantId) {
+  var out = { count: 0, avg: 0, recent: [] };
+  try {
+    // Prefilter to rows whose blob actually carries a review (d.review -> serialized "review":{...}); keeps the per-page-load
+    // scan cheap on large tenants. The post-parse rating/hidden checks below stay authoritative, so a LIKE false-positive is harmless.
+    var rows = ((await env.DB.prepare('SELECT data FROM bookings WHERE tenant_id=? AND data LIKE ? LIMIT 5000').bind(tenantId, '%"review"%').all()).results) || [];
+    var rv = [];
+    rows.forEach(function (b) {
+      var d = {}; try { d = JSON.parse(b.data || '{}'); } catch (e) { return; }
+      var r = d && d.review;
+      if (r && r.rating && !r.hidden) rv.push({ rating: Math.max(0, Math.min(5, Number(r.rating) || 0)), text: String(r.text || '').slice(0, 400), by: String(r.by || d.cust || '').slice(0, 80), at: Number(r.at) || 0 });
+    });
+    if (!rv.length) return out;
+    rv.sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
+    var sum = rv.reduce(function (s, r) { return s + r.rating; }, 0);
+    out.count = rv.length;
+    out.avg = Math.round((sum / rv.length) * 10) / 10;
+    var feat = rv.filter(function (r) { return r.rating >= 4 && r.text; }).slice(0, 3);   // best social proof first; fall back to most-recent
+    if (!feat.length) feat = rv.slice(0, 3);
+    out.recent = feat.map(function (r) { return { rating: r.rating, text: r.text, by: r.by }; });
+  } catch (e) {}
+  return out;
+}
 // Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
-function _bookPageHtml(slug, color, seo, prof) {
+// `reviews` (optional) = _publicReviewSummary output; drives the server-rendered reviews section (absent -> section skipped).
+function _bookPageHtml(slug, color, seo, prof, reviews) {
   // Growth badge -- "Powered by Atlas Rental.io" on every public tenant booking page (the #1 free-impression lever:
   // each tenant's booking visitors become Atlas impressions). Shown BY DEFAULT; hidden ONLY when the tenant opted
   // out via prof.settings.hideAtlasBadge -- the future paid "remove branding" upsell hook. Tiny, muted, centered,
   // inline-styled, no script, opens in a new tab -> never disrupts the tenant's own branding/layout/CSP. A missing
   // prof (e.g. a future caller) also shows the badge, so the default is fail-toward-showing.
   var _atlasBadge = (prof && prof.settings && prof.settings.hideAtlasBadge) ? '' : '<div style="text-align:center;margin:28px 0 4px;font-size:11px;line-height:1.4"><a href="https://atlasrental.io/?ref=poweredby" target="_blank" rel="noopener" style="color:#9aa0a6;text-decoration:none">Powered by Atlas Rental.io</a></div>';
-  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + ((seo && seo.noscript) || '') + '<div id="app" class="card">Loading&hellip;</div>' + _atlasBadge;
+  // ---- P0-1: server-rendered MARKETING sections around the booking form (the site the owner actually published:
+  // hero, fleet showcase, About, reviews, contact CTA, legal footer). PURELY ADDITIVE -- the #app booking form and its
+  // client JS below are byte-identical to before; every section here is static HTML with REAL crawlable text. Each
+  // gates on its published-snapshot toggle (default ON, explicit `false` hides -- mirrors the atlas.html owner preview).
+  // If the owner turned EVERY section off, `_anyOn` is false and NOTHING here renders (not even the extra <style>), so
+  // the served page is byte-for-byte the bare booking form it produced before this change.
+  var _pub = (prof && prof.settings && prof.settings.publicSite) || {};
+  var _pcfg = _pub.config || {};
+  var _sec = function (k) { var v = (_pcfg[k] !== undefined) ? _pcfg[k] : _pub[k]; return v !== false; };
+  var _anyOn = _sec('showFleet') || _sec('showAbout') || _sec('showReviews') || _sec('showContact');
+  var _biz = String((prof && prof.name) || '');
+  var _brandLogo = String((prof && prof.brand && prof.brand.logo) || '');
+  var _headline = String(_pub.headline || _biz || 'Book online');
+  var _tagline = String(_pub.tagline || '');
+  var _aboutTxt = String(_pub.about || '');
+  var _unit = String(_pcfg.unit || 'day');
+  var _noun = String(_pcfg.noun || 'rental');
+  var _plN = function (w) { if (!w) return 'rentals'; if (/(s|x|z|ch|sh)$/i.test(w)) return w + 'es'; if (/[^aeiouAEIOU]y$/.test(w)) return w.slice(0, -1) + 'ies'; return w + 's'; };
+  var _m2 = function (n) { n = Number(n) || 0; return '$' + (Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  var _stars = function (n) { n = Math.max(0, Math.min(5, Math.round(Number(n) || 0))); var s = ''; for (var i = 1; i <= 5; i++) s += '<span style="color:' + (i <= n ? '#f5a623' : '#dcdcdc') + '">★</span>'; return s; };
+  var _mktCss = '.mkt-hero{background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:26px 20px;margin-top:14px;text-align:center}.mkt-hero img{height:46px;border-radius:10px;margin:0 0 10px}.mkt-hero h1{font-size:26px;line-height:1.22;margin:0 0 6px}.mkt-hero .tl{color:#555;font-size:15px;margin:0 auto;max-width:34em}.mkt-cta{display:inline-block;background:var(--brand);color:#fff;text-decoration:none;border-radius:10px;padding:12px 22px;font-weight:700;font-size:15px;margin-top:16px}.mkt-sec{background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:18px;margin-top:14px}.mkt-sec>h2{margin:0 0 3px;font-size:19px}.mkt-sub{color:#777;font-size:13px;margin:0 0 12px}.mkt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}.mkt-car{border:1px solid #ececec;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;background:#fff}.mkt-ph{height:96px;object-fit:cover;background:#f0f0f0;display:block;width:100%}.mkt-noph{display:flex;align-items:center;justify-content:center;height:96px;font-size:28px;font-weight:700;color:#c4c4c4;background:#f3f3f3}.mkt-cb{padding:9px 11px}.mkt-nm{font-weight:700;font-size:14px}.mkt-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999;margin-top:1px}.mkt-ds{font-size:12px;color:#666;line-height:1.35;margin-top:3px;max-height:50px;overflow:hidden}.mkt-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:5px}.mkt-stars span{font-size:15px;letter-spacing:1px}.mkt-revs{display:grid;gap:10px}.mkt-rev{border:1px solid #ececec;border-radius:10px;padding:12px}.mkt-rev p{margin:6px 0 4px;font-size:13.5px;color:#333;line-height:1.5}.mkt-by{font-size:12px;color:#888}.mkt-foot{text-align:center;color:#9aa0a6;font-size:12px;margin-top:22px;line-height:1.6}';
+  var _mktStyle = _anyOn ? ('<style>' + _mktCss + '</style>') : '';
+  // HERO -- shown whenever ANY section is kept on (all-off = bare form). Headline is a REAL crawlable <h1>.
+  var _hero = _anyOn ? ('<div class="mkt-hero">'
+    + (/^(https?:|data:)/i.test(_brandLogo) ? ('<img src="' + esc(_brandLogo) + '" alt="' + esc(_biz) + '">') : '')
+    + '<h1>' + esc(_headline) + '</h1>'
+    + (_tagline ? ('<div class="tl">' + esc(_tagline) + '</div>') : '')
+    + '<a class="mkt-cta" href="#app">Book now</a></div>') : '';
+  // FLEET showcase -- real, crawlable per-asset text from the published snapshot. Marketing gallery only; the
+  // authoritative bookable set (plan-cap enforced) remains the #app form fed by /api/public, untouched here.
+  var _fleet = '';
+  if (_sec('showFleet')) {
+    var _fa = (Array.isArray(_pub.assets) ? _pub.assets : []).slice(0, 12);
+    if (_fa.length) {
+      _fleet = '<div class="mkt-sec"><h2>Our ' + esc(_plN(_noun)) + '</h2><div class="mkt-sub">' + _fa.length + ' ' + esc(_fa.length === 1 ? _noun : _plN(_noun)) + ' to choose from</div><div class="mkt-grid">'
+        + _fa.map(function (a) {
+          var ph = String((a && a.photo) || '');
+          var img = /^(https?:|data:)/i.test(ph) ? ('<img class="mkt-ph" src="' + esc(ph) + '" alt="">') : ('<div class="mkt-noph">' + esc(String((a && (a.type || a.name)) || '?').slice(0, 1).toUpperCase()) + '</div>');
+          var rate = Number(a && a.rate) || 0;
+          return '<div class="mkt-car">' + img + '<div class="mkt-cb"><div class="mkt-nm">' + esc(String((a && a.name) || '')) + '</div>'
+            + (a && a.type ? ('<div class="mkt-ty">' + esc(String(a.type)) + '</div>') : '')
+            + (a && a.desc ? ('<div class="mkt-ds">' + esc(String(a.desc)) + '</div>') : '')
+            + (rate > 0 ? ('<div class="mkt-pr">' + _m2(rate) + ' / ' + esc(_unit) + '</div>') : '') + '</div></div>';
+        }).join('') + '</div></div>';
+    }
+  }
+  // ABOUT
+  var _aboutSec = (_sec('showAbout') && _aboutTxt) ? ('<div class="mkt-sec"><h2>About ' + esc(_biz) + '</h2><div style="color:#444;font-size:14px;line-height:1.6;white-space:pre-wrap">' + esc(_aboutTxt) + '</div></div>') : '';
+  // REVIEWS -- aggregated verified reviews (owner-hidden already filtered by _publicReviewSummary). Real crawlable text.
+  var _reviewsSec = '';
+  if (_sec('showReviews') && reviews && reviews.count > 0) {
+    _reviewsSec = '<div class="mkt-sec"><h2>What our customers say</h2><div class="mkt-sub"><span class="mkt-stars">' + _stars(reviews.avg) + '</span> ' + (Math.round(Number(reviews.avg) * 10) / 10).toFixed(1) + ' from ' + reviews.count + ' review' + (reviews.count === 1 ? '' : 's') + '</div><div class="mkt-revs">'
+      + (reviews.recent || []).slice(0, 3).map(function (r) { return '<div class="mkt-rev"><span class="mkt-stars">' + _stars(r.rating) + '</span>' + (r.text ? ('<p>&ldquo;' + esc(String(r.text)) + '&rdquo;</p>') : '') + '<div class="mkt-by">&mdash; ' + esc(String(r.by || 'Verified customer')) + ', verified customer</div></div>'; }).join('')
+      + '</div></div>';
+  }
+  // CONTACT -- CTA back to the booking form (the form is the booking channel, mirroring the owner preview).
+  var _contact = _sec('showContact') ? '<div class="mkt-sec" style="text-align:center"><h2>Ready to book?</h2><div class="mkt-sub" style="margin-bottom:0">Reserve online in minutes.</div><a class="mkt-cta" href="#app">Start your booking</a></div>' : '';
+  // LEGAL FOOTER -- copyright line (only when the marketing site is on; the Atlas badge below stays separate/unchanged).
+  var _footer = _anyOn ? ('<div class="mkt-foot">© ' + new Date().getFullYear() + ' ' + esc(_biz) + '</div>') : '';
+  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + _mktStyle + ((seo && seo.noscript) || '') + _hero + _fleet + _aboutSec + _reviewsSec + '<div id="app" class="card">Loading&hellip;</div>' + _contact + _footer + _atlasBadge;
   var js = `
 var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
