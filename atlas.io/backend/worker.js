@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25e';
+const ATLAS_BUILD = '2026.07.25f';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1472,15 +1472,27 @@ async function _unsubSig(env, tenant, contact) {
     return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 32);
   } catch (e) { return ''; }
 }
+// #343 TCPA FIX: normalize a suppression contact so an opt-out is honored regardless of phone FORMAT. Inbound Twilio STOP
+// arrives as E.164 (+15551234567) but a stored/outbound number is often "(555) 123-4567" -- the old raw string-equality
+// lookup never matched, so an opted-out customer could still be texted. Emails keep case-folding; phones collapse to their
+// significant digits (last 10, dropping a US country code) so every format maps to one key.
+function _normContact(c) {
+  var s = String(c == null ? '' : c).trim();
+  if (s.indexOf('@') >= 0) return s.toLowerCase();          // email -> case-fold
+  var d = s.replace(/[^0-9]/g, '');                          // phone -> digits only
+  if (d.length >= 11) d = d.slice(-10);                     // drop the (US) country code -> last 10 significant digits
+  return d || s.toLowerCase();
+}
 async function isSuppressed(env, tenant, contact) {
-  try { var row = await env.DB.prepare('SELECT contact FROM suppressions WHERE tenant_id=? AND contact=?').bind(tenant, String(contact).toLowerCase()).first(); return !!row; } catch (e) { return false; }
+  // match the normalized key OR the legacy raw-lowercased key, so opt-outs stored before this fix are still honored
+  try { var row = await env.DB.prepare('SELECT contact FROM suppressions WHERE tenant_id=? AND contact IN (?,?)').bind(tenant, _normContact(contact), String(contact).toLowerCase()).first(); return !!row; } catch (e) { return false; }
 }
 async function suppress(env, tenant, contact, kind, reason) {
   try { await env.DB.prepare('INSERT INTO suppressions (tenant_id,contact,kind,reason,at) VALUES (?,?,?,?,?) ON CONFLICT(tenant_id,contact) DO UPDATE SET kind=?,reason=?,at=?')
-    .bind(tenant, String(contact).toLowerCase(), kind, reason, Date.now(), kind, reason, Date.now()).run(); } catch (e) {}
+    .bind(tenant, _normContact(contact), kind, reason, Date.now(), kind, reason, Date.now()).run(); } catch (e) {}
 }
 async function unsuppress(env, tenant, contact) {
-  try { await env.DB.prepare('DELETE FROM suppressions WHERE tenant_id=? AND contact=?').bind(tenant, String(contact).toLowerCase()).run(); } catch (e) {}
+  try { await env.DB.prepare('DELETE FROM suppressions WHERE tenant_id=? AND contact IN (?,?)').bind(tenant, _normContact(contact), String(contact).toLowerCase()).run(); } catch (e) {}
 }
 // Twilio inbound-webhook authenticity check (X-Twilio-Signature): base64(HMAC-SHA1(authToken, fullURL + sorted "key"+"value" pairs of every POST param)).
 // Fail-CLOSED by design: no auth token configured, no header present, or a mismatch -> false, and the caller must NOT act on the request (still answers
@@ -3687,7 +3699,7 @@ function doReset(){
           const _pa = pubAssets.filter(function (a) { return a && a.name === assetName; })[0] || {};
           if (Number(_pa.minLen) > 0 && periods < Number(_pa.minLen)) return err(400, 'This option needs at least ' + _pa.minLen + ' ' + _unit + (Number(_pa.minLen) > 1 ? 's' : '') + '.');
           if (Number(_pa.maxLen) > 0 && periods > Number(_pa.maxLen)) return err(400, 'This option allows at most ' + _pa.maxLen + ' ' + _unit + (Number(_pa.maxLen) > 1 ? 's' : '') + '.');
-          if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : Date.parse((bl && (bl.start || bl.from)) || '')); var e = Number(bl && bl.endTs != null ? bl.endTs : Date.parse((bl && (bl.end || bl.to)) || '')); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return err(409, 'Those dates are unavailable for this option. Please choose different dates.');
+          if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return err(409, 'Those dates are unavailable for this option. Please choose different dates.');
           try {   // #298 IDEMPOTENCY: a double-tapped submit repeats the EXACT same booking (same asset + dates + customer) -> return the existing
             // one instead of creating a duplicate. Keyed on existing columns (no migration): tenant + starts + ends within a 10-min window, then asset + email.
             const _rec = await env.DB.prepare("SELECT id, portal_token, data FROM bookings WHERE tenant_id=? AND starts=? AND ends=? AND created_at > ?").bind(prof.id, startTs, endTs, now - 600000).all();
@@ -3884,9 +3896,15 @@ function doReset(){
               var _isSec = (md.kind === 'security');
               // G1: a paid owner-added charge gets its OWN d.paid key ('charge:'+id) so multiple charges each count toward revenue (a shared 'charge' key would overwrite the prior one).
               var _pkKey = (md.kind === 'charge' && md.charge) ? ('charge:' + md.charge) : (md.kind || 'payment');
+              const _slotHad = !!d.paid[_pkKey];   // #339: was this exact payment slot already recorded? (idempotent guard for a webhook replay / the checkout.session.completed + payment_intent.succeeded dual-fire)
               d.paid[_pkKey] = { at: Date.now(), amountCents: amt, stripe: obj.id || '', pi: pi, hold: (_isSec && md.hold === '1') };
-              var _revSum = 0; for (var _pk in d.paid) { var _pp = d.paid[_pk]; if (_pp && !_pp.hold && _pk !== 'security') _revSum += (Number(_pp.amountCents) || 0); }
-              const rev = _revSum;
+              // #339 MONEY FIX: revenue_cents is a RUNNING total on the column -- which already carries offline/cash G5 revenue AND
+              // direct-in-Stripe refunds (charge.refunded decrements the COLUMN, never d.paid). So ADD this payment to that running
+              // total iff the slot is newly recorded and the payment is CAPTURED revenue (not an authorized hold, not a refundable
+              // security deposit). Idempotent: a replay / dual-fire for the same slot adds nothing twice. The OLD code recomputed
+              // revenue as a blind SUM over d.paid, which ERASED cash revenue and RESURRECTED refunds not reflected in d.paid.
+              const _addRev = (!_slotHad && !(_isSec && md.hold === '1') && md.kind !== 'security') ? (Number(amt) || 0) : 0;
+              const rev = Math.max(0, (Number(row.revenue_cents) || 0) + _addRev);
               if (md.kind === 'charge' && md.charge && Array.isArray(d.charges)) {   // stamp the specific charge paid so the portal shows it settled + the owner sees it collected
                 for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }   // paidOnline: this charge IS inside revenue_cents (Stripe-settled), so the client must NOT re-add it to _bkEarned
               }
@@ -6552,7 +6570,7 @@ function doReset(){
         if (!_can(ctx, 'bookEdit')) return err(403, 'Permission required.');
         const body = await req.json().catch(function () { return {}; });
         const keepCents = Math.max(0, Math.round(Number(body.keepCents) || 0));
-        const row = await env.DB.prepare('SELECT id,data FROM bookings WHERE id=? AND tenant_id=?').bind(cxm[1], ctx.tenant_id).first();
+        const row = await env.DB.prepare('SELECT id,data,revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(cxm[1], ctx.tenant_id).first();
         if (!row) return err(404, 'Booking not found.');
         const d = jparse(row.data, {}); d.paid = d.paid || {};
         const sk = await tenantStripeKey(env, ctx.tenant_id);
@@ -6565,7 +6583,12 @@ function doReset(){
           const sec = d.paid.security; if (sec && sec.pi && sec.hold) { const rc = await stripePost(sk, '/payment_intents/' + sec.pi + '/cancel', {}); if (rc.ok) { sec.released = { at: Date.now() }; delete sec.hold; released = true; } }   // release the refundable-deposit hold on cancel
         }
         d.status = 'Cancelled'; d.cancelledAt = Date.now(); d.cancelFee = keepCents / 100; d._t = Date.now();
-        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), keepCents, 'cancelled', Date.now(), cxm[1], ctx.tenant_id).run();
+        // #340 MONEY FIX: the kept revenue can never exceed what was actually COLLECTED on the booking (prior revenue_cents:
+        // online captures + any cash/G5). The dashboard "Keep 50%" preset computes 50% of the RENTAL TOTAL, not of what was
+        // collected -- so an unclamped keepCents recorded phantom revenue with no matching cash. cancelFee (the policy fee the
+        // owner charged) is kept as-is for the record; only the recorded revenue is clamped.
+        const _keepRev = Math.min(keepCents, Number(row.revenue_cents) || 0);
+        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), _keepRev, 'cancelled', Date.now(), cxm[1], ctx.tenant_id).run();
         await audit(env, ctx, req, 'booking.cancel', { booking: cxm[1], keepCents: keepCents, refundedCents: refundedCents, released: released });
         if (d.custEmail && (refundedCents > 0 || released)) { try { const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); const pr = tenantProfile(tr || { name: 'Atlas Rental.io' }); await sendEmail(env, { to: d.custEmail, fromName: pr.name, subject: 'Booking cancelled - ' + pr.name, html: _emailShell(pr, '<h2>Your booking was cancelled</h2><p>Booking <b>' + esc(cxm[1]) + '</b>.' + (refundedCents > 0 ? (' A refund of ' + money2(refundedCents) + ' was issued to your card.') : '') + (released ? ' Your deposit hold was released.' : '') + '</p>') }); } catch (e) {} }
         return json({ ok: true, refundedCents: refundedCents, released: released });
@@ -7955,7 +7978,7 @@ async function _availabilityCheck(env, prof, pubAssets, cfg, assetName, startTs,
   const _pa = pubAssets.filter(function (a) { return a && a.name === assetName; })[0] || {};
   if (Number(_pa.minLen) > 0 && p < Number(_pa.minLen)) return { available: false, reason: 'Needs at least ' + _pa.minLen + ' ' + _unit + (Number(_pa.minLen) > 1 ? 's' : '') + '.' };
   if (Number(_pa.maxLen) > 0 && p > Number(_pa.maxLen)) return { available: false, reason: 'At most ' + _pa.maxLen + ' ' + _unit + (Number(_pa.maxLen) > 1 ? 's' : '') + '.' };
-  if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : Date.parse((bl && (bl.start || bl.from)) || '')); var e = Number(bl && bl.endTs != null ? bl.endTs : Date.parse((bl && (bl.end || bl.to)) || '')); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return { available: false, reason: 'Unavailable on these dates.' };
+  if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return { available: false, reason: 'Unavailable on these dates.' };
   try {
     // X3 stock: COUNT overlapping active bookings of this asset; unavailable only once the count reaches the asset's unit count (qty from the matched pubAsset). qty absent/1 => first overlap blocks => byte-identical to the old any-overlap check.
     const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed')").bind(prof.id).all();
