@@ -5469,7 +5469,7 @@ const Atlas = (function(){
   function _haversine(a,b,c,d){ var R=3959, dLat=(c-a)*Math.PI/180, dLng=(d-b)*Math.PI/180, x=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.sin(dLng/2)*Math.sin(dLng/2)*Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180); return 2*R*Math.asin(Math.sqrt(x)); }
   function _trkDistETA(v){ var mi=_haversine(TRK_BASE.lat,TRK_BASE.lng,v.lat,v.lng)*1.3; var min=Math.max(1,Math.round(mi/28*60)); return {mi:mi, eta:min}; }
   var _trkRoute=null;
-  function _trkDrawRoute(){ var g=document.getElementById('trkRouteG'); if(!g)return; var v=_trkRoute?_trackers().vehicles[_trkRoute]:null; if(!v){ g.innerHTML=''; return; }
+  function _trkDrawRoute(){ if(_lmap){ _trkRouteLeaflet(); return; } var g=document.getElementById('trkRouteG'); if(!g)return; var v=_trkRoute?_trackers().vehicles[_trkRoute]:null; if(!v){ g.innerHTML=''; return; }
     var b=_trkProject(TRK_BASE.lat,TRK_BASE.lng), p=_trkProject(v.lat,v.lng);
     g.innerHTML='<path d="M'+b.x.toFixed(1)+','+b.y.toFixed(1)+' L'+p.x.toFixed(1)+','+b.y.toFixed(1)+' L'+p.x.toFixed(1)+','+p.y.toFixed(1)+'" class="trk-route"/>'; }
   function _trkStreet(){ return TRK_STREETS[Math.floor(Math.random()*TRK_STREETS.length)]; }
@@ -5515,7 +5515,7 @@ const Atlas = (function(){
         var prev=t.vehicles[id]||{}; nv[id]={ lat:p.lat, lng:p.lng, heading:p.heading||0, speed:Math.round(p.speed||0), status:(p.moving?'moving':'parked'), online:true, street:p.address||prev.street||'', milesToday:prev.milesToday||0, lastPing:Date.now(), deviceId:p.deviceId, label:p.label||'', real:true }; });
       t.vehicles=nv; save(); try{ _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); if(_trkSel)_trkRenderDetail(); }catch(e){}
     }).catch(function(){}); }
-  function renderTracking(){ var body=document.getElementById('trkBody'), top=document.getElementById('trkTopActions'); if(!body)return; var t=_trackers();
+  function renderTracking(){ var body=document.getElementById('trkBody'), top=document.getElementById('trkTopActions'); if(!body)return; _trkMapTeardown(); var t=_trackers();
     if(!_featOk('tracking')){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_lockOverlay('tracking'); return; }   // premium feature: locked below Pro
     if(!t.connected){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_trkConnectHtml(); return; }
     _trkReconcile();   // fix: reconcile trackers with the current fleet (add new assets, drop deleted) before rendering KPIs/map/list
@@ -5630,7 +5630,7 @@ const Atlas = (function(){
   function _geofences(){ var t=_trackers(); if(!t.geofences) t.geofences=[]; return t.geofences; }
   function _gfForAsset(id){ return _geofences().filter(function(g){return g.assetId===id;})[0]; }
   function _miToPx(mi){ return mi*(620/((TRK_BOX.maxLat-TRK_BOX.minLat)*69)); }   // approx px-per-mile on the sim map (1 deg lat ~= 69 mi)
-  function _trkRenderGeofences(){ var g=document.getElementById('trkZones'); if(!g)return; g.innerHTML=_geofences().map(function(z){ var p=_trkProject(z.lat,z.lng), r=Math.max(8,_miToPx(z.radiusMi||0.5));
+  function _trkRenderGeofences(){ if(_lmap){ _trkGeoLeaflet(); return; } var g=document.getElementById('trkZones'); if(!g)return; g.innerHTML=_geofences().map(function(z){ var p=_trkProject(z.lat,z.lng), r=Math.max(8,_miToPx(z.radiusMi||0.5));
     return '<circle cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="'+r.toFixed(1)+'" fill="var(--brand)" fill-opacity="0.07" stroke="var(--brand)" stroke-width="1.5" stroke-dasharray="5 4"/><text x="'+p.x.toFixed(1)+'" y="'+(p.y-r-4).toFixed(1)+'" text-anchor="middle" font-size="11" font-weight="700" fill="var(--brand)">'+esc(z.label||'Zone')+'</text>'; }).join(''); }
   function _gfCheck(){ var t=_trackers(), zs=t.geofences||[]; if(!zs.length) return; var alertsOn=!!_flags().advancedGeofence;
     zs.forEach(function(z){ var v=t.vehicles[z.assetId]; if(!v)return; var inside=_haversine(z.lat,z.lng,v.lat,v.lng)<=(z.radiusMi||0.5);
@@ -5653,7 +5653,7 @@ const Atlas = (function(){
     closeModal(); _trkRenderGeofences(); if(_trkSel) _trkRenderDetail(); toast('Geofence saved'); }
   function gfRemove(assetId){ if(!confirm('Remove this geofence?'))return; var t=_trackers(); t.geofences=(t.geofences||[]).filter(function(g){return g.assetId!==assetId;}); save(); try{_logEvent('tracker','Geofence removed',{asset:assetId});}catch(e){} closeModal(); _trkRenderGeofences(); if(_trkSel) _trkRenderDetail(); toast('Geofence removed'); }
   function _trkDashHtml(){ return '<div class="trk-kpis" id="trkKpis"></div><div class="trk-grid">'
-    +'<div class="trk-map-wrap"><svg id="trkMap" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice">'+_trkMapBg()+'<g id="trkRouteG"></g><g id="trkZones"></g><g id="trkMarkers"></g></svg>'
+    +'<div class="trk-map-wrap"><div id="trkLMap" style="position:absolute;inset:0"></div>'
     +'<div class="trk-map-legend"><span><i class="d-mv"></i>Moving</span><span><i class="d-id"></i>Idle</span><span><i class="d-pk"></i>Parked</span><span><i class="d-of"></i>Offline</span></div></div>'
     +'<div class="trk-side"><div class="trk-side__hd">Fleet</div><div id="trkList"></div></div></div><div id="trkDetail"></div>'; }
   function _trkMapBg(){ var s='<rect x="0" y="0" width="1000" height="620" fill="var(--trk-map)"/>';
@@ -5664,7 +5664,80 @@ const Atlas = (function(){
     s+='<circle cx="'+b.x+'" cy="'+b.y+'" r="20" fill="var(--brand)" opacity="0.15"/><circle cx="'+b.x+'" cy="'+b.y+'" r="7" fill="var(--brand)"/><text x="'+b.x+'" y="'+(b.y-14)+'" text-anchor="middle" font-size="13" font-weight="700" fill="var(--brand)">Base</text>';
     return s; }
   function _trkMkClass(v){ return v.status==='moving'?'mv':v.status==='idle'?'id':v.status==='parked'?'pk':'of'; }
-  function _trkRenderMap(){ var g=document.getElementById('trkMarkers'); if(!g)return; var t=_trackers();
+  /* ====== REAL LIVE MAP (Leaflet, lazy-loaded from CDN) -- binds the SAME position feed as the SVG grid; SVG below stays as the offline/failure fallback ====== */
+  var _lmap=null, _lmarkers={}, _lgeoLayers={}, _lrouteLayer=null, _lmapFit=false, _lmapMounting=false, _lmapFailed=false, _leafletPromise=null;
+  var LEAFLET_JS='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+  var LEAFLET_JS_SRI='sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+  var LEAFLET_CSS='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+  var LEAFLET_CSS_SHA256='p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';   // published SRI digest of leaflet.css -- verified after fetch: CSP style-src ('self' 'unsafe-inline', no https:) blocks a cross-origin <link>, so we fetch + hash-check + inline instead
+  function _b64(buf){ var b=new Uint8Array(buf), s=''; for(var i=0;i<b.length;i++){ s+=String.fromCharCode(b[i]); } return btoa(s); }
+  function _cssVar(name,fb){ try{ var v=getComputedStyle(document.documentElement).getPropertyValue(name); return (v&&v.trim())||fb; }catch(e){ return fb; } }
+  function _loadLeafletJs(){ if(window.L) return Promise.resolve();
+    return new Promise(function(resolve,reject){ var ex=document.getElementById('leafletJs');
+      if(ex){ ex.addEventListener('load',function(){ window.L?resolve():reject(new Error('noL')); }); ex.addEventListener('error',function(){ reject(new Error('js')); }); return; }
+      var s=document.createElement('script'); s.id='leafletJs'; s.src=LEAFLET_JS; s.integrity=LEAFLET_JS_SRI; s.crossOrigin='anonymous'; s.async=true;
+      s.onload=function(){ window.L?resolve():reject(new Error('noL')); }; s.onerror=function(){ reject(new Error('js')); }; document.head.appendChild(s); }); }
+  function _loadLeafletCss(){ if(document.getElementById('leafletCss')) return Promise.resolve();
+    if(!(window.fetch && window.crypto && window.crypto.subtle && window.TextDecoder)) return Promise.reject(new Error('nocrypto'));
+    return fetch(LEAFLET_CSS,{mode:'cors'}).then(function(r){ if(!r.ok) throw new Error('csshttp'); return r.arrayBuffer(); }).then(function(buf){
+      return window.crypto.subtle.digest('SHA-256',buf).then(function(dig){ if(_b64(dig)!==LEAFLET_CSS_SHA256) throw new Error('cssintegrity');
+        var css=new TextDecoder('utf-8').decode(buf), st=document.createElement('style'); st.id='leafletCss'; st.textContent=css; document.head.appendChild(st); }); }); }
+  // Lazy-load Leaflet exactly once (JS via <script>+SRI; CSS fetched, hash-verified, inlined). cb(true) when ready; cb(false) on ANY failure -> caller falls back to the SVG grid.
+  function _ensureLeaflet(cb){ if(window.L && document.getElementById('leafletCss')){ if(cb)cb(true); return; }
+    if(!_leafletPromise){ _leafletPromise=Promise.all([_loadLeafletCss(),_loadLeafletJs()]).then(function(){ if(!window.L) throw new Error('noL'); return true; }); }
+    _leafletPromise.then(function(){ if(cb)cb(true); },function(){ _leafletPromise=null; if(cb)cb(false); }); }   // null the promise on failure so a later open can retry (e.g. transient offline)
+  function _trkMapTeardown(){ if(_lmap){ try{ _lmap.remove(); }catch(e){} } _lmap=null; _lmarkers={}; _lgeoLayers={}; _lrouteLayer=null; _lmapFit=false; }
+  function _trkMountSvg(host){ if(!host) return; host.innerHTML='<svg id="trkMap" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice">'+_trkMapBg()+'<g id="trkRouteG"></g><g id="trkZones"></g><g id="trkMarkers"></g></svg>'; }
+  function _trkLeafletInit(host){ try{ host.innerHTML='';
+      _lmap=L.map(host,{zoomControl:true,attributionControl:true});
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'}).addTo(_lmap);
+      _lmap.setView([TRK_BASE.lat,TRK_BASE.lng],11);
+      setTimeout(function(){ if(_lmap){ try{ _lmap.invalidateSize(); }catch(e){} } },60); return true;
+    }catch(e){ try{ if(_lmap) _lmap.remove(); }catch(_e){} _lmap=null; return false; } }
+  function _trkMapMount(){ var host=document.getElementById('trkLMap'); if(!host) return;
+    if(_lmap){ try{ _lmap.remove(); }catch(e){} _lmap=null; }
+    _lmarkers={}; _lgeoLayers={}; _lrouteLayer=null; _lmapFit=false;
+    if(_lmapFailed){ _trkMountSvg(host); _trkRenderMapSvg(); return; }
+    if(_lmapMounting) return; _lmapMounting=true;
+    _ensureLeaflet(function(ok){ _lmapMounting=false; var h=document.getElementById('trkLMap'); if(!h) return;
+      if(ok && window.L && _trkLeafletInit(h)){ _trkRenderMap(); try{ _trkRenderKpis(); }catch(e){} }
+      else { _lmapFailed=true; _trkMountSvg(h); _trkRenderMapSvg(); } }); }
+  function _trkStatusColor(v){ var s=v&&v.status; return s==='moving'?_cssVar('--ok','#15A34A'):s==='idle'?_cssVar('--warn','#D97706'):s==='parked'?_cssVar('--muted','#7C828C'):_cssVar('--faint','#A9AEB6'); }
+  function _trkLPopup(id){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]||{name:id}; var v=_trackers().vehicles[id]; if(!v) return esc(a.name||String(id));
+    var live=v.real?'Live':'Preview', tag=v.real?'#15A34A':'#D97706'; var stat=v.status?(v.status.charAt(0).toUpperCase()+v.status.slice(1)):''; var line=stat+(v.status==='moving'?(' &middot; '+Math.round(v.speed||0)+' mph'):'');
+    return '<div style="min-width:158px;line-height:1.35">'
+      +'<div style="display:flex;align-items:center;gap:7px;margin-bottom:3px"><b style="font-size:13.5px;color:#14181F">'+esc(a.name||String(id))+'</b><span style="font-size:9.5px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#fff;background:'+tag+';border-radius:5px;padding:1px 6px">'+live+'</span></div>'
+      +'<div style="font-size:12.5px;color:#3B434C">'+esc(line)+'</div>'
+      +(v.street?('<div style="font-size:11.5px;color:#7C828C;margin-top:1px">'+esc(v.street)+'</div>'):'')
+      +'<button onclick="Atlas.trkNavApp(\'apple\',\''+esc(String(id))+'\')" style="margin-top:8px;font-size:12px;font-weight:600;color:#fff;background:#1E6E4E;border:0;border-radius:7px;padding:5px 11px;cursor:pointer">Directions</button></div>'; }
+  function _trkRenderMarkersLeaflet(){ if(!_lmap) return; var t=_trackers(), seen={}, pts=[];
+    (DATA.assets||[]).forEach(function(a){ var id=a.id, v=t.vehicles[id]; if(!v) return; seen[id]=1; pts.push([v.lat,v.lng]);
+      var col=_trkStatusColor(v), sel=(_trkSel===id), m=_lmarkers[id];
+      if(!m){ m=L.circleMarker([v.lat,v.lng],{radius:sel?11:9,weight:sel?4:2,color:'#ffffff',fillColor:col,fillOpacity:1});
+        (function(mid){ m.on('click',function(){ if(_trkSel!==mid) trkSelect(mid); }); m.bindPopup(function(){ return _trkLPopup(mid); },{closeButton:true,autoPan:false}); })(id);
+        m.bindTooltip(esc(a.name||String(id)),{direction:'top',offset:[0,-9],opacity:0.92}); m.addTo(_lmap); _lmarkers[id]=m; }
+      else { m.setLatLng([v.lat,v.lng]); try{ m.setRadius(sel?11:9); }catch(e){} m.setStyle({fillColor:col,weight:sel?4:2}); if(m.isPopupOpen&&m.isPopupOpen()){ try{ m.setPopupContent(_trkLPopup(id)); }catch(e){} } } });
+    Object.keys(_lmarkers).forEach(function(id){ if(!seen[id]){ try{ _lmap.removeLayer(_lmarkers[id]); }catch(e){} delete _lmarkers[id]; } });
+    if(!_lmapFit && pts.length){ _lmapFit=true; try{ if(pts.length===1){ _lmap.setView(pts[0],14); } else { _lmap.fitBounds(pts,{padding:[42,42],maxZoom:15}); } }catch(e){} } }
+  function _trkGeoLeaflet(){ if(!_lmap) return; var brand=_cssVar('--brand','#1E6E4E'), seen={};
+    _geofences().forEach(function(z){ if(z.lat==null||z.lng==null) return; seen[z.id]=1; var rad=Math.max(30,(z.radiusMi||0.5)*1609.34), c=_lgeoLayers[z.id];
+      if(!c){ c=L.circle([z.lat,z.lng],{radius:rad,color:brand,weight:1.5,dashArray:'5 4',fillColor:brand,fillOpacity:0.07}); c.bindTooltip(esc(z.label||'Zone'),{permanent:true,direction:'center',className:'trk-lzone',opacity:0.9}); c.addTo(_lmap); _lgeoLayers[z.id]=c; }
+      else { c.setLatLng([z.lat,z.lng]); c.setRadius(rad); c.setStyle({color:brand,fillColor:brand}); } });
+    Object.keys(_lgeoLayers).forEach(function(id){ if(!seen[id]){ try{ _lmap.removeLayer(_lgeoLayers[id]); }catch(e){} delete _lgeoLayers[id]; } }); }
+  function _trkRouteLeaflet(){ if(!_lmap) return; var v=_trkRoute?_trackers().vehicles[_trkRoute]:null;
+    if(!v){ if(_lrouteLayer){ try{ _lmap.removeLayer(_lrouteLayer); }catch(e){} _lrouteLayer=null; } return; }
+    var pts=[[TRK_BASE.lat,TRK_BASE.lng],[v.lat,v.lng]], brand=_cssVar('--brand','#1E6E4E');
+    if(!_lrouteLayer){ _lrouteLayer=L.polyline(pts,{color:brand,weight:3,opacity:0.9,dashArray:'6 5'}); _lrouteLayer.addTo(_lmap); }
+    else { _lrouteLayer.setLatLngs(pts); _lrouteLayer.setStyle({color:brand}); } }
+  // Master map render: real Leaflet when mounted (self-heals if its container was detached by a re-render); else lazy-mount Leaflet, or the SVG grid if Leaflet can't load.
+  function _trkRenderMap(){ if(_lmap){ var c=null; try{ c=_lmap.getContainer(); }catch(e){}
+      if(c && document.body.contains(c)){ _trkRenderMarkersLeaflet(); _trkRenderGeofences(); _trkDrawRoute(); return; }
+      _trkMapTeardown(); }
+    var host=document.getElementById('trkLMap');
+    if(host && !_lmapFailed){ if(_lmapMounting) return; _trkMapMount(); return; }
+    if(host && _lmapFailed && !document.getElementById('trkMap')) _trkMountSvg(host);
+    _trkRenderMapSvg(); }
+  function _trkRenderMapSvg(){ var g=document.getElementById('trkMarkers'); if(!g)return; var t=_trackers();
     (DATA.assets||[]).forEach(function(a){ var v=t.vehicles[a.id]; if(!v)return; var p=_trkProject(v.lat,v.lng); var el=document.getElementById('mk_'+a.id);
       if(!el){ el=document.createElementNS('http://www.w3.org/2000/svg','g'); el.setAttribute('id','mk_'+a.id); el.setAttribute('onclick',"Atlas.trkSelect('"+a.id+"')"); el.style.cursor='pointer';
         el.innerHTML='<circle r="15" class="trk-mk__pulse"/><circle r="16" class="trk-mk__ring"/><circle r="9" class="trk-mk__dot"/><text y="4" text-anchor="middle" class="trk-mk__txt">'+esc(_trkInitial(a.name))+'</text>'; g.appendChild(el); }
@@ -5696,17 +5769,17 @@ const Atlas = (function(){
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkNavApp(\'apple\')"><svg viewBox="0 0 20 20" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M10 2a5 5 0 015 5c0 3.8-5 11-5 11S5 10.8 5 7a5 5 0 015-5z" stroke="currentColor" stroke-width="1.5"/></svg> Apple Maps</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkNavApp(\'google\')"><svg viewBox="0 0 20 20" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M10 2a5 5 0 015 5c0 3.8-5 11-5 11S5 10.8 5 7a5 5 0 015-5z" stroke="currentColor" stroke-width="1.5"/></svg> Google Maps</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.trkSelect(\''+_trkSel+'\')">Close</button></div></div></div>'; }
-  function trkNavApp(kind){ if(!_trkSel)return; var v=_trackers().vehicles[_trkSel]; if(!v)return; var a=(DATA.assets||[]).filter(function(x){return x.id===_trkSel;})[0]||{};
+  function trkNavApp(kind,id){ id=id||_trkSel; if(!id)return; var v=_trackers().vehicles[id]; if(!v)return; var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]||{};
     var lat=(+v.lat).toFixed(6), lng=(+v.lng).toFixed(6);
     var url = kind==='apple' ? ('https://maps.apple.com/?daddr='+lat+','+lng+'&dirflg=d') : ('https://www.google.com/maps/dir/?api=1&destination='+lat+','+lng+'&travelmode=driving');
     try{ window.open(url,'_blank','noopener'); }catch(e){}
-    _logEvent('tracker','Navigated to '+(a.name||'vehicle')+' via '+(kind==='apple'?'Apple':'Google')+' Maps',{asset:_trkSel});
+    _logEvent('tracker','Navigated to '+(a.name||'vehicle')+' via '+(kind==='apple'?'Apple':'Google')+' Maps',{asset:id});
     toast('Opening '+(kind==='apple'?'Apple':'Google')+' Maps directions'); }
   function _telCell(l,v){ return '<div class="trk-tel__c"><div class="trk-tel__l">'+l+'</div><div class="trk-tel__v">'+esc(String(v))+'</div></div>'; }
   // ---- Full-screen map + 3D turn-by-turn navigation to a live-moving asset --------------------------------
   var _trkFS=false;
   function trkFullscreen(){ var w=document.querySelector('.trk-map-wrap'); if(!w)return; _trkFS=!_trkFS; w.classList.toggle('trk-fs',_trkFS); document.body.classList.toggle('trk-fs-on',_trkFS);
-    if(_trkFS && !document.getElementById('trkFsExit')){ var b=document.createElement('button'); b.id='trkFsExit'; b.className='trk-fs-exit'; b.setAttribute('aria-label','Exit full screen'); b.onclick=trkFullscreen; b.innerHTML='<svg viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'; document.body.appendChild(b); } }
+    if(_trkFS && !document.getElementById('trkFsExit')){ var b=document.createElement('button'); b.id='trkFsExit'; b.className='trk-fs-exit'; b.setAttribute('aria-label','Exit full screen'); b.onclick=trkFullscreen; b.innerHTML='<svg viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'; document.body.appendChild(b); } if(_lmap){ setTimeout(function(){ try{ _lmap.invalidateSize(); }catch(e){} },90); } }
   var _n3d=null;
   function trkNav3d(id){ id=id||_trkSel; if(!id)return; var v=_trackers().vehicles[id]; if(!v)return;
     var b=_trkProject(TRK_BASE.lat,TRK_BASE.lng), p=_trkProject(v.lat,v.lng);
