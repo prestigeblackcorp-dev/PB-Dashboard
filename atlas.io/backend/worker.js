@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25k';
+const ATLAS_BUILD = '2026.07.25l';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -603,7 +603,7 @@ function _can(ctx, cap) {
 const AIO_SAFETY_PROMPT =
   // WHO YOU ARE + PURPOSE
   'You are Atlas.io, the AI brain inside Atlas Rental.io - a white-label SaaS that runs ONE independent rental business of ANY type (cars/exotics, rental properties, apartments & units, RVs & campers, boats & yachts, salon suites, equipment, luxury events, and more). ' +
-  'Your job: help THIS owner run and GROW their business - price smartly, fill idle days, lift utilization and revenue, draft customer messages and marketing, explain their own numbers, research their local market, and guide them through every tab (Overview, Fleet/assets, Bookings, Customers, Analytics, Live Map, Website, Team, Settings). You always reason from their CURRENT live data and local market and surface the single best next action for their specific business right now. ' +
+  'Your job: help THIS owner run and GROW their business - price smartly, fill idle days, lift utilization and revenue, draft customer messages and marketing, explain their own numbers, reason about their local market from what they tell you, and guide them through every tab (Overview, Fleet/assets, Bookings, Customers, Analytics, Live Map, Website, Team, Settings). You always reason from their CURRENT live data and local market and surface the single best next action for their specific business right now. ' +
   // HONEST LIMITATIONS (never mislead)
   'Know the product honestly and never oversell it: the owner\'s OWN Atlas subscription, credit packs and website add-on bill through Stripe now (live) - treat those as real charges. Charging the owner\'s CUSTOMERS (booking deposits and balances) requires the owner to connect their own Stripe in Settings; until they do, customer charges are in setup mode and nothing is charged, so never imply a customer paid when they did not. Email sending needs Resend connected; SMS needs Twilio. Some features are plan-gated (asset caps, the built-in website on higher tiers). The app never touches raw card numbers (hosted Stripe Checkout does). You advise and can prepare actions, but you do not move money, charge cards, or sign agreements on your own. If something is not connected or not possible yet, say so plainly and tell them exactly how to turn it on. ' +
   // SECURITY (guard the known flaws)
@@ -1347,6 +1347,22 @@ async function _bookingMirrorWrite(env, tenantId, id, cols, vals, clientData) {
     if (_u && _u.meta && _u.meta.changes) return true;
   }
   return false;   // exhausted (extreme contention) -> the owner edit is not persisted, but the server payment ledger stays intact
+}
+// #346-E2b: CAS re-read/apply/write for SERVER-side booking-blob mutations that used to blind-write the WHOLE `d` (portal sign,
+// upload, extend, review, prefs; the notification cron's autoSent; owner upload-delete). A payment webhook landing between the
+// handler's `d` load and its write (customer pays then immediately signs/uploads) had its d.paid erased. Re-read fresh + re-apply
+// the mutation + CAS on updated_at so the webhook's payment fields are never clobbered. `patch(fd)` mutates the FRESH fd in place;
+// return false from patch to signal a no-op (idempotent skip). Returns true if applied/committed, false if the row is gone/contended.
+async function _bkPatch(env, id, tid, patch) {
+  for (var _i = 0; _i < 6; _i++) {
+    const row = await env.DB.prepare('SELECT data, updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(id, tid).first();
+    if (!row) return false;
+    const fd = jparse(row.data, {});
+    if (patch(fd) === false) return true;
+    const _u = await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?').bind(JSON.stringify(fd), Date.now(), id, tid, row.updated_at).run();
+    if (_u && _u.meta && _u.meta.changes) return true;
+  }
+  return false;
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
 function money2(cents) { return '$' + (Math.round(Number(cents) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -4430,7 +4446,7 @@ function doReset(){
           const _bid = (dkey.match(/\/portal\/([^/]+)\//) || [])[1] || '';
           if (_bid) {
             const _br = await env.DB.prepare('SELECT id,data FROM bookings WHERE id=? AND tenant_id=?').bind(_bid, _dctx.tenant_id).first();
-            if (_br) { const _d = jparse(_br.data, {}); if (_d.portal && Array.isArray(_d.portal.uploads)) { const _n = _d.portal.uploads.length; _d.portal.uploads = _d.portal.uploads.filter(function (u) { return u.key !== dkey; }); if (_d.portal.uploads.length !== _n) { _d._t = Date.now(); await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(_d), Date.now(), _br.id).run(); } } }
+            if (_br) { await _bkPatch(env, _br.id, _dctx.tenant_id, function (fd) { if (!(fd.portal && Array.isArray(fd.portal.uploads))) return false; const _n = fd.portal.uploads.length; fd.portal.uploads = fd.portal.uploads.filter(function (u) { return u.key !== dkey; }); if (fd.portal.uploads.length === _n) return false; fd._t = Date.now(); }); }   // #346-E2b: CAS re-apply so removing an upload ref can't clobber a payment webhook's d.paid
           }
         } catch (e) {}
         await audit(env, { tenant_id: _dctx.tenant_id }, req, 'file.delete', { key: dkey });
@@ -5856,7 +5872,7 @@ function doReset(){
           d.portal = d.portal || {}; d.portal.signedAt = at; d.portal.signerName = name;   // NO 200KB sig blob in the booking row
           d.sigTrail = { signedAt: at, ip: ip, ua: ua, docHash: docHash, sigId: sigId, signer: name };
           d._t = at;   // FIX: bump the merge clock so the owner's dashboard actually picks up the signed state (client merges newest-wins on data._t; a later owner edit no longer wipes it)
-          try { await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(d), at, brow.id).run(); } catch (e) {}
+          try { await _bkPatch(env, brow.id, brow.tenant_id, function (fd) { fd.portal = fd.portal || {}; fd.portal.signedAt = at; fd.portal.signerName = name; fd.sigTrail = d.sigTrail; fd._t = at; }); } catch (e) {}   // #346-E2b: CAS re-apply so a payment webhook landing mid-sign can't erase d.paid
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.signed', { booking: brow.id });
           try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first();
             if (ow) await sendEmail(env, { to: ow.email, fromName: 'Atlas Rental.io', subject: 'Agreement signed: ' + name + ' - ' + brow.id,
@@ -5890,10 +5906,10 @@ function doReset(){
           let encBytes; try { encBytes = await _encBytes(env, key, bytes); } catch (e) { return json({ ok: false, reason: 'store_failed', message: 'Could not save the file. Please try again.' }); }
           try { await r2.put(key, encBytes, { customMetadata: { ct: mime, enc: '1' } }); } catch (e) { return json({ ok: false, reason: 'store_failed', message: 'Could not save the file. Please try again.' }); }   // #260 ciphertext body -> real type lives in customMetadata, not httpMetadata
           const capUrl = url.origin + '/api/f/' + key;
-          d.portal = d.portal || {}; d.portal.uploads = d.portal.uploads || [];
-          d.portal.uploads.push({ kind: kind, key: key, url: capUrl, at: Date.now(), name: String(body.name || '').slice(0, 80) });
+          var _upEntry = { kind: kind, key: key, url: capUrl, at: Date.now(), name: String(body.name || '').slice(0, 80) };
+          d.portal = d.portal || {}; d.portal.uploads = d.portal.uploads || []; d.portal.uploads.push(_upEntry);
           d._t = Date.now();
-          try { await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(d), Date.now(), brow.id).run(); } catch (e) {}
+          try { await _bkPatch(env, brow.id, brow.tenant_id, function (fd) { fd.portal = fd.portal || {}; fd.portal.uploads = fd.portal.uploads || []; fd.portal.uploads.push(_upEntry); fd._t = Date.now(); }); } catch (e) {}   // #346-E2b: CAS re-apply so a payment webhook mid-upload can't erase d.paid
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.upload', { booking: brow.id, kind: kind });
           try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first(); if (ow) await sendEmail(env, { to: ow.email, fromName: 'Atlas Rental.io', subject: 'Customer uploaded a ' + kind + ' - booking ' + brow.id, html: _emailShell(pr, '<h2>New ' + esc(kind) + ' upload</h2><p>For booking <b>' + esc(brow.id) + '</b> (' + esc(d.asset || '') + ').</p><p><a href="' + esc(capUrl) + '">View the file</a></p>') }); } catch (e) {}
           return json({ ok: true, url: capUrl, kind: kind, count: d.portal.uploads.length });
@@ -5904,10 +5920,10 @@ function doReset(){
           const kind = body.type === 'addon' ? 'addon' : 'extend';
           const extra = String(body.extra || '').slice(0, 120), note = String(body.note || '').slice(0, 500);
           if (!extra && !note) return err(400, 'Please tell the owner what you would like.');
-          d.portal = d.portal || {}; d.portal.requests = d.portal.requests || [];
-          d.portal.requests.push({ type: kind, extra: extra, note: note, at: Date.now(), status: 'requested' });
+          var _reqEntry = { type: kind, extra: extra, note: note, at: Date.now(), status: 'requested' };
+          d.portal = d.portal || {}; d.portal.requests = d.portal.requests || []; d.portal.requests.push(_reqEntry);
           d._t = Date.now();
-          try { await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(d), Date.now(), brow.id).run(); } catch (e) {}
+          try { await _bkPatch(env, brow.id, brow.tenant_id, function (fd) { fd.portal = fd.portal || {}; fd.portal.requests = fd.portal.requests || []; fd.portal.requests.push(_reqEntry); fd._t = Date.now(); }); } catch (e) {}   // #346-E2b
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.request', { booking: brow.id, type: kind });
           try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first(); if (ow) await sendEmail(env, { to: ow.email, fromName: 'Atlas Rental.io', subject: 'Booking request (' + kind + ') - ' + brow.id, html: _emailShell(pr, '<h2>Customer wants to ' + (kind === 'addon' ? 'add an extra' : 'extend') + '</h2><p>Booking <b>' + esc(brow.id) + '</b> (' + esc(d.asset || '') + ')</p>' + (extra ? ('<p><b>' + esc(extra) + '</b></p>') : '') + (note ? ('<p style="color:#555">' + esc(note) + '</p>') : '') + '<p style="color:#666;font-size:13px">Open the booking in your dashboard to confirm and charge the change.</p>') }); } catch (e) {}
           return json({ ok: true, message: 'Sent to the owner - they will confirm the change and any price with you.' });
@@ -5919,9 +5935,10 @@ function doReset(){
           const rating = Math.max(0, Math.min(5, Math.round(Number(body.rating) || 0)));
           if (!rating) return err(400, 'Please choose a star rating.');
           if (d.review && d.review.rating) return json({ ok: true, already: true, rating: d.review.rating, message: 'Thanks - you already left a review.' });   // idempotent: one review per booking
-          d.review = { rating: rating, text: String(body.text || '').slice(0, 1000), at: Date.now(), by: d.cust || '', verified: true, reply: '' };
+          var _rev = { rating: rating, text: String(body.text || '').slice(0, 1000), at: Date.now(), by: d.cust || '', verified: true, reply: '' };
+          d.review = _rev;
           d._t = Date.now();
-          try { await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(d), Date.now(), brow.id).run(); } catch (e) {}
+          try { await _bkPatch(env, brow.id, brow.tenant_id, function (fd) { if (fd.review && fd.review.rating) return false; fd.review = _rev; fd._t = Date.now(); }); } catch (e) {}   // #346-E2b (idempotent: skip if a concurrent review already landed)
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.review', { booking: brow.id, rating: rating });
           try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first(); if (ow) await sendEmail(env, { to: ow.email, fromName: 'Atlas Rental.io', subject: 'New ' + rating + '-star review - ' + brow.id, html: _emailShell(pr, '<h2>New ' + rating + '-star review</h2><p>Booking <b>' + esc(brow.id) + '</b> (' + esc(d.asset || '') + ')</p>' + (d.review.text ? ('<p style="color:#555">' + esc(d.review.text) + '</p>') : '') + '<p style="color:#666;font-size:13px">See it in Reviews on your dashboard - reply or hide it there.</p>') }); } catch (e) {}
           return json({ ok: true, rating: rating, message: 'Thank you for your review!' });
@@ -5939,7 +5956,7 @@ function doReset(){
             smsConsentAt: (sms && !prev.sms) ? Date.now() : (prev.smsConsentAt || null),
             smsConsentIp: (sms && !prev.sms) ? (req.headers.get('CF-Connecting-IP') || '') : (prev.smsConsentIp || '') };
           d._t = Date.now();   // bump the merge clock so the owner's dashboard picks up the new preference (same newest-wins convention as sign/upload/review)
-          try { await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=?').bind(JSON.stringify(d), Date.now(), brow.id).run(); } catch (e) {}
+          try { await _bkPatch(env, brow.id, brow.tenant_id, function (fd) { var fprev = (fd.commsPref && typeof fd.commsPref === 'object') ? fd.commsPref : {}; fd.commsPref = { email: email, sms: sms, smsConsentAt: (sms && !fprev.sms) ? Date.now() : (fprev.smsConsentAt || null), smsConsentIp: (sms && !fprev.sms) ? (req.headers.get('CF-Connecting-IP') || '') : (fprev.smsConsentIp || '') }; fd._t = Date.now(); }); } catch (e) {}   // #346-E2b (recompute the consent stamp against the FRESH prev)
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.prefs', { booking: brow.id, email: email, sms: sms });
           return json({ ok: true, commsPref: { email: email, sms: sms }, message: 'Saved - thank you.' });
         }
@@ -7783,7 +7800,7 @@ async function _runLifecycleEmails(env, now) {
     if (autos.winback && autos.winback.on && b.ends && !sent.winback && now >= b.ends + ((autos.winback.days || 30) * DAY)) {
       await send(autos.winback, 'We miss you at {business}', '<h2>Come back, ' + esc(vars.name) + '</h2><p>It has been a while &mdash; ready for another ' + esc(d.asset || 'rental') + '?</p>'); sent.winback = now; changed = true;
     }
-    if (changed) { d.autoSent = sent; await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), now, b.id, b.tenant_id).run(); }
+    if (changed) { d.autoSent = sent; try { await _bkPatch(env, b.id, b.tenant_id, function (fd) { fd.autoSent = sent; }); } catch (e) {} }   // #346-E2b: CAS re-apply the autoSent marker so this cron can't clobber a payment webhook's d.paid
   }
 }
 
