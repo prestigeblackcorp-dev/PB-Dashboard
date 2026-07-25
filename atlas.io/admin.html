@@ -326,6 +326,40 @@
     <div class="card-h"><h2>System health</h2><span class="sub" id="healthSub"></span><div class="sp"></div><a class="chip" href="/status.html" target="_blank">Public status</a><button class="chip" onclick="loadHealth(true)">Refresh</button></div>
     <div class="card-b pad" id="healthBody"><div class="mut">Loading&hellip;</div></div>
   </div>
+
+  <!-- ===== SITE MONITORING (added): derived attention list + SEO health + tenant-site uptime + grouped error drill-down. Data from owner-only /api/admin/{seo-health,site-uptime,errors}; each card renders an honest empty state when its call fails or returns nothing. ===== -->
+  <style>
+    .mon-tag{display:inline-block;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:6px;border:1px solid var(--line2);color:var(--mut);margin:0 4px 3px 0;white-space:nowrap}
+    .mon-tag.ok{color:#6fe3a8;border-color:rgba(49,214,138,.28);background:rgba(49,214,138,.07)}
+    .mon-tag.bad{color:#ff9d9d;border-color:rgba(255,111,111,.28);background:rgba(255,111,111,.07)}
+    .mon-item{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:7px;background:var(--surf2)}
+    .mon-item.alert{border-color:rgba(255,111,111,.4);background:rgba(255,111,111,.06)}
+    .mon-dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:5px}
+    .mon-main{flex:1;min-width:0}
+    .mon-t{font-size:13px;font-weight:700}
+    .mon-b{font-size:11.5px;color:var(--mut);margin-top:2px;word-break:break-word}
+    .fun-step{margin-bottom:11px}
+    .fun-row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;margin-bottom:4px}
+    .fun-bar{height:22px;border-radius:6px;background:var(--surf3);overflow:hidden}
+    .fun-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--em2),var(--em));min-width:2px}
+    .fun-conv{font-size:11px;color:var(--mut2);margin-top:3px}
+  </style>
+  <div class="card">
+    <div class="card-h"><h2>Needs attention</h2><span class="sub" id="monSub"></span><div class="sp"></div><span class="sub">derived from live monitoring</span></div>
+    <div class="card-b pad" id="monBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h2>SEO monitor</h2><span class="sub" id="seoSub"></span><div class="sp"></div><span class="sub">worst first</span></div>
+    <div class="card-b pad" id="seoBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h2>Tenant-site uptime</h2><span class="sub" id="upSub"></span><div class="sp"></div><button class="chip" onclick="loadAll(true)">Refresh</button></div>
+    <div class="card-b pad" id="upBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+  <div class="card" id="monErrCard">
+    <div class="card-h"><h2>Error log (24h)</h2><span class="sub" id="errSub"></span><div class="sp"></div><button class="chip" onclick="loadErrors(true)">Refresh</button></div>
+    <div class="card-b pad" id="errBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
   </section>
 
   <section class="hqsec" data-sec="security">
@@ -397,6 +431,12 @@
   <div class="card">
     <div class="card-h"><h2>Website visits</h2><span class="sub" id="visSub"></span><span class="sub" id="visLive"></span><div class="sp"></div><span class="sub" id="visRange"></span></div>
     <div class="card-b pad" id="visBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+
+  <!-- SIGNUP FUNNEL (added): visitor -> signup -> trial -> paid, from server-side funnel_events (/api/admin/funnel). Honest empty state until events exist. -->
+  <div class="card">
+    <div class="card-h"><h2>Signup funnel</h2><span class="sub" id="funSub"></span><div class="sp"></div><span class="sub" id="funConv"></span></div>
+    <div class="card-b pad" id="funBody"><div class="mut">Loading&hellip;</div></div>
   </div>
 
   <!-- VISITS WORLD MAP -->
@@ -609,7 +649,7 @@ var TIER_LABEL = {starter:'Starter',pro:'Pro',enterprise:'Enterprise',business:'
 
 /* ================= state ================= */
 var _tok = '';
-var DATA = { overview:null, members:[], txns:[], bugs:[], tickets:[], aiCfg:null, visits:null, inbox:[], inboxCounts:{}, competitors:[], geo:null, purchases:null, growth:null, socialHandles:{}, socialPlatforms:{}, enterprise:{}, you:{}, security:null, errors:null };
+var DATA = { overview:null, members:[], txns:[], bugs:[], tickets:[], aiCfg:null, visits:null, inbox:[], inboxCounts:{}, competitors:[], geo:null, purchases:null, growth:null, socialHandles:{}, socialPlatforms:{}, enterprise:{}, you:{}, security:null, errors:null, seo:null, uptime:null, funnel:null };
 function _isOwner(){ return !!(DATA.you && DATA.you.role==='owner'); }
 function _isSuperOwner(){ return !!(DATA.you && (DATA.you.tier||0)>=2); }   /* tier-2+ = super-admin backup (or all-seeing root); tier-1 primary is NOT super */
 function applyTierBrand(){ var b=document.getElementById('hqBrand'); if(b) b.textContent=_isSuperOwner()?'ATLAS SHQ':'ATLAS HQ'; var s=document.getElementById('hqBrandSub'); if(s) s.textContent=_isSuperOwner()?'Super HQ':'Master Dashboard'; try{ if(_isSuperOwner()) document.title='Atlas SHQ \u2014 Super HQ'; }catch(e){}
@@ -694,7 +734,10 @@ function loadAll(quiet){ _lastFetch=Date.now();
     api('/api/admin/purchases?range='+_range+'&limit=1000'),
     api('/api/admin/growth-data?range='+_range),
     api('/api/admin/social'),
-    api('/api/admin/pnl?range='+_range)
+    api('/api/admin/pnl?range='+_range),
+    api('/api/admin/seo-health'),
+    api('/api/admin/site-uptime'),
+    api('/api/admin/funnel')
   ]).then(function(r){
     if(r[0].json&&r[0].json.ok){ DATA.overview=r[0].json; paintOverview(); }
     if(r[1].json&&r[1].json.ok){ DATA.members=r[1].json.members||[]; DATA.policyCurrent=r[1].json.policy_current||null; renderMembers(); }
@@ -710,6 +753,11 @@ function loadAll(quiet){ _lastFetch=Date.now();
     if(r[11]&&r[11].json&&r[11].json.ok){ DATA.growth=r[11].json.growth||null; renderGrowth(); }
     if(r[12]&&r[12].json&&r[12].json.ok){ DATA.socialHandles=r[12].json.handles||{}; DATA.socialPlatforms=r[12].json.platforms||{}; renderSocial(); }
     if(r[13]&&r[13].json&&r[13].json.ok){ DATA.pnl=r[13].json; paintOverview(); renderPnl(); renderMargin(); }
+    /* site monitoring (added): keep last-good on a transient blip; the render fns show an honest empty state when data is null or []. */
+    if(r[14]&&r[14].json&&r[14].json.ok){ DATA.seo=r[14].json; } renderSEO();
+    if(r[15]&&r[15].json&&r[15].json.ok){ DATA.uptime=r[15].json; } renderUptime();
+    if(r[16]&&r[16].json&&r[16].json.ok){ DATA.funnel=r[16].json; } renderFunnel();
+    renderMon();
     setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700);
     if((r[0].json&&r[0].json.ok)===false || r[0].status===403){ lock(); }
   }).catch(function(){ setTimeout(function(){ $('refreshBtn').classList.remove('spin'); },700); });
@@ -1072,12 +1120,106 @@ function renderHealth(){ var el=$('healthBody'); if(!el) return; var h=DATA.heal
     +_hc('SaaS domains', h.saas_domains?'ok':'warn', h.saas_domains?'on':'off')
     +_hc('Registrar', h.registrar?'ok':'warn', h.registrar?'Dynadot on':'off')
     +((h.big_rows!=null)?_hc('Payload', h.big_rows>5?'warn':'ok', (h.big_rows||0)+' big rows'):'')
-    +((DATA.errors && DATA.errors.count_24h!=null)?_hc('Errors (24h)', DATA.errors.count_24h>0?'bad':'ok', String(DATA.errors.count_24h)):'')
+    +(_errHasData()?'<div class="hc" style="cursor:pointer" onclick="monScrollErr()" title="Jump to the grouped error log"><div class="hk">'+esc('Errors (24h)')+'</div><div class="hv">'+_hdot(_errCount()>0?'bad':'ok')+'<span>'+String(_errCount())+'</span></div></div>':'')
     +'</div>';
   el.innerHTML=g;
 }
 /* ===== Errors (24h) -- sourced from the owner-only /api/admin/errors, never the public /api/health ===== */
-function loadErrors(){ return api('/api/admin/errors').then(function(r){ DATA.errors=(r.status===200&&r.json&&r.json.ok)?r.json:null; renderHealth(); }).catch(function(){}); }
+function loadErrors(manual){ if(manual&&$('errBody')) $('errBody').innerHTML='<div class="mut">Checking&hellip;</div>'; return api('/api/admin/errors').then(function(r){ DATA.errors=(r.status===200&&r.json&&r.json.ok)?r.json:null; renderHealth(); renderErrorLog(); }).catch(function(){}); }
+
+/* ===== Site monitoring (added): SEO health, tenant-site uptime, grouped error drill-down, signup funnel, and a
+   client-derived "needs attention" list. All data is owner-only /api/admin/*; every render shows an honest empty
+   state when its endpoint fails, is missing (older worker), or returns []. All tenant-supplied strings pass esc(). ===== */
+function _monScoreCol(sc){ sc=Number(sc)||0; return sc>=80?'#3ecb8f':(sc>=50?'#e0a94a':'#e0736f'); }
+function _monDot(sev){ var c=(sev==='high'?'#e0736f':(sev==='med'?'#e0a94a':'#6ea8ff')); return '<span class="mon-dot" style="background:'+c+'"></span>'; }
+function _pct(n){ n=Number(n)||0; if(n<=1) n=n*100; return (Math.round(n*10)/10)+'%'; }
+function _errCount(){ var d=DATA.errors||{}; if(d.count_24h!=null) return Number(d.count_24h)||0; return (d.groups||[]).reduce(function(s,g){ return s+(Number(g.count)||0); },0); }
+function _errHasData(){ var d=DATA.errors; return !!(d && (d.count_24h!=null || d.groups)); }
+function monScrollErr(){ var c=$('monErrCard'); if(!c) return; try{ c.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){ try{ c.scrollIntoView(); }catch(_){} } }
+
+/* -- SEO monitor: worst-first table of tenant sites (score, status, top issues). Headline = N sites missing pages/schema/reviews. -- */
+function renderSEO(){ var el=$('seoBody'); if(!el) return; var d=DATA.seo, sub=$('seoSub');
+  if(!d || !d.ok){ el.innerHTML='<div class="mut">No SEO data yet &mdash; needs the latest worker (/api/admin/seo-health). Paste worker.js into Cloudflare, then reload.</div>'; if(sub) sub.textContent=''; return; }
+  var list=(d.tenants||[]).slice();
+  if(!list.length){ el.innerHTML='<div class="sx-empty">No published tenant sites to audit yet.</div>'; if(sub) sub.textContent='0 sites'; return; }
+  list.sort(function(a,b){ return (Number(a.score)||0)-(Number(b.score)||0); });
+  var missing=list.filter(function(t){ return (t.issues&&t.issues.length>0) || (Number(t.score)||0)<80; }).length;
+  if(sub) sub.innerHTML=missing?('<b style="color:var(--amber)">'+nfmt(missing)+'</b> of '+nfmt(list.length)+' sites missing SEO pages / schema / reviews'):(nfmt(list.length)+' sites, all healthy');
+  var rows=list.map(function(t){
+    var sc=(t.score==null?null:Number(t.score)), col=_monScoreCol(sc||0);
+    var status=(sc==null)?'<span class="pill gray">--</span>':(sc>=80?'<span class="pill active">Good</span>':(sc>=50?'<span class="pill trial">Needs work</span>':'<span class="pill past">Critical</span>'));
+    var signals='<span class="mon-tag '+(t.schemaCount?'ok':'bad')+'">schema '+nfmt(t.schemaCount||0)+'</span>'
+      +'<span class="mon-tag '+(t.reviewsOnSite?'ok':'bad')+'">reviews '+(t.reviewsOnSite?'yes':'no')+'</span>'
+      +'<span class="mon-tag '+(t.cityPages?'ok':'bad')+'">city '+nfmt(t.cityPages||0)+'</span>'
+      +(t.published?'':'<span class="mon-tag bad">unpublished</span>');
+    var issues=(t.issues&&t.issues.length)?t.issues.slice(0,4).map(function(s){ return esc(String(s)); }).join(' &middot; '):'<span class="mut">no issues found</span>';
+    return '<tr class="row"><td><div class="m-name"><b>'+esc(t.name||t.slug||'(unnamed)')+'</b><span>'+esc(t.slug||'')+'</span></div><div style="margin-top:4px">'+signals+'</div></td>'
+      +'<td><b class="num" style="color:'+col+';font-size:15px">'+(sc==null?'--':nfmt(sc))+'</b></td>'
+      +'<td>'+status+'</td>'
+      +'<td class="mut" style="font-size:12px;line-height:1.5">'+issues+'</td></tr>';
+  }).join('');
+  el.innerHTML='<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Site</th><th>Score</th><th>Status</th><th>Top issues</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+/* -- Tenant-site uptime: down-first list with latency + last-checked; a down site is a red alert. -- */
+function renderUptime(){ var el=$('upBody'); if(!el) return; var d=DATA.uptime, sub=$('upSub');
+  if(!d || !d.ok){ el.innerHTML='<div class="mut">No uptime data yet &mdash; needs the latest worker (/api/admin/site-uptime).</div>'; if(sub) sub.textContent=''; return; }
+  var sites=(d.sites||[]).slice();
+  if(!sites.length){ el.innerHTML='<div class="sx-empty">No published tenant sites to monitor yet.</div>'; if(sub) sub.textContent='0 sites'; return; }
+  var ord={down:0,unknown:1,up:2}; sites.sort(function(a,b){ return (ord[a.status]==null?3:ord[a.status])-(ord[b.status]==null?3:ord[b.status]); });
+  var down=sites.filter(function(s){ return s.status==='down'; }).length;
+  if(sub) sub.innerHTML=down?('<b style="color:var(--red)">'+nfmt(down)+' site'+(down===1?'':'s')+' down</b>'):('all '+nfmt(sites.length)+' up');
+  el.innerHTML=sites.map(function(s){
+    var isDown=(s.status==='down'), c=(s.status==='up'?'#3ecb8f':(isDown?'#e0736f':'#7e9186')), lbl=(s.status==='up'?'up':(isDown?'DOWN':'unknown'));
+    var meta=[]; if(s.host) meta.push(esc(s.host)); if(s.status==='up'&&s.ms!=null) meta.push(nfmt(s.ms)+' ms'); if(s.checkedAt) meta.push('checked '+esc(ago(s.checkedAt)));
+    return '<div class="mon-item'+(isDown?' alert':'')+'"><span class="mon-dot" style="background:'+c+'"></span><div class="mon-main"><div class="mon-t">'+esc(s.name||s.host||'(unnamed site)')+' <span class="pill '+(s.status==='up'?'active':(isDown?'past':'gray'))+'" style="font-size:10px">'+lbl+'</span></div><div class="mon-b">'+(meta.join(' &middot; ')||'no check recorded yet')+'</div></div></div>';
+  }).join('');
+}
+
+/* -- Error log drill-down: grouped by signature, count-desc, with sample + last-seen. -- */
+function renderErrorLog(){ var el=$('errBody'); if(!el) return; var d=DATA.errors, sub=$('errSub');
+  if(!_errHasData()){ el.innerHTML='<div class="mut">No error data yet &mdash; needs the latest worker (/api/admin/errors).</div>'; if(sub) sub.textContent=''; return; }
+  var groups=((d&&d.groups)||[]).slice();
+  if(!groups.length){ el.innerHTML='<div class="sx-empty">No errors recorded in the last 24h. All clear.</div>'; if(sub) sub.textContent='0 errors'; return; }
+  groups.sort(function(a,b){ return (Number(b.count)||0)-(Number(a.count)||0); });
+  if(sub) sub.innerHTML='<b style="color:var(--red)">'+nfmt(_errCount())+'</b> across '+nfmt(groups.length)+' signature'+(groups.length===1?'':'s');
+  el.innerHTML=groups.map(function(g){
+    return '<div class="mon-item"><span class="mon-dot" style="background:#e0736f"></span><div class="mon-main"><div class="mon-t">'+esc(g.sig||'(unknown)')+' <span class="pill past" style="font-size:10px">'+nfmt(g.count||0)+'x</span></div>'
+      +(g.sample?('<div class="mon-b" style="font-family:var(--mono);white-space:pre-wrap">'+esc(String(g.sample).slice(0,300))+'</div>'):'')
+      +(g.last?('<div class="mon-b">last '+esc(ago(g.last))+'</div>'):'')+'</div></div>';
+  }).join('');
+}
+
+/* -- Signup funnel: step bars + step-to-step conversion + overall rate. -- */
+function renderFunnel(){ var el=$('funBody'); if(!el) return; var d=DATA.funnel, sub=$('funSub'), cv=$('funConv');
+  if(!d || !d.ok){ el.innerHTML='<div class="mut">No funnel data yet &mdash; needs the latest worker (/api/admin/funnel).</div>'; if(sub) sub.textContent=''; if(cv) cv.textContent=''; return; }
+  var steps=(d.steps||[]).slice();
+  if(!steps.length){ el.innerHTML='<div class="sx-empty">No funnel events captured yet.</div>'; if(sub) sub.textContent=''; if(cv) cv.textContent=''; return; }
+  var max=Math.max.apply(null, steps.map(function(s){ return Number(s.count)||0; }))||1;
+  if(sub) sub.textContent=steps.length+' steps';
+  if(cv) cv.innerHTML=(d.convRate!=null)?('conversion <b style="color:var(--em)">'+_pct(d.convRate)+'</b>'):'';
+  el.innerHTML=steps.map(function(s,i){
+    var n=Number(s.count)||0, w=Math.max(2, n/max*100), drop='';
+    if(i>0){ var prev=Number(steps[i-1].count)||0; drop=prev?('<div class="fun-conv">'+_pct(n/prev)+' of previous step</div>'):''; }
+    return '<div class="fun-step"><div class="fun-row"><span>'+esc(String(s.step||('Step '+(i+1))))+'</span><b class="num">'+nfmt(n)+'</b></div><div class="fun-bar"><i style="width:'+w+'%"></i></div>'+drop+'</div>';
+  }).join('');
+}
+
+/* -- Derived "needs attention": down sites + missing-SEO sites + stale fleets. Fleet-staleness is emitted ONLY when
+   member data actually carries a last-activity/last-asset timestamp; if the platform exposes none, that category is
+   honestly omitted rather than fabricated. -- */
+function _monRecs(){ var out=[];
+  var up=DATA.uptime||{}; (up.sites||[]).forEach(function(s){ if(s.status==='down'){ out.push({sev:'high', title:esc(s.name||s.host||'A tenant')+' site is DOWN', body:(s.host?esc(s.host):'')+(s.checkedAt?(' &middot; checked '+esc(ago(s.checkedAt))):'')}); } });
+  var seo=DATA.seo||{}; (seo.tenants||[]).forEach(function(t){ var sc=(t.score==null?null:Number(t.score)); if((t.issues&&t.issues.length>0) || (sc!=null&&sc<80)){ out.push({sev:(sc!=null&&sc<50)?'high':'med', title:esc(t.name||t.slug||'A tenant')+' website is missing SEO pages (score '+(sc==null?'?':nfmt(sc))+')', body:(t.issues&&t.issues.length)?t.issues.slice(0,3).map(function(x){ return esc(String(x)); }).join(' &middot; '):'low SEO score'}); } });
+  (DATA.members||[]).forEach(function(m){ var ts=m.fleet_updated_at||m.assets_updated_at||m.last_asset_update_at||m.last_activity_at||m.last_active_at||m.last_seen_at; if(ts){ var days=Math.floor((Date.now()-Number(ts))/86400000); if(days>=14){ out.push({sev:'low', title:esc(m.name||m.email||'A tenant')+" hasn't updated their fleet in "+nfmt(days)+' days', body:esc(m.email||'')}); } } });
+  var rank={high:0,med:1,low:2}; out.sort(function(a,b){ return (rank[a.sev]-rank[b.sev]); });
+  return out;
+}
+function renderMon(){ var el=$('monBody'); if(!el) return; var sub=$('monSub'), recs=_monRecs();
+  if(sub) sub.textContent=recs.length?(nfmt(recs.length)+' item'+(recs.length===1?'':'s')):'';
+  if(!recs.length){ el.innerHTML='<div class="cx-empty">All monitored sites look healthy &mdash; nothing needs attention.</div>'; return; }
+  el.innerHTML=recs.map(function(r){ return '<div class="mon-item'+(r.sev==='high'?' alert':'')+'">'+_monDot(r.sev)+'<div class="mon-main"><div class="mon-t">'+r.title+'</div>'+(r.body?'<div class="mon-b">'+r.body+'</div>':'')+'</div></div>'; }).join('');
+}
 /* ===== Security log (owner-only: hidden entirely for support/analyst, who get a 403 from the server) ===== */
 function loadSecurity(manual){ if(manual&&$('secBody')) $('secBody').innerHTML='<div class="mut">Checking&hellip;</div>';
   return api('/api/admin/security-log?filter='+encodeURIComponent(_secFilter)+'&q='+encodeURIComponent(_secQ)+'&range='+encodeURIComponent(_range)).then(function(r){

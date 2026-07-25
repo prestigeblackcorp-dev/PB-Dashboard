@@ -3154,7 +3154,7 @@ function _alert(env, ectx, o) {
 // platform_errors ip column), so neither is reachable by a support/analyst staff token, only the owner.
 // ABUSE-DEFENSE: bans/ban/unban/attacks added to OWNER_ONLY for the same reason -- ban rows + the attack feed carry
 // OTHER callers' emails/IPs, so none of the four routes are reachable by a support/analyst staff token either.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|pnl|owners?|owner\/)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -3289,6 +3289,36 @@ export default {
     // Public SEO surface (no auth, never gated) -- served alongside the legal pages above, BEFORE the ban-check and
     // every auth gate, so crawlers can always reach them. On-page SEO already ships in _bookHeadTags; robots.txt +
     // sitemap.xml just let Google discover and index Atlas's own public marketing URLs. Static, cached an hour.
+    // ---- PER-TENANT SEO on a connected custom domain: robots.txt, sitemap.xml, and /r/<key> city/industry landing pages,
+    // served at the tenant's OWN domain root (BEFORE the Atlas-apex robots/sitemap handlers below, which stay byte-identical
+    // for the apex). Fully additive + fail-open: any error, or an unresolved/unpublished domain, falls through to normal
+    // routing. Public read-only surface (like the apex robots/sitemap) -- no auth, never gated, no booking-path contact.
+    if (method === 'GET' && host && host !== 'atlasrental.io' && host !== 'www.atlasrental.io' && host.indexOf('.workers.dev') < 0 && host !== 'localhost' && host !== '127.0.0.1'
+        && (path === '/robots.txt' || path === '/sitemap.xml' || /^\/r\/[a-z0-9-]{1,80}$/.test(path))) {
+      try {
+        await ensurePlatformSchema(env);
+        const _hb = host.replace(/^www\./, '');
+        const _cd = await env.DB.prepare("SELECT id,name,subdomain,brand,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(_hb).first();
+        if (_cd && _cd.subdomain) {
+          const _pr = tenantProfile(_cd);
+          const _liveSite = _pr.settings.publicSite && _pr.settings.publicSite.published;
+          if (_liveSite) {
+            const _seob = _seoBase(url.origin, _cd.subdomain, true);
+            const _color = (_pr.brand && _pr.brand.color) || '#1E6E4E';
+            if (path === '/robots.txt') return new Response(_seoRobotsTxt(_seob.sitemapUrl), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
+            if (path === '/sitemap.xml') return new Response(_seoSitemapXml(_pr, _seob), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
+            const _lk = path.slice(3);   // strip '/r/'
+            const _land = _seoLandings(_pr, _seob.base).filter(function (l) { return l.key === _lk; })[0];
+            if (_land) {
+              let _rev = { count: 0, avg: 0, recent: [] }; try { _rev = await _publicReviewSummary(env, _cd.id); } catch (e) {}
+              return new Response(_seoLandingHtml(_pr, _color, _land, _seob, _rev), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=1800' }) });
+            }
+            // Unknown /r/<key> on a live tenant domain -> a real 404 (never a thin/duplicate page)
+            return new Response(_pageDoc('Not found', _color, '<div class="card"><h2>Page not found</h2><p class="muted">This page does not exist. <a href="' + esc(_seob.home) + '">Go to booking</a>.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
+          }
+        }
+      } catch (e) { /* fall through to normal routing (apex robots/sitemap handlers below, then the router) */ }
+    }
     if (method === 'GET' && path === '/robots.txt') {
       const _rb = 'User-agent: *\nAllow: /\n\nSitemap: https://atlasrental.io/sitemap.xml\n';
       return new Response(_rb, { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
@@ -3378,7 +3408,7 @@ export default {
               // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
               const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
               const _revSumA = await _publicReviewSummary(env, cd.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
-              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname), pr, _revSumA), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname, _revSumA), pr, _revSumA), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
             }
           }
         } catch (e) { /* fall through to normal routing */ }
@@ -5561,7 +5591,94 @@ function doReset(){
           const _now = Date.now();
           const _c24 = await env.DB.prepare('SELECT COUNT(*) c FROM platform_errors WHERE last_at>=?').bind(_now - 24 * 3600 * 1000).first();
           const _rows = await env.DB.prepare('SELECT sig,name,message,path,method,status,count,first_at,last_at FROM platform_errors ORDER BY last_at DESC LIMIT 50').all();
-          return json({ ok: true, count_24h: (_c24 && _c24.c) || 0, errors: (_rows.results || []) });
+          // `groups` = the SEO/support-plane grouped view ({sig,count,last,sample}); `errors`/`count_24h` are unchanged for existing consumers.
+          const _egroups = (_rows.results || []).map(function (r) { return { sig: r.sig, count: r.count || 0, last: r.last_at || 0, sample: r.message || '' }; }).sort(function (a, b) { return (b.count || 0) - (a.count || 0); });
+          return json({ ok: true, count_24h: (_c24 && _c24.c) || 0, errors: (_rows.results || []), groups: _egroups });
+        }
+
+        // ---- SEO health per tenant (owner-only via OWNER_ONLY above). Computed live from each tenant's PUBLISHED
+        // publicSite snapshot + its reviews. Bounded: newest 200 tenants; the (heavier) review scan runs for at most
+        // the first 60 published+reviews-on tenants. Read-only; never touches booking/pricing.
+        if (path === '/api/admin/seo-health' && method === 'GET') {
+          const _rows = ((await env.DB.prepare("SELECT id,name,subdomain,custom_domain,custom_domain_status,brand,settings,created_at FROM tenants WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200").all()).results) || [];
+          const _out = []; let _scanned = 0;
+          for (let _i = 0; _i < _rows.length; _i++) {
+            const _t = _rows[_i];
+            let _pr; try { _pr = tenantProfile(_t); } catch (e) { continue; }
+            const _pub = (_pr.settings && _pr.settings.publicSite) || {};
+            const _cfg = _pub.config || {};
+            const _published = !!_pub.published;
+            const _assets = Array.isArray(_pub.assets) ? _pub.assets : [];
+            const _named = _assets.filter(function (a) { return a && String((a && a.name) || '').trim(); });
+            const _hasSite = !!(_pub.headline || _named.length || _pub.about);
+            if (!_published && !_hasSite) continue;   // skip tenants that never started a public site (keeps the report relevant)
+            const _showRev = _cfg.showReviews !== false && _pub.showReviews !== false;
+            const _cities = _seoCities(_pr);
+            const _loc = _seoLoc(_pr);
+            const _schemaCount = _seoSchemaNodeCount(_pr);
+            const _cityPages = _seoLandings(_pr, 'x').length;
+            let _reviewsOnSite = false;
+            if (_published && _showRev && _scanned < 60) { _scanned++; try { const _rs = await _publicReviewSummary(env, _t.id); _reviewsOnSite = (_rs && _rs.count) > 0; } catch (e) {} }
+            let _score = 0; const _issues = [];
+            if (_published) _score += 20; else _issues.push('Booking site not published');
+            if (_named.length) _score += 15; else _issues.push('No assets in the published fleet');
+            if (_schemaCount >= 4) _score += 15; else _issues.push('Thin structured data');
+            if (_reviewsOnSite) _score += 15; else if (_published) _issues.push('No customer reviews shown on the site');
+            if (_cityPages >= 1) _score += 10;
+            if (_loc.city || _cities.length) _score += 10; else _issues.push('No city/location set (hurts local SEO)');
+            if (_pub.about) _score += 5; else _issues.push('No About text');
+            const _logo = String((_pr.brand && _pr.brand.logo) || '');
+            const _hasImg = /^https:\/\//i.test(_logo) || _assets.some(function (a) { return /^https:\/\//i.test(String((a && a.photo) || '')); });
+            if (_hasImg) _score += 5; else _issues.push('No https logo or asset photo (no social/OG image)');
+            if (_seoFaq(_pr).length) _score += 5; else _issues.push('No FAQ content');
+            if (_score > 100) _score = 100;
+            _out.push({ id: _t.id, name: _t.name || '', slug: _t.subdomain || '', published: _published, hasSite: _hasSite, schemaCount: _schemaCount, reviewsOnSite: _reviewsOnSite, cityPages: _cityPages, score: _score, issues: _issues });
+          }
+          return json({ ok: true, tenants: _out });
+        }
+
+        // ---- Published-site uptime (owner-only). Best-effort HTTP probe of each published tenant's public URL with a
+        // short timeout + a small cap; the last result is cached in platform_config (~5 min) so repeat opens are cheap.
+        // Never throws -- any probe error yields status:'unknown'. ?refresh=1 forces a fresh sweep.
+        if (path === '/api/admin/site-uptime' && method === 'GET') {
+          const _now = Date.now();
+          const _force = new URL(req.url).searchParams.get('refresh') === '1';
+          if (!_force) { try { const _cached = _hqJson(await _pcfgGet(env, 'seo_uptime_cache', ''), null); if (_cached && _cached.at && (_now - _cached.at) < 300000 && Array.isArray(_cached.sites)) return json({ ok: true, cached: true, checkedAt: _cached.at, sites: _cached.sites }); } catch (e) {} }
+          const _rows = ((await env.DB.prepare("SELECT id,name,subdomain,custom_domain,custom_domain_status,settings FROM tenants WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200").all()).results) || [];
+          const _targets = [];
+          for (let _i = 0; _i < _rows.length && _targets.length < 8; _i++) {
+            const _t = _rows[_i]; let _pr; try { _pr = tenantProfile(_t); } catch (e) { continue; }
+            const _pub = (_pr.settings && _pr.settings.publicSite) || {};
+            if (!_pub.published) continue;
+            let _thost, _turl;
+            if (_t.custom_domain && _t.custom_domain_status === 'live') { _thost = String(_t.custom_domain); _turl = 'https://' + _thost + '/'; }
+            else { _thost = 'atlasrental.io/api/book/' + _t.subdomain; _turl = 'https://atlasrental.io/api/book/' + _t.subdomain; }
+            _targets.push({ id: _t.id, name: _t.name || '', host: _thost, url: _turl });
+          }
+          const _sites = await Promise.all(_targets.map(async function (tg) {
+            const _t0 = Date.now();
+            try {
+              const _r = await _fetchTimeout(tg.url, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'AtlasUptime/1' } }, 4000);
+              const _ms = Date.now() - _t0;
+              const _up = !!(_r && _r.status >= 200 && _r.status < 400);
+              return { id: tg.id, name: tg.name, host: tg.host, status: _up ? 'up' : 'down', ms: _ms, checkedAt: Date.now() };
+            } catch (e) { return { id: tg.id, name: tg.name, host: tg.host, status: 'unknown', ms: Date.now() - _t0, checkedAt: Date.now() }; }
+          }));
+          try { await _pcfgSet(env, 'seo_uptime_cache', JSON.stringify({ at: Date.now(), sites: _sites })); } catch (e) {}
+          return json({ ok: true, cached: false, checkedAt: Date.now(), sites: _sites });
+        }
+
+        // ---- Signup funnel per-step counts + overall conversion (owner-only). Sourced from funnel_events (written by
+        // /api/visit-ping). Range-scoped via the shared _adminRange. convRate = trial_started / cta_click.
+        if (path === '/api/admin/funnel' && method === 'GET') {
+          const _range = _adminRange(new URL(req.url).searchParams.get('range'));
+          const _order = ['cta_click', 'signup_open', 'signup_submit', 'plan_selected', 'checkout_open', 'trial_started'];
+          const _counts = {}; _order.forEach(function (s) { _counts[s] = 0; });
+          try { const _fr = ((await env.DB.prepare('SELECT step, COALESCE(SUM(count),0) c FROM funnel_events WHERE day>=? AND day<=? GROUP BY step').bind(_range.startDay, _range.endDay).all()).results) || []; _fr.forEach(function (r) { if (Object.prototype.hasOwnProperty.call(_counts, r.step)) _counts[r.step] = r.c || 0; }); } catch (e) {}
+          const _steps = _order.map(function (s) { return { step: s, count: _counts[s] }; });
+          const _first = _counts[_order[0]] || 0, _last = _counts[_order[_order.length - 1]] || 0;
+          const _convRate = _first > 0 ? Math.round((_last / _first) * 10000) / 10000 : 0;
+          return json({ ok: true, range: { key: _range.key, label: _range.label }, steps: _steps, convRate: _convRate });
         }
 
         // #253 B3: owner-readable security log (owner-only via OWNER_ONLY above -- rows carry OTHER tenants' emails
@@ -5832,6 +5949,27 @@ function doReset(){
         return err(404, 'Unknown admin route.');
       }
 
+      // ---- PER-TENANT SEO for the path-based booking surface (/api/book/<slug>/{robots.txt,sitemap.xml,r/<key>}) ----
+      // Additive; the exact /api/book/<slug> booking page below is untouched. Fail-open 404 on anything unresolved.
+      const bseo = path.match(/^\/api\/book\/([a-z0-9-]{1,63})\/(sitemap\.xml|robots\.txt|r\/[a-z0-9-]{1,80})$/);
+      if (bseo && method === 'GET') {
+        const _bslug = bseo[1], _bsub = bseo[2];
+        const _btr = await env.DB.prepare('SELECT id,name,subdomain,brand,settings FROM tenants WHERE subdomain=?').bind(_bslug).first();
+        const _bpr = _btr ? tenantProfile(_btr) : null;
+        const _blive = _bpr && _bpr.settings.publicSite && _bpr.settings.publicSite.published;
+        const _bcolor = (_bpr && _bpr.brand && _bpr.brand.color) || '#1E6E4E';
+        if (!_blive) return err(404, 'This booking site is not published yet.');
+        const _bseob = _seoBase(url.origin, _bslug, false);
+        if (_bsub === 'robots.txt') return new Response(_seoRobotsTxt(_bseob.sitemapUrl), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
+        if (_bsub === 'sitemap.xml') return new Response(_seoSitemapXml(_bpr, _bseob), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
+        const _blk = _bsub.slice(2);   // strip 'r/'
+        const _bland = _seoLandings(_bpr, _bseob.base).filter(function (l) { return l.key === _blk; })[0];
+        if (_bland) {
+          let _brev = { count: 0, avg: 0, recent: [] }; try { _brev = await _publicReviewSummary(env, _btr.id); } catch (e) {}
+          return new Response(_seoLandingHtml(_bpr, _bcolor, _bland, _bseob, _brev), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=1800' }) });
+        }
+        return new Response(_pageDoc('Not found', _bcolor, '<div class="card"><h2>Page not found</h2><p class="muted"><a href="' + esc(_bseob.home) + '">Go to booking</a>.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
+      }
       // ---- served customer pages (branded, self-contained; reachable via the existing /api/* route) ----
       const bp = path.match(/^\/api\/book\/([a-z0-9-]{1,63})$/);
       if (bp && method === 'GET') {
@@ -5848,7 +5986,7 @@ function doReset(){
         // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
         const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
         const _revSumB = await _publicReviewSummary(env, tr.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
-        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname), pr, _revSumB), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname, _revSumB), pr, _revSumB), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend|prefs))?$/);
       if (ptp) {
@@ -8197,7 +8335,220 @@ async function _availabilityCheck(env, prof, pubAssets, cfg, assetName, startTs,
 // content before the client #app hydrates). Passed to _bookPageHtml as `seo` -> _pageDoc headExtra; NEVER applied to
 // the portal/receipt pages. Pure + synchronous (no DB, no await). Returns { title, head, noscript }; every value is
 // esc()'d for HTML, or JSON.stringify'd + `<`-escaped for the JSON-LD, so a tenant string can never break the markup.
-function _bookHeadTags(prof, canonicalUrl) {
+// ===================================================================== per-tenant SEO helpers (additive)
+// Pure, synchronous, throw-safe helpers that power the per-tenant sitemap/robots, the city/industry landing pages,
+// the image-SEO attributes, and the JSON-LD schema depth in _bookHeadTags. They ONLY read a tenant's already-published
+// snapshot (prof.settings.publicSite + brand + settings.location) -- they never touch the booking form, pricing, /book
+// intake, or availability. Every function fails toward "empty" so a malformed tenant blob can never break a page load.
+function _seoPlural(w) { w = String(w || '').trim(); if (!w) return 'rentals'; if (/(s|x|z|ch|sh)$/i.test(w)) return w + 'es'; if (/[^aeiouAEIOU]y$/.test(w)) return w.slice(0, -1) + 'ies'; return w + 's'; }
+function _seoTitleCase(s) { s = String(s || '').trim(); return s ? (s.charAt(0).toUpperCase() + s.slice(1)) : s; }
+// "Industry" label for a landing H1: a noun that already reads as a rental term ("rental"/"rentals") pluralizes as-is
+// ("Rentals"); anything else becomes "<Noun> rentals" ("car" -> "Car rentals"). Never invents a category the tenant
+// didn't choose -- it only reshapes their own cfg.noun.
+function _seoIndustryLabel(noun) { noun = String(noun || 'rental').trim() || 'rental'; if (/rental/i.test(noun)) return _seoTitleCase(_seoPlural(noun)); return _seoTitleCase(noun) + ' rentals'; }
+// Location facts from the tenant's OWN data. phone/lat/lng/hours are surfaced ONLY when genuinely present (else ''/null)
+// so schema enrichment can never fabricate a phone number, coordinate, or opening-hours the tenant never entered.
+function _seoLoc(prof) {
+  var s = (prof && prof.settings) || {}, b = (prof && prof.brand) || {}, loc = s.location || {};
+  var lat = (loc.lat != null ? Number(loc.lat) : (loc.latitude != null ? Number(loc.latitude) : null));
+  var lng = (loc.lng != null ? Number(loc.lng) : (loc.lon != null ? Number(loc.lon) : (loc.longitude != null ? Number(loc.longitude) : null)));
+  return {
+    city: String(loc.city || loc.area || b.city || b.area || '').trim().slice(0, 80),
+    region: String(loc.region || loc.state || b.region || b.state || '').trim().slice(0, 80),
+    postal: String(loc.zip || loc.postal || loc.postalCode || b.zip || '').trim().slice(0, 24),
+    phone: String(loc.phone || loc.tel || loc.telephone || b.phone || '').trim().slice(0, 40),
+    lat: lat, lng: lng,
+    hours: (Array.isArray(loc.hours) ? loc.hours : (Array.isArray(loc.openingHours) ? loc.openingHours : null))
+  };
+}
+// Tenant-AUTHORED FAQ, if any (publicSite.faq / config.faq / settings.faq -- {q,a}|{question,answer}|[q,a]). Returns []
+// when the tenant has no FAQ data, which is why _bookHeadTags emits an FAQPage node ONLY when this is non-empty.
+function _seoFaq(prof) {
+  try {
+    var s = (prof && prof.settings) || {}, pub = s.publicSite || {}, cfg = pub.config || {};
+    var raw = (Array.isArray(pub.faq) && pub.faq) || (Array.isArray(cfg.faq) && cfg.faq) || (Array.isArray(s.faq) && s.faq) || [];
+    var out = [];
+    raw.forEach(function (f) {
+      if (!f) return;
+      var q = String((f.q || f.question || (Array.isArray(f) ? f[0] : '')) || '').trim();
+      var a = String((f.a || f.answer || (Array.isArray(f) ? f[1] : '')) || '').trim();
+      if (q && a) out.push({ q: q.slice(0, 200), a: a.slice(0, 600) });
+    });
+    return out.slice(0, 20);
+  } catch (e) { return []; }
+}
+// The cities/markets this tenant serves (primary city + any configured pickup/delivery locations), deduped, capped.
+function _seoCities(prof) {
+  var out = [], seen = {};
+  function add(c) { c = String(c || '').trim().slice(0, 80); if (c) { var k = c.toLowerCase(); if (!seen[k]) { seen[k] = 1; out.push(c); } } }
+  try {
+    var s = (prof && prof.settings) || {}, b = (prof && prof.brand) || {}, loc = s.location || {};
+    add(loc.city || loc.area); add(b.city || b.area);
+    var locs = Array.isArray(s.locations) ? s.locations : [];
+    locs.forEach(function (x) { add((x && (x.name || x.city)) || (typeof x === 'string' ? x : '')); });
+  } catch (e) {}
+  return out.slice(0, 8);
+}
+// The set of generated landing-page descriptors for a tenant: one per served city ("<Industry> in <City>"), or a single
+// industry page when no city is set. `base` is the booking home (custom-domain origin, or the apex /api/book/<slug>
+// path); each landing lives at `base + '/r/' + key`. Real copy, real key -> a crawlable, non-duplicate URL.
+function _seoLandings(prof, base) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+    var noun = String(cfg.noun || 'rental').trim() || 'rental';
+    var label = _seoIndustryLabel(noun);
+    var low = label.toLowerCase();
+    var biz = String((prof && prof.name) || '');
+    var cities = _seoCities(prof);
+    var out = [], seen = {};
+    function push(key, city) {
+      key = String(key || '').trim(); if (!key || seen[key]) return; seen[key] = 1;
+      var h1 = label + (city ? (' in ' + city) : '');
+      out.push({ key: key, city: city || '', h1: h1, title: (biz ? (biz + ' — ') : '') + h1,
+        desc: 'Rent ' + low + (city ? (' in ' + city) : '') + (biz ? (' from ' + biz) : '') + '. Browse the fleet, check live availability, and book online in minutes.',
+        url: base + '/r/' + key });
+    }
+    if (cities.length) cities.forEach(function (c) { push(slugify(c), c); });
+    else push(slugify(label) || 'rentals', '');
+    return out.slice(0, 8);
+  } catch (e) { return []; }
+}
+// Per-asset deep-link anchors for the sitemap (home + '#a-<slug>'); the matching id is emitted on each served fleet card.
+function _seoAssetAnchors(prof, home) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {};
+    var assets = Array.isArray(pub.assets) ? pub.assets : [];
+    var out = [], seen = {};
+    assets.slice(0, 24).forEach(function (a) {
+      var nm = String((a && a.name) || '').trim(); if (!nm) return;
+      var slug = slugify(nm); if (!slug || seen[slug]) return; seen[slug] = 1;
+      out.push({ name: nm, slug: slug, url: home + '#a-' + slug });
+    });
+    return out;
+  } catch (e) { return []; }
+}
+// Count of JSON-LD @graph nodes _bookHeadTags emits for this tenant (LocalBusiness + up to 10 Products + Breadcrumb +
+// Organization + WebSite + optional FAQPage). Kept in lockstep with _bookHeadTags so /api/admin/seo-health reports the
+// real on-page schema depth. Reviews attach INSIDE LocalBusiness (not separate nodes) so they don't change the count.
+function _seoSchemaNodeCount(prof) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {};
+    var assets = Array.isArray(pub.assets) ? pub.assets : [];
+    var named = assets.filter(function (a) { return a && String((a && a.name) || '').trim(); }).slice(0, 10).length;
+    return 1 /*LocalBusiness*/ + named /*Products*/ + 3 /*Breadcrumb+Organization+WebSite*/ + (_seoFaq(prof).length ? 1 : 0);
+  } catch (e) { return 0; }
+}
+// Resolve the booking home + SEO surface URLs for a tenant on a given surface. isCustom = served at the tenant's own
+// connected domain root (routes live at /robots.txt, /sitemap.xml, /r/<key>); else the apex path surface
+// (/api/book/<slug>/{robots.txt,sitemap.xml,r/<key>}).
+function _seoBase(origin, slug, isCustom) {
+  var base = isCustom ? origin : (origin + '/api/book/' + slug);
+  var home = isCustom ? (origin + '/') : base;
+  return { base: base, home: home, sitemapUrl: base + '/sitemap.xml', robotsUrl: base + '/robots.txt' };
+}
+function _seoSitemapXml(prof, seob) {
+  var urls = [seob.home];
+  _seoLandings(prof, seob.base).forEach(function (l) { urls.push(l.url); });
+  _seoAssetAnchors(prof, seob.home).forEach(function (a) { urls.push(a.url); });
+  var seen = {}, out = [];
+  urls.forEach(function (u) { if (u && !seen[u]) { seen[u] = 1; out.push(u); } });
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    + out.map(function (u) { return '  <url><loc>' + esc(u) + '</loc></url>'; }).join('\n') + '\n</urlset>\n';
+}
+function _seoRobotsTxt(sitemapUrl) { return 'User-agent: *\nAllow: /\n\nSitemap: ' + sitemapUrl + '\n'; }
+// A grounded, non-fabricated FAQ derived from the tenant's REAL config (booking is online, prices come from real asset
+// rates, city comes from their own settings). Used on the landing page only when the tenant has no authored FAQ.
+function _seoDerivedFaq(prof, city) {
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var noun = String(cfg.noun || 'rental').trim() || 'rental';
+  var unit = String(cfg.unit || 'day');
+  var biz = String((prof && prof.name) || '');
+  var assets = Array.isArray(pub.assets) ? pub.assets : [];
+  var rates = assets.map(function (a) { return Number(a && a.rate) || 0; }).filter(function (r) { return r > 0; });
+  var min = rates.length ? Math.min.apply(null, rates) : 0;
+  var faq = [];
+  faq.push({ q: 'How do I book a ' + noun + (city ? (' in ' + city) : '') + '?', a: 'Choose your ' + noun + ', pick your dates, and reserve online in a few minutes' + (biz ? (' with ' + biz) : '') + '. You get instant confirmation.' });
+  if (min > 0) faq.push({ q: 'How much does it cost?', a: 'Rates start at ' + money2(Math.round(min * 100)) + ' per ' + unit + '. The exact price depends on the ' + noun + ' you choose and how long you book.' });
+  if (city) faq.push({ q: 'Do you serve ' + city + '?', a: 'Yes' + (biz ? (' — ' + biz) : '') + ' serves ' + city + '. Check live availability for your dates right on the booking page.' });
+  faq.push({ q: 'Can I book online?', a: 'Yes. The whole reservation happens online — browse the fleet, check availability, and confirm your ' + noun + ' without a phone call.' });
+  return faq;
+}
+// A full, standalone, crawlable landing page (own title/meta/canonical + WebPage/Breadcrumb/Organization/FAQPage JSON-LD),
+// rendered through the shared _pageDoc shell. Real H1, real intro, real fleet showcase, an FAQ, and internal links back to
+// the booking home + sibling landing pages. Never touches the booking form.
+function _seoLandingHtml(prof, color, land, seob, reviews) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var noun = String(cfg.noun || 'rental').trim() || 'rental';
+  var unit = String(cfg.unit || 'day');
+  var home = seob.home;
+  var assets = (Array.isArray(pub.assets) ? pub.assets : []).slice(0, 12);
+  var faq = _seoFaq(prof); if (!faq.length) faq = _seoDerivedFaq(prof, land.city);
+  var cards = assets.map(function (a) {
+    var nm = String((a && a.name) || '').trim();
+    var ty = String((a && a.type) || '');
+    var ph = String((a && a.photo) || '');
+    var rate = Number(a && a.rate) || 0;
+    var alt = esc((nm || noun) + (ty ? (' - ' + ty) : ''));
+    var im = /^(https?:|data:)/i.test(ph)
+      ? ('<img src="' + esc(ph) + '" alt="' + alt + '" width="320" height="200" loading="lazy" decoding="async" style="width:100%;height:120px;object-fit:cover;display:block;background:#eee">')
+      : ('<div style="height:120px;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#c4c4c4;background:#f3f3f3">' + esc((ty || nm || '?').slice(0, 1).toUpperCase()) + '</div>');
+    return '<div id="a-' + esc(slugify(nm)) + '" style="border:1px solid #ececec;border-radius:12px;overflow:hidden;background:#fff">' + im
+      + '<div style="padding:10px 12px"><div style="font-weight:700">' + esc(nm) + '</div>'
+      + (ty ? ('<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999">' + esc(ty) + '</div>') : '')
+      + (a && a.desc ? ('<div style="font-size:12px;color:#666;margin-top:3px">' + esc(String(a.desc).slice(0, 140)) + '</div>') : '')
+      + (rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + money2(Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
+      + '</div></div>';
+  }).join('');
+  var faqHtml = faq.map(function (f) { return '<div style="border-top:1px solid #eee;padding:12px 0"><div style="font-weight:700">' + esc(f.q) + '</div><div class="muted" style="margin-top:4px">' + esc(f.a) + '</div></div>'; }).join('');
+  var otherLinks = _seoLandings(prof, seob.base).filter(function (l) { return l.key !== land.key; }).slice(0, 6)
+    .map(function (l) { return '<a href="' + esc(l.url) + '" style="color:var(--brand);text-decoration:none;margin-right:14px;white-space:nowrap">' + esc(l.h1) + '</a>'; }).join('');
+  var revHtml = '';
+  if (reviews && reviews.count > 0) {
+    revHtml = '<div class="card"><h2>What customers say</h2><div class="muted">' + (Math.round(Number(reviews.avg) * 10) / 10).toFixed(1) + ' from ' + reviews.count + ' review' + (reviews.count === 1 ? '' : 's') + '</div>'
+      + (reviews.recent || []).slice(0, 3).map(function (r) { return '<div style="border-top:1px solid #eee;padding:10px 0">' + (r.text ? ('<div>&ldquo;' + esc(String(r.text)) + '&rdquo;</div>') : '') + '<div class="muted" style="margin-top:3px">&mdash; ' + esc(String(r.by || 'Verified customer')) + '</div></div>'; }).join('') + '</div>';
+  }
+  var body = '<div class="hd">' + esc(biz || land.h1) + '</div>'
+    + '<div class="card"><h1 style="margin:0 0 8px;font-size:24px">' + esc(land.h1) + '</h1>'
+    + '<p class="muted" style="font-size:15px">' + esc(land.desc) + '</p>'
+    + '<a class="btn" href="' + esc(home) + '" style="max-width:220px">Check availability</a></div>'
+    + (cards ? ('<div class="card"><h2>Our ' + esc(_seoPlural(noun)) + '</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px">' + cards + '</div></div>') : '')
+    + revHtml
+    + (faqHtml ? ('<div class="card"><h2>Frequently asked questions</h2>' + faqHtml + '</div>') : '')
+    + '<div class="card"><h2>Book online</h2><p class="muted">Ready to reserve? Head to the booking page to see live availability and confirm in minutes.</p><a class="btn" href="' + esc(home) + '" style="max-width:220px">Go to booking</a>'
+    + (otherLinks ? ('<div style="margin-top:14px;overflow-x:auto;white-space:nowrap">' + otherLinks + '</div>') : '') + '</div>';
+  var desc = String(land.desc).slice(0, 300);
+  var canon = land.url;
+  var img = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
+  var graph = [
+    { '@type': 'WebPage', name: land.title, url: canon, description: desc, isPartOf: { '@type': 'WebSite', name: biz || land.h1, url: home } },
+    { '@type': 'BreadcrumbList', itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+      { '@type': 'ListItem', position: 2, name: land.h1, item: canon } ] },
+    { '@type': 'Organization', name: biz || land.h1, url: home }
+  ];
+  if (img) graph[2].logo = img;
+  if (faq.length) graph.push({ '@type': 'FAQPage', mainEntity: faq.map(function (f) { return { '@type': 'Question', name: String(f.q).slice(0, 200), acceptedAnswer: { '@type': 'Answer', text: String(f.a).slice(0, 600) } }; }) });
+  var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': graph }).replace(/</g, '\\u003c');
+  var head = '<meta name="description" content="' + esc(desc) + '">'
+    + '<link rel="canonical" href="' + esc(canon) + '">'
+    + '<meta name="robots" content="index,follow">'
+    + '<link rel="sitemap" type="application/xml" href="' + esc(seob.sitemapUrl) + '">'
+    + '<meta property="og:type" content="website">'
+    + '<meta property="og:site_name" content="' + esc(biz || land.h1) + '">'
+    + '<meta property="og:title" content="' + esc(land.title) + '">'
+    + '<meta property="og:description" content="' + esc(desc) + '">'
+    + '<meta property="og:url" content="' + esc(canon) + '">'
+    + (img ? ('<meta property="og:image" content="' + esc(img) + '">') : '')
+    + '<meta name="twitter:card" content="' + (img ? 'summary_large_image' : 'summary') + '">'
+    + '<meta name="twitter:title" content="' + esc(land.title) + '">'
+    + '<meta name="twitter:description" content="' + esc(desc) + '">'
+    + '<scr' + 'ipt type="application/ld+json">' + ldJson + '</scr' + 'ipt>';
+  return _pageDoc(land.title, color, body, '', head);
+}
+// Server-rendered SEO / social head. `reviews` (optional, _publicReviewSummary output) threads aggregateRating + Review
+// nodes into the LocalBusiness node; absent -> byte-identical to no-reviews. Still pure + synchronous (no DB, no await).
+function _bookHeadTags(prof, canonicalUrl, reviews) {
   prof = prof || {};
   var brand = prof.brand || {}, settings = prof.settings || {};
   var pub = settings.publicSite || {}, cfg = pub.config || {}, loc = settings.location || {};
@@ -8226,6 +8577,21 @@ function _bookHeadTags(prof, canonicalUrl) {
   if (img) ld.image = img;
   if (desc) ld.description = desc;
   if (city || region || postal) { var ad = { '@type': 'PostalAddress' }; if (city) ad.addressLocality = city; if (region) ad.addressRegion = region; if (postal) ad.postalCode = postal; ld.address = ad; }
+  // Enrich LocalBusiness with REAL data ONLY (never fabricated): areaServed (city), priceRange (derived from real asset
+  // rates), telephone/openingHours/geo strictly when present in settings, and aggregateRating + up to 5 Review from the
+  // reviews summary threaded in by the caller (absent -> nothing added, byte-identical to before).
+  var _loc2 = _seoLoc(prof);
+  if (city) ld.areaServed = city;
+  var _rateNums = assets.map(function (a) { return Number(a && a.rate) || 0; }).filter(function (r) { return r > 0; });
+  if (_rateNums.length) { var _mn = Math.min.apply(null, _rateNums), _mx = Math.max.apply(null, _rateNums); ld.priceRange = (_mn === _mx) ? (currency + ' ' + _mn) : (currency + ' ' + _mn + '-' + _mx); }
+  if (_loc2.phone) ld.telephone = _loc2.phone;
+  if (_loc2.hours && _loc2.hours.length) ld.openingHours = _loc2.hours.slice(0, 7).map(function (h) { return String(h).slice(0, 40); });
+  if (_loc2.lat != null && isFinite(_loc2.lat) && _loc2.lng != null && isFinite(_loc2.lng)) ld.geo = { '@type': 'GeoCoordinates', latitude: _loc2.lat, longitude: _loc2.lng };
+  if (reviews && reviews.count > 0) {
+    ld.aggregateRating = { '@type': 'AggregateRating', ratingValue: Math.round(Number(reviews.avg) * 10) / 10, reviewCount: reviews.count };
+    var _rv5 = (reviews.recent || []).slice(0, 5).map(function (r) { var o = { '@type': 'Review', reviewRating: { '@type': 'Rating', ratingValue: Math.max(1, Math.min(5, Number(r.rating) || 0)) }, author: { '@type': 'Person', name: String(r.by || 'Verified customer').slice(0, 80) } }; if (r.text) o.reviewBody = String(r.text).slice(0, 400); return o; });
+    if (_rv5.length) ld.review = _rv5;
+  }
   var prods = assets.slice(0, 10).map(function (a) {
     var nm = String((a && a.name) || '').trim(); if (!nm) return null;
     var o = { '@type': 'Product', name: nm.slice(0, 120) };
@@ -8235,9 +8601,23 @@ function _bookHeadTags(prof, canonicalUrl) {
     if (rate > 0) o.offers = { '@type': 'Offer', price: (Math.round(rate * 100) / 100).toFixed(2), priceCurrency: currency, availability: 'https://schema.org/InStock' };
     return o;
   }).filter(Boolean);
-  var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': [ld].concat(prods) }).replace(/</g, '\\u003c');
+  // Schema depth: Breadcrumb + Organization + WebSite always; FAQPage ONLY when the tenant actually authored FAQ data.
+  var _home2 = canon; try { var _cu2 = new URL(canon); _home2 = _cu2.origin + '/'; } catch (e) {}
+  var _extra = [];
+  _extra.push({ '@type': 'BreadcrumbList', itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Home', item: _home2 },
+    { '@type': 'ListItem', position: 2, name: (city ? (nounPl + ' in ' + city) : nounPl), item: canon || _home2 } ] });
+  var _org2 = { '@type': 'Organization', name: biz, url: canon || _home2 }; if (img) _org2.logo = img;
+  _extra.push(_org2);
+  _extra.push({ '@type': 'WebSite', name: biz, url: _home2 });
+  var _faq2 = _seoFaq(prof);
+  if (_faq2.length) _extra.push({ '@type': 'FAQPage', mainEntity: _faq2.slice(0, 10).map(function (f) { return { '@type': 'Question', name: String(f.q).slice(0, 200), acceptedAnswer: { '@type': 'Answer', text: String(f.a).slice(0, 600) } }; }) });
+  // Per-tenant sitemap URL for this surface (custom-domain root, or the apex /api/book/<slug> path) -> referenced in <head>.
+  var _smUrl2 = ''; try { var _su2 = new URL(canon); if (/^\/api\/book\/[a-z0-9-]{1,63}$/.test(_su2.pathname)) _smUrl2 = _su2.origin + _su2.pathname + '/sitemap.xml'; else _smUrl2 = _su2.origin + '/sitemap.xml'; } catch (e) {}
+  var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': [ld].concat(prods).concat(_extra) }).replace(/</g, '\\u003c');
   var head = '<meta name="description" content="' + esc(desc) + '">'
     + (canon ? ('<link rel="canonical" href="' + esc(canon) + '">') : '')
+    + (_smUrl2 ? ('<link rel="sitemap" type="application/xml" href="' + esc(_smUrl2) + '">') : '')
     + '<meta property="og:type" content="website">'
     + '<meta property="og:site_name" content="' + esc(biz) + '">'
     + '<meta property="og:title" content="' + esc(title) + '">'
@@ -8327,9 +8707,15 @@ function _bookPageHtml(slug, color, seo, prof, reviews) {
       _fleet = '<div class="mkt-sec"><h2>Our ' + esc(_plN(_noun)) + '</h2><div class="mkt-sub">' + _fa.length + ' ' + esc(_fa.length === 1 ? _noun : _plN(_noun)) + ' to choose from</div><div class="mkt-grid">'
         + _fa.map(function (a) {
           var ph = String((a && a.photo) || '');
-          var img = /^(https?:|data:)/i.test(ph) ? ('<img class="mkt-ph" src="' + esc(ph) + '" alt="">') : ('<div class="mkt-noph">' + esc(String((a && (a.type || a.name)) || '?').slice(0, 1).toUpperCase()) + '</div>');
+          // Image SEO: real alt (asset name + type + business), explicit width/height (CLS), lazy-loaded. The client
+          // #app booking cards are untouched -- this is the crawlable marketing gallery only.
+          var _anm = String((a && a.name) || '').trim();
+          var _aty = String((a && a.type) || '').trim();
+          var _aslug = slugify(_anm);
+          var _alt = esc((_anm || _noun) + (_aty ? (' - ' + _aty) : '') + (_biz ? (' | ' + _biz) : ''));
+          var img = /^(https?:|data:)/i.test(ph) ? ('<img class="mkt-ph" src="' + esc(ph) + '" alt="' + _alt + '" width="300" height="96" loading="lazy" decoding="async">') : ('<div class="mkt-noph">' + esc(String((a && (a.type || a.name)) || '?').slice(0, 1).toUpperCase()) + '</div>');
           var rate = Number(a && a.rate) || 0;
-          return '<div class="mkt-car">' + img + '<div class="mkt-cb"><div class="mkt-nm">' + esc(String((a && a.name) || '')) + '</div>'
+          return '<div class="mkt-car"' + (_aslug ? (' id="a-' + _aslug + '"') : '') + '>' + img + '<div class="mkt-cb"><div class="mkt-nm">' + esc(String((a && a.name) || '')) + '</div>'
             + (a && a.type ? ('<div class="mkt-ty">' + esc(String(a.type)) + '</div>') : '')
             + (a && a.desc ? ('<div class="mkt-ds">' + esc(String(a.desc)) + '</div>') : '')
             + (rate > 0 ? ('<div class="mkt-pr">' + _m2(rate) + ' / ' + esc(_unit) + '</div>') : '') + '</div></div>';
