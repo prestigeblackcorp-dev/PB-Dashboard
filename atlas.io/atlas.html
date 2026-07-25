@@ -1519,6 +1519,10 @@ body.trk-fs-on .trk-fs-exit{display:grid}
               <div class="card__body" id="utilList"></div>
             </div>
           </div>
+          <div class="card" id="revOptCard" style="display:none">
+            <div class="card__head"><h3>Revenue optimizer</h3><span class="link" style="cursor:pointer" onclick="Atlas.revOptAsk()">Ask Atlas.io &rarr;</span></div>
+            <div class="card__body" id="revOptBody"></div>
+          </div>
           <div class="card">
             <div class="card__head"><h3>Recent bookings</h3><span class="link" onclick="Atlas.go('bookings')" style="cursor:pointer">See all</span></div>
             <div style="overflow-x:auto"><table class="tbl" id="bookTbl"></table></div>
@@ -4217,6 +4221,7 @@ const Atlas = (function(){
     const head=`<thead><tr><th>Booking</th><th>${cap(_custNoun())}</th><th>${cap(S.fleet.noun)}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
     document.getElementById('bookTbl').innerHTML=head+'<tbody>'+(DATA.bookings.length?DATA.bookings.slice(0,5).map(rows).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px 8px">No bookings yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.newBooking()">create your first booking</span>.</td></tr>')+'</tbody>';
     document.getElementById('bookTblFull').innerHTML=head+'<tbody>'+DATA.bookings.map(rows).join('')+'</tbody>';
+    try{ _renderRevOpt(); }catch(e){}   // Smart Pricing Increment 2: data-driven pricing suggestions, computed fresh from the util/bookings just recomputed above
     setTimeout(()=>drawRevChart(),30);
   }
   function statusChip(s){const m={'Confirmed':'info','On rent':'ok','Returned':'warn','Completed':'muted','Pending':'warn','Cancelled':'danger'};return `<span class="chip chip--${m[s]||'muted'}"><span class="dot"></span>${s}</span>`;}
@@ -4656,6 +4661,140 @@ const Atlas = (function(){
       +cell('Utilization now', fc.curUtil+'%', 'projected '+fc.projUtil+'%')
       +'</div>'+spark
       +'<div class="bk-lenhint" style="margin:12px 0 0">Projected from your trailing 8-week '+_fterm('book')+' history (damped momentum). An estimate, not a guarantee.</div>'; }
+  /* ---- Revenue Optimizer (Smart Pricing Increment 2): turns THIS tenant's own utilization + trailing booking
+     history into concrete, one-tap pricing suggestions -- deterministic + transparent (no AI in the compute path;
+     the "Ask Atlas.io" link on the card is a separate, optional natural-language layer on top). Every number is
+     real: when there is not enough booking history to say something meaningful, _revOptimizer says so honestly
+     instead of inventing a suggestion. Apply only ever flips an EXISTING smartPricing knob (Increment 1, see
+     _sp()/setSmartPricing above) or nudges one asset's own rate through the same _saveAssets persistence every
+     other asset edit uses -- calcQuote/priceQuote (the charging path) are never touched. ---- */
+  var REVOPT_WINDOW_DAYS=90;    // trailing window for the booking-share stats (weekend share, revenue scaling)
+  var REVOPT_MIN_SAMPLE=5;      // minimum committed bookings in that window before a SHARE stat (weekend rule) is trusted
+  var REVOPT_HIGH_UTIL=75;      // asset util% at/above which demand looks strong enough to raise the rate
+  var REVOPT_LOW_UTIL=25;       // asset (or fleet) util% at/below which days are sitting idle
+  var REVOPT_CAPTURE=0.3;       // modest share of idle capacity a last-minute discount actually recovers (headline + idle-suggestion impact)
+  var REVOPT_WEEKEND_PCT=15;    // default weekend uplift this rule proposes (matches smartPricing's own default weekend.pct)
+  var REVOPT_RAISE_PCT=10;      // default rate raise this rule proposes for a high-demand asset
+  var REVOPT_LASTMIN_DAYS=3;    // default "within N days of pickup" window for the idle-fill discount
+  var REVOPT_LASTMIN_PCT=-10;   // default last-minute discount (negative = off the base rate)
+  function _optUnitsPerMonth(){ return 30*86400000/_periodMs(); }   // how many of the CURRENT rate-model's periods fit in a 30-day month (day->30, hour->720, week->~4.3, month->1)
+  function _revOptWindowBookings(){ var now=Date.now(), from=now-REVOPT_WINDOW_DAYS*86400000;
+    return (DATA.bookings||[]).filter(function(b){ if(!_isCommitted(b)) return false; var t=Number(b.startTs)||Number(b.createdAt)||0; return t>=from && t<=now; }); }
+  function _revOptWeekendShare(list){ if(!list.length) return {share:0,n:0,rev:0};
+    var wk=list.filter(function(b){ var t=Number(b.startTs)||Number(b.createdAt)||0; var dow=new Date(t).getUTCDay(); return dow===5||dow===6; });   // Fri/Sat, UTC day-of-week -- same basis _dayFactor uses for the real weekend multiplier, so this stays consistent with what smartPricing would actually charge
+    return {share:wk.length/list.length, n:wk.length, rev:wk.reduce(function(s,b){ return s+_bkEarned(b); },0)}; }
+  // Pure data -- returns {headline, utilAvg, assetsCount, bookingsCount, suggestions:[{id,kind,assetId,title,text,why,impact}], notice}.
+  // Every string field is PLAIN TEXT (escaped once, by the renderer below) -- never pre-escaped here. notice is a
+  // plain honest sentence shown INSTEAD of the list when there truly isn't enough on file to say something useful.
+  function _revOptimizer(){
+    var assets=(DATA.assets||[]).slice();
+    var out={headline:0, utilAvg:0, assetsCount:assets.length, bookingsCount:(DATA.bookings||[]).length, suggestions:[], notice:''};
+    if(!assets.length){ out.notice='Add your first '+S.fleet.noun+' to see pricing suggestions here.'; return out; }
+    var upm=_optUnitsPerMonth();
+    out.utilAvg=Math.round(assets.reduce(function(s,a){ return s+(Number(a.util)||0); },0)/assets.length);
+    // "Money left on the table": idle capacity fleet-wide, valued at each asset's own rate and discounted by a modest
+    // capture factor -- a real (if conservative) read on the upside, never a promise of exactly this much.
+    out.headline=Math.round(assets.reduce(function(s,a){ var idleUnits=Math.max(0,1-(Number(a.util)||0)/100)*upm; return s+idleUnits*(Number(a.rate)||0)*REVOPT_CAPTURE; },0));
+    if(!out.bookingsCount){ out.notice='Not enough booking history yet to recommend a change.'; return out; }
+    var win=_revOptWindowBookings();
+    // ---- Rule 1: fleet-wide weekend demand -> suggest a weekend uplift ----
+    if(win.length>=REVOPT_MIN_SAMPLE){
+      var wk=_revOptWeekendShare(win);
+      if(wk.share>=0.3 && out.utilAvg>=40){
+        var monthlyWk=wk.rev/REVOPT_WINDOW_DAYS*30;
+        out.suggestions.push({ id:'weekend', kind:'weekend',
+          title:'Add a weekend uplift',
+          text:Math.round(wk.share*100)+'% of your recent '+_fterm('books')+' start on a Friday or Saturday, and your fleet is running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' - renters are already choosing weekends without a price nudge. A +'+REVOPT_WEEKEND_PCT+'% weekend rate would follow that real demand.',
+          why:Math.round(wk.share*100)+'% of '+win.length+' bookings in the last '+REVOPT_WINDOW_DAYS+' days started Fri/Sat; fleet '+_fterm('util').toLowerCase()+' '+out.utilAvg+'% is at/above the 40% healthy floor.',
+          impact:Math.round(monthlyWk*REVOPT_WEEKEND_PCT/100) }); } }
+    // ---- Rule 2: high-demand assets (util >= 75%) -> raise the rate ~10% ----
+    var hot=assets.filter(function(a){ return (Number(a.util)||0)>=REVOPT_HIGH_UTIL; }).sort(function(x,y){ return (Number(y.util)||0)-(Number(x.util)||0); });
+    hot.slice(0,3).forEach(function(a){
+      var winRev=win.filter(function(b){ return b.asset===a.name; }).reduce(function(s,b){ return s+_bkEarned(b); },0);
+      var monthlyRev = winRev>0 ? (winRev/REVOPT_WINDOW_DAYS*30) : ((Number(a.rate)||0)*upm*(Number(a.util)||0)/100);   // fallback: occupancy-implied revenue when no booking row in the trailing window matches this asset by name (e.g. an older booking still overlapping the 30-day util window)
+      out.suggestions.push({ id:'raise:'+a.id, kind:'raise', assetId:a.id,
+        title:'Raise the '+a.name+' rate',
+        text:'Raise the '+a.name+' rate about '+REVOPT_RAISE_PCT+'% ('+money(a.rate)+' to '+money(Math.round((Number(a.rate)||0)*(1+REVOPT_RAISE_PCT/100)))+') - it is booked '+a.util+'% of the time, close to as much as it can be.',
+        why:a.name+' is at '+a.util+'% '+_fterm('util').toLowerCase()+', at/above the '+REVOPT_HIGH_UTIL+'% demand floor.',
+        impact:Math.round(monthlyRev*REVOPT_RAISE_PCT/100) }); });
+    if(hot.length>3) out.suggestions.push({ id:'raise:more', kind:'info', title:(hot.length-3)+' more '+S.fleet.nouns+' also over '+REVOPT_HIGH_UTIL+'%', text:'Review the rest in your Fleet tab.', why:'', impact:0 });
+    // ---- Rule 3: idle asset / low util -> a last-minute discount to fill otherwise-empty days ----
+    var idle=assets.filter(function(a){ return a.status==='Available' && (Number(a.util)||0)<=REVOPT_LOW_UTIL; }).sort(function(x,y){ return (Number(x.util)||0)-(Number(y.util)||0); });
+    if(idle.length){ var w=idle[0];
+      out.suggestions.push({ id:'idle:'+w.id, kind:'idle',
+        title:'Fill '+w.name+' idle days',
+        text:w.name+' is only booked '+w.util+'% of the time. A last-minute discount for bookings within '+REVOPT_LASTMIN_DAYS+' days of pickup can turn some of that idle time into revenue instead of $0.',
+        why:w.name+' is at '+w.util+'% '+_fterm('util').toLowerCase()+', at/below the '+REVOPT_LOW_UTIL+'% idle floor.',
+        impact:Math.round(Math.max(0,1-(Number(w.util)||0)/100)*upm*(Number(w.rate)||0)*REVOPT_CAPTURE*(1+REVOPT_LASTMIN_PCT/100)) });
+    } else if(out.utilAvg<=REVOPT_LOW_UTIL){
+      var avgRate=assets.reduce(function(s,a){ return s+(Number(a.rate)||0); },0)/Math.max(1,assets.length);
+      out.suggestions.push({ id:'idle:fleet', kind:'idle',
+        title:'Fill idle days fleet-wide',
+        text:'Your fleet is running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' overall. A last-minute discount for bookings within '+REVOPT_LASTMIN_DAYS+' days of pickup can turn idle days into revenue instead of $0.',
+        why:'Fleet-wide '+_fterm('util').toLowerCase()+' is '+out.utilAvg+'%, at/below the '+REVOPT_LOW_UTIL+'% idle floor.',
+        impact:Math.round(Math.max(0,1-out.utilAvg/100)*upm*avgRate*REVOPT_CAPTURE*(1+REVOPT_LASTMIN_PCT/100)) }); }
+    if(!out.suggestions.length) out.notice = (win.length<REVOPT_MIN_SAMPLE) ? 'Not enough booking history yet to recommend a change.' : 'Nothing to flag right now - your pricing already looks balanced for the data on file.';
+    return out;
+  }
+  // Paints #revOptCard from _revOptimizer(). Called at the end of renderOverview (fresh util/bookings already
+  // loaded there) and again right after Apply, so the card always matches what the KPIs + fleet grid show.
+  function _renderRevOpt(){
+    var card=document.getElementById('revOptCard'); if(!card) return;
+    var r=_revOptimizer();
+    if(!r.assetsCount){ card.style.display='none'; return; }
+    card.style.display='';
+    var body=document.getElementById('revOptBody'); if(!body) return;
+    var head = r.bookingsCount ? ('<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px">'
+        +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">Money left on the table</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+money(r.headline)+'<span style="font-size:12px;font-weight:600;color:var(--muted)"> /mo est.</span></div></div>'
+        +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">Fleet '+_fterm('util')+'</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+r.utilAvg+'%</div></div>'
+        +'</div>') : '';
+    var rows=r.suggestions.filter(function(s){ return s.kind!=='info'; }).map(function(s){
+      var btn='<button class="btn btn--primary btn--sm" onclick="Atlas.revOptApply(\''+s.kind+'\''+(s.assetId?(",'"+s.assetId+"'"):'')+')">Apply</button>';
+      return '<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px">'
+        +'<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">'
+        +'<div style="flex:1;min-width:220px"><b style="font-size:13.5px;color:var(--ink)">'+esc(s.title)+'</b><div style="font-size:13px;color:var(--ink);margin-top:3px">'+esc(s.text)+'</div><div class="bk-lenhint" style="margin:6px 0 0">'+esc(s.why)+'</div></div>'
+        +'<div style="text-align:right;flex:none"><div style="font-size:11px;color:var(--muted)">est. impact</div><div style="font-weight:800;color:var(--brand-700)" class="tnum">+'+money(s.impact)+'/mo</div>'+btn+'</div>'
+        +'</div></div>'; }).join('');
+    var infoRow=r.suggestions.filter(function(s){ return s.kind==='info'; }).map(function(s){ return '<div class="bk-lenhint" style="margin:0 0 10px">'+esc(s.title)+' - '+esc(s.text)+'</div>'; }).join('');
+    var notice=r.notice?('<div class="bk-lenhint" style="margin:0">'+esc(r.notice)+'</div>'):'';
+    body.innerHTML=head+rows+infoRow+notice+'<div id="revOptAiBox"></div>';
+  }
+  // One-tap Apply: every kind only ever flips an EXISTING smartPricing knob (Increment 1) or nudges one asset's own
+  // rate through _saveAssets -- both fully reversible by the owner in Settings > Pricing / the asset's own rate field.
+  function revOptApply(kind,aid){
+    if(!_canMod('settings')) return;
+    if(kind==='weekend'){
+      var sp=_sp(); sp.on=true; sp.weekend.on=true; sp.weekend.pct=REVOPT_WEEKEND_PCT; save();
+      toast('Weekend uplift turned on (+'+REVOPT_WEEKEND_PCT+'%) - edit or turn off anytime in Settings > Pricing');
+    } else if(kind==='raise'){
+      var a=(DATA.assets||[]).filter(function(x){ return x.id===aid; })[0]; if(!a){ toast('That '+S.fleet.noun+' was not found'); return; }
+      var before=Number(a.rate)||0; a.rate=Math.round(before*(1+REVOPT_RAISE_PCT/100)); _saveAssets();
+      toast(esc(a.name)+' rate raised '+money(before)+' to '+money(a.rate));
+    } else if(kind==='idle'){
+      var sp2=_sp(); sp2.on=true; sp2.leadTime.lastMinuteDays=REVOPT_LASTMIN_DAYS; sp2.leadTime.lastMinutePct=REVOPT_LASTMIN_PCT; save();
+      toast('Last-minute discount turned on ('+REVOPT_LASTMIN_DAYS+' days, '+REVOPT_LASTMIN_PCT+'%) - edit or turn off anytime in Settings > Pricing');
+    } else return;
+    try{ renderFleet(); }catch(e){}
+    try{ renderOverview(); }catch(e){}   // renderOverview also repaints #revOptCard (_renderRevOpt) with the post-Apply numbers
+  }
+  // Optional natural-language layer on top of the deterministic card above: one best-effort call to the SAME
+  // Atlas.io endpoint the chat drawer uses, seeded with a concrete prompt built from this tenant's own util/
+  // suggestion summary. Any non-2xx response, missing text, or network failure just clears the box -- it never
+  // blocks or replaces the deterministic suggestions above.
+  function revOptAsk(){
+    var box=document.getElementById('revOptAiBox'); if(!box) return;
+    var r=_revOptimizer(); if(!r.assetsCount) return;
+    var top=r.suggestions.filter(function(s){ return s.kind!=='info'; })[0];
+    var q = top
+      ? ('My rental fleet is running '+r.utilAvg+'% '+_fterm('util').toLowerCase()+'. '+top.why+' In 2-3 sentences, explain why this suggestion -- '+top.title.charAt(0).toLowerCase()+top.title.slice(1)+' -- makes sense for my business, and one risk to watch for.')
+      : ('My rental fleet is running '+r.utilAvg+'% '+_fterm('util').toLowerCase()+' with '+r.bookingsCount+' '+_fterm('books')+' on file. In 2-3 sentences, tell me honestly whether that is enough data to act on yet and what to track next.');
+    box.innerHTML='<div class="bk-lenhint" style="margin:8px 0 0">Asking Atlas.io\u2026</div>';
+    _api('/api/aio',{method:'POST',body:{q:q, context:_aioBizContext()}}).then(function(res){
+      var j=res&&res.json, txt=j&&(j.synthesis||(j.models&&j.models[0]&&j.models[0].text));
+      if(!(res.status>=200&&res.status<300) || !txt){ box.innerHTML=''; return; }
+      box.innerHTML='<div style="border-top:1px solid var(--line);margin-top:4px;padding-top:10px;font-size:13px;color:var(--ink)"><b style="color:var(--brand-700)">Atlas.io says:</b> '+esc(String(txt)).replace(/\n/g,'<br>')+'</div>';
+    }).catch(function(){ box.innerHTML=''; });
+  }
   // Revenue-by-source breakdown from real bookings, for the donut.
   function _srcBreakdown(){
     var map={}, total=0, lab={website:'Website',portal:'Portal',direct:'Direct',manual:'Direct',partners:'Partners',partner:'Partners'};
@@ -9736,7 +9875,7 @@ const Atlas = (function(){
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
-    setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,
+    setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
