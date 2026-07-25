@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25b';
+const ATLAS_BUILD = '2026.07.25c';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4666,7 +4666,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000, platform_legal_name: (await _pcfgGet(env, 'platform_legal_name', 'Atlas Rental.io')) || 'Atlas Rental.io', platform_legal_address: (await _pcfgGet(env, 'platform_legal_address', DEFAULT_PLATFORM_ADDR)) || '', platform_tax_id: (await _pcfgGet(env, 'platform_tax_id', '')) || '', your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', trial_drip_enabled: (await _pcfgGet(env, 'trial_drip_enabled', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000, platform_legal_name: (await _pcfgGet(env, 'platform_legal_name', 'Atlas Rental.io')) || 'Atlas Rental.io', platform_legal_address: (await _pcfgGet(env, 'platform_legal_address', DEFAULT_PLATFORM_ADDR)) || '', platform_tax_id: (await _pcfgGet(env, 'platform_tax_id', '')) || '', your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via, tier: _reqTier } });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -4696,6 +4696,11 @@ function doReset(){
           // a protected endpoint -- independent of #276's payment_gate_enabled (this can be on while that is off,
           // and vice versa). This route is already OWNER_ONLY (path starts with /api/admin/config).
           if (typeof b.trial_requires_card !== 'undefined') { await _pcfgSet(env, 'trial_requires_card', b.trial_requires_card ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { trial_requires_card: !!b.trial_requires_card }); }
+          // TRIAL-CONVERSION + ACTIVATION DRIP: OFF by default. When ON, the cron (_runTrialDrip) emails each trialing
+          // tenant's OWNER a 4-stage lifecycle sequence (activation -> mid-trial -> ends-soon -> win-back) to lift
+          // trial->paid conversion. While OFF the cron is byte-identical to before (one cheap _pcfgGet read + return).
+          // Already OWNER_ONLY (path starts with /api/admin/config); mirrors the flag setters above + audit()s the change.
+          if (typeof b.trial_drip_enabled !== 'undefined') { await _pcfgSet(env, 'trial_drip_enabled', b.trial_drip_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { trial_drip_enabled: !!b.trial_drip_enabled }); }
           // PART C1: platform legal identity for the branded receipt footer (_platIdentity) -- honest-by-default:
           // rendered on a receipt ONLY when actually set here, never invented. This route is already OWNER_ONLY.
           if (typeof b.platform_legal_name !== 'undefined') { const _pln = String(b.platform_legal_name || '').slice(0, 200); await _pcfgSet(env, 'platform_legal_name', _pln); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { platform_legal_name: _pln }); }
@@ -4729,7 +4734,7 @@ function doReset(){
           if (typeof b.spike_floor_users !== 'undefined') { const _sfu = Math.max(0, Math.min(100000, Math.round(Number(b.spike_floor_users) || 0))); await _pcfgSet(env, 'spike_floor_users', String(_sfu)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_users: _sfu }); }
           if (typeof b.spike_floor_money !== 'undefined') { const _sfm = Math.max(0, Math.min(100000000, Math.round(Number(b.spike_floor_money) || 0))); await _pcfgSet(env, 'spike_floor_money', String(_sfm)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_money: _sfm }); }
           if (typeof b.spike_floor_usage !== 'undefined') { const _sfa = Math.max(0, Math.min(100000000, Math.round(Number(b.spike_floor_usage) || 0))); await _pcfgSet(env, 'spike_floor_usage', String(_sfa)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_usage: _sfa }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], credit_cost_micros: parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000, alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000 };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', trial_drip_enabled: (await _pcfgGet(env, 'trial_drip_enabled', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], credit_cost_micros: parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000, alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000 };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via, tier: _reqTier } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are
@@ -7322,6 +7327,7 @@ function doReset(){
     } catch (e) { /* best-effort GC; a cron error must never surface */ }
     try { await _runLifecycleEmails(env, Date.now()); } catch (e) { /* lifecycle emails are best-effort */ }
     try { await _runDunning(env, Date.now()); } catch (e) { /* PART A3: dunning sweep is best-effort -- must never break the cron */ }
+    try { await _runTrialDrip(env, Date.now()); } catch (e) { /* trial-conversion drip is best-effort + flag-gated OFF -- must never break the cron */ }
     // Nightly: write the daily metric snapshot (so "vs last week" is real) + generate the AI COO morning brief if enabled.
     try {
       await ensurePlatformSchema(env);
@@ -7505,6 +7511,183 @@ async function _runDunning(env, now) {
       }
     }
   } catch (e) { /* dunning sweep is best-effort -- must never break the cron */ }
+}
+
+// ---- TRIAL-CONVERSION + ACTIVATION DRIP ------------------------------------------------------------------------
+// A 4-stage lifecycle sequence emailed to each TRIALING tenant's OWNER to lift trial->paid conversion (today an
+// at-risk trial only surfaces for MANUAL founder outreach). FLAG-GATED OFF by default via platform_config
+// .trial_drip_enabled (owner-only toggle at /api/admin/config). While OFF this is a SINGLE cheap _pcfgGet read and an
+// immediate return -- the cron behaves byte-identically to before this feature existed, and the dedup table is never
+// even created. HONEST + transactional: real trial_ends dates + the real PLAN_PRICE_CENTS for the tenant's tier, sent
+// from the Atlas platform identity (_atlasEmailShell), each with a clear manage/cancel path (_dripFooter). Every stage
+// is deduped to AT MOST ONCE per (tenant,stage) by an idempotent INSERT OR IGNORE claim (mirrors recordTxn's
+// .meta.changes pattern), only ever targets the tenant OWNER, and NEVER emails the platform owner's own tenant, a
+// comped (gold/free) tenant, or a deleted tenant. Stages 1-3 require plan='trial' (so a converted plan='active' tenant
+// is excluded); stage 4 (win-back) targets a still-'trial' row whose trial_ends is 1-5 days in the PAST -- a lapsed
+// trial keeps plan='trial' (only a real conversion ever flips it to 'active', see _billingState). Each stage AND each
+// per-tenant send is wrapped in its own try/catch so a single failure logs-and-continues and can NEVER break the cron
+// or the other stages. Bounded LIMITs throughout; tenant-scoped queries only.
+
+// fleet_type (a plural like 'cars'/'boats') -> a singular display noun for the copy. Cosmetic, never load-bearing;
+// unknown types de-pluralize crudely or land on the neutral 'listing'.
+function _assetNoun(fleetType) {
+  var f = String(fleetType || '').toLowerCase().trim();
+  var map = { cars: 'car', car: 'car', vehicles: 'vehicle', vehicle: 'vehicle', exotics: 'car', exotic: 'car', luxury: 'car',
+    boats: 'boat', boat: 'boat', yachts: 'yacht', yacht: 'yacht', jetskis: 'jet ski', rvs: 'RV', rv: 'RV', motorhomes: 'RV',
+    trailers: 'trailer', trailer: 'trailer', bikes: 'bike', bike: 'bike', motorcycles: 'motorcycle', motorcycle: 'motorcycle',
+    equipment: 'piece of equipment', tools: 'tool', tool: 'tool', properties: 'property', property: 'property', homes: 'property',
+    rooms: 'room', gear: 'item', other: 'listing' };
+  if (map[f]) return map[f];
+  if (f.length > 3 && f.charAt(f.length - 1) === 's') return f.slice(0, -1);
+  return f || 'listing';
+}
+function _dripDate(ms) { try { return new Date(Number(ms)).toISOString().slice(0, 10); } catch (e) { return ''; } }   // trial_ends -> honest YYYY-MM-DD
+// Shared honest footer for every drip email: why they got it + one-click manage/cancel + a real reply path.
+function _dripFooter(env) {
+  var manage = (env.APP_ORIGIN || 'https://atlasrental.io') + '/?manage=1';
+  return '<p style="margin-top:22px;color:#8a9a92;font-size:11.5px;line-height:1.7">You are receiving this because you started a free Atlas Rental.io trial. '
+    + 'Manage your plan, update your card, or cancel anytime from <a href="' + esc(manage) + '" style="color:#177350">your account settings</a> &mdash; '
+    + 'cancel before your trial ends and you will not be charged. Questions? Just reply to this email and a human will help.</p>';
+}
+// Idempotent per-(tenant,stage) dedup claim. Mirrors recordTxn exactly: INSERT OR IGNORE + .meta.changes. Returns true
+// ONLY the first time this (tenant,stage) is claimed (-> caller sends); false on a replay OR any DB error (fail-closed:
+// never risk a duplicate or errant send). The whole ledger lives in trial_drip_log (created lazily by _runTrialDrip).
+async function _dripClaim(env, tenantId, stage) {
+  try {
+    const _r = await env.DB.prepare("INSERT OR IGNORE INTO trial_drip_log (tenant_id, stage, sent_at) VALUES (?,?,?)").bind(tenantId, stage, Date.now()).run();
+    return !!(_r && _r.meta && _r.meta.changes);
+  } catch (e) { return false; }
+}
+async function _runTrialDrip(env, now) {
+  if ((await _pcfgGet(env, 'trial_drip_enabled', '0')) !== '1') return;   // FLAG GATE: OFF -> byte-identical no-op (one cheap read, nothing else)
+  if (!env.RESEND_KEY) return;   // HONEST: no mailer -> nothing sends (same posture as sendEmail / _runLifecycleEmails)
+  const HR = 3600000, DAY = 86400000;
+  const APP = env.APP_ORIGIN || 'https://atlasrental.io';
+  const _btn = function (label) { return '<p style="text-align:center;margin-top:22px"><a href="' + esc(APP + '/?manage=1') + '" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:10px">' + esc(label) + '</a></p>'; };
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS trial_drip_log (tenant_id TEXT NOT NULL, stage TEXT NOT NULL, sent_at INTEGER, PRIMARY KEY(tenant_id, stage))").run(); }
+  catch (e) { return; }   // dedup ledger, created ONLY when the drip is ON; no table -> no safe dedup -> do not send
+
+  // Comped owners (gold/free) are never billed, so never drip them. Fetch the (small) comp set once per run.
+  const _comped = {};
+  try { const _cg = ((await env.DB.prepare("SELECT email FROM comp_grants WHERE role IN ('gold','free','admin')").all()).results) || []; _cg.forEach(function (r) { if (r && r.email) _comped[String(r.email).toLowerCase()] = 1; }); } catch (e) {}
+  const _eligible = function (email) { var e = String(email || '').toLowerCase(); return !!e && !_isOwnerEmail(env, e) && !_comped[e]; };   // skip the platform owner's own tenant + any comped owner
+  const _count = async function (sql, tid) { try { return ((await env.DB.prepare(sql).bind(tid).first()) || {}).c || 0; } catch (e) { return 0; } };
+
+  // ===== STAGE 1 -- activation nudge (~1 day after signup, still trialing): add your first <asset> + publish the link =====
+  try {
+    const rows = ((await env.DB.prepare(
+      "SELECT t.id, t.name, t.fleet_type, (SELECT email FROM users WHERE tenant_id=t.id AND role='owner' LIMIT 1) email " +
+      "FROM tenants t WHERE t.deleted_at IS NULL AND t.plan='trial' AND t.created_at>=? AND t.created_at<? ORDER BY t.created_at ASC LIMIT 200"
+    ).bind(now - 44 * HR, now - 20 * HR).all()).results) || [];
+    for (const t of rows) {
+      try {
+        if (!_eligible(t.email)) continue;
+        if (!(await _dripClaim(env, t.id, 'activate'))) continue;   // claim-first (idempotent) -> at most once ever
+        const noun = _assetNoun(t.fleet_type);
+        await sendEmail(env, { to: t.email, fromName: 'Atlas Rental.io', transactional: true,
+          subject: 'Add your first ' + noun + ' and share your booking link',
+          html: _atlasEmailShell('<h2>Let us get you booking-ready</h2>'
+            + '<p>Welcome to Atlas Rental.io' + (t.name ? (', ' + esc(t.name)) : '') + '. You are one day into your free trial &mdash; here is the fastest path to your first paid booking:</p>'
+            + '<ol style="padding-left:18px;color:#33443c;font-size:14px;line-height:1.9;margin:8px 0">'
+            + '<li><b>Add your first ' + esc(noun) + '</b> with a photo and a rate.</li>'
+            + '<li><b>Publish your booking page</b> in one click from <b>Website</b>.</li>'
+            + '<li><b>Share your booking link</b> so customers can reserve and pay online.</li>'
+            + '</ol>'
+            + '<p style="color:#33443c;font-size:14px">Stuck on any step? Reply to this email and we will set it up with you.</p>'
+            + _btn('Add your first ' + noun) + _dripFooter(env)) });
+      } catch (e) { /* one tenant's failure must never affect the rest of the stage */ }
+    }
+  } catch (e) { /* stage 1 is best-effort */ }
+
+  // ===== STAGE 2 -- mid-trial value nudge (~2 days before trial_ends, still trialing): what you set up + one next step =====
+  try {
+    const rows = ((await env.DB.prepare(
+      "SELECT t.id, t.name, t.fleet_type, t.trial_ends, (SELECT email FROM users WHERE tenant_id=t.id AND role='owner' LIMIT 1) email " +
+      "FROM tenants t WHERE t.deleted_at IS NULL AND t.plan='trial' AND t.trial_ends>=? AND t.trial_ends<? ORDER BY t.trial_ends ASC LIMIT 200"
+    ).bind(now + 36 * HR, now + 60 * HR).all()).results) || [];
+    for (const t of rows) {
+      try {
+        if (!_eligible(t.email)) continue;
+        if (!(await _dripClaim(env, t.id, 'midtrial'))) continue;
+        const noun = _assetNoun(t.fleet_type);
+        const na = await _count('SELECT COUNT(*) c FROM assets WHERE tenant_id=?', t.id);   // real state -> honest, specific nudge
+        const nb = await _count('SELECT COUNT(*) c FROM bookings WHERE tenant_id=?', t.id);
+        const endStr = _dripDate(t.trial_ends);
+        var setup = (na > 0)
+          ? ('You have added <b>' + na + ' ' + esc(noun) + (na === 1 ? '' : 's') + '</b>' + (nb > 0 ? (' and taken <b>' + nb + ' booking' + (nb === 1 ? '' : 's') + '</b>') : '') + '. Great start.')
+          : ('You have not added a ' + esc(noun) + ' yet &mdash; that is the one step between you and your first booking.');
+        var nextStep = (na === 0)
+          ? ('<b>Add your first ' + esc(noun) + '</b> and publish your booking page &mdash; it takes about two minutes.')
+          : (nb === 0
+              ? ('<b>Share your booking link</b> (Website &rarr; Copy link) with a few past customers so your first online booking lands before your trial ends.')
+              : ('<b>Turn on a refundable deposit hold</b> in Money rules to protect every rental &mdash; $0 in fees until you capture it.'));
+        await sendEmail(env, { to: t.email, fromName: 'Atlas Rental.io', transactional: true,
+          subject: 'You have about 2 days left on your Atlas trial',
+          html: _atlasEmailShell('<h2>Make the most of your trial</h2>'
+            + '<p>' + setup + '</p>'
+            + '<p style="margin-top:14px;color:#33443c;font-size:14px"><b>One high-impact next step:</b><br>' + nextStep + '</p>'
+            + '<p style="color:#5c6f66;font-size:13px;margin-top:14px">Your free trial runs through <b>' + esc(endStr) + '</b>.</p>'
+            + _btn('Open my dashboard') + _dripFooter(env)) });
+      } catch (e) {}
+    }
+  } catch (e) { /* stage 2 is best-effort */ }
+
+  // ===== STAGE 3 -- "your trial ends tomorrow" (~24h before trial_ends, still trialing): honest charge + how to change/cancel =====
+  try {
+    const rows = ((await env.DB.prepare(
+      "SELECT t.id, t.name, t.tier, t.trial_ends, t.card_on_file, (SELECT email FROM users WHERE tenant_id=t.id AND role='owner' LIMIT 1) email " +
+      "FROM tenants t WHERE t.deleted_at IS NULL AND t.plan='trial' AND t.trial_ends>=? AND t.trial_ends<? ORDER BY t.trial_ends ASC LIMIT 200"
+    ).bind(now + 12 * HR, now + 36 * HR).all()).results) || [];
+    for (const t of rows) {
+      try {
+        if (!_eligible(t.email)) continue;
+        if (!(await _dripClaim(env, t.id, 'endsoon'))) continue;
+        const endStr = _dripDate(t.trial_ends);
+        const cents = PLAN_PRICE_CENTS[t.tier];   // REAL tier price in cents (undefined if the trial never picked a tier)
+        const planNm = _planLabel(t.tier || '');
+        var body;
+        if (t.card_on_file && cents) {
+          body = '<h2>Your trial ends tomorrow</h2>'
+            + '<p>Heads up &mdash; your Atlas Rental.io free trial ends on <b>' + esc(endStr) + '</b>. Your card on file will be charged <b>' + esc(money2(cents)) + '</b>' + (planNm ? (' for the <b>' + esc(planNm) + '</b> plan') : '') + ' that day, then monthly after that.</p>'
+            + '<p style="color:#33443c;font-size:14px">Happy with Atlas? There is nothing to do &mdash; your account keeps running without interruption. Need to switch plans or cancel instead? You can do either in under a minute before ' + esc(endStr) + ', no questions asked.</p>';
+        } else {
+          body = '<h2>Your trial ends tomorrow</h2>'
+            + '<p>Your Atlas Rental.io free trial ends on <b>' + esc(endStr) + '</b>. You do not have a card on file, so <b>nothing will be charged</b>.</p>'
+            + '<p style="color:#33443c;font-size:14px">To keep Atlas running for your business without interruption once the trial ends, add a plan' + (cents ? (' (' + esc(planNm) + ' is ' + esc(money2(cents)) + '/mo)') : '') + ' before ' + esc(endStr) + '. Not ready? No problem &mdash; you can come back and pick a plan any time.</p>';
+        }
+        await sendEmail(env, { to: t.email, fromName: 'Atlas Rental.io', transactional: true,
+          subject: 'Your Atlas Rental.io trial ends ' + endStr,
+          html: _atlasEmailShell(body + _btn(t.card_on_file && cents ? 'Manage or cancel' : 'Choose a plan') + _dripFooter(env)) });
+      } catch (e) {}
+    }
+  } catch (e) { /* stage 3 is best-effort */ }
+
+  // ===== STAGE 4 -- post-trial win-back (trial lapsed 1-5 days ago WITHOUT converting; plan still 'trial') =====
+  try {
+    const rows = ((await env.DB.prepare(
+      "SELECT t.id, t.name, t.fleet_type, t.tier, (SELECT email FROM users WHERE tenant_id=t.id AND role='owner' LIMIT 1) email " +
+      "FROM tenants t WHERE t.deleted_at IS NULL AND t.plan='trial' AND t.trial_ends>=? AND t.trial_ends<? ORDER BY t.trial_ends ASC LIMIT 200"
+    ).bind(now - 5 * DAY, now - 1 * DAY).all()).results) || [];
+    for (const t of rows) {
+      try {
+        if (!_eligible(t.email)) continue;
+        if (!(await _dripClaim(env, t.id, 'winback'))) continue;
+        const noun = _assetNoun(t.fleet_type);
+        const cents = PLAN_PRICE_CENTS[t.tier];
+        const planNm = _planLabel(t.tier || '');
+        await sendEmail(env, { to: t.email, fromName: 'Atlas Rental.io', transactional: true,
+          subject: 'Your Atlas trial ended -- want a hand getting set up?',
+          html: _atlasEmailShell('<h2>We would love to have you back</h2>'
+            + '<p>Your Atlas Rental.io free trial ended' + (t.name ? (', ' + esc(t.name)) : '') + ', and your account is right where you left it whenever you are ready. Most owners who almost gave up were one ' + esc(noun) + ' and one booking link away from their first online booking &mdash; and we are happy to set that up with you.</p>'
+            + '<ul style="padding-left:18px;color:#33443c;font-size:14px;line-height:1.8;margin:12px 0">'
+            + '<li>Reply to this email and we will build your booking page with you, live.</li>'
+            + '<li>Your data is exactly where you left it &mdash; nothing was deleted.</li>'
+            + '<li>Reactivate any time' + (cents ? (' from ' + esc(money2(cents)) + '/mo' + (planNm ? (' (' + esc(planNm) + ')') : '')) : '') + '; cancel just as easily.</li>'
+            + '</ul>'
+            + _btn('Pick up where I left off') + _dripFooter(env)) });
+      } catch (e) {}
+    }
+  } catch (e) { /* stage 4 is best-effort */ }
 }
 
 // Branded HTML email body (inline styles; renders in any inbox).
