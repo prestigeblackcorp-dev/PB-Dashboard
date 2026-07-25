@@ -1791,6 +1791,35 @@ const Atlas = (function(){
       if(navigator.sendBeacon) navigator.sendBeacon(ATLAS_API+'/api/visit-ping', new Blob([body],{type:'application/json'}));
       else { var img=new Image(); img.src=ATLAS_API+'/api/visit-ping?src=app&sid='+encodeURIComponent(vsid); }
     }catch(e){ /* best-effort only -- never throw from a tracking call */ } }
+  // #297 SIGNUP-FUNNEL instrumentation (first-party, no-cookie): a lightweight event at each of the six REAL
+  // steps of the trial funnel, so the founder can see WHERE people drop off (today only page-level visits +
+  // a top-line signup count exist). Reuses the EXACT visit-ping transport above -- same ATLAS_API base, same
+  // random localStorage vsid, same sendBeacon (with the Image() fallback) -- so it is public / pre-auth-safe
+  // (no cookie, no CSRF header) and fire-and-forget: a tracking failure NEVER blocks the UI. Each step is
+  // deduped per browser-tab session (in-memory + sessionStorage) so a re-render -- or the return trip through
+  // the Stripe redirect -- can never double-count. The worker stores only the step name in a daily bucket.
+  var _funnelSent={};
+  function _funnelEvent(step){ try{
+      if(!step || _funnelSent[step]) return;
+      var key='atlas_fn_'+step, dup=false;
+      try{ dup=!!sessionStorage.getItem(key); }catch(e){}
+      if(dup){ _funnelSent[step]=1; return; }
+      _funnelSent[step]=1; try{ sessionStorage.setItem(key,'1'); }catch(e){}
+      var vsid=_vpingId(); if(!vsid) return;
+      var body=JSON.stringify({src:'app',sid:vsid,step:step});
+      if(navigator.sendBeacon) navigator.sendBeacon(ATLAS_API+'/api/visit-ping', new Blob([body],{type:'application/json'}));
+      else { var img=new Image(); img.src=ATLAS_API+'/api/visit-ping?src=app&sid='+encodeURIComponent(vsid)+'&step='+encodeURIComponent(step); }
+    }catch(e){ /* best-effort only -- never throw from a tracking call */ } }
+  // Platform Google Ads / GA4 conversion, DORMANT by default. ATLAS_CONV_ID is EMPTY (never a hard-coded id):
+  // the founder sets it to their OWN 'AW-XXXXXXX/label' (Ads) or 'G-XXXXXXX' (GA4) AND loads gtag.js to enable
+  // it. With no id set (or no gtag present) this is a pure no-op -- it stays OFF until the founder turns it on.
+  var ATLAS_CONV_ID='';
+  function _funnelConversion(){ try{
+      var id=ATLAS_CONV_ID || (typeof window!=='undefined' && window.ATLAS_CONV_ID) || '';
+      if(!id) return;                                                   // dormant: no owner-set id -> do nothing
+      if(typeof window==='undefined' || typeof window.gtag!=='function') return;   // requires the gtag loader too
+      window.gtag('event','conversion',{send_to:id});
+    }catch(e){ /* a conversion tag must never throw */ } }
   document.addEventListener('DOMContentLoaded',function(){ try{
       _vping();
       setInterval(function(){ try{ if(!document.hidden) _vping(); }catch(e){} }, 60000);   // heartbeat while the tab is visible, so "active now" ages out naturally when a visitor leaves/hides the tab
@@ -2747,9 +2776,10 @@ const Atlas = (function(){
   function _mfaTdKey(email){ return 'atlas_td_'+_emailKey(email); }
   function _mfaDeviceToken(email){ try{ var v=JSON.parse(localStorage.getItem(_mfaTdKey(email))||'null'); if(v&&v.token&&v.exp>Date.now()) return v.token; }catch(e){} return undefined; }
   function _mfaSaveDeviceToken(email,token){ try{ if(!token) return; var parts=String(token).split('.'); var exp=parseInt(parts[1],10)||(Date.now()+2592000000); localStorage.setItem(_mfaTdKey(email), JSON.stringify({token:token,exp:exp})); }catch(e){} }
-  function goAuth(mode){ try{ _demoTeardown(); }catch(e){} _authMode=(mode==='login')?'login':'signup'; renderAuth(); show('auth'); var e=document.getElementById('authEmail'); if(e) setTimeout(function(){e.focus();},60); }
+  function goAuth(mode){ try{ _demoTeardown(); }catch(e){} if(mode!=='login') _funnelEvent('cta_click');   /* #297 funnel: a landing "Start free trial" CTA (every one routes here) */ _authMode=(mode==='login')?'login':'signup'; renderAuth(); show('auth'); var e=document.getElementById('authEmail'); if(e) setTimeout(function(){e.focus();},60); }
   function _demoTeardown(){ if(_demo){ _demo.on=false; clearTimeout(_demo.timer); } var c=document.getElementById('dcoach'); if(c) c.classList.remove('on'); var x=document.getElementById('demoExit'); if(x) x.classList.remove('on'); }
   function renderAuth(){
+    if(_authMode==='signup') _funnelEvent('signup_open');   /* #297 funnel: the auth screen shown in signup mode */
     var _ef=document.getElementById('authEmailField');
     if(_authMode==='invite'){
       document.getElementById('authTitle').textContent='Set your password';
@@ -2848,6 +2878,7 @@ const Atlas = (function(){
   async function _afterAuthSuccess(email, r){
     S=load();
     if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
+    if(_authMode==='signup') _funnelEvent('signup_submit');   // #297 funnel: account created (this path only runs once the server confirms a real session)
     if(ATLAS_BACKEND && (r.verify==='sent' || r.verified===0)){ showVerifyGate(email); return; }       // email confirmation gate: hold the account until the link is clicked (if the mailer is off the server auto-verifies -> this is skipped)
     if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){
       // NEW funnel: a fresh signup that needs a card picks a PLAN FIRST (the plan picker collects the card via checkout).
@@ -3033,6 +3064,7 @@ const Atlas = (function(){
   }
   function _hideSignupPlans(){ var e=document.getElementById('planGate'); if(e) e.classList.remove('on'); }
   function _signupPickPlan(tierId){ var t=_tier(tierId); if(!t) return;
+    _funnelEvent('plan_selected');   // #297 funnel: a plan was picked in the signup plan gate
     if(S){ S.tier=t.id; S.chosenPlan=t.id; save(); }   // #291: carry the chosen plan across the Stripe redirect (localStorage) AND remember it as their explicit pick
     if(ATLAS_BACKEND && _apiCsrf){ _api('/api/tenant/profile',{method:'PUT',body:{settings:{chosenPlan:t.id}}}).catch(function(){}); }   // #291: persist the pick server-side immediately (not only via the debounced sync) so ANY device / device type brings them back to it
     _hideSignupPlans();
@@ -8188,7 +8220,7 @@ const Atlas = (function(){
     var body={kind:kind}; for(var k in (params||{})) body[k]=params[k];
     toast('Opening secure checkout...');
     _api('/api/billing/checkout',{method:'POST',body:body}).then(function(res){
-      if(res.status>=200&&res.status<300&&res.json&&res.json.url){ window.location.href=res.json.url; }
+      if(res.status>=200&&res.status<300&&res.json&&res.json.url){ if(kind==='trial') _funnelEvent('checkout_open');   /* #297 funnel: Stripe trial checkout actually opened (sendBeacon survives the redirect) */ window.location.href=res.json.url; }
       else { toast((res.json&&res.json.error)||'Could not start checkout - please try again'); }
     }).catch(function(){ toast('Network error starting checkout'); }); }
   // On return from Stripe Checkout (Stripe only redirects here AFTER a completed payment), reflect the purchase locally; the webhook is the server-authoritative record.
@@ -8200,7 +8232,7 @@ const Atlas = (function(){
     if(!(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND)){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); _postVerifyProceed(); }catch(e){} return; }   // truly offline/demo (no backend) -> local trial
     if(!_apiCsrf){ if(tries<14){ setTimeout(function(){ _confirmTrialReturn(sid, tries+1); }, 1500); } else { try{ toast('We could not confirm your card yet -- please add a card to start your trial.'); showPaywall('needs_card'); }catch(e){} } return; }   // GATE-FIX2: on a fresh boot after the Stripe redirect, /api/auth/me is still restoring _apiCsrf (set async at boot). WAIT for it -- never fall back to a local-only trial the server will re-gate -- then confirm with the server.
     if(tries===0){ try{ toast('Confirming your card...'); }catch(e){} }
-    var _done=function(){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); renderTrialBox(); renderSet(); buildAio(); }catch(e){} try{ _postVerifyProceed(); }catch(e){} try{ toast('Your free trial is active -- card saved, no charge today.'); }catch(e){} };
+    var _done=function(){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); renderTrialBox(); renderSet(); buildAio(); }catch(e){} try{ _postVerifyProceed(); }catch(e){} try{ _funnelEvent('trial_started'); _funnelConversion(); }catch(e){}   /* #297 funnel: trial started -- the server confirmed the card + the gate cleared; also fire the dormant conversion tag */ try{ toast('Your free trial is active -- card saved, no charge today.'); }catch(e){} };
     var _wait=function(){ if(tries<14){ setTimeout(function(){ _confirmTrialReturn(sid, tries+1); }, 2200); } else { try{ toast('We could not confirm your card yet -- please add a card to start your trial.'); showPaywall('needs_card'); }catch(e){} } };
     var p = sid ? _api('/api/billing/confirm-session',{method:'POST',body:{session_id:sid,kind:'trial'}})
                 : _api('/api/auth/me',{method:'GET'});

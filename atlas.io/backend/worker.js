@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25c';
+const ATLAS_BUILD = '2026.07.25d';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1145,7 +1145,12 @@ async function _hqGrowthData(env, range) {
   let fleet = []; try { fleet = ((await env.DB.prepare("SELECT COALESCE(fleet_type,'other') ft, COUNT(*) c FROM tenants WHERE deleted_at IS NULL GROUP BY fleet_type ORDER BY c DESC").all()).results) || []; } catch (e) {}
   let geo = []; try { geo = (((await env.DB.prepare('SELECT country, COALESCE(SUM(views),0) v FROM visit_geo WHERE day>=? AND day<=? GROUP BY country ORDER BY v DESC LIMIT 12').bind(range.startDay, range.endDay).all()).results) || []).filter(function (r) { return r.country && r.country !== 'XX'; }); } catch (e) {}
   let members = { total: 0, paid: 0, trials: 0 }; try { const m = (await env.DB.prepare('SELECT plan, stripe_sub FROM tenants WHERE deleted_at IS NULL').all()).results || []; m.forEach(function (t) { members.total++; if (t.plan === 'active' && t.stripe_sub) members.paid++; else if (t.plan !== 'active') members.trials++; }); } catch (e) {}
-  return { range: { key: range.key, label: range.label }, series: series, totals: totals, fleet_mix: fleet, geo: geo, members: members };
+  // #297 Signup-funnel per-step counts over the window (from funnel_events, written by /api/visit-ping). Ordered top of
+  // funnel -> trial so the master dash can show step-to-step drop-off. Defaults all-zero + own try/catch, so this is
+  // safe from day one (empty table -> zeros) and never affects the visits/signups/revenue substrate above.
+  let funnel = { cta_click: 0, signup_open: 0, signup_submit: 0, plan_selected: 0, checkout_open: 0, trial_started: 0 };
+  try { const fr = (await env.DB.prepare('SELECT step, COALESCE(SUM(count),0) c FROM funnel_events WHERE day>=? AND day<=? GROUP BY step').bind(range.startDay, range.endDay).all()).results || []; fr.forEach(function (r) { if (Object.prototype.hasOwnProperty.call(funnel, r.step)) funnel[r.step] = r.c || 0; }); } catch (e) {}
+  return { range: { key: range.key, label: range.label }, series: series, totals: totals, fleet_mix: fleet, geo: geo, members: members, funnel: funnel };
 }
 
 // The REAL "dreaming": deterministic per-tenant findings from the tenant's OWN D1 data. No invention, no LLM cost.
@@ -2351,6 +2356,11 @@ async function ensurePlatformSchema(env) {
   // the table stays tiny and each view is a single cheap upsert -- no third-party analytics, no cookies, no PII.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS page_views (tenant_id TEXT, day TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, day))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_pv_day ON page_views(day)").run(); } catch (e) {}
+  // #297 Signup-funnel step counter: one row per (UTC day, funnel step) with a single cheap upsert per event -- same
+  // tiny daily-bucket convention as page_views above. Written by /api/visit-ping when a valid `step` field is present;
+  // read per-step over a date range by _hqGrowthData for the master-dashboard drop-off view. No sid, no path, no PII.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS funnel_events (day TEXT, step TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(day, step))").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_fe_day ON funnel_events(day)").run(); } catch (e) {}
   // Atlas Counsel institutional memory: an append-only, dated, ranked feed of "what deserves attention". Written nightly by the
   // cron (deterministic scoring from real data; AI adds a narrative when a key is set). status: new|done|dismissed (the feedback loop) | brief.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS counsel_journal (id TEXT PRIMARY KEY, day TEXT, layer TEXT, kind TEXT, tenant_id TEXT, title TEXT, body_md TEXT, data_json TEXT, severity TEXT, impact_score INTEGER DEFAULT 0, action TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run(); } catch (e) {}
@@ -3684,16 +3694,32 @@ function doReset(){
       if (path === '/api/visit-ping' && (method === 'POST' || method === 'GET')) {
         try {
           const vip = req.headers.get('CF-Connecting-IP') || 'x';
-          let vsrc = '', vsid = '';
+          let vsrc = '', vsid = '', vstep = '';
           if (method === 'GET') {
             vsrc = String(url.searchParams.get('src') || '');
             vsid = String(url.searchParams.get('sid') || '');
+            vstep = String(url.searchParams.get('step') || '');
           } else {
             const vb = await req.json().catch(function () { return {}; });
-            vsrc = String((vb && vb.src) || ''); vsid = String((vb && vb.sid) || '');
+            vsrc = String((vb && vb.src) || ''); vsid = String((vb && vb.sid) || ''); vstep = String((vb && vb.step) || '');
           }
           vsrc = (vsrc === 'site' || vsrc === 'app') ? vsrc : '';           // allow-list: anything else is silently ignored
           vsid = vsid.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);          // bound + sanitize the client id (belt-and-suspenders; binds below are already parameterized)
+          vstep = vstep.toLowerCase().replace(/[^a-z_]/g, '').slice(0, 24); // #297: optional signup-funnel step; sanitized here + allow-listed just below
+          // #297 FUNNEL EVENT: a valid signup-funnel step is a user ACTION, recorded in its own tiny daily bucket and
+          // handled HERE so it never falls through to the page_views/active_now writes below -- the visitor is already
+          // counted by the on-load ping + the 60s heartbeat, so counting a funnel event as another "visit" would
+          // inflate the visits KPI. Reuses the SAME rate-limit bucket + waitUntil/best-effort posture as the ping.
+          const _FUNNEL_STEPS = { cta_click: 1, signup_open: 1, signup_submit: 1, plan_selected: 1, checkout_open: 1, trial_started: 1 };
+          if (vsid && vstep && _FUNNEL_STEPS[vstep] && await rateLimit(env, 'vping:' + vip, 6, 10000)) {   // note: for a normal (stepless) ping, `vstep && ...` short-circuits BEFORE rateLimit, so the heartbeat path is unchanged
+            await ensurePlatformSchema(env);
+            const fday = new Date(Date.now()).toISOString().slice(0, 10);
+            const fpp = (async function () {
+              try { await env.DB.prepare("INSERT INTO funnel_events (day,step,count) VALUES (?,?,1) ON CONFLICT(day,step) DO UPDATE SET count=count+1").bind(fday, vstep).run(); } catch (e) { /* best-effort analytics write; never surfaces */ }
+            })();
+            if (_ectx && _ectx.waitUntil) _ectx.waitUntil(fpp); else fpp.catch(function () {});
+            return new Response(null, { status: 204 });
+          }
           if (vsrc && vsid && await rateLimit(env, 'vping:' + vip, 6, 10000)) {   // ~1/10s per IP, generous for the 60s heartbeat; over the limit -> just skip the write, still 204 below
             await ensurePlatformSchema(env);   // idempotent no-op once warm; guarantees active_now exists even on a cold isolate right after this ships
             const vtid = '_' + vsrc;   // '_site' | '_app'
