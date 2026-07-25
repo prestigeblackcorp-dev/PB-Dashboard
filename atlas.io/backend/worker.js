@@ -3897,7 +3897,14 @@ function doReset(){
             if (amt > 0 && md.booking && md.tenant && _rfTxn && _rfTxn.new) {   // Payments P3: gate on the refund txn's OWN dedup (.new) so a REPLAYED charge.refunded never double-subtracts revenue_cents (the decrement is not idempotent on its own). Same guard as the credit-note receipt above.
               try {
                 const _brb = await env.DB.prepare('SELECT revenue_cents,data FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
-                if (_brb) { const _bd = jparse(_brb.data, {}); _bd._t = Date.now(); const _newRev = Math.max(0, (Number(_brb.revenue_cents) || 0) - Math.abs(amt)); await env.DB.prepare('UPDATE bookings SET revenue_cents=?, data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(_newRev, JSON.stringify(_bd), Date.now(), md.booking, md.tenant).run(); }
+                if (_brb) { const _bd = jparse(_brb.data, {}); _bd.refundIds = Array.isArray(_bd.refundIds) ? _bd.refundIds : [];
+                  // P1-REGRESSION FIX: the in-app /pay/refund + /cancel paths ALREADY recompute revenue_cents ABSOLUTELY and stamp this Stripe refund id into d.refundIds. If it's there, this webhook must NOT decrement again (that double-subtracted -- a cancel-keep-fee wiped the kept fee to $0). Only a DIRECT-in-Stripe refund (id never seen in-app) actually needs the decrement here.
+                  if (!(rf && rf.id && _bd.refundIds.indexOf(rf.id) >= 0)) {
+                    if (rf && rf.id) _bd.refundIds.push(rf.id);
+                    _bd._t = Date.now(); const _newRev = Math.max(0, (Number(_brb.revenue_cents) || 0) - Math.abs(amt));
+                    await env.DB.prepare('UPDATE bookings SET revenue_cents=?, data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(_newRev, JSON.stringify(_bd), Date.now(), md.booking, md.tenant).run();
+                  }
+                }
               } catch (e) {}
             }
           } else if (T === 'invoice.payment_failed') {
@@ -6149,7 +6156,7 @@ function doReset(){
         let r2;
         if (op === 'capture') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/capture', (vInt(body.amountCents) && body.amountCents > 0) ? { amount_to_capture: body.amountCents } : {}); if (r2.ok) { p.captured = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; delete p.hold; } }
         else if (op === 'release') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/cancel', {}); if (r2.ok) { p.released = { at: Date.now() }; delete p.hold; } }
-        else { const rp = { payment_intent: p.pi }; if (vInt(body.amountCents) && body.amountCents > 0) rp.amount = body.amountCents; r2 = await stripePost(sk, '/refunds', rp); if (r2.ok) { p.refunded = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; } }
+        else { const rp = { payment_intent: p.pi }; if (vInt(body.amountCents) && body.amountCents > 0) rp.amount = body.amountCents; r2 = await stripePost(sk, '/refunds', rp); if (r2.ok) { p.refunded = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; if (r2.obj && r2.obj.id) { d.refundIds = d.refundIds || []; d.refundIds.push(r2.obj.id); } } }   // P1-regression: stamp the Stripe refund id so the charge.refunded webhook (which now resolves the booking after P1) does NOT re-decrement revenue_cents -- this path already recomputed it absolutely below
         if (!r2.ok) return json({ ok: false, reason: r2.reason });
         // CORE-LOOP: bump d._t so the capture/release/refund propagates to the owner's dashboard + other devices (the client
         // merges newest-wins on data._t), and net refunds out of revenue_cents so a refunded booking stops counting as revenue.
@@ -6196,7 +6203,7 @@ function doReset(){
           const caps = []; for (const k in d.paid) { const p = d.paid[k]; if (p && p.pi && !p.hold && k !== 'security' && !p.refunded) caps.push(p); }
           let captured = 0; caps.forEach(function (p) { captured += (Number(p.amountCents) || 0); });
           let toRefund = Math.max(0, captured - keepCents);   // keep the policy fee, refund the rest of what was actually captured
-          for (const p of caps) { if (toRefund <= 0) break; const amt = Math.min(Number(p.amountCents) || 0, toRefund); if (amt <= 0) continue; const rr = await stripePost(sk, '/refunds', { payment_intent: p.pi, amount: amt }); if (rr.ok) { p.refunded = { at: Date.now(), amountCents: amt }; refundedCents += amt; toRefund -= amt; } }
+          for (const p of caps) { if (toRefund <= 0) break; const amt = Math.min(Number(p.amountCents) || 0, toRefund); if (amt <= 0) continue; const rr = await stripePost(sk, '/refunds', { payment_intent: p.pi, amount: amt }); if (rr.ok) { p.refunded = { at: Date.now(), amountCents: amt }; refundedCents += amt; toRefund -= amt; if (rr.obj && rr.obj.id) { d.refundIds = d.refundIds || []; d.refundIds.push(rr.obj.id); } } }   // P1-regression: stamp refund ids so charge.refunded webhook won't re-decrement (this sets revenue_cents=keepCents absolutely below)
           const sec = d.paid.security; if (sec && sec.pi && sec.hold) { const rc = await stripePost(sk, '/payment_intents/' + sec.pi + '/cancel', {}); if (rc.ok) { sec.released = { at: Date.now() }; delete sec.hold; released = true; } }   // release the refundable-deposit hold on cancel
         }
         d.status = 'Cancelled'; d.cancelledAt = Date.now(); d.cancelFee = keepCents / 100; d._t = Date.now();
@@ -6642,7 +6649,7 @@ function doReset(){
       //      one-tap unsubscribe (CAN-SPAM) via sendEmail(tenant set). Owner/manager only; deduped, validated, capped. ----
       if (path === '/api/outreach/send' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
-        if (!_can(ctx, 'settings')) return err(403, 'Marketing permission required.');
+        if (!_can(ctx, 'settings') && !_can(ctx, 'customersEdit')) return err(403, 'Marketing permission required.');   // align with the client: a customersEdit role can email a customer (the "Email this customer" action) -- not only a settings/marketing role. Still fail-closed for view-only/desk.
         if (!env.RESEND_KEY) return err(503, 'Email sending is not set up yet.');
         if (!await rateLimit(env, 'outreach:' + ctx.tenant_id, 12, 3600000)) return err(429, 'You have sent a lot of campaigns this hour - please wait a bit.');
         const b = await req.json().catch(() => ({}));
@@ -7333,7 +7340,7 @@ function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset'
 /* AUTO long-term discount -- mirror the worker's priceQuote so the estimate the customer sees equals the amount charged. */
 var rm=C.rateModel||'day';var wkP=(rm==='hour'?168:rm==='week'?2:rm==='month'?999999:7),moP=(rm==='hour'?672:rm==='week'?4:rm==='month'?12:28);var ex=_exCost(p),gA=g+ex;var ad=0;if(C.monthlyDisc&&p>=moP)ad=gA*C.monthlyDisc/100;else if(C.weeklyDisc&&p>=wkP)ad=gA*C.weeklyDisc/100;ad=Math.max(0,Math.min(ad,gA));var afterAuto=gA-ad;
 /* promo -- applied on the post-auto subtotal, same order as the worker. */
-var pd=0;if(_promo&&!(_promo.minDays&&p<_promo.minDays)){pd=_promo.type==='pct'?afterAuto*_promo.value/100:_promo.value;pd=Math.max(0,Math.min(afterAuto,pd))}var sub=afterAuto-pd;
+var pd=0;if(_promo&&!(_promo.minDays&&p<_promo.minDays)){pd=_promo.type==='pct'?afterAuto*_promo.value/100:_promo.value;pd=Math.max(0,Math.min(afterAuto,pd))}var sub=Math.round((afterAuto-pd)*100)/100;
 /* owner fees (money rules) on the discounted subtotal -- mirror _reprice. */
 var fees=0,taxableFees=0,feeRows='';(C.rules||[]).forEach(function(r){if(!r)return;var amt=(r.kind==='percent'?sub*(Number(r.value)||0)/100:(Number(r.value)||0));if(amt<=0)return;fees+=amt;if(r.taxable)taxableFees+=amt;feeRows+='<div class=row><span>'+esc(r.name||'Fee')+'</span><span>'+money(amt*100)+'</span></div>';});
 var t=(sub+taxableFees)*(C.tax||0)/100;var total=sub+fees+t;
