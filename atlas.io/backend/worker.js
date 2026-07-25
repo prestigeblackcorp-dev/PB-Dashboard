@@ -2270,6 +2270,10 @@ async function ensurePlatformSchema(env) {
     // retry POSTs a byte-identical, identically-signed payload (the receiver can dedup on X-Atlas-Delivery). Additive.
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS webhook_deliveries (id TEXT PRIMARY KEY, endpoint_id TEXT, tenant_id TEXT, event TEXT, body TEXT, attempts INTEGER DEFAULT 1, next_at INTEGER, status TEXT DEFAULT 'pending', last_status INTEGER, last_error TEXT, created_at INTEGER, updated_at INTEGER)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_whdeliv_due ON webhook_deliveries(status, next_at)").run();
+    // Atlas-level pre-launch waitlist / lead capture (public POST /api/lead). PLATFORM-scoped, NOT tenant data.
+    // email is UNIQUE so a repeat submit soft-dedupes via INSERT OR IGNORE (an idempotent no-op, never a spam row).
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS leads (id TEXT PRIMARY KEY, email TEXT UNIQUE, note TEXT, source TEXT, ip TEXT, created_at INTEGER)").run();
+    await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at)").run();
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
@@ -2755,6 +2759,20 @@ async function _cardGateStateForTenant(env, tenantId, email) {
     return _cardGateState(t, isOwner, comp);
   } catch (e) { return 'ok'; }
 }
+// LOOP-FIX (2026-07-25) + the owner's live/paid guarantee: the SINGLE source of truth for whether the trial CARD gate is
+// active. The per-request gate AND every billing_state computation (signup/login/mfa/verify-status/auth-me) MUST use THIS
+// identical expression. They diverged before -- the request gate used (_liveModeE || flag) while the auth handlers used the
+// flag ALONE -- so in LIVE mode /api/auth/me (an always-open route) reported 'ok' while protected routes 402'd needs_card:
+// the client cleared the paywall, hit a 402 on the next call, re-showed it, rechecked 'ok', and looped forever (onboard<->
+// gate). Now both sides compute identically, in EVERY mode/plan, so they can never oscillate. Live Stripe mode forces it ON
+// (no trial without a real card); the manual trial_requires_card flag also forces it ON so the gate is rehearsable in TEST.
+// Fails OPEN (no gate) on a config hiccup so a signup is never wrongly bricked.
+async function _cardGateOn(env) {
+  try {
+    const live = ((await _pcfgGet(env, 'payments_test_mode', '0')) !== '1') && !!env.PLATFORM_STRIPE_KEY;
+    return live || ((await _pcfgGet(env, 'trial_requires_card', '0')) === '1');
+  } catch (e) { return false; }
+}
 // ---- #278 FEATURE-LEVEL PAYMENT GATING (flag-gated OFF by default via platform_config.feature_gate_enabled) ----
 // The AI website builder (hosted site) + custom domains: building/editing/previewing stays FREE on every plan;
 // only PUBLISHING (going/staying live) and connecting a custom domain require entitlement. Mirrors WEBSITE_TIERS
@@ -2999,6 +3017,22 @@ export default {
       return new Response(_pageDoc(_lg.title, '#1E6E4E', _lg.body, ''), { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
     }
 
+    // Public SEO surface (no auth, never gated) -- served alongside the legal pages above, BEFORE the ban-check and
+    // every auth gate, so crawlers can always reach them. On-page SEO already ships in _bookHeadTags; robots.txt +
+    // sitemap.xml just let Google discover and index Atlas's own public marketing URLs. Static, cached an hour.
+    if (method === 'GET' && path === '/robots.txt') {
+      const _rb = 'User-agent: *\nAllow: /\n\nSitemap: https://atlasrental.io/sitemap.xml\n';
+      return new Response(_rb, { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
+    }
+    if (method === 'GET' && path === '/sitemap.xml') {
+      // Atlas's own public marketing pages (the worker-rendered legal pages + the static landing root). Tenant booking
+      // pages / customer portals are intentionally excluded here (they are per-tenant + often noindex/token-gated).
+      const _urls = ['https://atlasrental.io/', 'https://atlasrental.io/terms', 'https://atlasrental.io/privacy'];
+      const _sx = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + _urls.map(function (u) { return '  <url><loc>' + u + '</loc></url>'; }).join('\n') + '\n</urlset>\n';
+      return new Response(_sx, { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
+    }
+
     const resp = await (async () => {
     try {
       // ---- HIDDEN OWNER ENTRY: an unlinked sign-in door at a secret path (env.OWNER_ENTRY_PATH), served BEFORE the
@@ -3074,7 +3108,7 @@ export default {
               if (await _siteTakenDown(env, cd)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
               // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
               const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
-              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname), pr), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
             }
           }
         } catch (e) { /* fall through to normal routing */ }
@@ -3108,6 +3142,30 @@ export default {
         h.ok = h.db_bound && h.schema_loaded && h.secrets.SESSION_KEY && h.secrets.ENC_KEY && h.secrets.OWNER_EMAIL;   // UNCHANGED -- status.html + smoke.mjs assert on this; cron_fresh/mailer are separate, additive fields
         if (url.searchParams.get('strict') === '1') h.ok_strict = h.ok && h.cron_fresh && h.mailer;   // #253 B1-L2 optional: a stricter combined signal for an owner who wants ONE keyword covering everything; never overloads `ok` itself
         return json(h);
+      }
+
+      // ---- Atlas-level LEAD CAPTURE (public, NO session): recovers not-ready visitors into a pre-launch waitlist.
+      // Platform-scoped (not tenant-scoped). Public but abuse-hardened: email-validated + rate-limited per IP (5/hr),
+      // soft-deduped on a UNIQUE email so repeat submits are idempotent, and the owner is notified via the SAME
+      // owner-notify path the rest of the platform uses (_alert -> platform_alerts feed + a rate-limited owner email).
+      if (path === '/api/lead' && method === 'POST') {
+        const _lip = req.headers.get('CF-Connecting-IP') || '';
+        if (!await rateLimit(env, 'lead:' + (_lip || 'x'), 5, 3600000)) return err(429, 'Too many requests. Please try again later.');
+        const _lb = await req.json().catch(function () { return {}; });
+        const _lemail = String((_lb && _lb.email) || '').trim().toLowerCase();
+        if (!vEmail(_lemail)) return err(400, 'Please enter a valid email address.');
+        const _lnote = String((_lb && _lb.note) || '').slice(0, 1000);
+        const _lsource = String((_lb && _lb.source) || '').slice(0, 80);
+        try {
+          await ensurePlatformSchema(env);
+          await env.DB.prepare('INSERT OR IGNORE INTO leads (id,email,note,source,ip,created_at) VALUES (?,?,?,?,?,?)')
+            .bind('lead' + randId(14), _lemail, _lnote, _lsource, _lip, Date.now()).run();
+        } catch (e) { /* storage is best-effort -- never fail the visitor's submit on a transient DB error */ }
+        // Owner notification: REUSE the platform owner-notify path (_alert). Own 'lead' category -> its own rate-limit
+        // bucket + defaults-ON, so lead emails never share throttling with feature/ticket alerts; every lead still
+        // lands in the HQ Alerts feed even when the 1-email/10min throttle suppresses the email itself.
+        _alert(env, _ectx, { category: 'lead', severity: 'info', title: 'New Atlas lead: ' + _lemail, body: 'A visitor joined the Atlas waitlist' + (_lsource ? (' from ' + _lsource) : '') + '.' + (_lnote ? ('\n\nNote: ' + _lnote) : ''), meta: { email: _lemail, source: _lsource, ip: _lip } });
+        return json({ ok: true });
       }
 
       // ===== Developer API v1 =====================================================================
@@ -3196,7 +3254,7 @@ export default {
         // (never overrides an existing #276 lock reason) and only when this separate flag is on. A brand-new
         // signup has no card yet, so with the flag ON this reads 'needs_card' here -- expected: this IS the
         // funnel point that routes a fresh signup to the card gate instead of straight into onboarding.
-        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, tid, user.email); }
+        if (_bState === 'ok' && (await _cardGateOn(env))) { _bState = await _cardGateStateForTenant(env, tid, user.email); }
         return json({ ok: true, csrf: sess.csrf, tenant_id: tid, trial_ends: now + 7 * 24 * 3600 * 1000, ip: (req.headers.get('CF-Connecting-IP') || ''), verify: (_vSent ? 'sent' : 'skipped'), verified: (_vSent ? 0 : 1), billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
@@ -3248,7 +3306,7 @@ export default {
         let _bState = 'ok'; if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, user.tenant_id, user.email); }
         // #280: same independent card-required-for-trial layer as signup above -- only when #276 reads 'ok' and
         // only when this separate flag is on (see _cardGateState).
-        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, user.tenant_id, user.email); }
+        if (_bState === 'ok' && (await _cardGateOn(env))) { _bState = await _cardGateStateForTenant(env, user.tenant_id, user.email); }
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
@@ -3361,7 +3419,7 @@ function doReset(){
         // #280: same independent card-required-for-trial layer as signup/login above -- only when #276 reads 'ok'
         // and only when this separate flag is on (see _cardGateState). Lets an MFA-enabled account get routed to
         // the card gate right on auth too, not only after its first subsequent API call 402s.
-        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, user.tenant_id, user.email); }
+        if (_bState === 'ok' && (await _cardGateOn(env))) { _bState = await _cardGateStateForTenant(env, user.tenant_id, user.email); }
         return json({ ok: true, csrf: sess.csrf, tenant_id: user.tenant_id, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: (user.email_verified == null ? 1 : (user.email_verified ? 1 : 0)), trusted_device: deviceToken, billing_state: _bState }, 200, { 'Set-Cookie': sessionCookie(sess.id) });
       }
 
@@ -5435,7 +5493,7 @@ function doReset(){
         if (await _siteTakenDown(env, tr)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
         // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
         const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
-        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname), pr), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend|prefs))?$/);
       if (ptp) {
@@ -5707,8 +5765,7 @@ function doReset(){
       // Live mode = NOT in test mode AND a real platform Stripe key is actually configured. The PLATFORM_STRIPE_KEY
       // guard means we never demand a card for a trial we cannot even charge (a mis-/un-configured platform, or the
       // test harness) -- so this only bites once the owner is genuinely live. Mirrors _platStripe's own key selection.
-      const _liveModeE = ((await _pcfgGet(env, 'payments_test_mode', '0')) !== '1') && !!env.PLATFORM_STRIPE_KEY;
-      const cardGateOn = _liveModeE || ((await _pcfgGet(env, 'trial_requires_card', '0')) === '1');
+      const cardGateOn = await _cardGateOn(env);   // SINGLE source of truth (identical to every auth billing_state below) -> the request gate and /api/auth/me can never disagree and oscillate the client paywall
       if (cardGateOn && !_PAYMENT_OPEN.test(path)) {
         const _cs = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email);
         if (_cs !== 'ok') {
@@ -5726,7 +5783,7 @@ function doReset(){
         // and only when this separate flag is on. This is also the endpoint _paywallMaybeRecheck polls on
         // window-focus, so a card that just landed (Stripe webhook fired) clears the client's card gate the
         // moment this flips back to 'ok'.
-        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email); }
+        if (_bState === 'ok' && (await _cardGateOn(env))) { _bState = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email); }
         // #278: an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- only ENFORCEMENT (the 402s
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
@@ -5953,7 +6010,7 @@ function doReset(){
         // otherwise (an added field, never a removed/renamed one).
         let _bState = 'ok';
         if ((await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1') { _bState = await _billingStateForTenant(env, ctx.tenant_id, ctx.user.email); }
-        if (_bState === 'ok' && (await _pcfgGet(env, 'trial_requires_card', '0')) === '1') { _bState = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email); }
+        if (_bState === 'ok' && (await _cardGateOn(env))) { _bState = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email); }
         return json({ ok: true, verified: vv, billing_state: _bState });
       }
       if (path === '/api/auth/resend-verify' && method === 'POST') {
@@ -7580,8 +7637,14 @@ function _bookHeadTags(prof, canonicalUrl) {
   return { title: title, head: head, noscript: noscript };
 }
 // Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
-function _bookPageHtml(slug, color, seo) {
-  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + ((seo && seo.noscript) || '') + '<div id="app" class="card">Loading&hellip;</div>';
+function _bookPageHtml(slug, color, seo, prof) {
+  // Growth badge -- "Powered by Atlas Rental.io" on every public tenant booking page (the #1 free-impression lever:
+  // each tenant's booking visitors become Atlas impressions). Shown BY DEFAULT; hidden ONLY when the tenant opted
+  // out via prof.settings.hideAtlasBadge -- the future paid "remove branding" upsell hook. Tiny, muted, centered,
+  // inline-styled, no script, opens in a new tab -> never disrupts the tenant's own branding/layout/CSP. A missing
+  // prof (e.g. a future caller) also shows the badge, so the default is fail-toward-showing.
+  var _atlasBadge = (prof && prof.settings && prof.settings.hideAtlasBadge) ? '' : '<div style="text-align:center;margin:28px 0 4px;font-size:11px;line-height:1.4"><a href="https://atlasrental.io/?ref=poweredby" target="_blank" rel="noopener" style="color:#9aa0a6;text-decoration:none">Powered by Atlas Rental.io</a></div>';
+  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + ((seo && seo.noscript) || '') + '<div id="app" class="card">Loading&hellip;</div>' + _atlasBadge;
   var js = `
 var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
