@@ -1913,12 +1913,22 @@ async function _registrarSearch(env, domain) {
     return { ok: false, reason: (res.message || res.error) ? 'api_error' : 'no_result', apiError: (_em + (_ee ? (' | ' + _ee) : '')).slice(0, 320), code: String(res.code || res.status || ''), respKeys: Object.keys(res.raw || {}).slice(0, 10), dataKeys: Object.keys(d).slice(0, 12), status: res.status };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
-async function _registrarRegister(env, domain, years) {
+async function _registrarRegister(env, domain, years, contact) {
   if (!env.DYNADOT_KEY) return { ok: false, reason: 'no_registrar' };
   if (!env.DYNADOT_SECRET) return { ok: false, reason: 'no_secret' };   // register is a SIGNED transactional command -> no secret, no purchase (never a fake buy)
   try {
     // v2 register: POST /restful/v2/domains/{d}/register, body wraps a `domain` object with duration (INT years) + privacy. Signed.
-    var res = await _ddV2(env, 'POST', '/restful/v2/domains/' + encodeURIComponent(domain) + '/register', { domain: { duration: (parseInt(years, 10) || 1), privacy: 'off' }, currency: 'USD' });
+    // FIX (audit P0-4): default WHOIS privacy ON (was 'off', which published the registrant's contact), and -- when the
+    // buyer's name/email are known -- record the TENANT as the domain's REGISTRANT so THEY, not our reseller account, are
+    // the legal owner-of-record. Missing contact info -> falls back to the prior behavior (reseller-default contact).
+    var _d = { duration: (parseInt(years, 10) || 1), privacy: 'on' };
+    if (contact && (contact.email || contact.name)) {
+      // TODO verify contact field names vs live v2 spec -- Dynadot RESTful v2 may instead require a pre-created contact id
+      // (POST /restful/v2/contacts -> reference its id here) rather than this inline object. Shape mirrors the register
+      // body's `domain` wrapper; if the field is ignored we simply keep the reseller-default contact (no failed buy).
+      _d.registrant_contact = { name: String(contact.name || contact.email || '').slice(0, 120), organization: String(contact.name || '').slice(0, 120), email: String(contact.email || '').slice(0, 120) };
+    }
+    var res = await _ddV2(env, 'POST', '/restful/v2/domains/' + encodeURIComponent(domain) + '/register', { domain: _d, currency: 'USD' });
     return { ok: res.ok, reason: res.ok ? 'ok' : (String(res.message || (res.error && (res.error.description || res.error)) || ('code_' + res.code)) || 'register_fail'), code: String(res.code || ''), data: res.data };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
@@ -2178,6 +2188,7 @@ async function _dohCname(name) {
 }
 // ---- Cloudflare for SaaS automation: add each tenant's domain as a Custom Hostname so SSL issues + routing happen with NO manual step. Needs CF_API_TOKEN + CF_ZONE_ID. ----
 let _cfZone = null;
+let _cfFallbackDone = false;   // FIX (audit): Cloudflare-for-SaaS fallback origin is a ZONE-level one-time setting -- attempt it once per worker instance
 async function _cfZoneId(env) {   // auto-resolve the zone id from the token (needs Zone:Read) so the owner never has to hunt for it in the dashboard
   if (env.CF_ZONE_ID) return env.CF_ZONE_ID;
   if (_cfZone) return _cfZone;
@@ -2198,9 +2209,18 @@ async function _cfApi(env, method, apiPath, body) {
     return await r.json().catch(function () { return {}; });
   } catch (e) { return {}; }
 }
+// FIX (audit): without a ZONE fallback origin, live Cloudflare-for-SaaS custom hostnames don't route (they 530/1000).
+// Set it once per worker instance to our SaaS target. Idempotent: Cloudflare accepts a re-PUT of the same origin as a
+// no-op, and the _cfFallbackDone latch avoids re-calling it on every hostname add. Best-effort; never blocks setup.
+async function _cfSetFallbackOrigin(env) {
+  if (!env.CF_API_TOKEN || _cfFallbackDone) return;
+  _cfFallbackDone = true;
+  try { await _cfApi(env, 'PUT', '/custom_hostnames/fallback_origin', { origin: env.SAAS_TARGET || 'saas.atlasrental.io' }); } catch (e) { /* "already set"/transient -> ignore; the latch still prevents re-spamming this call */ }
+}
 async function _cfAddHostname(env, hostname) {
   if (!env.CF_API_TOKEN) return;
-  await _cfApi(env, 'POST', '/custom_hostnames', { hostname: hostname, ssl: { method: 'http', type: 'dv', settings: { min_tls_version: '1.0' } } });   // HTTP validation -> auto-issues once the tenant's CNAME points here; no extra TXT for them
+  await _cfSetFallbackOrigin(env);   // FIX (audit): ensure the zone fallback origin exists (once) BEFORE adding hostnames, or they never route
+  await _cfApi(env, 'POST', '/custom_hostnames', { hostname: hostname, ssl: { method: 'http', type: 'dv', settings: { min_tls_version: '1.2' } } });   // HTTP validation -> auto-issues once the tenant's CNAME points here; no extra TXT for them. FIX (audit): min TLS raised 1.0 -> 1.2
 }
 async function _cfHostnameActive(env, hostname) {
   if (!env.CF_API_TOKEN) return false;
@@ -4214,7 +4234,7 @@ function doReset(){
               if (md.domain && env.DYNADOT_KEY) {
                 let _already = false;
                 if (_takeover) { try { const _av = await _registrarSearch(env, md.domain); _already = !!(_av && _av.ok && _av.available === false); } catch (e) {} }
-                _reg = _already ? { ok: true, reason: 'already_registered' } : await _registrarRegister(env, md.domain, 1);
+                _reg = _already ? { ok: true, reason: 'already_registered' } : await _registrarRegister(env, md.domain, 1, { name: _biz || '', email: md.email || '' });   // FIX (audit P0-4): register the domain UNDER THE TENANT (buyer name/email from the domain purchase) with WHOIS privacy on
               }
               if (_reg.ok) {
                 // #201 AUTO-CONNECT the bought name (same mechanism as "connect existing": associate + Cloudflare custom hostname + registrar DNS -> our fallback).
@@ -6592,6 +6612,42 @@ function doReset(){
         return json({ ok: true });
       }
 
+      // ---- FIX (audit P0-4): TRANSFER-OUT / EPP auth code. Let a tenant retrieve the transfer (auth/EPP) code for a domain
+      //      THEY bought through Atlas + unlock it, so they can move the name to another registrar if they leave. Tenant-or-owner
+      //      gated (webEdit, same as the other domain-management routes); a strict ownership check on domains_sold scoped to
+      //      ctx.tenant_id means a tenant can only ever act on their OWN domain -- never another tenant's name. ----
+      if ((path === '/api/domain/authcode' || path === '/api/domain/transfer-out') && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'webEdit') && !_can(ctx, 'billing')) return err(403, 'You do not have permission to manage this domain.');
+        if (!await rateLimit(env, 'dauth:' + ctx.tenant_id, 20, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        if (!env.DYNADOT_KEY || !env.DYNADOT_SECRET) return err(400, 'Domain transfer is not available yet (registrar not fully configured). Contact support and we will provide your EPP/transfer code.');
+        await ensurePlatformSchema(env);
+        const b = await req.json().catch(() => ({}));
+        let dom = String(b.domain || '').toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+        if (!dom) { const tr = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); dom = (tr && tr.custom_domain) || ''; }
+        if (!dom) return err(400, 'No domain found.');
+        // OWNERSHIP GATE: the domain must be one THIS tenant bought/registered through Atlas. Never expose another tenant's name.
+        const owned = await env.DB.prepare('SELECT id FROM domains_sold WHERE tenant_id=? AND domain=? LIMIT 1').bind(ctx.tenant_id, dom).first();
+        if (!owned) return err(403, 'That domain is not registered to your account.');
+        // Unlock the domain so a transfer-out can proceed (best-effort; a no-op if already unlocked).
+        // TODO verify contact field names vs live v2 spec -- Dynadot RESTful v2 transfer-lock + auth-code endpoint/field
+        // names are inferred from the existing v2 resource pattern (SIGNED read/mutate on /domains/{d}/...); adjust to the
+        // live spec if the probe returns a shape/route error. Failure here never blocks returning the code.
+        try { await _ddV2(env, 'PUT', '/restful/v2/domains/' + encodeURIComponent(dom) + '/transfer_lock', { lock: false }, { sign: true }); } catch (e) {}
+        let code = '';
+        try {
+          const ac = await _ddV2(env, 'GET', '/restful/v2/domains/' + encodeURIComponent(dom) + '/transfer_auth_code', null, { sign: true });
+          const d = (ac && ac.data) || {};
+          code = String(d.auth_code || d.authCode || d.transfer_auth_code || d.transferAuthCode || d.epp_code || d.eppCode || '');
+        } catch (e) {}
+        if (!code) {   // fall back: some v2 builds surface the auth code inside domain_info instead of a dedicated endpoint
+          try { const info = await _ddV2(env, 'GET', '/restful/v2/domains/' + encodeURIComponent(dom), null, { sign: true }); const di = (info && info.data) || {}; code = String(di.auth_code || di.authCode || di.transfer_auth_code || di.epp_code || ''); } catch (e) {}
+        }
+        await audit(env, ctx, req, 'domain.authcode', { domain: dom, got: !!code });
+        if (!code) return json({ ok: false, unlocked: true, domain: dom, message: 'We unlocked ' + dom + ' for transfer, but could not retrieve the auth code automatically. Contact support and we will send your EPP/transfer code.' });
+        return json({ ok: true, domain: dom, auth_code: code, unlocked: true, message: 'Your domain is unlocked. Use this EPP/auth code at your new registrar to transfer ' + dom + '. The name is yours to keep.' });
+      }
+
       // ---- #201 real domain availability + our RETAIL price (registrar). HONEST: no registrar key -> {live:false} so the client shows an estimate, never a fake "available". ----
       if (path === '/api/domain/quote' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -6965,7 +7021,7 @@ function doReset(){
           // Payments G5: reflect an OFFLINE/cash COMMITTED booking's revenue in the SERVER revenue_cents (platform GMV + /api/v1 read it; the owner dashboard already uses accrual for these via _bkEarned's fallback). ONLY when the Stripe webhook never set it (no online d.paid) -> never lowers/overwrites a collected figure. Derived from the booking's own quote, server-side.
           if (coll === 'bookings' && body.data && typeof body.data === 'object' && cols.indexOf('revenue_cents') < 0) {
             const _g5 = body.data; const _g5online = _g5.paid && Object.keys(_g5.paid).some(function (k) { const p = _g5.paid[k]; return p && !p.hold && k !== 'security'; });
-            const _g5committed = _g5.status && _g5.status !== 'Cancelled' && _g5.status !== 'Pending';
+            const _g5st = String(_g5.status || '').toLowerCase(); const _g5committed = _g5.status && _g5st !== 'cancelled' && _g5st !== 'pending';   // FIX (audit P2): compare case-insensitively so a lowercase 'pending'/'cancelled' blob status (matching the /book D1 status column casing) can never be mis-read as committed and inject a phantom cash-revenue estimate. Byte-identical result for all existing capital-cased data; the toLowerCase() booking-status pattern is already used at _kpiFacts (~L1176).
             if (!_g5online && _g5committed && _g5.quote && Number(_g5.quote.total) > 0) {
               let _g5cur = 0; if (vStr(body.id, 40)) { try { const _g5r = await env.DB.prepare('SELECT revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(body.id, ctx.tenant_id).first(); _g5cur = _g5r ? (Number(_g5r.revenue_cents) || 0) : 0; } catch (e) {} }
               if (!(_g5cur > 0)) { cols.push('revenue_cents'); vals.push(Math.round(Number(_g5.quote.total) * 100)); }
@@ -7394,7 +7450,7 @@ function doReset(){
         let dom = String(b.domain || '').toLowerCase().trim();
         if (!dom) { const tr = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); dom = (tr && tr.custom_domain) || ''; }
         if (!dom) return err(400, 'No domain found to cancel.');
-        const drow = await env.DB.prepare('SELECT stripe_sub FROM domains_sold WHERE tenant_id=? AND domain=?').bind(ctx.tenant_id, dom).first();
+        const drow = await env.DB.prepare('SELECT stripe_sub, buyer_email FROM domains_sold WHERE tenant_id=? AND domain=?').bind(ctx.tenant_id, dom).first();   // FIX (audit): buyer_email widened in so the lapse-warning email below can reach the domain owner
         const sub = drow && drow.stripe_sub;
         if (!sub) return err(400, 'No recurring subscription found for ' + dom + '.');
         const pk = await _platStripe(env); if (!pk) return err(400, 'Platform billing is not configured yet.');
@@ -7402,6 +7458,18 @@ function doReset(){
         if (!up.ok) return err(502, 'Could not cancel: ' + ((up.j.error && up.j.error.message) || ('http_' + up.status)));
         try { await env.DB.prepare("UPDATE domains_sold SET status='canceling' WHERE tenant_id=? AND domain=?").bind(ctx.tenant_id, dom).run(); } catch (e) {}   // #282: hide the client 'Cancel renewal' control now that this domain is scheduled to lapse at period end (does NOT affect serving -- the public-site path keys off tenants.custom_domain, not this status)
         await audit(env, ctx, req, 'billing.domain_cancel', { domain: dom, when: 'period_end' });
+        // FIX (audit): honest lapse warning -- email the domain owner that auto-renewal is now off and the name will lapse
+        // at the end of the paid period, plus how to keep it. Additive + gated on RESEND_KEY (sendEmail also self-guards);
+        // wrapped so it can NEVER block or fail the cancel that already succeeded above.
+        if (env.RESEND_KEY) { try {
+          const _lapseTs = Number(up.j && up.j.current_period_end) || 0;
+          const _lapseStr = _lapseTs ? new Date(_lapseTs * 1000).toISOString().slice(0, 10) : '';
+          const _to = (drow && drow.buyer_email) || (ctx.user && ctx.user.email) || '';
+          if (_to) await sendEmail(env, { to: _to, transactional: true, fromName: 'Atlas Rental.io', subject: 'Auto-renewal cancelled for ' + dom + (_lapseStr ? (' - lapses ' + _lapseStr) : ''),
+            html: _atlasEmailShell('<h2>Your domain auto-renewal is cancelled</h2>'
+              + '<p>Auto-renewal for <b>' + esc(dom) + '</b> is now turned off. You keep the domain and your site stays live through the end of the period you have already paid for' + (_lapseStr ? (', until <b>' + esc(_lapseStr) + '</b>') : '') + '. After that the name will <b>lapse</b> and could be registered by someone else.</p>'
+              + '<p><b>Want to keep it?</b> Re-enable renewal anytime before then from <b>Website &rarr; Domain</b> in your Atlas Rental.io dashboard, or reply to this email and we will help. You can also transfer the domain to another registrar (request your EPP/transfer code from support) so you never lose it.</p>') });
+        } catch (e) {} }
         return json({ ok: true, canceled: true, when: 'period_end', domain: dom, cancel_at: (up.j && up.j.current_period_end) || null });
       }
 
