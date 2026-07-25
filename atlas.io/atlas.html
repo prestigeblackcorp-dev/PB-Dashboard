@@ -4013,7 +4013,7 @@ const Atlas = (function(){
     var _lcc=(val('aLocCity')||'').trim(); if(_lcc)a.locCity=_lcc; else delete a.locCity;   // per-asset market -> feeds location-aware dreaming
     var _lcz=(val('aLocZip')||'').trim(); if(_lcz)a.locZip=_lcz; else delete a.locZip;
     var _r=parseFloat(val('aRate')); a.rate=(_r>=0?_r:a.rate); a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
-    a.qty=Math.max(1, parseInt(val('aQty'),10)||1);   // X3: units in stock -> rides the _srvShape info blob; the worker already honors qty on the public profile + availability guards
+    a.qty=Math.max(1, parseInt(val('aQty'),10)||1);   // X3: units in stock -> synced on the asset blob AND carried into the published-site snapshot (_publicSiteAssets), which is what the worker availability guards read; takes effect on the live booking site once the owner publishes.
     var _mn=parseInt(val('aMinLen'),10); a.minLen=(_mn>0?_mn:0); var _mx=parseInt(val('aMaxLen'),10); a.maxLen=(_mx>0?_mx:0);   // per-asset min/max booking length rules
     var _exb=document.querySelectorAll('#aExtras .aEx'); if(_exb.length){ var _ck=[]; [].forEach.call(_exb,function(cb){ if(cb.checked) _ck.push(cb.value); }); if(_ck.length===_exb.length) delete a.extraIds; else a.extraIds=_ck; }   // per-asset extras: all checked = inherit global; otherwise store the offered subset (empty = none)
     if(_fleetSel().length>1){ var _at=val('aType'); if(_at&&_fleetSel().indexOf(_at)>=0) a.type=_at; }   // fix: persist the owner's per-asset type/category change (used by rate + filters)
@@ -8275,7 +8275,7 @@ const Atlas = (function(){
   function _bookingLink(){ return 'https://atlasrental.io/api/book/'+_bookingSlug(); }   // served by the worker via the existing /api/* route (no extra DNS needed)
   function _publicSiteAssets(){ return (DATA.assets||[]).filter(function(a){return (a.status||'')!=='Maintenance';}).map(function(a){
     var m=(typeof _moneyFor==='function')?_moneyFor(a.name):null; var rate=(m&&m.baseRate)||a.rate||S.money.baseRate;
-    return { name:a.name, rate:Number(rate)||0, type:a.type||'', photo:a.photo||'', desc:a.desc||'', minLen:Number(a.minLen)||0, maxLen:Number(a.maxLen)||0, blackouts:Array.isArray(a.blackouts)?a.blackouts:[] }; }); }
+    return { name:a.name, rate:Number(rate)||0, type:a.type||'', photo:a.photo||'', desc:a.desc||'', minLen:Number(a.minLen)||0, maxLen:Number(a.maxLen)||0, blackouts:Array.isArray(a.blackouts)?a.blackouts:[], qty:Math.max(1,parseInt(a.qty,10)||1), extraIds:Array.isArray(a.extraIds)?a.extraIds:undefined }; }); }   // X3 FIX: carry qty into the published snapshot -- the worker availability guards read qty from pubSite.assets, so without this every asset stayed capped at 1 unit no matter what the owner set. extraIds too, so per-asset extras filtering is faithful on the live site.
   function _publicSiteConfig(){ var wk=_webKeys(); return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
     collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
     analytics:{ ga:String(wk.ga||'').trim(), pixel:String(wk.pixel||'').trim() } }; }   // #24: GA + Meta/TikTok pixel actually injected into the served booking page (see worker _bookPageHtml)
