@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25j';
+const ATLAS_BUILD = '2026.07.25k';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1304,6 +1304,49 @@ async function _bkRMW(env, id, tid, mutate) {
     committed = !!(_u && _u.meta && _u.meta.changes);
   }
   return { committed: committed, d: d, missing: false };
+}
+// #346-E2: graft SERVER-authoritative payment fields from `serverD` onto the client blob `clientD`. These are written ONLY by
+// Stripe webhooks / server pay routes, so the owner-dashboard mirror must never erase them -- and the client can legitimately be
+// NEWER by _t (owner edited before the webhook synced back) yet still be missing them. Server always wins for d.paid slots,
+// refundIds/refundedPIs, portal.*PaidAt stamps, and per-charge paidOnline/paidAt; everything else in the client blob is kept.
+function _graftServerPay(clientD, serverD) {
+  if (!clientD || typeof clientD !== 'object' || !serverD || typeof serverD !== 'object') return;
+  if (serverD.paid && typeof serverD.paid === 'object') {
+    if (!clientD.paid || typeof clientD.paid !== 'object') clientD.paid = {};
+    for (var k in serverD.paid) clientD.paid[k] = serverD.paid[k];   // webhook-written slot wins
+  }
+  ['refundIds', 'refundedPIs'].forEach(function (f) {
+    if (Array.isArray(serverD[f])) { var arr = Array.isArray(clientD[f]) ? clientD[f] : []; serverD[f].forEach(function (x) { if (arr.indexOf(x) < 0) arr.push(x); }); clientD[f] = arr; }
+  });
+  if (serverD.portal && typeof serverD.portal === 'object') {
+    if (!clientD.portal || typeof clientD.portal !== 'object') clientD.portal = {};
+    ['reservePaidAt', 'balancePaidAt', 'depositPaidAt'].forEach(function (f) { if (serverD.portal[f] != null) clientD.portal[f] = serverD.portal[f]; });
+  }
+  if (Array.isArray(serverD.charges) && Array.isArray(clientD.charges)) {
+    var byId = {}; serverD.charges.forEach(function (sc) { if (sc && sc.id != null) byId[String(sc.id)] = sc; });
+    clientD.charges.forEach(function (cc) { if (cc && cc.id != null && byId[String(cc.id)] && byId[String(cc.id)].paidOnline) { cc.paidOnline = true; var pa = byId[String(cc.id)].paidAt; if (pa != null) cc.paidAt = pa; } });
+  }
+}
+// #346-E2: CAS + pay-graft write for the bookings mirror (the generic /api/data/bookings PUT/re-POST). The old blind UPDATE was a
+// 4th non-atomic sibling: an owner edit racing a Stripe webhook could overwrite the webhook's d.paid ledger. Every attempt re-reads
+// the fresh server blob, grafts its payment fields onto the client data, and CAS-writes on updated_at so a webhook landing mid-write
+// is re-read (not clobbered). `cols`/`vals` are the whitelisted columns; `clientData` is the parsed body.data (null -> no data write).
+async function _bookingMirrorWrite(env, tenantId, id, cols, vals, clientData) {
+  const dataIdx = cols.indexOf('data');
+  if (dataIdx < 0 || !clientData || typeof clientData !== 'object') {   // no data blob at risk -> plain scoped UPDATE
+    if (cols.length) await env.DB.prepare('UPDATE bookings SET ' + cols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=?').bind(...vals, id, tenantId).run();
+    return true;
+  }
+  const uaIdx = cols.indexOf('updated_at');
+  for (var _i = 0; _i < 6; _i++) {
+    const row = await env.DB.prepare('SELECT data, updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(id, tenantId).first();
+    if (!row) return false;
+    _graftServerPay(clientData, jparse(row.data, {}));   // server-owned payment fields always win, read fresh each attempt
+    const v = vals.slice(); v[dataIdx] = JSON.stringify(clientData); if (uaIdx >= 0) v[uaIdx] = Date.now();
+    const _u = await env.DB.prepare('UPDATE bookings SET ' + cols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=? AND updated_at IS ?').bind(...v, id, tenantId, row.updated_at).run();
+    if (_u && _u.meta && _u.meta.changes) return true;
+  }
+  return false;   // exhausted (extreme contention) -> the owner edit is not persisted, but the server payment ledger stays intact
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
 function money2(cents) { return '$' + (Math.round(Number(cents) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
@@ -3916,11 +3959,11 @@ function doReset(){
             // #344 OPTIMISTIC-LOCK read-modify-write: two webhooks for DIFFERENT slots on the SAME booking (e.g. a deposit and an
             // owner-charge) used to race -- both read the same row, both wrote absolutely, last write clobbered the other's payment.
             // Now the UPDATE is a CAS on updated_at; a lost CAS re-reads the fresh row + re-applies, so neither payment is dropped.
-            let d = null, _committed = false, _wasNew = false;
+            let d = null, _committed = false, _wasNew = false, _wasCancelled = false;
             const amt = Math.round(Number(obj.amount_total || obj.amount || 0));
             const pi = obj.payment_intent || (obj.object === 'payment_intent' ? obj.id : '');   // needed for capture/release/refund
             for (var _wtry = 0; _wtry < 6 && !_committed; _wtry++) {
-              const row = await env.DB.prepare('SELECT id,data,revenue_cents,updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
+              const row = await env.DB.prepare('SELECT id,data,revenue_cents,status,updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
               if (!row) break;
               d = jparse(row.data, {});
               d.paid = d.paid || {};
@@ -3937,7 +3980,11 @@ function doReset(){
               // #346 ordering guard: if a charge.refunded for THIS PaymentIntent already landed (Stripe delivered it out of order, or a
               // stale success replays after a refund), the pi is in d.refundedPIs -- do NOT re-add its revenue (paid-then-refunded nets to 0).
               var _piRefunded = !!(pi && Array.isArray(d.refundedPIs) && d.refundedPIs.indexOf(pi) >= 0);
-              const _addRev = (!_slotHad && !_piRefunded && !(_isSec && md.hold === '1') && md.kind !== 'security') ? (Number(amt) || 0) : 0;
+              // #346-E1 resurrection guard: a payment that CAS-commits AFTER a /cancel must NOT revive the booking. We still record the
+              // d.paid slot below (the money exists at Stripe -> reconciliation), but add NO revenue (cancel already set the final kept
+              // amount) and never flip status back to confirmed. Read from the FRESH row each retry so a cancel landing mid-loop is seen.
+              var _isCanx = (String(row.status || '').toLowerCase() === 'cancelled') || !!(d.status && /cancel/i.test(String(d.status)));
+              const _addRev = (!_slotHad && !_piRefunded && !_isCanx && !(_isSec && md.hold === '1') && md.kind !== 'security') ? (Number(amt) || 0) : 0;
               const rev = Math.max(0, (Number(row.revenue_cents) || 0) + _addRev);
               if (md.kind === 'charge' && md.charge && Array.isArray(d.charges)) {   // stamp the specific charge paid so the portal shows it settled
                 for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }   // paidOnline: this charge IS inside revenue_cents so the client must NOT re-add it to _bkEarned
@@ -3949,16 +3996,17 @@ function doReset(){
                 if (_pkind === 'balance') d.portal.balancePaidAt = d.portal.balancePaidAt || Date.now();
                 else if (_pkind === 'security') d.portal.depositPaidAt = d.portal.depositPaidAt || Date.now();   // captured refundable deposit
                 else if (_pkind !== 'charge') d.portal.reservePaidAt = d.portal.reservePaidAt || Date.now();   // reserve down-payment or generic payment (a one-off charge is NOT the reserve)
-                if (_pkind !== 'security' && _pkind !== 'charge') d.status = 'Confirmed';   // a real reserve/balance/payment confirms; a security capture or a one-off charge alone does not
+                if (_pkind !== 'security' && _pkind !== 'charge' && !_isCanx) d.status = 'Confirmed';   // a real reserve/balance/payment confirms -- but NEVER resurrect a cancelled booking (E1)
               }
               d._t = Date.now();
               const _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
-                .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT
+                .bind(JSON.stringify(d), rev, (_isCanx ? row.status : 'confirmed'), Date.now(), md.booking, md.tenant, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT; never overwrite a 'cancelled' status column with 'confirmed' (E1)
               _committed = !!(_u && _u.meta && _u.meta.changes);
-              if (_committed) _wasNew = !_slotHad;   // #346: did THIS delivery record a NEW payment (vs a replay / checkout.session+payment_intent dual-fire)? -> fire the receipt/audit/webhook ONCE per payment, not per delivery
+              if (_committed) { _wasNew = !_slotHad; _wasCancelled = _isCanx; }   // #346: fire receipt/audit/webhook ONCE per NEW payment, not per delivery; _wasCancelled -> reconciliation note instead of a confirm-receipt (E1)
             }
             if (!_committed && d) { try { await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid.uncommitted', { booking: md.booking, kind: md.kind, cents: amt, note: 'CAS contention: payment succeeded at Stripe but was not persisted after 6 tries -- reconcile with Stripe' }); } catch (e) {} }   // #346 monitoring hook: surface the (extremely rare) exhausted-retry case instead of silently 200-ing
-            if (_committed && _wasNew && d) {
+            if (_committed && _wasCancelled && _wasNew && d) { try { await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid.on_cancelled', { booking: md.booking, kind: md.kind, cents: amt, note: 'Payment landed on a CANCELLED booking -- recorded for reconciliation, NOT counted as revenue and did not reactivate the booking. Refund at Stripe if unexpected.' }); } catch (e) {} }   // E1: owner-visible note instead of a confusing confirm-receipt
+            if (_committed && _wasNew && !_wasCancelled && d) {
               const tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(md.tenant).first();
               if (tr && d.custEmail) { const pr = tenantProfile(tr);
                 const _smartR = !!(pr.settings && pr.settings.flags && pr.settings.flags.smartReceipts);   // Payments G6: the "auto-email a receipt the moment a booking is paid" toggle now fires a REAL itemized receipt (was a dead toggle -> only a one-liner ever sent)
@@ -6710,7 +6758,8 @@ function doReset(){
               if (clash.tenant_id === ctx.tenant_id) {   // same tenant re-POSTing the same id -> UPDATE, don't duplicate or 500
                 if (coll === 'assets') { const _qb = await _assetQtyRaiseBlocked(env, ctx.tenant_id, rid, body); if (_qb) return err(402, _qb); }   // PACKAGING: a re-POST-as-UPDATE can't raise qty past the plan cap (grandfathered: rename/reprice/reduce still fine; fail-open)
                 const uCols = cols.slice(), uVals = vals.slice(); if (hasUpd) { uCols.push('updated_at'); uVals.push(now); }   // customers has no updated_at column
-                if (uCols.length) await env.DB.prepare(`UPDATE ${coll} SET ${uCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...uVals, rid, ctx.tenant_id).run();
+                if (coll === 'bookings') await _bookingMirrorWrite(env, ctx.tenant_id, rid, uCols, uVals, (body.data && typeof body.data === 'object') ? body.data : null);   // #346-E2: CAS + graft server payment fields so an owner edit can't erase a webhook's d.paid
+                else if (uCols.length) await env.DB.prepare(`UPDATE ${coll} SET ${uCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...uVals, rid, ctx.tenant_id).run();
                 if (coll === 'bookings' && body.data) await _carryVerify(env, ctx.tenant_id, body.data);   // Customers C: index the verified person on the common mirror (re-POST -> UPDATE) path
                 await audit(env, ctx, req, coll + '.update', { id: rid });
                 return json({ ok: true, id: rid, updated: true });
@@ -6753,7 +6802,8 @@ function doReset(){
           if (coll === 'assets') { const _qb = await _assetQtyRaiseBlocked(env, ctx.tenant_id, id, body); if (_qb) return err(402, _qb); }   // PACKAGING: a PUT can't raise qty past the plan cap (grandfathered + fail-open)
           const setCols = cols.slice(), setVals = vals.slice();
           if (hasUpd) { setCols.push('updated_at'); setVals.push(Date.now()); }
-          await env.DB.prepare(`UPDATE ${coll} SET ${setCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...setVals, id, ctx.tenant_id).run();
+          if (coll === 'bookings') await _bookingMirrorWrite(env, ctx.tenant_id, id, setCols, setVals, (body.data && typeof body.data === 'object') ? body.data : null);   // #346-E2: CAS + graft server payment fields (the PUT path is the live mirror vector) so an owner edit can't erase a webhook's d.paid
+          else await env.DB.prepare(`UPDATE ${coll} SET ${setCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...setVals, id, ctx.tenant_id).run();
           if (coll === 'bookings' && body.data) await _carryVerify(env, ctx.tenant_id, body.data);   // Customers C: index the verified person on PUT
           await audit(env, ctx, req, coll + '.update', { id });
           return json({ ok: true });

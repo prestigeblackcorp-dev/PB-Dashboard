@@ -110,6 +110,13 @@ const run = async () => {
   await webhook(coEvt('b2', 't1', 'deposit', 10000, 'pi_X'));    // late success for the refunded PI
   ok('ORDERING GUARD: late success does NOT re-add revenue (stays 0)', db.rev('b2') === 0, 'rev=' + db.rev('b2'));
 
+  // 7. E1 resurrection guard: a late payment webhook on a CANCELLED booking must not revive it
+  db.seed('b3', 't1', { paid: {}, status: 'Cancelled' }, 0, 'cancelled');
+  await webhook(coEvt('b3', 't1', 'balance', 10000, 'pi_C'));
+  ok('E1: late webhook does NOT resurrect a cancelled booking (revenue stays 0)', db.rev('b3') === 0, 'rev=' + db.rev('b3'));
+  ok('E1: cancelled status column preserved', db.status('b3') === 'cancelled', 'st=' + db.status('b3'));
+  ok('E1: payment still recorded for reconciliation', !!db.data('b3').paid.balance);
+
   console.log('\nMONEY-CONCURRENCY: PASS=' + PASS + ' FAIL=' + FAIL);
   if (FAIL > 0) process.exit(1);
 };
