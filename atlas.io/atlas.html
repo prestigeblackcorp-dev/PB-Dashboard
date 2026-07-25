@@ -1878,10 +1878,13 @@ const Atlas = (function(){
   }
   // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
   function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
-    return Promise.all([_api('/api/data/bookings'),_api('/api/data/assets'),_api('/api/tenant/profile')]).then(function(r){
+    return Promise.all([_api('/api/data/bookings'),_api('/api/data/assets'),_api('/api/tenant/profile'),_api('/api/data/customers')]).then(function(r){
       _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items);
       _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items);
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
+      // X2: hydrate the SERVER customer store (was one-way -- the client only ever wrote it). Grafted into the derived
+      // customer list so a customer created on another device / by a public booking surfaces here with their phone + data.
+      try{ if(r[3]&&r[3].json&&Array.isArray(r[3].json.items)&&typeof S!=='undefined'&&S){ S._srvCustomers=r[3].json.items.map(function(c){ var d={}; try{ d=JSON.parse(c.data||'{}'); }catch(e){} return { id:c.id, name:c.name||'', email:(c.email||'').toLowerCase(), phone:c.phone||'', data:d }; }).filter(function(c){return c.email;}); if(typeof DATA!=='undefined'){ try{ DATA.customers=_customersFromBookings(); }catch(e){} } } }catch(e){}
       if(r[2].json && typeof r[2].json.credits==='number'){ try{ var _cb=_lsGet('atlas_tenant_'+tid,null); if(_cb){ if(!_cb.credits)_cb.credits={}; _cb.credits.bal=r[2].json.credits; _lsSet('atlas_tenant_'+tid,_cb); if(typeof S!=='undefined'&&S){ if(!S.credits)S.credits={}; S.credits.bal=r[2].json.credits; } } }catch(e){} }   // adopt server-authoritative credit balance on hydrate
       if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
       if(r[2].json && typeof r[2].json.websiteEntitled==='boolean'){ try{ var _wb=_lsGet('atlas_tenant_'+tid,null); if(_wb){ _wb.websiteEntitled=r[2].json.websiteEntitled; _lsSet('atlas_tenant_'+tid,_wb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.websiteEntitled=r[2].json.websiteEntitled; } }catch(e){} }   // #278: adopt server-authoritative website entitlement (owner/comp/tier/website_addon) on hydrate -- same pattern as credits/plan above
@@ -2046,7 +2049,7 @@ const Atlas = (function(){
   // Modules = which tabs a worker can SEE. Caps = what they can DO. Every action re-checks a cap (client guard;
   // the real backend must mirror the same check server-side so a hidden button can't be forced).
   const PERM_MODS=[['overview','Overview'],['fleet','Fleet &amp; assets'],['bookings','Bookings'],['customers','Customers'],['analytics','Analytics'],['tracking','Live map &amp; GPS'],['website','Website'],['team','Team'],['settings','Settings']];
-  const PERM_CAPS=[['fleetEdit','Add &amp; edit assets'],['bookEdit','Create, edit &amp; cancel bookings'],['pricing','Change pricing &amp; money rules'],['webEdit','Build &amp; edit the website'],['billing','Manage plan &amp; billing'],['teamManage','Manage team &amp; access']];
+  const PERM_CAPS=[['fleetEdit','Add &amp; edit assets'],['bookEdit','Create, edit &amp; cancel bookings'],['pricing','Change pricing &amp; money rules'],['customersEdit','Edit customer records &amp; notes'],['webEdit','Build &amp; edit the website'],['billing','Manage plan &amp; billing'],['teamManage','Manage team &amp; access']];   // G7/X5: customersEdit = WRITE cap, split from the 'customers' VIEW module. desk preset (_permsAll(false)+selective) gets view-only for free; owner/manager/ops get it via _permsAll(true). Mirrors the worker _needW.customers='customersEdit' + _can inheritance.
   function _permsAll(v){ var p={mods:{},caps:{}}; PERM_MODS.forEach(function(m){p.mods[m[0]]=v;}); PERM_CAPS.forEach(function(c){p.caps[c[0]]=v;}); return p; }
   const ROLE_PRESETS={
     manager:{label:'Manager', make:function(){ var p=_permsAll(true); p.caps.billing=false; p.caps.teamManage=false; p.mods.team=false; return p; }},
@@ -3614,6 +3617,8 @@ const Atlas = (function(){
       if(!map[k]) map[k]={name:k,trips:0,spent:0,email:b.custEmail||'',_t:0};
       map[k].trips++; map[k].spent+=Math.round((b.quote&&b.quote.total)||0);
       var t=b.createdAt||b.startTs||0; if(t>map[k]._t){ map[k]._t=t; if(b.custEmail)map[k].email=b.custEmail; } });
+    // X2: graft hydrated SERVER customers -- fill phone/id on email matches; surface server-only customers (created on another device or by a public booking that hasn't synced its booking row here yet).
+    try{ (S&&S._srvCustomers||[]).forEach(function(sc){ if(!sc||!sc.email)return; var hit=null; for(var kk in map){ if((map[kk].email||'').toLowerCase()===sc.email){ hit=map[kk]; break; } } if(hit){ if(!hit.phone&&sc.phone)hit.phone=sc.phone; if(!hit.id&&sc.id)hit.id=sc.id; } else { map['__srv:'+sc.email]={name:sc.name||sc.email,trips:0,spent:0,email:sc.email,phone:sc.phone||'',id:sc.id,_t:0,serverOnly:true}; } }); }catch(e){}
     return Object.keys(map).map(function(k){ var c=map[k], d=Math.max(0,Math.floor((now-c._t)/86400000));
       c.last=c._t?(d<1?'<1d':(d<30?d+'d':Math.floor(d/30)+'mo')):'new'; return c; }); }
   function seedData(){
@@ -4522,6 +4527,8 @@ const Atlas = (function(){
       +'<div class="mp-row"><span>'+cap(S.fleet.noun)+'</span><span style="color:var(--ink);font-weight:600">'+esc(b.asset)+'</span></div>'
       +'<div class="mp-row"><span>'+(b.endTs?'When':'Dates')+'</span><span class="tnum" style="text-align:right;max-width:62%">'+_bkWhen(b)+'</span></div>'
       +'<div class="mp-row"><span>Length</span><span class="tnum">'+b.periods+' '+_perUnit()+'</span></div>'
+      +(b.pickupTime?('<div class="mp-row"><span>Pickup time</span><span class="tnum">'+esc(b.pickupTime)+'</span></div>'):'')
+      +(b.deliveryAddr?('<div class="mp-row"><span>Delivery</span><span class="tnum" style="text-align:right;max-width:62%">'+esc(b.deliveryAddr)+'</span></div>'):'')
       +'<div class="mp-row"><span>'+money(b.rate!=null?b.rate:S.money.baseRate)+' &times; '+b.periods+' '+_perUnit()+'</span><span class="tnum">'+money((b.rate!=null?b.rate:S.money.baseRate)*b.periods)+'</span></div>'
       +(q.extrasLines||[]).map(function(l){return '<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>';}).join('')
       +(q.disc?'<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>':'')
@@ -5254,8 +5261,8 @@ const Atlas = (function(){
   }
   // Customers B: persistent per-customer CRM metadata (keyed by email in S.custMeta, so it survives the bookings-derived customer list + syncs).
   function _custMeta(key){ if(!S.custMeta)S.custMeta={}; if(!key)return {}; if(!S.custMeta[key])S.custMeta[key]={}; return S.custMeta[key]; }
-  function saveCustNote(i){ var c=DATA.customers[i]; if(!c)return; var key=(c.email||'').toLowerCase(); if(!key)return; var m=_custMeta(key); m.notes=(val('custNote')||'').slice(0,2000); save(); }
-  function emailCustomer(i){ var c=DATA.customers[i]; if(!c||!c.email)return; if(!_canMod('customers')&&!_canMod('settings'))return;
+  function saveCustNote(i){ if(!_canCap('customersEdit'))return; var c=DATA.customers[i]; if(!c)return; var key=(c.email||'').toLowerCase(); if(!key)return; var m=_custMeta(key); m.notes=(val('custNote')||'').slice(0,2000); save(); }   // X5: writing customer notes needs the edit cap
+  function emailCustomer(i){ var c=DATA.customers[i]; if(!c||!c.email)return; if(!_canCap('customersEdit'))return;   // X5: emailing a customer is a customer-write action -> edit cap (view-only roles can't)
     openModal('<div class="modal__head"><h3>Email '+esc((c.name||'customer').split(' ')[0])+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 10px">Sends one email to <b>'+esc(c.email)+'</b> from your business (unsubscribe + suppression applied).</div>'
       +'<div class="field"><label>Subject</label><input class="input" id="ceSubj" placeholder="A quick note"></div>'
