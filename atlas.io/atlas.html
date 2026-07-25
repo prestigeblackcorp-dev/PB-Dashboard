@@ -4566,12 +4566,16 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Usage / metered billing</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkMeter(\''+b.id+'\')">'+(b.meter?'Update':'Record usage')+'</button></div>'
         +'<div class="cond-sub">Bill exact hours or miles used &mdash; ideal for generators, tools and hourly gear.</div>'
         +_meterHtml(b)+'</div>'
+      +((b.portal&&b.portal.requests&&b.portal.requests.length)?('<div class="cond-sec"><div class="cond-hd"><span>Requests from the customer</span></div><div class="cond-sub" style="margin-bottom:2px">They asked for a change from their portal. Turn it into a charge to collect, or dismiss it.</div>'+b.portal.requests.map(function(rq,ri){ var pend=(rq.status==='requested'||!rq.status); return '<div class="cond-sub" style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:7px'+(pend?'':';opacity:.55')+'"><span>'+(rq.type==='addon'?'Add-on':'Extension')+': <b>'+esc(rq.extra||'change')+'</b>'+(rq.note?(' &mdash; '+esc(rq.note)):'')+'</span>'+(pend?('<span style="white-space:nowrap;flex:none"><button class="btn btn--ghost btn--sm" onclick="Atlas.bkReqCharge(\''+b.id+'\','+ri+')">Turn into charge</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.bkReqDone(\''+b.id+'\','+ri+')">Dismiss</button></span>'):('<span class="chip chip--muted" style="flex:none">'+esc(rq.status)+'</span>'))+'</div>'; }).join('')+'</div>'):'')
       +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+a+'</div>'
       +'<div style="display:flex;gap:10px;margin-top:10px"><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openPortal(\''+b.id+'\')">Customer portal</button></div></div>');
   }
   function setBookingStatus(id,st){ if(!_guard('bookEdit','Updating bookings'))return; var b=_getBooking(id); if(!b)return; b.status=st; if(st==='Completed'){ try{ _loyOnComplete(b); }catch(e){} } _upsertBooking(b); _logEvent('booking','Booking '+b.id+' marked '+st,{booking:b.id,status:st}); closeModal(); renderOverview(); renderBookings(); renderCustomers();   // fix: refresh Customers panel (Trips/Spent/last-active) live
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled';}).length; toast('Booking '+st.toLowerCase()); }
   function deleteBooking(id){ if(!_guard('bookEdit','Deleting bookings'))return; if(!confirm('Delete this booking permanently?'))return; _delBooking(id); closeModal(); renderOverview(); renderBookings(); renderCustomers(); _bkBadge(); toast('Booking deleted'); }   // fix: refresh Customers panel live
+  // Booking G2: act on a customer's portal change-request in-app (was only visible in an email). Turn it into a charge (reuses Send a charge) or dismiss it.
+  function bkReqCharge(id,ri){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b||!b.portal||!b.portal.requests||!b.portal.requests[ri])return; var rq=b.portal.requests[ri]; rq.status='charged'; _upsertBooking(b); save(); bkAddCharge(id); setTimeout(function(){ var l=document.getElementById('chLabel'); if(l) l.value=(rq.extra||'Requested change'); },60); }
+  function bkReqDone(id,ri){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b||!b.portal||!b.portal.requests||!b.portal.requests[ri])return; b.portal.requests[ri].status='dismissed'; _upsertBooking(b); save(); openBooking(id); toast('Request dismissed'); }
   // ---- Cancellation-policy engine: cancel with a smart fee (kept via the reconciled portal-charge model) ----
   function _cxWindow(){ return (S.money&&S.money.cancelWindowHrs!=null)?S.money.cancelWindowHrs:48; }
   function bkCancelFlow(id){ if(!_guard('bookEdit','Cancelling bookings'))return; var b=_getBooking(id); if(!b)return;
@@ -8232,6 +8236,9 @@ const Atlas = (function(){
   function _publicSiteConfig(){ var wk=_webKeys(); return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
     collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
     analytics:{ ga:String(wk.ga||'').trim(), pixel:String(wk.pixel||'').trim() } }; }   // #24: GA + Meta/TikTok pixel actually injected into the served booking page (see worker _bookPageHtml)
+  // Cross-sys G4: a signature of what the PUBLIC site would serve, captured at publish time. If the live Fleet/pricing/copy later diverges, the owner sees an "unpublished changes" badge (the served site keeps the last snapshot until re-publish).
+  function _sitePubSig(){ try{ return JSON.stringify({a:_publicSiteAssets(),c:_publicSiteConfig(),h:_web().headline||'',ab:_web().about||''}); }catch(e){ return ''; } }
+  function _siteDirty(){ var w=_web(); return !!w.published && w.pubSig!=null && w.pubSig!==_sitePubSig(); }   // guarded on pubSig!=null so sites published before this feature never false-positive as dirty
   function copyBookingLink(){ try{ navigator.clipboard.writeText(_bookingLink()); }catch(e){} toast('Booking link copied'); }
   function publishBookingSite(){ if(!_guard('webEdit','Publishing your site'))return;
     if(!ATLAS_BACKEND || !_apiCsrf){ toast('Your site is a preview. Publishing to a real link goes live once your Atlas backend is connected (see go-live steps).'); return; }
@@ -8242,7 +8249,7 @@ const Atlas = (function(){
       settings:{ comms:_comms(), publicSite:{ published:true, headline:_web().headline||('Rent with '+S.brand.name), about:_web().about||'', assets:_publicSiteAssets(), config:_publicSiteConfig() } } };
     toast('Publishing\u2026');
     _api('/api/tenant/profile',{method:'PUT',body:payload}).then(function(res){
-      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var w=_web(); w.published=true; w.publishedSlug=res.json.subdomain||slug; save(); renderWebsite(); toast('Booking site published \u2014 your link is live'); }
+      if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var w=_web(); w.published=true; w.publishedSlug=res.json.subdomain||slug; w.pubSig=_sitePubSig(); save(); renderWebsite(); toast('Booking site published \u2014 your link is live'); }
       else if(res.status===402 && res.json && res.json.error==='website_addon_required'){ toast('Add the website ($199 once or $19/mo) or upgrade to Enterprise to publish'); buyWebsiteAddon(); }   // #278: honest gate, same $199/$19-or-upgrade copy as _webGateHtml
       else toast((res.json&&res.json.error)||'Could not publish \u2014 please try again'); }).catch(function(){ toast('Network error while publishing'); }); }
   function _bookingSitePublished(){ return !!(ATLAS_BACKEND && _web().published); }
@@ -8299,8 +8306,8 @@ const Atlas = (function(){
       +'<div class="set-block"><h3>Public booking site</h3><div class="desc">A branded page where customers book '+esc(S.fleet.nouns)+' directly &mdash; everything above is editable and updates when you re-publish.</div>'
         +(ATLAS_BACKEND
           ? ('<div class="field"><label>Your booking link</label><div style="display:flex;gap:8px"><input class="input mono" readonly value="'+esc(_bookingLink())+'"><button class="btn btn--ghost btn--sm" onclick="Atlas.copyBookingLink()">Copy</button></div></div>'
-             +'<button class="btn btn--primary" onclick="Atlas.publishBookingSite()">'+(_web().published?'Re-publish changes':'Publish booking site')+'</button>'
-             +(_web().published?'<div class="bk-lenhint" style="margin:8px 0 0;border-color:var(--brand);color:var(--ink)"><b>Live</b> &mdash; customers can book at your link now.</div>':''))
+             +'<button class="btn btn--primary" onclick="Atlas.publishBookingSite()">'+(_web().published?(_siteDirty()?'Publish changes':'Re-publish changes'):'Publish booking site')+'</button>'
+             +(_web().published?('<div class="bk-lenhint" style="margin:8px 0 0;'+(_siteDirty()?'border-color:#C77D0A;color:#8a5200"><b>Unpublished changes</b> &mdash; your live site still shows the last published version. Publish to push your latest fleet, pricing and copy.':'border-color:var(--brand);color:var(--ink)"><b>Live</b> &mdash; customers can book at your link now.')+'</div>'):''))
           : '<div class="bk-lenhint" style="margin:0">This is a <b>preview</b>. Your public booking site and shareable link go live once your Atlas backend is connected (see go-live steps) &mdash; then Publish here. Nothing is served publicly until then.</div>')
       +'</div>'
       +'<div class="set-block" id="domBlock"><h3>Domain</h3><div class="desc">Swap your web address anytime.</div>'+_domainHtml()+'</div>'
@@ -9232,7 +9239,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkPortalLink,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
