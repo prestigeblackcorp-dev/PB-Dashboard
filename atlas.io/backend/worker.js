@@ -3406,7 +3406,7 @@ function doReset(){
           } catch (e) {}
           const token = randId(24), bref = 'BK-' + randId(8);
           const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
-            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined };
+            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined };   // G4: carry a delivery/pickup address if the site collects one
           try {
             await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
@@ -3799,6 +3799,15 @@ function doReset(){
               try {
                 const _tinfo = await env.DB.prepare("SELECT name, (SELECT email FROM users WHERE tenant_id=tenants.id AND role='owner' LIMIT 1) AS owner_email FROM tenants WHERE id=?").bind(tid).first();
                 if (_tinfo && _tinfo.owner_email) await _sendAtlasReceipt(env, { to: _tinfo.owner_email, business: _tinfo.name || '', credit: true, lineLabel: 'Atlas Rental.io refund', amountStr: money2(amt), totalStr: money2(amt) });
+              } catch (e) {}
+            }
+            // Payments G3b: if the refunded charge was a BOOKING payment (our booking checkouts stamp metadata.booking/tenant),
+            // net it out of that booking's revenue_cents + bump _t -- so an owner who refunds DIRECTLY in Stripe still sees the
+            // drop in their dashboard P&L (the in-app /api/pay/refund path already does this).
+            if (amt > 0 && md.booking && md.tenant) {
+              try {
+                const _brb = await env.DB.prepare('SELECT revenue_cents,data FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
+                if (_brb) { const _bd = jparse(_brb.data, {}); _bd._t = Date.now(); const _newRev = Math.max(0, (Number(_brb.revenue_cents) || 0) - Math.abs(amt)); await env.DB.prepare('UPDATE bookings SET revenue_cents=?, data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(_newRev, JSON.stringify(_bd), Date.now(), md.booking, md.tenant).run(); }
               } catch (e) {}
             }
           } else if (T === 'invoice.payment_failed') {
