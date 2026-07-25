@@ -1911,6 +1911,7 @@ async function stripeCheckout(secretKey, opts) {
     if (opts.email) add('customer_email', opts.email);
     var md = opts.metadata || {}; for (var k in md) add('metadata[' + k + ']', String(md[k]));
     if (mode === 'subscription') { for (var sk in md) add('subscription_data[metadata][' + sk + ']', String(md[sk])); }   // propagate to the subscription so renewal/cancel events carry the tenant + tier
+    if (mode === 'payment') { for (var pk in md) add('payment_intent_data[metadata][' + pk + ']', String(md[pk])); }   // Payments P1: Stripe does NOT copy Checkout Session metadata onto the PaymentIntent/Charge. charge.refunded reads charge.metadata -> without this, a refund done DIRECTLY in the Stripe dashboard can't find {booking,tenant} and revenue_cents is never decremented (P&L silently overstated). Mirror the metadata onto the PI so the charge carries it.
     var r = await _fetchTimeout('https://api.stripe.com/v1/checkout/sessions', {
       method: 'POST', headers: { 'Authorization': 'Bearer ' + secretKey, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: form.join('&')
@@ -3849,7 +3850,7 @@ function doReset(){
             // Payments G3b: if the refunded charge was a BOOKING payment (our booking checkouts stamp metadata.booking/tenant),
             // net it out of that booking's revenue_cents + bump _t -- so an owner who refunds DIRECTLY in Stripe still sees the
             // drop in their dashboard P&L (the in-app /api/pay/refund path already does this).
-            if (amt > 0 && md.booking && md.tenant) {
+            if (amt > 0 && md.booking && md.tenant && _rfTxn && _rfTxn.new) {   // Payments P3: gate on the refund txn's OWN dedup (.new) so a REPLAYED charge.refunded never double-subtracts revenue_cents (the decrement is not idempotent on its own). Same guard as the credit-note receipt above.
               try {
                 const _brb = await env.DB.prepare('SELECT revenue_cents,data FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
                 if (_brb) { const _bd = jparse(_brb.data, {}); _bd._t = Date.now(); const _newRev = Math.max(0, (Number(_brb.revenue_cents) || 0) - Math.abs(amt)); await env.DB.prepare('UPDATE bookings SET revenue_cents=?, data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(_newRev, JSON.stringify(_bd), Date.now(), md.booking, md.tenant).run(); }
@@ -6224,6 +6225,8 @@ function doReset(){
           if (!owns) return err(404, 'Not found.');           // cross-tenant writes are denied here
           const body = await req.json().catch(() => ({}));
           if (coll === 'charges' && vStr(body.booking_id, 40)) { const _bok = await env.DB.prepare('SELECT id FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking_id, ctx.tenant_id).first(); if (!_bok) delete body.booking_id; }   // defense-in-depth: never let a charge reference another tenant's booking id
+          // Payments P2: stale-push guard on the PUT path too (the client mirrors bookings PUT-FIRST, so this is the live vector). Without it an OLDER client blob overwrites a NEWER server data blob -- reverting webhook-set charges[].paidOnline/paidAt + portal *PaidAt, re-showing a PAID charge as payable (double-charge exposure). Newest-wins on data._t, mirroring the POST guard + client merge.
+          if (coll === 'bookings' && body.data && typeof body.data === 'object') { try { const _curP = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(id, ctx.tenant_id).first(); if (_curP) { const _cdP = jparse(_curP.data, {}); if (Number(body.data._t || 0) < Number(_cdP._t || 0)) delete body.data; } } catch (e) {} }
           const { cols, vals } = patchFields(coll, body);
           if (!cols.length) return json({ ok: true });          // nothing to change
           const setCols = cols.slice(), setVals = vals.slice();
