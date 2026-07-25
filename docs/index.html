@@ -1533,6 +1533,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
   <button class="tab-btn" onclick="switchTab('drivers')">&#128663; Drivers</button>
   <button class="tab-btn" onclick="switchTab('brokers')">&#129309; Brokers</button>
   <button class="tab-btn" id="tabBtnOutreach" onclick="switchTab('outreach')">&#128231; Outreach</button>
+  <button class="tab-btn" id="tabBtnLeads" onclick="switchTab('leads')">&#128293; Leads <span id="tabBadgeLeads" class="tab-badge tab-badge-gold" style="display:none"></span></button>
 </div>
 
 <!-- INVOICE PRINT AREA -->
@@ -2505,6 +2506,16 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
         </table>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- &#9552;&#9552;&#9552; TAB: LEADS &#9552;&#9552;&#9552; -->
+<div id="tab-leads" class="tab-panel">
+  <div class="main">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px">
+      <div style="font-size:18px;font-weight:800;color:#fff">&#128293; Hot Leads</div>
+    </div>
+    <div id="leadsList"></div>
   </div>
 </div>
 
@@ -4740,8 +4751,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v282';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v284';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v283';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v285';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -5407,6 +5418,15 @@ function cloudLoad(callback) {
           // ------------------------------------------------------------------
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
           _rehydrateSigs(bookings, function(_n){ if(_n>0){ try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){} try{ if(typeof render==='function') render(); }catch(e){} } });   // PHASE 2: fetch+graft any sig-stripped bookings from /sigs; no-op (no re-render) when flag OFF
+        }
+        // Leads are worker-owned ("Request Quote" inquiries written by the /lead endpoint) and live in
+        // their OWN Firebase node (pb_data/leads) -- NEVER merged into bookings/KPIs/gating. Read-only
+        // mirror for the Leads tab; the dashboard never PATCHes leads back (see _syncPayload).
+        if (data.leads && typeof data.leads === 'object') {
+          leads = Object.values(data.leads).filter(function(l){
+            return l && l.id && !l._deleted && l.status!=='dismissed' && l.status!=='converted';
+          }).sort(function(a,b){ return (Number(b._t)||0) - (Number(a._t)||0); });
+          try { if(activeTab==='leads' && typeof renderLeads==='function') renderLeads(); } catch(e) {}
         }
         // needsPush only when LOCAL has MORE than the cloud (real additions). A `!==` here churned
         // forever once these nodes held DUPLICATE entries (merged dedupes smaller than the raw cloud array)
@@ -7878,6 +7898,7 @@ var SAMPLE = [
 //  STATE
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 var bookings = [];
+var leads = []; // "Request Quote" inquiries (worker /lead endpoint -> pb_data/leads); READ-ONLY mirror, never merged into bookings/KPIs/gating -- see cloudLoad + _syncPayload
 var outreachTemplates = []; try{ outreachTemplates = JSON.parse(localStorage.getItem('pb_outreach_templates')||'[]')||[]; }catch(e){ outreachTemplates=[]; }
 var outreachHistory = []; try{ outreachHistory = JSON.parse(localStorage.getItem('pb_campaign_history')||'[]')||[]; }catch(e){ outreachHistory=[]; }
 var outreachSettings = {}; try{ outreachSettings = JSON.parse(localStorage.getItem('pb_outreach_settings')||'{}')||{}; }catch(e){ outreachSettings={}; }
@@ -8665,7 +8686,7 @@ function switchTab(name){
   document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
   $d('tab-'+name).classList.add('active');
   var btns=document.querySelectorAll('.tab-btn');
-  var map={overview:0,upcoming:1,current:2,previous:3,today:4,cancelled:5,calendar:6,tax:7,fleet:8,customers:9,drivers:10,brokers:11,outreach:12};
+  var map={overview:0,upcoming:1,current:2,previous:3,today:4,cancelled:5,calendar:6,tax:7,fleet:8,customers:9,drivers:10,brokers:11,outreach:12,leads:13};
   if(btns[map[name]]) btns[map[name]].classList.add('active');
   if(name==='calendar')   renderCalendar();
   else if(name==='upcoming')  renderUpcoming();
@@ -8679,6 +8700,7 @@ function switchTab(name){
   else if(name==='drivers'){  renderDriversTab(); setTimeout(function(){ initFleetMap(); refreshFleetMap(); loadRideHistFull(); if(!_fleetRefreshTimer){ _fleetRefreshTimer=setInterval(refreshFleetMap,15000); } },200); }
   else if(name==='brokers')   renderBrokerTab();
   else if(name==='outreach')  renderOutreachTab();
+  else if(name==='leads')     renderLeads();
 }
 
 // Pause the fleet poll while the browser tab is hidden (minimised / another app / phone asleep) and resume
@@ -19812,6 +19834,167 @@ function renderCustomersTab(){
       '<div style="padding:10px 12px;display:flex;flex-direction:column;gap:10px">'+custBody+'</div>' :
       '<div class="tbl-wrap">'+custBody+'</div>'
     )+'</div>';
+}
+
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+//  LEADS TAB -- "Request Quote" inquiries (worker /lead endpoint, pb_data/leads). Read-only mirror;
+//  never written back via sync (see _syncPayload / cloudLoad). Styled on tripCard() so it looks native.
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+function leadCard(lead){
+  // NOTE: .trip-card's mobile CSS hides its 3rd/4th DIRECT children (the Duration/Countdown columns on a
+  // normal booking trip-card) via :nth-child(3)/(4){display:none}. To keep that rule targeting the right
+  // elements here too (instead of accidentally hiding the actions row), this returns the SAME 5-child
+  // shape as tripCard(): date | main | hours-detail | est-total-detail | actions. Every must-show field
+  // is ALSO present in the always-visible main column, so nothing is lost when 3/4 collapse on mobile.
+  var srcMap={
+    events:  {label:'EVENTS',  color:'#C9A962', bg:'rgba(201,169,98,.18)', border:'rgba(201,169,98,.4)'},
+    Website: {label:'WEBSITE', color:'#60a5fa', bg:'rgba(96,165,250,.15)', border:'rgba(96,165,250,.3)'},
+    web:     {label:'WEB',     color:'#60a5fa', bg:'rgba(96,165,250,.15)', border:'rgba(96,165,250,.3)'}
+  };
+  var sm=srcMap[lead.source]||{label:(lead.source||'LEAD').toUpperCase(),color:'var(--muted)',bg:'rgba(255,255,255,.06)',border:'rgba(255,255,255,.15)'};
+  var sourceBadge='<span style="background:'+sm.bg+';color:'+sm.color+';border:1px solid '+sm.border+';border-radius:5px;padding:1px 7px;font-size:10px;font-weight:800;letter-spacing:.02em">'+esc(sm.label)+'</span>';
+
+  var whatFor=lead.vehicle||lead.package||'Inquiry';
+  var whatForSub=(lead.vehicle&&lead.package&&lead.package!==lead.vehicle)?lead.package:'';
+
+  var _ld=lead.eventDate?parseLocalDate(lead.eventDate):null;
+  var _ldOk=_ld&&!isNaN(_ld.getTime());
+  var dateColHtml=
+    '<div class="trip-date-big">'+(_ldOk?_ld.getDate():'\u2014')+'</div>'+
+    '<div class="trip-date-sub">'+(_ldOk?_ld.toLocaleString('en-US',{weekday:'short'}).toUpperCase()+' \u2022 '+_ld.toLocaleString('en-US',{month:'short'}).toUpperCase():'No date')+'</div>'+
+    (lead.timeWindow?'<div style="font-size:10px;color:var(--gold);margin-top:2px;white-space:nowrap">'+esc(lead.timeWindow)+'</div>':'');
+
+  var extrasChips='';
+  var _chips=[];
+  if(Number(lead.hours)>0) _chips.push('\u23f1 '+Number(lead.hours)+' hr'+(Number(lead.hours)===1?'':'s'));
+  if(lead.addons && typeof lead.addons==='object'){
+    Object.keys(lead.addons).forEach(function(k){ if(lead.addons[k]) _chips.push(k); });
+  }
+  if(_chips.length) extrasChips='<div class="trip-extras">'+_chips.map(function(c){ return '<span class="extra-chip">'+esc(c)+'</span>'; }).join('')+'</div>';
+
+  var digits=(lead.phone||'').replace(/\D/g,'');
+  var callBtn=digits?'<button class="btn btn-sm" style="border-color:var(--green);color:var(--green)" onclick="window.location.href=\'tel:'+digits+'\'">\ud83d\udcde Call</button>':'';
+  var textBtn=digits?'<button class="btn btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="window.location.href=\'sms:'+digits+'\'">\ud83d\udcac Text</button>':'';
+
+  // Main column (always visible, incl. on mobile) -- carries every must-show field.
+  var mainHtml=
+    '<div style="margin-bottom:4px">'+sourceBadge+'</div>'+
+    '<div class="trip-vehicle">'+esc(whatFor)+'</div>'+
+    (whatForSub?'<div style="font-size:11px;color:var(--gold);margin-top:1px">'+esc(whatForSub)+'</div>':'')+
+    '<div class="trip-customer">'+esc(lead.name||'Unnamed lead')+(lead.phone?' \u00b7 '+esc(lead.phone):'')+(lead.email?' \u00b7 '+esc(lead.email):'')+'</div>'+
+    (lead.location?'<div style="font-size:11px;color:var(--muted);margin-top:4px">\ud83d\udccd '+esc(lead.location)+'</div>':'')+
+    extrasChips+
+    (Number(lead.estimatedTotal)>0?'<div style="margin-top:6px;font-size:15px;font-weight:800;color:var(--gold)">Est. '+$$(Number(lead.estimatedTotal))+'</div>':'')+
+    (lead.notes?'<div style="margin-top:6px;font-size:11px;color:var(--muted);background:rgba(255,255,255,.04);border-left:2px solid var(--gold-dim);padding:4px 8px;border-radius:0 6px 6px 0;white-space:pre-wrap">\ud83d\udcdd '+esc(lead.notes)+'</div>':'')+
+    (lead.createdAt?'<div style="font-size:9px;color:var(--muted);margin-top:6px">\ud83d\udd14 '+new Date(Number(lead.createdAt)).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true})+'</div>':'');
+
+  // Desktop-only bonus detail columns (3rd/4th child -- collapse on mobile like Duration/Countdown do).
+  // Both values are already duplicated above in the always-visible main column, so nothing is lost.
+  var hoursDetailHtml=Number(lead.hours)>0?
+    '<div class="trip-detail-label">Hours</div><div class="trip-detail-val">'+Number(lead.hours)+'</div>':'';
+  var totalDetailHtml=Number(lead.estimatedTotal)>0?
+    '<div class="trip-detail-label">Est. Total</div><div class="trip-detail-val">'+$$(Number(lead.estimatedTotal))+'</div>':'';
+
+  return '<div class="trip-card" id="leadcard-'+lead.id+'">'+
+    '<div>'+dateColHtml+'</div>'+
+    '<div>'+mainHtml+'</div>'+
+    '<div>'+hoursDetailHtml+'</div>'+
+    '<div>'+totalDetailHtml+'</div>'+
+    '<div class="trip-card-actions">'+
+      callBtn+textBtn+
+      '<button class="btn btn-sm btn-gold" title="Convert to Booking" onclick="convertLeadToBooking(\''+lead.id+'\')">\u2713 Convert</button>'+
+      '<button class="btn btn-sm" style="border-color:rgba(255,92,92,.5);color:var(--red)" onclick="dismissLead(\''+lead.id+'\')">\u2715 Dismiss</button>'+
+    '</div>'+
+  '</div>';
+}
+function renderLeads(){
+  var el=$d('leadsList'); if(!el) return;
+  el.innerHTML = leads.length
+    ? leads.map(leadCard).join('')
+    : '<div style="padding:40px;text-align:center;color:var(--muted)">No new leads yet.<br><span style="font-size:12px">Quote requests from the website and Events Pro will show up here.</span></div>';
+  var tb=$d('tabBadgeLeads'); if(tb){ tb.textContent=leads.length; tb.style.display=leads.length?'':'none'; }
+}
+// Optimistic dismiss: hide it locally immediately (mirrors _dismissOwnerAlert's pattern), then tell the
+// worker so it doesn't come back on the next sync. Network failure is tolerated silently -- worst case
+// it reappears on the next pull and can be dismissed again; nothing here is destructive or data-losing.
+function dismissLead(id){
+  leads = leads.filter(function(x){ return x.id!==id; });
+  renderLeads();
+  try{
+    if(WORKER_URL){
+      fetch(WORKER_URL+'/lead/dismiss',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({leadId:id})}).catch(function(){});
+    }
+  }catch(e){}
+}
+// Convert a lead into a real booking by reusing the EXISTING Add Booking modal + saveBooking() flow --
+// the same hand-off pattern bookFromWaitlist() already uses for waitlist entries. Pre-fills the form from
+// the lead and opens it for the owner to review (a lead's free-text vehicle/package rarely matches a
+// fleet vehicle name exactly, and saveBooking()'s own conflict/blacklist checks should still run) rather
+// than hand-building a bookings[] entry that would skip all of that. Never invents a parallel save path.
+function convertLeadToBooking(id){
+  var lead=leads.find(function(x){ return x.id===id; });
+  if(!lead){ toast('Lead not found \u2014 it may already be handled.'); return; }
+  openModal();
+  if($d('fName'))  $d('fName').value  = lead.name  || '';
+  if($d('fPhone')) $d('fPhone').value = lead.phone || '';
+  if($d('fEmail')) $d('fEmail').value = lead.email || '';
+  var vehGuess=lead.vehicle||lead.package||'';
+  if($d('fVehicle') && vehGuess){
+    var _vOpts=$d('fVehicle').options||[];
+    for(var _vi=0; _vi<_vOpts.length; _vi++){ if(_vOpts[_vi].value===vehGuess){ $d('fVehicle').value=vehGuess; break; } }
+  }
+  if(lead.eventDate && $d('fPickupDate')){
+    $d('fPickupDate').value=lead.eventDate;
+    if($d('fDate')) $d('fDate').value=lead.eventDate;
+  }
+  var isEventLead=!!(lead.eventType||lead.package||lead.source==='events');
+  if(isEventLead && $d('fType')){
+    $d('fType').value='event';
+    try{ _populateEventSelects(); }catch(e){}
+    if(lead.package && $d('fEventPackage')){
+      var _pOpts=$d('fEventPackage').options||[];
+      for(var _pi=0; _pi<_pOpts.length; _pi++){ if(_pOpts[_pi].value===lead.package){ $d('fEventPackage').value=lead.package; break; } }
+    }
+    if(lead.eventType && $d('fEventType')){
+      var _tOpts=$d('fEventType').options||[];
+      for(var _ti=0; _ti<_tOpts.length; _ti++){ if(_tOpts[_ti].value===lead.eventType){ $d('fEventType').value=lead.eventType; break; } }
+    }
+    try{ toggleEventFields(); }catch(e){}
+  } else if(Number(lead.hours)>0 && $d('fType')){
+    $d('fType').value='hourly';
+  }
+  if(Number(lead.hours)>0 && $d('fDays')) $d('fDays').value=Number(lead.hours);
+  if(Number(lead.estimatedTotal)>0 && $d('fRevenue')){
+    $d('fRevenue').value=Number(lead.estimatedTotal);
+    $d('fRevenue')._manual=true;   // protects the lead's quoted price from onVehicleChange/_evRecalc auto-pricing below
+  }
+  if(lead.location && $d('fAddress') && !$d('fAddress').value) $d('fAddress').value=lead.location;
+  var noteParts=['Converted from '+(lead.source||'web')+' lead inquiry'];
+  if(lead.package)    noteParts.push('Package: '+lead.package);
+  if(lead.eventType)  noteParts.push('Event type: '+lead.eventType);
+  if(lead.timeWindow) noteParts.push('Time window: '+lead.timeWindow);
+  if(lead.location)   noteParts.push('Location: '+lead.location);
+  if(lead.addons && typeof lead.addons==='object'){
+    var _ak=Object.keys(lead.addons).filter(function(k){ return lead.addons[k]; });
+    if(_ak.length) noteParts.push('Requested add-ons: '+_ak.join(', '));
+  }
+  if(lead.notes) noteParts.push(lead.notes);
+  if($d('fNotes')) $d('fNotes').value=noteParts.join('\n');
+  if($d('fSource')){
+    var _sMap={events:'Website',Website:'Website',web:'Website'};
+    var _sVal=_sMap[lead.source]||'';
+    if(_sVal){
+      var _sOpts=$d('fSource').options||[];
+      for(var _si=0; _si<_sOpts.length; _si++){ if(_sOpts[_si].value===_sVal){ $d('fSource').value=_sVal; break; } }
+    }
+  }
+  try{ if(typeof onVehicleChange==='function') onVehicleChange(); }catch(e){}
+  try{ updateLiveTotal(); updateRemainingBalance(); }catch(e){}
+  // Hand this lead off to the booking flow now (same optimistic remove + worker POST as Dismiss) so it
+  // no longer sits in Hot Leads while the owner finishes the form. The raw lead row stays in Firebase
+  // (status:dismissed, never deleted) -- fully recoverable; nothing here is destructive.
+  dismissLead(id);
+  toast('Lead loaded into Add Booking \u2014 review and Save to confirm.');
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
