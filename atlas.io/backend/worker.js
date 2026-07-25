@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25l';
+const ATLAS_BUILD = '2026.07.25m';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1337,13 +1337,18 @@ async function _bookingMirrorWrite(env, tenantId, id, cols, vals, clientData) {
     if (cols.length) await env.DB.prepare('UPDATE bookings SET ' + cols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=?').bind(...vals, id, tenantId).run();
     return true;
   }
-  const uaIdx = cols.indexOf('updated_at');
+  const revIdx = cols.indexOf('revenue_cents');   // G5 may inject a DERIVED cash-quote revenue estimate -- valid ONLY while the column is still 0
   for (var _i = 0; _i < 6; _i++) {
-    const row = await env.DB.prepare('SELECT data, updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(id, tenantId).first();
+    const row = await env.DB.prepare('SELECT data, revenue_cents, updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(id, tenantId).first();
     if (!row) return false;
     _graftServerPay(clientData, jparse(row.data, {}));   // server-owned payment fields always win, read fresh each attempt
-    const v = vals.slice(); v[dataIdx] = JSON.stringify(clientData); if (uaIdx >= 0) v[uaIdx] = Date.now();
-    const _u = await env.DB.prepare('UPDATE bookings SET ' + cols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=? AND updated_at IS ?').bind(...v, id, tenantId, row.updated_at).run();
+    // #346-E2c: the G5 revenue estimate was frozen pre-loop; if a payment webhook has since set revenue_cents (>0), DROP the estimate
+    // THIS attempt so a stale cash-quote can't clobber a real recorded payment. Re-checked against the FRESH row on every retry.
+    var wCols = cols, wVals = vals;
+    if (revIdx >= 0 && (Number(row.revenue_cents) || 0) > 0) { wCols = cols.slice(); wVals = vals.slice(); wCols.splice(revIdx, 1); wVals.splice(revIdx, 1); }
+    const dIdx = wCols.indexOf('data'), uIdx = wCols.indexOf('updated_at');
+    const v = wVals.slice(); v[dIdx] = JSON.stringify(clientData); if (uIdx >= 0) v[uIdx] = Date.now();
+    const _u = await env.DB.prepare('UPDATE bookings SET ' + wCols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=? AND updated_at IS ?').bind(...v, id, tenantId, row.updated_at).run();
     if (_u && _u.meta && _u.meta.changes) return true;
   }
   return false;   // exhausted (extreme contention) -> the owner edit is not persisted, but the server payment ledger stays intact
