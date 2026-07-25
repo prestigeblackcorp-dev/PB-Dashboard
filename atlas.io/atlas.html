@@ -8192,14 +8192,29 @@ const Atlas = (function(){
       else { toast((res.json&&res.json.error)||'Could not start checkout - please try again'); }
     }).catch(function(){ toast('Network error starting checkout'); }); }
   // On return from Stripe Checkout (Stripe only redirects here AFTER a completed payment), reflect the purchase locally; the webhook is the server-authoritative record.
+  // GATE FIX / confirm-on-return: after a Stripe trial checkout, verify the session with the server (worker fetches the
+  // session from Stripe and writes card_on_file + stripe_sub + trial_ends directly -- no webhook dependency) BEFORE
+  // onboarding. Only proceeds once the server confirms; retries a few times while Stripe settles; otherwise leaves the
+  // honest card gate up. Falls back to a plain /api/auth/me billing_state poll when no session_id is present.
+  function _confirmTrialReturn(sid, tries){ tries=tries||0;
+    if(!(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf)){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); _postVerifyProceed(); }catch(e){} return; }
+    if(tries===0){ try{ toast('Confirming your card...'); }catch(e){} }
+    var _done=function(){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); renderTrialBox(); renderSet(); buildAio(); }catch(e){} try{ _postVerifyProceed(); }catch(e){} try{ toast('Your free trial is active -- card saved, no charge today.'); }catch(e){} };
+    var _wait=function(){ if(tries<6){ setTimeout(function(){ _confirmTrialReturn(sid, tries+1); }, 2500); } else { try{ toast('We could not confirm your card yet -- please add a card to start your trial.'); showPaywall('needs_card'); }catch(e){} } };
+    var p = sid ? _api('/api/billing/confirm-session',{method:'POST',body:{session_id:sid,kind:'trial'}})
+                : _api('/api/auth/me',{method:'GET'});
+    p.then(function(res){ var j=(res&&res.json)||{}; var bs=j.billing_state;
+      var ok = res && res.status>=200 && res.status<300 && (sid ? !!j.confirmed : (!bs || bs==='ok'));
+      if(ok){ _done(); } else { _wait(); }
+    }).catch(_wait); }
   function _billingReturn(){ try{ var q=new URLSearchParams(location.search); var b=q.get('billing'); if(!b) return;
-    if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack');
+    if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack'), sid=q.get('session_id');
       if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
       else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); } }
       else if(kind==='website'){ S.websitePaid=true; save(); }
-      else if(kind==='trial'){ if(tier){ var _tt=_tier(tier); if(_tt) S.tier=_tt.id; } if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }   // NEW funnel: lock in the chosen plan + card-on-file; day-7 invoice.paid flips plan to active server-side
+      else if(kind==='trial'){ if(tier){ var _tt=_tier(tier); if(_tt) S.tier=_tt.id; save(); } _confirmTrialReturn(sid, 0); }   // GATE FIX: don't optimistically mark card-on-file from the return URL -- confirm the checkout session server-side first (records card_on_file + stripe_sub even if the webhook lags/misconfigured), THEN onboard. A completed trial clears the gate; an incomplete one honestly stays gated. _confirmTrialReturn owns the proceed + toast.
       try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){}
-      setTimeout(function(){ toast(kind==='trial'?'Your free trial is active - card saved, no charge today.':'Payment received - thank you! You are all set.'); }, 500);
+      setTimeout(function(){ if(kind!=='trial') toast('Payment received - thank you! You are all set.'); }, 500);   // the trial confirmation toast is shown by _confirmTrialReturn once the SERVER confirms the card
     }
     try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
   }catch(e){} }

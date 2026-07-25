@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25a';
+const ATLAS_BUILD = '2026.07.25b';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -6605,11 +6605,49 @@ function doReset(){
           meta.billing = 'asset_unlock'; meta.asset = _an;
         } else { return err(400, 'Unknown purchase kind.'); }
         const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
-          successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : ''),
+          successUrl: origin + '/?billing=success&kind=' + encodeURIComponent(kind) + (body.tier ? ('&tier=' + encodeURIComponent(body.tier)) : '') + (body.pack ? ('&pack=' + encodeURIComponent(body.pack)) : '') + '&session_id={CHECKOUT_SESSION_ID}',   // Stripe substitutes the real id on redirect -> confirm-on-return can fetch this session + record card/sub without waiting on the webhook
           cancelUrl: origin + '/?billing=cancel', metadata: meta });
         if (!co.ok) return err(502, 'Could not start checkout: ' + co.reason);
         await audit(env, ctx, req, 'billing.checkout', { kind: kind, tier: body.tier, pack: body.pack });
         return json({ ok: true, url: co.url });
+      }
+
+      // ---- CONFIRM-ON-RETURN (trial-gate fix + webhook independence). When the client lands back from Stripe checkout it
+      // POSTs the session_id here; we fetch the session straight from Stripe and write the SAME columns the
+      // checkout.session.completed webhook would (card_on_file + stripe_sub + trial_ends/tier/plan) -- so the card gate clears
+      // and the dashboard reflects the trial/plan EVEN IF the webhook is misconfigured or lagging (e.g. TEST mode without
+      // STRIPE_WEBHOOK_SECRET_TEST). Idempotent with the webhook (both just UPDATE the tenant row to identical values). We do
+      // NOT record the $0 trial txn or send the welcome email here -- those stay owned by the webhook (recordTxn dedups on the
+      // session id; the welcome email is gated on recordTxn.new) so nothing double-fires. Reachable while gated: _PAYMENT_OPEN
+      // covers /api/billing/. Security: only a session whose metadata.tenant matches the caller is honored, and every write
+      // targets the AUTHENTICATED caller's own tenant row. ----
+      if (path === '/api/billing/confirm-session' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!await rateLimit(env, 'bconf:' + ctx.tenant_id, 40, 3600000)) return err(429, 'Please wait a moment.');
+        const b = await req.json().catch(() => ({}));
+        const sid = String(b.session_id || '').trim();
+        if (!sid || !/^cs_[A-Za-z0-9_]+$/.test(sid)) return err(400, 'Missing checkout session id.');
+        const pk = await _platStripe(env);
+        if (!pk) return err(400, 'Platform billing is not configured yet.');
+        const sr = await stripeApi(pk, 'GET', 'checkout/sessions/' + encodeURIComponent(sid));
+        if (!sr.ok || !sr.j || !sr.j.id) return err(502, 'Could not verify your checkout with Stripe.');
+        const sess = sr.j, smd = sess.metadata || {};
+        if (smd.tenant && smd.tenant !== ctx.tenant_id) { await audit(env, ctx, req, 'billing.confirm_denied', { sid: sid }); return err(403, 'That checkout is not yours.'); }
+        const done = (sess.status === 'complete') || (sess.payment_status === 'paid') || (sess.payment_status === 'no_payment_required');
+        if (!done) return json({ ok: true, confirmed: false, pending: true });   // Stripe not settled yet -> client retries; the webhook also catches it
+        const _kind = smd.billing || String(b.kind || '');
+        if (_kind === 'trial') {
+          const _trialEnds = Date.now() + 7 * 24 * 3600 * 1000;   // mirror the webhook's trial window exactly
+          await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind(smd.tier || null, _trialEnds, sess.customer || null, sess.subscription || null, Date.now(), ctx.tenant_id).run();
+          await audit(env, ctx, req, 'billing.trial_card_confirmed', { tier: smd.tier, sid: sid });
+        } else if (_kind === 'plan') {
+          await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(smd.tier || null, sess.customer || null, sess.subscription || null, Date.now(), ctx.tenant_id).run();
+          await audit(env, ctx, req, 'billing.subscribed_confirmed', { tier: smd.tier, sid: sid });
+        } else {
+          return json({ ok: true, confirmed: false, kind: _kind });   // credits/website/domain/asset_unlock don't gate signup -> leave to the webhook
+        }
+        let _bs2 = 'ok'; try { if (await _cardGateOn(env)) _bs2 = await _cardGateStateForTenant(env, ctx.tenant_id, ctx.user.email); } catch (e) {}
+        return json({ ok: true, confirmed: true, billing_state: _bs2 });
       }
 
       // ---- RELOCK (or RESUME) a per-asset unlock: cancel_at_period_end on that ONE asset's $11.99/mo subscription.
