@@ -2614,7 +2614,7 @@ const Atlas = (function(){
     hold:{ type:'none', value:250, collect:'hold', when:'pickup' },      // #290 SEPARATE refundable security/damage deposit (NOT revenue unless kept): none | fixed($value) | percent(%value of total); collect = hold (authorize, $0 fee to release) | charge (capture + refund); when = pickup | booking. Default OFF so it's opt-in per business.
     payout:{ enabled:false, label:'Partner payout', kind:'percent', value:0, base:'subtotal' },  // a commission/split that leaves you per booking (agent, referrer, staff) -> your net = revenue - tax - payout
     weeklyDisc:10, monthlyDisc:25, _rc:0,
-    smartPricing:{ on:false, weekend:{on:false,days:[5,6],pct:15}, seasons:[], leadTime:{lastMinuteDays:2,lastMinutePct:10,earlyBirdDays:30,earlyBirdPct:-10} },   // Smart Pricing Increment 1: owner-controlled rate MULTIPLIER (weekend uplift + seasonal date ranges + lead-time). on:false -> zero change to pricing until a tenant explicitly enables it (see _smartRateMult below).
+    smartPricing:{ on:false, weekend:{on:false,days:[5,6],pct:15}, seasons:[], leadTime:{lastMinuteDays:2,lastMinutePct:10,earlyBirdDays:30,earlyBirdPct:-10}, autoApply:{ on:false, maxUpPct:15, maxDownPct:15, stepPct:5, cadenceDays:7, lastRunAt:0, log:[] } },   // Smart Pricing Increment 1: owner-controlled rate MULTIPLIER (weekend uplift + seasonal date ranges + lead-time). on:false -> zero change to pricing until a tenant explicitly enables it (see _smartRateMult below).
     // How the operator's booking form behaves -- fully editable in Settings > Bookings ("teach + build").
     //   time:false      -> collect dates only; true -> also collect start (and end) times
     //   durationMode:'length' -> guest enters how many days/hours; 'end' -> guest picks an end date, length auto-calculated
@@ -3455,7 +3455,7 @@ const Atlas = (function(){
      existing tenant's pricing stays byte-identical until they explicitly enable it in Fleet > Pricing Rules. The actual
      multiplier math lives in _smartRateMult/_dayFactor/_inSeason/_ymdNum above -- kept byte-identical to the worker's
      copy (the parity contract: dashboard, public site and portal all quote and charge the same price). ---- */
-  function _sp(){ if(!S.money.smartPricing) S.money.smartPricing={ on:false, weekend:{on:false,days:[5,6],pct:15}, seasons:[], leadTime:{lastMinuteDays:2,lastMinutePct:10,earlyBirdDays:30,earlyBirdPct:-10} }; return S.money.smartPricing; }
+  function _sp(){ if(!S.money.smartPricing) S.money.smartPricing={ on:false, weekend:{on:false,days:[5,6],pct:15}, seasons:[], leadTime:{lastMinuteDays:2,lastMinutePct:10,earlyBirdDays:30,earlyBirdPct:-10} }; if(!S.money.smartPricing.autoApply) S.money.smartPricing.autoApply={ on:false, maxUpPct:15, maxDownPct:15, stepPct:5, cadenceDays:7, lastRunAt:0, log:[] }; return S.money.smartPricing; }
   function setSmartPricing(k,v){ if(!_canMod('settings'))return; var sp=_sp();
     if(k==='on') sp.on=!!v;
     else if(k==='weekend.on') sp.weekend.on=!!v;
@@ -4221,6 +4221,7 @@ const Atlas = (function(){
     const head=`<thead><tr><th>Booking</th><th>${cap(_custNoun())}</th><th>${cap(S.fleet.noun)}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
     document.getElementById('bookTbl').innerHTML=head+'<tbody>'+(DATA.bookings.length?DATA.bookings.slice(0,5).map(rows).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px 8px">No bookings yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.newBooking()">create your first booking</span>.</td></tr>')+'</tbody>';
     document.getElementById('bookTblFull').innerHTML=head+'<tbody>'+DATA.bookings.map(rows).join('')+'</tbody>';
+    try{ _autoPriceRun('overview'); }catch(e){}   // Smart Pricing Increment 3: bounded auto-apply -- gated + no-op unless opted in; may nudge a.rate, then _renderRevOpt repaints with the new numbers
     try{ _renderRevOpt(); }catch(e){}   // Smart Pricing Increment 2: data-driven pricing suggestions, computed fresh from the util/bookings just recomputed above
     setTimeout(()=>drawRevChart(),30);
   }
@@ -4267,7 +4268,7 @@ const Atlas = (function(){
     a.name=(val('aName')||a.name).trim(); var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
     var _lcc=(val('aLocCity')||'').trim(); if(_lcc)a.locCity=_lcc; else delete a.locCity;   // per-asset market -> feeds location-aware dreaming
     var _lcz=(val('aLocZip')||'').trim(); if(_lcz)a.locZip=_lcz; else delete a.locZip;
-    var _r=parseFloat(val('aRate')); a.rate=(_r>=0?_r:a.rate); a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
+    var _r=parseFloat(val('aRate')); var _rPrev=a.rate; a.rate=(_r>=0?_r:a.rate); if(Number(a.rate)!==Number(_rPrev) && _sp().autoApply && _sp().autoApply.on) a.rateBaseline=a.rate;   /* Inc3: a manual rate edit re-anchors the auto-optimize band to the owner's new deliberate rate */ a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
     // packaging(1): qty is UNIT-capped -- raising it can't push the fleet's total units past the plan allowance (upgrade or
     // unlock instead). Never REDUCES an existing qty, so a downgrade-stranded asset is never silently shrunk on a plain save.
     var _qReq=Math.max(1, parseInt(val('aQty'),10)||1), _qOld=Math.max(1,parseInt(a.qty,10)||1), _vc=_vehCap(), _capHit=false;
@@ -4757,7 +4758,7 @@ const Atlas = (function(){
         +'</div></div>'; }).join('');
     var infoRow=r.suggestions.filter(function(s){ return s.kind==='info'; }).map(function(s){ return '<div class="bk-lenhint" style="margin:0 0 10px">'+esc(s.title)+' - '+esc(s.text)+'</div>'; }).join('');
     var notice=r.notice?('<div class="bk-lenhint" style="margin:0">'+esc(r.notice)+'</div>'):'';
-    body.innerHTML=head+rows+infoRow+notice+'<div id="revOptAiBox"></div>';
+    body.innerHTML=head+_autoPxBanner()+rows+infoRow+notice+'<div id="revOptAiBox"></div>';
   }
   // One-tap Apply: every kind only ever flips an EXISTING smartPricing knob (Increment 1) or nudges one asset's own
   // rate through _saveAssets -- both fully reversible by the owner in Settings > Pricing / the asset's own rate field.
@@ -4794,6 +4795,131 @@ const Atlas = (function(){
       if(!(res.status>=200&&res.status<300) || !txt){ box.innerHTML=''; return; }
       box.innerHTML='<div style="border-top:1px solid var(--line);margin-top:4px;padding-top:10px;font-size:13px;color:var(--ink)"><b style="color:var(--brand-700)">Atlas.io says:</b> '+esc(String(txt)).replace(/\n/g,'<br>')+'</div>';
     }).catch(function(){ box.innerHTML=''; });
+  }
+  /* ---- Smart Pricing Increment 3: BOUNDED auto-apply (opt-in, autoApply.on DEFAULT OFF). When on, Atlas nudges each
+     asset's OWN base rate (a.rate) toward demand -- UP for high-util assets, DOWN for idle ones -- but NEVER outside a
+     fixed band around rateBaseline (the rate the owner set by hand, snapshotted at opt-in and re-anchored on any manual
+     rate edit). Each move is <= stepPct, the band is [baseline*(1-maxDown%), baseline*(1+maxUp%)], there is a cadence
+     gate per asset + a ~once/day fleet gate + a 1% deadband, and every change is logged and one-tap revertible.
+     Because bounds anchor to a FIXED baseline (not the current rate), repeated runs CONVERGE to the band edge and can
+     never drift past it -- the key difference from the compounding manual "raise" apply. This only ever writes a.rate
+     through the SAME _saveAssets path a manual rate edit uses -- calcQuote/priceQuote and the _smartRateMult multiplier
+     are never touched, so the client<->worker parity contract is untouched. Runs on the OWNER'S dashboard only (never a
+     server cron + gated on _canMod('settings')), so a human is present and sees every change immediately. ---- */
+  var AUTOPX_FLEET_GATE_MS=20*3600*1000;   // fleet-wide: don't even evaluate more than about once a day
+  function _autoPx(){ return _sp().autoApply; }   // _sp() backfills autoApply for older tenants
+  function _autoPxBand(aa,base){ var up=Math.max(0,Number(aa.maxUpPct)||0), dn=Math.max(0,Math.min(90,Number(aa.maxDownPct)||0));
+    return { lo:Math.round(base*(1-dn/100)), hi:Math.round(base*(1+up/100)) }; }
+  // Pure planner: what each asset WOULD move to next, ignoring the cadence clock (used by the Settings preview). Anchored
+  // to rateBaseline so it shows the true bounded target, never a runaway number.
+  function _autoPxPlan(){ var aa=_autoPx(), plan=[];
+    (DATA.assets||[]).forEach(function(a){ var base=(a.rateBaseline!=null&&Number(a.rateBaseline)>0)?Number(a.rateBaseline):(Number(a.rate)||0); if(base<=0) return;
+      var util=Number(a.util)||0, cur=Number(a.rate)||0, dir=0;
+      if(util>=REVOPT_HIGH_UTIL) dir=1; else if(a.status==='Available'&&util<=REVOPT_LOW_UTIL) dir=-1; else return;
+      var band=_autoPxBand(aa,base), step=Math.max(0,Number(aa.stepPct)||0)/100;
+      var target=dir>0?Math.min(band.hi,Math.round(cur*(1+step))):Math.max(band.lo,Math.round(cur*(1-step)));
+      if(!(target>0)||Math.abs(target-cur)<Math.max(1,cur*0.01)) return;
+      plan.push({name:a.name, from:cur, to:target, dir:dir, util:util, atBand:(target===band.hi||target===band.lo)}); });
+    return plan; }
+  // The engine. Returns the number of rates changed. No-op unless opted in + a settings-capable user + gates elapsed.
+  function _autoPriceRun(reason){
+    try{
+      if(!_canMod('settings')) return 0;                 // only an owner/manager's dashboard drives it
+      var aa=_autoPx(); if(!aa||!aa.on) return 0;
+      var now=Date.now();
+      if(now-(Number(aa.lastRunAt)||0) < AUTOPX_FLEET_GATE_MS) return 0;   // fleet gate: about once a day
+      var assets=(DATA.assets||[]); if(!assets.length) return 0;
+      var changed=[];
+      assets.forEach(function(a){
+        if(a.rateBaseline==null || !(Number(a.rateBaseline)>0)) a.rateBaseline=Number(a.rate)||0;   // first touch: anchor the band to the owner's current rate
+        var base=Number(a.rateBaseline)||0; if(base<=0) return;
+        if(now-(Number(a.rateAutoAt)||0) < Math.max(1,Number(aa.cadenceDays)||7)*86400000) return;  // per-asset cadence
+        var util=Number(a.util)||0, cur=Number(a.rate)||0, dir=0;
+        if(util>=REVOPT_HIGH_UTIL) dir=1;                                  // strong demand -> raise
+        else if(a.status==='Available' && util<=REVOPT_LOW_UTIL) dir=-1;   // idle + bookable -> discount
+        else return;
+        var band=_autoPxBand(aa,base), step=Math.max(0,Number(aa.stepPct)||0)/100;
+        var target = dir>0 ? Math.min(band.hi, Math.round(cur*(1+step))) : Math.max(band.lo, Math.round(cur*(1-step)));
+        if(!(target>0)) return;
+        if(Math.abs(target-cur) < Math.max(1, cur*0.01)) return;           // deadband: skip sub-1% / sub-$1 noise (and no thrash at the band edge)
+        var from=cur; a.rate=target; a.rateAutoAt=now;
+        changed.push({assetId:a.id, name:a.name, from:from, to:target, dir:dir, util:util});
+      });
+      aa.lastRunAt=now;
+      if(changed.length){
+        changed.forEach(function(c){ aa.log.unshift({ts:now, assetId:c.assetId, name:c.name, from:c.from, to:c.to, dir:c.dir, util:c.util}); });
+        if(aa.log.length>120) aa.log=aa.log.slice(0,120);
+        _saveAssets(); save();
+        var ups=changed.filter(function(c){return c.dir>0;}).length, dns=changed.length-ups;
+        toast('Atlas auto-tuned '+changed.length+' rate'+(changed.length>1?'s':'')+(ups?(' ('+ups+' up'+(dns?', '+dns+' down':'')+')'):(dns?(' ('+dns+' down)'):''))+' within your bounds - review or revert in Overview');
+      } else { save(); }   // persist lastRunAt even when nothing moved, so the gate holds
+      return changed.length;
+    }catch(e){ return 0; }
+  }
+  function setAutoPrice(k,v){
+    if(!_canMod('settings')) return; var aa=_autoPx();
+    if(k==='on'){ aa.on=!!v;
+      if(aa.on){ (DATA.assets||[]).forEach(function(a){ if(a.rateBaseline==null||!(Number(a.rateBaseline)>0)) a.rateBaseline=Number(a.rate)||0; }); _saveAssets(); aa.lastRunAt=0; }   // snapshot baselines at opt-in; allow an immediate first bounded run
+    }
+    else if(k==='maxUpPct') aa.maxUpPct=Math.max(0,Math.min(100,parseFloat(v)||0));
+    else if(k==='maxDownPct') aa.maxDownPct=Math.max(0,Math.min(90,parseFloat(v)||0));
+    else if(k==='stepPct') aa.stepPct=Math.max(1,Math.min(50,parseFloat(v)||0));
+    else if(k==='cadenceDays') aa.cadenceDays=Math.max(1,Math.min(90,parseInt(v,10)||7));
+    save();
+    if(k==='on' && aa.on){ try{ _autoPriceRun('optin'); }catch(e){} }
+    try{ renderOverview(); }catch(e){} try{ renderSetSoft(); }catch(e){}
+  }
+  // Restore every auto-touched asset to its owner baseline AND switch auto-optimize off -- the promised "one click and
+  // everything snaps back to my rates".
+  function autoPriceRevertAll(){
+    if(!_canMod('settings')) return; var aa=_autoPx(), n=0;
+    (DATA.assets||[]).forEach(function(a){ if(a.rateBaseline!=null && Number(a.rateBaseline)>0 && Number(a.rate)!==Number(a.rateBaseline)){ a.rate=Number(a.rateBaseline); n++; } a.rateAutoAt=0; });
+    aa.on=false; aa.log.unshift({ts:Date.now(), revertAll:true, count:n}); if(aa.log.length>120) aa.log=aa.log.slice(0,120);
+    _saveAssets(); save();
+    toast(n?('Reverted '+n+' rate'+(n>1?'s':'')+' to your baseline; auto-optimize off'):'Rates already matched your baseline; auto-optimize off');
+    try{ renderFleet(); }catch(e){} try{ renderOverview(); }catch(e){} try{ renderSetSoft(); }catch(e){}
+  }
+  // Restore ONE asset to its baseline (leaves auto-optimize on).
+  function autoPriceRevertOne(aid){
+    if(!_canMod('settings')) return; var a=(DATA.assets||[]).filter(function(x){return String(x.id)===String(aid);})[0]; if(!a) return;
+    if(a.rateBaseline!=null && Number(a.rateBaseline)>0) a.rate=Number(a.rateBaseline);
+    a.rateAutoAt=0; var aa=_autoPx(); aa.log.unshift({ts:Date.now(), assetId:a.id, name:a.name, revertOne:true}); if(aa.log.length>120) aa.log=aa.log.slice(0,120);
+    _saveAssets(); save(); toast(esc(a.name)+' rate reset to your baseline '+money(a.rate));
+    try{ renderFleet(); }catch(e){} try{ renderOverview(); }catch(e){} try{ renderSetSoft(); }catch(e){}
+  }
+  // Live-state banner for the Revenue Optimizer card: shows which assets Atlas currently holds off-baseline, each with an undo.
+  function _autoPxBanner(){
+    var aa=_autoPx(); if(!aa||!aa.on) return '';
+    var live=(DATA.assets||[]).filter(function(a){ return Number(a.rateAutoAt)>0 && a.rateBaseline!=null && Number(a.rate)!==Number(a.rateBaseline); });
+    var head='<div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px">'
+      +'<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-size:12.5px;color:var(--brand-700)">Auto-optimize is on</b>'
+      +(live.length?'<button class="btn btn--sm btn--ghost" onclick="Atlas.autoPriceRevertAll()">Revert all &amp; turn off</button>':'')+'</div>';
+    if(!live.length) return head+'<div class="bk-lenhint" style="margin:4px 0 0">Watching demand - Atlas will nudge rates within your bounds. Nothing is off your baseline yet.</div></div>';
+    return head+'<div style="margin-top:6px">'+live.map(function(a){ var up=Number(a.rate)>Number(a.rateBaseline);
+      return '<div style="font-size:12.5px;color:var(--ink);display:flex;justify-content:space-between;gap:8px;align-items:center"><span>'+esc(a.name)+' '+(up?'raised':'lowered')+' '+money(a.rateBaseline)+' &rarr; '+money(a.rate)+'</span><span class="link" style="cursor:pointer;font-size:12px" onclick="Atlas.autoPriceRevertOne(\''+esc(String(a.id))+'\')">undo</span></div>'; }).join('')+'</div></div>';
+  }
+  // Settings > Pricing card: the toggle, the bounds, a dry-run preview, recent history, and revert-all.
+  function _autoPriceHtml(){
+    if(!_canMod('settings')) return ''; var aa=_autoPx();
+    var out='<div style="border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px"><b style="font-size:14px;color:var(--ink)">Auto-optimize rates</b>'
+      +'<label class="switch"><input type="checkbox" '+(aa.on?'checked':'')+' onchange="Atlas.setAutoPrice(\'on\',this.checked)"><span class="switch__t"></span></label></div>'
+      +'<div class="bk-lenhint" style="margin:0 0 '+(aa.on?'12px':'0')+'">Let Atlas nudge each '+esc(S.fleet.noun)+' rate toward demand - up when it is booked solid, down when it sits idle - but never outside the bounds you set. Every change is logged and one-tap reversible. Runs on your dashboard about once a day. Off by default.</div>';
+    if(!aa.on) return out+'</div>';
+    out+='<div class="row2"><div class="field" style="margin:0"><label>Max increase</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(Number(aa.maxUpPct)||0)+'" oninput="Atlas.setAutoPrice(\'maxUpPct\',this.value)"><span>% above baseline</span></div></div>'
+      +'<div class="field" style="margin:0"><label>Max discount</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(Number(aa.maxDownPct)||0)+'" oninput="Atlas.setAutoPrice(\'maxDownPct\',this.value)"><span>% below baseline</span></div></div></div>'
+      +'<div class="row2" style="margin-top:10px"><div class="field" style="margin:0"><label>Step per change</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(Number(aa.stepPct)||0)+'" oninput="Atlas.setAutoPrice(\'stepPct\',this.value)"><span>% at a time</span></div></div>'
+      +'<div class="field" style="margin:0"><label>At most every</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(Number(aa.cadenceDays)||7)+'" oninput="Atlas.setAutoPrice(\'cadenceDays\',this.value)"><span>days / '+esc(S.fleet.noun)+'</span></div></div></div>'
+      +'<div class="bk-lenhint" style="margin:10px 0 0">Within your bounds a '+money(100)+' rate could range '+money(Math.round(100*(1-(Math.min(90,Number(aa.maxDownPct)||0))/100)))+' to '+money(Math.round(100*(1+(Number(aa.maxUpPct)||0)/100)))+'. Baseline = the rate you set by hand; editing a rate yourself re-anchors it.</div>';
+    var plan=_autoPxPlan();
+    if(plan.length){ out+='<div style="margin-top:12px"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">Next adjustments (preview)</div>'
+      +plan.slice(0,6).map(function(p){ return '<div style="font-size:12.5px;color:var(--ink);display:flex;justify-content:space-between;gap:8px"><span>'+esc(p.name)+' '+(p.dir>0?'raise':'lower')+' ('+p.util+'% '+_fterm('util').toLowerCase()+')</span><span class="tnum">'+money(p.from)+' &rarr; '+money(p.to)+(p.atBand?' (cap)':'')+'</span></div>'; }).join('')+'</div>'; }
+    else out+='<div class="bk-lenhint" style="margin:10px 0 0">No adjustments pending - every '+esc(S.fleet.nouns)+' is inside its target range for current demand.</div>';
+    var hist=(aa.log||[]).filter(function(e){ return e.to!=null; }).slice(0,6);
+    if(hist.length){ out+='<div style="margin-top:12px"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">Recent auto-changes</div>'
+      +hist.map(function(e){ var d=new Date(e.ts); return '<div class="bk-lenhint" style="margin:0">'+esc(e.name)+': '+money(e.from)+' &rarr; '+money(e.to)+' &middot; '+esc(d.toLocaleDateString())+'</div>'; }).join('')+'</div>'; }
+    out+='<div style="margin-top:14px"><button class="btn btn--ghost btn--sm" onclick="Atlas.autoPriceRevertAll()">Revert all rates to baseline &amp; turn off</button></div>';
+    return out+'</div>';
   }
   // Revenue-by-source breakdown from real bookings, for the donut.
   function _srcBreakdown(){
@@ -6763,7 +6889,7 @@ const Atlas = (function(){
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addPromo()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>New promo code</button>
       </div>
       <div class="set-block"><h3>Smart pricing</h3><div class="desc">Automatically raise or lower your rate by when a trip falls &mdash; weekend uplift, your own seasonal date ranges, and last-minute / early-bird lead time. Off by default and applies to the rate on new quotes only &mdash; nothing about today's pricing changes until you turn it on.</div>
-        <div id="spBlock">${_smartPricingHtml()}</div>
+        <div id="spBlock">${_smartPricingHtml()}</div><div id="apxBlock">${_autoPriceHtml()}</div>
       </div>
       <div class="set-block"><h3>Loyalty &amp; referrals</h3><div class="desc">Reward repeat customers with points on every dollar they spend, and give each one a referral code to bring you new business. Points, tier and code all show in their portal.</div>
         ${_loyaltySettingsHtml()}
@@ -9875,7 +10001,7 @@ const Atlas = (function(){
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
-    setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,
+    setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
