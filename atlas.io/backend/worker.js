@@ -3544,8 +3544,11 @@ function doReset(){
               await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?')
                 .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant).run();
               const tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(md.tenant).first();
-              if (tr && d.custEmail) { const pr = tenantProfile(tr); await sendEmail(env, { to: d.custEmail, fromName: pr.name,
-                subject: 'Payment received - ' + pr.name, html: _emailShell(pr, '<h2>Payment received</h2><p>Thanks! We received ' + money2(amt) + ' for booking <b>' + esc(md.booking) + '</b> (' + esc(d.asset || '') + ').</p>') }); }
+              if (tr && d.custEmail) { const pr = tenantProfile(tr);
+                const _smartR = !!(pr.settings && pr.settings.flags && pr.settings.flags.smartReceipts);   // Payments G6: the "auto-email a receipt the moment a booking is paid" toggle now fires a REAL itemized receipt (was a dead toggle -> only a one-liner ever sent)
+                await sendEmail(env, { to: d.custEmail, transactional: true, fromName: pr.name,
+                  subject: (_smartR ? 'Receipt - ' : 'Payment received - ') + pr.name,
+                  html: _emailShell(pr, _smartR ? _bookingReceiptInner(pr, d, md, amt) : ('<h2>Payment received</h2><p>Thanks! We received ' + money2(amt) + ' for booking <b>' + esc(md.booking) + '</b> (' + esc(d.asset || '') + ').</p>')) }); }
               await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid', { booking: md.booking, kind: md.kind, cents: amt });
               _fireWebhook(_ectx, env, md.tenant, 'booking.paid', { id: md.booking, ref: md.booking, kind: md.kind || 'payment', amount_cents: amt, currency: 'usd', asset: d.asset || '', status: 'confirmed', paid_at: Math.floor(Date.now() / 1000) });
             }
@@ -6130,6 +6133,15 @@ function doReset(){
           // Booking #4 stale-push guard: never let an OLDER client blob overwrite a newer server booking (e.g. wipe a webhook-set charge.paidAt / d.paid, re-opening a paid charge as payable). Newest-wins on data._t, matching the client's own merge. Other columns still update.
           if (coll === 'bookings' && body.data && typeof body.data === 'object' && vStr(body.id, 40)) { try { const _curB = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(body.id, ctx.tenant_id).first(); if (_curB) { const _cdB = jparse(_curB.data, {}); if (Number(body.data._t || 0) < Number(_cdB._t || 0)) delete body.data; } } catch (e) {} }
           const { cols, vals } = patchFields(coll, body);       // whitelisted domain fields
+          // Payments G5: reflect an OFFLINE/cash COMMITTED booking's revenue in the SERVER revenue_cents (platform GMV + /api/v1 read it; the owner dashboard already uses accrual for these via _bkEarned's fallback). ONLY when the Stripe webhook never set it (no online d.paid) -> never lowers/overwrites a collected figure. Derived from the booking's own quote, server-side.
+          if (coll === 'bookings' && body.data && typeof body.data === 'object' && cols.indexOf('revenue_cents') < 0) {
+            const _g5 = body.data; const _g5online = _g5.paid && Object.keys(_g5.paid).some(function (k) { const p = _g5.paid[k]; return p && !p.hold && k !== 'security'; });
+            const _g5committed = _g5.status && _g5.status !== 'Cancelled' && _g5.status !== 'Pending';
+            if (!_g5online && _g5committed && _g5.quote && Number(_g5.quote.total) > 0) {
+              let _g5cur = 0; if (vStr(body.id, 40)) { try { const _g5r = await env.DB.prepare('SELECT revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(body.id, ctx.tenant_id).first(); _g5cur = _g5r ? (Number(_g5r.revenue_cents) || 0) : 0; } catch (e) {} }
+              if (!(_g5cur > 0)) { cols.push('revenue_cents'); vals.push(Math.round(Number(_g5.quote.total) * 100)); }
+            }
+          }
           for (const c of (REQUIRED[coll] || [])) if (cols.indexOf(c) < 0) return err(400, 'Missing required field: ' + c);
           const now = Date.now();
           // Preserve a client-provided id for ANY collection so a mirror (PUT-then-POST-on-404) is idempotent and never
@@ -7247,6 +7259,18 @@ function _agreementBodyHtml(pr, brow, d, agr, signed) {
   if (signed) { var pp = d.portal || {}, tr = d.sigTrail || {}; sb = '<h3>Signature</h3><div class="rowr"><span>Signed by</span><span>' + esc(pp.signerName || '') + '</span></div><div class="rowr"><span>Date</span><span>' + esc(new Date(pp.signedAt || 0).toISOString()) + '</span></div>' + (tr.ip ? ('<div class="rowr"><span>IP address</span><span>' + esc(tr.ip) + '</span></div>') : '') + (tr.docHash ? ('<div class="rowr"><span>Document fingerprint</span><span style="font-family:monospace;font-size:12px">' + esc(String(tr.docHash).slice(0, 24)) + '...</span></div>') : ''); }
   else sb = '<div class="mut" style="margin-top:14px">Not yet signed. Open your booking link to review and sign.</div>';
   return '<h1>' + esc(pr.name) + '</h1><div class="mut">Rental Agreement &middot; Booking ' + esc(brow.id) + '</div><div class="bar"></div><pre>' + esc(agr) + '</pre>' + sb;
+}
+// Payments G6: a compact itemized booking receipt, built SERVER-side (the rich _receiptHtml lives in the client). Fired from the paid webhook when the tenant's smartReceipts toggle is on.
+function _bookingReceiptInner(pr, d, md, amt) {
+  var q = _quoteCents(d.quote || {});
+  var rows = '<tr><td style="padding:3px 0">' + esc(d.asset || 'Rental') + ' x ' + (d.periods || 1) + '</td><td style="padding:3px 0;text-align:right">' + money2(q.subtotalCents || 0) + '</td></tr>';
+  if (q.taxCents) rows += '<tr><td style="padding:3px 0">Tax</td><td style="padding:3px 0;text-align:right">' + money2(q.taxCents) + '</td></tr>';
+  var kindLabel = (md.kind === 'balance') ? 'Balance payment' : (md.kind === 'security') ? 'Refundable deposit' : (md.kind === 'charge') ? 'Additional charge' : 'Deposit / reserve';
+  return '<h2>Receipt</h2><p>Thank you! Here is your receipt from ' + esc(pr.name) + '.</p>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:14px;margin:12px 0">' + rows
+    + '<tr><td style="border-top:1px solid #ddd;padding-top:6px"><b>Total</b></td><td style="border-top:1px solid #ddd;padding-top:6px;text-align:right"><b>' + money2(q.totalCents || 0) + '</b></td></tr>'
+    + '<tr><td style="color:#1E6E4E;padding-top:4px"><b>' + esc(kindLabel) + ' paid</b></td><td style="color:#1E6E4E;padding-top:4px;text-align:right"><b>' + money2(amt) + '</b></td></tr>'
+    + '</table><p style="color:#888;font-size:12px">Booking reference ' + esc(md.booking) + '.</p>';
 }
 function _portalPageHtml(token, color) {
   var body = '<style>.upl{display:block;font-size:12.5px;color:#555;margin:8px 0 2px}.upl input{display:block;margin-top:3px;font-size:13px}.dlbtn{display:block;text-align:center;text-decoration:none}</style><div id="app" class="card">Loading&hellip;</div>';
