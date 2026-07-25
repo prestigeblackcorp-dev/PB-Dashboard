@@ -2610,6 +2610,7 @@ const Atlas = (function(){
     hold:{ type:'none', value:250, collect:'hold', when:'pickup' },      // #290 SEPARATE refundable security/damage deposit (NOT revenue unless kept): none | fixed($value) | percent(%value of total); collect = hold (authorize, $0 fee to release) | charge (capture + refund); when = pickup | booking. Default OFF so it's opt-in per business.
     payout:{ enabled:false, label:'Partner payout', kind:'percent', value:0, base:'subtotal' },  // a commission/split that leaves you per booking (agent, referrer, staff) -> your net = revenue - tax - payout
     weeklyDisc:10, monthlyDisc:25, _rc:0,
+    smartPricing:{ on:false, weekend:{on:false,days:[5,6],pct:15}, seasons:[], leadTime:{lastMinuteDays:2,lastMinutePct:10,earlyBirdDays:30,earlyBirdPct:-10} },   // Smart Pricing Increment 1: owner-controlled rate MULTIPLIER (weekend uplift + seasonal date ranges + lead-time). on:false -> zero change to pricing until a tenant explicitly enables it (see _smartRateMult below).
     // How the operator's booking form behaves -- fully editable in Settings > Bookings ("teach + build").
     //   time:false      -> collect dates only; true -> also collect start (and end) times
     //   durationMode:'length' -> guest enters how many days/hours; 'end' -> guest picks an end date, length auto-calculated
@@ -2627,9 +2628,9 @@ const Atlas = (function(){
   // Call as calcQuote(m, periods, addons) OR calcQuote(m, {periods, addons, extras, discount}).
   //   extras   = [{name, price, per:'unit'|'flat', qty}]  -> priced line items added to the booking
   //   discount = {type:'flat'|'percent'|'none', value}    -> a manual, per-booking discount on top of auto weekly/monthly
-  function calcQuote(m, periods, addons, extras, discount){
+  function calcQuote(m, periods, addons, extras, discount, startsAt){
     m=m||{};
-    if(periods && typeof periods==='object'){ var o=periods; periods=o.periods; addons=o.addons; extras=o.extras; discount=o.discount; }
+    if(periods && typeof periods==='object'){ var o=periods; periods=o.periods; addons=o.addons; extras=o.extras; discount=o.discount; startsAt=o.startsAt; }
     periods=Math.max(1,periods||1); addons=addons||0; extras=extras||[];
     var _bkMs=periods*_periodMsOf((m&&m.rateModel)||(S.money&&S.money.rateModel)||'day');   // booking length in ms, from rate-model periods
     var exLines=extras.map(function(x){ var each=(x.price||0)*(x.qty||1), amt;
@@ -2638,7 +2639,8 @@ const Atlas = (function(){
       else amt=each;                                                                                    // flat / one-time / trip
       return {name:x.name, amt:amt}; });
     var exTotal=exLines.reduce(function(s,l){return s+l.amt;},0);
-    var gross=(m.baseRate||0)*periods + addons + exTotal, disc=0;
+    var _rm=_smartRateMult(m,(o&&o.startsAt)||startsAt||0,periods,m.rateModel);   // Smart Pricing Increment 1: multiplier on the RATE only (extras/fees/tax/discount below untouched). DEFAULT OFF or no startsAt -> _rm===1, byte-identical to before.
+    var gross=(m.baseRate||0)*_rm*periods + addons + exTotal, disc=0;
     var _wkP=(m.rateModel==='hour'?168:m.rateModel==='week'?2:m.rateModel==='month'?999999:7), _moP=(m.rateModel==='hour'?672:m.rateModel==='week'?4:m.rateModel==='month'?12:28);   // "weekly"/"monthly" thresholds in the CURRENT rate-model's periods. week model: the "weekly" discount is a MULTI-week discount at 2+ (was 1 -> it silently fired on every single-week booking); month model: weekly never fires, "monthly" disc = long-term at 12+ months
     if(m.monthlyDisc && periods>=_moP) disc=gross*m.monthlyDisc/100;
     else if(m.weeklyDisc && periods>=_wkP) disc=gross*m.weeklyDisc/100;
@@ -2656,8 +2658,53 @@ const Atlas = (function(){
     var pay=m.payout||{}, payBase=(pay.base==='total')?total:subtotal;
     var payoutAmt=(pay.enabled && pay.value)? (pay.kind==='percent'? payBase*(pay.value||0)/100 : (pay.value||0)) : 0;
     var netToYou=Math.max(0, total - taxAmt - payoutAmt);   // your take-home: revenue minus pass-through tax minus the payout/commission
-    return {gross:gross,disc:disc,subtotal:subtotal,fees:fees,feeTotal:feeTotal,taxAmt:taxAmt,total:total,dueNow:dueNow,balance:Math.max(0,total-dueNow),hold:holdAmt,extrasLines:exLines,extrasTotal:exTotal,payoutAmt:payoutAmt,netToYou:netToYou};
+    return {gross:gross,disc:disc,subtotal:subtotal,fees:fees,feeTotal:feeTotal,taxAmt:taxAmt,total:total,dueNow:dueNow,balance:Math.max(0,total-dueNow),hold:holdAmt,extrasLines:exLines,extrasTotal:exTotal,payoutAmt:payoutAmt,netToYou:netToYou,rateMult:_rm};
   }
+  // ---- Smart Pricing Increment 1: owner-controlled dynamic rate MULTIPLIER (weekend uplift, seasonal date-range overrides,
+  // lead-time last-minute/early-bird). DEFAULT OFF (money.smartPricing absent or on!==true) -> always returns 1, so an
+  // existing tenant's pricing is byte-identical until they opt in. Kept BYTE-IDENTICAL to the worker's copy in backend/worker.js --
+  // this is the parity contract that lets the dashboard, public site and portal all quote and charge the same price.
+  function _smartRateMult(money, startMs, periods, rateModel, nowMs){
+    var sp = money && money.smartPricing;
+    if(!sp || sp.on !== true || !startMs) return 1;
+    var unit = _periodMsOf(rateModel || (money && money.rateModel) || 'day');
+    var n = Math.max(1, Math.min(3650, parseInt(periods,10)||1));
+    var SAMPLE = Math.min(n, 366);
+    var sum = 0, i;
+    for(i=0;i<SAMPLE;i++){ sum += _dayFactor(sp, startMs + i*unit); }
+    var blend = sum / SAMPLE;
+    var lead = 0;
+    if(sp.leadTime){
+      var now = (nowMs!=null)? nowMs : Date.now();
+      var lm = Math.floor((startMs - now)/86400000);
+      if(sp.leadTime.lastMinuteDays>0 && lm>=0 && lm < sp.leadTime.lastMinuteDays) lead = (Number(sp.leadTime.lastMinutePct)||0)/100;
+      else if(sp.leadTime.earlyBirdDays>0 && lm >= sp.leadTime.earlyBirdDays) lead = (Number(sp.leadTime.earlyBirdPct)||0)/100;
+    }
+    var mult = blend + lead;
+    if(mult < 0.25) mult = 0.25; if(mult > 5) mult = 5;
+    return mult;
+  }
+  function _dayFactor(sp, t){
+    var add = 0;
+    if(sp.weekend && sp.weekend.on){
+      var dow = new Date(t).getUTCDay();
+      var days = (sp.weekend.days && sp.weekend.days.length)? sp.weekend.days : [5,6];
+      if(days.indexOf(dow) >= 0) add += (Number(sp.weekend.pct)||0)/100;
+    }
+    if(sp.seasons && sp.seasons.length){ var s;
+      for(s=0;s<sp.seasons.length;s++){ var se=sp.seasons[s];
+        if(se && se.on !== false && _inSeason(se, t)){ add += (Number(se.pct)||0)/100; break; }
+      }
+    }
+    return 1 + add;
+  }
+  function _inSeason(se, t){
+    if(!se || !se.from || !se.to) return false;
+    var d=new Date(t), ymd=d.getUTCFullYear()*10000+(d.getUTCMonth()+1)*100+d.getUTCDate();
+    var pf=_ymdNum(se.from), pt=_ymdNum(se.to);
+    if(pf==null||pt==null) return false; return ymd>=pf && ymd<=pt;
+  }
+  function _ymdNum(s){ var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||'')); return m?(parseInt(m[1],10)*10000+parseInt(m[2],10)*100+parseInt(m[3],10)):null; }
 
   /* ---------- theming ---------- */
   function applyBrand(){
@@ -3399,6 +3446,66 @@ const Atlas = (function(){
   function setRule(id,f,v){ var r=(S.money.rules||[]).find(function(x){return x.id===id;}); if(!r)return; r[f]=(f==='value')?(parseFloat(v)||0):v; save(); _updMoneyPrev(); }
   function removeRule(id){ S.money.rules=(S.money.rules||[]).filter(function(x){return x.id!==id;}); save(); renderSet(); }
   function addRule(){ S.money._rc=(S.money._rc||0)+1; S.money.rules.push({id:'r'+S.money._rc,name:'New fee',kind:'flat',value:0,taxable:false,on:true}); save(); renderSet(); }
+  /* ---- Smart pricing (Increment 1): owner-controlled dynamic rate MULTIPLIER -- weekend uplift, seasonal date-range
+     overrides, lead-time last-minute/early-bird. S.money.smartPricing is created here (on:false) on first touch, so an
+     existing tenant's pricing stays byte-identical until they explicitly enable it in Fleet > Pricing Rules. The actual
+     multiplier math lives in _smartRateMult/_dayFactor/_inSeason/_ymdNum above -- kept byte-identical to the worker's
+     copy (the parity contract: dashboard, public site and portal all quote and charge the same price). ---- */
+  function _sp(){ if(!S.money.smartPricing) S.money.smartPricing={ on:false, weekend:{on:false,days:[5,6],pct:15}, seasons:[], leadTime:{lastMinuteDays:2,lastMinutePct:10,earlyBirdDays:30,earlyBirdPct:-10} }; return S.money.smartPricing; }
+  function setSmartPricing(k,v){ if(!_canMod('settings'))return; var sp=_sp();
+    if(k==='on') sp.on=!!v;
+    else if(k==='weekend.on') sp.weekend.on=!!v;
+    else if(k==='weekend.pct') sp.weekend.pct=parseFloat(v)||0;
+    else if(k==='weekend.days'){ var n=parseInt(v,10), i=sp.weekend.days.indexOf(n); if(i>=0) sp.weekend.days.splice(i,1); else sp.weekend.days.push(n); }
+    else if(k==='leadTime.lastMinuteDays') sp.leadTime.lastMinuteDays=Math.max(0,parseInt(v,10)||0);
+    else if(k==='leadTime.lastMinutePct') sp.leadTime.lastMinutePct=parseFloat(v)||0;
+    else if(k==='leadTime.earlyBirdDays') sp.leadTime.earlyBirdDays=Math.max(0,parseInt(v,10)||0);
+    else if(k==='leadTime.earlyBirdPct') sp.leadTime.earlyBirdPct=parseFloat(v)||0;
+    save(); _updSpPreview(); }
+  function spAddSeason(){ if(!_canMod('settings'))return; var sp=_sp(); sp._sc=(sp._sc||0)+1;
+    function ymd(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+    var t0=new Date(), t1=new Date(t0.getTime()+30*86400000);
+    sp.seasons.push({id:'sn'+sp._sc,name:'New season',from:ymd(t0),to:ymd(t1),pct:25,on:true}); save(); renderSet(); }
+  function spSetSeason(id,field,v){ if(!_canMod('settings'))return; var sp=_sp(), s=sp.seasons.filter(function(x){return x.id===id;})[0]; if(!s)return;
+    if(field==='pct') s.pct=parseFloat(v)||0; else if(field==='on') s.on=!!v; else s[field]=v;
+    save(); if(field==='on') renderSet(); else _updSpPreview(); }
+  function spRmSeason(id){ if(!_canMod('settings'))return; var sp=_sp(); sp.seasons=sp.seasons.filter(function(x){return x.id!==id;}); save(); renderSet(); }
+  function _spPreviewHtml(){ var m=S.money, sp=_sp();
+    var now=new Date(), dow=now.getUTCDay(), add=((6-dow+7)%7)+7;   // next-but-one Saturday (7-13 days out): clear of the default 2-day last-minute window and the default 30-day early-bird window, so the demo isolates weekend/season
+    var sat=Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()+add,12,0,0);
+    var rm=_smartRateMult(m,sat,3,m.rateModel), withMult=(m.baseRate||0)*3*rm, pct=Math.round((rm-1)*100);
+    return 'A Sat 3-'+(m.rateModel||'day')+' booking of your base rate would quote '+money(withMult)+' ('+(pct>=0?'+':'')+pct+'%)'; }
+  function _updSpPreview(){ var el=document.getElementById('spPreview'); if(el) el.textContent=_spPreviewHtml(); }
+  function _spDayBtns(sp){ var lbls=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], out='';
+    lbls.forEach(function(lbl,idx){ var on=sp.weekend.days.indexOf(idx)>=0;
+      out+='<button type="button" class="btn btn--sm '+(on?'btn--primary':'btn--ghost')+'" style="padding:6px 10px" onclick="Atlas.setSmartPricing(\'weekend.days\','+idx+');Atlas.renderSetSoft()">'+lbl+'</button>'; });
+    return out; }
+  function _spSeasonsHtml(sp){ if(!sp.seasons.length) return '<div class="bk-lenhint" style="margin:0 0 10px">No seasons yet &mdash; add one for a holiday, peak season or slow stretch.</div>';
+    return sp.seasons.map(function(se){ return '<div style="border:1px solid var(--line-2);border-radius:10px;padding:10px;margin-bottom:8px">'
+      +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input class="input" style="flex:1;font-weight:650" value="'+esc(se.name)+'" onchange="Atlas.spSetSeason(\''+se.id+'\',\'name\',this.value)">'
+      +'<label class="switch" style="transform:scale(.85)" title="On/off"><input type="checkbox" '+(se.on!==false?'checked':'')+' onchange="Atlas.spSetSeason(\''+se.id+'\',\'on\',this.checked)"><span class="switch__t"></span></label>'
+      +'<button class="btn btn--sm" style="color:var(--danger);padding:6px 9px" onclick="Atlas.spRmSeason(\''+se.id+'\')" title="Remove">&times;</button></div>'
+      +'<div class="row2"><div class="field" style="margin:0"><label>From</label><input class="input" type="date" value="'+esc(se.from||'')+'" onchange="Atlas.spSetSeason(\''+se.id+'\',\'from\',this.value)"></div>'
+      +'<div class="field" style="margin:0"><label>To</label><input class="input" type="date" value="'+esc(se.to||'')+'" onchange="Atlas.spSetSeason(\''+se.id+'\',\'to\',this.value)"></div></div>'
+      +'<div class="field" style="margin:8px 0 0"><label>Percent (negative = discount)</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+se.pct+'" oninput="Atlas.spSetSeason(\''+se.id+'\',\'pct\',this.value)"><span>%</span></div></div></div>'; }).join(''); }
+  function _smartPricingHtml(){ var sp=_sp();
+    var out='<label style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><label class="switch"><input type="checkbox" '+(sp.on?'checked':'')+' onchange="Atlas.setSmartPricing(\'on\',this.checked);Atlas.renderSetSoft()"><span class="switch__t"></span></label><span style="font-size:13.5px;color:var(--ink)">Smart pricing '+(sp.on?'<b>on</b>':'off')+'</span></label>';
+    if(!sp.on) return out;
+    out+='<div style="border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px">'
+      +'<label class="cfg-check" style="margin-bottom:0"><input type="checkbox" '+(sp.weekend.on?'checked':'')+' onchange="Atlas.setSmartPricing(\'weekend.on\',this.checked);Atlas.renderSetSoft()">Weekend uplift</label>'
+      +(sp.weekend.on?('<div class="row2" style="margin-top:10px"><div class="field" style="margin:0"><label>Counts as &quot;weekend&quot;</label><div style="display:flex;gap:6px;flex-wrap:wrap">'+_spDayBtns(sp)+'</div></div>'
+        +'<div class="field" style="margin:0"><label>Uplift</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+sp.weekend.pct+'" oninput="Atlas.setSmartPricing(\'weekend.pct\',this.value)"><span>%</span></div></div></div>'):'')
+      +'</div>'
+      +'<div style="border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px"><b style="font-size:13.5px;color:var(--ink)">Seasonal date ranges</b><div class="desc" style="margin:2px 0 10px">Your own peak or slow periods, each with its own dates and percent. The first range that covers a day wins.</div>'
+      +_spSeasonsHtml(sp)
+      +'<button class="btn btn--ghost btn--sm" onclick="Atlas.spAddSeason()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a season</button></div>'
+      +'<div style="border:1px solid var(--line);border-radius:12px;padding:14px"><b style="font-size:13.5px;color:var(--ink)">Lead time</b><div class="desc" style="margin:2px 0 10px">Charge more for a rushed last-minute booking, or reward one booked far ahead.</div>'
+      +'<div class="row2"><div class="field" style="margin:0"><label>Last-minute: within</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+sp.leadTime.lastMinuteDays+'" oninput="Atlas.setSmartPricing(\'leadTime.lastMinuteDays\',this.value)"><span>days of pickup</span></div></div>'
+      +'<div class="field" style="margin:0"><label>Last-minute uplift</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+sp.leadTime.lastMinutePct+'" oninput="Atlas.setSmartPricing(\'leadTime.lastMinutePct\',this.value)"><span>%</span></div></div></div>'
+      +'<div class="row2" style="margin-top:10px"><div class="field" style="margin:0"><label>Early-bird: booked</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+sp.leadTime.earlyBirdDays+'" oninput="Atlas.setSmartPricing(\'leadTime.earlyBirdDays\',this.value)"><span>+ days ahead</span></div></div>'
+      +'<div class="field" style="margin:0"><label>Early-bird discount</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+sp.leadTime.earlyBirdPct+'" oninput="Atlas.setSmartPricing(\'leadTime.earlyBirdPct\',this.value)"><span>%</span></div></div></div></div>'
+      +'<div class="bk-lenhint" id="spPreview" style="margin-top:12px">'+_spPreviewHtml()+'</div>';
+    return out; }
   /* ---- Booking-model builder (Settings > Bookings): edit the base for your preference ---- */
   function setBookingCfg(path,v){ if(!S.money.booking) S.money.booking={time:true,durationMode:'end',fields:{phone:true,notes:true}};
     var bk=S.money.booking; bk.fields=bk.fields||{phone:true,notes:true};
@@ -4670,9 +4777,10 @@ const Atlas = (function(){
     var hint=document.getElementById('bkLenHint');
     if(hint){ hint.innerHTML = _bkUsesEnd()? ('= <b>'+per+' '+_perUnit()+'</b>'+(w.endTs<=w.startTs?' (end must be after start)':'')) : ''; }
     var mEff=_moneyFor(val('bkAsset')), rate=mEff.baseRate;
-    var q=calcQuote(mEff,{periods:per,addons:0,extras:(_bkDraft?_bkDraft.extras:[]),discount:_bkReadDiscount()});
+    var q=calcQuote(mEff,{periods:per,addons:0,extras:(_bkDraft?_bkDraft.extras:[]),discount:_bkReadDiscount(),startsAt:w.startTs});
     var el=document.getElementById('bkPreview'); if(!el)return;
-    var h='<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+'</span><span class="tnum">'+money(rate*per)+'</span></div>';
+    var _rmNote=(q.rateMult&&q.rateMult!==1)? (' <span style="color:var(--brand)">('+(q.rateMult>1?'+':'')+Math.round((q.rateMult-1)*100)+'% smart pricing)</span>') : '';   // Smart Pricing Increment 1: only shows once a tenant enables it (rateMult===1 otherwise) -- matches rate*rateMult*periods, the same rate portion baked into q.total below
+    var h='<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+_rmNote+'</span><span class="tnum">'+money(rate*(q.rateMult||1)*per)+'</span></div>';
     (q.extrasLines||[]).forEach(function(l){ h+='<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>'; });
     if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>';
     q.fees.forEach(function(f){ h+='<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>'; });
@@ -4698,7 +4806,7 @@ const Atlas = (function(){
       if(_ao.maxLen>0 && w.periods>_ao.maxLen && !confirm(esc(asset)+' has a '+_ao.maxLen+'-'+_u+' maximum. Book '+w.periods+' anyway?')) return; }
     var _cf=_availabilityConflict(asset, w.startTs, w.endTs, editId);   // warn on double-book / blackout; owner can knowingly override
     if(_cf && !confirm(esc(asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates ('+_cf.reason+')'):(_cf.type==='maintenance'?('marked out of service ('+_cf.reason+')'):('already booked for those dates ('+_cf.reason+')')))+'.\n\nBook it anyway?')) return;
-    var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc});
+    var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc,startsAt:w.startTs});
     var b= editId? _getBooking(editId) : {id:_nextBkId(), createdAt:Date.now()};
     b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.rate=mEff.baseRate;
     if(document.getElementById('bkPhone')) b.phone=val('bkPhone');       // only touch fields the operator's form collects
@@ -6514,6 +6622,9 @@ const Atlas = (function(){
       <div class="set-block"><h3>Promo codes</h3><div class="desc">Discount codes customers enter at checkout &mdash; percent or flat, with an optional expiry, minimum length and usage cap. Every redemption is tracked.</div>
         <div id="promoList">${_promoListHtml()}</div>
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addPromo()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>New promo code</button>
+      </div>
+      <div class="set-block"><h3>Smart pricing</h3><div class="desc">Automatically raise or lower your rate by when a trip falls &mdash; weekend uplift, your own seasonal date ranges, and last-minute / early-bird lead time. Off by default and applies to the rate on new quotes only &mdash; nothing about today's pricing changes until you turn it on.</div>
+        <div id="spBlock">${_smartPricingHtml()}</div>
       </div>
       <div class="set-block"><h3>Loyalty &amp; referrals</h3><div class="desc">Reward repeat customers with points on every dollar they spend, and give each one a referral code to bring you new business. Points, tier and code all show in their portal.</div>
         ${_loyaltySettingsHtml()}
@@ -8775,10 +8886,12 @@ const Atlas = (function(){
   }
   function _wbQuote(){ var el=document.getElementById('wbQuote'); if(!el)return;
     var asset=val('wbAsset')||'', per=Math.max(1,parseInt(val('wbPer'),10)||1);
+    var _wsd=val('wbStart'), _wStartsAt=_wsd? new Date(_wsd+'T09:00:00').getTime() : 0;   // Smart Pricing Increment 1: mirror webSubmitBooking's own date parse so the preview quotes the same startsAt it will submit
     var code=(val('wbPromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=_findPromo(code);
     if(promo){ var r=_validatePromo(promo,per,true); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; }
-    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc});
-    var h='<div class="mp-row"><span>'+money(mEff.baseRate)+' &times; '+per+' '+_perUnit()+'</span><span class="tnum">'+money(q.gross)+'</span></div>';
+    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc,startsAt:_wStartsAt});
+    var _rmNote=(q.rateMult&&q.rateMult!==1)? (' ('+(q.rateMult>1?'+':'')+Math.round((q.rateMult-1)*100)+'%)') : '';
+    var h='<div class="mp-row"><span>'+money(mEff.baseRate)+' &times; '+per+' '+_perUnit()+_rmNote+'</span><span class="tnum">'+money(q.gross)+'</span></div>';
     if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount'+(code?(' ('+esc(code)+')'):'')+'</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>';
     if(q.taxAmt) h+='<div class="mp-row"><span>Tax</span><span class="tnum">'+money(q.taxAmt)+'</span></div>';
     h+='<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div>';
@@ -8800,7 +8913,7 @@ const Atlas = (function(){
     if(_wst < new Date(new Date().setHours(0,0,0,0)).getTime()){ toast('Please choose a start date that is not in the past.'); return; }
     var code=(val('wbPromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=_findPromo(code);
     if(code){ if(promo){ var r=_validatePromo(promo,per,true); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; else { toast('That promo is not valid'); code=''; promo=null; } } else { code=''; } }
-    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc});
+    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc,startsAt:_wst});
     var b={ id:_nextBkId(), createdAt:Date.now(), cust:name, custEmail:email, custPhone:phone,
       asset:asset, rate:mEff.baseRate, periods:per, startTs:_wst, endTs:_wen, time:!!cfg.time,
       extras:[], discount:disc, addons:0, status:'Pending', quote:q, source:'website', promoCode:code };
@@ -9623,7 +9736,7 @@ const Atlas = (function(){
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
-    setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
+    setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,

@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25n';
+const ATLAS_BUILD = '2026.07.25o';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1407,7 +1407,52 @@ function securityFor(money, total) {
   return 0;
 }
 function _periodMsOf(u) { return u === 'hour' ? 3600000 : (u === 'week' ? 604800000 : ((u === 'month' || u === 'pmonth') ? 2592000000 : 86400000)); }   // Booking G5: ms for an explicit period unit (mirror the client's _periodMsOf) -- pday/day/unknown -> day
-function priceQuote(money, publishedAssets, assetName, periods, extras) {
+// ---- Smart Pricing Increment 1: owner-controlled dynamic rate MULTIPLIER (weekend uplift, seasonal date-range overrides,
+// lead-time last-minute/early-bird). DEFAULT OFF (money.smartPricing absent or on!==true) -> always returns 1, so an
+// existing tenant's pricing is byte-identical until they opt in. Kept BYTE-IDENTICAL to the client's copy in atlas.html --
+// this is the parity contract that lets the dashboard, public site and portal all quote and charge the same price.
+function _smartRateMult(money, startMs, periods, rateModel, nowMs){
+  var sp = money && money.smartPricing;
+  if(!sp || sp.on !== true || !startMs) return 1;
+  var unit = _periodMsOf(rateModel || (money && money.rateModel) || 'day');
+  var n = Math.max(1, Math.min(3650, parseInt(periods,10)||1));
+  var SAMPLE = Math.min(n, 366);
+  var sum = 0, i;
+  for(i=0;i<SAMPLE;i++){ sum += _dayFactor(sp, startMs + i*unit); }
+  var blend = sum / SAMPLE;
+  var lead = 0;
+  if(sp.leadTime){
+    var now = (nowMs!=null)? nowMs : Date.now();
+    var lm = Math.floor((startMs - now)/86400000);
+    if(sp.leadTime.lastMinuteDays>0 && lm>=0 && lm < sp.leadTime.lastMinuteDays) lead = (Number(sp.leadTime.lastMinutePct)||0)/100;
+    else if(sp.leadTime.earlyBirdDays>0 && lm >= sp.leadTime.earlyBirdDays) lead = (Number(sp.leadTime.earlyBirdPct)||0)/100;
+  }
+  var mult = blend + lead;
+  if(mult < 0.25) mult = 0.25; if(mult > 5) mult = 5;
+  return mult;
+}
+function _dayFactor(sp, t){
+  var add = 0;
+  if(sp.weekend && sp.weekend.on){
+    var dow = new Date(t).getUTCDay();
+    var days = (sp.weekend.days && sp.weekend.days.length)? sp.weekend.days : [5,6];
+    if(days.indexOf(dow) >= 0) add += (Number(sp.weekend.pct)||0)/100;
+  }
+  if(sp.seasons && sp.seasons.length){ var s;
+    for(s=0;s<sp.seasons.length;s++){ var se=sp.seasons[s];
+      if(se && se.on !== false && _inSeason(se, t)){ add += (Number(se.pct)||0)/100; break; }
+    }
+  }
+  return 1 + add;
+}
+function _inSeason(se, t){
+  if(!se || !se.from || !se.to) return false;
+  var d=new Date(t), ymd=d.getUTCFullYear()*10000+(d.getUTCMonth()+1)*100+d.getUTCDate();
+  var pf=_ymdNum(se.from), pt=_ymdNum(se.to);
+  if(pf==null||pt==null) return false; return ymd>=pf && ymd<=pt;
+}
+function _ymdNum(s){ var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||'')); return m?(parseInt(m[1],10)*10000+parseInt(m[2],10)*100+parseInt(m[3],10)):null; }
+function priceQuote(money, publishedAssets, assetName, periods, extras, startMs) {
   var p = Math.max(1, Math.min(3650, parseInt(periods, 10) || 1));
   var a = (publishedAssets || []).filter(function (x) { return x && x.name === assetName; })[0];
   var rate = (a && Number(a.rate) > 0) ? Number(a.rate) : (Number(money.baseRate) || 0);
@@ -1421,7 +1466,8 @@ function priceQuote(money, publishedAssets, assetName, periods, extras) {
     else amt = each;
     _exLines.push({ name: x.name, amt: amt }); _exTotal += amt;
   });
-  var gross = rate * p + _exTotal;
+  var _rm = _smartRateMult(money, startMs || 0, p, money.rateModel);   // Smart Pricing Increment 1: multiplier on the RATE only (extras/fees/tax/discount untouched). DEFAULT OFF or no startMs -> _rm===1, byte-identical to before.
+  var gross = rate * _rm * p + _exTotal;
   // AUTO long-term discount (mirror the dashboard's calcQuote so the live site charges what the owner's engine promises).
   var rm = money.rateModel || 'day';
   var wkP = (rm === 'hour' ? 168 : rm === 'week' ? 2 : rm === 'month' ? 999999 : 7), moP = (rm === 'hour' ? 672 : rm === 'week' ? 4 : rm === 'month' ? 12 : 28);
@@ -1431,6 +1477,7 @@ function priceQuote(money, publishedAssets, assetName, periods, extras) {
   disc = Math.max(0, Math.min(disc, gross));
   var c = function (x) { return Math.round((Number(x) || 0) * 100); };
   var q = { rateCents: c(rate), periods: p, grossCents: c(gross), subtotalCents: c(gross - disc), taxPct: Number(money.tax) || 0, discountCents: c(disc), extrasCents: c(_exTotal), extrasLines: _exLines.map(function (l) { return { name: l.name, amountCents: c(l.amt) }; }) };   // G5: extras itemized (cents) for the receipt + dashboard
+  q.rateMult = _rm;   // Smart Pricing Increment 1: expose the applied multiplier (1 when off / no start date) for the dashboard + receipt to show
   return _reprice(money, q);
 }
 // Recompute FEES (owner money-rules: card %, delivery, cleaning), tax + total + deposit from the current subtotal. Mirrors the
@@ -3818,7 +3865,7 @@ function doReset(){
               _resolvedExtras.push({ id: _id, name: String(_e.name || 'Extra').slice(0, 60), price: Number(_e.price) || 0, per: String(_e.per || 'flat'), qty: _qty });
             });
           }
-          const q = priceQuote(prof.money, pubAssets, assetName, periods, _resolvedExtras);
+          const q = priceQuote(prof.money, pubAssets, assetName, periods, _resolvedExtras, startTs);   // Smart Pricing Increment 1: the /book handler already parsed this booking's real start (line ~3779) -- thread it so the SERVER charge reflects the same weekend/season/lead-time multiplier the client quoted
           // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount off the pre-tax subtotal, ON TOP of any auto discount).
           let promoCode = '', _bumpPromo = '';
           if (vStr(b.promo, 40)) {
