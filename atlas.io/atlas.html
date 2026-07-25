@@ -2451,12 +2451,12 @@ const Atlas = (function(){
     if(cm.sentMonth!==_mkey){ cm.sentThisMonth=0; if(cm.sms) cm.sms.sentThisMonth=0; cm.sentMonth=_mkey; }
     var plan=EMAIL_PLANS.filter(function(p){return p.id===cm.plan;})[0]||EMAIL_PLANS[0];
     if(emailN && cm.sentThisMonth+emailN>plan.cap){ toast('That would pass your '+plan.name+' email limit ('+plan.cap.toLocaleString()+'/mo). Upgrade to send.'); openEmailPlans(); return; }
-    cm.sentThisMonth+=emailN; cm.sms.sentThisMonth=(cm.sms.sentThisMonth||0)+smsN;
+    cm.sentThisMonth+=emailN;   // G6: only EMAIL actually goes out via broadcast. SMS is not wired to broadcast, so we no longer count/log/record phantom texts as "sent".
     var audLabel={all:'All customers',active:'Active renters',past:'Past customers'}[aud]||aud;
-    var parts=[]; if(emailN) parts.push(emailN+' email'+(emailN===1?'':'s')); if(smsN) parts.push(smsN+' text'+(smsN===1?'':'s'));
-    if(!parts.length){ toast('Nothing to send'); return; }
-    cm.campaigns.unshift({ subject:subject||('Text: '+body.slice(0,40)), audience:audLabel, count:emailN+smsN, channel:channel, at:Date.now() });
-    _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via '+channel+' to '+parts.join(' + ')+' ('+audLabel+')',{count:emailN+smsN,channel:channel}); save(); closeModal(); renderSet();
+    var parts=[]; if(emailN) parts.push(emailN+' email'+(emailN===1?'':'s'));
+    if(!parts.length){ toast(smsN? ('SMS broadcast is not available yet \u2014 send an email, or text this customer from their profile.') : 'Nothing to send'); return; }   // an SMS-only campaign has nothing that actually sends
+    cm.campaigns.unshift({ subject:subject||body.slice(0,40), audience:audLabel, count:emailN, channel:'email', at:Date.now() });   // records only what truly went out
+    _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via email to '+parts.join(' + ')+' ('+audLabel+')',{count:emailN,channel:'email'}); save(); closeModal(); renderSet();
     // LIVE: actually send the email to the eligible audience via the worker (suppression + one-tap unsubscribe applied server-side).
     // SMS is platform-level and not wired to broadcast here, so it stays a preview -- we never claim a text went out.
     var _live=(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf);
@@ -3966,7 +3966,7 @@ const Atlas = (function(){
     document.getElementById('bookTblFull').innerHTML=head+'<tbody>'+DATA.bookings.map(rows).join('')+'</tbody>';
     setTimeout(()=>drawRevChart(),30);
   }
-  function statusChip(s){const m={'Confirmed':'info','On rent':'ok','Completed':'muted','Pending':'warn','Cancelled':'danger'};return `<span class="chip chip--${m[s]||'muted'}"><span class="dot"></span>${s}</span>`;}
+  function statusChip(s){const m={'Confirmed':'info','On rent':'ok','Returned':'warn','Completed':'muted','Pending':'warn','Cancelled':'danger'};return `<span class="chip chip--${m[s]||'muted'}"><span class="dot"></span>${s}</span>`;}
   var _fleetLocFilter=null;
   function _assetLocs(){ if(!DATA.assets.some(function(a){return a.loc;})) return null; var g={}; DATA.assets.forEach(function(a){ var L=a.loc||'Unassigned'; (g[L]=g[L]||[]).push(a); }); return g; }
   function fleetLoc(L){ _fleetLocFilter=(_fleetLocFilter===L)?null:L; renderFleet(); }
@@ -4223,7 +4223,7 @@ const Atlas = (function(){
     }
   }
   /* ---- Bookings module (persisted per-tenant collection, priced by the money engine) ---- */
-  const BK_STATUSES=['Pending','Confirmed','On rent','Completed','Cancelled'];
+  const BK_STATUSES=['Pending','Confirmed','On rent','Returned','Completed','Cancelled'];   // G3: 'Returned' = came back, awaiting close-out (inspect / resolve deposit / final charges). Asset stays RESERVED (availability excludes only Completed+Cancelled) until you mark Completed, which frees it.
   var _bkFilter='all';
   var _bkView='list', _bkCalOff=0;
   function bkSetView(m){ _bkView=(m==='calendar'?'calendar':'list'); renderBookings(); }
@@ -4405,6 +4405,7 @@ const Atlas = (function(){
     var phoneField=cfg.fields.phone? '<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkPhone" value="'+esc(b.phone||'')+'" placeholder="(555) 555-1234"></div>' : '';
     var contactRow=cfg.fields.phone? ('<div class="row2">'+phoneField+assetField+'</div>') : assetField;
     var notesField=cfg.fields.notes? '<div class="field"><label>Notes <span style="color:var(--muted);font-weight:500">(internal)</span></label><textarea class="input" id="bkNotes" rows="2" placeholder="Anything to remember about this booking">'+esc(b.notes||'')+'</textarea></div>' : '';
+    var deliveryField=cfg.fields.delivery? '<div class="field"><label>Delivery / pickup address <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkDeliv" value="'+esc(b.deliveryAddr||'')+'" placeholder="Street, city, ZIP &mdash; leave blank for on-site pickup"></div>' : '';   // G4: delivery businesses can record where the asset goes
     openModal('<div class="modal__head"><h3>'+(existing?'Edit booking':'New booking')+'</h3>'
       +'<div style="display:flex;align-items:center;gap:7px"><button class="tour-link" onclick="Atlas.bkTour(true)"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.4" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 6.2a1.8 1.8 0 013.4.6c0 1.2-1.7 1.4-1.7 2.6M8 11.4h.01" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>Tour</button>'+_xBtn()+'</div></div>'
       +'<div class="modal__body">'
@@ -4421,6 +4422,7 @@ const Atlas = (function(){
       +'<div class="row2"><div class="field"><label>Discount</label><input class="input tnum" id="bkDiscVal" type="number" min="0" value="'+(disc.value||0)+'" oninput="Atlas.bkPreview()"></div>'
       +'<div class="field"><label>Discount type</label><select class="select" id="bkDiscType" onchange="Atlas.bkPreview()"><option value="none"'+(disc.type==='none'||!disc.type?' selected':'')+'>No discount</option><option value="flat"'+(disc.type==='flat'?' selected':'')+'>$ off</option><option value="percent"'+(disc.type==='percent'?' selected':'')+'>% off</option></select></div></div>'
       +notesField
+      +deliveryField
       +'<div class="field"><label>Status</label><select class="select" id="bkStatusF">'+BK_STATUSES.map(function(s){return '<option'+(s===(b.status||'Confirmed')?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>'
       +'<div class="mp" id="bkPreview" style="margin:2px 0 16px"></div>'
       +((_noAssets&&!existing)
@@ -4467,6 +4469,7 @@ const Atlas = (function(){
     b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.rate=mEff.baseRate;
     if(document.getElementById('bkPhone')) b.phone=val('bkPhone');       // only touch fields the operator's form collects
     if(document.getElementById('bkNotes')) b.notes=val('bkNotes');
+    if(document.getElementById('bkDeliv')) b.deliveryAddr=val('bkDeliv');   // G4: delivery/pickup address
     b.periods=w.periods; b.startTs=w.startTs; b.endTs=w.endTs; b.time=w.time;
     b.extras=extras; b.discount=disc; b.addons=0;
     b.status=val('bkStatusF')||b.status||'Confirmed'; b.quote=q;
@@ -4700,11 +4703,11 @@ const Atlas = (function(){
       +'<div class="field"><label>Amount to keep</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="hcAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+max+'"></div></div>'
       +'<button class="btn btn--danger btn--full btn--lg" onclick="Atlas.doCapture(\''+id+'\')">Capture</button></div>'); }
   function doCapture(id){ var b=_getBooking(id); if(!b||!b.hold)return; var cap=Math.min(b.hold.amount, _r2(parseFloat(val('hcAmt'))||0)); if(cap<=0){ closeModal(); return holdRelease(id); }
-    b.hold.status='captured'; b.hold.captured=cap; b.hold.capturedAt=Date.now();
-    _charges(b).push({id:_chId(), label:'Deposit captured (damage/fuel)', amount:cap, at:Date.now(), paidAt:Date.now()});
-    _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); closeModal(); try{ renderOverview(); renderBookings(); }catch(e){} openBooking(id);
-    if(ATLAS_BACKEND && _apiCsrf && !_isDemoTenant()){ _api('/api/pay/capture',{method:'POST',body:{booking:id,kind:'security',amountCents:Math.round(cap*100)}}).then(function(res){ toast((res.json&&res.json.ok)?('Captured '+money(cap)+' from the deposit'):('Recorded here \u2014 '+((res.json&&(res.json.message||res.json.reason))||'no online deposit hold to capture'))); }).catch(function(){ toast('Recorded here \u2014 network error'); }); }
-    else toast('Captured '+money(cap)+' from the hold'); }
+    // G6: book the captured revenue ONLY after it actually captures. Before, the local "Deposit captured" charge was written
+    // immediately (phantom revenue) even when no real Stripe hold existed. Now the worker capture must SUCCEED first.
+    function _book(){ b.hold.status='captured'; b.hold.captured=cap; b.hold.capturedAt=Date.now(); _charges(b).push({id:_chId(), label:'Deposit captured (damage/fuel)', amount:cap, at:Date.now(), paidAt:Date.now()}); _upsertBooking(b); _logEvent('booking','Captured '+money(cap)+' from the hold on '+b.id,{booking:b.id}); save(); try{ renderOverview(); renderBookings(); }catch(e){} openBooking(id); }
+    if(ATLAS_BACKEND && _apiCsrf && !_isDemoTenant()){ closeModal(); _api('/api/pay/capture',{method:'POST',body:{booking:id,kind:'security',amountCents:Math.round(cap*100)}}).then(function(res){ if(res.json&&res.json.ok){ _book(); toast('Captured '+money(cap)+' from the deposit'); } else { toast('Nothing captured \u2014 '+((res.json&&(res.json.message||res.json.reason))||'no online deposit hold on this booking')); } }).catch(function(){ toast('Nothing captured \u2014 network error'); }); return; }
+    _book(); closeModal(); toast('Captured '+money(cap)+' (recorded)'); }   // demo/offline: record locally
   /* ---- small shared helpers ---- */
   function val(id){ var e=document.getElementById(id); return e?e.value:''; }
   function _perUnitOne(){ return S.money.rateModel==='hour'?'hour':(S.money.rateModel==='week'?'week':(S.money.rateModel==='month'?'month':'day')); }
@@ -4723,7 +4726,7 @@ const Atlas = (function(){
     if(msg){ msg.style.color='var(--ok)'; msg.innerHTML='&#10003; '+esc(p.code)+' applied &mdash; '+(p.type==='pct'?(p.value+'% off'):(money(p.value)+' off')); }
     bkPreview(); }
   /* ---- booking model config (Settings > Bookings): times, duration mode, fields ---- */
-  function _bookingCfg(){ var c=(S.money&&S.money.booking)||{}; return { time:(c.time!==false), durationMode:c.durationMode||'end', fields:{ phone:!(c.fields&&c.fields.phone===false), notes:!(c.fields&&c.fields.notes===false) } }; }
+  function _bookingCfg(){ var c=(S.money&&S.money.booking)||{}; return { time:(c.time!==false), durationMode:c.durationMode||'end', fields:{ phone:!(c.fields&&c.fields.phone===false), notes:!(c.fields&&c.fields.notes===false), delivery:!(c.fields&&c.fields.delivery===false) } }; }
   function _bkUsesTime(){ return _bookingCfg().time; }
   function _bkUsesEnd(){ return _bookingCfg().durationMode==='end'; }
   // Derive how many periods (days/hours/weeks) a start->end span covers, per the pricing model. Always >= 1.
