@@ -3022,7 +3022,7 @@ export default {
               if (await _siteTakenDown(env, cd)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
               // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
               const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
-              return new Response(_bookPageHtml(cd.subdomain, color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
             }
           }
         } catch (e) { /* fall through to normal routing */ }
@@ -5356,7 +5356,7 @@ function doReset(){
         if (await _siteTakenDown(env, tr)) return new Response(_siteUnavailableHtml(color), { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });
         // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
         const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
-        return new Response(_bookPageHtml(bp[1], color), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend|prefs))?$/);
       if (ptp) {
@@ -5652,6 +5652,33 @@ function doReset(){
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
         return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), assetCap: await _assetCapFor(env, ctx.tenant_id), assetUnlockCents: ASSET_UNLOCK_CENTS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+      }
+
+      // ---- TENANT SELF-SERVICE DATA EXPORT (GDPR/CCPA data portability): this tenant downloads its OWN operating
+      //      data as one JSON file. Tenant-scoped by ctx.tenant_id ONLY -- NEVER a query param, so a tenant can never
+      //      read another tenant's data (unlike the platform-staff /api/admin/export-tenant, which takes a tenant_id).
+      //      Owner or a settings-capable role. Reuses the admin route's SELECTs, locked to the caller's tenant; reviews
+      //      live inside booking blobs (no separate table) so they are surfaced explicitly. Read-only, no mutations. ----
+      if (path === '/api/tenant/export' && method === 'GET') {
+        if (!(ctx.isOwner || _can(ctx, 'settings'))) return err(403, 'You do not have permission to export this data.');
+        if (!await rateLimit(env, 'tenexport:' + ctx.tenant_id, 6, 3600000)) return err(429, 'Too many exports right now - please wait a moment.');
+        const _tid = ctx.tenant_id;
+        const data = await _dumpTables(env, [
+          { t: 'tenants', cols: 'id,name,fleet_type,plan,tier,subdomain,created_at,tz,brand,money,settings', where: 'id=?', binds: [_tid], limit: 1 },
+          { t: 'users', cols: 'id,email,role,created_at,last_login', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'assets', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'bookings', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'customers', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'charges', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'ledger', cols: '*', where: 'tenant_id=?', binds: [_tid] }
+        ]);
+        // reviews are stored INSIDE booking data blobs (d.review), not a separate table -- surface them explicitly for portability.
+        const reviews = [];
+        (data.bookings || []).forEach(function (b) { var d = {}; try { d = JSON.parse(b.data || '{}'); } catch (e) { return; } var rv = d && d.review; if (rv && (rv.rating || rv.text || rv.comment)) reviews.push({ booking_id: b.id, customer: String((d.customer && d.customer.name) || d.cust || '').slice(0, 120), rating: Number(rv.rating) || 0, text: String(rv.text || rv.comment || '').slice(0, 4000), reply: String(rv.reply || '').slice(0, 4000), at: rv.at || rv.ratedAt || 0 }); });
+        data.reviews = reviews;
+        const _slug = String((data.tenants && data.tenants[0] && data.tenants[0].subdomain) || _tid).replace(/[^a-z0-9-]/gi, '').slice(0, 63) || 'tenant';
+        await audit(env, ctx, req, 'tenant.export', { tenant_id: _tid, bookings: (data.bookings || []).length, customers: (data.customers || []).length });
+        return new Response(JSON.stringify({ atlas_tenant_export: true, tenant_id: _tid, exported_by: (ctx.user && ctx.user.email) || '', at: Date.now(), data: data }), { headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="atlas-export-' + _slug + '-' + new Date(Date.now()).toISOString().slice(0, 10) + '.json"' } });
       }
 
       // ============================================================ TEAM (real multi-user)
@@ -6650,6 +6677,49 @@ function doReset(){
       if (path === '/api/outreach/send' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'settings') && !_can(ctx, 'customersEdit')) return err(403, 'Marketing permission required.');   // align with the client: a customersEdit role can email a customer (the "Email this customer" action) -- not only a settings/marketing role. Still fail-closed for view-only/desk.
+        // ---- SMS BROADCAST (additive; the EMAIL branch below is byte-for-byte unchanged). Fires ONLY when the caller
+        //      explicitly asks for SMS (body.sms===true, or body.channel includes 'sms') AND this tenant has SMS set up
+        //      (comms.sms.enabled + a fromNumber). Sends ONLY to this tenant's OWN customers who gave SMS consent
+        //      (commsPref.sms / smsConsentAt on their booking blob) and are NOT STOP-suppressed -- sendSms re-checks the
+        //      suppression list per recipient (TCPA). The body is peeked via req.clone() so the email branch's
+        //      req.json() below reads an untouched body; own rate-limit bucket. An email-only request never enters here
+        //      (wantSms false) and behaves exactly as before this branch existed. ----
+        {
+          const _peek = await req.clone().json().catch(() => ({}));
+          const _ch = _peek && _peek.channel;
+          const _wantSms = (_peek && _peek.sms === true)
+            || (typeof _ch === 'string' && /(^|[,\s])sms([,\s]|$)/i.test(_ch))
+            || (Array.isArray(_ch) && _ch.some(function (c) { return String(c).toLowerCase() === 'sms'; }));
+          if (_wantSms) {
+            const _tr = await env.DB.prepare('SELECT name,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+            const _pr = tenantProfile(_tr || { name: 'Atlas Rental.io' });
+            const _smsCfg = (_pr.settings.comms && _pr.settings.comms.sms) || {};
+            const _from = String(_smsCfg.fromNumber || '').trim();
+            if (!_smsCfg.enabled || !_from) return json({ ok: false, emailSent: 0, smsSent: 0, smsSkipped: 0, reason: 'sms_not_configured', message: 'Turn on SMS and set a sending number in Settings first.' });
+            if (!await rateLimit(env, 'outreachsms:' + ctx.tenant_id, 12, 3600000)) return err(429, 'You have sent a lot of texts this hour - please wait a bit.');
+            const _msg = String((_peek && (_peek.body || _peek.message || _peek.smsBody)) || '').slice(0, 1500).trim();
+            if (!_msg) return err(400, 'Write a message to text.');
+            let _rows = [];
+            try { _rows = ((await env.DB.prepare('SELECT id,data FROM bookings WHERE tenant_id=? LIMIT 5000').bind(ctx.tenant_id).all()).results) || []; } catch (e) { _rows = []; }
+            const _seen = {}, _recips = [];
+            for (const _r of _rows) {
+              let _d = {}; try { _d = JSON.parse(_r.data || '{}'); } catch (e) { continue; }
+              const _cp = (_d && _d.commsPref) || {};
+              if (!(_cp.sms === true || _cp.smsConsentAt)) continue;                              // (b) explicit SMS consent captured on the booking
+              const _phone = String((_d && (_d.custPhone || _d.phone || _d.customerPhone || (_d.customer && _d.customer.phone))) || '').trim();
+              if (!_phone) continue;                                                              // (a) has a phone on file
+              const _key = _phone.replace(/[^0-9+]/g, ''); if (!_key || _seen[_key]) continue;    // dedupe by normalized number
+              _seen[_key] = 1;
+              _recips.push({ phone: _phone, name: String((_d.customer && _d.customer.name) || _d.cust || '').slice(0, 80) });
+              if (_recips.length >= 500) break;                                                   // hard cap per send (parity with the email branch)
+            }
+            let _smsSent = 0, _smsSkipped = 0;
+            const _res = await _sendChunked(_recips, 8, (r) => sendSms(env, ctx.tenant_id, { to: r.phone, from: _from, body: _fillTokens(_msg, r, _pr).slice(0, 1500) }));   // (c) sendSms honors the STOP-suppression list per recipient -> a suppressed (or unreachable) number returns {sent:false} and is counted as skipped
+            for (const _x of _res) { if (_x && _x.sent) _smsSent++; else _smsSkipped++; }
+            await audit(env, ctx, req, 'outreach.sms', { total: _recips.length, sent: _smsSent, skipped: _smsSkipped });
+            return json({ ok: true, emailSent: 0, smsSent: _smsSent, smsSkipped: _smsSkipped, total: _recips.length });
+          }
+        }
         if (!env.RESEND_KEY) return err(503, 'Email sending is not set up yet.');
         if (!await rateLimit(env, 'outreach:' + ctx.tenant_id, 12, 3600000)) return err(429, 'You have sent a lot of campaigns this hour - please wait a bit.');
         const b = await req.json().catch(() => ({}));
@@ -7292,7 +7362,7 @@ function _legalShell(kind) {
     + '<div class="foot">Contact <a href="mailto:support@atlasrental.io">support@atlasrental.io</a>. &copy; 2026 Atlas Rental.io. All rights reserved.</div></div>';
   return { title: title + ' -- Atlas Rental.io', body: body };
 }
-function _pageDoc(title, brandColor, bodyHtml, scriptJs) {
+function _pageDoc(title, brandColor, bodyHtml, scriptJs, headExtra) {
   var brand = /^#[0-9a-fA-F]{3,8}$/.test(brandColor || '') ? brandColor : '#1E6E4E';
   return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title><style>'
     + ':root{--brand:' + brand + '}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#f6f7f9;color:#141414;line-height:1.5}'
@@ -7300,7 +7370,7 @@ function _pageDoc(title, brandColor, bodyHtml, scriptJs) {
     + '.card{background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:18px;margin-top:14px}label{display:block;font-size:13px;font-weight:600;margin:12px 0 5px}'
     + 'input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d7d7d7;border-radius:9px;font-size:15px;font-family:inherit;background:#fff}'
     + '.btn{display:block;width:100%;background:var(--brand);color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;cursor:pointer;margin-top:16px}.btn:disabled{opacity:.5}'
-    + '.muted{color:#777;font-size:13px}.row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid #eee}.tot{display:flex;justify-content:space-between;font-weight:700;margin-top:6px;font-size:16px}.err{color:#b42318;font-size:13px;margin-top:8px}h2{margin:0 0 8px}</style></head><body><div class="wrap">' + bodyHtml + '</div><scr' + 'ipt>' + scriptJs + '</scr' + 'ipt></body></html>';
+    + '.muted{color:#777;font-size:13px}.row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid #eee}.tot{display:flex;justify-content:space-between;font-weight:700;margin-top:6px;font-size:16px}.err{color:#b42318;font-size:13px;margin-top:8px}h2{margin:0 0 8px}</style>' + (headExtra || '') + '</head><body><div class="wrap">' + bodyHtml + '</div><scr' + 'ipt>' + scriptJs + '</scr' + 'ipt></body></html>';
 }
 
 // Read-only availability check for the customer preview. Same guard rails as the /book intake (min/max length,
@@ -7326,9 +7396,70 @@ async function _availabilityCheck(env, prof, pubAssets, cfg, assetName, startTs,
   } catch (e) {}
   return { available: true, reason: 'Available on these dates' };
 }
+// Server-rendered SEO / social head for the PUBLIC booking page ONLY (crawlers + link-unfurlers see real per-tenant
+// content before the client #app hydrates). Passed to _bookPageHtml as `seo` -> _pageDoc headExtra; NEVER applied to
+// the portal/receipt pages. Pure + synchronous (no DB, no await). Returns { title, head, noscript }; every value is
+// esc()'d for HTML, or JSON.stringify'd + `<`-escaped for the JSON-LD, so a tenant string can never break the markup.
+function _bookHeadTags(prof, canonicalUrl) {
+  prof = prof || {};
+  var brand = prof.brand || {}, settings = prof.settings || {};
+  var pub = settings.publicSite || {}, cfg = pub.config || {}, loc = settings.location || {};
+  var biz = String(prof.name || 'Atlas Rental.io').slice(0, 120);
+  var city = String(loc.city || loc.area || brand.city || brand.area || '').trim().slice(0, 80);
+  var region = String(loc.region || loc.state || brand.region || brand.state || '').trim().slice(0, 80);
+  var postal = String(loc.zip || loc.postal || loc.postalCode || brand.zip || '').trim().slice(0, 24);
+  var noun = (String(cfg.noun || 'item').trim() || 'item').slice(0, 40);
+  function _pl(w) { if (!w) return 'rentals'; if (/(s|x|z|ch|sh)$/i.test(w)) return w + 'es'; if (/[^aeiouAEIOU]y$/.test(w)) return w.slice(0, -1) + 'ies'; return w + 's'; }
+  var nounPl = _pl(noun);
+  var assets = Array.isArray(pub.assets) ? pub.assets : [];
+  var currency = (String(cfg.currency || 'usd').toUpperCase().replace(/[^A-Z]/g, '') || 'USD').slice(0, 3);
+  var names = assets.map(function (a) { return String((a && a.name) || '').trim(); }).filter(Boolean);
+  var title = (biz + ' \u2014 ' + (city ? (city + ' ') : '') + nounPl).slice(0, 160);
+  var whatShort = names.slice(0, 6).join(', ');
+  var descRaw = pub.about ? String(pub.about)
+    : ('Book ' + nounPl + (whatShort ? (' -- ' + whatShort) : '') + (city ? (' in ' + city) : '') + ' with ' + biz + '. Reserve online in minutes.');
+  var desc = descRaw.replace(/\s+/g, ' ').trim().slice(0, 300);
+  var canon = String(canonicalUrl || '').slice(0, 500);
+  // og:image: an https brand logo, else the first https asset photo (data: URIs skipped -- oversized + poorly unfurled).
+  var img = /^https:\/\//i.test(String(brand.logo || '')) ? String(brand.logo).slice(0, 600) : '';
+  if (!img) { for (var i = 0; i < assets.length; i++) { var ph = assets[i] && assets[i].photo; if (/^https:\/\//i.test(String(ph || ''))) { img = String(ph).slice(0, 600); break; } } }
+  // JSON-LD: LocalBusiness + up to 10 Product/Offer. `<` -> < so no tenant string can close the script early.
+  var ld = { '@type': 'LocalBusiness', name: biz };
+  if (canon) ld.url = canon;
+  if (img) ld.image = img;
+  if (desc) ld.description = desc;
+  if (city || region || postal) { var ad = { '@type': 'PostalAddress' }; if (city) ad.addressLocality = city; if (region) ad.addressRegion = region; if (postal) ad.postalCode = postal; ld.address = ad; }
+  var prods = assets.slice(0, 10).map(function (a) {
+    var nm = String((a && a.name) || '').trim(); if (!nm) return null;
+    var o = { '@type': 'Product', name: nm.slice(0, 120) };
+    if (a && a.type) o.category = String(a.type).slice(0, 60);
+    if (a && a.desc) o.description = String(a.desc).replace(/\s+/g, ' ').trim().slice(0, 200);
+    var rate = Number(a && a.rate) || 0;
+    if (rate > 0) o.offers = { '@type': 'Offer', price: (Math.round(rate * 100) / 100).toFixed(2), priceCurrency: currency, availability: 'https://schema.org/InStock' };
+    return o;
+  }).filter(Boolean);
+  var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': [ld].concat(prods) }).replace(/</g, '\\u003c');
+  var head = '<meta name="description" content="' + esc(desc) + '">'
+    + (canon ? ('<link rel="canonical" href="' + esc(canon) + '">') : '')
+    + '<meta property="og:type" content="website">'
+    + '<meta property="og:site_name" content="' + esc(biz) + '">'
+    + '<meta property="og:title" content="' + esc(title) + '">'
+    + '<meta property="og:description" content="' + esc(desc) + '">'
+    + (canon ? ('<meta property="og:url" content="' + esc(canon) + '">') : '')
+    + (img ? ('<meta property="og:image" content="' + esc(img) + '">') : '')
+    + '<meta name="twitter:card" content="' + (img ? 'summary_large_image' : 'summary') + '">'
+    + '<meta name="twitter:title" content="' + esc(title) + '">'
+    + '<meta name="twitter:description" content="' + esc(desc) + '">'
+    + (img ? ('<meta name="twitter:image" content="' + esc(img) + '">') : '')
+    + '<scr' + 'ipt type="application/ld+json">' + ldJson + '</scr' + 'ipt>';
+  var noscript = '<noscript><div class="card"><h2>' + esc(biz) + '</h2><p>' + esc(desc) + '</p>'
+    + (names.length ? ('<p>' + esc(names.slice(0, 12).join(' \u00b7 ')) + '</p>') : '')
+    + '<p><a href="' + esc(canon || '/') + '">Book ' + esc(nounPl) + ' online</a></p></div></noscript>';
+  return { title: title, head: head, noscript: noscript };
+}
 // Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
-function _bookPageHtml(slug, color) {
-  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style><div id="app" class="card">Loading&hellip;</div>';
+function _bookPageHtml(slug, color, seo) {
+  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + ((seo && seo.noscript) || '') + '<div id="app" class="card">Loading&hellip;</div>';
   var js = `
 var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
@@ -7359,7 +7490,7 @@ function _exCost(periods){var ofr=_exOffered(),rm=(D.config||{}).rateModel||'day
 function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value,time:el('stt')?el('stt').value:'',deliveryAddr:el('dlv')?el('dlv').value:'',location:el('loc')?el('loc').value:'',extras:_selExArr(),promo:el('promo')?el('promo').value:''};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
 fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;try{var _an=j.analytics||{};if(_an.ga){var _g=document.createElement('script');_g.async=true;_g.src='https://www.googletagmanager.com/gtag/js?id='+encodeURIComponent(_an.ga);document.head.appendChild(_g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag('js',new Date());gtag('config',_an.ga)}if(_an.pixel){!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init',_an.pixel);fbq('track','PageView')}}catch(e){}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><div id=assetGrid class=agrid></div><input type=hidden id=asset><div id=rate class=muted style="margin-top:6px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput="qt();checkAvail()"><label>Start date</label><input id=st type=date onchange=checkAvail()><label>Pickup time</label><input id=stt type=time value="10:00" onchange=qt()><div id=avail class=avail></div><div id=exWrap></div><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+(j.config.collectDelivery?'<label>Delivery address</label><input id=dlv placeholder="Where should we deliver? (optional)">':'')+((j.locations&&j.locations.length)?('<label>Pickup location</label><select id=loc><option value="">Choose a location</option>'+j.locations.map(function(l){return '<option>'+esc(l)+'</option>';}).join('')+'</select>'):'')+((j.promos&&j.promos.length)?'<label>Promo code</label><div style="display:flex;gap:6px"><input id=promo style="flex:1;text-transform:uppercase" placeholder="Optional"><button type=button class=btn style="width:auto;padding:0 14px" onclick=applyPromo()>Apply</button></div><div id=promsg style="font-size:12px;margin-top:4px"></div>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';renderAssets();qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
 `;
-  return _pageDoc('Book', color, body, js);
+  return _pageDoc((seo && seo.title) || 'Book', color, body, js, (seo && seo.head) || '');
 }
 // Served customer portal: loads the booking by its token, shows status + pay-deposit/balance (if Stripe connected).
 function _m(c) { return '$' + ((Math.round(Number(c) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })); }
