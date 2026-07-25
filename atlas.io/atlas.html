@@ -8197,10 +8197,11 @@ const Atlas = (function(){
   // onboarding. Only proceeds once the server confirms; retries a few times while Stripe settles; otherwise leaves the
   // honest card gate up. Falls back to a plain /api/auth/me billing_state poll when no session_id is present.
   function _confirmTrialReturn(sid, tries){ tries=tries||0;
-    if(!(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf)){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); _postVerifyProceed(); }catch(e){} return; }
+    if(!(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND)){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); _postVerifyProceed(); }catch(e){} return; }   // truly offline/demo (no backend) -> local trial
+    if(!_apiCsrf){ if(tries<14){ setTimeout(function(){ _confirmTrialReturn(sid, tries+1); }, 1500); } else { try{ toast('We could not confirm your card yet -- please add a card to start your trial.'); showPaywall('needs_card'); }catch(e){} } return; }   // GATE-FIX2: on a fresh boot after the Stripe redirect, /api/auth/me is still restoring _apiCsrf (set async at boot). WAIT for it -- never fall back to a local-only trial the server will re-gate -- then confirm with the server.
     if(tries===0){ try{ toast('Confirming your card...'); }catch(e){} }
     var _done=function(){ if(!S.card)S.card={}; S.card.onFile=true; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); try{ hidePaywall(); _hideSignupPlans(); renderTrialBox(); renderSet(); buildAio(); }catch(e){} try{ _postVerifyProceed(); }catch(e){} try{ toast('Your free trial is active -- card saved, no charge today.'); }catch(e){} };
-    var _wait=function(){ if(tries<6){ setTimeout(function(){ _confirmTrialReturn(sid, tries+1); }, 2500); } else { try{ toast('We could not confirm your card yet -- please add a card to start your trial.'); showPaywall('needs_card'); }catch(e){} } };
+    var _wait=function(){ if(tries<14){ setTimeout(function(){ _confirmTrialReturn(sid, tries+1); }, 2200); } else { try{ toast('We could not confirm your card yet -- please add a card to start your trial.'); showPaywall('needs_card'); }catch(e){} } };
     var p = sid ? _api('/api/billing/confirm-session',{method:'POST',body:{session_id:sid,kind:'trial'}})
                 : _api('/api/auth/me',{method:'GET'});
     p.then(function(res){ var j=(res&&res.json)||{}; var bs=j.billing_state;
