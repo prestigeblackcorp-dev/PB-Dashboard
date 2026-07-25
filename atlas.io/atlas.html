@@ -2454,7 +2454,7 @@ const Atlas = (function(){
     cm.sentThisMonth+=emailN;   // G6: only EMAIL actually goes out via broadcast. SMS is not wired to broadcast, so we no longer count/log/record phantom texts as "sent".
     var audLabel={all:'All customers',active:'Active renters',past:'Past customers'}[aud]||aud;
     var parts=[]; if(emailN) parts.push(emailN+' email'+(emailN===1?'':'s'));
-    if(!parts.length){ toast(smsN? ('SMS broadcast is not available yet \u2014 send an email, or text this customer from their profile.') : 'Nothing to send'); return; }   // an SMS-only campaign has nothing that actually sends
+    if(!parts.length){ toast(smsN? ('SMS broadcast is not available yet \u2014 send an email, or email this customer directly from their profile.') : 'Nothing to send'); return; }   // an SMS-only campaign has nothing that actually sends; individual email IS wired (Email this customer)
     cm.campaigns.unshift({ subject:subject||body.slice(0,40), audience:audLabel, count:emailN, channel:'email', at:Date.now() });   // records only what truly went out
     _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via email to '+parts.join(' + ')+' ('+audLabel+')',{count:emailN,channel:'email'}); save(); closeModal(); renderSet();
     // LIVE: actually send the email to the eligible audience via the worker (suppression + one-tap unsubscribe applied server-side).
@@ -5230,6 +5230,8 @@ const Atlas = (function(){
     var nc=mine.filter(_isCommitted);   // earned only -- matches the Customers row (_custStats) + Analytics
     var spent=nc.reduce(function(s,b){return s+((b.quote&&b.quote.total)||0);},0), trips=nc.length;
     var codes={}; mine.forEach(function(b){ if(b.promoCode) codes[b.promoCode]=1; });
+    var verified=mine.some(function(b){ return b.idVerified||(b.portal&&b.portal.idVerified); });   // Customers G5/B: roll the per-booking ID-verify up to the person
+    var cmeta=_custMeta(key);
     var rows=mine.slice().sort(function(a,b){return (b.startTs||0)-(a.startTs||0);}).map(function(b){ var q=b.quote||{};
       return '<button class="cust-bk" onclick="Atlas.closeModal();Atlas.openBooking(\''+b.id+'\')">'
         +'<div style="flex:1;min-width:0;text-align:left"><div style="font-weight:650;font-size:13.5px">'+esc(b.asset||'-')+'</div>'
@@ -5240,13 +5242,31 @@ const Atlas = (function(){
     openModal('<div class="modal__head"><h3>'+esc(c.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar" style="width:44px;height:44px;font-size:18px">'+esc((c.name||'?')[0])+'</span><div style="min-width:0"><div style="font-size:13px;color:var(--muted)">'+esc(c.email||'')+'</div>'+(c.phone?('<div style="font-size:13px;color:var(--muted)">'+esc(c.phone)+'</div>'):'')+'</div></div>'
       +'<div style="display:flex;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px 6px;margin-bottom:16px">'+stat(cap(_fterm('books')),trips)+stat('Spent',money(spent))+stat('Codes',String(Object.keys(codes).length))+'</div>'
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 12px">'+(verified?'<span class="chip chip--ok"><span class="dot"></span>ID verified</span>':'<span class="chip chip--muted">Not ID-verified</span>')+'</div>'
+      +'<div class="field"><label>Private notes <span style="color:var(--muted);font-weight:400">(only you see these)</span></label><textarea class="input" id="custNote" rows="2" placeholder="VIP, prefers weekends, damage history, tags..." onblur="Atlas.saveCustNote('+i+')">'+esc(cmeta.notes||'')+'</textarea></div>'
       +(_loy().on?_custLoyaltyHtml(c,i):'')
       +_custGiftHtml(c)
       +'<div style="font-size:13px;font-weight:750;margin:0 0 8px">Booking history</div>'
       +'<div class="cust-bklist" style="display:flex;flex-direction:column;gap:8px">'+rows+'</div>'
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:14px" onclick="Atlas.closeModal();Atlas.newBooking()">New booking</button>'
+      +(c.email?('<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px" onclick="Atlas.emailCustomer('+i+')">Email this customer</button>'):'')
       +'</div>');
   }
+  // Customers B: persistent per-customer CRM metadata (keyed by email in S.custMeta, so it survives the bookings-derived customer list + syncs).
+  function _custMeta(key){ if(!S.custMeta)S.custMeta={}; if(!key)return {}; if(!S.custMeta[key])S.custMeta[key]={}; return S.custMeta[key]; }
+  function saveCustNote(i){ var c=DATA.customers[i]; if(!c)return; var key=(c.email||'').toLowerCase(); if(!key)return; var m=_custMeta(key); m.notes=(val('custNote')||'').slice(0,2000); save(); }
+  function emailCustomer(i){ var c=DATA.customers[i]; if(!c||!c.email)return; if(!_canMod('customers')&&!_canMod('settings'))return;
+    openModal('<div class="modal__head"><h3>Email '+esc((c.name||'customer').split(' ')[0])+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 10px">Sends one email to <b>'+esc(c.email)+'</b> from your business (unsubscribe + suppression applied).</div>'
+      +'<div class="field"><label>Subject</label><input class="input" id="ceSubj" placeholder="A quick note"></div>'
+      +'<div class="field"><label>Message</label><textarea class="input" id="ceBody" rows="5" placeholder="Hi '+esc((c.name||'').split(' ')[0])+',"></textarea></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.sendCustEmail('+i+')">Send email</button></div>'); }
+  function sendCustEmail(i){ var c=DATA.customers[i]; if(!c||!c.email)return; var subj=(val('ceSubj')||'').trim(), body=(val('ceBody')||'').trim();
+    if(!subj){ toast('Add a subject'); return; } if(!body){ toast('Write a message'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Connect your Atlas backend to send email'); return; }
+    toast('Sending...'); _api('/api/outreach/send',{method:'POST',body:{subject:subj,body:body,recipients:[c.email]}}).then(function(res){
+      if(res.json&&res.json.ok&&(res.json.sent>0)){ _logEvent('email','Emailed '+c.email+': '+subj,{to:c.email}); closeModal(); toast('Email sent'); }
+      else { toast((res.json&&(res.json.error))||((res.json&&res.json.skipped)?'Not sent -- this customer is unsubscribed':'Could not send')); } }).catch(function(){ toast('Network error'); }); }
   function renderAnalytics(){
     if(!document.getElementById('anaKpis')) return;   // only when the Analytics panel is mounted
     try{ _materializeRecurring(); }catch(e){}   // generate any recurring expenses due, prune stale/orphaned ones, before anything on this panel reads the ledger
@@ -5333,12 +5353,12 @@ const Atlas = (function(){
     try{ var blob=new Blob([csv],{type:'text/csv'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='atlas-'+name+'-'+_todayStr()+'.csv'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Downloaded '+name+'.csv'); }catch(e){ toast('Download not available here'); } }
   function downloadReport(kind){ var rows,name;
     if(kind==='bookings'){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r.from;});   // earned rows -- reconciles 1:1 with the report card + tax CSV (pending + cancelled shown in the Bookings tab)
-      rows=[['Booking ID','Customer','Email','Asset','Start','Periods','Status','Promo','Gross','Discount','Tax','Total']];
-      bks.forEach(function(b){ var q=b.quote||{}; rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',_c2(q.gross||q.subtotal||q.total||0),_c2(q.disc||0),_c2(q.taxAmt||0),_c2(q.total||0)]); });
+      rows=[['Booking ID','Customer','Email','Asset','Start','Periods','Status','Promo','Gross','Discount','Tax','Booked Total','Collected']];   // G8: 'Booked Total' = accrual (full quote); 'Collected' = cash actually in (reconciles 1:1 with the P&L revenue KPI). The two differ for unpaid/partly-paid bookings -- that gap is the point.
+      bks.forEach(function(b){ var q=b.quote||{}; rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',_c2(q.gross||q.subtotal||q.total||0),_c2(q.disc||0),_c2(q.taxAmt||0),_c2(q.total||0),_c2(_bkEarned(b))]); });
       name='bookings'; }
     else if(kind==='tax'){ var r2=_repRange(); var b2=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r2.from;});
-      var g=0,d=0,fe=0,t=0,ch=0,tot=0; b2.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b); g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); fe+=(q.feeTotal||0); t+=(q.taxAmt||0)+_collectedChargeTax(b); ch+=cc; tot+=(q.total||0)+cc; });   // Tax collected includes the tax embedded in taxable payment-widget/owner charges
-      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Fees','Tax collected','Add-on charges collected','Total collected'],[r2.label,b2.length,_c2(g),_c2(d),_c2(fe),_c2(t),_c2(ch),_c2(tot)]]; name='tax-summary'; }   // Gross - Discounts + Fees + Tax + Add-on charges == Total reconciles
+      var g=0,d=0,fe=0,t=0,ch=0,tot=0,coll=0; b2.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b); g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); fe+=(q.feeTotal||0); t+=(q.taxAmt||0)+_collectedChargeTax(b); ch+=cc; tot+=(q.total||0)+cc; coll+=_bkEarned(b); });   // Tax collected includes the tax embedded in taxable payment-widget/owner charges. G8: 'coll' = true cash-in (matches the P&L revenue KPI); 'tot' is the accrual booked value.
+      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Fees','Tax collected','Add-on charges collected','Total booked (accrual)','Collected to date (matches P&L)'],[r2.label,b2.length,_c2(g),_c2(d),_c2(fe),_c2(t),_c2(ch),_c2(tot),_c2(coll)]]; name='tax-summary'; }   // Gross - Discounts + Fees + Tax + Add-on charges == Total booked reconciles; Collected reconciles to the dashboard revenue KPI
     else if(kind==='accounting'){ var r3=_repRange(); var b3=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r3.from;});
       // Xero/QuickBooks-friendly sales rows (one invoice line per booking) -- import as sales invoices.
       rows=[['ContactName','InvoiceNumber','InvoiceDate','Description','Quantity','UnitAmount','TaxAmount','LineTotal','AccountCode']];
@@ -9239,7 +9259,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkPortalLink,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
