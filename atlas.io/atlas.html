@@ -2130,7 +2130,7 @@ const Atlas = (function(){
     ['instantPatch','Apply owner hot-fixes without a reload (coming soon)'],
     ['aiActions','Atlas.io can make changes for you (preview + one-tap undo)']
   ];
-  function _flags(){ if(!S.flags)S.flags={}; return S.flags; }
+  function _flags(){ if(!S.flags)S.flags={}; if(S.flags.aiActions==null) S.flags.aiActions=true; return S.flags; }   // aiActions defaults ON: the edit engine is RBAC-gated + preview-before-apply on money + fully undoable; owner can still toggle it off in Settings.
   /* ---- Team roles & granular, enforced permissions ---- */
   // Modules = which tabs a worker can SEE. Caps = what they can DO. Every action re-checks a cap (client guard;
   // the real backend must mirror the same check server-side so a hidden button can't be forced).
@@ -7249,6 +7249,7 @@ const Atlas = (function(){
       var _ids=(typeof _fleetSel==='function'?_fleetSel():[(S.fleet&&S.fleet.id)]); var _labels=_ids.map(function(id){return (_typeById(id)||{}).label||id;});
       if(_labels.length) p.push('Rents: '+_labels.join(', '));
       if(S.brand&&S.brand.city) p.push('Market / city: '+S.brand.city);
+      try{ if(S.brand&&S.brand.color) p.push('Current brand accent color: '+S.brand.color+', theme '+_theme()); }catch(e){}
       if(S.setup&&S.setup.goal) p.push('Owner goal: '+S.setup.goal);
       try{ if(S.money){ p.push('Pricing: base '+money(S.money.baseRate||0)+' per '+_perUnitOne()+(S.money.tax?(', tax '+S.money.tax+'%'):'')); } }catch(e){}
       var na=(typeof DATA!=='undefined'&&DATA.assets)?DATA.assets.length:0, nb=(typeof DATA!=='undefined'&&DATA.bookings)?DATA.bookings.length:0;
@@ -7488,7 +7489,25 @@ const Atlas = (function(){
     _logEvent('promo','Promo code '+promo.code+' created ('+(promo.type==='pct'?promo.value+'% off':money(promo.value)+' off')+')',{code:promo.code});
     save(); try{ renderSet(); }catch(e){}
     return promo.id; }
+  // Normalizes an AI-supplied color to a #RRGGBB hex: accepts #rgb / #rrggbb, or a common color name. null if unresolvable.
+  var _AIO_CNAMES={black:'#111111',jet:'#111111',white:'#FFFFFF',gold:'#C6A15B',champagne:'#C6A15B',navy:'#1E293B',charcoal:'#1E293B',slate:'#1E293B',red:'#DC2626',crimson:'#DC2626',green:'#1E6E4E',emerald:'#059669',blue:'#2563EB',royal:'#2563EB',purple:'#7C3AED',violet:'#7C3AED',pink:'#DB2777',magenta:'#DB2777',orange:'#EA580C',amber:'#CA8A04',yellow:'#CA8A04',teal:'#0891B2',cyan:'#0891B2',indigo:'#4F46E5',bronze:'#B45309'};
+  function _aioHex(v){ var s=String(v||'').trim().toLowerCase();
+    var m=/^#?([0-9a-f]{6})$/.exec(s); if(m) return '#'+m[1].toUpperCase();
+    var m3=/^#?([0-9a-f]{3})$/.exec(s); if(m3){ var h=m3[1]; return ('#'+h[0]+h[0]+h[1]+h[1]+h[2]+h[2]).toUpperCase(); }
+    if(_AIO_CNAMES[s]) return _AIO_CNAMES[s];
+    var w=s.replace(/[^a-z]/g,''); if(_AIO_CNAMES[w]) return _AIO_CNAMES[w];
+    return null; }
   const AIO_ACTIONS={
+    'brand.setColor':{
+      params:['color'], hint:'color is a #RRGGBB hex -- translate a color name (gold, navy, black) to its hex. For a two-tone look like "black and gold", set the ACCENT here (gold) and ALSO emit theme.set with mode dark.',
+      cap:'settings', money:false, tier:'auto',
+      label:function(p){ var h=_aioHex(p.color)||String(p.color||''); return 'Set your brand color to '+esc(h); },
+      summary:function(p){ return {field:'Brand color', before:(S.brand&&S.brand.color)||'(default)', after:(_aioHex(p.color)||String(p.color||''))}; },
+      validate:function(p){ if(!_aioHex(p.color)) return {ok:false,msg:'Give me a color as a hex like #C6A15B, or a name like gold, navy or black.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:(S.brand&&S.brand.color)||''}; },
+      apply:function(p){ if(!_canMod('settings')) return false; setBrandColor(_aioHex(p.color)); },
+      undo:function(snap){ if(snap.prevValue) setBrandColor(snap.prevValue); }
+    },
     'theme.set':{
       params:['mode'], hint:'mode must be exactly "dark" or "light".',
       cap:null, extraGate:_canDark, money:false, tier:'auto',
@@ -7904,7 +7923,10 @@ const Atlas = (function(){
       || /\bsales tax\b|\btax rate\b/.test(s)
       || /\b(deposit|security deposit|down payment)\b/.test(s)
       || /\b(fee|fees|surcharge)\b/.test(s)
-      || /\bpromo(tion)?s?\b|\bpromo code\b|\bcoupon\b|\bdiscount code\b/.test(s);
+      || /\bpromo(tion)?s?\b|\bpromo code\b|\bcoupon\b|\bdiscount code\b/.test(s)
+      // Appearance: brand color / palette / luxury look (maps to brand.setColor [+ theme.set + headline/about]).
+      || /\b(colou?rs?|palette|accent|brand colou?r|theme colou?r)\b/.test(s)
+      || /\bblack and gold\b|\bgold and black\b|\bluxur(y|ious)\b|\bmore (upscale|premium|high.?end|elegant)\b/.test(s);
   }
   function _aioLooksActionable(s){
     if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
