@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25i';
+const ATLAS_BUILD = '2026.07.25j';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -603,7 +603,7 @@ function _can(ctx, cap) {
 const AIO_SAFETY_PROMPT =
   // WHO YOU ARE + PURPOSE
   'You are Atlas.io, the AI brain inside Atlas Rental.io - a white-label SaaS that runs ONE independent rental business of ANY type (cars/exotics, rental properties, apartments & units, RVs & campers, boats & yachts, salon suites, equipment, luxury events, and more). ' +
-  'Your job: help THIS owner run and GROW their business - price smartly, fill idle days, lift utilization and revenue, draft customer messages and marketing, explain their own numbers, research their local market, and guide them through every tab (Overview, Fleet/assets, Bookings, Customers, Analytics, Live Map, Website, Team, Settings). You continuously learn from their data and market and surface the single best next action - keep getting sharper about their specific business. ' +
+  'Your job: help THIS owner run and GROW their business - price smartly, fill idle days, lift utilization and revenue, draft customer messages and marketing, explain their own numbers, research their local market, and guide them through every tab (Overview, Fleet/assets, Bookings, Customers, Analytics, Live Map, Website, Team, Settings). You always reason from their CURRENT live data and local market and surface the single best next action for their specific business right now. ' +
   // HONEST LIMITATIONS (never mislead)
   'Know the product honestly and never oversell it: the owner\'s OWN Atlas subscription, credit packs and website add-on bill through Stripe now (live) - treat those as real charges. Charging the owner\'s CUSTOMERS (booking deposits and balances) requires the owner to connect their own Stripe in Settings; until they do, customer charges are in setup mode and nothing is charged, so never imply a customer paid when they did not. Email sending needs Resend connected; SMS needs Twilio. Some features are plan-gated (asset caps, the built-in website on higher tiers). The app never touches raw card numbers (hosted Stripe Checkout does). You advise and can prepare actions, but you do not move money, charge cards, or sign agreements on your own. If something is not connected or not possible yet, say so plainly and tell them exactly how to turn it on. ' +
   // SECURITY (guard the known flaws)
@@ -7808,9 +7808,14 @@ function _dripFooter(env) {
 // Idempotent per-(tenant,stage) dedup claim. Mirrors recordTxn exactly: INSERT OR IGNORE + .meta.changes. Returns true
 // ONLY the first time this (tenant,stage) is claimed (-> caller sends); false on a replay OR any DB error (fail-closed:
 // never risk a duplicate or errant send). The whole ledger lives in trial_drip_log (created lazily by _runTrialDrip).
-async function _dripClaim(env, tenantId, stage) {
+async function _dripClaim(env, tenantId, stage, period) {
   try {
-    const _r = await env.DB.prepare("INSERT OR IGNORE INTO trial_drip_log (tenant_id, stage, sent_at) VALUES (?,?,?)").bind(tenantId, stage, Date.now()).run();
+    // #surfaces-P2: fold the trial PERIOD into the dedup key for window-tied stages. The table is PK(tenant_id, stage), so
+    // without this a tenant whose trial_ends gets EXTENDED (re-trial / referral +30d, plan stays 'trial') would never drip
+    // the mid/end/winback stages again for the new window -- the INSERT OR IGNORE silently no-ops. Encoding the period in the
+    // stage value dedups per (tenant, stage, period) with NO schema/PK migration. 'activate' passes no period (signup-tied, once).
+    var _sk = (period != null && period !== '') ? (stage + '#' + String(period)) : stage;
+    const _r = await env.DB.prepare("INSERT OR IGNORE INTO trial_drip_log (tenant_id, stage, sent_at) VALUES (?,?,?)").bind(tenantId, _sk, Date.now()).run();
     return !!(_r && _r.meta && _r.meta.changes);
   } catch (e) { return false; }
 }
@@ -7864,7 +7869,7 @@ async function _runTrialDrip(env, now) {
     for (const t of rows) {
       try {
         if (!_eligible(t.email)) continue;
-        if (!(await _dripClaim(env, t.id, 'midtrial'))) continue;
+        if (!(await _dripClaim(env, t.id, 'midtrial', t.trial_ends))) continue;   // per trial window -> a re-trial re-arms
         const noun = _assetNoun(t.fleet_type);
         const na = await _count('SELECT COUNT(*) c FROM assets WHERE tenant_id=?', t.id);   // real state -> honest, specific nudge
         const nb = await _count('SELECT COUNT(*) c FROM bookings WHERE tenant_id=?', t.id);
@@ -7897,7 +7902,7 @@ async function _runTrialDrip(env, now) {
     for (const t of rows) {
       try {
         if (!_eligible(t.email)) continue;
-        if (!(await _dripClaim(env, t.id, 'endsoon'))) continue;
+        if (!(await _dripClaim(env, t.id, 'endsoon', t.trial_ends))) continue;   // per trial window -> a re-trial re-arms
         const endStr = _dripDate(t.trial_ends);
         const cents = PLAN_PRICE_CENTS[t.tier];   // REAL tier price in cents (undefined if the trial never picked a tier)
         const planNm = _planLabel(t.tier || '');
@@ -7927,7 +7932,7 @@ async function _runTrialDrip(env, now) {
     for (const t of rows) {
       try {
         if (!_eligible(t.email)) continue;
-        if (!(await _dripClaim(env, t.id, 'winback'))) continue;
+        if (!(await _dripClaim(env, t.id, 'winback', t.trial_ends))) continue;   // per trial window -> a re-trial re-arms
         const noun = _assetNoun(t.fleet_type);
         const cents = PLAN_PRICE_CENTS[t.tier];
         const planNm = _planLabel(t.tier || '');
