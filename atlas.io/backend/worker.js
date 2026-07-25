@@ -580,9 +580,18 @@ function _roleCaps(role) {
 function _can(ctx, cap) {
   if (!ctx || !ctx.user) return false;
   if (ctx.isOwner || ctx.user.role === 'owner') return true;
+  // G7: 'customersEdit' is a NEW finer-grained WRITE cap, split out from the coarse 'customers' (view) module so a role
+  // can be given customer VIEW without customer EDIT. Backward-compat: any cap set that predates it (no explicit
+  // customersEdit key) INHERITS the 'customers' permission, so no existing member ever loses write access on deploy.
   let stored = null; try { stored = ctx.user.caps ? JSON.parse(ctx.user.caps) : null; } catch (e) {}
-  if (stored && (stored.caps || stored.mods)) { const flat = {}; ['caps', 'mods'].forEach(g => { const o = stored[g] || {}; Object.keys(o).forEach(k => { if (o[k]) flat[k] = 1; }); }); return !!flat[cap]; }
-  const rc = _roleCaps(ctx.user.role); if (rc === null) return true; return !!rc[cap];
+  if (stored && (stored.caps || stored.mods)) {
+    const flat = {}; ['caps', 'mods'].forEach(g => { const o = stored[g] || {}; Object.keys(o).forEach(k => { if (o[k]) flat[k] = 1; }); });
+    if (cap === 'customersEdit' && !(stored.caps && ('customersEdit' in stored.caps))) return !!flat['customers'];   // inherit unless the client EXPLICITLY set customersEdit (true or false)
+    return !!flat[cap];
+  }
+  const rc = _roleCaps(ctx.user.role); if (rc === null) return true;
+  if (cap === 'customersEdit' && !('customersEdit' in rc)) return !!rc['customers'];   // role-preset users: inherit from the coarse customers cap
+  return !!rc[cap];
 }
 
 // ============================================================ Atlas.io council
@@ -2126,6 +2135,33 @@ async function _creditAdd(env, tid, n) {
 // ---- Atlas HQ (owner master dashboard): platform tables self-heal so the whole thing is a PASTE-ONLY deploy (no separate migration).
 // CREATE ... IF NOT EXISTS + additive ALTER (swallowed if the column already exists) are idempotent + safe to re-run.
 let _pReady = false;
+// Customers C: when a booking carries an approved ID, record the PERSON (tenant+email) as verified so their future
+// bookings auto-inherit it + skip the verify email. Best-effort + idempotent -- never blocks or fails the booking write.
+async function _carryVerify(env, tenantId, data) {
+  try {
+    if (!data || typeof data !== 'object') return;
+    const verified = !!(data.idVerified || (data.portal && data.portal.idVerified));
+    if (!verified) return;
+    const email = String(data.custEmail || data.customerEmail || (data.portal && data.portal.email) || '').trim().toLowerCase();
+    if (!email || email.indexOf('@') < 1) return;
+    const name = String(data.cust || data.customer || data.custName || '').slice(0, 160);
+    let dlExp = 0; const rawExp = data.idExpiry || data.dlExpiry || (data.portal && (data.portal.dlExpiry || data.portal.idExpiry));
+    if (rawExp) { const t = (typeof rawExp === 'number') ? rawExp : Date.parse(rawExp); if (t && !isNaN(t)) dlExp = t; }
+    await env.DB.prepare("INSERT INTO verified_customers (tenant_id,email,name,verified_at,dl_expiry,source) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,email) DO UPDATE SET name=COALESCE(NULLIF(excluded.name,''),verified_customers.name), verified_at=excluded.verified_at, dl_expiry=MAX(verified_customers.dl_expiry, excluded.dl_expiry)")
+      .bind(tenantId, email, name, Date.now(), dlExp, 'booking').run();
+  } catch (e) { /* verify-carry is a convenience index, never critical path */ }
+}
+// Customers C: is this tenant's customer (by email) already ID-verified, with a still-valid DL? Used by the public
+// booking intake to pre-mark a returning customer + skip the verify email. Returns {verified,name,dl_expiry} or null.
+async function _lookupVerified(env, tenantId, email) {
+  try {
+    const e = String(email || '').trim().toLowerCase(); if (!e || e.indexOf('@') < 1) return null;
+    const row = await env.DB.prepare("SELECT name,verified_at,dl_expiry FROM verified_customers WHERE tenant_id=? AND email=?").bind(tenantId, e).first();
+    if (!row) return null;
+    if (row.dl_expiry && Number(row.dl_expiry) > 0 && Number(row.dl_expiry) < Date.now()) return null;   // DL expired -> must re-verify
+    return { verified: true, name: row.name || '', dl_expiry: Number(row.dl_expiry) || 0 };
+  } catch (e) { return null; }
+}
 async function ensurePlatformSchema(env) {
   if (_pReady) return;
   try {
@@ -2149,6 +2185,10 @@ async function ensurePlatformSchema(env) {
     try { await env.DB.prepare("ALTER TABLE signatures ADD COLUMN doc_text TEXT").run(); } catch (e) {}   // store the EXACT agreement text signed -> the hash stays reproducible/verifiable even after the owner edits their template
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_sig_booking ON signatures(tenant_id, booking_id)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS promo_uses (tenant_id TEXT, code TEXT, n INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, code))").run();   // server-authoritative public promo redemption count (cap enforcement)
+    // Customers C: verify auto-carry. Once a customer's ID is approved on ANY booking, the person (tenant+email) is
+    // recorded here so their FUTURE bookings inherit verified status + skip the verify-ID email while their DL is still
+    // valid. Tenant-scoped (PK tenant_id+email) -> never carries across businesses. dl_expiry: ms epoch, 0 = unknown/no expiry.
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS verified_customers (tenant_id TEXT, email TEXT, name TEXT, verified_at INTEGER, dl_expiry INTEGER DEFAULT 0, source TEXT, PRIMARY KEY(tenant_id, email))").run();
     // Developer platform: per-tenant API keys. Only the SHA-256 hash is stored -> a DB dump never yields a usable key; the full secret is shown ONCE at creation.
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, tenant_id TEXT, name TEXT, key_hash TEXT, prefix TEXT, created_at INTEGER, last_used_at INTEGER, revoked_at INTEGER)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_apikeys_hash ON api_keys(key_hash)").run();
@@ -3405,8 +3445,10 @@ function doReset(){
               .bind(custId, prof.id, String(b.name).slice(0, 120), b.email.toLowerCase(), String(b.phone || '').slice(0, 40), '{}', now).run();
           } catch (e) {}
           const token = randId(24), bref = 'BK-' + randId(8);
+          let _vc = null; try { await ensurePlatformSchema(env); _vc = await _lookupVerified(env, prof.id, b.email); } catch (e) {}   // Customers C: returning, already-ID-verified customer (valid DL) -> auto-carry so they are NOT asked to re-upload
           const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
-            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined };   // G4: carry a delivery/pickup address if the site collects one
+            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined,
+            idVerified: _vc ? true : undefined, idVerifiedCarriedAt: _vc ? now : undefined };   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification.
           try {
             await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
@@ -6124,7 +6166,7 @@ function doReset(){
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         // server-side RBAC floor: a read-only member can never mutate tenant data, even with a valid session + CSRF
         if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
-        { const _needW = ({ assets: 'fleetEdit', bookings: 'bookEdit', charges: 'bookEdit', customers: 'customers', promos: 'pricing', ledger: 'pricing' })[coll]; if (_needW && !_can(ctx, _needW)) return err(403, 'You do not have permission to modify ' + coll + '.'); }
+        { const _needW = ({ assets: 'fleetEdit', bookings: 'bookEdit', charges: 'bookEdit', customers: 'customersEdit', promos: 'pricing', ledger: 'pricing' })[coll]; if (_needW && !_can(ctx, _needW)) return err(403, 'You do not have permission to modify ' + coll + '.'); }   // G7: customer WRITES gate on customersEdit (view stays on the customers module); _can() inherits customersEdit from customers for legacy cap sets
 
         const hasUpd = (coll === 'assets' || coll === 'bookings');
         if (method === 'POST') {
@@ -6153,6 +6195,7 @@ function doReset(){
               if (clash.tenant_id === ctx.tenant_id) {   // same tenant re-POSTing the same id -> UPDATE, don't duplicate or 500
                 const uCols = cols.slice(), uVals = vals.slice(); if (hasUpd) { uCols.push('updated_at'); uVals.push(now); }   // customers has no updated_at column
                 if (uCols.length) await env.DB.prepare(`UPDATE ${coll} SET ${uCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...uVals, rid, ctx.tenant_id).run();
+                if (coll === 'bookings' && body.data) await _carryVerify(env, ctx.tenant_id, body.data);   // Customers C: index the verified person on the common mirror (re-POST -> UPDATE) path
                 await audit(env, ctx, req, coll + '.update', { id: rid });
                 return json({ ok: true, id: rid, updated: true });
               }
@@ -6172,6 +6215,7 @@ function doReset(){
           const allCols = ['id', 'tenant_id', 'created_at'].concat(hasUpd ? ['updated_at'] : []).concat(cols);
           const allVals = [rid, ctx.tenant_id, now].concat(hasUpd ? [now] : []).concat(vals);
           await env.DB.prepare(`INSERT INTO ${coll} (${allCols.join(',')}) VALUES (${allCols.map(() => '?').join(',')})`).bind(...allVals).run();
+          if (coll === 'bookings' && body.data) await _carryVerify(env, ctx.tenant_id, body.data);   // Customers C: index the verified person on create
           await audit(env, ctx, req, coll + '.create', { id: rid });
           return json({ ok: true, id: rid });
         }
@@ -6185,6 +6229,7 @@ function doReset(){
           const setCols = cols.slice(), setVals = vals.slice();
           if (hasUpd) { setCols.push('updated_at'); setVals.push(Date.now()); }
           await env.DB.prepare(`UPDATE ${coll} SET ${setCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...setVals, id, ctx.tenant_id).run();
+          if (coll === 'bookings' && body.data) await _carryVerify(env, ctx.tenant_id, body.data);   // Customers C: index the verified person on PUT
           await audit(env, ctx, req, coll + '.update', { id });
           return json({ ok: true });
         }
