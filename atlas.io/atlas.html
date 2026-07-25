@@ -1565,7 +1565,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 
         <!-- TRACKING (live GPS map) -->
         <section class="panel" data-panel="tracking">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px;flex-wrap:wrap"><div><h2 style="font-size:22px">Live map</h2><p style="color:var(--muted);font-size:14px">Real-time location and telemetry for every connected asset.</p></div><div id="trkTopActions"></div></div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px;flex-wrap:wrap"><div><h2 style="font-size:22px">Live map</h2><p style="color:var(--muted);font-size:14px">Live GPS for connected trackers (Bouncie, Samsara, Traccar) &mdash; every other brand shows the live-map layout with simulated positions.</p></div><div id="trkTopActions"></div></div>
           <div id="trkBody"></div>
         </section>
 
@@ -2470,9 +2470,7 @@ const Atlas = (function(){
     var audLabel={all:'All customers',active:'Active renters',past:'Past customers'}[aud]||aud;
     // EMAIL: count + record only what truly goes out (unchanged send behavior)
     if(doEmail){
-      cm.sentThisMonth+=emailN;
-      cm.campaigns.unshift({ subject:subject||body.slice(0,40), audience:audLabel, count:emailN, channel:'email', at:Date.now() });
-      _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via email to '+emailN+' recipient'+(emailN===1?'':'s')+' ('+audLabel+')',{count:emailN,channel:'email'});
+      cm.sentThisMonth+=emailN;   // plan-cap meter only -- an estimate is fine here (renews monthly); the campaign LOG below records the worker-confirmed count instead
     }
     save(); closeModal(); renderSet();
     // LIVE email send to the eligible audience (suppression + one-tap unsubscribe applied server-side).
@@ -2481,10 +2479,16 @@ const Atlas = (function(){
       toast('Sending '+_list.length+' email'+(_list.length===1?'':'s')+'...');
       _api('/api/outreach/send',{method:'POST',body:{subject:subject,body:body,recipients:_list}}).then(function(res){
         if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var n=res.json.sent||0, sk=res.json.skipped||0;
+          cm.campaigns.unshift({ subject:subject||body.slice(0,40), audience:audLabel, count:n, channel:'email', at:Date.now() });   // record the WORKER-CONFIRMED count, not the pre-send estimate
+          _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via email to '+n+' recipient'+(n===1?'':'s')+(sk?(' ('+sk+' skipped)'):'')+' ('+audLabel+')',{count:n,channel:'email'}); save(); renderSet();
           toast('Sent '+n+' email'+(n===1?'':'s')+(sk?(' ('+sk+' skipped -- unsubscribed or invalid)'):'')); }
         else { toast((res.json&&res.json.error)?('Could not send: '+res.json.error):'Could not send the email'); }
       }).catch(function(){ toast('Could not reach the mail server -- try again'); });
-    } else if(doEmail && !_live){ toast('Email queued for '+emailN+' (demo -- connect your Atlas backend to send)'); }
+    } else if(doEmail && !_live){
+      cm.campaigns.unshift({ subject:subject||body.slice(0,40), audience:audLabel, count:emailN, channel:'email', at:Date.now() });   // demo/offline: no worker to confirm -> fall back to the eligible estimate
+      _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" queued via email to '+emailN+' recipient'+(emailN===1?'':'s')+' ('+audLabel+')',{count:emailN,channel:'email'}); save(); renderSet();
+      toast('Email queued for '+emailN+' (demo -- connect your Atlas backend to send)');
+    }
     // LIVE SMS broadcast: the worker itself derives the consented, non-STOP-suppressed recipients (TCPA) and returns the real count -- we record ONLY what it confirms sent.
     if(wantSms){
       if(!_live){ toast('Connect your Atlas backend to send texts'); }
@@ -3316,7 +3320,7 @@ const Atlas = (function(){
   function catAddExtra(){ _ensureExtras().push({id:'x'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),name:'New extra',price:25,per:'flat'}); save(); renderSet(); }
   function catRemoveExtra(id){ S.money.extras=_ensureExtras().filter(function(x){return x.id!==id;}); save(); renderSet(); }
   function _updBkModelPrev(){ var el=document.getElementById('bkModelPrev'); if(el) el.innerHTML=_bkModelPreviewHtml(); }
-  function _bkModelPreviewHtml(){ var cfg=_bookingCfg(), rows=['Customer name + email'];
+  function _bkModelPreviewHtml(){ var cfg=_bookingCfg(), rows=[cap(_custNoun())+' name + email'];
     if(cfg.fields.phone) rows.push('Phone');
     rows.push(cap(S.fleet.noun)+' to rent');
     if(cfg.durationMode==='end'){ rows.push(cfg.time?'Start date + time':'Start date'); rows.push(cfg.time?'End date + time':'End date'); }
@@ -4002,7 +4006,7 @@ const Atlas = (function(){
     const rows=b=>`<tr style="cursor:pointer" onclick="Atlas.openBooking('${b.id}')"><td><b>${b.id}</b></td><td><div class="cust"><span class="avatar">${esc((b.cust||'?')[0])}</span>${esc(b.cust)}</div></td>
       <td>${esc(b.asset)}</td><td class="tnum">${_fmtWhen(b.startTs,b.time)} &middot; ${b.periods}${_pu}</td>
       <td class="tnum"><b>${money(_bkTotal(b))}</b></td><td>${statusChip(b.status)}</td></tr>`;
-    const head=`<thead><tr><th>Booking</th><th>Customer</th><th>${cap(S.fleet.noun)}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
+    const head=`<thead><tr><th>Booking</th><th>${cap(_custNoun())}</th><th>${cap(S.fleet.noun)}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
     document.getElementById('bookTbl').innerHTML=head+'<tbody>'+(DATA.bookings.length?DATA.bookings.slice(0,5).map(rows).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px 8px">No bookings yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.newBooking()">create your first booking</span>.</td></tr>')+'</tbody>';
     document.getElementById('bookTblFull').innerHTML=head+'<tbody>'+DATA.bookings.map(rows).join('')+'</tbody>';
     setTimeout(()=>drawRevChart(),30);
@@ -4038,6 +4042,7 @@ const Atlas = (function(){
       +(ro? '<div class="bk-lenhint" style="margin:0">'+esc(_servicePlanHint(a))+'</div>'
           : '<div class="row2"><div class="field"><label>Service every <span style="color:var(--muted);font-weight:400;font-size:12px">(days, blank = off)</span></label><input class="input tnum" id="aSvcDays" inputmode="numeric" value="'+((a.service&&a.service.intervalDays>0)?a.service.intervalDays:'')+'" placeholder="e.g. 90"></div>'
             +'<div class="field"><label>Or every <span style="color:var(--muted);font-weight:400;font-size:12px">('+_svcUnitWord()+', blank = off)</span></label><input class="input tnum" id="aSvcMiles" inputmode="numeric" value="'+((a.service&&a.service.intervalMiles>0)?a.service.intervalMiles:'')+'" placeholder="e.g. 5000"></div></div>'
+            +'<div class="field"><label>Current '+_svcUnitWord()+' reading <span style="color:var(--muted);font-weight:400;font-size:12px">(optional &mdash; powers the usage-based service reminder)</span></label><input class="input tnum" id="aOdometer" inputmode="numeric" value="'+((+a.odometer>0)?(+a.odometer):'')+'" placeholder="e.g. 42000"></div>'
             +'<div class="bk-lenhint" style="margin:5px 0 0">'+esc(_servicePlanHint(a))+'</div>')
       +'<div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 6px"><span style="font-size:13px;font-weight:750;color:var(--ink)">Service &amp; mileage log</span>'+(ro?'':'<button class="btn btn--ghost btn--sm" onclick="Atlas.assetLogService(\''+id+'\')">+ Log service</button>')+'</div>'+_maintHtml(a)
       +'<div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 6px"><span style="font-size:13px;font-weight:750;color:var(--ink)">Documents</span>'+(ro?'':'<button class="btn btn--ghost btn--sm" onclick="Atlas.assetAddDoc(\''+id+'\')">+ Add document</button>')+'</div>'+_docVaultHtml(a)
@@ -4061,6 +4066,7 @@ const Atlas = (function(){
     if(document.getElementById('aSvcDays')){ var _sd=parseInt(val('aSvcDays'),10)||0, _sm=parseInt(val('aSvcMiles'),10)||0;   // scheduler: read the service-plan intervals (only when the fleetEdit inputs are on-screen)
       if(_sd>0||_sm>0){ var _sv=_asService(a); _sv.intervalDays=(_sd>0?_sd:0); _sv.intervalMiles=(_sm>0?_sm:0); _serviceSyncLast(a); }
       else if(a.service){ a.service.intervalDays=0; a.service.intervalMiles=0; } }   // both blank -> stop tracking, but keep the last-serviced markers
+    if(document.getElementById('aOdometer')){ var _od=parseInt(val('aOdometer'),10); if(_od>=0 && isFinite(_od)) a.odometer=_od; }   // scheduler: current usage reading -> feeds _serviceDue's odometer axis, written independently of any service log (blank = leave unchanged)
     var tn=(val('aTenName')||'').trim();
     a.tenant = tn? { name:tn, phone:val('aTenPhone'), email:val('aTenEmail'), since:(a.tenant&&a.tenant.since)||Date.now() } : null;
     _saveAssets(); closeModal(); renderFleet(); renderOverview();
@@ -4316,6 +4322,7 @@ const Atlas = (function(){
       <span class="chip chip--${a.status==='Available'?'ok':a.status==='Maintenance'?'warn':'info'}" style="position:absolute;top:10px;left:10px"><span class="dot"></span>${a.status}</span>${_serviceCardBadge(a)}</div>
       <div class="asset__body"><b>${esc(a.name)}</b>${(+a.qty>1)?` <span style="font-size:10px;font-weight:800;color:var(--muted);letter-spacing:.3px;margin-left:5px;vertical-align:middle">&times;${(+a.qty)} units</span>`:''}${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(cap(_custNoun()))}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div>${_assetCardLock(a)}</div>`; }
   function renderFleet(){
+    _recomputeUtil();   // fresh per-asset utilization before the fleet grid + location grid read a.util (was only recomputed in renderOverview/_forecast, so a freshly-added asset could paint stale)
     var capN=_vehCap(), capTxt=(capN===Infinity)?'unlimited':capN, n=DATA.assets.length, avail=DATA.assets.filter(function(a){return a.status==='Available';}).length;
     _fleetUnlockMap=_assetUnlockMap(); _fleetOverCapSet={}; _overCapNames().forEach(function(nm){ _fleetOverCapSet[nm]=1; });   // per-asset unlock: which over-cap assets are hidden from the booking site (server-authoritative cap)
     var _lockedCt=Object.keys(_fleetOverCapSet).length;
@@ -4413,6 +4420,7 @@ const Atlas = (function(){
     (_bookings()||[]).forEach(function(b){
       if(!_isCommitted(b)) return;
       var s=Number(b.startTs)||Number(b.createdAt)||0; if(!s) return;
+      if(s>now) return;   // #7: future-dated bookings are not realized revenue -- keep them out of the trailing series instead of clamping into week 0 (which inflated recent momentum)
       var wi=Math.floor((now-s)/wk); if(wi<0)wi=0; if(wi>=weeks) return;
       rev[weeks-1-wi]+=_bkEarned(b); cnt[weeks-1-wi]+=1;
     });
@@ -4467,7 +4475,7 @@ const Atlas = (function(){
     if(!list.length){ el.innerHTML=''; if(empty)empty.style.display='block'; return; }
     if(empty)empty.style.display='none';
     var pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':(S.money.rateModel==='month'?'mo':'d'));
-    el.innerHTML='<thead><tr><th>Booking</th><th>Customer</th><th>'+cap(S.fleet.noun)+'</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead><tbody>'
+    el.innerHTML='<thead><tr><th>Booking</th><th>'+cap(_custNoun())+'</th><th>'+cap(S.fleet.noun)+'</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead><tbody>'
       +list.map(function(b){ return '<tr style="cursor:pointer" onclick="Atlas.openBooking(\''+b.id+'\')"><td><b>'+b.id+'</b></td><td><div class="cust"><span class="avatar">'+esc((b.cust||'?')[0])+'</span>'+esc(b.cust)+'</div></td><td>'+esc(b.asset)+'</td><td class="tnum">'+_fmtWhen(b.startTs,b.time)+' &middot; '+b.periods+pu+'</td><td class="tnum"><b>'+money(_bkTotal(b))+'</b></td><td>'+statusChip(b.status)+'</td></tr>'; }).join('')+'</tbody>';
   }
   function bkFilter(s){ _bkFilter=s; renderBookings(); }
@@ -5433,16 +5441,17 @@ const Atlas = (function(){
     return {from:from,label:label,value:v}; }
   function renderReports(){ var el=document.getElementById('repBody'); if(!el)return; var r=_repRange();
     var bks=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && (b.createdAt||b.startTs||0)>=r.from; });
-    var gross=0,disc=0,fees=0,tax=0,total=0; bks.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b), cct=_collectedChargeTax(b); gross+=(q.gross||q.subtotal||q.total||0)+(cc-cct); disc+=(q.disc||0); fees+=(q.feeTotal||0); tax+=(q.taxAmt||0)+cct; total+=(q.total||0)+cc; });   // include collected add-on charges so the card ties to the Tax CSV + Overview (earned basis)
+    var gross=0,disc=0,fees=0,tax=0,total=0,coll=0; bks.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b), cct=_collectedChargeTax(b); gross+=(q.gross||q.subtotal||q.total||0)+(cc-cct); disc+=(q.disc||0); fees+=(q.feeTotal||0); tax+=(q.taxAmt||0)+cct; total+=(q.total||0)+cc; coll+=_bkEarned(b); });   // include collected add-on charges so the card ties to the Tax CSV + Overview (earned basis); coll = true cash collected to date (ties to the P&L revenue KPI)
     el.innerHTML='<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>Bookings</span><span class="tnum">'+bks.length+'</span></div>'
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Gross revenue (pre-tax)</span><span class="tnum">'+money(gross)+'</span></div>'
       +'<div class="mp-row mp-ok"><span>Discounts given</span><span class="tnum">&minus;'+money(disc)+'</span></div>'
       +(fees?'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillReportRow(\'fees\')"><span>Fees</span><span class="tnum">'+money(fees)+'</span></div>':'')
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillReportRow(\'tax\')"><span>Tax collected</span><span class="tnum">'+money(tax)+'</span></div>'
-      +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Total collected</span><span class="tnum">'+money(total)+'</span></div></div>'
+      +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Total booked</span><span class="tnum">'+money(total)+'</span></div>'
+      +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Collected to date</span><span class="tnum">'+money(coll)+'</span></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'bookings\')">Bookings CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'tax\')">Tax Summary CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'events\')">Activity Log CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'accounting\')">QuickBooks / Xero</button></div>'
-      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card, Bookings CSV and Tax CSV all tie to the same bookings.</div>'; }
+      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card shows booked value; "Collected to date" is cash actually received and ties to your P&amp;L. Bookings CSV and Tax CSV tie to the same bookings.</div>'; }
   function drillReportRow(kind){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && (b.createdAt||b.startTs||0)>=r.from; });
     if(kind==='fees'){ _drill('Fees', r.label+' &middot; fees charged on top of the rental', bks.filter(function(b){return ((b.quote&&b.quote.feeTotal)||0)>0;}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:(b.quote&&b.quote.feeTotal)||0, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total fees', empty:'No fees charged '+r.label.toLowerCase()+'.'}); }
     else { _drill('Tax collected', r.label+' &middot; sales tax collected on bookings + taxable charges', bks.filter(function(b){return (((b.quote&&b.quote.taxAmt)||0)+_collectedChargeTax(b))>0;}).map(function(b){ var t=((b.quote&&b.quote.taxAmt)||0)+_collectedChargeTax(b); return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:t, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total tax', empty:'No tax collected '+r.label.toLowerCase()+'.'}); } }
@@ -5574,7 +5583,7 @@ const Atlas = (function(){
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
     body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); if(t.live) _trkFetchLive(true); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
-    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers and track every '+esc(S.fleet.noun)+' in real time &mdash; location, trips, mileage, geofences and alerts.</p>'
+    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers to map every '+esc(S.fleet.noun)+' &mdash; live positions on Bouncie, Samsara and Traccar; every other brand shows the same layout with simulated positions. Location, trips, mileage, geofences and alerts.</p>'
     +'<button class="btn btn--primary" onclick="Atlas.openTrackerConnect()">Connect a tracker</button>'
     +'<div class="trk-logos">'+TRACKERS.map(function(x){return '<span class="trk-logo">'+esc(x.name)+'</span>';}).join('')+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:6px">Works with '+TRACKERS.length+'+ providers &mdash; bring your API key or account login.</div></div>'; }
