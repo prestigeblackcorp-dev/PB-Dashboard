@@ -3990,6 +3990,7 @@ const Atlas = (function(){
       +'<div class="field"><label>ZIP</label><input class="input" id="aLocZip" value="'+esc(a.locZip||'')+'" placeholder="'+esc((S.brand&&S.brand.zip)||'')+'"'+dis+'></div></div>'
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aRate" style="width:auto;flex:1;text-align:left" value="'+a.rate+'"'+dis+'><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="aStatus"'+dis+'>'+['Available','On rent','Maintenance'].map(function(s){return '<option'+(a.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'
+      +'<div class="field"><label>Quantity / units in stock <span style="color:var(--muted);font-weight:400;font-size:12px">(identical, interchangeable units)</span></label><input class="input tnum" id="aQty" inputmode="numeric" value="'+(+a.qty>1?(+a.qty):1)+'" placeholder="1"'+dis+'><div class="bk-lenhint" style="margin:5px 0 0">How many identical units of this '+esc(S.fleet.noun)+' you stock. Bookings can overlap up to this many at once.</div></div>'
       +'<div class="row2"><div class="field"><label>Min booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMinLen" value="'+((a.minLen>0)?a.minLen:'')+'" placeholder="no minimum"'+dis+'></div>'
       +'<div class="field"><label>Max booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMaxLen" value="'+((a.maxLen>0)?a.maxLen:'')+'" placeholder="no maximum"'+dis+'></div></div>'
       +((ro||!_extrasCatalog().length)?'':('<div class="field"><label>Booking extras offered <span style="color:var(--muted);font-weight:400;font-size:12px">(uncheck any to hide on this '+esc(S.fleet.noun)+')</span></label><div id="aExtras" style="display:flex;flex-direction:column;gap:7px;margin-top:4px">'+_extrasCatalog().map(function(e){ var on=!Array.isArray(a.extraIds)||a.extraIds.indexOf(e.id)>=0; return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink)"><input type="checkbox" class="aEx" value="'+esc(e.id)+'"'+(on?' checked':'')+'> '+esc(e.name)+' <span style="color:var(--muted)">'+money(e.price)+' / '+esc(e.per)+'</span></label>'; }).join('')+'</div><div class="bk-lenhint" style="margin:5px 0 0">Manage the master list in Settings &rarr; Money. All checked = every extra is offered on this '+esc(S.fleet.noun)+'.</div></div>'))
@@ -4012,6 +4013,7 @@ const Atlas = (function(){
     var _lcc=(val('aLocCity')||'').trim(); if(_lcc)a.locCity=_lcc; else delete a.locCity;   // per-asset market -> feeds location-aware dreaming
     var _lcz=(val('aLocZip')||'').trim(); if(_lcz)a.locZip=_lcz; else delete a.locZip;
     var _r=parseFloat(val('aRate')); a.rate=(_r>=0?_r:a.rate); a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.
+    a.qty=Math.max(1, parseInt(val('aQty'),10)||1);   // X3: units in stock -> rides the _srvShape info blob; the worker already honors qty on the public profile + availability guards
     var _mn=parseInt(val('aMinLen'),10); a.minLen=(_mn>0?_mn:0); var _mx=parseInt(val('aMaxLen'),10); a.maxLen=(_mx>0?_mx:0);   // per-asset min/max booking length rules
     var _exb=document.querySelectorAll('#aExtras .aEx'); if(_exb.length){ var _ck=[]; [].forEach.call(_exb,function(cb){ if(cb.checked) _ck.push(cb.value); }); if(_ck.length===_exb.length) delete a.extraIds; else a.extraIds=_ck; }   // per-asset extras: all checked = inherit global; otherwise store the offered subset (empty = none)
     if(_fleetSel().length>1){ var _at=val('aType'); if(_at&&_fleetSel().indexOf(_at)>=0) a.type=_at; }   // fix: persist the owner's per-asset type/category change (used by rate + filters)
@@ -4204,7 +4206,7 @@ const Atlas = (function(){
     return `<div class="asset" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
       <div class="asset__img"${a.photo?` style="background-image:url('${_cssUrl(a.photo)}');background-size:cover;background-position:center"`:''}>${a.photo?'':`<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`}
       <span class="chip chip--${a.status==='Available'?'ok':a.status==='Maintenance'?'warn':'info'}" style="position:absolute;top:10px;left:10px"><span class="dot"></span>${a.status}</span></div>
-      <div class="asset__body"><b>${esc(a.name)}</b>${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(_fterm('book')==='reservation'?'Tenant':'Renter')}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div>${_assetCardLock(a)}</div>`; }
+      <div class="asset__body"><b>${esc(a.name)}</b>${(+a.qty>1)?` <span style="font-size:10px;font-weight:800;color:var(--muted);letter-spacing:.3px;margin-left:5px;vertical-align:middle">&times;${(+a.qty)} units</span>`:''}${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(_fterm('book')==='reservation'?'Tenant':'Renter')}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div>${_assetCardLock(a)}</div>`; }
   function renderFleet(){
     var capN=_vehCap(), capTxt=(capN===Infinity)?'unlimited':capN, n=DATA.assets.length, avail=DATA.assets.filter(function(a){return a.status==='Available';}).length;
     _fleetUnlockMap=_assetUnlockMap(); _fleetOverCapSet={}; _overCapNames().forEach(function(nm){ _fleetOverCapSet[nm]=1; });   // per-asset unlock: which over-cap assets are hidden from the booking site (server-authoritative cap)
@@ -6089,6 +6091,17 @@ const Atlas = (function(){
       +'<div id="dbizPortfolio">'+_dbizPortfolioHtml()+'</div>'
       +'<div class="bk-lenhint" style="margin:12px 0 0;line-height:1.55"><b style="color:var(--ink)">Is this real, sustainable money?</b> Yes &mdash; but it stacks slowly. Margins run about $3&ndash;10 per domain per year (a .com costs ~$9 wholesale and sells for ~$15). The passive part is renewals: about 75% renew each year at the same margin with almost no work. Example: 500 domains at a $6 margin renewing at 75% is roughly <b style="color:var(--ink)">$187/mo</b> recurring. Atlas gives you a built-in funnel &mdash; every tenant building a website needs a domain &mdash; so volume compounds as you grow. Treat it as a sustainable side income, not a get-rich scheme.</div>'
     +'</div>'; }
+  // X4: owner-authored pickup / branch locations. Edits S.locations (array of {name}); _srvMirrorProfile
+  // publishes them to settings.locations, which the worker already exposes for public booking intake (booking.location).
+  function _locList(){ if(!Array.isArray(S.locations)) S.locations=[]; return S.locations; }
+  function _locName(l){ return (l&&typeof l==='object')?(l.name||''):String(l||''); }
+  function _locationsHtml(){ var ls=_locList(), ro=!_canMod('settings');
+    var rows=ls.length ? ls.map(function(l,i){ return '<div class="mp-row"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(_locName(l))+'</span>'+(ro?'':'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:4px 8px;flex:none" title="Remove" onclick="Atlas.removeLocation('+i+')">&times;</button>')+'</div>'; }).join('')
+      : '<div class="bk-lenhint" style="margin:6px 0 0">No '+esc(_fterm('locs'))+' yet.</div>';
+    var add=ro?'':'<div style="display:flex;gap:8px;margin-top:12px"><input class="input" id="locNew" placeholder="'+esc((S.brand&&S.brand.city)||'Downtown')+'" style="flex:1" onkeydown="if(event.key===\'Enter\'){event.preventDefault();Atlas.addLocation();}"><button class="btn btn--ghost" onclick="Atlas.addLocation()">Add '+esc(_fterm('loc'))+'</button></div>';
+    return rows+add; }
+  function addLocation(){ if(!_canMod('settings'))return; var v=(val('locNew')||'').trim(); if(!v){ toast('Enter a '+_fterm('loc')+' name'); return; } _locList().push({name:v}); save(); var el=document.getElementById('locList'); if(el)el.innerHTML=_locationsHtml(); toast(cap(_fterm('loc'))+' added'); }
+  function removeLocation(i){ if(!_canMod('settings'))return; var ls=_locList(); i=parseInt(i,10); if(!(i>=0&&i<ls.length))return; ls.splice(i,1); save(); var el=document.getElementById('locList'); if(el)el.innerHTML=_locationsHtml(); }
   function renderSet(){
     const b=document.getElementById('setBody'); const m=S.money;
     if(m && !m.payout) m.payout={enabled:false,label:'Partner payout',kind:'percent',value:0,base:'subtotal'};   // back-compat for tenants saved before payouts
@@ -6247,6 +6260,9 @@ const Atlas = (function(){
       <div class="set-block" data-bkb="extras"><h3>Extras menu</h3><div class="desc">The add-ons guests can choose. Rename, re-price, remove, or add your own &mdash; these appear on every booking.</div>
         <div id="catExtras">${_catExtrasHtml()}</div>
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.catAddExtra()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add extra</button>
+      </div>
+      <div class="set-block"><h3>${esc(cap(_fterm('locs')))}</h3><div class="desc">Pickup / branch ${esc(_fterm('locs'))} guests can choose when they book on your website. Leave empty to run one default location.</div>
+        <div id="locList">${_locationsHtml()}</div>
       </div>
       <div class="set-block" data-bkb="prev"><h3>Preview</h3><div class="desc">Exactly what your booking form will ask &mdash; it updates live as you change the settings above.</div>
         <div class="bk-model-prev" id="bkModelPrev">${_bkModelPreviewHtml()}</div>
@@ -9272,7 +9288,7 @@ const Atlas = (function(){
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
-    setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,
+    setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
