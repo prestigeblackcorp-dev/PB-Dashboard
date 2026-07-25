@@ -3527,7 +3527,7 @@ function doReset(){
               var _revSum = 0; for (var _pk in d.paid) { var _pp = d.paid[_pk]; if (_pp && !_pp.hold && _pk !== 'security') _revSum += (Number(_pp.amountCents) || 0); }
               const rev = _revSum;
               if (md.kind === 'charge' && md.charge && Array.isArray(d.charges)) {   // stamp the specific charge paid so the portal shows it settled + the owner sees it collected
-                for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); break; } }
+                for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }   // paidOnline: this charge IS inside revenue_cents (Stripe-settled), so the client must NOT re-add it to _bkEarned
               }
               // CORE-LOOP FIX: reflect the payment in the OWNER'S dashboard, not just the D1 columns. The client reads
               // paid-state from d.portal.*PaidAt + d.status and adopts a server row only when d._t is newer -- so update
@@ -5304,7 +5304,7 @@ function doReset(){
             var _cid = String(body.chargeId || '');
             _chg = (Array.isArray(d.charges) ? d.charges : []).filter(function (c) { return String(c.id) === _cid; })[0];
             if (!_chg) return json({ ok: false, reason: 'not_found', message: 'That charge was not found.' });
-            if (_chg.paidAt) return json({ ok: false, reason: 'already_paid', message: 'That charge has already been paid - thank you.' });
+            if (_chg.paidAt || (d.paid && d.paid['charge:' + _cid])) return json({ ok: false, reason: 'already_paid', message: 'That charge has already been paid - thank you.' });   // guard on the Stripe-settled key too: paidAt lags the webhook, so two fast clicks could both pass a paidAt-only check
           }
           // LAUNCH-FIX (sweep): idempotency guard -- refuse to open a 2nd Checkout for a payment KIND already recorded paid
           // (the Stripe-signature-verified webhook writes d.paid[kind]). Without this, a re-click / two open tabs / a network
@@ -6127,6 +6127,8 @@ function doReset(){
         if (method === 'POST') {
           const body = await req.json().catch(() => ({}));
           if (coll === 'charges' && vStr(body.booking_id, 40)) { const _bok = await env.DB.prepare('SELECT id FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking_id, ctx.tenant_id).first(); if (!_bok) delete body.booking_id; }   // defense-in-depth: never let a charge reference another tenant's booking id
+          // Booking #4 stale-push guard: never let an OLDER client blob overwrite a newer server booking (e.g. wipe a webhook-set charge.paidAt / d.paid, re-opening a paid charge as payable). Newest-wins on data._t, matching the client's own merge. Other columns still update.
+          if (coll === 'bookings' && body.data && typeof body.data === 'object' && vStr(body.id, 40)) { try { const _curB = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(body.id, ctx.tenant_id).first(); if (_curB) { const _cdB = jparse(_curB.data, {}); if (Number(body.data._t || 0) < Number(_cdB._t || 0)) delete body.data; } } catch (e) {} }
           const { cols, vals } = patchFields(coll, body);       // whitelisted domain fields
           for (const c of (REQUIRED[coll] || [])) if (cols.indexOf(c) < 0) return err(400, 'Missing required field: ' + c);
           const now = Date.now();
@@ -7253,7 +7255,7 @@ var T=${JSON.stringify(token)};
 function el(i){return document.getElementById(i)}
 function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-function pay(kind,chg){fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}alert(j.message||'Payment is not available right now.')}).catch(function(){alert('Network error')})}
+var _payBusy=false;function pay(kind,chg){if(_payBusy)return;_payBusy=true;fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}_payBusy=false;alert(j.message||'Payment is not available right now.')}).catch(function(){_payBusy=false;alert('Network error')})}
 function sign(){var nm=(el('sgName')?el('sgName').value:'').trim();var ag=el('sgAgree')&&el('sgAgree').checked;if(nm.length<2){alert('Please type your full legal name');return}if(!ag){alert('Please check the box to agree to the rental agreement');return}var b=el('sgBtn');if(b){b.disabled=true;b.textContent='Signing...'}fetch('/api/portal/'+T+'/sign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,sig:nm,agree:true})}).then(function(r){return r.json()}).then(function(j){if(j.ok){location.reload()}else{alert(j.error||'Could not sign');if(b){b.disabled=false;b.textContent='Agree & sign'}}}).catch(function(){alert('Network error');if(b){b.disabled=false;b.textContent='Agree & sign'}})}
 function up(inp,kind){var f=inp.files&&inp.files[0];if(!f)return;if(f.size>6000000){alert('That file is too large (max 6MB).');inp.value='';return}var rd=new FileReader();rd.onload=function(){fetch('/api/portal/'+T+'/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,data:rd.result,name:f.name})}).then(function(r){return r.json()}).then(function(j){if(j.ok){var l=el('uplist');if(l)l.textContent='Uploaded '+(j.count||1)+' file(s). Thank you.';inp.value=''}else{alert(j.message||j.error||'Could not upload.')}}).catch(function(){alert('Network error')})};rd.readAsDataURL(f)}
 function reqExt(){var ex=(el('extExtra')?el('extExtra').value:'').trim();var nt=(el('extNote')?el('extNote').value:'').trim();if(!ex&&!nt){alert('Tell the owner what you would like.');return}fetch('/api/portal/'+T+'/extend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({extra:ex,note:nt})}).then(function(r){return r.json()}).then(function(j){var m=el('extMsg');if(j.ok){if(m){m.style.color='#12813f';m.textContent=j.message||'Sent to the owner.'}if(el('extExtra'))el('extExtra').value='';if(el('extNote'))el('extNote').value=''}else{if(m){m.style.color='#c0392b';m.textContent=j.error||j.message||'Could not send.'}}}).catch(function(){var m=el('extMsg');if(m){m.style.color='#c0392b';m.textContent='Network error'}})}
