@@ -1776,6 +1776,14 @@ const Atlas = (function(){
         // gate, this just reflects it. Login/signup/billing/etc. are server-side allow-listed and never 402 here.
         if(r.status===402 && j && j.error==='payment_required'){ try{ showPaywall(j.billing_state); }catch(e){} }
         return {status:r.status,json:j}; }); }); }
+  // ---- TENANT REFERRAL PROGRAM (client). Server (platform_config.referral_enabled) is the real gate; _refEnabled is
+  // hydrated from /api/auth/me + /api/tenant/profile so the "Refer & earn" card in Settings hides entirely while OFF.
+  // Capture: read ?ref=<code> ONCE at boot and stash it in localStorage so it survives the whole signup flow (and a
+  // page reload) until it rides along on the /api/auth/signup body; cleared on a successful signup.
+  var _refEnabled=false, _referralUrl='';
+  function _refStoredCode(){ try{ return localStorage.getItem('atlas_ref_code')||''; }catch(e){ return ''; } }
+  function _refCaptureFromUrl(){ try{ var c=new URLSearchParams(location.search).get('ref'); if(c){ c=String(c).trim().slice(0,40); if(c) localStorage.setItem('atlas_ref_code',c); } }catch(e){} }
+  _refCaptureFromUrl();
   // #274: first-party, no-cookie visit ping for the master-dashboard "Website visits" KPI + world map (they only
   // ever saw a WORKER-SERVED tenant booking page -- this app is served by GitHub Pages and never hit the worker
   // at all, so real traffic here was invisible). vsid is a random id kept in localStorage ONLY -- never a cookie,
@@ -1829,7 +1837,7 @@ const Atlas = (function(){
     // A remembered device sends back its trusted_device token (see mfaSubmit) so the server can skip a repeat
     // 2FA challenge; sits in the JSON body (not a header) so it never needs a CORS allow-list change.
     var body = mode==='login' ? {email:email,password:pass,trusted_device:_mfaDeviceToken(email)}
-             : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars'};
+             : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars',ref:_refStoredCode()};
     return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
       if(res.json && res.json.mfa_required){ return {mfa:true, method:res.json.method, challenge:res.json.challenge}; }
       if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; if(res.json.ip) _clientIp=res.json.ip; return {ok:true,tenant_id:res.json.tenant_id,verify:res.json.verify,verified:res.json.verified,billing_state:res.json.billing_state}; }
@@ -1938,6 +1946,7 @@ const Atlas = (function(){
       if(r[2].json && typeof r[2].json.credits==='number'){ try{ var _cb=_lsGet('atlas_tenant_'+tid,null); if(_cb){ if(!_cb.credits)_cb.credits={}; _cb.credits.bal=r[2].json.credits; _lsSet('atlas_tenant_'+tid,_cb); if(typeof S!=='undefined'&&S){ if(!S.credits)S.credits={}; S.credits.bal=r[2].json.credits; } } }catch(e){} }   // adopt server-authoritative credit balance on hydrate
       if(PAYMENTS_LIVE && prof && (prof.plan==='active'||prof.plan==='trial')){ try{ var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb && _tb.plan!==prof.plan){ _tb.plan=prof.plan; _lsSet('atlas_tenant_'+tid,_tb); if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.plan=prof.plan; } } }catch(e){} }   // billing is server-authoritative (the plan COLUMN, which the client can't write) -> adopt it
       if(r[2].json && typeof r[2].json.websiteEntitled==='boolean'){ try{ var _wb=_lsGet('atlas_tenant_'+tid,null); if(_wb){ _wb.websiteEntitled=r[2].json.websiteEntitled; _lsSet('atlas_tenant_'+tid,_wb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.websiteEntitled=r[2].json.websiteEntitled; } }catch(e){} }   // #278: adopt server-authoritative website entitlement (owner/comp/tier/website_addon) on hydrate -- same pattern as credits/plan above
+      if(r[2].json && typeof r[2].json.referralEnabled==='boolean'){ _refEnabled=r[2].json.referralEnabled; }   // REFERRAL: adopt the platform master switch so the "Refer & earn" card shows only when the owner has turned it on
       if(r[2].json && ('domainRenewal' in r[2].json)){ try{ var _dvR=r[2].json.domainRenewal||null; var _dwb=_lsGet('atlas_tenant_'+tid,null); if(_dwb){ _dwb.domainRenewal=_dvR; _lsSet('atlas_tenant_'+tid,_dwb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.domainRenewal=_dvR; } }catch(e){} }   // #282: adopt server-authoritative billed-domain (self-cancellable yearly renewal); null once cancelled -> Add-ons control clears on next hydrate
       if(r[2].json){ try{ if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ if('assetCap' in r[2].json) S.assetCap=r[2].json.assetCap; if(typeof r[2].json.assetUnlockCents==='number') S.assetUnlockCents=r[2].json.assetUnlockCents; if(typeof r[2].json.assetUnlockUnits==='number') S.assetUnlockUnits=r[2].json.assetUnlockUnits; if(Array.isArray(r[2].json.assetUnlocks)) S.assetUnlocks=r[2].json.assetUnlocks; if(typeof renderFleet==='function' && document.getElementById('assetGrid')) renderFleet(); } }catch(e){} }   // per-asset unlock: adopt server plan cap + $11.99/mo unlocks so the Fleet lock UI is authoritative; re-render if the fleet is open
       try{ var _pc=r[2].json&&r[2].json.policyCurrent, _pa=r[2].json&&r[2].json.policyAccepted; if(_pc && _pa!==_pc){ _showPolicyBanner(_pc); } else { _hidePolicyBanner(); } }catch(e){}   // #254: re-prompt acceptance whenever the published policy version moved past what this tenant last accepted
@@ -2878,6 +2887,7 @@ const Atlas = (function(){
   async function _afterAuthSuccess(email, r){
     S=load();
     if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
+    if(_authMode==='signup'){ try{ localStorage.removeItem('atlas_ref_code'); }catch(e){} }   // REFERRAL: the code (if any) rode along on the signup body -> clear it so a later signup on this browser can't reuse it
     if(_authMode==='signup') _funnelEvent('signup_submit');   // #297 funnel: account created (this path only runs once the server confirms a real session)
     if(ATLAS_BACKEND && (r.verify==='sent' || r.verified===0)){ showVerifyGate(email); return; }       // email confirmation gate: hold the account until the link is clicked (if the mailer is off the server auto-verifies -> this is skipped)
     if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){
@@ -6690,7 +6700,8 @@ const Atlas = (function(){
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
           <div style="flex:1;min-width:180px"><div style="font-size:26px;font-weight:850;color:var(--ink)" class="tnum">${_c.toLocaleString()}</div><div style="font-size:12.5px;color:var(--muted)">credits available &middot; ${_t.credits.toLocaleString()} free every week on ${esc(_t.name)}</div></div>
           <button class="btn btn--primary btn--sm" onclick="Atlas.openCredits()">Buy credits</button></div>
-      </div>` + _addonsBillingHtml();
+      </div>` + _addonsBillingHtml() + _referralCardHtml();
+      if(_refEnabled) _referralLoad();
     }
     else if(setCur==='support'){ b.innerHTML = `
       <div class="set-block"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3>Support tickets</h3><div class="desc">Open a ticket and the Atlas team replies right here &mdash; you'll get an email too.</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.openTicket()">+ New ticket</button></div>
@@ -6705,6 +6716,30 @@ const Atlas = (function(){
     }
   }
   function renderSetSoft(){ renderSet(); }
+  /* ---- TENANT REFERRAL "Refer & earn" card (Plan & billing tab). Rendered ONLY when the platform master switch is on
+     (_refEnabled, hydrated from the server); a byte-empty string while OFF so the surface hides entirely. Stats + the
+     share link load lazily from /api/referral/mine. Distinct from the per-CUSTOMER loyalty/referral controls above. ---- */
+  function _referralCardHtml(){ if(!_refEnabled) return '';
+    return '<div class="set-block" id="referBlock"><h3>Refer &amp; earn</h3>'
+      +'<div class="desc">Give a month, get a month &mdash; you and the business you refer each get a free month when they upgrade to a paid plan.</div>'
+      +'<div id="referBody"><div style="color:var(--muted);font-size:13px">Loading your referral link&hellip;</div></div></div>'; }
+  function _referralLoad(){ var el=document.getElementById('referBody'); if(!el) return;
+    _api('/api/referral/mine',{method:'GET'}).then(function(res){ var j=res&&res.json;
+      if(!(j&&j.ok&&j.enabled)){ var bx=document.getElementById('referBlock'); if(bx) bx.style.display='none'; return; }   // server says off (or error) -> hide the whole card
+      _referralUrl=j.url||'';
+      el.innerHTML='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">'
+        +'<input class="input mono" id="referLink" readonly value="'+esc(j.url||'')+'" style="flex:1;min-width:220px" onclick="try{this.select()}catch(e){}">'
+        +'<button class="btn btn--primary btn--sm" onclick="Atlas.referCopy()">Copy link</button></div>'
+        +'<div class="owner-stats">'
+          +'<div class="owner-stat"><div class="owner-stat__v tnum">'+(Number(j.referred)||0)+'</div><div class="owner-stat__l">Referred</div></div>'
+          +'<div class="owner-stat"><div class="owner-stat__v tnum">'+(Number(j.converted)||0)+'</div><div class="owner-stat__l">Upgraded</div></div>'
+          +'<div class="owner-stat"><div class="owner-stat__v tnum">'+(Number(j.rewards_earned)||0)+'</div><div class="owner-stat__l">Months earned</div></div>'
+        +'</div>';
+    }).catch(function(){ var bx=document.getElementById('referBlock'); if(bx) bx.style.display='none'; }); }
+  function referCopy(){ var i=document.getElementById('referLink'); var v=(i&&i.value)||_referralUrl||''; if(!v){ toast('No referral link yet'); return; }
+    try{ if(i){ i.select(); } }catch(e){}
+    try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(v).then(function(){ toast('Referral link copied'); },function(){ try{ document.execCommand('copy'); }catch(e){} toast('Referral link copied'); }); return; } }catch(e){}
+    try{ document.execCommand('copy'); toast('Referral link copied'); }catch(e2){ toast('Select and copy your link'); } }
   /* ---- support tickets (two-way threads; the platform owner replies from the master dashboard) ---- */
   var _myTickets=[], _TKCATS=[['technical','Technical / bug'],['billing','Billing & plan'],['account','My account'],['feature','Feature request'],['other','Something else']];
   function _tkStatusPill(s){ var m={open:['Open','tk-open'],answered:['Replied','tk-ans'],resolved:['Resolved','tk-res']}, x=m[s]||m.open; return '<span class="tk-pill '+x[1]+'">'+x[0]+'</span>'; }
@@ -9572,7 +9607,7 @@ const Atlas = (function(){
   return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
-    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
+    finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,

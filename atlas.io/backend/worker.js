@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25d';
+const ATLAS_BUILD = '2026.07.25e';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2203,6 +2203,106 @@ async function _creditAdd(env, tid, n) {
   try { await ensurePlatformSchema(env); await env.DB.prepare('UPDATE tenants SET credits_purchased = COALESCE(credits_purchased,0) + ? WHERE id=?').bind(Math.max(0, Math.round(Number(n) || 0)), tid).run(); } catch (e) {}
 }
 
+// ============================================================ TENANT REFERRAL PROGRAM (Atlas's OWN growth loop)
+// Additive + FLAG-GATED OFF by default (platform_config.referral_enabled). While the flag is '0' the whole feature is
+// inert: /api/referral/mine returns {enabled:false}, capture is a no-op, and NO reward is ever credited. Reward
+// (owner default) = 1 free month for BOTH the referrer AND the newly-referred tenant, credited only when the referee
+// CONVERTS to a paid plan (the invoice.paid / checkout.session.completed plan-active webhook path). Distinct from the
+// per-TENANT customer loyalty/referral program in atlas.html -- this is tenant->tenant referral of Atlas Rental.io itself.
+const _REFERRAL_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // no I/O/0/1 -- unambiguous when typed/shared
+function _referralGenCode() { let out = ''; const u = new Uint8Array(8); crypto.getRandomValues(u); for (let i = 0; i < 8; i++) out += _REFERRAL_CODE_ALPHABET[u[i] % _REFERRAL_CODE_ALPHABET.length]; return out; }
+// Stable per-tenant code, generated lazily on first read and stored on tenants.referral_code (UNIQUE). Concurrency-safe:
+// the conditional UPDATE only stamps a code when the column is still empty; a UNIQUE collision (astronomically unlikely)
+// just retries. Returns '' only if generation genuinely could not persist (never throws).
+async function _referralCodeFor(env, tid) {
+  try {
+    await ensurePlatformSchema(env);
+    const cur = await env.DB.prepare('SELECT referral_code FROM tenants WHERE id=?').bind(tid).first();
+    if (cur && cur.referral_code) return cur.referral_code;
+    for (let i = 0; i < 6; i++) {
+      const code = _referralGenCode();
+      try {
+        const r = await env.DB.prepare("UPDATE tenants SET referral_code=? WHERE id=? AND (referral_code IS NULL OR referral_code='')").bind(code, tid).run();
+        if (r && r.meta && r.meta.changes) return code;
+      } catch (e) { /* UNIQUE collision -> try another code */ }
+      const again = await env.DB.prepare('SELECT referral_code FROM tenants WHERE id=?').bind(tid).first();
+      if (again && again.referral_code) return again.referral_code;   // set concurrently by another request
+    }
+  } catch (e) {}
+  return '';
+}
+// Resolve a shared code -> the referrer tenant id, or '' for unknown/inactive (deleted) codes (ignored silently at capture).
+async function _referralResolveCode(env, code) {
+  try {
+    const c = String(code || '').trim().toUpperCase().slice(0, 40);
+    if (!c) return '';
+    const r = await env.DB.prepare("SELECT id FROM tenants WHERE referral_code=? AND deleted_at IS NULL AND plan!='deleted' LIMIT 1").bind(c).first();
+    return (r && r.id) ? r.id : '';
+  } catch (e) { return ''; }
+}
+// CAPTURE (called from /api/auth/signup): link referrer -> brand-new referee as a 'pending' referral. No-op while the
+// flag is OFF. Guards: unknown/inactive code ignored; a tenant can never refer itself; exactly one referral row per
+// referee (UNIQUE index on referee_tenant + INSERT OR IGNORE -> idempotent, first referrer wins). Never throws.
+async function _referralCapture(env, code, refereeTid) {
+  try {
+    if ((await _pcfgGet(env, 'referral_enabled', '0')) !== '1') return;   // flag OFF -> capture is a no-op
+    if (!refereeTid) return;
+    await ensurePlatformSchema(env);
+    const referrer = await _referralResolveCode(env, code);
+    if (!referrer || referrer === refereeTid) return;                     // unknown code, or a self-referral
+    await env.DB.prepare("INSERT OR IGNORE INTO referrals (id, referrer_tenant, referee_tenant, code, status, created_at) VALUES (?,?,?,?,'pending',?)")
+      .bind('rf' + randId(12), referrer, refereeTid, String(code || '').trim().toUpperCase().slice(0, 40), Date.now()).run();
+  } catch (e) { /* never block a signup on a referral-capture error */ }
+}
+// Is this tenant's owner comped (gold/free)? A comp pays nothing, so a "free month" is meaningless -> never credited.
+async function _tenantComped(env, tid) {
+  try {
+    const own = await env.DB.prepare("SELECT email FROM users WHERE tenant_id=? AND role='owner' ORDER BY created_at LIMIT 1").bind(tid).first();
+    const em = (own && own.email) ? own.email.toLowerCase() : '';
+    if (!em) return false;
+    const c = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(em).first();
+    return !!c;
+  } catch (e) { return false; }
+}
+// Apply "1 free month" to ONE tenant via the SAFEST EXISTING, NON-Stripe, reversible paths (see the money-call note in
+// the build report). Two effects, both server-owned + un-clobberable by the client's settings auto-mirror:
+//   (1) durable ACCOUNT CREDIT: tenants.referral_credit_months += 1 (mirrors the tenants.credits_purchased column
+//       pattern) -- the reviewable ledger of owed free months the owner honors at billing (never a Stripe call here).
+//   (2) if the tenant is still on a free TRIAL, also push trial_ends +30 days NOW (the exact mechanism of the existing
+//       /api/admin/grant action:'trial') -- guarded WHERE plan='trial' so an active/paying tenant is NEVER touched and
+//       the plan column is never changed. A just-converted (active) referee gets (1) only; that is correct.
+async function _referralCreditTenant(env, tid) {
+  try { await env.DB.prepare('UPDATE tenants SET referral_credit_months = COALESCE(referral_credit_months,0) + 1, updated_at=? WHERE id=?').bind(Date.now(), tid).run(); } catch (e) {}
+  try {
+    const t = await env.DB.prepare('SELECT plan, trial_ends FROM tenants WHERE id=?').bind(tid).first();
+    if (t && t.plan === 'trial') {
+      const base = Math.max(Date.now(), Number(t.trial_ends) || 0);
+      await env.DB.prepare("UPDATE tenants SET trial_ends=?, updated_at=? WHERE id=? AND plan='trial'").bind(base + 30 * 24 * 3600 * 1000, Date.now(), tid).run();
+    }
+  } catch (e) {}
+}
+// REWARD ON CONVERSION (MONEY-CRITICAL, FLAG-GATED, IDEMPOTENT): called from the webhook the instant a referee turns
+// paid. IDEMPOTENCY + never-double: an ATOMIC claim UPDATE flips the referee's row pending -> rewarded and only the
+// execution that actually changes a row (meta.changes) goes on to credit -- so a webhook REPLAY, or the two conversion
+// branches both firing for the same tenant, credits exactly once. Renewals never re-reward (the row is no longer
+// 'pending'). Comped tenants are skipped. Never throws (a referral error must never break billing).
+async function _referralOnConvert(env, req, refereeTid) {
+  try {
+    if (!refereeTid) return;
+    if ((await _pcfgGet(env, 'referral_enabled', '0')) !== '1') return;   // flag OFF -> no reward is ever credited
+    await ensurePlatformSchema(env);
+    const row = await env.DB.prepare("SELECT id, referrer_tenant, referee_tenant FROM referrals WHERE referee_tenant=? AND status='pending' LIMIT 1").bind(refereeTid).first();
+    if (!row) return;
+    if (row.referrer_tenant === row.referee_tenant) return;              // belt-and-suspenders (capture already blocks self-referral)
+    const now = Date.now();
+    const claim = await env.DB.prepare("UPDATE referrals SET status='rewarded', converted_at=COALESCE(converted_at,?), rewarded_at=? WHERE id=? AND status='pending'").bind(now, now, row.id).run();
+    if (!(claim && claim.meta && claim.meta.changes)) return;            // lost the race / replay -> the other execution owns the credit
+    if (!(await _tenantComped(env, row.referrer_tenant))) { try { await _referralCreditTenant(env, row.referrer_tenant); } catch (e) {} }
+    if (!(await _tenantComped(env, row.referee_tenant)))   { try { await _referralCreditTenant(env, row.referee_tenant); } catch (e) {} }
+    try { await audit(env, { tenant_id: row.referee_tenant }, req, 'referral.rewarded', { referrer: row.referrer_tenant, referee: row.referee_tenant }); } catch (e) {}
+  } catch (e) { /* never break the webhook on a referral error */ }
+}
+
 // ---- Atlas HQ (owner master dashboard): platform tables self-heal so the whole thing is a PASTE-ONLY deploy (no separate migration).
 // CREATE ... IF NOT EXISTS + additive ALTER (swallowed if the column already exists) are idempotent + safe to re-run.
 let _pReady = false;
@@ -2280,6 +2380,18 @@ async function ensurePlatformSchema(env) {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS leads (id TEXT PRIMARY KEY, email TEXT UNIQUE, note TEXT, source TEXT, ip TEXT, created_at INTEGER)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at)").run();
   } catch (e) { return; }   // leave _pReady false so a transient DB error retries next request
+  // ---- TENANT REFERRAL PROGRAM (flag-gated OFF; see the _referral* helpers above). Additive + self-healing, each
+  // statement its own try/catch (never blocks _pReady): a referral row links a referrer tenant to a referee tenant,
+  // status pending -> rewarded once the referee converts to paid. UNIQUE(referee_tenant) enforces one referral per
+  // referee (first referrer wins via INSERT OR IGNORE). referral_code = each tenant's stable share code (UNIQUE;
+  // SQLite treats multiple NULLs as distinct, so ungenerated codes never collide). referral_credit_months = the
+  // durable, server-owned account-credit ledger of earned free months (mirrors the credits_purchased column).
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS referrals (id TEXT PRIMARY KEY, referrer_tenant TEXT, referee_tenant TEXT, code TEXT, status TEXT DEFAULT 'pending', created_at INTEGER, converted_at INTEGER, rewarded_at INTEGER)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_referrals_referee ON referrals(referee_tenant)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_tenant, status)").run(); } catch (e) {}
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN referral_code TEXT").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_refcode ON tenants(referral_code)").run(); } catch (e) {}
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN referral_credit_months INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN tier TEXT").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN card_on_file INTEGER DEFAULT 0").run(); } catch (e) { /* already exists */ }
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN stripe_customer TEXT").run(); } catch (e) { /* already exists */ }
@@ -3256,6 +3368,11 @@ export default {
         const user = { id: uid, email: body.email.toLowerCase(), tenant_id: tid };
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: tid, user }, req, 'signup', { email: user.email, verifyEmail: _vSent });
+        // REFERRAL capture (additive; a no-op unless a valid ?ref code rode in on the signup body AND the feature flag
+        // is ON). Never blocks or fails a signup -- links the referrer -> this new tenant as a 'pending' referral that
+        // rewards both only when this tenant later converts to paid. Self-referral / unknown-code / already-referred
+        // are all handled inside _referralCapture.
+        try { await _referralCapture(env, (typeof body.ref === 'string' ? body.ref : ''), tid); } catch (e) {}
         // #276: billing_state is only ever computed when the payment gate is ON (flag OFF -> always 'ok', so this
         // response is byte-identical to before the feature existed). A brand-new signup is always a fresh 7-day
         // trial, so this will read 'ok' in practice -- included for parity with login and forward-compat.
@@ -3807,6 +3924,9 @@ function doReset(){
             // #281: also clear delinquent_since -- belt-and-suspenders alongside the invoice.paid/subscription.updated(active) clears below, so a re-subscribe after a past-due lapse never leaves a stale timestamp behind.
             await env.DB.prepare('UPDATE tenants SET plan=?, delinquent_since=NULL, tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind('active', md.tier || null, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.subscribed', { tier: md.tier });
+            // REFERRAL reward on a DIRECT subscribe (no-trial -> paid now). Flag-gated + idempotent (atomic pending->rewarded
+            // claim inside), so this and the invoice.paid path both firing for the same tenant credits exactly once.
+            try { await _referralOnConvert(env, req, md.tenant); } catch (e) {}
           } else if (T === 'checkout.session.completed' && md.billing === 'trial' && md.tenant) {
             // free trial with a card on file: no charge today, first invoice fires at trial end.
             const _trialEnds = Date.now() + 7 * 24 * 3600 * 1000;
@@ -3936,6 +4056,10 @@ function doReset(){
               // PART A4: also clear dunning in this SAME statement -- a successful charge (first-try or a recovered
               // past_due retry) means there is nothing left to dun, regardless of which path got them here.
               await env.DB.prepare('UPDATE tenants SET plan=?, tier=?, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?').bind('active', im.tier || null, Date.now(), im.tenant).run();
+              // REFERRAL reward on TRIAL -> PAID conversion (the first REAL charge). Called AFTER plan flips to 'active'
+              // (so a just-converted referee is correctly treated as paying, not trialing). Flag-gated + idempotent:
+              // the atomic pending->rewarded claim inside means a monthly renewal (also an invoice.paid) never re-rewards.
+              try { await _referralOnConvert(env, req, im.tenant); } catch (e) {}
               if (_ptx && _ptx.new) {
                 const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
                 const _biz = await _tenantName(env, im.tenant);
@@ -4692,7 +4816,7 @@ function doReset(){
 
         // ---- AI Command Center: on/off toggle (admin-gated; NOT itself AI-flag-gated so you can always flip it) ----
         if (path === '/api/admin/config' && method === 'GET') {
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', trial_drip_enabled: (await _pcfgGet(env, 'trial_drip_enabled', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000, platform_legal_name: (await _pcfgGet(env, 'platform_legal_name', 'Atlas Rental.io')) || 'Atlas Rental.io', platform_legal_address: (await _pcfgGet(env, 'platform_legal_address', DEFAULT_PLATFORM_ADDR)) || '', platform_tax_id: (await _pcfgGet(env, 'platform_tax_id', '')) || '', your_role: _role };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', referral_enabled: (await _pcfgGet(env, 'referral_enabled', '0')) === '1', trial_drip_enabled: (await _pcfgGet(env, 'trial_drip_enabled', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000, platform_legal_name: (await _pcfgGet(env, 'platform_legal_name', 'Atlas Rental.io')) || 'Atlas Rental.io', platform_legal_address: (await _pcfgGet(env, 'platform_legal_address', DEFAULT_PLATFORM_ADDR)) || '', platform_tax_id: (await _pcfgGet(env, 'platform_tax_id', '')) || '', your_role: _role };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via, tier: _reqTier } });
         }
         if (path === '/api/admin/config' && method === 'POST') {
@@ -4722,6 +4846,11 @@ function doReset(){
           // a protected endpoint -- independent of #276's payment_gate_enabled (this can be on while that is off,
           // and vice versa). This route is already OWNER_ONLY (path starts with /api/admin/config).
           if (typeof b.trial_requires_card !== 'undefined') { await _pcfgSet(env, 'trial_requires_card', b.trial_requires_card ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { trial_requires_card: !!b.trial_requires_card }); }
+          // TENANT REFERRAL PROGRAM master switch: OFF by default. Flipping this ON is the ONLY thing that activates the
+          // whole feature -- the tenant "Refer & earn" card appears, signup ?ref capture starts recording referrals, and
+          // a referee converting to paid credits BOTH tenants 1 free month (see the _referral* helpers + webhook path).
+          // While OFF every one of those is inert. Already OWNER_ONLY (path starts with /api/admin/config); mirrors the flag setters above + audit()s the change.
+          if (typeof b.referral_enabled !== 'undefined') { await _pcfgSet(env, 'referral_enabled', b.referral_enabled ? '1' : '0'); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { referral_enabled: !!b.referral_enabled }); }
           // TRIAL-CONVERSION + ACTIVATION DRIP: OFF by default. When ON, the cron (_runTrialDrip) emails each trialing
           // tenant's OWNER a 4-stage lifecycle sequence (activation -> mid-trial -> ends-soon -> win-back) to lift
           // trial->paid conversion. While OFF the cron is byte-identical to before (one cheap _pcfgGet read + return).
@@ -4760,7 +4889,7 @@ function doReset(){
           if (typeof b.spike_floor_users !== 'undefined') { const _sfu = Math.max(0, Math.min(100000, Math.round(Number(b.spike_floor_users) || 0))); await _pcfgSet(env, 'spike_floor_users', String(_sfu)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_users: _sfu }); }
           if (typeof b.spike_floor_money !== 'undefined') { const _sfm = Math.max(0, Math.min(100000000, Math.round(Number(b.spike_floor_money) || 0))); await _pcfgSet(env, 'spike_floor_money', String(_sfm)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_money: _sfm }); }
           if (typeof b.spike_floor_usage !== 'undefined') { const _sfa = Math.max(0, Math.min(100000000, Math.round(Number(b.spike_floor_usage) || 0))); await _pcfgSet(env, 'spike_floor_usage', String(_sfa)); await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.config', { spike_floor_usage: _sfa }); }
-          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', trial_drip_enabled: (await _pcfgGet(env, 'trial_drip_enabled', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], credit_cost_micros: parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000, alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000 };
+          const ent = { gmv_take_bps: parseInt(await _pcfgGet(env, 'gmv_take_bps', '0'), 10) || 0, gmv_connect_enabled: (await _pcfgGet(env, 'gmv_connect_enabled', '0')) === '1', gmv_available: !!env.PLATFORM_STRIPE_KEY, r2: !!_r2(env), payments_test_mode: (await _pcfgGet(env, 'payments_test_mode', '0')) === '1', test_key: !!env.PLATFORM_STRIPE_TEST_KEY, registrar: !!env.DYNADOT_KEY, registrar_sandbox: !!env.DYNADOT_SANDBOX, dev_api_enabled: (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1', mfa_enabled: (await _pcfgGet(env, 'mfa_enabled', '1')) === '1', payment_gate_enabled: (await _pcfgGet(env, 'payment_gate_enabled', '0')) === '1', feature_gate_enabled: (await _pcfgGet(env, 'feature_gate_enabled', '0')) === '1', trial_requires_card: (await _pcfgGet(env, 'trial_requires_card', '0')) === '1', referral_enabled: (await _pcfgGet(env, 'referral_enabled', '0')) === '1', trial_drip_enabled: (await _pcfgGet(env, 'trial_drip_enabled', '0')) === '1', site_takedown_enabled: (await _pcfgGet(env, 'site_takedown_enabled', '0')) === '1', tenants_locked: await _lockedTenantCount(env), fixed_costs: _hqJson(await _pcfgGet(env, 'platform_fixed_costs_json', '[]'), []) || [], credit_cost_micros: parseInt(await _pcfgGet(env, 'credit_cost_micros', '10000'), 10) || 10000, alert_cats: await _alertCatsGet(env), spike_mult: parseFloat(await _pcfgGet(env, 'spike_mult', '3')) || 3, spike_floor_traffic: parseInt(await _pcfgGet(env, 'spike_floor_traffic', '50'), 10) || 50, spike_floor_users: parseInt(await _pcfgGet(env, 'spike_floor_users', '5'), 10) || 5, spike_floor_money: parseInt(await _pcfgGet(env, 'spike_floor_money', '50000'), 10) || 50000, spike_floor_usage: parseInt(await _pcfgGet(env, 'spike_floor_usage', '5000'), 10) || 5000 };
           return json({ ok: true, config: { ai_hq_enabled: (await _pcfgGet(env, 'ai_hq_enabled', '0')) === '1', ai_available: _hqHasAI(env), build: ATLAS_BUILD }, enterprise: ent, you: { actor: _actor, role: _role, via: _via, tier: _reqTier } });
         }
         // #264: named-actor roles (platform_config.admin_roles, keyed by a self-asserted X-Admin-Actor string) are
@@ -4869,8 +4998,10 @@ function doReset(){
           else out.notes.push('Stripe rejected the key (HTTP ' + acct.status + '). Re-check PLATFORM_STRIPE_KEY.');
           if (!out.checks.webhook_secret_set) out.notes.push('Set ' + (_testMode ? 'STRIPE_WEBHOOK_SECRET_TEST (the TEST webhook signing secret)' : 'STRIPE_WEBHOOK_SECRET (the webhook signing secret)') + ' from Stripe > Developers > Webhooks.');
           const eps = await stripeApi(pk, 'GET', 'webhook_endpoints?limit=100', null);   // read-only: is a webhook pointed at us?
-          if (eps.ok && Array.isArray(eps.j.data)) { const m = eps.j.data.filter(function (e) { return e && e.url && e.url.indexOf('/api/stripe/webhook') >= 0; })[0]; out.checks.webhook_endpoint_configured = !!m; if (m) out.webhook = { url: m.url, status: m.status, events: (m.enabled_events || []).slice(0, 8) }; else out.notes.push('No Stripe webhook points at ' + out.expected_webhook_url + ' -- add it in Stripe > Developers > Webhooks.'); }
-          else out.notes.push('Could not read your Stripe webhook endpoints.');
+          if (eps.ok && Array.isArray(eps.j.data)) { const m = eps.j.data.filter(function (e) { return e && e.url && e.url.indexOf('/api/stripe/webhook') >= 0; })[0]; if (m) { out.checks.webhook_endpoint_configured = true; out.webhook = { url: m.url, status: m.status, events: (m.enabled_events || []).slice(0, 8) }; } }
+          // Sandbox / Workbench webhooks register as v2 EVENT DESTINATIONS, which the v1 webhook_endpoints list above never returns -- so a real, working endpoint reads as "missing". Best-effort check the v2 API too (read-only, wrapped; ignored if the account/version has no v2 access).
+          if (!out.checks.webhook_endpoint_configured) { try { const _v2 = await _fetchTimeout('https://api.stripe.com/v2/core/event_destinations?limit=100', { method: 'GET', headers: { 'Authorization': 'Bearer ' + pk, 'Stripe-Version': '2025-06-30.basil' } }, 12000); const _v2j = await _v2.json().catch(function () { return {}; }); if (_v2.ok && Array.isArray(_v2j.data) && _v2j.data.filter(function (d) { try { return JSON.stringify(d).indexOf('/api/stripe/webhook') >= 0; } catch (e) { return false; } })[0]) { out.checks.webhook_endpoint_configured = true; out.webhook = { url: out.expected_webhook_url, kind: 'event_destination' }; } } catch (e) {} }
+          if (!out.checks.webhook_endpoint_configured) out.notes.push('Could not auto-detect a webhook at ' + out.expected_webhook_url + '. Newer Sandbox/Workbench endpoints are not always listed by the API this check reads -- if you added one, send a test event; a 200 response confirms it works and you can ignore this line.');
           if (out.checks.key_valid && !out.checks.charges_enabled) out.notes.push('Charges are not enabled on this Stripe account yet -- finish Stripe onboarding (business + bank details).');
           // Recent payments (read-only) so you can WATCH a test (or live) charge land after a checkout -- the loop, full circle.
           if (out.checks.key_valid) { const ch = await stripeApi(pk, 'GET', 'charges?limit=8', null); if (ch.ok && Array.isArray(ch.j.data)) out.recent_payments = ch.j.data.map(function (c) { return { amount: c.amount, currency: c.currency, status: c.status, paid: !!c.paid, refunded: !!c.refunded, created: (c.created || 0) * 1000, desc: String(c.description || (c.metadata && (c.metadata.booking || c.metadata.kind)) || '').slice(0, 80) }; }); }
@@ -5818,7 +5949,19 @@ function doReset(){
         // #278: an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- only ENFORCEMENT (the 402s
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
-        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), assetCap: await _assetCapFor(env, ctx.tenant_id), assetUnlockCents: ASSET_UNLOCK_CENTS, assetUnlockUnits: ASSET_UNLOCK_UNITS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), assetCap: await _assetCapFor(env, ctx.tenant_id), assetUnlockCents: ASSET_UNLOCK_CENTS, assetUnlockUnits: ASSET_UNLOCK_UNITS, referralEnabled: (await _pcfgGet(env, 'referral_enabled', '0')) === '1', policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+      }
+
+      // ---- TENANT REFERRAL: this tenant's own share code + link + stats (session-authed, tenant-scoped by ctx only).
+      // Inert while the master switch is OFF (returns {enabled:false} -> the client hides the "Refer & earn" card). When
+      // ON, lazily mints + returns this tenant's stable code, the share URL, and counts: referred (all rows they own),
+      // converted (referee reached paid), rewards_earned (rows actually rewarded = free months this tenant has earned).
+      if (path === '/api/referral/mine' && method === 'GET') {
+        if ((await _pcfgGet(env, 'referral_enabled', '0')) !== '1') return json({ ok: true, enabled: false });
+        await ensurePlatformSchema(env);
+        const _rcode = await _referralCodeFor(env, ctx.tenant_id);
+        const _rst = await env.DB.prepare("SELECT COUNT(*) referred, COALESCE(SUM(CASE WHEN status IN ('converted','rewarded') THEN 1 ELSE 0 END),0) converted, COALESCE(SUM(CASE WHEN status='rewarded' THEN 1 ELSE 0 END),0) rewarded FROM referrals WHERE referrer_tenant=?").bind(ctx.tenant_id).first();
+        return json({ ok: true, enabled: true, code: _rcode, url: 'https://atlasrental.io/?ref=' + encodeURIComponent(_rcode), referred: (_rst && _rst.referred) || 0, converted: (_rst && _rst.converted) || 0, rewards_earned: (_rst && _rst.rewarded) || 0 });
       }
 
       // ---- TENANT SELF-SERVICE DATA EXPORT (GDPR/CCPA data portability): this tenant downloads its OWN operating
@@ -6227,7 +6370,7 @@ function doReset(){
           // Rows already scheduled to lapse are stamped status='canceling' by /api/billing/domain-cancel and excluded here.
           let _domRenew282 = null;
           try { const _dr282 = await env.DB.prepare("SELECT domain FROM domains_sold WHERE tenant_id=? AND stripe_sub IS NOT NULL AND status NOT IN ('canceling','canceled','renew_failed') ORDER BY created_at DESC LIMIT 1").bind(ctx.tenant_id).first(); if (_dr282 && _dr282.domain) _domRenew282 = _dr282.domain; } catch (e) {}
-          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, assetCap: t ? await _assetCapFor(env, ctx.tenant_id) : null, assetUnlocks: t ? (_hqJson(t.asset_unlocks, []) || []) : [], assetUnlockCents: ASSET_UNLOCK_CENTS, assetUnlockUnits: ASSET_UNLOCK_UNITS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, assetCap: t ? await _assetCapFor(env, ctx.tenant_id) : null, assetUnlocks: t ? (_hqJson(t.asset_unlocks, []) || []) : [], assetUnlockCents: ASSET_UNLOCK_CENTS, assetUnlockUnits: ASSET_UNLOCK_UNITS, referralEnabled: (await _pcfgGet(env, 'referral_enabled', '0')) === '1', policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
         }
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
