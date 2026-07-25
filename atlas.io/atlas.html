@@ -1376,6 +1376,11 @@ body.trk-fs-on .trk-fs-exit{display:grid}
         <span class="eyebrow">Simple, honest pricing</span>
         <h2>Plans that scale with you.</h2>
         <p style="margin-left:auto;margin-right:auto">Start with a 7-day free trial &mdash; no charge for 7 days. <b>Every plan includes the full core</b> &mdash; bookings, contracts, the branded portal, analytics and Atlas.io. Step up for more assets, locations, credits and premium features. No per-booking fees, no seat charges.</p>
+        <div style="display:flex;align-items:center;justify-content:center;gap:11px;flex-wrap:wrap;background:var(--brand-050);border:1px solid var(--brand-100);border-radius:14px;padding:11px 18px;margin:20px auto 0;max-width:600px">
+          <span class="chip chip--brand" style="font-size:11px;letter-spacing:.04em;text-transform:uppercase;flex:none">Founding member</span>
+          <span style="font-size:13.5px;color:var(--body);text-align:left;line-height:1.45">Founding pricing &mdash; lock in your rate as one of the first rental businesses on Atlas. <b>No charge for 7 days &middot; cancel anytime.</b></span>
+        </div>
+        <p style="font-size:13.5px;color:var(--muted);font-style:italic;max-width:560px;margin:14px auto 0;line-height:1.55">We&rsquo;re early, and building Atlas alongside our very first operators. Come in now and you&rsquo;ll help shape it &mdash; at a founding rate we&rsquo;ll honor as you grow. &mdash; The Atlas Rental.io team</p>
       </div>
       <div id="priceGrid"></div>
     </div>
@@ -1384,6 +1389,22 @@ body.trk-fs-on .trk-fs-exit{display:grid}
   <section class="section">
     <div class="section__head" style="margin:0 auto 26px;text-align:center"><span class="eyebrow">Good to know</span><h2>Questions, answered.</h2></div>
     <div class="faq" id="faq"></div>
+  </section>
+
+  <section class="section" id="leadCapture" style="padding-top:8px">
+    <div style="max-width:560px;margin:0 auto;background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:32px 28px;text-align:center;box-shadow:var(--shadow-lg)">
+      <span class="eyebrow">Not ready to start today?</span>
+      <h2 style="font-size:clamp(22px,2.6vw,28px);letter-spacing:-.02em;margin:6px 0 0">Get a demo &amp; founding pricing.</h2>
+      <p style="font-size:15px;color:var(--body);margin:12px auto 20px;max-width:440px;line-height:1.5">Leave your email and we&rsquo;ll send over a quick demo plus a founding-member rate you can lock in as one of the first rental businesses on Atlas.</p>
+      <div id="leadForm" style="display:flex;gap:10px;max-width:430px;margin:0 auto;flex-wrap:wrap;justify-content:center">
+        <input class="input" id="leadEmail" type="email" placeholder="you@example.com" autocomplete="email" style="flex:1;min-width:210px" onkeydown="if(event.key==='Enter')Atlas.leadSubmit()">
+        <button class="btn btn--primary" id="leadBtn" onclick="Atlas.leadSubmit()">Get founding pricing</button>
+      </div>
+      <div id="leadMsg" style="display:none;font-size:13.5px;font-weight:600;margin-top:14px"></div>
+      <div class="hero__note" style="justify-content:center;margin-top:16px">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M13 4.5L6.5 11 3 7.5" stroke="var(--brand)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>No charge for 7 days &middot; cancel anytime
+      </div>
+    </div>
   </section>
 
   <div class="cta-band">
@@ -2684,6 +2705,29 @@ const Atlas = (function(){
     var _pl=document.getElementById('priceList'); if(_pl) _pl.innerHTML=PRICE.map(p=>`<li><svg viewBox="0 0 20 20" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>${p}</li>`).join('');
     var pg=document.getElementById('priceGrid'); if(pg) pg.innerHTML=_priceCompareHtml();
     document.getElementById('faq').innerHTML=FAQS.map(f=>`<details class="faq__item"><summary class="faq__q">${f[0]}<svg viewBox="0 0 18 18" fill="none"><path d="M9 4v10M4 9h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></summary><div class="faq__a">${f[1]}</div></details>`).join('');
+  }
+
+  // Feature D: Atlas-level lead capture -- recover landing visitors who are not ready to start a trial today.
+  // PUBLIC endpoint (no auth/CSRF): posts to ATLAS_API + '/api/lead' through the shared _api() helper. Honest
+  // success only -- the confirmation shows solely when the request resolves ok; any error re-enables the form.
+  var _leadBusy=false;
+  function _leadEmailOk(e){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e||'').trim()); }
+  function _leadMsg(html,ok){ var m=document.getElementById('leadMsg'); if(!m) return;
+    m.style.display='block'; m.style.color=ok?'var(--brand-700)':'var(--danger)'; m.innerHTML=html; }
+  function _leadReset(btn){ _leadBusy=false; if(btn){ btn.disabled=false; btn.textContent='Get founding pricing'; } }
+  function leadSubmit(){
+    var inp=document.getElementById('leadEmail'), btn=document.getElementById('leadBtn');
+    var email=inp?String(inp.value||'').trim():'';
+    if(!_leadEmailOk(email)){ _leadMsg('Please enter a valid email address.',false); if(inp)inp.focus(); return; }
+    if(_leadBusy) return; _leadBusy=true;
+    if(btn){ btn.disabled=true; btn.textContent='Sending...'; }
+    _api('/api/lead',{method:'POST',body:{email:email,source:'landing'}}).then(function(res){
+      if(res && res.status>=200 && res.status<300){
+        var form=document.getElementById('leadForm'); if(form) form.style.display='none';
+        _leadMsg('Thanks &mdash; we&rsquo;ll be in touch with a demo and founding pricing.',true);
+        try{ toast('Thanks &mdash; we&rsquo;ll be in touch.'); }catch(e){}
+      } else { _leadReset(btn); _leadMsg('That didn&rsquo;t go through. Please try again.',false); }
+    }).catch(function(){ _leadReset(btn); _leadMsg('Network hiccup &mdash; please try again in a moment.',false); });
   }
 
   /* ============================== ONBOARDING ============================== */
@@ -9482,7 +9526,7 @@ const Atlas = (function(){
     openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,openModal,closeModal,
     setBrandName,setBrandColor,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,obRefresh,setField,
-    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
+    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkPortalLink,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
