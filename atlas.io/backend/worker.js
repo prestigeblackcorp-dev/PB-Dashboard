@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25f';
+const ATLAS_BUILD = '2026.07.25g';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1484,15 +1484,18 @@ function _normContact(c) {
   return d || s.toLowerCase();
 }
 async function isSuppressed(env, tenant, contact) {
-  // match the normalized key OR the legacy raw-lowercased key, so opt-outs stored before this fix are still honored
-  try { var row = await env.DB.prepare('SELECT contact FROM suppressions WHERE tenant_id=? AND contact IN (?,?)').bind(tenant, _normContact(contact), String(contact).toLowerCase()).first(); return !!row; } catch (e) { return false; }
+  // match the normalized key, the legacy raw-lowercased key, AND a legacy E.164 key (+1XXXXXXXXXX) -- an opt-out stored
+  // before the normalize fix (inbound Twilio STOP wrote E.164) is still honored without a data migration
+  try { var _n = _normContact(contact), _e164 = /^[0-9]{10}$/.test(_n) ? ('+1' + _n) : _n;
+    var row = await env.DB.prepare('SELECT contact FROM suppressions WHERE tenant_id=? AND contact IN (?,?,?)').bind(tenant, _n, String(contact).toLowerCase(), _e164).first(); return !!row; } catch (e) { return false; }
 }
 async function suppress(env, tenant, contact, kind, reason) {
   try { await env.DB.prepare('INSERT INTO suppressions (tenant_id,contact,kind,reason,at) VALUES (?,?,?,?,?) ON CONFLICT(tenant_id,contact) DO UPDATE SET kind=?,reason=?,at=?')
     .bind(tenant, _normContact(contact), kind, reason, Date.now(), kind, reason, Date.now()).run(); } catch (e) {}
 }
 async function unsuppress(env, tenant, contact) {
-  try { await env.DB.prepare('DELETE FROM suppressions WHERE tenant_id=? AND contact IN (?,?)').bind(tenant, _normContact(contact), String(contact).toLowerCase()).run(); } catch (e) {}
+  try { var _n = _normContact(contact), _e164 = /^[0-9]{10}$/.test(_n) ? ('+1' + _n) : _n;
+    await env.DB.prepare('DELETE FROM suppressions WHERE tenant_id=? AND contact IN (?,?,?)').bind(tenant, _n, String(contact).toLowerCase(), _e164).run(); } catch (e) {}
 }
 // Twilio inbound-webhook authenticity check (X-Twilio-Signature): base64(HMAC-SHA1(authToken, fullURL + sorted "key"+"value" pairs of every POST param)).
 // Fail-CLOSED by design: no auth token configured, no header present, or a mismatch -> false, and the caller must NOT act on the request (still answers
@@ -3699,7 +3702,7 @@ function doReset(){
           const _pa = pubAssets.filter(function (a) { return a && a.name === assetName; })[0] || {};
           if (Number(_pa.minLen) > 0 && periods < Number(_pa.minLen)) return err(400, 'This option needs at least ' + _pa.minLen + ' ' + _unit + (Number(_pa.minLen) > 1 ? 's' : '') + '.');
           if (Number(_pa.maxLen) > 0 && periods > Number(_pa.maxLen)) return err(400, 'This option allows at most ' + _pa.maxLen + ' ' + _unit + (Number(_pa.maxLen) > 1 ? 's' : '') + '.');
-          if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return err(409, 'Those dates are unavailable for this option. Please choose different dates.');
+          if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))) + 86400000; return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return err(409, 'Those dates are unavailable for this option. Please choose different dates.');
           try {   // #298 IDEMPOTENCY: a double-tapped submit repeats the EXACT same booking (same asset + dates + customer) -> return the existing
             // one instead of creating a duplicate. Keyed on existing columns (no migration): tenant + starts + ends within a 10-min window, then asset + email.
             const _rec = await env.DB.prepare("SELECT id, portal_token, data FROM bookings WHERE tenant_id=? AND starts=? AND ends=? AND created_at > ?").bind(prof.id, startTs, endTs, now - 600000).all();
@@ -3762,17 +3765,24 @@ function doReset(){
             asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, location: String(b.location || '').slice(0, 120) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined,   // X4: optional pickup/return location captured on the booking (additive; absent when empty, no availability impact)
             extras: _resolvedExtras.length ? _resolvedExtras : undefined, pickupTime: /^\d{1,2}:\d{2}$/.test(String(b.time || '')) ? String(b.time) : undefined,   // G5: paid extras (server-priced) + pickup time-of-day
             idVerified: _vc ? true : undefined, idVerifiedCarriedAt: _vc ? now : undefined };   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification.
+          let _myRowid = 0;
           try {
-            await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+            const _ins = await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
+            _myRowid = (_ins && _ins.meta && Number(_ins.meta.last_row_id)) || 0;   // #297b: DB-assigned rowid = true commit order for the tie-break below
           } catch (e) { return err(500, 'Could not save your booking. Please try again.'); }
           try {   // #297 DOUBLE-BOOKING RACE (TOCTOU close): the pre-check above can be raced by a concurrent submit that also passed it. After
             // inserting, re-check for overlapping ACTIVE bookings of the SAME asset (DIFFERENT rows); the SAME deterministic tie-break (earliest
             // created_at, then smallest id) orders them. X3 stock: I only lose if at least qty OTHER rows rank AHEAD of me in that order (so exactly
             // qty winners survive); the loser(s) delete their own row + 409, BEFORE any email / webhook / charge below. qty absent/1 => "any row ahead" => byte-identical to the old .some() gate.
-            const _post = await env.DB.prepare("SELECT id, created_at, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed') AND id != ? AND starts < ? AND ends > ?").bind(prof.id, bref, endTs, startTs).all();
+            const _post = await env.DB.prepare("SELECT rowid AS _rid, id, created_at, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed') AND id != ? AND starts < ? AND ends > ?").bind(prof.id, bref, endTs, startTs).all();
             const _qtyCapP = Math.max(1, Number(_pa.qty) || 1);
-            const _ahead = (_post.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} if (!d || d.asset !== assetName) return false; var rc = Number(r.created_at) || 0; return (rc < now) || (rc === now && String(r.id) < String(bref)); }).length;
+            // #297b TOCTOU FIX: tie-break on the DB-assigned rowid (true commit order), NOT the request-start wall-clock `now`
+            // (captured before several awaited round-trips, so two concurrent inserts could BOTH pass the old created_at check).
+            // A lower rowid committed first and wins; the loser(s) delete + 409. Fall back to created_at+id only if rowid is 0.
+            const _ahead = (_post.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} if (!d || d.asset !== assetName) return false;
+              var rr = Number(r._rid) || 0; if (_myRowid > 0 && rr > 0) return rr < _myRowid;
+              var rc = Number(r.created_at) || 0; return (rc < now) || (rc === now && String(r.id) < String(bref)); }).length;
             if (_ahead >= _qtyCapP) { try { await env.DB.prepare('DELETE FROM bookings WHERE id=?').bind(bref).run(); } catch (e) {} return err(409, 'Those dates were just taken by another guest. Please choose different dates.'); }
           } catch (e) {}
           if (_bumpPromo) { try { await _promoBump(env, prof.id, _bumpPromo); } catch (e) {} }   // count the redemption only after the booking actually saved
@@ -6521,7 +6531,7 @@ function doReset(){
         const op = pym[1];
         const body = await req.json().catch(function () { return {}; });
         if (!vStr(body.booking, 40)) return err(400, 'Booking id required.');
-        const row = await env.DB.prepare('SELECT id,data FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking, ctx.tenant_id).first();
+        const row = await env.DB.prepare('SELECT id,data,revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking, ctx.tenant_id).first();
         if (!row) return err(404, 'Booking not found.');
         const sk = await tenantStripeKey(env, ctx.tenant_id);
         if (!sk) return json({ ok: false, reason: 'no_stripe', message: 'Connect Stripe to capture, release or refund payments.' });
@@ -6537,8 +6547,12 @@ function doReset(){
         // CORE-LOOP: bump d._t so the capture/release/refund propagates to the owner's dashboard + other devices (the client
         // merges newest-wins on data._t), and net refunds out of revenue_cents so a refunded booking stops counting as revenue.
         d._t = Date.now();
-        var _payRev = 0; for (var _rk in d.paid) { var _rp = d.paid[_rk]; if (_rp && !_rp.hold && _rk !== 'security') _payRev += (Number(_rp.amountCents) || 0) - ((_rp.refunded && Number(_rp.refunded.amountCents)) || 0); }
-        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), Math.max(0, _payRev), Date.now(), body.booking, ctx.tenant_id).run();
+        // #339-CLASS FIX: revenue_cents is a RUNNING total that also carries cash/G5 revenue never present in d.paid. The old
+        // blind recompute from d.paid alone ERASED that cash on ANY capture/release/refund (e.g. a clean hold RELEASE zeroed a
+        // cash booking's revenue). Only a REFUND moves revenue -- down by the amount refunded THIS op; a capture or a clean
+        // release moves none. Deduct the delta from the column instead of recomputing the whole thing from d.paid.
+        var _refThisOp = (op === 'refund' && p && p.refunded) ? (Number(p.refunded.amountCents) || 0) : 0;
+        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), Math.max(0, (Number(row.revenue_cents) || 0) - _refThisOp), Date.now(), body.booking, ctx.tenant_id).run();
         await audit(env, ctx, req, 'pay.' + op, { booking: body.booking, kind: kind });
         if ((op === 'refund' || op === 'release') && d.custEmail) {
           const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
@@ -7978,7 +7992,7 @@ async function _availabilityCheck(env, prof, pubAssets, cfg, assetName, startTs,
   const _pa = pubAssets.filter(function (a) { return a && a.name === assetName; })[0] || {};
   if (Number(_pa.minLen) > 0 && p < Number(_pa.minLen)) return { available: false, reason: 'Needs at least ' + _pa.minLen + ' ' + _unit + (Number(_pa.minLen) > 1 ? 's' : '') + '.' };
   if (Number(_pa.maxLen) > 0 && p > Number(_pa.maxLen)) return { available: false, reason: 'At most ' + _pa.maxLen + ' ' + _unit + (Number(_pa.maxLen) > 1 ? 's' : '') + '.' };
-  if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))); return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return { available: false, reason: 'Unavailable on these dates.' };
+  if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))) + 86400000; return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return { available: false, reason: 'Unavailable on these dates.' };
   try {
     // X3 stock: COUNT overlapping active bookings of this asset; unavailable only once the count reaches the asset's unit count (qty from the matched pubAsset). qty absent/1 => first overlap blocks => byte-identical to the old any-overlap check.
     const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed')").bind(prof.id).all();
