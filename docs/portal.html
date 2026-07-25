@@ -2279,19 +2279,30 @@ function tripEffEndDay(b){
 }
 function _fmtDayShort(s){ return s?fmtDate(s):''; }
 
-// Owner check-in/check-out photos \u2014 fetched read-only per booking, cached.
-var _ownerPhotos = {};        // bookingId -> {checkIn:[],checkOut:[]}
+// Owner check-in/check-out photos, PLUS (once the worker supports it -- see STAGE 3 NOTE below) the
+// customer's own offloaded pre/post-trip photos \u2014 fetched read-only per booking, cached.
+var _ownerPhotos = {};        // bookingId -> {checkIn:[],checkOut:[],customerPre:[],customerPost:[]}
 var _ownerPhotosLoading = {};
 function _loadOwnerPhotos(bid){
   if(_ownerPhotos[bid]||_ownerPhotosLoading[bid]||!state.token) return;
   const b = state.bookings.find(x=>x.id===bid);
-  if(!b || (!(b.checkInPhotoIds||[]).length && !(b.checkOutPhotoIds||[]).length)) return;
+  const hasOwnerIds = b && ((b.checkInPhotoIds||[]).length || (b.checkOutPhotoIds||[]).length);
+  // STAGE 3 NOTE: customerPre/customerPost mirror customerPreTripPhotoIds/customerPostTripPhotoIds the same
+  // way checkIn/checkOut mirror checkInPhotoIds/checkOutPhotoIds, as [{id,data}]. The CURRENT worker's GET
+  // /portal/booking-photos only resolves checkInPhotoIds/checkOutPhotoIds -- it does not send customerPre/
+  // customerPost yet, so those two keys are always [] today (safe no-op) until a later stage teaches the
+  // worker to also resolve ctx.bk.customerPreTripPhotoIds/customerPostTripPhotoIds into this same response
+  // (mirroring its existing fetchIds() calls for checkIn/checkOut). Gating the fetch on hasCustIds too means
+  // a booking with ONLY migrated guest photos (no owner check-in/out photos) still triggers the load, ready
+  // for when that worker piece lands.
+  const hasCustIds  = b && ((b.customerPreTripPhotoIds||[]).length || (b.customerPostTripPhotoIds||[]).length);
+  if(!hasOwnerIds && !hasCustIds) return;
   _ownerPhotosLoading[bid]=true;
   fetch(`${WORKER}/portal/booking-photos?bookingId=${encodeURIComponent(bid)}&token=${encodeURIComponent(state.token)}`,{cache:'no-store'})
     .then(r=>r.ok?r.json():null)
     .then(d=>{
       _ownerPhotosLoading[bid]=false;
-      if(d&&(d.checkIn||d.checkOut)){ _ownerPhotos[bid]={checkIn:d.checkIn||[],checkOut:d.checkOut||[]}; renderBookings(); }
+      if(d&&(d.checkIn||d.checkOut||d.customerPre||d.customerPost)){ _ownerPhotos[bid]={checkIn:d.checkIn||[],checkOut:d.checkOut||[],customerPre:d.customerPre||[],customerPost:d.customerPost||[]}; renderBookings(); }
     })
     .catch(()=>{ _ownerPhotosLoading[bid]=false; });
 }
@@ -2354,8 +2365,23 @@ function showCondition(booking){
   if(!_ownerPhotos[booking.id]) setTimeout(()=>_loadOwnerPhotos(booking.id),0);
   const preOwner = owner.checkIn||[];
   const postOwner = owner.checkOut||[];
-  const preCust = (booking.customerPreTripPhotos||[]).filter(Boolean);
-  const postCust = (booking.customerPostTripPhotos||[]).filter(Boolean);
+  // Guest pre/post-trip photos, normalized to {src,at} regardless of source: legacy inline base64
+  // (customerPreTripPhotos, meta aligned by array index) PLUS offloaded by-id photos (customerPreTripPhotoIds,
+  // resolved through the SAME /portal/booking-photos call as the owner's check-in/out photos and cached in
+  // _ownerPhotos[bid].customerPre as [{id,data}] -- see _loadOwnerPhotos above). Additive: an un-migrated
+  // (or, until the worker gains customerPre/customerPost, not-yet-resolvable) booking just shows its legacy
+  // inline photos, exactly as before.
+  const _custPhotos = (type) => {
+    const legacy = (booking[type==='pre'?'customerPreTripPhotos':'customerPostTripPhotos']||[]).filter(Boolean);
+    const meta   = booking[type==='pre'?'customerPreTripPhotoMeta':'customerPostTripPhotoMeta']||[];
+    const ids    = booking[type==='pre'?'customerPreTripPhotoIds':'customerPostTripPhotoIds']||[];
+    const byId   = owner[type==='pre'?'customerPre':'customerPost']||[];
+    const out = legacy.map((src,i)=>({src, at:(meta[i]&&meta[i].at)||null}));
+    byId.forEach(p=>{ const i=ids.indexOf(p.id); out.push({src:p.data, at:(i>-1&&meta[i]&&meta[i].at)||null}); });
+    return out;
+  };
+  const preCust = _custPhotos('pre');
+  const postCust = _custPhotos('post');
   const preLocked = !!booking.customerPreTripLockedAt;
   const postLocked = !!booking.customerPostTripLockedAt;
   const pickupDay = String(booking.pickupDate||booking.date||'').split('T')[0];
@@ -2367,10 +2393,9 @@ function showCondition(booking){
   const col = (label, ownerArr, custArr, type, open, locked, notYetMsg) => {
     const ownerVids = ((type==='pre'?booking.checkInVideos:booking.checkOutVideos)||[]).filter(Boolean);
     const custVids  = ((type==='pre'?booking.customerPreTripVideos:booking.customerPostTripVideos)||[]).filter(Boolean);
-    const custMeta = ((type==='pre'?booking.customerPreTripPhotoMeta:booking.customerPostTripPhotoMeta)||[]);
     let html = `<div><div class="condition-col-label">${label}</div><div class="photo-grid">`;
     ownerArr.forEach(src=>{ html += `<div style="display:flex;flex-direction:column;align-items:center;gap:2px"><img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Uploaded by Prestige Black"></div>`; });
-    custArr.forEach((src,i)=>{ const _t=(custMeta[i]&&custMeta[i].at)?_fmtMediaTs(custMeta[i].at):''; html += `<div style="display:flex;flex-direction:column;align-items:center;gap:2px"><img class="photo-thumb" src="${src}" onclick="openPhotoModal('${src}')" title="Your photo">${_t?`<div style="font-size:8px;color:var(--text-muted);text-align:center;line-height:1.1;max-width:64px">${_t}</div>`:''}</div>`; });
+    custArr.forEach(p=>{ const _t=p.at?_fmtMediaTs(p.at):''; html += `<div style="display:flex;flex-direction:column;align-items:center;gap:2px"><img class="photo-thumb" src="${p.src}" onclick="openPhotoModal('${p.src}')" title="Your photo">${_t?`<div style="font-size:8px;color:var(--text-muted);text-align:center;line-height:1.1;max-width:64px">${_t}</div>`:''}</div>`; });
     html += '</div>';
     if(ownerVids.length || custVids.length){
       html += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
@@ -3622,6 +3647,7 @@ function _renderTripModule(){
   const type=_tripModule.type;
   const locked=!!(type==='pre'?bk.customerPreTripLockedAt:bk.customerPostTripLockedAt);
   const arr=((type==='pre'?bk.customerPreTripPhotos:bk.customerPostTripPhotos)||[]).filter(Boolean);
+  const idArr=((type==='pre'?bk.customerPreTripPhotoIds:bk.customerPostTripPhotoIds)||[]);
   const vids=((type==='pre'?bk.customerPreTripVideos:bk.customerPostTripVideos)||[]).filter(Boolean);
   document.getElementById('tpm-title').textContent=(type==='pre'?'Pre-Trip':'Post-Trip')+' Photos & Videos \u2014 '+(bk.vehicle||'');
   document.getElementById('tpm-locked').style.display=locked?'block':'none';
@@ -3633,11 +3659,25 @@ function _renderTripModule(){
     const _pt=(pMeta[i]&&pMeta[i].at)?`<div style="font-size:8px;color:var(--text-muted);text-align:center;line-height:1.15;margin-top:2px">${_fmtMediaTs(pMeta[i].at)}</div>`:'';
     g+=`<div style="position:relative"><img class="photo-thumb" src="${src}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${src}')">${locked?'':`<button onclick="deleteTripPhoto(${i})" title="Remove photo" style="position:absolute;top:-8px;right:-8px;width:30px;height:30px;border-radius:50%;background:#ef4444;color:#fff;border:2px solid var(--surface);font-size:14px;font-weight:800;cursor:pointer;line-height:1">\u2715</button>`}${_pt}</div>`;
   });
+  // Offloaded by-id photos (customerPreTripPhotoIds/customerPostTripPhotoIds) -- read-only here, no remove
+  // button: deleteTripPhoto() above only ever targets the legacy inline array by index, and has no id-based
+  // equivalent yet. Resolved via the same _ownerPhotos cache _loadOwnerPhotos() populates for this booking
+  // (see showCondition/_loadOwnerPhotos); [] until the worker sends customerPre/customerPost, so this is a
+  // no-op today.
+  if(idArr.length){
+    const byId=((_ownerPhotos[bk.id]||{})[type==='pre'?'customerPre':'customerPost']||[]);
+    byId.forEach(p=>{
+      const _i=idArr.indexOf(p.id);
+      const _pt=(_i>-1&&pMeta[_i]&&pMeta[_i].at)?`<div style="font-size:8px;color:var(--text-muted);text-align:center;line-height:1.15;margin-top:2px">${_fmtMediaTs(pMeta[_i].at)}</div>`:'';
+      g+=`<div style="position:relative"><img class="photo-thumb" src="${p.data}" style="width:100%;height:84px;object-fit:cover" onclick="openPhotoModal('${p.data}')">${_pt}</div>`;
+    });
+    if(!_ownerPhotos[bk.id]) setTimeout(()=>_loadOwnerPhotos(bk.id),0);
+  }
   if(!locked && arr.length<12){
     g+=`<button onclick="triggerPhotoUpload('${esc(bk.id)}','${type}')" title="Add photo" style="height:84px;border:1.5px dashed rgba(201,169,98,.4);border-radius:10px;background:transparent;color:var(--gold);font-size:22px;cursor:pointer">+</button>`;
   }
   document.getElementById('tpm-grid').innerHTML=g||'<div style="grid-column:1/-1;color:var(--text-muted);font-size:12px;text-align:center;padding:8px">No photos yet</div>';
-  document.getElementById('tpm-count').textContent=arr.length+' / 12 photos';
+  document.getElementById('tpm-count').textContent=(arr.length+idArr.length)+' / 12 photos';
   // ---- Videos ----
   let v='';
   vids.forEach((vid)=>{
