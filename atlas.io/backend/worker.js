@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25h';
+const ATLAS_BUILD = '2026.07.25i';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1284,6 +1284,27 @@ function _extractEmail(s) { var m = String(s || '').match(/[^\s<>@]+@[^\s<>@]+\.
 // HONESTLY -- it returns {emailed:false,reason:'no_mailer'} / {paid:false,reason:'no_stripe'} and never fakes success.
 // Adding the key lights the same path up for real. The booking pipeline itself works on D1 alone (no keys needed).
 function jparse(s, fb) { try { return (typeof s === 'string' && s) ? JSON.parse(s) : (s && typeof s === 'object' ? s : fb); } catch (e) { return fb; } }
+// #346 OPTIMISTIC-LOCK read-modify-write for a booking row (same CAS the webhook uses inline, factored out for /api/pay + /cancel +
+// charge.refunded). `mutate(d, row)` mutates the FRESHLY-read `d` in place and returns { rev:<new revenue_cents>, status:<new status
+// column, optional -> keep current> }. The UPDATE is a CAS on updated_at; if a concurrent write landed since our SELECT (meta.changes
+// ===0) we re-read the fresh row and re-run mutate, up to 6 tries -- so a payment webhook racing a refund/cancel on the same booking is
+// never clobbered. IMPORTANT: any Stripe side-effect (capture/refund/release) must fire ONCE, OUTSIDE this call; mutate only re-applies
+// its ALREADY-DECIDED outcome onto the fresh row (idempotently -- e.g. dedup refund ids), never re-charges. Returns {committed, d, missing}.
+async function _bkRMW(env, id, tid, mutate) {
+  var d = null, committed = false;
+  for (var _i = 0; _i < 6 && !committed; _i++) {
+    const row = await env.DB.prepare('SELECT id,data,revenue_cents,status,updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(id, tid).first();
+    if (!row) return { committed: false, missing: true, d: null };
+    d = jparse(row.data, {}); d.paid = d.paid || {};
+    const out = mutate(d, row) || {};
+    const rev = (typeof out.rev === 'number') ? Math.max(0, Math.round(out.rev)) : (Number(row.revenue_cents) || 0);
+    const st = (out.status != null) ? out.status : row.status;
+    const _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
+      .bind(JSON.stringify(d), rev, st, Date.now(), id, tid, row.updated_at).run();
+    committed = !!(_u && _u.meta && _u.meta.changes);
+  }
+  return { committed: committed, d: d, missing: false };
+}
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
 function money2(cents) { return '$' + (Math.round(Number(cents) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function renderTpl(str, vars) { return String(str || '').replace(/\{(\w+)\}/g, function (m, k) { return vars[k] != null ? String(vars[k]) : ''; }); }
@@ -3895,7 +3916,7 @@ function doReset(){
             // #344 OPTIMISTIC-LOCK read-modify-write: two webhooks for DIFFERENT slots on the SAME booking (e.g. a deposit and an
             // owner-charge) used to race -- both read the same row, both wrote absolutely, last write clobbered the other's payment.
             // Now the UPDATE is a CAS on updated_at; a lost CAS re-reads the fresh row + re-applies, so neither payment is dropped.
-            let d = null, _committed = false;
+            let d = null, _committed = false, _wasNew = false;
             const amt = Math.round(Number(obj.amount_total || obj.amount || 0));
             const pi = obj.payment_intent || (obj.object === 'payment_intent' ? obj.id : '');   // needed for capture/release/refund
             for (var _wtry = 0; _wtry < 6 && !_committed; _wtry++) {
@@ -3913,7 +3934,10 @@ function doReset(){
               d.paid[_pkKey] = { at: Date.now(), amountCents: amt, stripe: obj.id || '', pi: pi, hold: (_isSec && md.hold === '1') };
               // #339: revenue_cents is a RUNNING total (carries cash/G5 revenue + direct-in-Stripe refunds, neither in d.paid). ADD this
               // payment iff the slot is newly recorded and it is captured revenue (not a hold, not a refundable security deposit).
-              const _addRev = (!_slotHad && !(_isSec && md.hold === '1') && md.kind !== 'security') ? (Number(amt) || 0) : 0;
+              // #346 ordering guard: if a charge.refunded for THIS PaymentIntent already landed (Stripe delivered it out of order, or a
+              // stale success replays after a refund), the pi is in d.refundedPIs -- do NOT re-add its revenue (paid-then-refunded nets to 0).
+              var _piRefunded = !!(pi && Array.isArray(d.refundedPIs) && d.refundedPIs.indexOf(pi) >= 0);
+              const _addRev = (!_slotHad && !_piRefunded && !(_isSec && md.hold === '1') && md.kind !== 'security') ? (Number(amt) || 0) : 0;
               const rev = Math.max(0, (Number(row.revenue_cents) || 0) + _addRev);
               if (md.kind === 'charge' && md.charge && Array.isArray(d.charges)) {   // stamp the specific charge paid so the portal shows it settled
                 for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }   // paidOnline: this charge IS inside revenue_cents so the client must NOT re-add it to _bkEarned
@@ -3931,8 +3955,10 @@ function doReset(){
               const _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
                 .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT
               _committed = !!(_u && _u.meta && _u.meta.changes);
+              if (_committed) _wasNew = !_slotHad;   // #346: did THIS delivery record a NEW payment (vs a replay / checkout.session+payment_intent dual-fire)? -> fire the receipt/audit/webhook ONCE per payment, not per delivery
             }
-            if (_committed && d) {
+            if (!_committed && d) { try { await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid.uncommitted', { booking: md.booking, kind: md.kind, cents: amt, note: 'CAS contention: payment succeeded at Stripe but was not persisted after 6 tries -- reconcile with Stripe' }); } catch (e) {} }   // #346 monitoring hook: surface the (extremely rare) exhausted-retry case instead of silently 200-ing
+            if (_committed && _wasNew && d) {
               const tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(md.tenant).first();
               if (tr && d.custEmail) { const pr = tenantProfile(tr);
                 const _smartR = !!(pr.settings && pr.settings.flags && pr.settings.flags.smartReceipts);   // Payments G6: the "auto-email a receipt the moment a booking is paid" toggle now fires a REAL itemized receipt (was a dead toggle -> only a one-liner ever sent)
@@ -4212,15 +4238,20 @@ function doReset(){
             // drop in their dashboard P&L (the in-app /api/pay/refund path already does this).
             if (amt > 0 && md.booking && md.tenant && _rfTxn && _rfTxn.new) {   // Payments P3: gate on the refund txn's OWN dedup (.new) so a REPLAYED charge.refunded never double-subtracts revenue_cents (the decrement is not idempotent on its own). Same guard as the credit-note receipt above.
               try {
-                const _brb = await env.DB.prepare('SELECT revenue_cents,data FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
-                if (_brb) { const _bd = jparse(_brb.data, {}); _bd.refundIds = Array.isArray(_bd.refundIds) ? _bd.refundIds : [];
-                  // P1-REGRESSION FIX: the in-app /pay/refund + /cancel paths ALREADY recompute revenue_cents ABSOLUTELY and stamp this Stripe refund id into d.refundIds. If it's there, this webhook must NOT decrement again (that double-subtracted -- a cancel-keep-fee wiped the kept fee to $0). Only a DIRECT-in-Stripe refund (id never seen in-app) actually needs the decrement here.
-                  if (!(rf && rf.id && _bd.refundIds.indexOf(rf.id) >= 0)) {
-                    if (rf && rf.id) _bd.refundIds.push(rf.id);
-                    _bd._t = Date.now(); const _newRev = Math.max(0, (Number(_brb.revenue_cents) || 0) - Math.abs(amt));
-                    await env.DB.prepare('UPDATE bookings SET revenue_cents=?, data=?, updated_at=? WHERE id=? AND tenant_id=?').bind(_newRev, JSON.stringify(_bd), Date.now(), md.booking, md.tenant).run();
-                  }
-                }
+                // #346: persist via CAS (a booking-payment webhook can land during this decrement) + record the refunded PaymentIntent so a
+                // LATER / out-of-order checkout.session.completed for the SAME charge cannot re-add its revenue (guarded in the success handler).
+                var _rfPi = obj.payment_intent || (rf && rf.payment_intent) || '';
+                await _bkRMW(env, md.booking, md.tenant, function (_bd, _brb) {
+                  _bd.refundIds = Array.isArray(_bd.refundIds) ? _bd.refundIds : [];
+                  if (_rfPi) { _bd.refundedPIs = Array.isArray(_bd.refundedPIs) ? _bd.refundedPIs : []; if (_bd.refundedPIs.indexOf(_rfPi) < 0) _bd.refundedPIs.push(_rfPi); }
+                  // P1-REGRESSION: the in-app /pay/refund + /cancel paths ALREADY decremented revenue_cents absolutely and stamped this Stripe
+                  // refund id. If it's present, do NOT decrement again (that double-subtracted -- a cancel-keep-fee wiped the kept fee to $0).
+                  // Only a DIRECT-in-Stripe refund (id never seen in-app) decrements here. (Outer .new guard already blocks a replayed webhook.)
+                  var _seen = !!(rf && rf.id && _bd.refundIds.indexOf(rf.id) >= 0);
+                  if (!_seen && rf && rf.id) _bd.refundIds.push(rf.id);
+                  _bd._t = Date.now();
+                  return { rev: _seen ? (Number(_brb.revenue_cents) || 0) : ((Number(_brb.revenue_cents) || 0) - Math.abs(amt)) };
+                });
               } catch (e) {}
             }
           } else if (T === 'invoice.payment_failed') {
@@ -6545,15 +6576,25 @@ function doReset(){
         else if (op === 'release') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/cancel', {}); if (r2.ok) { p.released = { at: Date.now() }; delete p.hold; } }
         else { const rp = { payment_intent: p.pi }; if (vInt(body.amountCents) && body.amountCents > 0) rp.amount = body.amountCents; r2 = await stripePost(sk, '/refunds', rp); if (r2.ok) { p.refunded = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; if (r2.obj && r2.obj.id) { d.refundIds = d.refundIds || []; d.refundIds.push(r2.obj.id); } } }   // P1-regression: stamp the Stripe refund id so the charge.refunded webhook (which now resolves the booking after P1) does NOT re-decrement revenue_cents -- this path already recomputed it absolutely below
         if (!r2.ok) return json({ ok: false, reason: r2.reason });
-        // CORE-LOOP: bump d._t so the capture/release/refund propagates to the owner's dashboard + other devices (the client
-        // merges newest-wins on data._t), and net refunds out of revenue_cents so a refunded booking stops counting as revenue.
-        d._t = Date.now();
-        // #339-CLASS FIX: revenue_cents is a RUNNING total that also carries cash/G5 revenue never present in d.paid. The old
-        // blind recompute from d.paid alone ERASED that cash on ANY capture/release/refund (e.g. a clean hold RELEASE zeroed a
-        // cash booking's revenue). Only a REFUND moves revenue -- down by the amount refunded THIS op; a capture or a clean
-        // release moves none. Deduct the delta from the column instead of recomputing the whole thing from d.paid.
+        // #346 OPTIMISTIC-LOCK persist: the Stripe op above already succeeded and fires exactly ONCE. Re-apply its outcome onto a
+        // FRESHLY-read row via CAS so a payment webhook / another op racing on THIS same booking is never clobbered (the old blind
+        // UPDATE here could erase a deposit that landed a beat earlier). revenue_cents is a RUNNING total that also carries cash/G5
+        // revenue never present in d.paid -- only a REFUND moves it (down by the amount refunded THIS op); a capture or a clean release
+        // moves none (#339-CLASS: deduct the delta, never recompute the column from d.paid). _t bumped so it syncs to the dashboard.
         var _refThisOp = (op === 'refund' && p && p.refunded) ? (Number(p.refunded.amountCents) || 0) : 0;
-        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), Math.max(0, (Number(row.revenue_cents) || 0) - _refThisOp), Date.now(), body.booking, ctx.tenant_id).run();
+        var _refId = (op === 'refund' && r2.obj && r2.obj.id) ? String(r2.obj.id) : '';
+        var _casP = await _bkRMW(env, body.booking, ctx.tenant_id, function (dd, rr) {
+          var pp = (dd.paid && dd.paid[kind]) || null;
+          if (pp) {
+            if (op === 'capture') { pp.captured = p.captured; delete pp.hold; }
+            else if (op === 'release') { pp.released = p.released; delete pp.hold; }
+            else if (op === 'refund') { pp.refunded = p.refunded; }
+          }
+          if (_refId) { dd.refundIds = Array.isArray(dd.refundIds) ? dd.refundIds : []; if (dd.refundIds.indexOf(_refId) < 0) dd.refundIds.push(_refId); }
+          dd._t = Date.now();
+          return { rev: (Number(rr.revenue_cents) || 0) - _refThisOp };
+        });
+        if (!_casP.committed) return json({ ok: false, reason: 'persist_failed', message: 'The ' + op + ' completed at Stripe but could not be saved after several tries -- refresh and check this booking before retrying.' });
         await audit(env, ctx, req, 'pay.' + op, { booking: body.booking, kind: kind });
         if ((op === 'refund' || op === 'release') && d.custEmail) {
           const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); const pr = tenantProfile(tr || { name: 'Atlas Rental.io' });
@@ -6590,20 +6631,28 @@ function doReset(){
         const d = jparse(row.data, {}); d.paid = d.paid || {};
         const sk = await tenantStripeKey(env, ctx.tenant_id);
         let refundedCents = 0, released = false;
+        var _patches = [];   // {key,refunded} for each successful refund -- re-applied idempotently onto the fresh row in the CAS below
+        var _refIds = [];
         if (sk) {
-          const caps = []; for (const k in d.paid) { const p = d.paid[k]; if (p && p.pi && !p.hold && k !== 'security' && !p.refunded) caps.push(p); }
-          let captured = 0; caps.forEach(function (p) { captured += (Number(p.amountCents) || 0); });
+          const caps = []; for (const k in d.paid) { const p = d.paid[k]; if (p && p.pi && !p.hold && k !== 'security' && !p.refunded) caps.push({ k: k, p: p }); }
+          let captured = 0; caps.forEach(function (c) { captured += (Number(c.p.amountCents) || 0); });
           let toRefund = Math.max(0, captured - keepCents);   // keep the policy fee, refund the rest of what was actually captured
-          for (const p of caps) { if (toRefund <= 0) break; const amt = Math.min(Number(p.amountCents) || 0, toRefund); if (amt <= 0) continue; const rr = await stripePost(sk, '/refunds', { payment_intent: p.pi, amount: amt }); if (rr.ok) { p.refunded = { at: Date.now(), amountCents: amt }; refundedCents += amt; toRefund -= amt; if (rr.obj && rr.obj.id) { d.refundIds = d.refundIds || []; d.refundIds.push(rr.obj.id); } } }   // P1-regression: stamp refund ids so charge.refunded webhook won't re-decrement (this sets revenue_cents=keepCents absolutely below)
-          const sec = d.paid.security; if (sec && sec.pi && sec.hold) { const rc = await stripePost(sk, '/payment_intents/' + sec.pi + '/cancel', {}); if (rc.ok) { sec.released = { at: Date.now() }; delete sec.hold; released = true; } }   // release the refundable-deposit hold on cancel
+          for (const c of caps) { if (toRefund <= 0) break; const amt = Math.min(Number(c.p.amountCents) || 0, toRefund); if (amt <= 0) continue; const rr = await stripePost(sk, '/refunds', { payment_intent: c.p.pi, amount: amt }); if (rr.ok) { refundedCents += amt; toRefund -= amt; _patches.push({ key: c.k, refunded: { at: Date.now(), amountCents: amt } }); if (rr.obj && rr.obj.id) _refIds.push(String(rr.obj.id)); } }   // Stripe refund fires ONCE here; the d.paid[k].refunded stamp + refund-id are re-applied in the CAS so a race can't lose them
+          const sec = d.paid.security; if (sec && sec.pi && sec.hold) { const rc = await stripePost(sk, '/payment_intents/' + sec.pi + '/cancel', {}); if (rc.ok) { released = true; } }   // release the refundable-deposit hold on cancel
         }
-        d.status = 'Cancelled'; d.cancelledAt = Date.now(); d.cancelFee = keepCents / 100; d._t = Date.now();
-        // #340 MONEY FIX: the kept revenue can never exceed what was actually COLLECTED on the booking (prior revenue_cents:
-        // online captures + any cash/G5). The dashboard "Keep 50%" preset computes 50% of the RENTAL TOTAL, not of what was
-        // collected -- so an unclamped keepCents recorded phantom revenue with no matching cash. cancelFee (the policy fee the
-        // owner charged) is kept as-is for the record; only the recorded revenue is clamped.
-        const _keepRev = Math.min(keepCents, Number(row.revenue_cents) || 0);
-        await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(d), _keepRev, 'cancelled', Date.now(), cxm[1], ctx.tenant_id).run();
+        // #340 + #346: kept revenue can never exceed what was actually COLLECTED (prior revenue_cents: online captures + cash/G5) -- the
+        // "Keep 50%" preset is 50% of the RENTAL TOTAL not of collected, so an unclamped keepCents booked phantom revenue. Persist via
+        // CAS so a payment webhook landing during the (multi-round-trip) refund loop above isn't clobbered; the Stripe refunds/release
+        // fired ONCE and are re-applied idempotently onto the fresh row here. cancelFee (the policy fee) is kept for the record.
+        var _casC = await _bkRMW(env, cxm[1], ctx.tenant_id, function (dd, rr) {
+          dd.paid = dd.paid || {};
+          _patches.forEach(function (pt) { if (dd.paid[pt.key]) dd.paid[pt.key].refunded = pt.refunded; });
+          if (released && dd.paid.security && dd.paid.security.hold) { dd.paid.security.released = { at: Date.now() }; delete dd.paid.security.hold; }
+          if (_refIds.length) { dd.refundIds = Array.isArray(dd.refundIds) ? dd.refundIds : []; _refIds.forEach(function (id) { if (dd.refundIds.indexOf(id) < 0) dd.refundIds.push(id); }); }
+          dd.status = 'Cancelled'; dd.cancelledAt = Date.now(); dd.cancelFee = keepCents / 100; dd._t = Date.now();
+          return { rev: Math.min(keepCents, Number(rr.revenue_cents) || 0), status: 'cancelled' };
+        });
+        if (!_casC.committed) return json({ ok: false, reason: 'persist_failed', message: 'Refunds were issued at Stripe but the cancellation could not be saved after several tries -- refresh and check this booking before retrying.' });
         await audit(env, ctx, req, 'booking.cancel', { booking: cxm[1], keepCents: keepCents, refundedCents: refundedCents, released: released });
         if (d.custEmail && (refundedCents > 0 || released)) { try { const tr = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); const pr = tenantProfile(tr || { name: 'Atlas Rental.io' }); await sendEmail(env, { to: d.custEmail, fromName: pr.name, subject: 'Booking cancelled - ' + pr.name, html: _emailShell(pr, '<h2>Your booking was cancelled</h2><p>Booking <b>' + esc(cxm[1]) + '</b>.' + (refundedCents > 0 ? (' A refund of ' + money2(refundedCents) + ' was issued to your card.') : '') + (released ? ' Your deposit hold was released.' : '') + '</p>') }); } catch (e) {} }
         return json({ ok: true, refundedCents: refundedCents, released: released });
