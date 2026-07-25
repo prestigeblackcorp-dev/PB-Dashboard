@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.25g';
+const ATLAS_BUILD = '2026.07.25h';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3892,46 +3892,47 @@ function doReset(){
         const md = obj.metadata || {};
         if ((evt.type === 'checkout.session.completed' || evt.type === 'payment_intent.succeeded') && md.booking && md.tenant) {
           try {
-            const row = await env.DB.prepare('SELECT id,data,revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
-            if (row) {
-              const d = jparse(row.data, {}); const amt = Math.round(Number(obj.amount_total || obj.amount || 0));
-              const pi = obj.payment_intent || (obj.object === 'payment_intent' ? obj.id : '');   // needed for capture/release/refund
-              // #290 FIX: the RESERVE down-payment ('deposit') and the balance are CAPTURED revenue -- they were being
-              // wrongly excluded (a full-deposit booking recorded $0) AND the old code OVERWROTE revenue with a single
-              // payment instead of summing. ONLY a refundable SECURITY deposit ('security') is held out of revenue (a
-              // refundable liability until captured for damage). Recompute revenue as the SUM of every captured (non-hold,
-              // non-security) payment on the booking -- deterministic + idempotent (a webhook redelivery just re-sets the
-              // same d.paid[kind], so the sum is unchanged, and no payment is ever double-counted).
+            // #344 OPTIMISTIC-LOCK read-modify-write: two webhooks for DIFFERENT slots on the SAME booking (e.g. a deposit and an
+            // owner-charge) used to race -- both read the same row, both wrote absolutely, last write clobbered the other's payment.
+            // Now the UPDATE is a CAS on updated_at; a lost CAS re-reads the fresh row + re-applies, so neither payment is dropped.
+            let d = null, _committed = false;
+            const amt = Math.round(Number(obj.amount_total || obj.amount || 0));
+            const pi = obj.payment_intent || (obj.object === 'payment_intent' ? obj.id : '');   // needed for capture/release/refund
+            for (var _wtry = 0; _wtry < 6 && !_committed; _wtry++) {
+              const row = await env.DB.prepare('SELECT id,data,revenue_cents,updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(md.booking, md.tenant).first();
+              if (!row) break;
+              d = jparse(row.data, {});
               d.paid = d.paid || {};
               var _isSec = (md.kind === 'security');
-              // G1: a paid owner-added charge gets its OWN d.paid key ('charge:'+id) so multiple charges each count toward revenue (a shared 'charge' key would overwrite the prior one).
+              // G1: a paid owner-added charge gets its OWN d.paid key ('charge:'+id) so multiple charges each count toward revenue.
               var _pkKey = (md.kind === 'charge' && md.charge) ? ('charge:' + md.charge) : (md.kind || 'payment');
-              const _slotHad = !!d.paid[_pkKey];   // #339: was this exact payment slot already recorded? (idempotent guard for a webhook replay / the checkout.session.completed + payment_intent.succeeded dual-fire)
+              const _slotHad = !!d.paid[_pkKey];   // #339: was this exact payment slot already recorded? (idempotent guard for a webhook replay / checkout.session.completed + payment_intent.succeeded dual-fire)
+              // #345 dual-checkout: if the slot already holds a DIFFERENT pi (two DISTINCT completed checkouts for the same kind), archive
+              // the prior payment under a pi-suffixed key so its Stripe id stays findable for a refund (never re-counted as revenue).
+              if (_slotHad && d.paid[_pkKey] && d.paid[_pkKey].pi && String(d.paid[_pkKey].pi) !== String(pi)) d.paid[_pkKey + '#' + String(d.paid[_pkKey].pi).slice(0, 40)] = d.paid[_pkKey];
               d.paid[_pkKey] = { at: Date.now(), amountCents: amt, stripe: obj.id || '', pi: pi, hold: (_isSec && md.hold === '1') };
-              // #339 MONEY FIX: revenue_cents is a RUNNING total on the column -- which already carries offline/cash G5 revenue AND
-              // direct-in-Stripe refunds (charge.refunded decrements the COLUMN, never d.paid). So ADD this payment to that running
-              // total iff the slot is newly recorded and the payment is CAPTURED revenue (not an authorized hold, not a refundable
-              // security deposit). Idempotent: a replay / dual-fire for the same slot adds nothing twice. The OLD code recomputed
-              // revenue as a blind SUM over d.paid, which ERASED cash revenue and RESURRECTED refunds not reflected in d.paid.
+              // #339: revenue_cents is a RUNNING total (carries cash/G5 revenue + direct-in-Stripe refunds, neither in d.paid). ADD this
+              // payment iff the slot is newly recorded and it is captured revenue (not a hold, not a refundable security deposit).
               const _addRev = (!_slotHad && !(_isSec && md.hold === '1') && md.kind !== 'security') ? (Number(amt) || 0) : 0;
               const rev = Math.max(0, (Number(row.revenue_cents) || 0) + _addRev);
-              if (md.kind === 'charge' && md.charge && Array.isArray(d.charges)) {   // stamp the specific charge paid so the portal shows it settled + the owner sees it collected
-                for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }   // paidOnline: this charge IS inside revenue_cents (Stripe-settled), so the client must NOT re-add it to _bkEarned
+              if (md.kind === 'charge' && md.charge && Array.isArray(d.charges)) {   // stamp the specific charge paid so the portal shows it settled
+                for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }   // paidOnline: this charge IS inside revenue_cents so the client must NOT re-add it to _bkEarned
               }
-              // CORE-LOOP FIX: reflect the payment in the OWNER'S dashboard, not just the D1 columns. The client reads
-              // paid-state from d.portal.*PaidAt + d.status and adopts a server row only when d._t is newer -- so update
-              // the BLOB (not only the columns) and bump _t, otherwise a real online payment shows as "unpaid" forever.
+              // CORE-LOOP: reflect the payment in the OWNER's dashboard (d.portal.*PaidAt + d.status), not just the columns; bump _t.
               if (!(_isSec && md.hold === '1')) {   // an authorized (uncaptured) security HOLD is not captured money
                 d.portal = d.portal || {};
                 const _pkind = md.kind || 'payment';
                 if (_pkind === 'balance') d.portal.balancePaidAt = d.portal.balancePaidAt || Date.now();
                 else if (_pkind === 'security') d.portal.depositPaidAt = d.portal.depositPaidAt || Date.now();   // captured refundable deposit
-                else if (_pkind !== 'charge') d.portal.reservePaidAt = d.portal.reservePaidAt || Date.now();   // deposit/reserve down-payment or generic payment (a one-off charge is NOT the reserve)
-                if (_pkind !== 'security' && _pkind !== 'charge') d.status = 'Confirmed';   // a real reserve/balance/payment confirms the booking; a security capture or a one-off charge alone does not
+                else if (_pkind !== 'charge') d.portal.reservePaidAt = d.portal.reservePaidAt || Date.now();   // reserve down-payment or generic payment (a one-off charge is NOT the reserve)
+                if (_pkind !== 'security' && _pkind !== 'charge') d.status = 'Confirmed';   // a real reserve/balance/payment confirms; a security capture or a one-off charge alone does not
               }
               d._t = Date.now();
-              await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=?')
-                .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant).run();
+              const _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
+                .bind(JSON.stringify(d), rev, 'confirmed', Date.now(), md.booking, md.tenant, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT
+              _committed = !!(_u && _u.meta && _u.meta.changes);
+            }
+            if (_committed && d) {
               const tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(md.tenant).first();
               if (tr && d.custEmail) { const pr = tenantProfile(tr);
                 const _smartR = !!(pr.settings && pr.settings.flags && pr.settings.flags.smartReceipts);   // Payments G6: the "auto-email a receipt the moment a booking is paid" toggle now fires a REAL itemized receipt (was a dead toggle -> only a one-liner ever sent)
