@@ -1957,7 +1957,7 @@ const PLAN_ASSET_CAP = { starter: 10, pro: 50, enterprise: 150, business: 500, u
 async function _assetCapFor(env, tid) {
   try { const t = await env.DB.prepare('SELECT tier FROM tenants WHERE id=?').bind(tid).first();
     const tier = String((t && t.tier) || '').toLowerCase();
-    return (tier && PLAN_ASSET_CAP[tier] != null) ? PLAN_ASSET_CAP[tier] : 25;   // no tier yet (trial/new) -> a generous default that still blocks runaway abuse
+    return (tier && PLAN_ASSET_CAP[tier] != null) ? PLAN_ASSET_CAP[tier] : 50;   // no tier yet (trial/new) -> match the CLIENT's null-tier fallback (TIERS 'pro' = 50 units) so the two sides never disagree and wrongly 402 a legit add; still blocks runaway abuse
   } catch (e) { return 0; }   // fail OPEN on a DB hiccup -> never wrongly block a legit add
 }
 // PACKAGING (1): the asset cap counts UNITS, not asset ROWS. Every asset carries a stock count in its info blob (info.qty,
@@ -1967,6 +1967,27 @@ async function _tenantAssetUnits(env, tid) {
   try { const rows = ((await env.DB.prepare('SELECT info FROM assets WHERE tenant_id=?').bind(tid).all()).results) || [];
     return rows.reduce(function (s, r) { let q = 1; try { q = Math.max(1, parseInt((_hqJson(r.info, {}) || {}).qty, 10) || 1); } catch (e) { q = 1; } return s + q; }, 0);
   } catch (e) { return -1; }
+}
+// PACKAGING (defense-in-depth): the create-gate only guards the INSERT path. A re-POST of an existing id (UPDATE branch) or a
+// PUT could otherwise RAISE info.qty past the plan cap unchecked (harmless for serving -- the publish-lock + /book re-clamp from
+// the published snapshot -- but it shouldn't be a stored backdoor). This guards an EXISTING asset's qty raise. GRANDFATHERED:
+// same-or-lower qty (rename/reprice/reduce) NEVER blocks; only a qty INCREASE that pushes total units over cap does. FAIL-OPEN on
+// any DB hiccup so a legit edit is never wrongly blocked. Returns an error string to 402 with, or null to allow.
+async function _assetQtyRaiseBlocked(env, tid, assetId, body) {
+  try {
+    const _cap = await _assetCapFor(env, tid);
+    if (!(_cap > 0)) return null;                                            // uncapped plan -> never block
+    const _ni = (body && body.info && typeof body.info === 'object') ? body.info : _hqJson(body && body.info, null);
+    if (!_ni) return null;                                                   // this write isn't setting info -> no qty change -> allow
+    const _newQty = Math.max(1, parseInt(_ni.qty, 10) || 1);
+    const _cur = await env.DB.prepare('SELECT info FROM assets WHERE id=? AND tenant_id=?').bind(assetId, tid).first();
+    const _oldQty = Math.max(1, parseInt((_hqJson(_cur && _cur.info, {}) || {}).qty, 10) || 1);
+    if (_newQty <= _oldQty) return null;                                     // GRANDFATHER: same or reducing qty is always allowed
+    const _totalUnits = await _tenantAssetUnits(env, tid);                   // -1 on DB error
+    if (_totalUnits < 0) return null;                                        // fail OPEN
+    if (((_totalUnits - _oldQty) + _newQty) > _cap) return 'Your plan allows up to ' + _cap + ' units - upgrade to raise this quantity.';
+    return null;
+  } catch (e) { return null; }                                              // fail OPEN -> never wrongly block a legit edit
 }
 // PACKAGING (3, FAIR variant): only the units of an asset PAST the cap line need paid unlocks -- a straddling asset's
 // under-cap units are always free. Given an ordered {name,qty} list (publish order) + cap, return how many of `name`'s
@@ -4461,7 +4482,7 @@ function doReset(){
           if (act === 'gold' || act === 'free') {   // 'admin' is retired entirely -- comp_grants can never confer platform-owner (owner authority is EMAIL-ONLY, see resolveSession); /api/admin/comp also only accepts gold/free
             if (!em) return err(400, 'This member has no owner email to comp.');
             await env.DB.prepare('INSERT INTO comp_grants (email,role,granted_by,granted_at) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET role=?,granted_at=?').bind(em, act, 'atlas-hq', Date.now(), act, Date.now()).run();
-            if (act !== 'free') await env.DB.prepare("UPDATE tenants SET plan='active', tier='unlimited', updated_at=? WHERE id=?").bind(Date.now(), tid).run();   // comped Gold = full access -> tier 'unlimited' so the asset cap is uncapped (a null tier silently fell back to the starter cap of 25)
+            await env.DB.prepare("UPDATE tenants SET plan='active', tier='unlimited', updated_at=? WHERE id=?").bind(Date.now(), tid).run();   // comped Gold OR Free = full access -> tier 'unlimited' so BOTH asset + location caps are uncapped, matching the client (freecomp/gold both grant unlimited). comp_grants above still records the true gold/free role, so free-comp perks are unchanged -- this ONLY lifts the cap (a null/starter tier used to wrongly 402 a legit free comp past 25 units / 99 locations)
           } else if (act === 'tier') {
             const tier = String(b.tier || ''); if (!PLAN_PRICE_CENTS[tier]) return err(400, 'Unknown tier.');
             await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?").bind(tier, Date.now(), tid).run();
@@ -5728,7 +5749,15 @@ function doReset(){
           { t: 'bookings', cols: '*', where: 'tenant_id=?', binds: [_tid] },
           { t: 'customers', cols: '*', where: 'tenant_id=?', binds: [_tid] },
           { t: 'charges', cols: '*', where: 'tenant_id=?', binds: [_tid] },
-          { t: 'ledger', cols: '*', where: 'tenant_id=?', binds: [_tid] }
+          { t: 'ledger', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'promos', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'promo_uses', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'signatures', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'consents', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'suppressions', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'verified_customers', cols: '*', where: 'tenant_id=?', binds: [_tid] },
+          { t: 'support_tickets', cols: '*', where: 'tenant_id=?', binds: [_tid] }
+          // NOTE: 'integrations' is deliberately EXCLUDED -- those rows hold ENCRYPTED third-party API secrets (Stripe/tracker/etc.); a downloadable portability file must never carry credentials. All the rows above are the tenant's OWN operating + legal data (bookings/customers/assets/money/e-sign/consent/suppression/KYC/promos/tickets) and are scoped by tenant_id only. _dumpTables try/catches per table, so a table absent in a given deployment simply exports as [].
         ]);
         // reviews are stored INSIDE booking data blobs (d.review), not a separate table -- surface them explicitly for portability.
         const reviews = [];
@@ -6361,6 +6390,7 @@ function doReset(){
             const clash = await env.DB.prepare(`SELECT tenant_id FROM ${coll} WHERE id=?`).bind(rid).first();
             if (clash) {
               if (clash.tenant_id === ctx.tenant_id) {   // same tenant re-POSTing the same id -> UPDATE, don't duplicate or 500
+                if (coll === 'assets') { const _qb = await _assetQtyRaiseBlocked(env, ctx.tenant_id, rid, body); if (_qb) return err(402, _qb); }   // PACKAGING: a re-POST-as-UPDATE can't raise qty past the plan cap (grandfathered: rename/reprice/reduce still fine; fail-open)
                 const uCols = cols.slice(), uVals = vals.slice(); if (hasUpd) { uCols.push('updated_at'); uVals.push(now); }   // customers has no updated_at column
                 if (uCols.length) await env.DB.prepare(`UPDATE ${coll} SET ${uCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...uVals, rid, ctx.tenant_id).run();
                 if (coll === 'bookings' && body.data) await _carryVerify(env, ctx.tenant_id, body.data);   // Customers C: index the verified person on the common mirror (re-POST -> UPDATE) path
@@ -6402,6 +6432,7 @@ function doReset(){
           if (coll === 'bookings' && body.data && typeof body.data === 'object') { try { const _curP = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(id, ctx.tenant_id).first(); if (_curP) { const _cdP = jparse(_curP.data, {}); if (Number(body.data._t || 0) < Number(_cdP._t || 0)) delete body.data; } } catch (e) {} }
           const { cols, vals } = patchFields(coll, body);
           if (!cols.length) return json({ ok: true });          // nothing to change
+          if (coll === 'assets') { const _qb = await _assetQtyRaiseBlocked(env, ctx.tenant_id, id, body); if (_qb) return err(402, _qb); }   // PACKAGING: a PUT can't raise qty past the plan cap (grandfathered + fail-open)
           const setCols = cols.slice(), setVals = vals.slice();
           if (hasUpd) { setCols.push('updated_at'); setVals.push(Date.now()); }
           await env.DB.prepare(`UPDATE ${coll} SET ${setCols.map(c => c + '=?').join(',')} WHERE id=? AND tenant_id=?`).bind(...setVals, id, ctx.tenant_id).run();
@@ -6786,8 +6817,10 @@ function doReset(){
             const _from = String(_smsCfg.fromNumber || '').trim();
             if (!_smsCfg.enabled || !_from) return json({ ok: false, emailSent: 0, smsSent: 0, smsSkipped: 0, reason: 'sms_not_configured', message: 'Turn on SMS and set a sending number in Settings first.' });
             if (!await rateLimit(env, 'outreachsms:' + ctx.tenant_id, 12, 3600000)) return err(429, 'You have sent a lot of texts this hour - please wait a bit.');
-            const _msg = String((_peek && (_peek.body || _peek.message || _peek.smsBody)) || '').slice(0, 1500).trim();
+            const _msg = String((_peek && (_peek.body || _peek.message || _peek.smsBody)) || '').slice(0, 1450).trim();
             if (!_msg) return err(400, 'Write a message to text.');
+            // TCPA/CTIA: every marketing text MUST carry an opt-out. The dashboard promises "every text ends with Reply STOP to opt out", so ENFORCE it here server-side -- append the STOP line whenever the owner's body doesn't already include one. Room was reserved by the 1450 slice above so the suffix survives the per-send 1500 cap; sendSms adds no STOP of its own, so there's no double-append.
+            const _msgOut = /\bstop\b/i.test(_msg) ? _msg : (_msg + ' Reply STOP to opt out.');
             let _rows = [];
             try { _rows = ((await env.DB.prepare('SELECT id,data FROM bookings WHERE tenant_id=? LIMIT 5000').bind(ctx.tenant_id).all()).results) || []; } catch (e) { _rows = []; }
             const _seen = {}, _recips = [];
@@ -6803,7 +6836,7 @@ function doReset(){
               if (_recips.length >= 500) break;                                                   // hard cap per send (parity with the email branch)
             }
             let _smsSent = 0, _smsSkipped = 0;
-            const _res = await _sendChunked(_recips, 8, (r) => sendSms(env, ctx.tenant_id, { to: r.phone, from: _from, body: _fillTokens(_msg, r, _pr).slice(0, 1500) }));   // (c) sendSms honors the STOP-suppression list per recipient -> a suppressed (or unreachable) number returns {sent:false} and is counted as skipped
+            const _res = await _sendChunked(_recips, 8, (r) => sendSms(env, ctx.tenant_id, { to: r.phone, from: _from, body: _fillTokens(_msgOut, r, _pr).slice(0, 1500) }));   // (c) sendSms honors the STOP-suppression list per recipient -> a suppressed (or unreachable) number returns {sent:false} and is counted as skipped
             for (const _x of _res) { if (_x && _x.sent) _smsSent++; else _smsSkipped++; }
             await audit(env, ctx, req, 'outreach.sms', { total: _recips.length, sent: _smsSent, skipped: _smsSkipped });
             return json({ ok: true, emailSent: 0, smsSent: _smsSent, smsSkipped: _smsSkipped, total: _recips.length });
