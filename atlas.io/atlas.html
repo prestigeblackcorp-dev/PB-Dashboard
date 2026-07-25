@@ -1839,6 +1839,7 @@ const Atlas = (function(){
       if(!b.status && row.status) b.status=row.status;
       if(!b.phone && b.custPhone) b.phone=b.custPhone;                       // website intake stores custPhone; the owner view reads b.phone
       if(b._t==null && Number.isFinite(row.updated_at)) b._t=row.updated_at; // let the newest-wins merge see a server timestamp
+      if(Number.isFinite(row.revenue_cents)) b.revCents=row.revenue_cents;   // Payments G1: the SERVER-reconciled collected revenue (reserve+balance+online charges, nets refunds). The P&L prefers this so the owner's books TIE TO STRIPE; falls back to accrual when absent (offline/unpaid).
     }
     return b;
   }catch(e){ return {id:row.id}; } }
@@ -4259,7 +4260,7 @@ const Atlas = (function(){
   // Realized revenue for a committed booking = the rental total (accrual) + any add-on charges collected. Used by every
   // REVENUE/INCOME rollup (Overview KPI, Analytics, Reports, source split, drill-downs, tax/QuickBooks) so they all tie out.
   // NOTE: customer "spend" + loyalty deliberately stay on _bkTotal (rental only) -- you don't reward points on a damage fee.
-  function _bkEarned(b){ return _bkTotal(b) + _collectedCharges(b); }
+  function _bkEarned(b){ if(b && typeof b.revCents==='number' && b.revCents>0) return _r2(b.revCents/100); return _bkTotal(b) + _collectedCharges(b); }   // Payments G1/G2/G3: when the server has reconciled money on this booking, revenue = ACTUALLY COLLECTED (reserve+balance+online charges, NET of refunds) so the books tie to Stripe; a partial pay shows the partial, a refund lowers it. revenue_cents already includes portal-paid charges, so we do NOT re-add _collectedCharges here. Offline/unpaid (no revCents) fall back to the accrual total + collected charges, unchanged.
   // ONE basis for "realized business". A booking counts toward revenue, occupancy + reconciled reports only once it is
   // COMMITTED (accepted). Pending = pipeline -- shown ONLY in the Upcoming KPI + the Bookings tab, never counted as earned
   // revenue. Cancelled = excluded everywhere. Every money/util/report surface routes through this so they all tie out.
