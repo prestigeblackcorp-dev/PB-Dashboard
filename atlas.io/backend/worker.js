@@ -1316,11 +1316,22 @@ function securityFor(money, total) {
   if (h.type === 'percent') return Math.max(0, total * (Number(h.value) || 0) / 100);
   return 0;
 }
-function priceQuote(money, publishedAssets, assetName, periods) {
+function _periodMsOf(u) { return u === 'hour' ? 3600000 : (u === 'week' ? 604800000 : ((u === 'month' || u === 'pmonth') ? 2592000000 : 86400000)); }   // Booking G5: ms for an explicit period unit (mirror the client's _periodMsOf) -- pday/day/unknown -> day
+function priceQuote(money, publishedAssets, assetName, periods, extras) {
   var p = Math.max(1, Math.min(3650, parseInt(periods, 10) || 1));
   var a = (publishedAssets || []).filter(function (x) { return x && x.name === assetName; })[0];
   var rate = (a && Number(a.rate) > 0) ? Number(a.rate) : (Number(money.baseRate) || 0);
-  var gross = rate * p;
+  // Booking G5: paid EXTRAS. Prices are SERVER-AUTHORITATIVE (the caller resolves each id against money.extras -- never trusts a client-sent price). Mirror the client calcQuote exLines exactly so the public estimate == what is charged.
+  var _bkMs = p * _periodMsOf(money.rateModel || 'day');
+  var _exLines = [], _exTotal = 0;
+  (extras || []).forEach(function (x) {
+    var each = (Number(x.price) || 0) * (Number(x.qty) || 1), amt;
+    if (x.per === 'unit') amt = each * p;
+    else if (x.per === 'hour' || x.per === 'pday' || x.per === 'week' || x.per === 'pmonth') amt = each * Math.max(1, Math.ceil(_bkMs / _periodMsOf(x.per)));
+    else amt = each;
+    _exLines.push({ name: x.name, amt: amt }); _exTotal += amt;
+  });
+  var gross = rate * p + _exTotal;
   // AUTO long-term discount (mirror the dashboard's calcQuote so the live site charges what the owner's engine promises).
   var rm = money.rateModel || 'day';
   var wkP = (rm === 'hour' ? 168 : rm === 'week' ? 2 : rm === 'month' ? 999999 : 7), moP = (rm === 'hour' ? 672 : rm === 'week' ? 4 : rm === 'month' ? 12 : 28);
@@ -1329,7 +1340,7 @@ function priceQuote(money, publishedAssets, assetName, periods) {
   else if (money.weeklyDisc && p >= wkP) disc = gross * money.weeklyDisc / 100;
   disc = Math.max(0, Math.min(disc, gross));
   var c = function (x) { return Math.round((Number(x) || 0) * 100); };
-  var q = { rateCents: c(rate), periods: p, grossCents: c(gross), subtotalCents: c(gross - disc), taxPct: Number(money.tax) || 0, discountCents: c(disc) };
+  var q = { rateCents: c(rate), periods: p, grossCents: c(gross), subtotalCents: c(gross - disc), taxPct: Number(money.tax) || 0, discountCents: c(disc), extrasCents: c(_exTotal), extrasLines: _exLines.map(function (l) { return { name: l.name, amountCents: c(l.amt) }; }) };   // G5: extras itemized (cents) for the receipt + dashboard
   return _reprice(money, q);
 }
 // Recompute FEES (owner money-rules: card %, delivery, cleaning), tax + total + deposit from the current subtotal. Mirrors the
@@ -1363,6 +1374,8 @@ function _quoteDollars(q) {
   q.balance = Math.max(0, q.total - q.dueNow);
   q.security = (q.securityCents || 0) / 100;   // #290: refundable security deposit amount (separate line; hold or charge per q.securityHold)
   q.hold = q.security;   // #290: also expose as `hold` (the dashboard/portal "refundable hold" field) so it displays; collected SEPARATELY, never folded into q.total or charged at public booking
+  q.extrasTotal = (q.extrasCents || 0) / 100;   // G5: dollar-named extras total + itemized lines the dashboard/receipt read (parity with client calcQuote extrasLines/extrasTotal)
+  q.extrasLines = (q.extrasLines || []).map(function (l) { return { name: l.name, amt: (l.amountCents || 0) / 100 }; });
   return q;
 }
 // CORE-LOOP: OWNER-created (manual) bookings store a DOLLAR-shaped quote from the client calcQuote (total/dueNow/hold/...),
@@ -2159,7 +2172,10 @@ async function _lookupVerified(env, tenantId, email) {
     const e = String(email || '').trim().toLowerCase(); if (!e || e.indexOf('@') < 1) return null;
     const row = await env.DB.prepare("SELECT name,verified_at,dl_expiry FROM verified_customers WHERE tenant_id=? AND email=?").bind(tenantId, e).first();
     if (!row) return null;
-    if (row.dl_expiry && Number(row.dl_expiry) > 0 && Number(row.dl_expiry) < Date.now()) return null;   // DL expired -> must re-verify
+    // C3: never auto-carry FOREVER. Use the real DL expiry when known; when unknown (0), cap the carry to 1 year from the
+    // verification date so a customer must re-verify at least annually (matches typical KYC re-check windows).
+    const _exp = (row.dl_expiry && Number(row.dl_expiry) > 0) ? Number(row.dl_expiry) : ((Number(row.verified_at) || 0) + 31536000000);
+    if (_exp && _exp < Date.now()) return null;   // expired (real DL date, or the 1-year unknown-expiry cap) -> must re-verify
     return { verified: true, name: row.name || '', dl_expiry: Number(row.dl_expiry) || 0 };
   } catch (e) { return null; }
 }
@@ -3367,8 +3383,9 @@ function doReset(){
             brand: { color: prof.brand.color || '', logo: prof.brand.logo || '', initial: prof.brand.initial || (prof.name || 'A')[0] },
             headline: pubSite.headline || '', about: pubSite.about || '',
             unit: cfg.unit || 'day', noun: cfg.noun || 'item',
-            assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '', minLen: Number(a.minLen) || 0, maxLen: Number(a.maxLen) || 0 }; }),
-            config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false, rateModel: prof.money.rateModel || 'day', weeklyDisc: Number(prof.money.weeklyDisc) || 0, monthlyDisc: Number(prof.money.monthlyDisc) || 0, rules: (prof.money.rules || []).filter(function (r) { return r && r.on; }).map(function (r) { return { name: String(r.name || 'Fee').slice(0, 40), kind: r.kind === 'percent' ? 'percent' : 'flat', value: Number(r.value) || 0, taxable: !!r.taxable }; }) },
+            assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '', minLen: Number(a.minLen) || 0, maxLen: Number(a.maxLen) || 0, extraIds: Array.isArray(a.extraIds) ? a.extraIds : null }; }),   // G5: extraIds = subset of extras this asset offers (null/absent = all)
+            extras: ((prof.money && prof.money.extras) || []).map(function (e) { return { id: String(e.id || ''), name: String(e.name || 'Extra').slice(0, 60), price: Number(e.price) || 0, per: String(e.per || 'flat') }; }),   // G5: paid add-on catalog for the public form. The /book intake RE-RESOLVES each selected id against this same server list, so a client can never forge an extra price.
+            config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false, collectDelivery: !!(cfg.collectDelivery || (cfg.fields && cfg.fields.delivery)), rateModel: prof.money.rateModel || 'day', weeklyDisc: Number(prof.money.weeklyDisc) || 0, monthlyDisc: Number(prof.money.monthlyDisc) || 0, rules: (prof.money.rules || []).filter(function (r) { return r && r.on; }).map(function (r) { return { name: String(r.name || 'Fee').slice(0, 40), kind: r.kind === 'percent' ? 'percent' : 'flat', value: Number(r.value) || 0, taxable: !!r.taxable }; }) },
             promos: (function () { var _t = new Date().toISOString().slice(0, 10); return ((prof.settings && prof.settings.promos) || []).filter(function (p) { return p && p.active !== false && !p.personal && !p.customer && !p.cust && !(p.expiry && _t > p.expiry) && !(p.cap && (p.used || 0) >= p.cap); }).map(function (p) { return { code: String(p.code || '').toUpperCase(), type: p.type === 'pct' ? 'pct' : 'amt', value: Number(p.value) || 0, minDays: Number(p.minDays) || 0 }; }); })(),
             analytics: { ga: String((cfg.analytics && cfg.analytics.ga) || '').slice(0, 40), pixel: String((cfg.analytics && cfg.analytics.pixel) || '').slice(0, 40) },
             capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } });
@@ -3396,7 +3413,8 @@ function doReset(){
           const assetName = (vStr(b.asset, 160) && pubAssets.some(function (a) { return a.name === b.asset; })) ? b.asset : (pubAssets[0] && pubAssets[0].name);
           if (!assetName) return err(400, 'Please choose an available option.');
           const periods = Math.max(1, Math.min(3650, parseInt(b.periods, 10) || 1));
-          const startTs = vInt(b.start) ? b.start : (Date.parse(String(b.start || '')) || Date.now());
+          let startTs = vInt(b.start) ? b.start : (Date.parse(String(b.start || '')) || Date.now());
+          { const _tm = /^(\d{1,2}):(\d{2})$/.exec(String(b.time || '')); if (_tm && !vInt(b.start)) startTs += (Math.min(23, parseInt(_tm[1], 10)) * 3600000 + Math.min(59, parseInt(_tm[2], 10)) * 60000); }   // Booking G5: fold the pickup TIME-of-day into the date-only start (a website booking was always midnight before). Skip if the client already sent a full ms timestamp.
           const unitMs = ({ hour: 3600000, day: 86400000, week: 604800000, month: 2592000000 })[cfg.unit || 'day'] || 86400000;
           const endTs = startTs + periods * unitMs;
           const now = Date.now();
@@ -3419,7 +3437,23 @@ function doReset(){
             const _clash = (_act.results || []).some(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return d && d.asset === assetName && Number(r.starts) < endTs && Number(r.ends) > startTs; });
             if (_clash) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
           } catch (e) {}
-          const q = priceQuote(prof.money, pubAssets, assetName, periods);
+          // Booking G5: resolve the customer's selected EXTRAS SERVER-SIDE against the tenant catalog + the asset's allow-list.
+          // Prices come ONLY from prof.money.extras -- a client-sent price/name is ignored, so nobody can forge a $0 or negative extra.
+          const _resolvedExtras = [];
+          if (Array.isArray(b.extras) && b.extras.length) {
+            const _cat = (prof.money && prof.money.extras) || [];
+            const _allow = Array.isArray(_pa.extraIds) ? _pa.extraIds : null;
+            b.extras.slice(0, 20).forEach(function (sel) {
+              const _id = String((sel && (sel.id != null ? sel.id : sel)) || '');
+              if (!_id) return;
+              if (_allow && _allow.indexOf(_id) < 0) return;   // this asset does not offer that extra
+              const _e = _cat.filter(function (x) { return String(x.id) === _id; })[0];
+              if (!_e) return;
+              const _qty = Math.max(1, Math.min(20, parseInt(sel && sel.qty, 10) || 1));
+              _resolvedExtras.push({ id: _id, name: String(_e.name || 'Extra').slice(0, 60), price: Number(_e.price) || 0, per: String(_e.per || 'flat'), qty: _qty });
+            });
+          }
+          const q = priceQuote(prof.money, pubAssets, assetName, periods, _resolvedExtras);
           // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount off the pre-tax subtotal, ON TOP of any auto discount).
           let promoCode = '', _bumpPromo = '';
           if (vStr(b.promo, 40)) {
@@ -3449,6 +3483,7 @@ function doReset(){
           let _vc = null; try { await ensurePlatformSchema(env); _vc = await _lookupVerified(env, prof.id, b.email); } catch (e) {}   // Customers C: returning, already-ID-verified customer (valid DL) -> auto-carry so they are NOT asked to re-upload
           const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
             asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined,
+            extras: _resolvedExtras.length ? _resolvedExtras : undefined, pickupTime: /^\d{1,2}:\d{2}$/.test(String(b.time || '')) ? String(b.time) : undefined,   // G5: paid extras (server-priced) + pickup time-of-day
             idVerified: _vc ? true : undefined, idVerifiedCarriedAt: _vc ? now : undefined };   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification.
           try {
             await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -7267,18 +7302,26 @@ var _promo=null;
 function applyPromo(){var c=(el('promo')?el('promo').value:'').trim().toUpperCase();var m=el('promsg');var per=Math.max(1,parseInt(el('per').value,10)||1);if(!c){_promo=null;if(m)m.textContent='';return qt()}var p=(D.promos||[]).filter(function(x){return x.code===c})[0];if(!p){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Code not found'}return qt()}if(p.minDays&&per<p.minDays){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Needs at least '+p.minDays+' '+esc(D.unit)+(p.minDays>1?'s':'')}return qt()}_promo=p;if(m){m.style.color='#0a0';m.textContent=(p.type==='pct'?(p.value+'% off'):('$'+p.value+' off'))+' applied'}qt()}
 function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var p=Math.max(1,parseInt(el('per').value,10)||1);var C=D.config||{};var g=(a.rate||0)*p;
 /* AUTO long-term discount -- mirror the worker's priceQuote so the estimate the customer sees equals the amount charged. */
-var rm=C.rateModel||'day';var wkP=(rm==='hour'?168:rm==='week'?2:rm==='month'?999999:7),moP=(rm==='hour'?672:rm==='week'?4:rm==='month'?12:28);var ad=0;if(C.monthlyDisc&&p>=moP)ad=g*C.monthlyDisc/100;else if(C.weeklyDisc&&p>=wkP)ad=g*C.weeklyDisc/100;ad=Math.max(0,Math.min(ad,g));var afterAuto=g-ad;
+var rm=C.rateModel||'day';var wkP=(rm==='hour'?168:rm==='week'?2:rm==='month'?999999:7),moP=(rm==='hour'?672:rm==='week'?4:rm==='month'?12:28);var ex=_exCost(p),gA=g+ex;var ad=0;if(C.monthlyDisc&&p>=moP)ad=gA*C.monthlyDisc/100;else if(C.weeklyDisc&&p>=wkP)ad=gA*C.weeklyDisc/100;ad=Math.max(0,Math.min(ad,gA));var afterAuto=gA-ad;
 /* promo -- applied on the post-auto subtotal, same order as the worker. */
 var pd=0;if(_promo&&!(_promo.minDays&&p<_promo.minDays)){pd=_promo.type==='pct'?afterAuto*_promo.value/100:_promo.value;pd=Math.max(0,Math.min(afterAuto,pd))}var sub=afterAuto-pd;
 /* owner fees (money rules) on the discounted subtotal -- mirror _reprice. */
 var fees=0,taxableFees=0,feeRows='';(C.rules||[]).forEach(function(r){if(!r)return;var amt=(r.kind==='percent'?sub*(Number(r.value)||0)/100:(Number(r.value)||0));if(amt<=0)return;fees+=amt;if(r.taxable)taxableFees+=amt;feeRows+='<div class=row><span>'+esc(r.name||'Fee')+'</span><span>'+money(amt*100)+'</span></div>';});
 var t=(sub+taxableFees)*(C.tax||0)/100;var total=sub+fees+t;
-el('rate').textContent=a.rate?('At '+money(a.rate*100)+' / '+D.unit):'';el('qz').innerHTML='<div class=row><span>'+p+' '+esc(D.unit)+(p>1?'s':'')+'</span><span>'+money(g*100)+'</span></div>'+(ad>0?('<div class=row><span>Discount</span><span>-'+money(ad*100)+'</span></div>'):'')+(pd>0?('<div class=row><span>Promo</span><span>-'+money(pd*100)+'</span></div>'):'')+feeRows+(C.tax?('<div class=row><span>Tax '+C.tax+'%</span><span>'+money(t*100)+'</span></div>'):'')+'<div class=tot><span>Estimated total</span><span>'+money(total*100)+'</span></div>'}
+el('rate').textContent=a.rate?('At '+money(a.rate*100)+' / '+D.unit):'';el('qz').innerHTML='<div class=row><span>'+p+' '+esc(D.unit)+(p>1?'s':'')+'</span><span>'+money(g*100)+'</span></div>'+(ex>0?('<div class=row><span>Add-ons</span><span>'+money(ex*100)+'</span></div>'):'')+(ad>0?('<div class=row><span>Discount</span><span>-'+money(ad*100)+'</span></div>'):'')+(pd>0?('<div class=row><span>Promo</span><span>-'+money(pd*100)+'</span></div>'):'')+feeRows+(C.tax?('<div class=row><span>Tax '+C.tax+'%</span><span>'+money(t*100)+'</span></div>'):'')+'<div class=tot><span>Estimated total</span><span>'+money(total*100)+'</span></div>'}
 function renderAssets(){var g=el('assetGrid');if(!g)return;var A=D.assets||[];if(!A.length){g.innerHTML='<div class=muted>No options are available right now.</div>';return}g.innerHTML=A.map(function(a,i){var r=(a.minLen||a.maxLen)?('<div class=acard-rule>'+(a.minLen&&a.maxLen?(a.minLen+'-'+a.maxLen+' '+esc(D.unit)+'s'):(a.minLen?('min '+a.minLen+' '+esc(D.unit)+(a.minLen>1?'s':'')):('max '+a.maxLen+' '+esc(D.unit)+(a.maxLen>1?'s':''))))+'</div>'):'';return '<div class=acard onclick="selAsset('+i+')">'+(a.photo?'<img class=acard-ph src="'+esc(a.photo)+'" alt="">':'<div class="acard-ph acard-noph">'+esc(String(a.type||a.name||'?').slice(0,1).toUpperCase())+'</div>')+'<div class=acard-b><div class=acard-nm>'+esc(a.name)+'</div>'+(a.type?'<div class=acard-ty>'+esc(a.type)+'</div>':'')+(a.desc?'<div class=acard-ds>'+esc(a.desc)+'</div>':'')+'<div class=acard-pr>'+(a.rate?(money(a.rate*100)+' / '+esc(D.unit)):'')+'</div>'+r+'</div></div>'}).join('');selAsset(0)}
-function selAsset(i){var A=D.assets||[];var a=A[i];if(!a)return;el('asset').value=a.name;var cs=document.querySelectorAll('#assetGrid .acard');for(var k=0;k<cs.length;k++){if(cs[k].classList)cs[k].classList.toggle('sel',k===i)}qt();checkAvail()}
+function selAsset(i){var A=D.assets||[];var a=A[i];if(!a)return;el('asset').value=a.name;var cs=document.querySelectorAll('#assetGrid .acard');for(var k=0;k<cs.length;k++){if(cs[k].classList)cs[k].classList.toggle('sel',k===i)}renderExtras();qt();checkAvail()}
 var _avT=null;function checkAvail(){var av=el('avail');if(!av)return;var an=el('asset')?el('asset').value:'',st=el('st')?el('st').value:'',per=el('per')?el('per').value:'1';if(!an||!st){av.textContent='';av.className='avail';return}av.textContent='Checking availability...';av.className='avail avail-wait';if(_avT)clearTimeout(_avT);_avT=setTimeout(function(){fetch('/api/public/'+S+'/availability?asset='+encodeURIComponent(an)+'&start='+encodeURIComponent(st)+'&periods='+encodeURIComponent(per)).then(function(r){return r.json()}).then(function(j){if(j.available===true){av.textContent='\\u2713 '+(j.reason||'Available');av.className='avail avail-ok'}else if(j.available===false){av.textContent='\\u2715 '+(j.reason||'Not available');av.className='avail avail-no'}else{av.textContent='';av.className='avail'}}).catch(function(){av.textContent='';av.className='avail'})},350)}
-function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value,promo:el('promo')?el('promo').value:''};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
-fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;try{var _an=j.analytics||{};if(_an.ga){var _g=document.createElement('script');_g.async=true;_g.src='https://www.googletagmanager.com/gtag/js?id='+encodeURIComponent(_an.ga);document.head.appendChild(_g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag('js',new Date());gtag('config',_an.ga)}if(_an.pixel){!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init',_an.pixel);fbq('track','PageView')}}catch(e){}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><div id=assetGrid class=agrid></div><input type=hidden id=asset><div id=rate class=muted style="margin-top:6px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput="qt();checkAvail()"><label>Start date</label><input id=st type=date onchange=checkAvail()><div id=avail class=avail></div><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+((j.promos&&j.promos.length)?'<label>Promo code</label><div style="display:flex;gap:6px"><input id=promo style="flex:1;text-transform:uppercase" placeholder="Optional"><button type=button class=btn style="width:auto;padding:0 14px" onclick=applyPromo()>Apply</button></div><div id=promsg style="font-size:12px;margin-top:4px"></div>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';renderAssets();qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
+/* Booking G5: paid extras on the public form. Prices shown here are advisory -- the /book intake re-prices server-side. */
+var _selEx={};
+function _exOffered(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var all=D.extras||[];if(!a.extraIds)return all;return all.filter(function(e){return a.extraIds.indexOf(e.id)>=0})}
+function _exPerLbl(p){return p==='flat'?'':(p==='unit'?('/ '+esc(D.unit)):(p==='hour'?'/hr':(p==='pday'?'/day':(p==='week'?'/wk':(p==='pmonth'?'/mo':'')))))}
+function renderExtras(){var w=el('exWrap');if(!w)return;var ofr=_exOffered();if(!ofr.length){w.innerHTML='';return}w.innerHTML='<label>Add-ons</label>'+ofr.map(function(e){return '<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin:5px 0"><input type=checkbox value="'+esc(e.id)+'"'+(_selEx[e.id]?' checked':'')+' onchange="_toggleEx(this)"><span style="flex:1">'+esc(e.name)+'</span><span class=muted>'+money(e.price*100)+' '+esc(_exPerLbl(e.per))+'</span></label>'}).join('')}
+function _toggleEx(cb){if(cb.checked)_selEx[cb.value]=1;else delete _selEx[cb.value];qt()}
+function _selExArr(){return Object.keys(_selEx).map(function(id){return {id:id,qty:1}})}
+function _exCost(periods){var ofr=_exOffered(),rm=(D.config||{}).rateModel||'day',pms=(rm==='hour'?3600000:(rm==='week'?604800000:(rm==='month'?2592000000:86400000))),bkMs=periods*pms,t=0;ofr.forEach(function(e){if(!_selEx[e.id])return;var each=e.price,amt;if(e.per==='unit')amt=each*periods;else if(e.per==='hour'||e.per==='pday'||e.per==='week'||e.per==='pmonth'){var epm=(e.per==='hour'?3600000:(e.per==='week'?604800000:(e.per==='pmonth'?2592000000:86400000)));amt=each*Math.max(1,Math.ceil(bkMs/epm))}else amt=each;t+=amt});return t}
+function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value,time:el('stt')?el('stt').value:'',deliveryAddr:el('dlv')?el('dlv').value:'',extras:_selExArr(),promo:el('promo')?el('promo').value:''};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
+fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;try{var _an=j.analytics||{};if(_an.ga){var _g=document.createElement('script');_g.async=true;_g.src='https://www.googletagmanager.com/gtag/js?id='+encodeURIComponent(_an.ga);document.head.appendChild(_g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag('js',new Date());gtag('config',_an.ga)}if(_an.pixel){!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init',_an.pixel);fbq('track','PageView')}}catch(e){}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><div id=assetGrid class=agrid></div><input type=hidden id=asset><div id=rate class=muted style="margin-top:6px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput="qt();checkAvail()"><label>Start date</label><input id=st type=date onchange=checkAvail()><label>Pickup time</label><input id=stt type=time value="10:00" onchange=qt()><div id=avail class=avail></div><div id=exWrap></div><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+(j.config.collectDelivery?'<label>Delivery address</label><input id=dlv placeholder="Where should we deliver? (optional)">':'')+((j.promos&&j.promos.length)?'<label>Promo code</label><div style="display:flex;gap:6px"><input id=promo style="flex:1;text-transform:uppercase" placeholder="Optional"><button type=button class=btn style="width:auto;padding:0 14px" onclick=applyPromo()>Apply</button></div><div id=promsg style="font-size:12px;margin-top:4px"></div>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';renderAssets();qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
 `;
   return _pageDoc('Book', color, body, js);
 }
