@@ -2462,24 +2462,42 @@ const Atlas = (function(){
     if(cm.sentMonth!==_mkey){ cm.sentThisMonth=0; if(cm.sms) cm.sms.sentThisMonth=0; cm.sentMonth=_mkey; }
     var plan=EMAIL_PLANS.filter(function(p){return p.id===cm.plan;})[0]||EMAIL_PLANS[0];
     if(emailN && cm.sentThisMonth+emailN>plan.cap){ toast('That would pass your '+plan.name+' email limit ('+plan.cap.toLocaleString()+'/mo). Upgrade to send.'); openEmailPlans(); return; }
-    cm.sentThisMonth+=emailN;   // G6: only EMAIL actually goes out via broadcast. SMS is not wired to broadcast, so we no longer count/log/record phantom texts as "sent".
-    var audLabel={all:'All customers',active:'Active renters',past:'Past customers'}[aud]||aud;
-    var parts=[]; if(emailN) parts.push(emailN+' email'+(emailN===1?'':'s'));
-    if(!parts.length){ toast(smsN? ('SMS broadcast is not available yet \u2014 send an email, or email this customer directly from their profile.') : 'Nothing to send'); return; }   // an SMS-only campaign has nothing that actually sends; individual email IS wired (Email this customer)
-    cm.campaigns.unshift({ subject:subject||body.slice(0,40), audience:audLabel, count:emailN, channel:'email', at:Date.now() });   // records only what truly went out
-    _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via email to '+parts.join(' + ')+' ('+audLabel+')',{count:emailN,channel:'email'}); save(); closeModal(); renderSet();
-    // LIVE: actually send the email to the eligible audience via the worker (suppression + one-tap unsubscribe applied server-side).
-    // SMS is platform-level and not wired to broadcast here, so it stays a preview -- we never claim a text went out.
+    // ---- what will ACTUALLY send this campaign: EMAIL (client list) and/or SMS (worker-derived consented list) ----
     var _live=(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf);
-    var _list=(channel==='sms')?[]:_emailAudienceList(aud);
-    if(_live && emailN && _list.length){
+    var doEmail = emailN>0;                                   // email recipients minus opt-outs
+    var wantSms = (channel!=='email') && smsN>0;              // SMS only when asked AND at least one consented number exists (channel==='sms'+0 already returned above)
+    if(!doEmail && !wantSms){ toast(channel==='email'?'Nothing to send':'No one to send to yet'); return; }
+    var audLabel={all:'All customers',active:'Active renters',past:'Past customers'}[aud]||aud;
+    // EMAIL: count + record only what truly goes out (unchanged send behavior)
+    if(doEmail){
+      cm.sentThisMonth+=emailN;
+      cm.campaigns.unshift({ subject:subject||body.slice(0,40), audience:audLabel, count:emailN, channel:'email', at:Date.now() });
+      _logEvent('email','Broadcast "'+(subject||body.slice(0,40))+'" sent via email to '+emailN+' recipient'+(emailN===1?'':'s')+' ('+audLabel+')',{count:emailN,channel:'email'});
+    }
+    save(); closeModal(); renderSet();
+    // LIVE email send to the eligible audience (suppression + one-tap unsubscribe applied server-side).
+    var _list=doEmail?_emailAudienceList(aud):[];
+    if(_live && doEmail && _list.length){
       toast('Sending '+_list.length+' email'+(_list.length===1?'':'s')+'...');
       _api('/api/outreach/send',{method:'POST',body:{subject:subject,body:body,recipients:_list}}).then(function(res){
         if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var n=res.json.sent||0, sk=res.json.skipped||0;
           toast('Sent '+n+' email'+(n===1?'':'s')+(sk?(' ('+sk+' skipped -- unsubscribed or invalid)'):'')); }
-        else { toast((res.json&&res.json.error)?('Could not send: '+res.json.error):'Could not send the campaign'); }
+        else { toast((res.json&&res.json.error)?('Could not send: '+res.json.error):'Could not send the email'); }
       }).catch(function(){ toast('Could not reach the mail server -- try again'); });
-    } else { toast('Sent '+parts.join(' + ')+' (demo)'); } }
+    } else if(doEmail && !_live){ toast('Email queued for '+emailN+' (demo -- connect your Atlas backend to send)'); }
+    // LIVE SMS broadcast: the worker itself derives the consented, non-STOP-suppressed recipients (TCPA) and returns the real count -- we record ONLY what it confirms sent.
+    if(wantSms){
+      if(!_live){ toast('Connect your Atlas backend to send texts'); }
+      else { _api('/api/outreach/send',{method:'POST',body:{sms:true,body:body}}).then(function(res){ var j=res.json||{};
+        if(res.status>=200&&res.status<300&&j.ok){ var sn=j.smsSent||0, ssk=j.smsSkipped||0;
+          if(sn||ssk){ if(cm.sms){ cm.sms.sentThisMonth=(cm.sms.sentThisMonth||0)+sn; }
+            cm.campaigns.unshift({ subject:'[SMS] '+body.slice(0,40), audience:audLabel, count:sn, channel:'sms', at:Date.now() });
+            _logEvent('sms','Broadcast texted to '+sn+' customer'+(sn===1?'':'s')+(ssk?(' ('+ssk+' skipped)'):'')+' ('+audLabel+')',{count:sn,channel:'sms'}); save(); renderSet();
+            toast('Texted '+sn+' customer'+(sn===1?'':'s')+(ssk?(' ('+ssk+' skipped -- opted out or unreachable)'):'')); }
+          else { toast('No consented mobile numbers to text yet'); } }
+        else { toast(j.message||j.error||'Could not send the texts'); }
+      }).catch(function(){ toast('Could not reach the SMS server -- try again'); }); }
+    } }
   // Send a test copy to the owner's own inbox so they can see exactly what customers receive.
   function sendTestEmail(mode){ if(!_canMod('settings'))return; var cm=_comms(); var to=(cm.replyTo||'').trim();
     if(!to){ toast('Add your inbox first (Messaging > Your inbox), then send a test'); goSettings('comms'); return; }
