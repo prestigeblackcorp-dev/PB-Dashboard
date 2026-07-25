@@ -1960,9 +1960,40 @@ async function _assetCapFor(env, tid) {
     return (tier && PLAN_ASSET_CAP[tier] != null) ? PLAN_ASSET_CAP[tier] : 25;   // no tier yet (trial/new) -> a generous default that still blocks runaway abuse
   } catch (e) { return 0; }   // fail OPEN on a DB hiccup -> never wrongly block a legit add
 }
+// PACKAGING (1): the asset cap counts UNITS, not asset ROWS. Every asset carries a stock count in its info blob (info.qty,
+// >=1). Sum Math.max(1, info.qty) across a tenant's assets to get their used units. Kept as a helper so the create-gate and
+// the per-asset-unlock guard measure "units" identically. Fails to -1 on a DB error so callers can fail OPEN.
+async function _tenantAssetUnits(env, tid) {
+  try { const rows = ((await env.DB.prepare('SELECT info FROM assets WHERE tenant_id=?').bind(tid).all()).results) || [];
+    return rows.reduce(function (s, r) { let q = 1; try { q = Math.max(1, parseInt((_hqJson(r.info, {}) || {}).qty, 10) || 1); } catch (e) { q = 1; } return s + q; }, 0);
+  } catch (e) { return -1; }
+}
+// PACKAGING (3, FAIR variant): only the units of an asset PAST the cap line need paid unlocks -- a straddling asset's
+// under-cap units are always free. Given an ordered {name,qty} list (publish order) + cap, return how many of `name`'s
+// units are over the cap: max(0, min(Q, (prevUnits + Q) - cap)). 0 if the asset isn't in the list or cap<=0. This is the
+// SAME per-asset formula the publish-lock inlines, so the unlock-checkout allowance and the public gate never disagree.
+function _overUnitsInList(list, name, cap) {
+  if (!(cap > 0) || !Array.isArray(list)) return 0;
+  let prev = 0;
+  for (let i = 0; i < list.length; i++) {
+    const q = Math.max(1, parseInt(list[i] && list[i].qty, 10) || 1);
+    if (list[i] && list[i].name === name) return Math.max(0, Math.min(q, (prev + q) - cap));
+    prev += q;
+  }
+  return 0;
+}
+// PACKAGING (2): LOCATIONS are a HARD cap per tier (no unlock/overage path, unlike assets). Mirrors _assetCapFor: 0 = unlimited.
+const PLAN_LOCATION_CAP = { starter: 1, pro: 3, enterprise: 99, business: 99, unlimited: 0 };   // from TIERS.locations; server-enforced on the profile PUT so a downgraded/trial tenant can't exceed it via the API/mirror
+async function _locationCapFor(env, tid) {
+  try { const t = await env.DB.prepare('SELECT tier FROM tenants WHERE id=?').bind(tid).first();
+    const tier = String((t && t.tier) || '').toLowerCase();
+    return (tier && PLAN_LOCATION_CAP[tier] != null) ? PLAN_LOCATION_CAP[tier] : 99;   // no tier yet (trial/new) -> generous default so a legit save is never wrongly blocked; the client enforces the real tier cap
+  } catch (e) { return 0; }   // fail OPEN on a DB hiccup -> never wrongly block a legit save
+}
 const CREDIT_PACK_CENTS = { '500': 2500, '2000': 8000, '5000': 17500 };
 const WEBSITE_ADDON_CENTS = { once: 19900, mo: 1900 };
 const ASSET_UNLOCK_CENTS = 1199;   // per-asset unlock: a downgraded tenant pays $11.99/mo per specific over-cap asset to keep it live/bookable instead of upgrading (owner directive) -- one independent Stripe subscription each, so their receipt names exactly which asset each charge is for
+const ASSET_UNLOCK_UNITS = 5;   // PACKAGING (3): each $11.99/mo unlock covers a UNIT QUOTA of 5 units of one over-cap asset. An asset with U units needs ceil(U/5) unlock slots (subscriptions) to stay fully live; a legacy unlock entry with no `units` field counts as this default. Keeps qty<=5 behaviour byte-identical to the old one-flat-fee-per-asset model.
 function _planLabel(t) { return ({ starter: 'Starter', pro: 'Pro', enterprise: 'Enterprise', business: 'Business', unlimited: 'Enterprise Unlimited' })[t] || String(t || ''); }
 // DNS-over-HTTPS CNAME lookup (Cloudflare 1.1.1.1 JSON API) -> a REAL check that a tenant pointed their domain at us (not a cosmetic flag).
 async function _dohCname(name) {
@@ -3368,10 +3399,31 @@ function doReset(){
         // so a downgrade can't leave over-limit inventory bookable. cap 0 = uncapped (unlimited/comped) -> no change.
         const _fullPubAssets = pubSite.assets || [];
         const _acap = await _assetCapFor(env, trow.id);
-        const _unlockedNames = (_hqJson(trow.asset_unlocks, []) || []).map(function (u) { return u && u.name; }).filter(Boolean);   // per-asset paid unlocks ($11.99/mo each) -> these specific over-cap assets stay live/bookable (a `canceling` entry still counts until its sub actually ends)
-        const pubAssets = (_acap > 0 && _fullPubAssets.length > _acap)
-          ? _fullPubAssets.filter(function (a, i) { return i < _acap || (a && a.name && _unlockedNames.indexOf(a.name) >= 0); })
-          : _fullPubAssets;
+        // PACKAGING (1)+(3, FAIR): the cap counts UNITS (sum of each asset's info.qty), not asset rows. Walk the published
+        // assets in order tracking the running unit total BEFORE each asset (`prev`). For an asset of qty Q, only the units
+        // PAST the cap line need paid unlocks -- overUnits = max(0, min(Q, (prev+Q) - cap)); its under-cap units are ALWAYS
+        // free and stay live even with zero unlocks (so a straddling asset shows its under-cap portion, never fully hidden).
+        // Each $11.99/mo unlock covers ASSET_UNLOCK_UNITS (5) of THAT named asset's over-cap units (a `canceling` entry still
+        // counts until its sub ends). Bookable qty = Q - max(0, overUnits - coveredUnits): all under-cap units + every
+        // covered over-cap unit. Fully live when covered, partial when some over-cap units are still unpaid, hidden only when
+        // the asset is WHOLLY over cap AND unpaid. cap 0 = uncapped (unlimited/comped) -> no change.
+        const _unlockUnitsByName = {};   // name -> total unlocked UNITS across all its $11.99/mo blocks
+        (_hqJson(trow.asset_unlocks, []) || []).forEach(function (u) { if (u && u.name) _unlockUnitsByName[u.name] = (_unlockUnitsByName[u.name] || 0) + Math.max(1, parseInt(u.units, 10) || ASSET_UNLOCK_UNITS); });
+        let pubAssets;
+        if (_acap > 0) {
+          pubAssets = []; let _prevUnits = 0;
+          for (let _pi = 0; _pi < _fullPubAssets.length; _pi++) {
+            const _pa = _fullPubAssets[_pi]; const _pu = Math.max(1, parseInt(_pa && _pa.qty, 10) || 1);
+            const _over = Math.max(0, Math.min(_pu, (_prevUnits + _pu) - _acap));   // FAIR: only this asset's units past the cap line
+            _prevUnits += _pu;
+            if (_over <= 0) { pubAssets.push(_pa); continue; }          // fully within cap -> full qty stays live
+            const _cov = (_pa && _pa.name && _unlockUnitsByName[_pa.name]) || 0;   // unlocked units for this asset (5 per block)
+            const _liveQty = _pu - Math.max(0, _over - _cov);           // under-cap units + covered over-cap units
+            if (_liveQty >= _pu) pubAssets.push(_pa);                   // every over-cap unit covered -> full qty
+            else if (_liveQty > 0) pubAssets.push(Object.assign({}, _pa, { qty: _liveQty }));   // partial -> only under-cap + covered units bookable
+            // else _liveQty == 0 -> wholly over cap + unpaid -> hidden from the public site
+          }
+        } else { pubAssets = _fullPubAssets; }
         const cfg = pubSite.config || {};
 
         if (method === 'GET' && !sub) {
@@ -3761,8 +3813,14 @@ function doReset(){
             await ensurePlatformSchema(env);
             const _aurow = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(md.tenant).first();
             let _aul = _hqJson(_aurow && _aurow.asset_unlocks, []) || [];
-            if (_aul.some(function (u) { return u && u.name === md.asset; })) _aul = _aul.map(function (u) { return (u && u.name === md.asset) ? Object.assign({}, u, { sub: obj.subscription || u.sub, canceling: false }) : u; });
-            else _aul.push({ name: md.asset, sub: obj.subscription || null, at: Date.now() });
+            // PACKAGING (3): each unlock is a 5-unit BLOCK (ASSET_UNLOCK_UNITS) so an asset needing ceil(qty/5) unlocks can
+            // hold several. Idempotent on the SUBSCRIPTION id (a webhook replay for the same sub just clears `canceling`,
+            // never a dup block); a brand-new sub id pushes another block. No sub id (edge) -> fall back to the original
+            // name-keyed upsert so null-sub dups can't accumulate (byte-identical to the pre-units single-entry behaviour).
+            const _sub = obj.subscription || null;
+            if (_sub && _aul.some(function (u) { return u && u.sub === _sub; })) _aul = _aul.map(function (u) { return (u && u.sub === _sub) ? Object.assign({}, u, { canceling: false }) : u; });
+            else if (!_sub && _aul.some(function (u) { return u && u.name === md.asset; })) _aul = _aul.map(function (u) { return (u && u.name === md.asset) ? Object.assign({}, u, { canceling: false }) : u; });
+            else _aul.push({ name: md.asset, sub: _sub, at: Date.now(), units: ASSET_UNLOCK_UNITS });
             await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_aul), Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.asset_unlock', { asset: md.asset });
           } else if (T === 'invoice.paid') {
@@ -5651,7 +5709,7 @@ function doReset(){
         // #278: an honest FACT (owner/comp/tier/website_addon), not itself flag-gated -- only ENFORCEMENT (the 402s
         // at /api/tenant/profile PUT + /api/domain/connect) is behind feature_gate_enabled. Lets the client recognize
         // real entitlement (e.g. after buying the add-on on a different device) even before the gate is ever turned on.
-        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), assetCap: await _assetCapFor(env, ctx.tenant_id), assetUnlockCents: ASSET_UNLOCK_CENTS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+        return json({ user: { email: ctx.user.email, role: ctx.user.role, isOwner: ctx.isOwner, comp: ctx.comp }, tenant: t, csrf: ctx.session.csrf, billing_state: _bState, websiteEntitled: _websiteEntitled(t, ctx.isOwner, ctx.comp), assetCap: await _assetCapFor(env, ctx.tenant_id), assetUnlockCents: ASSET_UNLOCK_CENTS, assetUnlockUnits: ASSET_UNLOCK_UNITS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
       }
 
       // ---- TENANT SELF-SERVICE DATA EXPORT (GDPR/CCPA data portability): this tenant downloads its OWN operating
@@ -6052,7 +6110,7 @@ function doReset(){
           // Rows already scheduled to lapse are stamped status='canceling' by /api/billing/domain-cancel and excluded here.
           let _domRenew282 = null;
           try { const _dr282 = await env.DB.prepare("SELECT domain FROM domains_sold WHERE tenant_id=? AND stripe_sub IS NOT NULL AND status NOT IN ('canceling','canceled','renew_failed') ORDER BY created_at DESC LIMIT 1").bind(ctx.tenant_id).first(); if (_dr282 && _dr282.domain) _domRenew282 = _dr282.domain; } catch (e) {}
-          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, assetCap: t ? await _assetCapFor(env, ctx.tenant_id) : null, assetUnlocks: t ? (_hqJson(t.asset_unlocks, []) || []) : [], assetUnlockCents: ASSET_UNLOCK_CENTS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
+          return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, assetCap: t ? await _assetCapFor(env, ctx.tenant_id) : null, assetUnlocks: t ? (_hqJson(t.asset_unlocks, []) || []) : [], assetUnlockCents: ASSET_UNLOCK_CENTS, assetUnlockUnits: ASSET_UNLOCK_UNITS, policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
         }
         if (method === 'PUT') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -6114,6 +6172,19 @@ function doReset(){
             const _mk279 = {}; for (const _a in _curKt279) _mk279[_a] = Number(_curKt279[_a] || 0); for (const _b in _inKt279) { if (Number(_inKt279[_b] || 0) > (_mk279[_b] || 0)) _mk279[_b] = Number(_inKt279[_b] || 0); }
             if (Object.keys(_mk279).length) _mergedSettings279._kt = _mk279;
             const _mt279 = Math.max(Number(_curSettings279._t || 0), Number(body.settings._t || 0)); if (_mt279) _mergedSettings279._t = _mt279;
+            // PACKAGING (2): LOCATIONS HARD CAP. Reject a write that GROWS the location list past the plan's cap (the client
+            // blocks this too; this is the server backstop). An already-over-cap tenant (e.g. just downgraded) can still SAVE
+            // -- we only reject when the merged count both exceeds the cap AND is larger than what was stored -> never bricks
+            // an ongoing sync and never silently drops a stored location (prefer-reject, per owner directive). Locations have
+            // no unlock/overage path, unlike assets.
+            if (Array.isArray(_mergedSettings279.locations)) {
+              const _locCap = await _locationCapFor(env, ctx.tenant_id);
+              if (_locCap > 0) {
+                const _cntLoc = function (arr) { return (Array.isArray(arr) ? arr : []).filter(function (x) { return x && (typeof x === 'string' ? x.trim() : x.name); }).length; };
+                const _newLocN = _cntLoc(_mergedSettings279.locations), _oldLocN = _cntLoc(_curSettings279.locations);
+                if (_newLocN > _locCap && _newLocN > _oldLocN) return json({ error: 'location_cap', message: 'Your plan allows up to ' + _locCap + ' locations - upgrade to add more.' }, 402);
+              }
+            }
             sets.push('settings=?'); vals.push(JSON.stringify(_mergedSettings279));
           }
           if (vStr(body.name, 120)) { sets.push('name=?'); vals.push(body.name.slice(0, 120)); }
@@ -6301,7 +6372,13 @@ function doReset(){
           }
           if (coll === 'assets') {   // enforce the plan's asset cap SERVER-SIDE (was client-only -> a downgraded/trial tenant could exceed it via the API/mirror)
             const _cap = await _assetCapFor(env, ctx.tenant_id);
-            if (_cap > 0) { const _cnt = await env.DB.prepare('SELECT COUNT(*) AS n FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).first(); if (_cnt && _cnt.n >= _cap) return err(402, 'Your plan allows up to ' + _cap + ' items - upgrade to add more.'); }
+            // PACKAGING (1): the cap is TOTAL UNITS (sum of info.qty), so quantity can't be a backdoor around the plan. Sum
+            // existing units, add the new asset's units (from body.info.qty, default 1) and block if that would exceed cap.
+            if (_cap > 0) {
+              const _existingUnits = await _tenantAssetUnits(env, ctx.tenant_id);   // -1 on DB error -> fail OPEN below
+              let _newUnits = 1; try { const _ni = (body.info && typeof body.info === 'object') ? body.info : _hqJson(body.info, {}); _newUnits = Math.max(1, parseInt(_ni && _ni.qty, 10) || 1); } catch (e) { _newUnits = 1; }
+              if (_existingUnits >= 0 && (_existingUnits + _newUnits) > _cap) return err(402, 'Your plan allows up to ' + _cap + ' units - upgrade to add more.');
+            }
           }
           // CORE-LOOP FIX: mint a portal_token for owner-created bookings too (website bookings already get one at
           // intake). Without it, /api/portal/<token> is unreachable for phone / walk-in / admin-entered bookings, so
@@ -6417,16 +6494,26 @@ function doReset(){
           await ensurePlatformSchema(env);
           const _an = String(body.asset || '').trim().slice(0, 120);
           if (!_an) return err(400, 'Which asset do you want to unlock?');
-          const _tu = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          const _tu = await env.DB.prepare('SELECT asset_unlocks, settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
           const _ul = _hqJson(_tu && _tu.asset_unlocks, []) || [];
-          if (_ul.some(function (u) { return u && u.name === _an; })) return err(409, 'That asset is already unlocked.');   // no 2nd sub for the same asset (a `canceling` one still counts until it ends -> use Resume, not a new checkout)
           const _cap = await _assetCapFor(env, ctx.tenant_id);
-          const _cntRow = await env.DB.prepare('SELECT COUNT(*) c FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).first();
-          const _total = (_cntRow && _cntRow.c) || 0;
-          if (_cap === 0 || _total <= _cap) return err(400, 'Your plan already covers all your assets - no unlock needed.');   // cheap over-cap guard (total count; publish order decides exactly which are hidden, but this blocks a pointless charge)
-          const _exists = await env.DB.prepare('SELECT 1 FROM assets WHERE tenant_id=? AND name=? LIMIT 1').bind(ctx.tenant_id, _an).first();
-          if (!_exists) return err(404, 'That asset was not found.');
-          amountCents = ASSET_UNLOCK_CENTS; name = 'Atlas Rental.io asset unlock - ' + _an; mode = 'subscription'; interval = 'month';
+          // PACKAGING (3, FAIR): only an asset's units PAST the cap line need unlocks. Compute THIS asset's over-cap units the
+          // SAME way the public gate does -- from the published-site snapshot in publish order (settings.publicSite.assets),
+          // via _overUnitsInList. Each $11.99/mo unlock covers ASSET_UNLOCK_UNITS (5) of them; it needs ceil(overUnits/5)
+          // blocks. Allow buying the next block until every over-cap unit is covered, then 409. qty<=5 + wholly-over identical.
+          let _rows = null; try { _rows = ((await env.DB.prepare('SELECT name, info FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).all()).results) || []; } catch (e) { _rows = null; }
+          const _unitsOf = function (inf) { try { return Math.max(1, parseInt((_hqJson(inf, {}) || {}).qty, 10) || 1); } catch (e) { return 1; } };
+          const _thisRow = _rows ? _rows.filter(function (r) { return r && r.name === _an; })[0] : null;
+          if (_rows && !_thisRow) return err(404, 'That asset was not found.');
+          const _aq = _thisRow ? _unitsOf(_thisRow.info) : 1;                                   // this asset's total unit count (fallback 1 on DB error)
+          const _totUnits = _rows ? _rows.reduce(function (s, r) { return s + _unitsOf(r.info); }, 0) : (_cap + 1);   // DB error -> don't wrongly block the paid unlock
+          if (_cap === 0 || _totUnits <= _cap) return err(400, 'Your plan already covers all your assets - no unlock needed.');   // plan covers every unit -> pointless charge
+          const _snap = (function () { try { var s = _hqJson(_tu && _tu.settings, {}); return (s.publicSite && s.publicSite.assets) || []; } catch (e) { return []; } })();
+          const _over = _snap.some(function (x) { return x && x.name === _an; }) ? _overUnitsInList(_snap, _an, _cap) : _aq;   // published -> exact FAIR over-units; not on the live site yet -> treat as wholly over (safe fallback; the public gate re-applies fair math once published)
+          if (_over <= 0) return err(400, 'That asset is within your plan - no unlock needed.');   // all of its units are under the cap line
+          const _haveUnits = _ul.filter(function (u) { return u && u.name === _an; }).reduce(function (s, u) { return s + Math.max(1, parseInt(u.units, 10) || ASSET_UNLOCK_UNITS); }, 0);
+          if (_haveUnits >= _over) return err(409, 'That asset is already fully unlocked.');      // every over-cap unit covered (or canceling blocks still counting -> Resume, not a new checkout)
+          amountCents = ASSET_UNLOCK_CENTS; name = 'Atlas Rental.io asset unlock - ' + _an + (_over > ASSET_UNLOCK_UNITS ? (' (' + Math.min(ASSET_UNLOCK_UNITS, _over - _haveUnits) + ' of ' + _over + ' over-cap units)') : ''); mode = 'subscription'; interval = 'month';
           meta.billing = 'asset_unlock'; meta.asset = _an;
         } else { return err(400, 'Unknown purchase kind.'); }
         const co = await stripeCheckout(pk, { amountCents: amountCents, name: name, email: ctx.user.email, mode: mode, interval: interval, trialDays: (kind === 'trial' ? 7 : 0),
@@ -6451,10 +6538,13 @@ function doReset(){
         const _resume = cb.resume === true || cb.resume === '1';
         const _t = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         let _ul = _hqJson(_t && _t.asset_unlocks, []) || [];
-        const _e = _ul.filter(function (u) { return u && u.name === _an; })[0];
-        if (!_e || !_e.sub) return json({ ok: true, message: 'That asset is not unlocked.' });   // idempotent: nothing to cancel
-        const _r = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(_e.sub), 'cancel_at_period_end=' + (_resume ? 'false' : 'true'));
-        if (!_r.ok) return err(502, 'Could not update the unlock right now - please try again.');
+        // PACKAGING (3): an over-cap asset may hold several 5-unit BLOCKS (one sub each). Relock/Resume acts on the whole
+        // asset -> cancel_at_period_end every block's sub, not just the first (single-block assets are unchanged).
+        const _es = _ul.filter(function (u) { return u && u.name === _an && u.sub; });
+        if (!_es.length) return json({ ok: true, message: 'That asset is not unlocked.' });   // idempotent: nothing to cancel
+        let _anyFail = false;
+        for (let _rk = 0; _rk < _es.length; _rk++) { const _rr = await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(_es[_rk].sub), 'cancel_at_period_end=' + (_resume ? 'false' : 'true')); if (!_rr.ok) _anyFail = true; }
+        if (_anyFail) return err(502, 'Could not update the unlock right now - please try again.');
         _ul = _ul.map(function (u) { return (u && u.name === _an) ? Object.assign({}, u, { canceling: !_resume }) : u; });
         await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_ul), Date.now(), ctx.tenant_id).run();
         await audit(env, ctx, req, _resume ? 'billing.asset_unlock_resumed' : 'billing.asset_relock', { asset: _an });
@@ -6522,9 +6612,8 @@ function doReset(){
           const _ur = await env.DB.prepare('SELECT asset_unlocks FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
           let _uul = _hqJson(_ur && _ur.asset_unlocks, []) || [];
           if (_uul.length) {
-            const _cntU = await env.DB.prepare('SELECT COUNT(*) c FROM assets WHERE tenant_id=?').bind(ctx.tenant_id).first();
-            const _totU = (_cntU && _cntU.c) || 0;
-            if (_ncap === 0 || _totU <= _ncap) {   // fully covered -> stop every per-asset charge
+            const _totU = await _tenantAssetUnits(env, ctx.tenant_id);   // PACKAGING (1): compare UNITS to the new cap, not row count
+            if (_ncap === 0 || (_totU >= 0 && _totU <= _ncap)) {   // fully covered -> stop every per-asset charge (DB error -> _totU<0 -> keep unlocks, never wrongly cancel a paid sub)
               for (var _i = 0; _i < _uul.length; _i++) { if (_uul[_i] && _uul[_i].sub && !_uul[_i].canceling) { try { await stripeApi(pk, 'POST', 'subscriptions/' + encodeURIComponent(_uul[_i].sub), 'cancel_at_period_end=true'); } catch (e) {} } }
               _uul = _uul.map(function (u) { return u ? Object.assign({}, u, { canceling: true }) : u; });
               await env.DB.prepare('UPDATE tenants SET asset_unlocks=?, updated_at=? WHERE id=?').bind(JSON.stringify(_uul), Date.now(), ctx.tenant_id).run();
