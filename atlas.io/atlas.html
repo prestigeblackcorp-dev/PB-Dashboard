@@ -3669,7 +3669,8 @@ const Atlas = (function(){
   function _totalPayouts(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+((b.quote&&b.quote.payoutAmt)||0); },0); }   // commission/split that leaves the owner on each booking -- a real deduction from take-home
   function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarned(b);},0); }   // rental + collected add-on charges (owner chose: count charges as income everywhere)
   function _cancelledFeeIncome(){ return (DATA.bookings||[]).filter(function(b){ return b&&b.status==='Cancelled'; }).reduce(function(s,b){ return s+_collectedCharges(b); },0); }   // kept cancellation fees, recognized when actually COLLECTED (cash basis); committed-basis rollups exclude cancelled bookings, so their paid charges are real income counted only here
-  function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts(); }   // take-home now subtracts partner payouts (the settings copy promises net "in analytics")
+  function _taxCollected(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+_bkTax(b); },0); }   // Payments G4: sales tax collected = a liability owed to the state, excluded from net profit
+  function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts() - _taxCollected(); }   // take-home subtracts partner payouts AND remitted sales tax (a pass-through liability, not income)
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
     if(opts.total!=null){   // reconciliation guard: an itemized drill with an explicit total always foots -- a hidden data gap reads as a real number instead of a silent math error
@@ -3704,7 +3705,8 @@ const Atlas = (function(){
       if(_cf>0) _nrows.push({label:'<b>Cancellation fees kept</b>',sub:'collected on cancelled '+_fterm('books'),amt:_cf,onClick:"Atlas.drillLedger('income')"});
       _nrows.push({label:'<b>Expenses</b>',sub:_activeExpenses().length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"});
       if(_pay>0) _nrows.push({label:'<b>'+esc(_payoutLabel())+'</b>',sub:'commission on '+_fterm('books'),amt:_pay,neg:true,onClick:"Atlas.drillKpi('payout')"});
-      _drill('Net Profit', 'Booking revenue, plus other income, minus expenses'+(_pay>0?' and payouts':''), _nrows, {total:_netProfit(), totalLabel:'Net Profit'}); }
+      var _tx=_taxCollected(); if(_tx>0) _nrows.push({label:'<b>Sales tax collected</b>',sub:'held for the state - a liability, not income',amt:_tx,neg:true});   // Payments G4
+      _drill('Net Profit', 'Booking revenue, plus other income, minus expenses'+(_pay>0?', payouts':'')+(_tx>0?' and sales tax owed':''), _nrows, {total:_netProfit(), totalLabel:'Net Profit'}); }
     else if(which==='payout'){ _drill(_payoutLabel(), 'The commission or split that leaves you on each '+_fterm('book'), (DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&((b.quote&&b.quote.payoutAmt)||0)>0;}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:((b.quote&&b.quote.payoutAmt)||0), neg:true, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total payout', empty:'No payouts yet -- turn on a payout/commission in Settings > Money rules.'}); } }
   function drillLog(i){ var e=_events()[i]; if(!e)return; var _d=new Date(e.t); var _iso=''; try{_iso=_d.toISOString();}catch(x){}
     var _rw=function(k,v){ return {label:'<span style="color:var(--muted)">'+esc(k)+'</span> &nbsp; <b>'+esc(v)+'</b>'}; };
@@ -3832,8 +3834,9 @@ const Atlas = (function(){
     var cancelFee=(DATA.bookings||[]).filter(function(b){ var t=_bDate(b); return b&&b.status==='Cancelled'&&t>=B.from&&t<=B.to&&(all||_assetKindByName(b.asset)===kind); }).reduce(function(s,b){return s+_collectedCharges(b);},0);
     var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
     var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
-    var base=rev+income+cancelFee, net=base-exp-payout;
-    return {rev:rev,income:income,cancelFee:cancelFee,exp:exp,payout:payout,net:net,margin:(base>0?Math.round(net/base*1000)/10:0)}; }
+    var tax=bks.reduce(function(s,b){return s+_bkTax(b);},0);   // Payments G4: sales-tax liability, out of net (same basis as _netProfit -> keeps the _pnlSummary(all).net===_netProfit() invariant)
+    var base=rev+income+cancelFee, net=base-exp-payout-tax;
+    return {rev:rev,income:income,cancelFee:cancelFee,exp:exp,payout:payout,tax:tax,net:net,margin:(base>0?Math.round(net/base*1000)/10:0)}; }
   function _pnlByKind(B){ var kinds=_pnlKinds(), known={}; kinds.forEach(function(k){known[k]=1;});
     var rows=kinds.map(function(k){ var s=_pnlSummary(B,k); return {kind:k,rev:_r2(s.rev+s.cancelFee),exp:_r2(s.exp),net:_r2(s.net),margin:s.margin}; });
     // General / shared: other income (not tied to any asset) + expenses with no assetKind, PLUS any booking/expense whose
@@ -3856,8 +3859,9 @@ const Atlas = (function(){
       var income=all?_ledger().incomes.reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0):0;
       var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
       var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
+      var tax=bks.reduce(function(s,b){return s+_bkTax(b);},0);   // Payments G4: sales tax out of monthly net too
       var totalRev=_r2(rev+cancelFee+income);
-      out.push({label:_pnlMonthLabel(d),rev:totalRev,exp:_r2(exp),net:_r2(totalRev-exp-payout)}); }
+      out.push({label:_pnlMonthLabel(d),rev:totalRev,exp:_r2(exp),net:_r2(totalRev-exp-payout-tax)}); }
     return out; }
   function _pnlCardHtml(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind);
     var revTotal=_r2(s.rev+s.cancelFee+s.income), netNeg=(s.net<0), kindLabel=(_pnlKind==='all')?'All types':_pnlKind;
@@ -4253,6 +4257,8 @@ const Atlas = (function(){
   // of the rental. Refundable deposit HOLDS are NOT charges (separate authorize), so they never leak in here. Unpaid charges
   // are not counted (cash-collected basis for add-ons). Owner picked "count everywhere" -> folded into _bkEarned below.
   function _collectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+(c&&c.paidAt?_r2(c.amount||0):0); },0); }
+  // Payments G7: charges paid OFFLINE / locally (meter bill, installment, deposit-capture, preview widget) set c.paidAt WITHOUT a Stripe webhook, so they are NOT in the server revenue_cents. When _bkEarned uses revCents it must add these back (a portal-paid charge is stamped c.paidOnline=true and already counted, so it's excluded here).
+  function _offlineCollectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+((c&&c.paidAt&&!c.paidOnline)?_r2(c.amount||0):0); },0); }
   // Tax embedded in a gross taxable collected charge (charge.amount is tax-inclusive so it shares the revenue basis). Threads
   // payment-widget + owner charge tax into the tax CSV, accounting CSV + reports, so a payment widget moves EVERY number.
   function _chargeTax(c){ var t=(S.money.tax||0)/100; if(!c||!c.paidAt||!c.taxable||t<=0)return 0; return Math.round((c.amount||0)*t/(1+t)); }
@@ -4260,10 +4266,14 @@ const Atlas = (function(){
   // Realized revenue for a committed booking = the rental total (accrual) + any add-on charges collected. Used by every
   // REVENUE/INCOME rollup (Overview KPI, Analytics, Reports, source split, drill-downs, tax/QuickBooks) so they all tie out.
   // NOTE: customer "spend" + loyalty deliberately stay on _bkTotal (rental only) -- you don't reward points on a damage fee.
-  function _bkEarned(b){ if(b && typeof b.revCents==='number' && b.revCents>0) return _r2(b.revCents/100); return _bkTotal(b) + _collectedCharges(b); }   // Payments G1/G2/G3: when the server has reconciled money on this booking, revenue = ACTUALLY COLLECTED (reserve+balance+online charges, NET of refunds) so the books tie to Stripe; a partial pay shows the partial, a refund lowers it. revenue_cents already includes portal-paid charges, so we do NOT re-add _collectedCharges here. Offline/unpaid (no revCents) fall back to the accrual total + collected charges, unchanged.
+  function _bkEarned(b){ if(b && typeof b.revCents==='number' && b.revCents>0) return _r2(b.revCents/100 + _offlineCollectedCharges(b)); return _bkTotal(b) + _collectedCharges(b); }   // Payments G1/G2/G3: when the server has reconciled money on this booking, revenue = ACTUALLY COLLECTED (reserve+balance+online charges, NET of refunds) so the books tie to Stripe; a partial pay shows the partial, a refund lowers it. G7: revenue_cents already includes Stripe-settled (paidOnline) charges so we do NOT re-add those, but we DO add back charges paid offline/locally (paidAt without a webhook). Offline/unpaid (no revCents) fall back to the accrual total + all collected charges, unchanged.
   // ONE basis for "realized business". A booking counts toward revenue, occupancy + reconciled reports only once it is
   // COMMITTED (accepted). Pending = pipeline -- shown ONLY in the Upcoming KPI + the Bookings tab, never counted as earned
   // revenue. Cancelled = excluded everywhere. Every money/util/report surface routes through this so they all tie out.
+  // Payments G4: the sales tax the customer PAID that the owner must REMIT to the state -- a pass-through liability, NOT profit.
+  // Scaled to what was actually collected (a partial pay owes proportional tax). Rental tax from quote.taxAmt + tax embedded in
+  // taxable paid charges. Subtracted from NET profit (never from the revenue/gross line), so the owner stops treating tax as income.
+  function _bkTax(b){ if(!b) return 0; var q=b.quote||{}, taxAmt=(q.taxAmt||0); var fullVal=_bkTotal(b)+_collectedCharges(b); var earned=_bkEarned(b); var frac=fullVal>0?Math.min(1,earned/fullVal):1; return _r2(taxAmt*frac + _collectedChargeTax(b)); }
   function _isCommitted(b){ return !!b && b.status!=='Cancelled' && b.status!=='Pending'; }
   // ---- Real metrics: ALL derived from _bookings() so the KPIs, charts, fleet grid, customers + Atlas.io agree ----
   // Per-asset utilization = share of the trailing 30 days this asset is booked (excludes cancelled).
