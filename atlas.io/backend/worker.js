@@ -3174,7 +3174,10 @@ function _alert(env, ectx, o) {
 // platform_errors ip column), so neither is reachable by a support/analyst staff token, only the owner.
 // ABUSE-DEFENSE: bans/ban/unban/attacks added to OWNER_ONLY for the same reason -- ban rows + the attack feed carry
 // OTHER callers' emails/IPs, so none of the four routes are reachable by a support/analyst staff token either.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|pnl|owners?|owner\/)/;
+// analytics/ + monitor/ added: /api/admin/analytics/* (cohorts, segmented funnel) + /api/admin/monitor/* (uptime) all
+// surface CROSS-TENANT aggregates (MRR/LTV, every tenant's site status) -- same owner-only tier as funnel/seo-health/
+// site-uptime above, never reachable by a support/analyst staff token.
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -5732,6 +5735,132 @@ function doReset(){
           return json({ ok: true, range: { key: _range.key, label: _range.label }, steps: _steps, convRate: _convRate });
         }
 
+        // ---- COHORT / RETENTION analytics (owner-only via OWNER_ONLY -> analytics/). READ-ONLY: every number is
+        // computed from the REAL tenants + platform_transactions records; nothing is written. MRR = sum of active PAID
+        // plan prices (PLAN_PRICE_CENTS x count, the SAME basis as /api/admin/overview); ARPU = MRR/activeCount; LTV =
+        // ARPU x avg-lifetime-months. Lifetime is derived from the observed churn rate when there is signal, else a
+        // documented fixed assumption -- either way it is disclosed in `notes`. Owner-operator tenants are excluded from
+        // every count (operators, not customers), exactly like the overview KPIs. Churn is proxied by account deletion
+        // (deleted_at) -- there is no separate cancel-without-delete signal on the tenant record -- noted honestly below.
+        if (path === '/api/admin/analytics/cohorts' && method === 'GET') {
+          const _notes = [];
+          const _ex = _excludeOwnerTenants(env, 'id');
+          const _exT = _excludeOwnerTenants(env, 't.id');
+          const LTV_FALLBACK_MONTHS = 24;   // documented assumption, used ONLY when churn history is too thin to derive a rate
+          // Platform-wide member state (owner-operator tenants excluded).
+          const _agg = ((await env.DB.prepare(
+            "SELECT COALESCE(SUM(CASE WHEN plan='active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' AND deleted_at IS NULL THEN 1 ELSE 0 END),0) activePaid,"
+            + " COALESCE(SUM(CASE WHEN plan<>'active' AND deleted_at IS NULL THEN 1 ELSE 0 END),0) trials,"
+            + " COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END),0) churned"
+            + " FROM tenants WHERE 1=1" + _ex.clause).bind(..._ex.binds).first()) || {});
+          const activeCount = _agg.activePaid || 0, trialCount = _agg.trials || 0, churnedCount = _agg.churned || 0;
+          // MRR from active PAID subscriptions only, priced by tier (comped/manually-active have no stripe_sub -> excluded).
+          const _tierRows = ((await env.DB.prepare(
+            "SELECT (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END) tier, COUNT(*) n FROM tenants"
+            + " WHERE plan='active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' AND deleted_at IS NULL" + _ex.clause
+            + " GROUP BY (CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)").bind(..._ex.binds).all()).results) || [];
+          let mrr_cents = 0; _tierRows.forEach(function (r) { mrr_cents += (PLAN_PRICE_CENTS[r.tier] || 0) * (r.n || 0); });
+          if (_tierRows.some(function (r) { return r.tier === 'other' && r.n > 0; })) _notes.push('Some paid tenants have no known plan tier and are priced at $0 in MRR.');
+          const arpu_cents = activeCount > 0 ? Math.round(mrr_cents / activeCount) : 0;
+          // Lifetime from churn: churnRate = churned / (activePaid + churned). Thin history -> the fixed assumption, disclosed.
+          const _churnBase = activeCount + churnedCount;
+          const _churnRate = _churnBase > 0 ? (churnedCount / _churnBase) : 0;
+          let _lifeMonths;
+          if (churnedCount >= 5 && _churnRate > 0) { _lifeMonths = Math.max(1, Math.round(1 / _churnRate)); }
+          else { _lifeMonths = LTV_FALLBACK_MONTHS; _notes.push('LTV uses a fixed ' + LTV_FALLBACK_MONTHS + '-month average-lifetime assumption (churn history too thin to derive a rate).'); }
+          const ltv_cents = Math.round(arpu_cents * _lifeMonths);
+          if (activeCount === 0) _notes.push('No active paid subscriptions yet -- ARPU and LTV are 0.');
+          // Cohorts by signup month over the last 12 months. created_at is epoch-ms -> /1000 for strftime's unixepoch.
+          const _now = Date.now();
+          const _d = new Date(_now); const _cutMs = Date.UTC(_d.getUTCFullYear(), _d.getUTCMonth() - 11, 1);
+          const _coRows = ((await env.DB.prepare(
+            "SELECT strftime('%Y-%m', created_at/1000, 'unixepoch') ym, COUNT(*) signups,"
+            + " COALESCE(SUM(CASE WHEN plan='active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' AND deleted_at IS NULL THEN 1 ELSE 0 END),0) active,"
+            + " COALESCE(SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END),0) churned"
+            + " FROM tenants WHERE created_at>=?" + _ex.clause + " GROUP BY ym").bind(_cutMs, ..._ex.binds).all()).results) || [];
+          const _revRows = ((await env.DB.prepare(
+            "SELECT strftime('%Y-%m', t.created_at/1000, 'unixepoch') ym, COALESCE(SUM(pt.amount_cents),0) rev"
+            + " FROM tenants t JOIN platform_transactions pt ON pt.tenant_id=t.id"
+            + " WHERE t.created_at>=?" + _exT.clause + " GROUP BY ym").bind(_cutMs, ..._exT.binds).all()).results) || [];
+          const _coMap = {}; _coRows.forEach(function (r) { _coMap[r.ym] = r; });
+          const _revMap = {}; _revRows.forEach(function (r) { _revMap[r.ym] = r.rev || 0; });
+          const cohorts = [];
+          for (let _m = 11; _m >= 0; _m--) {
+            const _dm = new Date(Date.UTC(_d.getUTCFullYear(), _d.getUTCMonth() - _m, 1));
+            const _ym = _dm.toISOString().slice(0, 7);
+            const _row = _coMap[_ym] || { signups: 0, active: 0, churned: 0 };
+            const _su = _row.signups || 0, _ac = _row.active || 0;
+            cohorts.push({ month: _ym, signups: _su, active: _ac, churned: _row.churned || 0,
+              retentionPct: _su > 0 ? Math.round((_ac / _su) * 100) : 0, revenue_cents: _revMap[_ym] || 0 });
+          }
+          return json({ ok: true, arpu_cents: arpu_cents, ltv_cents: ltv_cents, mrr_cents: mrr_cents,
+            activeCount: activeCount, trialCount: trialCount, churnedCount: churnedCount,
+            avgLifetimeMonths: _lifeMonths, churnRatePct: Math.round(_churnRate * 10000) / 100,
+            cohorts: cohorts, notes: _notes });
+        }
+
+        // ---- SEGMENTED funnel (owner-only via OWNER_ONLY -> analytics/). READ-ONLY. The top-level `steps` are the SAME
+        // real instrumented funnel as /api/admin/funnel (funnel_events, written by /api/visit-ping), range-scoped. On
+        // SEGMENTATION: funnel_events is stored as a (day,step) COUNT with no per-visit dimension, so the visit steps
+        // themselves cannot be split by plan/industry. What CAN be attributed is the ACCOUNT funnel -- the real tenants
+        // that reached signup -- split by tier (plan) or fleet_type (industry) from the tenants table. Each segment
+        // therefore reports signup -> trial -> active from REAL account records; never fabricated (disclosed in `notes`).
+        if (path === '/api/admin/analytics/funnel' && method === 'GET') {
+          const _u = new URL(req.url);
+          const _range = _adminRange(_u.searchParams.get('range'));
+          let _seg = String(_u.searchParams.get('seg') || 'all').toLowerCase(); if (['plan', 'industry', 'all'].indexOf(_seg) < 0) _seg = 'all';
+          // Top-level instrumented funnel (identical source + order to /api/admin/funnel).
+          const _order = ['cta_click', 'signup_open', 'signup_submit', 'plan_selected', 'checkout_open', 'trial_started'];
+          const _labels = { cta_click: 'CTA click', signup_open: 'Signup opened', signup_submit: 'Signup submitted', plan_selected: 'Plan selected', checkout_open: 'Checkout opened', trial_started: 'Trial started' };
+          const _counts = {}; _order.forEach(function (s) { _counts[s] = 0; });
+          try { const _fr = ((await env.DB.prepare('SELECT step, COALESCE(SUM(count),0) c FROM funnel_events WHERE day>=? AND day<=? GROUP BY step').bind(_range.startDay, _range.endDay).all()).results) || []; _fr.forEach(function (r) { if (Object.prototype.hasOwnProperty.call(_counts, r.step)) _counts[r.step] = r.c || 0; }); } catch (e) {}
+          const _topN = _counts[_order[0]] || 0;
+          const steps = _order.map(function (s) { return { key: s, label: _labels[s], count: _counts[s], pct: _topN > 0 ? Math.round((_counts[s] / _topN) * 1000) / 10 : 0 }; });
+          // ACCOUNT funnel split, from REAL tenant records created in the range (owner-operators excluded).
+          const _ex = _excludeOwnerTenants(env, 'id');
+          const _acctSteps = [{ key: 'signup', label: 'Signed up' }, { key: 'trial', label: 'On trial' }, { key: 'active', label: 'Active (paid)' }];
+          const segments = []; const _notes = [];
+          if (_seg !== 'all') {
+            const _dim = _seg === 'plan'
+              ? "(CASE WHEN tier IS NULL OR tier='' THEN 'other' ELSE tier END)"
+              : "(CASE WHEN fleet_type IS NULL OR fleet_type='' THEN 'other' ELSE fleet_type END)";
+            const _rows = ((await env.DB.prepare(
+              "SELECT " + _dim + " k, COUNT(*) signup,"
+              + " COALESCE(SUM(CASE WHEN plan<>'active' AND deleted_at IS NULL THEN 1 ELSE 0 END),0) trial,"
+              + " COALESCE(SUM(CASE WHEN plan='active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' AND deleted_at IS NULL THEN 1 ELSE 0 END),0) active"
+              + " FROM tenants WHERE created_at>=? AND created_at<?" + _ex.clause + " GROUP BY k ORDER BY signup DESC")
+              .bind(_range.start, _range.end, ..._ex.binds).all()).results) || [];
+            _rows.forEach(function (r) {
+              const _firstS = r.signup || 0;
+              segments.push({ key: String(r.k || 'other'), label: String(r.k || 'other'),
+                steps: _acctSteps.map(function (st) { const _c = r[st.key] || 0; return { key: st.key, label: st.label, count: _c, pct: _firstS > 0 ? Math.round((_c / _firstS) * 1000) / 10 : 0 }; }) });
+            });
+            _notes.push('Segment steps (signup/trial/active) are real account records grouped by ' + (_seg === 'plan' ? 'plan tier' : 'industry / fleet type') + '; the visit steps above are not per-visit segmentable (funnel_events is a day+step aggregate).');
+          }
+          return json({ ok: true, range: { key: _range.key, label: _range.label }, segment: _seg, steps: steps, segments: segments, notes: _notes });
+        }
+
+        // ---- Synthetic UPTIME monitor (owner-only via OWNER_ONLY -> monitor/). READ-ONLY w.r.t. the persistent store:
+        // the trailing-24h history is written ONLY by the hourly-gated cron probe (see scheduled()). This route reads
+        // that capped history for upPct24h + checks, and does a bounded live probe ONLY for connected tenants with no
+        // history yet (cold start) so the panel is never blank -- that live probe is NOT persisted. 4s timeout, pool of 4.
+        if (path === '/api/admin/monitor/uptime' && method === 'GET') {
+          const _now = Date.now();
+          const _targets = await _uptimeTargets(env, 20);
+          let _hist = {}; try { _hist = _hqJson(await _pcfgGet(env, 'uptime_history', ''), {}) || {}; } catch (e) {}
+          const _cold = _targets.filter(function (tg) { return !(Array.isArray(_hist[tg.id]) && _hist[tg.id].length); });
+          let _live = {}; if (_cold.length) { try { _live = await _uptimeSweep(_cold, 4); } catch (e) {} }
+          const tenants = _targets.map(function (tg) {
+            const _h = Array.isArray(_hist[tg.id]) ? _hist[tg.id] : [];
+            const _latest = _h.length ? _h[_h.length - 1] : (_live[tg.id] || null);
+            const _s24 = _uptime24h(_h, _now);
+            return { slug: tg.slug, name: tg.name, host: tg.host,
+              up: _latest ? !!_latest.up : false, status: _latest ? (_latest.status || 0) : 0, ms: _latest ? (_latest.ms || 0) : 0,
+              upPct24h: _s24.upPct24h, checks: _s24.checks };
+          });
+          return json({ ok: true, checkedAt: _now, tenants: tenants });
+        }
+
         // #253 B3: owner-readable security log (owner-only via OWNER_ONLY above -- rows carry OTHER tenants' emails
         // + IPs). Fetches the date-range window ONCE, then filters to the SECURITY_ACTIONS allow-list in JS (belt
         // and suspenders: a query-construction slip can never silently leak a non-security row) before applying the
@@ -6369,6 +6498,65 @@ function doReset(){
         const _rcode = await _referralCodeFor(env, ctx.tenant_id);
         const _rst = await env.DB.prepare("SELECT COUNT(*) referred, COALESCE(SUM(CASE WHEN status IN ('converted','rewarded') THEN 1 ELSE 0 END),0) converted, COALESCE(SUM(CASE WHEN status='rewarded' THEN 1 ELSE 0 END),0) rewarded FROM referrals WHERE referrer_tenant=?").bind(ctx.tenant_id).first();
         return json({ ok: true, enabled: true, code: _rcode, url: 'https://atlasrental.io/?ref=' + encodeURIComponent(_rcode), referred: (_rst && _rst.referred) || 0, converted: (_rst && _rst.converted) || 0, rewards_earned: (_rst && _rst.rewarded) || 0 });
+      }
+
+      // ---- TENANT SELF-SERVICE SEO HEALTH (session-authed, tenant-scoped by ctx ONLY -- NEVER a slug param, so a tenant
+      // can only ever score its OWN site). READ-ONLY: computed entirely from this tenant's own publicSite snapshot + its
+      // reviews; NEVER calls an external SEO API and NEVER touches booking/pricing/availability. Score = weighted sum of
+      // honest real signals (published, meta title/desc, About, FAQ, reviews, blog, per-asset pages, custom domain,
+      // sitemap); each signal is a check row, and the unmet ones become plain-English recommendations. Fail-open: a
+      // malformed tenant blob degrades to an empty profile (low score + recommendations), never a thrown 500.
+      if (path === '/api/seo/health' && method === 'GET') {
+        const _t = await env.DB.prepare('SELECT id,name,subdomain,custom_domain,custom_domain_status,brand,settings FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+        let _pr; try { _pr = tenantProfile(_t); } catch (e) { _pr = { settings: {}, brand: {} }; }
+        const _pub = (_pr.settings && _pr.settings.publicSite) || {};
+        const _cfg = _pub.config || {};
+        const _published = !!_pub.published;
+        const _customLive = !!(_t && _t.custom_domain && _t.custom_domain_status === 'live');
+        // Resolve this tenant's served surface (custom-domain root when live, else the apex /api/book/<slug> path).
+        const _origin = _customLive ? ('https://' + _t.custom_domain) : 'https://atlasrental.io';
+        const _seob = _seoBase(_origin, (_t && _t.subdomain) || '', _customLive);
+        // Real signals, all from the tenant's OWN data.
+        const _about = !!String(_pub.about || '').trim();
+        const _hasFaq = _seoFaq(_pr).length >= 1;
+        const _hasBlog = _blogPosts(_pr).length >= 1;
+        const _assetPages = _seoAssetPages(_pr, _seob); const _hasAssets = _assetPages.length >= 1;
+        const _metaTitle = !!String(_cfg.metaTitle || '').trim();
+        const _metaDesc = !!String(_cfg.metaDescription || '').trim();
+        const _showRev = _cfg.showReviews !== false && _pub.showReviews !== false;
+        let _revCount = 0; try { const _rs = await _publicReviewSummary(env, ctx.tenant_id); _revCount = (_rs && _rs.count) || 0; } catch (e) {}
+        const _hasReviews = _showRev && _revCount > 0;
+        const _sitemapUrls = (function () { try { return (_seoSitemapXml(_pr, _seob).match(/<loc>/g) || []).length; } catch (e) { return 0; } })();
+        const _sitemapOk = _published && _sitemapUrls >= 2;
+        // Weighted checks (weights sum to 100). ok -> adds its weight to the score; unmet -> becomes a recommendation.
+        const _defs = [
+          { key: 'published', label: 'Booking site is published', ok: _published, w: 20, severity: 'high', rec: 'Publish your booking site so search engines can find and index it.' },
+          { key: 'assets', label: 'Has named assets (per-asset pages)', ok: _hasAssets, w: 12, severity: 'high', rec: 'Add at least one named asset so each gets its own crawlable /v/<name> detail page.' },
+          { key: 'reviews', label: 'Customer reviews shown', ok: _hasReviews, w: 12, severity: 'med', rec: _showRev ? 'Collect customer reviews -- they add star-rating schema and social proof.' : 'Turn on the reviews section and collect reviews so star ratings can show.' },
+          { key: 'about', label: 'About section authored', ok: _about, w: 10, severity: 'med', rec: 'Write an About section -- it powers your /about page and adds trust and keywords.' },
+          { key: 'faq', label: 'Has at least one FAQ', ok: _hasFaq, w: 10, severity: 'med', rec: 'Add FAQs -- they build an FAQPage schema and win long-tail searches.' },
+          { key: 'blog', label: 'Has at least one published blog post', ok: _hasBlog, w: 10, severity: 'low', rec: 'Publish a blog post or two -- fresh content helps you rank for local terms.' },
+          { key: 'metaTitle', label: 'Custom SEO title set', ok: _metaTitle, w: 8, severity: 'med', rec: 'Set a custom SEO title (meta title) that names your business and city.' },
+          { key: 'metaDescription', label: 'Meta description set', ok: _metaDesc, w: 8, severity: 'med', rec: 'Write a meta description (~150 chars) summarizing what you rent and where.' },
+          { key: 'customDomain', label: 'Custom domain connected', ok: _customLive, w: 5, severity: 'low', rec: 'Connect a custom domain -- your own domain builds authority over the shared path.' },
+          { key: 'sitemap', label: 'Sitemap is populated', ok: _sitemapOk, w: 5, severity: 'low', rec: 'Publish your site so sitemap.xml lists your pages for crawlers.' }
+        ];
+        let _score = 0; const checks = []; const recommendations = [];
+        _defs.forEach(function (d) {
+          if (d.ok) _score += d.w; else recommendations.push(d.rec);
+          checks.push({ key: d.key, label: d.label, ok: d.ok, severity: d.severity, note: d.ok ? 'OK' : d.rec });
+        });
+        _score = Math.max(0, Math.min(100, Math.round(_score)));
+        // Served URLs (indexable only once published; a crawler sees them the moment the site is live).
+        const pages = [{ url: _seob.home, label: 'Home', indexable: _published }];
+        if (_about) pages.push({ url: _seob.base + '/about', label: 'About', indexable: _published });
+        pages.push({ url: _seob.base + '/faq', label: 'FAQ', indexable: _published });
+        pages.push({ url: _seob.base + '/contact', label: 'Contact', indexable: _published });
+        if (_hasBlog) pages.push({ url: _seob.base + '/blog', label: 'Blog', indexable: _published });
+        _assetPages.slice(0, 24).forEach(function (a) { pages.push({ url: a.url, label: a.name, indexable: _published }); });
+        try { _seoLandings(_pr, _seob.base).forEach(function (l) { pages.push({ url: l.url, label: l.h1, indexable: _published }); }); } catch (e) {}
+        return json({ ok: true, score: _score, checks: checks, pages: pages, recommendations: recommendations,
+          site: { published: _published, customDomain: _customLive ? _t.custom_domain : null, sitemapUrl: _seob.sitemapUrl } });
       }
 
       // ---- TENANT SELF-SERVICE DATA EXPORT (GDPR/CCPA data portability): this tenant downloads its OWN operating
@@ -8010,6 +8198,28 @@ function doReset(){
       }
       }
     } catch (e) { /* competitor deep-crawl + learning is best-effort */ }
+    // ---- Synthetic UPTIME probe (additive, best-effort). Hourly-gated so it runs at most ~1x/hr even though the cron
+    // ticks more often. Bounded: at most 20 connected tenant sites, a pool of 4 in-flight probes, a 4s timeout each --
+    // it can never open unbounded subrequests or stall the cron. Appends {t,up,status,ms} to each tenant's trailing
+    // history in platform_config('uptime_history'), CAPPED at the last 24 entries per tenant AND keyed only to the
+    // currently-connected tenants (disconnected ones drop out) -> the store is strictly bounded. Read back by
+    // /api/admin/monitor/uptime. Own try/catch so it can never break the GC/cron above.
+    try {
+      if (await _due(env, 'uptime_probe', 3300000)) {
+        const _uts = await _uptimeTargets(env, 20);
+        if (_uts.length) {
+          const _ures = await _uptimeSweep(_uts, 4);
+          let _uh = {}; try { _uh = _hqJson(await _pcfgGet(env, 'uptime_history', ''), {}) || {}; } catch (e) {}
+          const _next = {};
+          _uts.forEach(function (tg) {
+            const _c = _ures[tg.id]; if (!_c) return;
+            const _prev = Array.isArray(_uh[tg.id]) ? _uh[tg.id] : [];
+            _next[tg.id] = _prev.concat([_c]).slice(-24);   // cap to last 24 -> bounded; only connected tenants retained
+          });
+          try { await _pcfgSet(env, 'uptime_history', JSON.stringify(_next)); } catch (e) {}
+        }
+      }
+    } catch (e) { /* synthetic uptime probe is best-effort -- never breaks the cron */ }
     // Atlas Counsel: append today's institutional-memory entry ("what deserves attention"), once per day. Best-effort; no AI key required.
     try { await _counselCompute(env, {}); } catch (e) { /* Counsel journal is best-effort */ }
     try { if (await _due(env, 'counsel_weekly', 7 * 86400000)) await _counselRollup(env, 'weekly'); } catch (e) { /* weekly rollup best-effort */ }
@@ -8458,6 +8668,57 @@ async function _availabilityCheck(env, prof, pubAssets, cfg, assetName, startTs,
 // content before the client #app hydrates). Passed to _bookPageHtml as `seo` -> _pageDoc headExtra; NEVER applied to
 // the portal/receipt pages. Pure + synchronous (no DB, no await). Returns { title, head, noscript }; every value is
 // esc()'d for HTML, or JSON.stringify'd + `<`-escaped for the JSON-LD, so a tenant string can never break the markup.
+// ===================================================================== synthetic-uptime helpers (additive, read-only)
+// Shared by GET /api/admin/monitor/uptime AND the hourly-gated cron probe. They mirror the target-selection + probe
+// logic already in /api/admin/site-uptime (published tenants only; custom-domain root when live, else the apex
+// /api/book/<slug> path), factored out so the route and the cron agree. NEVER touch booking/pricing/availability --
+// a probe is a plain best-effort HTTP GET of a tenant's own PUBLIC site root with a short timeout.
+// Build the capped list of connected/published tenant sites to probe. Bounded by `cap` (default 20) so neither the
+// route nor the cron ever fans out unboundedly. Fail-open per row (a malformed tenant blob is skipped, never thrown).
+async function _uptimeTargets(env, cap) {
+  const rows = ((await env.DB.prepare("SELECT id,name,subdomain,custom_domain,custom_domain_status,settings FROM tenants WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200").all()).results) || [];
+  const out = [];
+  for (let i = 0; i < rows.length && out.length < (cap || 20); i++) {
+    const t = rows[i]; let pr; try { pr = tenantProfile(t); } catch (e) { continue; }
+    const pub = (pr.settings && pr.settings.publicSite) || {};
+    if (!pub.published) continue;   // only sites the tenant actually published are "connected" -> worth monitoring
+    let host, url;
+    if (t.custom_domain && t.custom_domain_status === 'live') { host = String(t.custom_domain); url = 'https://' + host + '/'; }
+    else { host = 'atlasrental.io/api/book/' + t.subdomain; url = 'https://atlasrental.io/api/book/' + t.subdomain; }
+    out.push({ id: t.id, slug: t.subdomain || '', name: t.name || '', host: host, url: url });
+  }
+  return out;
+}
+// One best-effort probe -> {t, up, status, ms}. redirect:'manual' so a 3xx counts as up (a served redirect is alive);
+// any network error / timeout -> up:false, status:0. Never throws.
+async function _uptimeProbe(tg) {
+  const t0 = Date.now();
+  try {
+    const r = await _fetchTimeout(tg.url, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'AtlasUptime/1' } }, 4000);
+    const status = (r && r.status) || 0;
+    return { t: Date.now(), up: !!(status >= 200 && status < 400), status: status, ms: Date.now() - t0 };
+  } catch (e) { return { t: Date.now(), up: false, status: 0, ms: Date.now() - t0 }; }
+}
+// Bounded-concurrency sweep: at most `poolN` (default 4) in-flight probes so a batch of slow sites can never open N
+// simultaneous subrequests or stall the caller. Returns { tenantId: {t,up,status,ms} }.
+async function _uptimeSweep(targets, poolN) {
+  const results = {}; let idx = 0;
+  async function worker() { while (idx < targets.length) { const i = idx++; const tg = targets[i]; results[tg.id] = await _uptimeProbe(tg); } }
+  const n = Math.max(1, Math.min(poolN || 4, targets.length));
+  const workers = []; for (let k = 0; k < n; k++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
+}
+// Summarize a tenant's capped check history over the trailing 24h -> {upPct24h, checks}. checks<1 -> upPct24h:null (an
+// honest "not enough data yet" rather than a fake 100). `hist` is the stored array of {t,up,...}, newest-appended.
+function _uptime24h(hist, now) {
+  const cut = (now || Date.now()) - 24 * 3600000;
+  const win = (Array.isArray(hist) ? hist : []).filter(function (h) { return h && (h.t || 0) >= cut; });
+  if (!win.length) return { upPct24h: null, checks: 0 };
+  const up = win.reduce(function (s, h) { return s + (h.up ? 1 : 0); }, 0);
+  return { upPct24h: Math.round((up / win.length) * 100), checks: win.length };
+}
+
 // ===================================================================== per-tenant SEO helpers (additive)
 // Pure, synchronous, throw-safe helpers that power the per-tenant sitemap/robots, the city/industry landing pages,
 // the image-SEO attributes, and the JSON-LD schema depth in _bookHeadTags. They ONLY read a tenant's already-published
