@@ -2598,7 +2598,7 @@ const Atlas = (function(){
     onboarded:false, onboardStarted:false, onboardStep:0, firstAsset:{}, invite:{}, team:[], _actAs:null,
     legal:{ jur:{country:'United States', region:''}, agreement:{status:'none', text:'', flags:[]}, tos:{status:'none', text:''}, privacy:{status:'none', text:''} },
     comms:_defaultComms(), promos:[], events:[], trackers:null, portalCfg:null,
-    website:{ built:false, headline:'', tagline:'', about:'', showFleet:true, showAbout:true, showContact:true,
+    website:{ built:false, headline:'', tagline:'', about:'', showFleet:true, showAbout:true, showContact:true, posts:[],
       domain:{ mode:'sub', custom:'', status:'live' } }, websitePaid:false }; }
   // Generic optional extras a customer can add to a booking. per:'unit' = charged per day/hour/week; per:'flat' = one-time.
   // Fully editable -- operators change these, and can add one-off custom extras right on any booking.
@@ -7494,6 +7494,7 @@ const Atlas = (function(){
   // honoring the plan's UNIT cap. The id is pre-generated in snapshot() (which runs synchronously right before apply(),
   // nothing else can create an asset in between) and couriered via _aioNewAssetId so undo() can remove exactly this row.
   var _aioNewAssetId='';
+  var _aioNewPostId='';   // pre-generated post id for content.addPost -- couriered from snapshot() to apply()/undo() (mirrors _aioNewAssetId)
   function _aioAddAsset(id,p){
     if(!_canCap('fleetEdit')) return false;
     var cap=_vehCap(); if(cap!==Infinity && _fleetUnits()>=cap) return false;   // plan/unit cap -- same gate as addVehicle()
@@ -7856,6 +7857,19 @@ const Atlas = (function(){
       snapshot:function(){ return {idx:(Array.isArray(_web().faq)?_web().faq.length:0)}; },
       apply:function(p){ if(!_canCap('webEdit')) return false; var before=(Array.isArray(_web().faq)?_web().faq.length:0); webFaqAdd(); var f=Array.isArray(_web().faq)?_web().faq:[]; if(f.length<=before) return false; var i=f.length-1; webFaqSet(i,'q',String(p.q||'').trim().slice(0,200)); webFaqSet(i,'a',String(p.a||'').trim().slice(0,1000)); try{renderWebsite();}catch(e){} },
       undo:function(snap,p){ var w=_web(); var f=Array.isArray(w.faq)?w.faq:[]; var q=String((p&&p.q)||'').trim().slice(0,200); var i=(snap&&snap.idx!=null&&snap.idx<f.length&&String((f[snap.idx]&&f[snap.idx].q)||'')===q)?snap.idx:-1; if(i<0){ for(var j=f.length-1;j>=0;j--){ if(String((f[j]&&f[j].q)||'')===q){ i=j; break; } } } if(i>=0) webFaqRemove(i); }
+    },
+    /* ---- Blog / content verb: content.addPost reuses the SAME webPostAdd setter the manager form calls (webEdit
+       RBAC, save()->sync, live preview inherited). The id is pre-generated in snapshot() and couriered via
+       _aioNewPostId so undo() removes exactly this post -- the same deterministic pattern as asset.add. ---- */
+    'content.addPost':{
+      params:['title','body'], hint:'title is the blog post headline. body is the post content (a paragraph or more).',
+      cap:'webEdit', money:false, tier:'confirm',
+      label:function(p){ return 'Add a blog post: "'+esc(String((p&&p.title)||'').trim())+'"'; },
+      summary:function(p){ return {field:'Blog', before:'(new)', after:String((p&&p.title)||'').trim()}; },
+      validate:function(p){ var t=String((p&&p.title)||'').trim(), b=String((p&&p.body)||'').trim(); if(!t||t.length<2) return {ok:false,msg:'What should the post be titled?'}; if(!b||b.length<10) return {ok:false,msg:'Give me a bit more to work with for the post body.'}; if(t.length>120) return {ok:false,msg:'Keep the title under 120 characters.'}; if(b.length>20000) return {ok:false,msg:'That post is too long -- keep it under 20000 characters.'}; if((Array.isArray(_web().posts)?_web().posts.length:0)>=50) return {ok:false,msg:'You already have 50 posts, the maximum. Remove one to add another.'}; return {ok:true}; },
+      snapshot:function(){ _aioNewPostId=_postId(); return {id:_aioNewPostId}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; var id=_aioNewPostId||_postId(); _aioNewPostId=''; var before=(Array.isArray(_web().posts)?_web().posts.length:0); webPostAdd(String(p.title||'').trim(), String(p.body||'').trim(), id); var f=Array.isArray(_web().posts)?_web().posts:[]; if(f.length<=before) return false; try{renderWebsite();}catch(e){} return true; },
+      undo:function(snap){ if(!snap||!snap.id) return; webPostRemove(snap.id); }
     }
   };
   // Phase 3 (deferred, not built here): nav.reorder (needs new S.nav.order state), per-asset booking
@@ -8047,7 +8061,11 @@ const Atlas = (function(){
       || /\b(write|writing|rewrite|update|change|set|edit|improve|fill|redo|generate) (my |the |our )?about\b/.test(s)
       || /\b(font|fonts|typeface|typefaces|serif)\b/.test(s)
       || /\b(template|templates|theme|layout)\b/.test(s)
-      || /\bfaqs?\b|\bfrequently asked\b|\bcommon questions?\b/.test(s);
+      || /\bfaqs?\b|\bfrequently asked\b|\bcommon questions?\b/.test(s)
+      // Blog / content: a post, article, news or general content ask -> content.addPost. Broad on purpose --
+      // the planner + content.addPost validate() are the real authority; a false match just gets a normal reply.
+      || /\b(blog|post|posts|article|articles|news|content)\b/.test(s)
+      || /\bwrite\b[a-z0-9' .,-]{0,30}\b(post|article|blog)\b/.test(s);
   }
   function _aioLooksActionable(s){
     if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
@@ -9149,8 +9167,8 @@ const Atlas = (function(){
   function _tierUnlocks(id){ var m={ starter:'Bookings, contracts, member portal, analytics', pro:'+ Live GPS tracking &amp; 3D map', enterprise:'+ AI website builder, multi-location', business:'+ 500 '+((S.fleet&&S.fleet.nouns)||'assets')+', priority support', unlimited:'+ Unlimited everything' }; return m[id]||''; }
   function openWebsite(){ if(closeAio) closeAio(); go('website'); }
   /* ---- WEBSITE module: Atlas.io-built site from your data + domain connect/buy (Phase 3) ---- */
-  function _web(){ if(!S.website) S.website={built:false,headline:'',tagline:'',about:'',showFleet:true,showAbout:true,showContact:true,domain:{mode:'sub',custom:'',status:'live'}};
-    if(!S.website.domain) S.website.domain={mode:'sub',custom:'',status:'live'}; return S.website; }
+  function _web(){ if(!S.website) S.website={built:false,headline:'',tagline:'',about:'',showFleet:true,showAbout:true,showContact:true,posts:[],domain:{mode:'sub',custom:'',status:'live'}};
+    if(!S.website.domain) S.website.domain={mode:'sub',custom:'',status:'live'}; if(!Array.isArray(S.website.posts)) S.website.posts=[]; return S.website; }
   function _subUrl(){ return (S.brand.subdomain||'yoursite').replace(/[^a-z0-9]/g,'')+'.atlasrental.site'; }
   function _siteUrl(){ var w=_web(); return (w.domain.mode==='custom'&&w.domain.custom)? w.domain.custom : _subUrl(); }
   // ---- Public booking site: publish the profile to the worker so a REAL customer-reachable page exists ----
@@ -9163,6 +9181,7 @@ const Atlas = (function(){
     collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
     showFleet:w.showFleet!==false, showAbout:w.showAbout!==false, showReviews:w.showReviews!==false, showContact:w.showContact!==false,   // P0-1: owner section toggles now reach the served page (worker _sec() hides a section only on explicit false)
     faq:_webFaqList(), font:(w.font||'system'), template:(w.template||'classic'), metaTitle:String(w.metaTitle||'').trim().slice(0,70), metaDescription:String(w.metaDescription||'').trim().slice(0,300), accent2:(_aioHex(w.accent2)||''),   // Website builder (AI + owner controls): worker RENDERS these from config -- faq[{q,a}], font system|serif|modern|elegant, template classic|luxury|bold|minimal, meta tags + secondary accent. Defaults ''/'system'/'classic' = current look.
+    posts:(Array.isArray(w.posts)?w.posts:[]).map(function(p){ return {slug:p.slug,title:p.title,body:p.body,excerpt:p.excerpt,published:p.published!==false,at:p.at}; }),   // Blog: emit all posts; the worker filters to published for /blog + per-post pages
     analytics:{ ga:String(wk.ga||'').trim(), pixel:String(wk.pixel||'').trim() } }; }   // #24: GA + Meta/TikTok pixel actually injected into the served booking page (see worker _bookPageHtml)
   // Cross-sys G4: a signature of what the PUBLIC site would serve, captured at publish time. If the live Fleet/pricing/copy later diverges, the owner sees an "unpublished changes" badge (the served site keeps the last snapshot until re-publish).
   function _sitePubSig(){ try{ return JSON.stringify({a:_publicSiteAssets(),c:_publicSiteConfig(),h:_web().headline||'',ab:_web().about||''}); }catch(e){ return ''; } }
@@ -9335,6 +9354,45 @@ const Atlas = (function(){
   function webFaqAdd(){ if(!_guard('webEdit'))return; var w=_web(); if(!Array.isArray(w.faq))w.faq=[]; if(w.faq.length>=20){ toast('Up to 20 FAQs'); return; } w.faq.push({q:'',a:''}); save(); _webRefreshFaq(); }
   function webFaqSet(i,field,v){ var w=_web(); if(!Array.isArray(w.faq)||!w.faq[i])return; var k=(field==='a')?'a':'q'; w.faq[i][k]=String(v||'').slice(0, k==='a'?1000:200); save(); _webRefreshPreview(); }
   function webFaqRemove(i){ if(!_guard('webEdit'))return; var w=_web(); if(!Array.isArray(w.faq))return; w.faq.splice(i,1); save(); _webRefreshFaq(); _webRefreshPreview(); }
+  // ---- Blog / Content engine: S.website.posts = [{id,slug,title,body,excerpt,published,at}]. Mirrors the FAQ setters
+  //      exactly (mutate _web() -> save() -> re-render). Posts reach the served page via _publicSiteConfig().posts, so
+  //      editing one flips the "unpublished changes" badge the same automatic way FAQ/pricing do (via _sitePubSig).
+  //      _web() guarantees posts is an array, so every setter is fail-safe when the id is missing. ----
+  function _postId(){ return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }   // 'p'+ unique -- same scheme as _assetId
+  function _postSlug(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,63); }   // reuse the _bookingSlug transform for post slugs
+  function _postExcerpt(b){ return String(b||'').replace(/\s+/g,' ').trim().slice(0,160); }
+  function _webPost(id){ var w=_web(), a=Array.isArray(w.posts)?w.posts:[]; for(var i=0;i<a.length;i++){ if(a[i]&&a[i].id===id) return a[i]; } return null; }
+  // Create a post. _id is optional so the AI verb can pre-generate the id in snapshot() and undo it deterministically.
+  function webPostAdd(title, body, _id){ if(!_guard('webEdit'))return ''; var w=_web(); if(!Array.isArray(w.posts))w.posts=[]; if(w.posts.length>=50){ toast('Up to 50 posts'); return ''; }
+    var t=String(title||'').trim().slice(0,120), b=String(body||'').trim().slice(0,20000); var id=_id||_postId();
+    w.posts.push({ id:id, slug:(_postSlug(t)||('post-'+id)), title:t, body:b, excerpt:_postExcerpt(b), published:true, at:Date.now() });
+    save(); _webRefreshPosts(); _webRefreshPreview(); return id; }
+  function webPostSet(id, patch){ var p=_webPost(id); if(!p)return; patch=patch||{};
+    if('title' in patch){ p.title=String(patch.title||'').slice(0,120); p.slug=(_postSlug(p.title)||('post-'+p.id)); }   // re-derive slug when the title changes
+    if('body' in patch){ p.body=String(patch.body||'').slice(0,20000); p.excerpt=_postExcerpt(p.body); }               // re-derive excerpt when the body changes
+    if('published' in patch) p.published=!!patch.published;
+    save(); _webRefreshPreview(); }   // preview only -- never re-render the manager mid-type (mirrors webFaqSet, keeps input focus)
+  function webPostRemove(id){ if(!_guard('webEdit'))return; var w=_web(); if(!Array.isArray(w.posts))return; var n=w.posts.length; w.posts=w.posts.filter(function(p){ return p&&p.id!==id; }); if(w.posts.length!==n){ save(); _webRefreshPosts(); _webRefreshPreview(); } }
+  function webPostToggle(id){ if(!_guard('webEdit'))return; var p=_webPost(id); if(!p)return; p.published=(p.published===false); save(); _webRefreshPosts(); _webRefreshPreview(); }
+  function _webPostsHtml(){ return '<div id="webPostBox">'+_webPostsInner()+'</div>'; }
+  function _webRefreshPosts(){ var el=document.getElementById('webPostBox'); if(el) el.innerHTML=_webPostsInner(); }
+  function _webPostsInner(){ var w=_web(), posts=Array.isArray(w.posts)?w.posts:[];
+    var rows=posts.map(function(p){ return '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
+      +'<input class="input" style="margin-bottom:6px" placeholder="Post title" value="'+esc((p&&p.title)||'')+'" oninput="Atlas.webPostSet(\''+esc(p.id)+'\',{title:this.value})">'
+      +'<textarea class="input" rows="3" placeholder="Write your update, news or guide..." oninput="Atlas.webPostSet(\''+esc(p.id)+'\',{body:this.value})">'+esc((p&&p.body)||'')+'</textarea>'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">'
+        +'<label class="cfg-check" style="margin:0"><input type="checkbox" '+((p&&p.published!==false)?'checked':'')+' onchange="Atlas.webPostToggle(\''+esc(p.id)+'\')">Published</label>'
+        +'<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="if(confirm(\'Delete this post?\'))Atlas.webPostRemove(\''+esc(p.id)+'\')">Remove</button>'
+      +'</div></div>'; }).join('');
+    return (rows||'<div class="bk-lenhint" style="margin:0 0 8px">No posts yet. Publish updates, news or guides &mdash; each becomes a page on your site that brings in search traffic and gives customers a reason to come back.</div>')
+      +'<div style="border-top:1px solid var(--line);margin-top:8px;padding-top:10px">'
+        +'<input class="input" id="webPostNewTitle" style="margin-bottom:6px" placeholder="New post title">'
+        +'<textarea class="input" id="webPostNewBody" rows="3" placeholder="Write your update, news or guide..."></textarea>'
+        +'<button class="btn btn--ghost btn--sm btn--full" style="margin-top:6px" onclick="Atlas.webPostAddFromForm()">+ Add post</button>'
+      +'</div>'; }
+  function webPostAddFromForm(){ if(!_guard('webEdit'))return; var t=(val('webPostNewTitle')||'').trim(), b=(val('webPostNewBody')||'').trim();
+    if(t.length<2){ toast('Give the post a title (2+ characters)'); return; } if(b.length<1){ toast('Write something for the post'); return; }
+    webPostAdd(t,b); }
   function _webBuilderHtml(w){
     var side='<div class="web-side">'
       +'<div class="web-live"><span class="dot"></span><div>'+(_bookingSitePublished()?('Live at <b>'+esc(_bookingLink())+'</b>'):'Preview &mdash; <b>publish below</b> to go live')+'</div></div>'
@@ -9349,6 +9407,7 @@ const Atlas = (function(){
         +'<div class="field" style="margin-bottom:0"><label>SEO description</label><textarea class="input" rows="2" maxlength="300" placeholder="A short summary that shows under your title in search results." oninput="Atlas.setWebField(\'metaDescription\',this.value)">'+esc(w.metaDescription||'')+'</textarea></div>'
       +'</div>'
       +'<div class="set-block"><h3>FAQ</h3><div class="desc">Answer common questions right on your site.</div>'+_webFaqHtml()+'</div>'
+      +'<div class="set-block"><h3>Blog / Content</h3><div class="desc">Publish posts, news and guides &mdash; each becomes a page on your site, great for SEO and returning customers. Atlas.io can also draft one from chat.</div>'+_webPostsHtml()+'</div>'
       +'<div class="set-block"><h3>Sections</h3><div class="desc">Show or hide parts of your site.</div>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showFleet?'checked':'')+' onchange="Atlas.toggleWebSection(\'showFleet\',this.checked)">Fleet listings ('+DATA.assets.length+' '+esc(S.fleet.nouns)+')</label>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showAbout?'checked':'')+' onchange="Atlas.toggleWebSection(\'showAbout\',this.checked)">About section</label>'
@@ -9394,6 +9453,9 @@ const Atlas = (function(){
     if(w.showAbout){ h+='<div class="site__sec site__about"><h2>About '+esc(S.brand.name)+'</h2><p>'+esc(w.about||'')+'</p></div>'; }
     if(w.showReviews!==false) h+=_siteReviewsHtml();   // owner can hide the reviews section from the public site
     var _faq=_webFaqList(); if(_faq.length){ h+='<div class="site__sec site__faq"><h2>Frequently asked questions</h2>'+_faq.slice(0,10).map(function(f){ return '<div style="text-align:left;max-width:640px;margin:0 auto 12px"><div style="font-weight:700;margin-bottom:3px">'+esc(f.q)+'</div><div style="color:var(--muted);font-size:14px">'+esc(f.a)+'</div></div>'; }).join('')+'</div>'; }   // live FAQ preview (published via config.faq)
+    var _pp=(Array.isArray(w.posts)?w.posts:[]).filter(function(p){ return p&&p.published!==false&&String((p&&p.title)||'').trim(); });   // live "Latest posts" strip approximates the served /blog surface
+    if(_pp.length){ h+='<div class="site__sec site__blog"><h2>Latest posts</h2><div class="sub">News, updates and guides from '+esc(S.brand.name)+'</div>'
+      +'<div style="max-width:640px;margin:0 auto">'+_pp.slice(0,3).map(function(p){ var ex=_postExcerpt(p.excerpt||p.body); return '<div style="text-align:left;border-top:1px solid var(--line);padding:12px 0"><div style="font-weight:700;margin-bottom:3px">'+esc(p.title)+'</div>'+(ex?('<div style="color:var(--muted);font-size:14px">'+esc(ex)+'</div>'):'')+'</div>'; }).join('')+'</div></div>'; }
     h+=_sitePromoSection();
     if(w.showContact){ h+='<div class="site__sec"><h2>Ready to book?</h2><div class="sub">Reserve online in minutes.</div><button class="site__cta" style="background:var(--brand);color:#fff" onclick="Atlas.webBookNow(\'\')">Start your booking</button></div>'; }
     h+='<div class="site__foot">&copy; '+esc(S.brand.name)+' &middot; '+esc(_siteUrl())
@@ -10132,7 +10194,7 @@ const Atlas = (function(){
     t.fleet=_fleetOf('units'); t.owner='Jordan'; t.onboarded=true;
     t.plan='active'; t.tier='business'; t.subscribedAt=Date.now()-12*86400000; t.card={brand:'Visa',last4:'4242'};
     t.money.rateModel='day'; t.money.baseRate=175;
-    t.website={built:false,headline:'',tagline:'',about:'',showFleet:true,showAbout:true,showContact:true,domain:{mode:'sub',custom:'',status:'live'}};
+    t.website={built:false,headline:'',tagline:'',about:'',showFleet:true,showAbout:true,showContact:true,posts:[],domain:{mode:'sub',custom:'',status:'live'}};
     _lsSet('atlas_tenant_demobig', t);
     var props=['Harbor Lofts','Vista Towers','Cedar Grove','The Marquess','Bayfront Residences','Elm & 5th'];
     var TNS=['Alex Morgan','Sam Patel','Jordan Lee','Riley Cruz','Casey Kim','Drew Silva','Jamie Fox','Taylor Ross','Robin Vale','Quinn Ayers'];
@@ -10328,7 +10390,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,

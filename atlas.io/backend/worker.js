@@ -3344,7 +3344,7 @@ export default {
     // shared securityHeaders (marketing pages -> not the frameable booking form). Additive; never touches the booking form,
     // /book intake, pricing, or availability. Any error / unresolved / unpublished domain falls through to normal routing.
     if (method === 'GET' && host && host !== 'atlasrental.io' && host !== 'www.atlasrental.io' && host.indexOf('.workers.dev') < 0 && host !== 'localhost' && host !== '127.0.0.1'
-        && (/^\/v\/[a-z0-9-]{1,80}$/.test(path) || path === '/about' || path === '/faq' || path === '/contact')) {
+        && (/^\/v\/[a-z0-9-]{1,80}$/.test(path) || path === '/about' || path === '/faq' || path === '/contact' || path === '/blog' || /^\/blog\/[a-z0-9-]{1,80}$/.test(path))) {
       try {
         await ensurePlatformSchema(env);
         const _hb2 = host.replace(/^www\./, '');
@@ -3358,6 +3358,8 @@ export default {
             if (path === '/about') return _ok2(_aboutPageHtml(_pr2, _color2, _seob2));
             if (path === '/faq') return _ok2(_faqPageHtml(_pr2, _color2, _seob2));
             if (path === '/contact') return _ok2(_contactPageHtml(_pr2, _color2, _seob2));
+            if (path === '/blog') return _ok2(_blogIndexHtml(_pr2, _color2, _seob2));
+            if (path.indexOf('/blog/') === 0) { const _bpost2 = _blogBySlug(_pr2, path.slice(6)); return _ok2(_bpost2 ? _blogPostHtml(_pr2, _color2, _seob2, _bpost2) : _blogIndexHtml(_pr2, _color2, _seob2)); }   // strip '/blog/'; unknown slug -> index (never a hard 404)
             const _asset2 = _assetBySlug(_pr2, path.slice(3));   // strip '/v/'
             if (_asset2) {
               let _rev2 = { count: 0, avg: 0, recent: [] }; try { _rev2 = await _publicReviewSummary(env, _cd2.id); } catch (e) {}
@@ -6021,7 +6023,7 @@ function doReset(){
       }
       // ---- PER-TENANT served MULTI-PAGES for the path-based booking surface: /api/book/<slug>/{v/<asset-slug>,about,faq,contact}.
       // Additive; the /api/book/<slug> booking page below is untouched. Fail-open 404 on anything unresolved/unpublished.
-      const bpage = path.match(/^\/api\/book\/([a-z0-9-]{1,63})\/(about|faq|contact|v\/[a-z0-9-]{1,80})$/);
+      const bpage = path.match(/^\/api\/book\/([a-z0-9-]{1,63})\/(about|faq|contact|blog|blog\/[a-z0-9-]{1,80}|v\/[a-z0-9-]{1,80})$/);
       if (bpage && method === 'GET') {
         const _pgslug = bpage[1], _pgsub = bpage[2];
         const _pgtr = await env.DB.prepare('SELECT id,name,subdomain,brand,settings FROM tenants WHERE subdomain=?').bind(_pgslug).first();
@@ -6034,6 +6036,8 @@ function doReset(){
         if (_pgsub === 'about') return _pgok(_aboutPageHtml(_pgpr, _pgcolor, _pgseob));
         if (_pgsub === 'faq') return _pgok(_faqPageHtml(_pgpr, _pgcolor, _pgseob));
         if (_pgsub === 'contact') return _pgok(_contactPageHtml(_pgpr, _pgcolor, _pgseob));
+        if (_pgsub === 'blog') return _pgok(_blogIndexHtml(_pgpr, _pgcolor, _pgseob));
+        if (_pgsub.indexOf('blog/') === 0) { const _pgbpost = _blogBySlug(_pgpr, _pgsub.slice(5)); return _pgok(_pgbpost ? _blogPostHtml(_pgpr, _pgcolor, _pgseob, _pgbpost) : _blogIndexHtml(_pgpr, _pgcolor, _pgseob)); }   // strip 'blog/'; unknown slug -> index (never a hard 404)
         const _pgasset = _assetBySlug(_pgpr, _pgsub.slice(2));   // strip 'v/'
         if (_pgasset) {
           let _pgrev = { count: 0, avg: 0, recent: [] }; try { _pgrev = await _publicReviewSummary(env, _pgtr.id); } catch (e) {}
@@ -8571,6 +8575,7 @@ function _seoSitemapXml(prof, seob) {
   _seoAssetAnchors(prof, seob.home).forEach(function (a) { urls.push(a.url); });
   _seoAssetPages(prof, seob).forEach(function (a) { urls.push(a.url); });     // per-asset DETAIL pages (/v/<slug>)
   _seoStaticPages(prof, seob).forEach(function (p) { urls.push(p.url); });    // About (if authored) / FAQ / Contact
+  _seoBlogPages(prof, seob).forEach(function (a) { urls.push(a.url); });      // Blog index + one /blog/<slug> per post
   var seen = {}, out = [];
   urls.forEach(function (u) { if (u && !seen[u]) { seen[u] = 1; out.push(u); } });
   return '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
@@ -8727,6 +8732,7 @@ function _servedNav(prof, seob, active) {
     var home = seob.home, base = seob.base;
     var items = [['home', 'Home', home], ['fleet', 'Fleet', home + '#fleet']];
     if (about) items.push(['about', 'About', base + '/about']);
+    if (_blogPosts(prof).length) items.push(['blog', 'Blog', base + '/blog']);
     items.push(['faq', 'FAQ', base + '/faq']);
     items.push(['contact', 'Contact', base + '/contact']);
     var links = items.map(function (it) {
@@ -8745,6 +8751,32 @@ function _assetBySlug(prof, slug) {
     for (var i = 0; i < assets.length; i++) {
       var nm = String((assets[i] && assets[i].name) || '').trim();
       if (nm && slugify(nm) === slug) return assets[i];
+    }
+  } catch (e) {}
+  return null;
+}
+// ---- served blog / content engine (additive) -------------------------------------------------------------------
+// Published posts for a tenant's public site, stored by the client at publicSite.config.posts as
+// {slug,title,body,excerpt,published,at} (at = ms epoch). Pure + fail-open (-> []). Valid = non-empty title AND body
+// AND published !== false; sorted newest-first by numeric `at` (NEVER reads the clock -> no Date.now()); capped at 60.
+function _blogPosts(prof) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+    var raw = Array.isArray(cfg.posts) ? cfg.posts : [];
+    var out = raw.filter(function (p) {
+      return p && String(p.title || '').trim() && String(p.body || '').trim() && p.published !== false;
+    });
+    out.sort(function (a, b) { return (Number(b.at) || 0) - (Number(a.at) || 0); });
+    return out.slice(0, 60);
+  } catch (e) { return []; }
+}
+// First published post whose slugified slug|title matches. null when none. Mirrors _assetBySlug.
+function _blogBySlug(prof, slug) {
+  try {
+    var posts = _blogPosts(prof);
+    for (var i = 0; i < posts.length; i++) {
+      var p = posts[i];
+      if (slugify(String(p.slug || p.title)) === slug) return p;
     }
   } catch (e) {}
   return null;
@@ -8778,6 +8810,20 @@ function _seoStaticPages(prof, seob) {
     return out;
   } catch (e) { return []; }
 }
+// Blog page descriptors: the /blog index + one /blog/<slug> per published post, gated so the sitemap never lists a
+// blog URL when the tenant has no posts. Deduped on slug. Mirrors _seoStaticPages / _seoAssetPages; used by _seoSitemapXml.
+function _seoBlogPages(prof, seob) {
+  try {
+    var posts = _blogPosts(prof);
+    if (!posts.length) return [];
+    var out = [{ key: 'blog', url: seob.base + '/blog' }], seen = {};
+    posts.forEach(function (p) {
+      var slug = slugify(String(p.slug || p.title)); if (!slug || seen[slug]) return; seen[slug] = 1;
+      out.push({ slug: slug, url: seob.base + '/blog/' + slug });
+    });
+    return out;
+  } catch (e) { return []; }
+}
 // Best-effort JSON-LD @type for an asset detail page: a road/watercraft-style rental -> schema.org Vehicle (a Product
 // subtype), everything else -> Product. Purely a schema-richness hint; both types are valid Offer carriers.
 function _looksVehicle(noun, type) {
@@ -8807,7 +8853,7 @@ function _servedPageHead(prof, cfg, color, o) {
   var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': o.graph || [] }).replace(/</g, '\\u003c');
   return '<meta name="description" content="' + esc(desc) + '">'
     + (canon ? ('<link rel="canonical" href="' + esc(canon) + '">') : '')
-    + '<meta name="robots" content="index,follow">'
+    + '<meta name="robots" content="' + (o.noindex ? 'noindex,follow' : 'index,follow') + '">'
     + (o.sitemapUrl ? ('<link rel="sitemap" type="application/xml" href="' + esc(o.sitemapUrl) + '">') : '')
     + '<meta property="og:type" content="' + esc(o.ogType || 'website') + '">'
     + '<meta property="og:site_name" content="' + esc(biz) + '">'
@@ -8893,7 +8939,7 @@ function _aboutPageHtml(prof, color, seob) {
       { '@type': 'ListItem', position: 2, name: 'About', item: canon } ] }
   ];
   if (img) graph[1].logo = img;
-  var head = _servedPageHead(prof, cfg, color, { title: 'About ' + biz, desc: about, canon: canon, sitemapUrl: seob.sitemapUrl, image: img, graph: graph });
+  var head = _servedPageHead(prof, cfg, color, { title: 'About ' + biz, desc: about, canon: canon, sitemapUrl: seob.sitemapUrl, image: img, graph: graph, noindex: !String(pub.about || '').trim() });
   return _pageDoc('About ' + biz, color, body, '', head);
 }
 // FAQ page: the owner's authored FAQ (else the grounded _seoDerivedFaq), a CTA to book, and FAQPage/BreadcrumbList JSON-LD.
@@ -8916,7 +8962,7 @@ function _faqPageHtml(prof, color, seob) {
   ];
   var desc = faq.length ? ('Answers about booking' + (biz ? (' with ' + biz) : '') + ': ' + faq.slice(0, 3).map(function (f) { return f.q; }).join(' ')) : ('Frequently asked questions' + (biz ? (' about ' + biz) : ''));
   var title = 'FAQ' + (biz ? (' — ' + biz) : '');
-  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: '', graph: graph });
+  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: '', graph: graph, noindex: !_seoFaq(prof).length });
   return _pageDoc(title, color, body, '', head);
 }
 // Contact page: a CTA back to the (online) booking form plus any REAL contact facts from settings (phone/address/served
@@ -8949,8 +8995,84 @@ function _contactPageHtml(prof, color, seob) {
       { '@type': 'ListItem', position: 2, name: 'Contact', item: canon } ] }
   ];
   var desc = 'Contact ' + biz + (addrLine ? (' in ' + addrLine) : '') + '. Book online in minutes' + (lc.phone ? (' or call ' + lc.phone) : '') + '.';
-  var head = _servedPageHead(prof, cfg, color, { title: 'Contact ' + biz, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph });
+  var head = _servedPageHead(prof, cfg, color, { title: 'Contact ' + biz, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph, noindex: (!lc.phone && !addrLine && !_seoCities(prof).length) });
   return _pageDoc('Contact ' + biz, color, body, '', head);
+}
+// Blog index (/blog): the tenant's published posts (linked title + date + excerpt), a CTA to check availability, and
+// Blog + BreadcrumbList JSON-LD. NOINDEX when there are no posts (thin). Mirrors _faqPageHtml.
+function _blogIndexHtml(prof, color, seob) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var home = seob.home, canon = seob.base + '/blog';
+  var posts = _blogPosts(prof);
+  var rows = posts.map(function (p) {
+    var pslug = slugify(String(p.slug || p.title));
+    var dt = '';
+    try { var _at = Number(p.at) || 0; if (_at > 0) dt = new Date(_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); } catch (e) { dt = ''; }
+    var ex = String(p.excerpt || '').trim();
+    return '<div style="border-top:1px solid #eee;padding:13px 0">'
+      + '<a href="' + esc(seob.base + '/blog/' + pslug) + '" style="font-weight:700;color:var(--brand);text-decoration:none;font-size:16px">' + esc(String(p.title)) + '</a>'
+      + (dt ? ('<div class="muted" style="margin-top:3px;font-size:12px">' + esc(dt) + '</div>') : '')
+      + (ex ? ('<div class="muted" style="margin-top:5px">' + esc(ex) + '</div>') : '')
+      + '</div>';
+  }).join('');
+  var body = _servedNav(prof, seob, 'blog')
+    + '<div class="hd">' + esc(biz || 'Blog') + '</div>'
+    + '<div class="card"><h1 style="margin:0 0 6px;font-size:24px">News &amp; guides</h1>'
+    + (rows || '<p class="muted">No posts yet.</p>')
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a></div>';
+  var logo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
+  var org = { '@type': 'Organization', name: biz, url: home };
+  if (logo) org.logo = logo;
+  var graph = [
+    { '@type': 'Blog', name: (biz ? (biz + ' blog') : 'Blog'), url: canon, publisher: org },
+    { '@type': 'BreadcrumbList', itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+      { '@type': 'ListItem', position: 2, name: 'Blog', item: canon } ] }
+  ];
+  var desc = posts.length
+    ? ('News and guides' + (biz ? (' from ' + biz) : '') + ': ' + posts.slice(0, 3).map(function (p) { return String(p.title); }).join('; '))
+    : ('News and guides' + (biz ? (' from ' + biz) : ''));
+  var title = 'Blog' + (biz ? (' — ' + biz) : '');
+  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph, noindex: posts.length === 0 });
+  return _pageDoc(title, color, body, '', head);
+}
+// Single blog post (/blog/<slug>): title, date, body (esc + pre-wrap so paragraphs survive), a CTA to check
+// availability, and BlogPosting + BreadcrumbList JSON-LD. NOINDEX when the body is thin (< 200 chars). Mirrors _aboutPageHtml.
+function _blogPostHtml(prof, color, seob, post) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var home = seob.home;
+  var titleTxt = String((post && post.title) || '');
+  var bodyTxt = String((post && post.body) || '');
+  var excerpt = String((post && post.excerpt) || '').trim();
+  var canon = seob.base + '/blog/' + slugify(String((post && post.slug) || (post && post.title) || ''));
+  var dt = '';
+  try { var _at = Number(post && post.at) || 0; if (_at > 0) dt = new Date(_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); } catch (e) { dt = ''; }
+  var body = _servedNav(prof, seob, 'blog')
+    + '<div class="hd">' + esc(biz || titleTxt) + '</div>'
+    + '<div class="card"><h1 style="margin:0 0 6px;font-size:24px">' + esc(titleTxt) + '</h1>'
+    + (dt ? ('<div class="muted" style="margin-bottom:12px;font-size:12.5px">' + esc(dt) + '</div>') : '')
+    + '<div style="color:#444;font-size:15px;line-height:1.7;white-space:pre-wrap">' + esc(bodyTxt) + '</div>'
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a>'
+    + '<div style="margin-top:12px"><a href="' + esc(seob.base + '/blog') + '" style="color:var(--brand);text-decoration:none;font-size:13.5px">&lsaquo; Back to all posts</a></div></div>';
+  var logo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
+  var org = { '@type': 'Organization', name: biz, url: home };
+  if (logo) org.logo = logo;
+  var descSrc = (excerpt || bodyTxt).replace(/\s+/g, ' ').trim().slice(0, 300);
+  var bp = { '@type': 'BlogPosting', headline: titleTxt.slice(0, 110), mainEntityOfPage: canon, url: canon, author: { '@type': 'Organization', name: biz }, publisher: org };
+  if (descSrc) bp.description = descSrc;
+  try { var _at2 = Number(post && post.at) || 0; if (_at2 > 0) bp.datePublished = new Date(_at2).toISOString(); } catch (e) {}
+  var graph = [
+    bp,
+    { '@type': 'BreadcrumbList', itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+      { '@type': 'ListItem', position: 2, name: 'Blog', item: seob.base + '/blog' },
+      { '@type': 'ListItem', position: 3, name: titleTxt.slice(0, 110), item: canon } ] }
+  ];
+  var title = (biz ? (biz + ' — ') : '') + titleTxt;
+  var head = _servedPageHead(prof, cfg, color, { title: title, desc: (descSrc || titleTxt), canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph, ogType: 'article', noindex: bodyTxt.trim().length < 200 });
+  return _pageDoc(title, color, body, '', head);
 }
 // Server-rendered SEO / social head. `reviews` (optional, _publicReviewSummary output) threads aggregateRating + Review
 // nodes into the LocalBusiness node; absent -> byte-identical to no-reviews. Still pure + synchronous (no DB, no await).
