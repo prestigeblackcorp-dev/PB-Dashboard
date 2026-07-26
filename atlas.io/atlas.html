@@ -7822,6 +7822,40 @@ const Atlas = (function(){
       snapshot:function(){ return {prevValue:_web().metaDescription||''}; },
       apply:function(p){ if(!_canCap('webEdit')) return false; setWebField('metaDescription', String(p.value).trim()); try{buildSettings();}catch(e){} },
       undo:function(snap){ setWebField('metaDescription', snap.prevValue); try{buildSettings();}catch(e){} }
+    },
+    /* ---- Website builder verbs: font / template / FAQ. Each reuses the SAME setter a manual click calls
+       (setWebFont / setWebTemplate / webFaqAdd + webFaqSet), so webEdit RBAC, save()->sync and the live
+       preview are inherited. renderWebsite() re-renders the builder UI (#webBody) when it is open. Headline
+       + about copy already have verbs (profile.setHeadline / profile.setAbout, same setWebField setter). ---- */
+    'brand.setFont':{
+      params:['value'], hint:function(){ return 'value is the website font, one of: '+WEB_FONTS.map(function(f){return f[0];}).join(', ')+'.'; },
+      cap:'webEdit', money:false, tier:'auto',
+      label:function(p){ return 'Set your website font to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'Website font', before:(_web().font||'system'), after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'Which font? Options: '+WEB_FONTS.map(function(f){return f[0];}).join(', ')+'.'}; if(!WEB_FONTS.some(function(f){return f[0]===v;})) return {ok:false,msg:'Font must be one of: '+WEB_FONTS.map(function(f){return f[0];}).join(', ')+'.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:_web().font||'system'}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; setWebFont(String(p.value).trim()); try{renderWebsite();}catch(e){} },
+      undo:function(snap){ setWebFont(snap.prevValue); try{renderWebsite();}catch(e){} }
+    },
+    'brand.setTemplate':{
+      params:['value'], hint:function(){ return 'value is the website layout template, one of: '+WEB_TEMPLATES.map(function(t){return t[0];}).join(', ')+'.'; },
+      cap:'webEdit', money:false, tier:'auto',
+      label:function(p){ return 'Switch your website template to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'Website template', before:(_web().template||'classic'), after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'Which template? Options: '+WEB_TEMPLATES.map(function(t){return t[0];}).join(', ')+'.'}; if(!WEB_TEMPLATES.some(function(t){return t[0]===v;})) return {ok:false,msg:'Template must be one of: '+WEB_TEMPLATES.map(function(t){return t[0];}).join(', ')+'.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:_web().template||'classic'}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; setWebTemplate(String(p.value).trim()); try{renderWebsite();}catch(e){} },
+      undo:function(snap){ setWebTemplate(snap.prevValue); try{renderWebsite();}catch(e){} }
+    },
+    'faq.add':{
+      params:['q','a'], hint:'q is the question to add to your booking-site FAQ. a is the answer.',
+      cap:'webEdit', money:false, tier:'confirm',
+      label:function(p){ return 'Add an FAQ: "'+esc(String((p&&p.q)||'').trim())+'"'; },
+      summary:function(p){ return {field:'FAQ', before:'(new)', after:String((p&&p.q)||'').trim()+' \u2014 '+String((p&&p.a)||'').trim()}; },
+      validate:function(p){ var q=String((p&&p.q)||'').trim(), a=String((p&&p.a)||'').trim(); if(!q) return {ok:false,msg:'What question should the FAQ answer?'}; if(!a) return {ok:false,msg:'What should the answer say?'}; if(q.length>200) return {ok:false,msg:'Keep the question under 200 characters.'}; if(a.length>1000) return {ok:false,msg:'Keep the answer under 1000 characters.'}; if((Array.isArray(_web().faq)?_web().faq.length:0)>=20) return {ok:false,msg:'You already have 20 FAQs, the maximum. Remove one to add another.'}; return {ok:true}; },
+      snapshot:function(){ return {idx:(Array.isArray(_web().faq)?_web().faq.length:0)}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; var before=(Array.isArray(_web().faq)?_web().faq.length:0); webFaqAdd(); var f=Array.isArray(_web().faq)?_web().faq:[]; if(f.length<=before) return false; var i=f.length-1; webFaqSet(i,'q',String(p.q||'').trim().slice(0,200)); webFaqSet(i,'a',String(p.a||'').trim().slice(0,1000)); try{renderWebsite();}catch(e){} },
+      undo:function(snap,p){ var w=_web(); var f=Array.isArray(w.faq)?w.faq:[]; var q=String((p&&p.q)||'').trim().slice(0,200); var i=(snap&&snap.idx!=null&&snap.idx<f.length&&String((f[snap.idx]&&f[snap.idx].q)||'')===q)?snap.idx:-1; if(i<0){ for(var j=f.length-1;j>=0;j--){ if(String((f[j]&&f[j].q)||'')===q){ i=j; break; } } } if(i>=0) webFaqRemove(i); }
     }
   };
   // Phase 3 (deferred, not built here): nav.reorder (needs new S.nav.order state), per-asset booking
@@ -8007,7 +8041,13 @@ const Atlas = (function(){
       || /\b(add|create|list|register)\b[a-z0-9' .,-]{0,40}\bto (my |the |our )?(fleet|inventory|roster|lineup|listings?)\b/.test(s)
       || /\badd (a |an |another )[a-z0-9]/.test(s)
       // SEO: browser/search title + description -> seo.setTitle / seo.setDescription.
-      || /\bseo\b|\bmeta ?(title|description|tag|tags)\b|\b(page|browser|site|search) title\b|\bsearch (result )?(description|snippet)\b/.test(s);
+      || /\bseo\b|\bmeta ?(title|description|tag|tags)\b|\b(page|browser|site|search) title\b|\bsearch (result )?(description|snippet)\b/.test(s)
+      // Website builder: about copy ("write my about"), font/typeface, layout template/theme, FAQ -> profile.setAbout /
+      // brand.setFont / brand.setTemplate / faq.add. headline/tagline + luxury look already match higher up.
+      || /\b(write|writing|rewrite|update|change|set|edit|improve|fill|redo|generate) (my |the |our )?about\b/.test(s)
+      || /\b(font|fonts|typeface|typefaces|serif)\b/.test(s)
+      || /\b(template|templates|theme|layout)\b/.test(s)
+      || /\bfaqs?\b|\bfrequently asked\b|\bcommon questions?\b/.test(s);
   }
   function _aioLooksActionable(s){
     if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
