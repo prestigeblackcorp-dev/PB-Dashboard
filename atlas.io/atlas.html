@@ -1320,7 +1320,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
           <button class="btn btn--outline btn--lg" onclick="Atlas.demoStart()">
             <svg viewBox="0 0 16 16" fill="none"><path d="M2 4.5A1.5 1.5 0 013.5 3h9A1.5 1.5 0 0114 4.5v7A1.5 1.5 0 0112.5 13h-9A1.5 1.5 0 012 11.5v-7z" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 6.2v3.6l3-1.8-3-1.8z" fill="currentColor"/></svg>See the live demo</button>
           <button class="btn btn--outline btn--lg" onclick="Atlas.playFilm()">
-            <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 5.4v5.2l4-2.6-4-2.6z" fill="currentColor"/></svg>Watch the tour</button>
+            <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 5.4v5.2l4-2.6-4-2.6z" fill="currentColor"/></svg>Meet Atlas Rental.io</button>
         </div>
         <div class="hero__note"><svg viewBox="0 0 16 16" fill="none"><path d="M13 4.5L6.5 11 3 7.5" stroke="var(--brand)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>No charge for 7 days &middot; Set up in minutes &middot; Cancel anytime</div>
       </div>
@@ -1426,7 +1426,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
     <h2>Your fleet. Your brand. Your command center.</h2>
     <p>Set it up in minutes and see your whole operation in one place.</p>
     <button class="btn btn--primary btn--lg" onclick="Atlas.goAuth('signup')">Start free 7-day trial</button>
-    <button class="btn btn--lg" style="color:#fff;border:1px solid rgba(255,255,255,.25)" onclick="Atlas.playFilm()">Watch the tour</button>
+    <button class="btn btn--lg" style="color:#fff;border:1px solid rgba(255,255,255,.25)" onclick="Atlas.playFilm()">Meet Atlas Rental.io</button>
   </div>
 
   <footer class="lp-foot">
@@ -7494,6 +7494,8 @@ const Atlas = (function(){
   // nothing else can create an asset in between) and couriered via _aioNewAssetId so undo() can remove exactly this row.
   var _aioNewAssetId='';
   var _aioNewPostId='';   // pre-generated post id for content.addPost -- couriered from snapshot() to apply()/undo() (mirrors _aioNewAssetId)
+  var _aioNewBlkId='';    // pre-generated blackout id for availability.block -- couriered snapshot()->apply()/undo() (mirrors _aioNewAssetId)
+  var _aioNewBkId='';     // pre-generated booking id for booking.create -- couriered snapshot()->apply()/undo()
   function _aioAddAsset(id,p){
     if(!_canCap('fleetEdit')) return false;
     var cap=_vehCap(); if(cap!==Infinity && _fleetUnits()>=cap) return false;   // plan/unit cap -- same gate as addVehicle()
@@ -7525,6 +7527,36 @@ const Atlas = (function(){
     if(_AIO_CNAMES[s]) return _AIO_CNAMES[s];
     var w=s.replace(/[^a-z]/g,''); if(_AIO_CNAMES[w]) return _AIO_CNAMES[w];
     return null; }
+  // ---- Agentic fleet verbs (availability.block / booking.create) share these resolvers. _aioAssetByName mirrors how
+  // createBooking keys on the asset NAME; the date helpers normalize to YYYY-MM-DD then to the SAME noon-anchored
+  // timestamp saveAssetBlock/_bkReadWhen produce, so a chat-created block/booking is identical to a hand-made one.
+  function _aioAssetByName(q){ q=String(q||'').trim().toLowerCase(); if(!q) return null; var as=DATA.assets||[];
+    var hit=as.filter(function(a){return String(a.name||'').toLowerCase()===q;})[0]; if(hit) return hit;
+    return as.filter(function(a){ var n=String(a.name||'').toLowerCase(); return n && (n.indexOf(q)>=0 || q.indexOf(n)>=0); })[0]||null; }
+  function _aioNormDate(str){ str=String(str||'').trim();
+    var m=/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/.exec(str);
+    if(m){ var y=+m[1],mo=+m[2],d=+m[3]; if(mo>=1&&mo<=12&&d>=1&&d<=31) return y+'-'+('0'+mo).slice(-2)+'-'+('0'+d).slice(-2); return ''; }
+    m=/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(str);
+    if(m){ var mo2=+m[1],d2=+m[2],y2=+m[3]; if(y2<100)y2+=2000; if(mo2>=1&&mo2<=12&&d2>=1&&d2<=31) return y2+'-'+('0'+mo2).slice(-2)+'-'+('0'+d2).slice(-2); return ''; }
+    return ''; }
+  function _aioDateMs(str){ var n=_aioNormDate(str); if(!n) return NaN; var t=new Date(n+'T12:00:00').getTime(); return isNaN(t)?NaN:t; }
+  // booking.create: build a booking from params the SAME way createBooking does -- calcQuote for money, _derivePeriods
+  // for length, _moneyFor for the asset rate, _upsertBooking to insert. NEVER computes money itself. The id is
+  // pre-generated in snapshot() and couriered via _aioNewBkId so undo() removes exactly this booking.
+  function _aioCreateBooking(id,p){
+    if(!_canCap('bookEdit')) return false;
+    var a=_aioAssetByName(p.asset); if(!a) return false;
+    var cust=String(p.customer||'').trim().slice(0,80); if(!cust) return false;
+    var startTs=_aioDateMs(p.start); if(isNaN(startTs)) return false;
+    var endTs=p.end?_aioDateMs(p.end):NaN; if(isNaN(endTs)||endTs<=startTs) endTs=startTs+_periodMs();
+    var periods=_derivePeriods(startTs,endTs), mEff=_moneyFor(a.name);
+    var q=calcQuote(mEff,{periods:periods,addons:0,extras:[],discount:{type:'none',value:0},startsAt:startTs});
+    var b={ id:id, createdAt:Date.now(), cust:cust, custEmail:'', asset:a.name, rate:mEff.baseRate, periods:periods,
+      startTs:startTs, endTs:endTs, time:_bookingCfg().time, extras:[], discount:{type:'none',value:0}, addons:0, status:'Confirmed', quote:q };
+    _upsertBooking(b); save();
+    _logEvent('booking','Booking '+b.id+' created via assistant: '+b.cust+' / '+b.asset+' / '+money(q.total),{booking:b.id,total:_r2(q.total)});
+    try{ renderOverview(); }catch(e){} try{ renderBookings(); }catch(e){} try{ renderCustomers(); }catch(e){} try{ _bkBadge(); }catch(e){}
+    return true; }
   const AIO_ACTIONS={
     'brand.setColor':{
       params:['color'], hint:'color is a #RRGGBB hex -- translate a color name (gold, navy, black) to its hex. For a two-tone look like "black and gold", set the ACCENT here (gold) and ALSO emit theme.set with mode dark.',
@@ -7869,6 +7901,30 @@ const Atlas = (function(){
       snapshot:function(){ _aioNewPostId=_postId(); return {id:_aioNewPostId}; },
       apply:function(p){ if(!_canCap('webEdit')) return false; var id=_aioNewPostId||_postId(); _aioNewPostId=''; var before=(Array.isArray(_web().posts)?_web().posts.length:0); webPostAdd(String(p.title||'').trim(), String(p.body||'').trim(), id); var f=Array.isArray(_web().posts)?_web().posts:[]; if(f.length<=before) return false; try{renderWebsite();}catch(e){} return true; },
       undo:function(snap){ if(!snap||!snap.id) return; webPostRemove(snap.id); }
+    },
+    /* ---- Agentic fleet verbs. availability.block reuses the SAME blackout store saveAssetBlock writes
+       (_blackouts(a).push -> _saveAssets), undone via the existing assetUnblock setter. booking.create reuses
+       createBooking's primitives (calcQuote / _derivePeriods / _moneyFor / _upsertBooking / _nextBkId), undone via
+       _delBooking. Neither reimplements pricing or the blackout model; money:true forces booking.create's confirm card. ---- */
+    'availability.block':{
+      params:['asset','start','end'], hint:function(){ return 'asset is one of your '+esc(S.fleet.nouns)+' (match by name). start and end are calendar dates (YYYY-MM-DD). Blocks those days so it cannot be booked.'; },
+      cap:'fleetEdit', money:false, tier:'confirm',
+      label:function(p){ var a=_aioAssetByName(p.asset); return 'Block '+esc(a?a.name:String(p.asset||''))+' from '+esc(_aioNormDate(p.start)||String(p.start||''))+' to '+esc(_aioNormDate(p.end||p.start)||String(p.end||p.start||'')); },
+      summary:function(p){ var a=_aioAssetByName(p.asset); return {field:'Blocked days'+(a?(' \u2014 '+a.name):''), before:'(bookable)', after:(_aioNormDate(p.start)||'?')+' \u2192 '+(_aioNormDate(p.end||p.start)||'?')}; },
+      validate:function(p){ var a=_aioAssetByName(p.asset); if(!a) return {ok:false,msg:'Which '+esc(S.fleet.noun)+'? I could not match "'+esc(String(p.asset||''))+'" to one you have.'}; if(isNaN(_aioDateMs(p.start))) return {ok:false,msg:'Give me a start date like 2026-08-01.'}; if(isNaN(_aioDateMs(p.end||p.start))) return {ok:false,msg:'Give me an end date like 2026-08-05.'}; return {ok:true}; },
+      snapshot:function(p){ var a=_aioAssetByName(p.asset); _aioNewBlkId='blk'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36); return {assetId:a&&a.id, blkId:_aioNewBlkId}; },
+      apply:function(p){ if(!_canCap('fleetEdit')) return false; var a=_aioAssetByName(p.asset); if(!a) return false; var from=_aioDateMs(p.start), to=_aioDateMs(p.end||p.start); if(isNaN(from)||isNaN(to)) return false; if(to<from){ var x=from;from=to;to=x; } var bid=_aioNewBlkId||('blk'+Date.now().toString(36)); _aioNewBlkId=''; _blackouts(a).push({id:bid, from:from, to:to, reason:'Blocked via Atlas.io assistant'}); _saveAssets(); try{ renderFleet(); }catch(e){} return true; },
+      undo:function(snap){ if(!snap||!snap.assetId||!snap.blkId) return; try{ assetUnblock(snap.assetId, snap.blkId); }catch(e){} try{ renderFleet(); }catch(e){} }
+    },
+    'booking.create':{
+      params:['customer','asset','start','end'], hint:function(){ return 'customer is the renter name. asset is one of your '+esc(S.fleet.nouns)+'. start and end are calendar dates (YYYY-MM-DD). Uses your normal pricing.'; },
+      cap:'bookEdit', money:true, tier:'confirm',
+      label:function(p){ var a=_aioAssetByName(p.asset); return 'Create a booking for '+esc(String(p.customer||'').trim())+' \u2014 '+esc(a?a.name:String(p.asset||''))+', '+esc(_aioNormDate(p.start)||String(p.start||''))+(p.end?(' to '+esc(_aioNormDate(p.end)||String(p.end))):''); },
+      summary:function(p){ var a=_aioAssetByName(p.asset), st=_aioDateMs(p.start), en=p.end?_aioDateMs(p.end):NaN; if(isNaN(en)||en<=st) en=st+_periodMs(); var per=isNaN(st)?0:_derivePeriods(st,en); var q=null; try{ q=calcQuote(a?_moneyFor(a.name):S.money,{periods:per,addons:0,extras:[],discount:{type:'none',value:0},startsAt:st}); }catch(e){} return {field:'New booking', before:'(none)', after:(a?a.name:String(p.asset||''))+' \u00b7 '+per+' '+_perUnit()+(q?(' \u00b7 '+money(q.total)):'')}; },
+      validate:function(p){ if(!(DATA.assets||[]).length) return {ok:false,msg:'Add a '+esc(S.fleet.noun)+' first, then I can book it.'}; var cust=String(p.customer||'').trim(); if(!cust) return {ok:false,msg:'Who is the booking for? Give me a customer name.'}; if(cust.length>80) return {ok:false,msg:'Keep the customer name under 80 characters.'}; var a=_aioAssetByName(p.asset); if(!a) return {ok:false,msg:'Which '+esc(S.fleet.noun)+'? I could not match "'+esc(String(p.asset||''))+'" to one you have.'}; if(isNaN(_aioDateMs(p.start))) return {ok:false,msg:'Give me a start date like 2026-08-01.'}; if(p.end&&isNaN(_aioDateMs(p.end))) return {ok:false,msg:'That end date did not read as a date \u2014 try 2026-08-05.'}; return {ok:true}; },
+      snapshot:function(){ _aioNewBkId=_nextBkId(); return {id:_aioNewBkId}; },
+      apply:function(p){ var id=_aioNewBkId||_nextBkId(); _aioNewBkId=''; return _aioCreateBooking(id,p); },
+      undo:function(snap){ if(!snap||!snap.id) return; _delBooking(snap.id); try{ renderOverview(); }catch(e){} try{ renderBookings(); }catch(e){} try{ renderCustomers(); }catch(e){} try{ _bkBadge(); }catch(e){} }
     }
   };
   // Phase 3 (deferred, not built here): nav.reorder (needs new S.nav.order state), per-asset booking
@@ -8064,7 +8120,13 @@ const Atlas = (function(){
       // Blog / content: a post, article, news or general content ask -> content.addPost. Broad on purpose --
       // the planner + content.addPost validate() are the real authority; a false match just gets a normal reply.
       || /\b(blog|post|posts|article|articles|news|content)\b/.test(s)
-      || /\bwrite\b[a-z0-9' .,-]{0,30}\b(post|article|blog)\b/.test(s);
+      || /\bwrite\b[a-z0-9' .,-]{0,30}\b(post|article|blog)\b/.test(s)
+      // Agentic fleet verbs: block an asset's dates + create a booking. Tight, action-anchored triggers so a bare
+      // "bookings" or "block the tab" still just navigates -- _aioLocalIntent + each verb's validate() are the authority.
+      || /\b(block|blackout|black\s?out)\b[a-z0-9' .,\/-]{0,44}\b(dates?|days?|off|out|calendar|unavailable|today|tomorrow|20\d\d|\d{1,2}\/\d{1,2})\b/.test(s)
+      || /\bmake\b[a-z0-9' .,-]{0,24}\bunavailable\b/.test(s)
+      || /\b(create|add|new|take|schedule|start)\b[a-z0-9' .,-]{0,24}\b(booking|reservation)\b/.test(s)
+      || /\bbook\b[a-z0-9' .,-]{0,20}\bfor\b[a-z0-9' .,-]{0,40}\b(20\d\d|\d{1,2}\/\d{1,2}|today|tomorrow)\b/.test(s);
   }
   function _aioLooksActionable(s){
     if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
@@ -8093,8 +8155,85 @@ const Atlas = (function(){
       _aioPlanFallback(q);
     }).catch(function(){ _aioDropThink(); _aioPlanFallback(q); });
   }
+  // ---- Deterministic LOCAL intent parser: turns a typed sentence into a registry action so the high-value verbs
+  // fire OUT OF THE BOX (no worker ANTHROPIC_KEY). Conservative -- returns null unless every required param is
+  // extracted; the {type,params} it returns still runs through _aioValidateAction + the confirm/undo pipeline (no bypass).
+  function _aioDQ(raw){ var m=/["\u201c\u201d]([^"\u201c\u201d]{1,600})["\u201c\u201d]/.exec(String(raw||'')); return m?String(m[1]).trim():''; }
+  function _aioClip(v,n){ v=String(v==null?'':v).trim(); return v.length>n?v.slice(0,n).trim():v; }
+  function _aioColorName(s){ var keys=Object.keys(_AIO_CNAMES); for(var i=0;i<keys.length;i++){ if(new RegExp('\\b'+keys[i]+'\\b').test(s)) return keys[i]; } return ''; }
+  function _aioPickList(s,list){ for(var i=0;i<list.length;i++){ var k=list[i][0]; if(new RegExp('\\b'+k+'\\b').test(s)) return k; } return ''; }
+  function _aioSplitQA(body){ body=String(body||'').trim(); if(!body) return null;
+    var m=/^(.*?\?)\s*(.+)$/.exec(body); if(m && m[1].replace(/[^a-z0-9]/gi,'').length>=2 && m[2].trim()) return {q:m[1].trim(), a:m[2].trim()};
+    m=/^(.+?)\s*(?:\||\bans(?:wer)?\s*[:\-]|\bA\s*[:\-])\s*(.+)$/i.exec(body); if(m && m[1].trim() && m[2].trim()) return {q:m[1].trim().replace(/[\s:\-]+$/,''), a:m[2].trim()};
+    return null; }
+  function _aioFindDates(raw){ var s=String(raw||''), out=[], m;
+    var re=/\b(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})\b/g; while((m=re.exec(s))){ var n=_aioNormDate(m[1]+'-'+m[2]+'-'+m[3]); if(n) out.push(n); }
+    var re2=/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/g; while((m=re2.exec(s))){ var n2=_aioNormDate(m[1]+'/'+m[2]+'/'+m[3]); if(n2) out.push(n2); }
+    var low=s.toLowerCase(); if(/\btoday\b/.test(low)) out.push(_todayStr());
+    if(/\btomorrow\b/.test(low)){ var d=new Date(); d.setDate(d.getDate()+1); out.push(d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2)); }
+    var seen={}, res=[]; out.forEach(function(x){ if(x && !seen[x]){ seen[x]=1; res.push(x); } }); return res; }
+  function _aioAssetFromText(raw){ var s=String(raw||'').toLowerCase();
+    var as=(DATA.assets||[]).slice().sort(function(a,b){ return String(b.name||'').length-String(a.name||'').length; });
+    for(var i=0;i<as.length;i++){ var n=String(as[i].name||'').toLowerCase().trim(); if(n && n.length>=2 && s.indexOf(n)>=0) return as[i]; } return null; }
+  function _aioLocalIntent(raw){
+    var s=String(raw||'').toLowerCase();
+    // 1) Brand color -- require an explicit color word (or a two-tone phrase) so "rename my brand" never trips it.
+    var twoTone=/\b(black\s*and\s*gold|gold\s*and\s*black)\b/.test(s);
+    if(twoTone || /\b(colou?rs?|palette|accent)\b/.test(s)){
+      if(twoTone) return {type:'brand.setColor', params:{color:'gold'}};
+      var hx=/#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/.exec(raw); if(hx && _aioHex('#'+hx[1])) return {type:'brand.setColor', params:{color:'#'+hx[1]}};
+      var cn=_aioColorName(s); if(cn) return {type:'brand.setColor', params:{color:cn}};
+    }
+    // 2) Website font -- (font|typeface|serif) + a known WEB_FONTS value.
+    if(/\b(fonts?|typefaces?|serif)\b/.test(s)){ var fv=_aioPickList(s, WEB_FONTS); if(fv) return {type:'brand.setFont', params:{value:fv}}; }
+    // 3) Website template -- (template|layout|theme) + a known WEB_TEMPLATES value.
+    if(/\b(templates?|layouts?|theme)\b/.test(s)){ var tv=_aioPickList(s, WEB_TEMPLATES); if(tv) return {type:'brand.setTemplate', params:{value:tv}}; }
+    // 4) Headline / tagline / slogan.
+    if(/\b(head\s?line|tag\s?line|slogan)\b/.test(s)){ var hv=_aioDQ(raw); if(!hv){ var hm=/(?:head\s?line|tag\s?line|slogan)\b[^a-z0-9"]*(?:to|say|read|be|as|:)\s+(.+)$/i.exec(raw); if(hm) hv=hm[1].trim(); } hv=_aioClip(hv,120); if(hv.length>=2) return {type:'profile.setHeadline', params:{value:hv}}; }
+    // 5) About section -- only when the owner PROVIDES the copy (never fabricate it).
+    if(/\b(write|rewrite|update|change|set|edit|improve|fill|redo|make)\b[a-z' ]{0,14}\babout\b/.test(s) || /\babout (section|us|page|blurb|bio)\b/.test(s)){ var av=_aioDQ(raw); if(!av){ var am=/\babout\b[^a-z0-9"]*(?:section|us|page|blurb|bio)?[^a-z0-9"]*(?:to|say|read|:)\s+(.+)$/i.exec(raw); if(am) av=am[1].trim(); } av=_aioClip(av,1000); if(av.length>=2) return {type:'profile.setAbout', params:{value:av}}; }
+    // 6) SEO title / description.
+    if(/\bseo\b|\bmeta\b|\b(page|browser|site|search) title\b|\bsearch (result )?(description|snippet)\b/.test(s)){
+      var sv=_aioDQ(raw); if(!sv){ var sm=/\b(?:title|description|desc|snippet)\b[^a-z0-9"]*(?:to|say|read|be|:)\s+(.+)$/i.exec(raw); if(sm) sv=sm[1].trim(); }
+      sv=_aioClip(sv,300);
+      if(sv.length>=2){ if(/\b(description|desc|snippet)\b/.test(s) && !/\btitle\b/.test(s)) return {type:'seo.setDescription', params:{value:sv}}; if(/\btitle\b/.test(s)) return {type:'seo.setTitle', params:{value:sv}}; if(/\b(description|desc|snippet)\b/.test(s)) return {type:'seo.setDescription', params:{value:sv}}; }
+    }
+    // 7) FAQ -- need a separable question + answer (else null; never fabricate an answer).
+    if(/\bfaqs?\b|\bfrequently asked\b|\bcommon questions?\b|(\bquestion\b[\s\S]*\banswer\b)/.test(s)){
+      var fbody=String(raw).replace(/^\s*(?:please\s+|can you\s+|could you\s+)?(?:add|create|insert|new|make|set\s?up)?\s*(?:an?\s+|a\s+new\s+)?(?:faq|frequently asked question|common question|question)\b[\s:,\-]*/i,'').trim();
+      var qa=_aioSplitQA(fbody) || _aioSplitQA(String(raw));
+      if(qa) return {type:'faq.add', params:{q:_aioClip(qa.q,200), a:_aioClip(qa.a,1000)}};
+    }
+    // 8) Blog post -- need BOTH a title and a body (never fabricate the body).
+    if(/\b(blog|article)\b/.test(s) || (/\bpost\b/.test(s) && /\b(add|write|create|publish|new|draft)\b/.test(s))){
+      var title='', body='', dq=_aioDQ(raw);
+      if(dq){ title=dq; var idx=raw.indexOf(dq); var after=raw.slice(idx+dq.length+1).replace(/^["\u201d]?\s*[:\-\u2014,.]?\s*/,'').trim(); body=after; }
+      else { var tm=/\b(?:titled|title|called|about|on)\b\s*[:\-]?\s*(.+)$/i.exec(raw); if(tm){ var sp=/^(.{2,120}?)\s*(?:[:\n\u2014]|\s-\s)\s*(.+)$/.exec(tm[1].trim()); if(sp){ title=sp[1].trim(); body=sp[2].trim(); } } }
+      title=_aioClip(title,120); body=_aioClip(body,20000);
+      if(title.length>=2 && body.length>=10) return {type:'content.addPost', params:{title:title, body:body}};
+    }
+    // 9) Availability block -- "block <asset> from <date> [to <date>]".
+    if(/\b(block|blackout|black\s?out|unavailable|out of service|off\s?line)\b/.test(s)){
+      var bAsset=_aioAssetFromText(raw), bDates=_aioFindDates(raw);
+      if(bAsset && bDates.length>=1) return {type:'availability.block', params:{asset:bAsset.name, start:bDates[0], end:bDates[1]||bDates[0]}};
+    }
+    // 10) Booking create -- "create a booking for <Name> on <asset> from <date> [to <date>]".
+    if(/\b(create|add|new|make|take|schedule|book|reserve)\b/.test(s) && /\b(booking|reservation|rental|reserve|book)\b/.test(s)){
+      var cDates=_aioFindDates(raw), cAsset=_aioAssetFromText(raw), cust='';
+      var cm=/\bfor\s+([A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+){0,2})/.exec(raw); if(cm) cust=cm[1].trim();
+      if(!cust){ var dq2=_aioDQ(raw); if(dq2 && dq2.length<=60 && !/\d/.test(dq2)) cust=dq2.trim(); }
+      if(cust && cAsset && cust.toLowerCase().indexOf(String(cAsset.name).toLowerCase())>=0) cust='';
+      if(cust && cAsset && cDates.length>=1) return {type:'booking.create', params:{customer:cust, asset:cAsset.name, start:cDates[0], end:cDates[1]||''}};
+    }
+    return null;
+  }
+  // Offline / unkeyed fallback: FIRST try the deterministic local parser so the high-value verbs fire out of the box,
+  // routed through the SAME _aioValidateAction + confirm-card + undo pipeline the live planner uses. Only if it finds
+  // nothing do we fall back to the existing nav-by-voice heuristic or the honest "planner not connected" message.
   function _aioPlanFallback(q){
     var s=String(q).toLowerCase().trim();
+    var _intent=null; try{ _intent=_aioLocalIntent(String(q)); }catch(e){}
+    if(_intent){ _aioProposeActions([_intent]); return; }
     var navr=_aioNavReply(s);
     aioMsg('bot', navr || 'I can prepare that once Atlas.io\u2019s live action planner is connected. For now I can still reshape your navigation by voice, or make this change from the right tab in Settings.');
   }
