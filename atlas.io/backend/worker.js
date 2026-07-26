@@ -3339,6 +3339,35 @@ export default {
         }
       } catch (e) { /* fall through to normal routing (apex robots/sitemap handlers below, then the router) */ }
     }
+    // ---- PER-TENANT served MULTI-PAGES on a connected custom domain: /v/<asset-slug> detail pages + /about, /faq, /contact.
+    // Same resolve-published-tenant pattern + fail-open fall-through as the custom-domain SEO block above; served with the
+    // shared securityHeaders (marketing pages -> not the frameable booking form). Additive; never touches the booking form,
+    // /book intake, pricing, or availability. Any error / unresolved / unpublished domain falls through to normal routing.
+    if (method === 'GET' && host && host !== 'atlasrental.io' && host !== 'www.atlasrental.io' && host.indexOf('.workers.dev') < 0 && host !== 'localhost' && host !== '127.0.0.1'
+        && (/^\/v\/[a-z0-9-]{1,80}$/.test(path) || path === '/about' || path === '/faq' || path === '/contact')) {
+      try {
+        await ensurePlatformSchema(env);
+        const _hb2 = host.replace(/^www\./, '');
+        const _cd2 = await env.DB.prepare("SELECT id,name,subdomain,brand,settings FROM tenants WHERE custom_domain=? AND custom_domain_status='live'").bind(_hb2).first();
+        if (_cd2 && _cd2.subdomain) {
+          const _pr2 = tenantProfile(_cd2);
+          if (_pr2.settings.publicSite && _pr2.settings.publicSite.published) {
+            const _seob2 = _seoBase(url.origin, _cd2.subdomain, true);
+            const _color2 = (_pr2.brand && _pr2.brand.color) || '#1E6E4E';
+            const _ok2 = function (htmlStr) { return new Response(htmlStr, { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=1800' }) }); };
+            if (path === '/about') return _ok2(_aboutPageHtml(_pr2, _color2, _seob2));
+            if (path === '/faq') return _ok2(_faqPageHtml(_pr2, _color2, _seob2));
+            if (path === '/contact') return _ok2(_contactPageHtml(_pr2, _color2, _seob2));
+            const _asset2 = _assetBySlug(_pr2, path.slice(3));   // strip '/v/'
+            if (_asset2) {
+              let _rev2 = { count: 0, avg: 0, recent: [] }; try { _rev2 = await _publicReviewSummary(env, _cd2.id); } catch (e) {}
+              return _ok2(_assetDetailHtml(_pr2, _color2, _asset2, _seob2, _rev2));
+            }
+            return new Response(_pageDoc('Not found', _color2, '<div class="card"><h2>Page not found</h2><p class="muted">This page does not exist. <a href="' + esc(_seob2.home) + '">Go to booking</a>.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
+          }
+        }
+      } catch (e) { /* fall through to normal routing */ }
+    }
     if (method === 'GET' && path === '/robots.txt') {
       const _rb = 'User-agent: *\nAllow: /\n\nSitemap: https://atlasrental.io/sitemap.xml\n';
       return new Response(_rb, { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }) });
@@ -3428,7 +3457,7 @@ export default {
               // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
               const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
               const _revSumA = await _publicReviewSummary(env, cd.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
-              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname, _revSumA), pr, _revSumA), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+              return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname, _revSumA), pr, _revSumA, _seoBase(url.origin, cd.subdomain, true)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
             }
           }
         } catch (e) { /* fall through to normal routing */ }
@@ -5990,6 +6019,28 @@ function doReset(){
         }
         return new Response(_pageDoc('Not found', _bcolor, '<div class="card"><h2>Page not found</h2><p class="muted"><a href="' + esc(_bseob.home) + '">Go to booking</a>.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
       }
+      // ---- PER-TENANT served MULTI-PAGES for the path-based booking surface: /api/book/<slug>/{v/<asset-slug>,about,faq,contact}.
+      // Additive; the /api/book/<slug> booking page below is untouched. Fail-open 404 on anything unresolved/unpublished.
+      const bpage = path.match(/^\/api\/book\/([a-z0-9-]{1,63})\/(about|faq|contact|v\/[a-z0-9-]{1,80})$/);
+      if (bpage && method === 'GET') {
+        const _pgslug = bpage[1], _pgsub = bpage[2];
+        const _pgtr = await env.DB.prepare('SELECT id,name,subdomain,brand,settings FROM tenants WHERE subdomain=?').bind(_pgslug).first();
+        const _pgpr = _pgtr ? tenantProfile(_pgtr) : null;
+        const _pglive = _pgpr && _pgpr.settings.publicSite && _pgpr.settings.publicSite.published;
+        const _pgcolor = (_pgpr && _pgpr.brand && _pgpr.brand.color) || '#1E6E4E';
+        if (!_pglive) return new Response(_pageDoc('Not available', _pgcolor, '<div class="card"><h2>Not available yet</h2><p class="muted">This booking site has not been published.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
+        const _pgseob = _seoBase(url.origin, _pgslug, false);
+        const _pgok = function (htmlStr) { return new Response(htmlStr, { headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=1800' }) }); };
+        if (_pgsub === 'about') return _pgok(_aboutPageHtml(_pgpr, _pgcolor, _pgseob));
+        if (_pgsub === 'faq') return _pgok(_faqPageHtml(_pgpr, _pgcolor, _pgseob));
+        if (_pgsub === 'contact') return _pgok(_contactPageHtml(_pgpr, _pgcolor, _pgseob));
+        const _pgasset = _assetBySlug(_pgpr, _pgsub.slice(2));   // strip 'v/'
+        if (_pgasset) {
+          let _pgrev = { count: 0, avg: 0, recent: [] }; try { _pgrev = await _publicReviewSummary(env, _pgtr.id); } catch (e) {}
+          return _pgok(_assetDetailHtml(_pgpr, _pgcolor, _pgasset, _pgseob, _pgrev));
+        }
+        return new Response(_pageDoc('Not found', _pgcolor, '<div class="card"><h2>Page not found</h2><p class="muted"><a href="' + esc(_pgseob.home) + '">Go to booking</a>.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
+      }
       // ---- served customer pages (branded, self-contained; reachable via the existing /api/* route) ----
       const bp = path.match(/^\/api\/book\/([a-z0-9-]{1,63})$/);
       if (bp && method === 'GET') {
@@ -6006,7 +6057,7 @@ function doReset(){
         // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
         const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
         const _revSumB = await _publicReviewSummary(env, tr.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
-        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname, _revSumB), pr, _revSumB), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
+        return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname, _revSumB), pr, _revSumB, _seoBase(url.origin, bp[1], false)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend|prefs))?$/);
       if (ptp) {
@@ -8518,6 +8569,8 @@ function _seoSitemapXml(prof, seob) {
   var urls = [seob.home];
   _seoLandings(prof, seob.base).forEach(function (l) { urls.push(l.url); });
   _seoAssetAnchors(prof, seob.home).forEach(function (a) { urls.push(a.url); });
+  _seoAssetPages(prof, seob).forEach(function (a) { urls.push(a.url); });     // per-asset DETAIL pages (/v/<slug>)
+  _seoStaticPages(prof, seob).forEach(function (p) { urls.push(p.url); });    // About (if authored) / FAQ / Contact
   var seen = {}, out = [];
   urls.forEach(function (u) { if (u && !seen[u]) { seen[u] = 1; out.push(u); } });
   return '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
@@ -8576,7 +8629,7 @@ function _seoLandingHtml(prof, color, land, seob, reviews) {
     revHtml = '<div class="card"><h2>What customers say</h2><div class="muted">' + (Math.round(Number(reviews.avg) * 10) / 10).toFixed(1) + ' from ' + reviews.count + ' review' + (reviews.count === 1 ? '' : 's') + '</div>'
       + (reviews.recent || []).slice(0, 3).map(function (r) { return '<div style="border-top:1px solid #eee;padding:10px 0">' + (r.text ? ('<div>&ldquo;' + esc(String(r.text)) + '&rdquo;</div>') : '') + '<div class="muted" style="margin-top:3px">&mdash; ' + esc(String(r.by || 'Verified customer')) + '</div></div>'; }).join('') + '</div>';
   }
-  var body = '<div class="hd">' + esc(biz || land.h1) + '</div>'
+  var body = _servedNav(prof, seob, '') + '<div class="hd">' + esc(biz || land.h1) + '</div>'
     + '<div class="card"><h1 style="margin:0 0 8px;font-size:24px">' + esc(land.h1) + '</h1>'
     + '<p class="muted" style="font-size:15px">' + esc(land.desc) + '</p>'
     + '<a class="btn" href="' + esc(home) + '" style="max-width:220px">Check availability</a></div>'
@@ -8611,8 +8664,293 @@ function _seoLandingHtml(prof, color, land, seob, reviews) {
     + '<meta name="twitter:card" content="' + (img ? 'summary_large_image' : 'summary') + '">'
     + '<meta name="twitter:title" content="' + esc(land.title) + '">'
     + '<meta name="twitter:description" content="' + esc(desc) + '">'
-    + '<scr' + 'ipt type="application/ld+json">' + ldJson + '</scr' + 'ipt>';
+    + '<scr' + 'ipt type="application/ld+json">' + ldJson + '</scr' + 'ipt>'
+    + _siteThemeStyle(cfg, color);
   return _pageDoc(land.title, color, body, '', head);
+}
+// ===================================================================== served multi-page site (additive)
+// New crawlable served surfaces layered on the SAME published snapshot the booking page + landing pages already use:
+// per-asset detail pages (/v/<slug>), an About/FAQ/Contact set, a shared top-nav, and owner-selectable font/template
+// theming. Every function here is pure, synchronous, and fail-open (throw -> "" or null) so a malformed tenant blob can
+// never break a page load. NONE of this touches the booking form, /book intake, pricing, availability, or Stripe.
+// Font stack for the owner's chosen publicSite.config.font. 'system' (or unset) returns '' -> the page keeps the exact
+// -apple-system stack _pageDoc already ships (byte-identical default). The others map to WIDELY-PREINSTALLED families
+// only (no external font request -> CSP-clean + offline-safe).
+function _siteFontStack(font) {
+  switch (String(font || '').toLowerCase()) {
+    case 'serif': return "Georgia,'Times New Roman',Times,serif";
+    case 'modern': return "'Avenir Next',Avenir,'Century Gothic','Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+    case 'elegant': return "'Iowan Old Style','Palatino Linotype',Palatino,Georgia,'Times New Roman',serif";
+    default: return '';
+  }
+}
+// A <style> block that themes ALL served pages from publicSite.config (font + template + optional accent2). Returns ''
+// whenever the tenant is on the defaults (font system/unset, template classic/unset, no accent2) so the served pages
+// stay byte-identical to today. accent2 is validated to a #hex, so it can never break out of the style context, and
+// every family + rule below is a hard-coded constant -> no tenant string is ever interpolated raw into CSS.
+function _siteThemeStyle(cfg, color) {
+  cfg = cfg || {};
+  var font = String(cfg.font || '').toLowerCase();
+  var tmpl = String(cfg.template || '').toLowerCase();
+  var acc2 = /^#[0-9a-fA-F]{3,8}$/.test(String(cfg.accent2 || '')) ? String(cfg.accent2) : '';
+  var fam = _siteFontStack(font);
+  if (!fam && (!tmpl || tmpl === 'classic') && !acc2) return '';   // DEFAULT -> no override (byte-identical)
+  var css = '';
+  if (acc2) css += ':root{--accent2:' + acc2 + '}';
+  if (fam) css += 'body{font-family:' + fam + '}';
+  if (tmpl === 'luxury') {
+    css += '.hd,.mkt-hero{background:linear-gradient(135deg,var(--brand),' + (acc2 || 'var(--brand)') + ')}'
+      + '.card,.mkt-sec,.mkt-hero{border-radius:16px}h1,h2{letter-spacing:-.01em}.mkt-hero h1{font-size:30px}'
+      + '.btn,.mkt-cta{border-radius:12px;letter-spacing:.02em}';
+  } else if (tmpl === 'bold') {
+    css += '.hd{border-radius:8px}.card,.mkt-sec,.mkt-hero{border-radius:8px;border-width:2px}'
+      + 'h1,h2,.mkt-hero h1{font-weight:900;letter-spacing:-.02em}.mkt-hero h1{font-size:32px;text-transform:uppercase}'
+      + '.btn,.mkt-cta{border-radius:8px;font-weight:800;text-transform:uppercase;letter-spacing:.03em}'
+      + (acc2 ? '.btn,.mkt-cta{background:' + acc2 + '}' : '');
+  } else if (tmpl === 'minimal') {
+    css += '.card,.mkt-sec,.mkt-hero{border-radius:6px;box-shadow:none;border-color:#ededed}'
+      + '.hd{background:none;color:var(--brand);border:1px solid #eee}h1,h2,.mkt-hero h1{font-weight:700}'
+      + '.btn,.mkt-cta{border-radius:6px;font-weight:600}';
+  } else if (acc2) {
+    css += '.btn,.mkt-cta{background:' + acc2 + '}';   // classic template but a secondary accent -> primary CTAs only
+  }
+  return '<style>' + css + '</style>';
+}
+// Shared top-nav rendered on every served page (Home / Fleet / About / FAQ / Contact). About shows only when the owner
+// wrote About copy (keeps the nav honest + avoids a thin page); Home/Fleet/FAQ/Contact always resolve. Inline-styled +
+// fail-open so it never breaks a page; uses --brand (and --accent2 when themed). `active` bolds/underlines the current tab.
+function _servedNav(prof, seob, active) {
+  try {
+    if (!seob) return '';
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {};
+    var about = String(pub.about || '').trim();
+    var home = seob.home, base = seob.base;
+    var items = [['home', 'Home', home], ['fleet', 'Fleet', home + '#fleet']];
+    if (about) items.push(['about', 'About', base + '/about']);
+    items.push(['faq', 'FAQ', base + '/faq']);
+    items.push(['contact', 'Contact', base + '/contact']);
+    var links = items.map(function (it) {
+      var on = it[0] === active;
+      return '<a href="' + esc(it[2]) + '" style="text-decoration:none;font-size:13.5px;font-weight:' + (on ? '700' : '600') + ';color:' + (on ? 'var(--brand)' : '#555') + ';padding:7px 1px;border-bottom:2px solid ' + (on ? 'var(--brand)' : 'transparent') + ';white-space:nowrap">' + esc(it[1]) + '</a>';
+    }).join('');
+    return '<nav aria-label="Site" style="display:flex;gap:20px;align-items:center;overflow-x:auto;padding:10px 2px;margin-bottom:4px;border-bottom:1px solid #eee">' + links + '</nav>';
+  } catch (e) { return ''; }
+}
+// Resolve a published asset by the slugified form of its name (the /v/<slug> key). First match wins -> mirrors the
+// dedupe in _seoAssetAnchors/_seoAssetPages so a card, its sitemap entry, and its detail page all agree.
+function _assetBySlug(prof, slug) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {};
+    var assets = Array.isArray(pub.assets) ? pub.assets : [];
+    for (var i = 0; i < assets.length; i++) {
+      var nm = String((assets[i] && assets[i].name) || '').trim();
+      if (nm && slugify(nm) === slug) return assets[i];
+    }
+  } catch (e) {}
+  return null;
+}
+// Per-asset DETAIL page descriptors (base + '/v/' + slug), deduped + capped -> fed into the sitemap and matched by the
+// /v/<slug> routes. Distinct from _seoAssetAnchors (home '#a-<slug>' deep-links), which stay as-is.
+function _seoAssetPages(prof, seob) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {};
+    var assets = Array.isArray(pub.assets) ? pub.assets : [];
+    var out = [], seen = {};
+    assets.slice(0, 48).forEach(function (a) {
+      var nm = String((a && a.name) || '').trim(); if (!nm) return;
+      var slug = slugify(nm); if (!slug || seen[slug]) return; seen[slug] = 1;
+      out.push({ name: nm, slug: slug, url: seob.base + '/v/' + slug });
+    });
+    return out;
+  } catch (e) { return []; }
+}
+// About / FAQ / Contact page descriptors, gated so the sitemap never lists a page with nothing on it: About only when
+// the owner wrote About copy; FAQ whenever there is authored OR grounded-derivable FAQ (there always is); Contact always
+// (a real CTA-back-to-booking page). Used by _seoSitemapXml.
+function _seoStaticPages(prof, seob) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {};
+    var out = [];
+    if (String(pub.about || '').trim()) out.push({ key: 'about', url: seob.base + '/about' });
+    var faq = _seoFaq(prof); if (!faq.length) faq = _seoDerivedFaq(prof, '');
+    if (faq.length) out.push({ key: 'faq', url: seob.base + '/faq' });
+    out.push({ key: 'contact', url: seob.base + '/contact' });
+    return out;
+  } catch (e) { return []; }
+}
+// Best-effort JSON-LD @type for an asset detail page: a road/watercraft-style rental -> schema.org Vehicle (a Product
+// subtype), everything else -> Product. Purely a schema-richness hint; both types are valid Offer carriers.
+function _looksVehicle(noun, type) {
+  return /\b(car|cars|vehicle|truck|suv|van|auto|motor|sedan|coupe|bus|rv|jeep|convertible|exotic|sportscar|limo|scooter|motorc|atv|boat|yacht|jet)\b/i.test(String(noun || '') + ' ' + String(type || ''));
+}
+// About copy: the owner's publicSite.about when present, else a grounded fallback built only from their own real data
+// (business name + asset count + noun) -- never a fabricated claim. Keeps the /about page substantive even pre-authoring.
+function _aboutText(prof) {
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var about = String(pub.about || '').trim();
+  if (about) return about;
+  var biz = String((prof && prof.name) || '');
+  var noun = String(cfg.noun || 'rental').trim() || 'rental';
+  var assets = Array.isArray(pub.assets) ? pub.assets : [];
+  var n = assets.filter(function (a) { return a && String((a && a.name) || '').trim(); }).length;
+  return (biz || 'We') + (biz ? ' offers ' : ' offer ') + (n ? (n + ' ') : '') + _seoPlural(noun)
+    + ' with transparent pricing and instant online booking. Browse the fleet, check live availability, and reserve in minutes.';
+}
+// Shared <head> extras for a served multi-page: description/canonical/robots/sitemap + OpenGraph/Twitter + JSON-LD + the
+// theme <style>. Mirrors _seoLandingHtml's head so every new page is a full, self-describing document. `o.image` is used
+// only when it is an https URL (data: URIs skipped -- oversized + poorly unfurled).
+function _servedPageHead(prof, cfg, color, o) {
+  var biz = String((prof && prof.name) || '');
+  var desc = String(o.desc || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  var canon = String(o.canon || '');
+  var img = /^https:\/\//i.test(String(o.image || '')) ? String(o.image).slice(0, 600) : '';
+  var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': o.graph || [] }).replace(/</g, '\\u003c');
+  return '<meta name="description" content="' + esc(desc) + '">'
+    + (canon ? ('<link rel="canonical" href="' + esc(canon) + '">') : '')
+    + '<meta name="robots" content="index,follow">'
+    + (o.sitemapUrl ? ('<link rel="sitemap" type="application/xml" href="' + esc(o.sitemapUrl) + '">') : '')
+    + '<meta property="og:type" content="' + esc(o.ogType || 'website') + '">'
+    + '<meta property="og:site_name" content="' + esc(biz) + '">'
+    + '<meta property="og:title" content="' + esc(o.title || '') + '">'
+    + '<meta property="og:description" content="' + esc(desc) + '">'
+    + (canon ? ('<meta property="og:url" content="' + esc(canon) + '">') : '')
+    + (img ? ('<meta property="og:image" content="' + esc(img) + '">') : '')
+    + '<meta name="twitter:card" content="' + (img ? 'summary_large_image' : 'summary') + '">'
+    + '<meta name="twitter:title" content="' + esc(o.title || '') + '">'
+    + '<meta name="twitter:description" content="' + esc(desc) + '">'
+    + (img ? ('<meta name="twitter:image" content="' + esc(img) + '">') : '')
+    + '<scr' + 'ipt type="application/ld+json">' + ldJson + '</scr' + 'ipt>'
+    + _siteThemeStyle(cfg, color);
+}
+// Per-asset DETAIL page: big photo, name/type, description, rate+unit, a "Book this <noun>" CTA deep-linking to the
+// booking form (home + '#app'), a breadcrumb, and Product/Vehicle + BreadcrumbList JSON-LD (aggregateRating threaded in
+// from the public reviews summary when present). Full, standalone, crawlable -- rendered through the shared _pageDoc shell.
+function _assetDetailHtml(prof, color, asset, seob, reviews) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var noun = String(cfg.noun || 'rental').trim() || 'rental';
+  var unit = String(cfg.unit || 'day');
+  var currency = (String(cfg.currency || 'usd').toUpperCase().replace(/[^A-Z]/g, '') || 'USD').slice(0, 3);
+  var nm = String((asset && asset.name) || '').trim();
+  var slug = slugify(nm);
+  var ty = String((asset && asset.type) || '').trim();
+  var ph = String((asset && asset.photo) || '');
+  var dsc = String((asset && asset.desc) || '').trim();
+  var rate = Number(asset && asset.rate) || 0;
+  var home = seob.home, canon = seob.base + '/v/' + slug, bookHref = home + '#app';
+  var alt = esc(nm + (ty ? (' - ' + ty) : '') + (biz ? (' | ' + biz) : ''));
+  var big = /^(https?:|data:)/i.test(ph)
+    ? ('<img src="' + esc(ph) + '" alt="' + alt + '" width="620" height="380" decoding="async" style="width:100%;max-height:380px;object-fit:cover;display:block;background:#eee;border-radius:12px">')
+    : ('<div style="height:220px;display:flex;align-items:center;justify-content:center;font-size:64px;font-weight:800;color:#c4c4c4;background:#f3f3f3;border-radius:12px">' + esc((ty || nm || '?').slice(0, 1).toUpperCase()) + '</div>');
+  var crumb = '<div class="muted" style="font-size:12.5px;margin:2px 0 10px"><a href="' + esc(home) + '" style="color:var(--brand);text-decoration:none">Home</a> &rsaquo; <a href="' + esc(home) + '#fleet" style="color:var(--brand);text-decoration:none">Fleet</a> &rsaquo; ' + esc(nm) + '</div>';
+  var ratingLine = (reviews && reviews.count > 0)
+    ? ('<div class="muted" style="margin-top:4px">' + (Math.round(Number(reviews.avg) * 10) / 10).toFixed(1) + ' from ' + reviews.count + ' review' + (reviews.count === 1 ? '' : 's') + '</div>') : '';
+  var body = _servedNav(prof, seob, 'fleet')
+    + '<div class="hd">' + esc(biz || nm) + '</div>'
+    + '<div class="card">' + crumb + big
+    + '<h1 style="margin:14px 0 2px;font-size:24px">' + esc(nm) + '</h1>'
+    + (ty ? ('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#999">' + esc(ty) + '</div>') : '')
+    + ratingLine
+    + (rate > 0 ? ('<div style="font-weight:800;color:var(--brand);font-size:20px;margin-top:10px">' + money2(Math.round(rate * 100)) + ' <span style="font-size:14px;font-weight:600;color:#777">/ ' + esc(unit) + '</span></div>') : '')
+    + (dsc ? ('<p style="color:#444;font-size:15px;line-height:1.6;margin-top:12px;white-space:pre-wrap">' + esc(dsc) + '</p>') : '')
+    + '<a class="btn" href="' + esc(bookHref) + '" style="max-width:260px">Book this ' + esc(noun) + '</a>'
+    + '<div style="margin-top:12px"><a href="' + esc(home) + '#fleet" style="color:var(--brand);text-decoration:none;font-size:13.5px">&lsaquo; Back to the fleet</a></div></div>';
+  var pType = _looksVehicle(noun, ty) ? 'Vehicle' : 'Product';
+  var prod = { '@type': pType, name: nm.slice(0, 120), url: canon };
+  if (ty) prod.category = ty.slice(0, 60);
+  if (dsc) prod.description = dsc.replace(/\s+/g, ' ').slice(0, 300);
+  if (biz) prod.brand = { '@type': 'Brand', name: biz.slice(0, 80) };
+  if (/^https?:\/\//i.test(ph)) prod.image = ph.slice(0, 600);
+  if (rate > 0) prod.offers = { '@type': 'Offer', price: (Math.round(rate * 100) / 100).toFixed(2), priceCurrency: currency, availability: 'https://schema.org/InStock', url: canon };
+  if (reviews && reviews.count > 0) prod.aggregateRating = { '@type': 'AggregateRating', ratingValue: Math.round(Number(reviews.avg) * 10) / 10, reviewCount: reviews.count };
+  var graph = [prod, { '@type': 'BreadcrumbList', itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+    { '@type': 'ListItem', position: 2, name: 'Fleet', item: home + '#fleet' },
+    { '@type': 'ListItem', position: 3, name: nm, item: canon } ] }];
+  var desc = dsc || (nm + (ty ? (' - ' + ty) : '') + (rate > 0 ? (' from ' + money2(Math.round(rate * 100)) + ' per ' + unit) : '') + (biz ? ('. Book online with ' + biz + '.') : '.'));
+  var title = (biz ? (biz + ' — ') : '') + nm;
+  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: (/^https:\/\//i.test(ph) ? ph : ''), graph: graph, ogType: 'product' });
+  return _pageDoc(title, color, body, '', head);
+}
+// About page: the owner's About copy (or the grounded _aboutText fallback), a CTA to check availability, and
+// AboutPage/Organization/BreadcrumbList JSON-LD.
+function _aboutPageHtml(prof, color, seob) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var home = seob.home, canon = seob.base + '/about';
+  var about = _aboutText(prof);
+  var img = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
+  var body = _servedNav(prof, seob, 'about')
+    + '<div class="hd">' + esc(biz || 'About') + '</div>'
+    + '<div class="card"><h1 style="margin:0 0 10px;font-size:24px">About ' + esc(biz) + '</h1>'
+    + '<div style="color:#444;font-size:15px;line-height:1.7;white-space:pre-wrap">' + esc(about) + '</div>'
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a></div>';
+  var graph = [
+    { '@type': 'AboutPage', name: 'About ' + biz, url: canon, description: String(about).replace(/\s+/g, ' ').slice(0, 300), isPartOf: { '@type': 'WebSite', name: biz, url: home } },
+    { '@type': 'Organization', name: biz, url: home },
+    { '@type': 'BreadcrumbList', itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+      { '@type': 'ListItem', position: 2, name: 'About', item: canon } ] }
+  ];
+  if (img) graph[1].logo = img;
+  var head = _servedPageHead(prof, cfg, color, { title: 'About ' + biz, desc: about, canon: canon, sitemapUrl: seob.sitemapUrl, image: img, graph: graph });
+  return _pageDoc('About ' + biz, color, body, '', head);
+}
+// FAQ page: the owner's authored FAQ (else the grounded _seoDerivedFaq), a CTA to book, and FAQPage/BreadcrumbList JSON-LD.
+function _faqPageHtml(prof, color, seob) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var home = seob.home, canon = seob.base + '/faq';
+  var faq = _seoFaq(prof); if (!faq.length) faq = _seoDerivedFaq(prof, '');
+  var faqHtml = faq.map(function (f) { return '<div style="border-top:1px solid #eee;padding:13px 0"><div style="font-weight:700">' + esc(f.q) + '</div><div class="muted" style="margin-top:5px">' + esc(f.a) + '</div></div>'; }).join('');
+  var body = _servedNav(prof, seob, 'faq')
+    + '<div class="hd">' + esc(biz || 'FAQ') + '</div>'
+    + '<div class="card"><h1 style="margin:0 0 6px;font-size:24px">Frequently asked questions</h1>'
+    + (faqHtml || '<p class="muted">No questions yet.</p>')
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Book online</a></div>';
+  var graph = [
+    { '@type': 'FAQPage', mainEntity: faq.map(function (f) { return { '@type': 'Question', name: String(f.q).slice(0, 200), acceptedAnswer: { '@type': 'Answer', text: String(f.a).slice(0, 600) } }; }) },
+    { '@type': 'BreadcrumbList', itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+      { '@type': 'ListItem', position: 2, name: 'FAQ', item: canon } ] }
+  ];
+  var desc = faq.length ? ('Answers about booking' + (biz ? (' with ' + biz) : '') + ': ' + faq.slice(0, 3).map(function (f) { return f.q; }).join(' ')) : ('Frequently asked questions' + (biz ? (' about ' + biz) : ''));
+  var title = 'FAQ' + (biz ? (' — ' + biz) : '');
+  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: '', graph: graph });
+  return _pageDoc(title, color, body, '', head);
+}
+// Contact page: a CTA back to the (online) booking form plus any REAL contact facts from settings (phone/address/served
+// cities via _seoLoc/_seoCities -- never fabricated), and ContactPage/Organization(+ContactPoint)/BreadcrumbList JSON-LD.
+function _contactPageHtml(prof, color, seob) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var home = seob.home, canon = seob.base + '/contact';
+  var lc = _seoLoc(prof);
+  var addrLine = [lc.city, lc.region, lc.postal].filter(Boolean).join(', ');
+  var rows = '';
+  if (lc.phone) rows += '<div class="row"><span>Phone</span><span><a href="tel:' + esc(lc.phone.replace(/[^0-9+]/g, '')) + '" style="color:var(--brand);text-decoration:none">' + esc(lc.phone) + '</a></span></div>';
+  if (addrLine) rows += '<div class="row"><span>Location</span><span>' + esc(addrLine) + '</span></div>';
+  if (!addrLine) { var cities = _seoCities(prof); if (cities.length) rows += '<div class="row"><span>Serving</span><span>' + esc(cities.join(', ')) + '</span></div>'; }
+  var body = _servedNav(prof, seob, 'contact')
+    + '<div class="hd">' + esc(biz || 'Contact') + '</div>'
+    + '<div class="card"><h1 style="margin:0 0 8px;font-size:24px">Contact ' + esc(biz) + '</h1>'
+    + '<p class="muted" style="font-size:14.5px">The fastest way to reserve is right here — booking is online and confirmed in minutes.</p>'
+    + (rows ? ('<div style="margin:6px 0 4px">' + rows + '</div>') : '')
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Start your booking</a></div>';
+  var org = { '@type': 'Organization', name: biz, url: home };
+  if (lc.phone) org.contactPoint = { '@type': 'ContactPoint', telephone: lc.phone, contactType: 'reservations' };
+  var logo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
+  if (logo) org.logo = logo;
+  var graph = [
+    { '@type': 'ContactPage', name: 'Contact ' + biz, url: canon, isPartOf: { '@type': 'WebSite', name: biz, url: home } },
+    org,
+    { '@type': 'BreadcrumbList', itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+      { '@type': 'ListItem', position: 2, name: 'Contact', item: canon } ] }
+  ];
+  var desc = 'Contact ' + biz + (addrLine ? (' in ' + addrLine) : '') + '. Book online in minutes' + (lc.phone ? (' or call ' + lc.phone) : '') + '.';
+  var head = _servedPageHead(prof, cfg, color, { title: 'Contact ' + biz, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph });
+  return _pageDoc('Contact ' + biz, color, body, '', head);
 }
 // Server-rendered SEO / social head. `reviews` (optional, _publicReviewSummary output) threads aggregateRating + Review
 // nodes into the LocalBusiness node; absent -> byte-identical to no-reviews. Still pure + synchronous (no DB, no await).
@@ -8635,6 +8973,10 @@ function _bookHeadTags(prof, canonicalUrl, reviews) {
   var descRaw = pub.about ? String(pub.about)
     : ('Book ' + nounPl + (whatShort ? (' -- ' + whatShort) : '') + (city ? (' in ' + city) : '') + ' with ' + biz + '. Reserve online in minutes.');
   var desc = descRaw.replace(/\s+/g, ' ').trim().slice(0, 300);
+  // Owner-authored SEO overrides (publicSite.config.metaTitle / metaDescription). Present -> win over the derived
+  // title/description here (and every og/twitter tag + JSON-LD field below that reads them); absent -> derive as today.
+  var _mt = String(cfg.metaTitle || '').trim(); if (_mt) title = _mt.slice(0, 160);
+  var _md = String(cfg.metaDescription || '').trim(); if (_md) desc = _md.replace(/\s+/g, ' ').trim().slice(0, 300);
   var canon = String(canonicalUrl || '').slice(0, 500);
   // og:image: an https brand logo, else the first https asset photo (data: URIs skipped -- oversized + poorly unfurled).
   var img = /^https:\/\//i.test(String(brand.logo || '')) ? String(brand.logo).slice(0, 600) : '';
@@ -8731,7 +9073,7 @@ async function _publicReviewSummary(env, tenantId) {
 }
 // Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
 // `reviews` (optional) = _publicReviewSummary output; drives the server-rendered reviews section (absent -> section skipped).
-function _bookPageHtml(slug, color, seo, prof, reviews) {
+function _bookPageHtml(slug, color, seo, prof, reviews, seob) {
   // Growth badge -- "Powered by Atlas Rental.io" on every public tenant booking page (the #1 free-impression lever:
   // each tenant's booking visitors become Atlas impressions). Shown BY DEFAULT; hidden ONLY when the tenant opted
   // out via prof.settings.hideAtlasBadge -- the future paid "remove branding" upsell hook. Tiny, muted, centered,
@@ -8772,7 +9114,7 @@ function _bookPageHtml(slug, color, seo, prof, reviews) {
   if (_sec('showFleet')) {
     var _fa = (Array.isArray(_pub.assets) ? _pub.assets : []).slice(0, 12);
     if (_fa.length) {
-      _fleet = '<div class="mkt-sec"><h2>Our ' + esc(_plN(_noun)) + '</h2><div class="mkt-sub">' + _fa.length + ' ' + esc(_fa.length === 1 ? _noun : _plN(_noun)) + ' to choose from</div><div class="mkt-grid">'
+      _fleet = '<div class="mkt-sec" id="fleet"><h2>Our ' + esc(_plN(_noun)) + '</h2><div class="mkt-sub">' + _fa.length + ' ' + esc(_fa.length === 1 ? _noun : _plN(_noun)) + ' to choose from</div><div class="mkt-grid">'
         + _fa.map(function (a) {
           var ph = String((a && a.photo) || '');
           // Image SEO: real alt (asset name + type + business), explicit width/height (CLS), lazy-loaded. The client
@@ -8783,10 +9125,15 @@ function _bookPageHtml(slug, color, seo, prof, reviews) {
           var _alt = esc((_anm || _noun) + (_aty ? (' - ' + _aty) : '') + (_biz ? (' | ' + _biz) : ''));
           var img = /^(https?:|data:)/i.test(ph) ? ('<img class="mkt-ph" src="' + esc(ph) + '" alt="' + _alt + '" width="300" height="96" loading="lazy" decoding="async">') : ('<div class="mkt-noph">' + esc(String((a && (a.type || a.name)) || '?').slice(0, 1).toUpperCase()) + '</div>');
           var rate = Number(a && a.rate) || 0;
-          return '<div class="mkt-car"' + (_aslug ? (' id="a-' + _aslug + '"') : '') + '>' + img + '<div class="mkt-cb"><div class="mkt-nm">' + esc(String((a && a.name) || '')) + '</div>'
+          // Each showcase card deep-links to that asset's own detail page (/v/<slug>) when the page base (seob) is known;
+          // absent -> the card stays exactly as before (byte-identical). The outer id="a-<slug>" anchor is preserved.
+          var _dhref = (seob && _aslug) ? (seob.base + '/v/' + _aslug) : '';
+          var _da = _dhref ? ('<a href="' + esc(_dhref) + '" style="text-decoration:none;color:inherit;display:block">') : '';
+          var _dz = _dhref ? '</a>' : '';
+          return '<div class="mkt-car"' + (_aslug ? (' id="a-' + _aslug + '"') : '') + '>' + _da + img + '<div class="mkt-cb"><div class="mkt-nm">' + esc(String((a && a.name) || '')) + '</div>'
             + (a && a.type ? ('<div class="mkt-ty">' + esc(String(a.type)) + '</div>') : '')
             + (a && a.desc ? ('<div class="mkt-ds">' + esc(String(a.desc)) + '</div>') : '')
-            + (rate > 0 ? ('<div class="mkt-pr">' + _m2(rate) + ' / ' + esc(_unit) + '</div>') : '') + '</div></div>';
+            + (rate > 0 ? ('<div class="mkt-pr">' + _m2(rate) + ' / ' + esc(_unit) + '</div>') : '') + '</div>' + _dz + '</div>';
         }).join('') + '</div></div>';
     }
   }
@@ -8803,7 +9150,7 @@ function _bookPageHtml(slug, color, seo, prof, reviews) {
   var _contact = _sec('showContact') ? '<div class="mkt-sec" style="text-align:center"><h2>Ready to book?</h2><div class="mkt-sub" style="margin-bottom:0">Reserve online in minutes.</div><a class="mkt-cta" href="#app">Start your booking</a></div>' : '';
   // LEGAL FOOTER -- copyright line (only when the marketing site is on; the Atlas badge below stays separate/unchanged).
   var _footer = _anyOn ? ('<div class="mkt-foot">© ' + new Date().getFullYear() + ' ' + esc(_biz) + '</div>') : '';
-  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + _mktStyle + ((seo && seo.noscript) || '') + _hero + _fleet + _aboutSec + _reviewsSec + '<div id="app" class="card">Loading&hellip;</div>' + _contact + _footer + _atlasBadge;
+  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + _mktStyle + ((_anyOn && seob) ? _servedNav(prof, seob, 'home') : '') + ((seo && seo.noscript) || '') + _hero + _fleet + _aboutSec + _reviewsSec + '<div id="app" class="card">Loading&hellip;</div>' + _contact + _footer + _atlasBadge;
   var js = `
 var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
@@ -8834,7 +9181,7 @@ function _exCost(periods){var ofr=_exOffered(),rm=(D.config||{}).rateModel||'day
 function sub(){var e=el('err');e.textContent='';var b={name:el('nm').value,email:el('em').value,phone:el('ph')?el('ph').value:'',asset:el('asset').value,periods:el('per').value,start:el('st').value,time:el('stt')?el('stt').value:'',deliveryAddr:el('dlv')?el('dlv').value:'',location:el('loc')?el('loc').value:'',extras:_selExArr(),promo:el('promo')?el('promo').value:''};if(!b.name){e.textContent='Please enter your name';return}if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(b.email)){e.textContent='Please enter a valid email';return}var g=el('gobtn');g.disabled=true;g.textContent='Sending\\u2026';fetch('/api/public/'+S+'/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).then(function(r){return r.json()}).then(function(j){if(!j.ok){e.textContent=j.error||'Something went wrong';g.disabled=false;g.textContent='Request booking';return}if(j.payUrl){location.href=j.payUrl;return}el('app').innerHTML='<div class=hd>'+esc(D.business)+'</div><div class=card><h2>You are booked!</h2><p>'+esc(j.message)+'</p><p class=muted>Reference '+esc(j.ref)+'</p></div>'}).catch(function(){e.textContent='Network error, please try again';g.disabled=false;g.textContent='Request booking'})}
 fetch('/api/public/'+S).then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>This booking site is not available.</div>';return}D=j;try{var _an=j.analytics||{};if(_an.ga){var _g=document.createElement('script');_g.async=true;_g.src='https://www.googletagmanager.com/gtag/js?id='+encodeURIComponent(_an.ga);document.head.appendChild(_g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag('js',new Date());gtag('config',_an.ga)}if(_an.pixel){!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init',_an.pixel);fbq('track','PageView')}}catch(e){}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);el('app').innerHTML='<div class=hd>'+(b.logo?'<img src="'+esc(b.logo)+'" style="height:28px;border-radius:6px">':'')+esc(j.business)+'</div>'+(j.headline?'<div class=card><b>'+esc(j.headline)+'</b>'+(j.about?'<div class=muted style="margin-top:6px">'+esc(j.about)+'</div>':'')+'</div>':'')+'<div class=card><label>What would you like to book?</label><div id=assetGrid class=agrid></div><input type=hidden id=asset><div id=rate class=muted style="margin-top:6px"></div><label>How many '+esc(j.unit)+'s?</label><input id=per type=number min=1 value=1 oninput="qt();checkAvail()"><label>Start date</label><input id=st type=date onchange=checkAvail()><label>Pickup time</label><input id=stt type=time value="10:00" onchange=qt()><div id=avail class=avail></div><div id=exWrap></div><label>Your name</label><input id=nm><label>Email</label><input id=em type=email>'+(j.config.collectPhone?'<label>Phone</label><input id=ph>':'')+(j.config.collectDelivery?'<label>Delivery address</label><input id=dlv placeholder="Where should we deliver? (optional)">':'')+((j.locations&&j.locations.length)?('<label>Pickup location</label><select id=loc><option value="">Choose a location</option>'+j.locations.map(function(l){return '<option>'+esc(l)+'</option>';}).join('')+'</select>'):'')+((j.promos&&j.promos.length)?'<label>Promo code</label><div style="display:flex;gap:6px"><input id=promo style="flex:1;text-transform:uppercase" placeholder="Optional"><button type=button class=btn style="width:auto;padding:0 14px" onclick=applyPromo()>Apply</button></div><div id=promsg style="font-size:12px;margin-top:4px"></div>':'')+'<div id=qz style="margin-top:14px"></div>'+(j.config.terms?'<div class=muted style="margin-top:10px">'+esc(j.config.terms)+'</div>':'')+'<button class=btn id=gobtn onclick=sub()>Request booking</button><div id=err class=err></div></div>';renderAssets();qt()}).catch(function(){el('app').innerHTML='<div class=card>Could not load this booking site.</div>'})
 `;
-  return _pageDoc((seo && seo.title) || 'Book', color, body, js, (seo && seo.head) || '');
+  return _pageDoc((seo && seo.title) || 'Book', color, body, js, ((seo && seo.head) || '') + _siteThemeStyle(_pcfg, color));
 }
 // Served customer portal: loads the booking by its token, shows status + pay-deposit/balance (if Stripe connected).
 function _m(c) { return '$' + ((Math.round(Number(c) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })); }
