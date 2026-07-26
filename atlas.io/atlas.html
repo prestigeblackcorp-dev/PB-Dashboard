@@ -7494,6 +7494,7 @@ const Atlas = (function(){
   // nothing else can create an asset in between) and couriered via _aioNewAssetId so undo() can remove exactly this row.
   var _aioNewAssetId='';
   var _aioNewPostId='';   // pre-generated post id for content.addPost -- couriered from snapshot() to apply()/undo() (mirrors _aioNewAssetId)
+  var _aioNewPageId='';   // pre-generated page id for page.create -- couriered snapshot()->apply()/undo() (mirrors _aioNewPostId)
   var _aioNewBlkId='';    // pre-generated blackout id for availability.block -- couriered snapshot()->apply()/undo() (mirrors _aioNewAssetId)
   var _aioNewBkId='';     // pre-generated booking id for booking.create -- couriered snapshot()->apply()/undo()
   function _aioAddAsset(id,p){
@@ -7902,6 +7903,19 @@ const Atlas = (function(){
       apply:function(p){ if(!_canCap('webEdit')) return false; var id=_aioNewPostId||_postId(); _aioNewPostId=''; var before=(Array.isArray(_web().posts)?_web().posts.length:0); webPostAdd(String(p.title||'').trim(), String(p.body||'').trim(), id); var f=Array.isArray(_web().posts)?_web().posts:[]; if(f.length<=before) return false; try{renderWebsite();}catch(e){} return true; },
       undo:function(snap){ if(!snap||!snap.id) return; webPostRemove(snap.id); }
     },
+    /* ---- Custom-page verb: page.create reuses the SAME webPageAdd setter the Pages manager calls (webEdit RBAC,
+       save()->sync, live preview inherited). webPageAdd(title,id) with no sections seeds a starter [hero,text,cta].
+       The id is pre-generated in snapshot() and couriered via _aioNewPageId so undo() removes exactly this page. ---- */
+    'page.create':{
+      params:['title'], hint:'title is the name of the new custom page (e.g. "About us", "Our services"). It starts with a hero, a text block and a call-to-action the owner can edit.',
+      cap:'webEdit', money:false, tier:'confirm',
+      label:function(p){ return 'Create a page: "'+esc(String((p&&p.title)||'').trim())+'"'; },
+      summary:function(p){ return {field:'Pages', before:'(new)', after:String((p&&p.title)||'').trim()}; },
+      validate:function(p){ var t=String((p&&p.title)||'').trim(); if(!t||t.length<2) return {ok:false,msg:'What should the page be called?'}; if(t.length>120) return {ok:false,msg:'Keep the page title under 120 characters.'}; if((Array.isArray(_web().pages)?_web().pages.length:0)>=30) return {ok:false,msg:'You already have 30 pages, the maximum. Remove one to add another.'}; return {ok:true}; },
+      snapshot:function(){ _aioNewPageId=_pageId(); return {id:_aioNewPageId}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; var id=_aioNewPageId||_pageId(); _aioNewPageId=''; var before=(Array.isArray(_web().pages)?_web().pages.length:0); webPageAdd(String(p.title||'').trim(), id); var f=Array.isArray(_web().pages)?_web().pages:[]; if(f.length<=before) return false; try{renderWebsite();}catch(e){} return true; },
+      undo:function(snap){ if(!snap||!snap.id) return; webPageRemove(snap.id); }
+    },
     /* ---- Agentic fleet verbs. availability.block reuses the SAME blackout store saveAssetBlock writes
        (_blackouts(a).push -> _saveAssets), undone via the existing assetUnblock setter. booking.create reuses
        createBooking's primitives (calcQuote / _derivePeriods / _moneyFor / _upsertBooking / _nextBkId), undone via
@@ -8121,6 +8135,10 @@ const Atlas = (function(){
       // the planner + content.addPost validate() are the real authority; a false match just gets a normal reply.
       || /\b(blog|post|posts|article|articles|news|content)\b/.test(s)
       || /\bwrite\b[a-z0-9' .,-]{0,30}\b(post|article|blog)\b/.test(s)
+      // Custom pages: "make/create a page", "landing page", "add an about/services page" -> page.create. Broad; the
+      // planner (_aioLocalIntent 8b) + page.create validate() are the real authority, so a false match just replies.
+      || /\blanding page\b/.test(s)
+      || /\b(make|create|build|add|new|set\s?up|generate|design)\b[a-z0-9' .,-]{0,24}\bpage\b/.test(s)
       // Agentic fleet verbs: block an asset's dates + create a booking. Tight, action-anchored triggers so a bare
       // "bookings" or "block the tab" still just navigates -- _aioLocalIntent + each verb's validate() are the authority.
       || /\b(block|blackout|black\s?out)\b[a-z0-9' .,\/-]{0,44}\b(dates?|days?|off|out|calendar|unavailable|today|tomorrow|20\d\d|\d{1,2}\/\d{1,2})\b/.test(s)
@@ -8211,6 +8229,16 @@ const Atlas = (function(){
       else { var tm=/\b(?:titled|title|called|about|on)\b\s*[:\-]?\s*(.+)$/i.exec(raw); if(tm){ var sp=/^(.{2,120}?)\s*(?:[:\n\u2014]|\s-\s)\s*(.+)$/.exec(tm[1].trim()); if(sp){ title=sp[1].trim(); body=sp[2].trim(); } } }
       title=_aioClip(title,120); body=_aioClip(body,20000);
       if(title.length>=2 && body.length>=10) return {type:'content.addPost', params:{title:title, body:body}};
+    }
+    // 8b) Custom page -- "make/create/build a (landing) page called X". The about branch (#5) already claimed "about
+    //     page", so this only fires for other page names. Never fabricates -- needs a separable page title.
+    if(/\b(landing page|landing)\b/.test(s) || (/\bpage\b/.test(s) && /\b(make|create|build|add|new|set\s?up|generate|design)\b/.test(s) && !/\b(home ?page|web ?page|per page|page views?|next page|this page)\b/.test(s))){
+      var pgTitle=_aioDQ(raw);
+      if(!pgTitle){ var pm1=/\b(?:landing page|page)\b[^a-z0-9"]*(?:called|titled|named|for|about|:)\s+(.+)$/i.exec(raw); if(pm1) pgTitle=pm1[1].trim(); }
+      if(!pgTitle){ var pm2=/\b(?:make|create|build|add|new|set\s?up|generate|design)\b\s+(?:me\s+)?(?:a|an|the|my)?\s*(?:new\s+)?(.+?)\s+(?:landing\s+)?page\b/i.exec(raw); if(pm2) pgTitle=pm2[1].trim(); }
+      pgTitle=String(pgTitle||'').replace(/^(?:a|an|the|my|new|called|titled|named)\s+/i,'').trim();
+      pgTitle=_aioClip(pgTitle,120);
+      if(pgTitle.length>=2 && !/^landing$/i.test(pgTitle)) return {type:'page.create', params:{title:pgTitle}};
     }
     // 9) Availability block -- "block <asset> from <date> [to <date>]".
     if(/\b(block|blackout|black\s?out|unavailable|out of service|off\s?line)\b/.test(s)){
@@ -9306,7 +9334,7 @@ const Atlas = (function(){
   function openWebsite(){ if(closeAio) closeAio(); go('website'); }
   /* ---- WEBSITE module: Atlas.io-built site from your data + domain connect/buy (Phase 3) ---- */
   function _web(){ if(!S.website) S.website={built:false,headline:'',tagline:'',about:'',showFleet:true,showAbout:true,showContact:true,posts:[],domain:{mode:'sub',custom:'',status:'live'}};
-    if(!S.website.domain) S.website.domain={mode:'sub',custom:'',status:'live'}; if(!Array.isArray(S.website.posts)) S.website.posts=[]; return S.website; }
+    if(!S.website.domain) S.website.domain={mode:'sub',custom:'',status:'live'}; if(!Array.isArray(S.website.posts)) S.website.posts=[]; if(!Array.isArray(S.website.pages)) S.website.pages=[]; return S.website; }
   function _subUrl(){ return (S.brand.subdomain||'yoursite').replace(/[^a-z0-9]/g,'')+'.atlasrental.site'; }
   function _siteUrl(){ var w=_web(); return (w.domain.mode==='custom'&&w.domain.custom)? w.domain.custom : _subUrl(); }
   // ---- Public booking site: publish the profile to the worker so a REAL customer-reachable page exists ----
@@ -9320,6 +9348,7 @@ const Atlas = (function(){
     showFleet:w.showFleet!==false, showAbout:w.showAbout!==false, showReviews:w.showReviews!==false, showContact:w.showContact!==false,   // P0-1: owner section toggles now reach the served page (worker _sec() hides a section only on explicit false)
     faq:_webFaqList(), font:(w.font||'system'), template:(w.template||'classic'), metaTitle:String(w.metaTitle||'').trim().slice(0,70), metaDescription:String(w.metaDescription||'').trim().slice(0,300), accent2:(_aioHex(w.accent2)||''),   // Website builder (AI + owner controls): worker RENDERS these from config -- faq[{q,a}], font system|serif|modern|elegant, template classic|luxury|bold|minimal, meta tags + secondary accent. Defaults ''/'system'/'classic' = current look.
     posts:(Array.isArray(w.posts)?w.posts:[]).map(function(p){ return {slug:p.slug,title:p.title,body:p.body,excerpt:p.excerpt,published:p.published!==false,at:p.at}; }),   // Blog: emit all posts; the worker filters to published for /blog + per-post pages
+    pages:(Array.isArray(w.pages)?w.pages:[]).map(function(p){ return {id:p.id,slug:p.slug,title:p.title,seoDesc:p.seoDesc,published:p.published!==false,nav:!!p.nav,at:p.at,sections:p.sections}; }),   // Custom pages: emit all; the worker filters to published + >=1 section for /p/<slug> + nav + sitemap
     analytics:{ ga:String(wk.ga||'').trim(), pixel:String(wk.pixel||'').trim() } }; }   // #24: GA + Meta/TikTok pixel actually injected into the served booking page (see worker _bookPageHtml)
   // Cross-sys G4: a signature of what the PUBLIC site would serve, captured at publish time. If the live Fleet/pricing/copy later diverges, the owner sees an "unpublished changes" badge (the served site keeps the last snapshot until re-publish).
   function _sitePubSig(){ try{ return JSON.stringify({a:_publicSiteAssets(),c:_publicSiteConfig(),h:_web().headline||'',ab:_web().about||''}); }catch(e){ return ''; } }
@@ -9531,6 +9560,226 @@ const Atlas = (function(){
   function webPostAddFromForm(){ if(!_guard('webEdit'))return; var t=(val('webPostNewTitle')||'').trim(), b=(val('webPostNewBody')||'').trim();
     if(t.length<2){ toast('Give the post a title (2+ characters)'); return; } if(b.length<1){ toast('Write something for the post'); return; }
     webPostAdd(t,b); }
+  /* ==== Custom Pages: freeform section-based page builder (Shopify/Squarespace-classic array-of-blocks). Model lives at
+     S.website.pages -> emitted into _publicSiteConfig().pages (the worker serves /p/<slug> from it). Mirrors the blog
+     setter pattern exactly (mutate _web() -> save() -> refresh + live preview; dirty-tracking is automatic via
+     _sitePubSig). A single SECTION_REG drives BOTH the editor fields and the preview renderer so preview ~= served.
+     ADDITIVE + money-safe: nothing here touches calcQuote/pricing/booking/Stripe. ==== */
+  var _webEditPageId='';   // which page is open in the editor (drives the section stack + the live preview target)
+  var _PG_TYPE_ORDER=['hero','text','split','features','fleet','cta','gallery','faq','stats','contact'];
+  // SECTION REGISTRY -- the single source of truth. Each type: label, a short ASCII icon badge, def() -> default props
+  // (pre-filled from the owner's real brand/assets so every add looks finished), and the editable fields the editor
+  // renders. props are CONTENT ONLY; tone (light|dark|brand) is the only style knob and is edited on every card.
+  var SECTION_REG={
+    hero:{ label:'Hero', icon:'HR', def:function(){ var w=_web(); return {tone:'brand', heading:String(w.headline||S.brand.name||'').slice(0,120), subheading:String(w.tagline||'').slice(0,200), image:'', btnLabel:'Book now', btnLink:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'subheading',label:'Subheading',kind:'text'},{key:'image',label:'Background image URL',kind:'text'},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] },
+    text:{ label:'Text', icon:'TX', def:function(){ return {tone:'light', heading:'', body:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'body',label:'Body',kind:'textarea',rows:4}] },
+    split:{ label:'Split', icon:'SP', def:function(){ return {tone:'light', heading:'', body:'', image:'', side:'left', btnLabel:'', btnLink:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'body',label:'Body',kind:'textarea',rows:3},{key:'image',label:'Image URL',kind:'text'},{key:'side',label:'Image side',kind:'select',opts:[['left','Image left'],['right','Image right']]},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] },
+    features:{ label:'Features', icon:'FE', def:function(){ return {tone:'light', heading:'Why '+String(S.brand.name||'us'), columns:'3', items:[{title:'Easy online booking',text:'Reserve in minutes, no phone tag.'},{title:'Transparent pricing',text:'The price you see is the price you pay.'},{title:'Well-kept '+String(S.fleet.nouns||'inventory'),text:'Clean, ready and reliable every time.'}]}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'columns',label:'Columns',kind:'select',opts:[['2','2 columns'],['3','3 columns'],['4','4 columns']]},{key:'items',label:'Features',kind:'list',cap:6,addLabel:'Add feature',sub:[{key:'title',label:'Title',kind:'text'},{key:'text',label:'Text',kind:'textarea'}]}] },
+    fleet:{ label:'Fleet', icon:'FL', def:function(){ return {tone:'light', heading:'Our '+String(S.fleet.nouns||'fleet'), columns:'3', showPrice:true, btnLabel:'Book'}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'columns',label:'Columns',kind:'select',opts:[['2','2 columns'],['3','3 columns'],['4','4 columns']]},{key:'showPrice',label:'Show prices',kind:'toggle'},{key:'btnLabel',label:'Button label',kind:'text'}] },
+    cta:{ label:'Call to action', icon:'CTA', def:function(){ return {tone:'brand', heading:'Ready to book?', subtext:'Reserve online in minutes.', btnLabel:'Book now', btnLink:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'subtext',label:'Subtext',kind:'textarea',rows:2},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] },
+    gallery:{ label:'Gallery', icon:'GA', def:function(){ return {tone:'light', heading:'Gallery', columns:'3', images:[]}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'columns',label:'Columns',kind:'select',opts:[['2','2 columns'],['3','3 columns'],['4','4 columns']]},{key:'images',label:'Images',kind:'list',scalar:true,cap:12,addLabel:'Add image',sub:[{key:'url',label:'Image URL',kind:'text'}]}] },
+    faq:{ label:'FAQ', icon:'FAQ', def:function(){ var fq=_webFaqList(); return {tone:'light', heading:'Frequently asked questions', items:(fq.length?fq.slice(0,6).map(function(x){ return {q:x.q,a:x.a}; }):[{q:'',a:''}])}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'items',label:'Questions',kind:'list',cap:12,addLabel:'Add Q&amp;A',sub:[{key:'q',label:'Question',kind:'text'},{key:'a',label:'Answer',kind:'textarea'}]}] },
+    stats:{ label:'Stats', icon:'ST', def:function(){ return {tone:'light', heading:'', items:[{number:String((DATA.assets||[]).length||'10'),label:String(S.fleet.nouns||'assets')},{number:'24/7',label:'Support'},{number:'100%',label:'Online booking'}]}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'items',label:'Stats',kind:'list',cap:4,addLabel:'Add stat',sub:[{key:'number',label:'Number',kind:'text'},{key:'label',label:'Label',kind:'text'}]}] },
+    contact:{ label:'Contact', icon:'CO', def:function(){ return {tone:'light', heading:'Contact us', phone:String((S.brand&&S.brand.phone)||''), email:String((S.brand&&S.brand.email)||''), address:String((S.brand&&S.brand.city)||''), btnLabel:'Book', btnLink:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'phone',label:'Phone',kind:'text'},{key:'email',label:'Email',kind:'text'},{key:'address',label:'Address',kind:'text'},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] }
+  };
+  function _pageId(){ return 'pg'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }   // 'pg'+ unique -- same scheme as _postId, distinct prefix
+  function _secId(){ return 's'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }     // stable section id so reorder/undo are safe
+  function _webPage(id){ var w=_web(), a=Array.isArray(w.pages)?w.pages:[]; for(var i=0;i<a.length;i++){ if(a[i]&&a[i].id===id) return a[i]; } return null; }
+  function _webPageSection(pageId, secId){ var pg=_webPage(pageId); if(!pg||!Array.isArray(pg.sections)) return null; for(var i=0;i<pg.sections.length;i++){ if(pg.sections[i]&&pg.sections[i].id===secId) return pg.sections[i]; } return null; }
+  function _pgFieldByKey(type, key){ var e=SECTION_REG[type]; if(!e||!e.fields) return null; for(var i=0;i<e.fields.length;i++){ if(e.fields[i]&&e.fields[i].key===key) return e.fields[i]; } return null; }
+  function _pgBlankListItem(f){ var o={}; ((f&&f.sub)||[]).forEach(function(sf){ o[sf.key]=''; }); return o; }
+  function _pgNewSection(type){ var e=SECTION_REG[type]; if(!e) return null; var props={}; try{ props=e.def()||{}; }catch(x){ props={}; } return {id:_secId(), type:type, props:props}; }
+  function _pgStarter(types){ return (types||[]).map(function(t){ return _pgNewSection(t); }).filter(Boolean); }
+  // ---- Page setters (all clone the webPost* discipline: _guard('webEdit') on structural writes -> mutate -> save() ->
+  //      refresh; per-keystroke prop writes use a silent _canCap gate + preview-only refresh so typing keeps focus). ----
+  function webPageAdd(title, _id, _sections){ if(!_guard('webEdit'))return ''; var w=_web(); if(!Array.isArray(w.pages))w.pages=[]; if(w.pages.length>=30){ toast('Up to 30 pages'); return ''; }
+    var t=String(title||'').trim().slice(0,120)||'Untitled page'; var id=_id||_pageId();
+    var secs=Array.isArray(_sections)?_sections:_pgStarter(['hero','text','cta']);   // 2-arg call (AI verb / new-page form) seeds a friendly starter; never an empty box
+    w.pages.push({ id:id, slug:(_postSlug(t)||('page-'+id)), title:t, seoDesc:'', published:true, nav:false, at:Date.now(), sections:secs });
+    save(); _webRefreshPages(); _webRefreshPreview(); return id; }
+  function webPageSet(id, patch){ if(!_canCap('webEdit'))return; var p=_webPage(id); if(!p)return; patch=patch||{};
+    if('title' in patch){ p.title=String(patch.title||'').slice(0,120); p.slug=(_postSlug(p.title)||('page-'+p.id)); }   // re-derive slug on title change
+    if('seoDesc' in patch) p.seoDesc=String(patch.seoDesc||'').slice(0,300);
+    save(); _webRefreshPreview(); }   // preview-only -- never re-render the editor mid-type (mirrors webPostSet, keeps input focus)
+  function webPageRemove(id){ if(!_guard('webEdit'))return; var w=_web(); if(!Array.isArray(w.pages))return; var n=w.pages.length; w.pages=w.pages.filter(function(p){ return p&&p.id!==id; }); if(w.pages.length!==n){ if(_webEditPageId===id)_webEditPageId=''; save(); _webRefreshPages(); _webRefreshPreview(); } }
+  function webPageToggle(id){ if(!_guard('webEdit'))return; var p=_webPage(id); if(!p)return; p.published=(p.published===false); save(); _webRefreshPages(); _webRefreshPreview(); }
+  function webPageNavToggle(id){ if(!_guard('webEdit'))return; var p=_webPage(id); if(!p)return; p.nav=!p.nav; save(); _webRefreshPages(); _webRefreshPreview(); }
+  function webPageSectionAdd(pageId, type){ if(!_guard('webEdit'))return ''; if(!SECTION_REG[type]){ toast('Unknown section'); return ''; } var pg=_webPage(pageId); if(!pg)return ''; if(!Array.isArray(pg.sections))pg.sections=[]; if(pg.sections.length>=20){ toast('Up to 20 sections per page'); return ''; }
+    var sec=_pgNewSection(type); if(!sec)return ''; pg.sections.push(sec); save(); _webRefreshPages(); _webRefreshPreview(); return sec.id; }
+  function webPageSectionSet(pageId, secId, patch){ if(!_canCap('webEdit'))return; var sec=_webPageSection(pageId,secId); if(!sec)return; if(!sec.props)sec.props={}; patch=patch||{};
+    for(var k in patch){ if(!Object.prototype.hasOwnProperty.call(patch,k))continue; var v=patch[k]; if(k==='tone'){ v=(v==='dark'||v==='brand')?v:'light'; } if(typeof v==='string') v=v.slice(0,6000); sec.props[k]=v; }
+    save(); _webRefreshPreview(); }   // preview-only -- keeps focus while typing (structural changes below re-render)
+  function webPageSectionRemove(pageId, secId){ if(!_guard('webEdit'))return; var pg=_webPage(pageId); if(!pg||!Array.isArray(pg.sections))return; var n=pg.sections.length; pg.sections=pg.sections.filter(function(x){ return x&&x.id!==secId; }); if(pg.sections.length!==n){ save(); _webRefreshPages(); _webRefreshPreview(); } }
+  function webPageSectionMove(pageId, secId, dir){ if(!_guard('webEdit'))return; var pg=_webPage(pageId); if(!pg||!Array.isArray(pg.sections))return; var a=pg.sections, i=-1; for(var k=0;k<a.length;k++){ if(a[k]&&a[k].id===secId){ i=k; break; } } if(i<0)return; var j=(dir==='up')?i-1:i+1; if(j<0||j>=a.length)return; var t=a[i]; a[i]=a[j]; a[j]=t; save(); _webRefreshPages(); _webRefreshPreview(); }
+  function webPageSectionListSet(pageId, secId, key, idx, subKey, value){ if(!_canCap('webEdit'))return; var sec=_webPageSection(pageId,secId); if(!sec)return; if(!sec.props)sec.props={}; var arr=Array.isArray(sec.props[key])?sec.props[key]:(sec.props[key]=[]); idx=parseInt(idx,10); if(isNaN(idx)||idx<0||idx>=arr.length)return;
+    if(subKey){ if(!arr[idx]||typeof arr[idx]!=='object')arr[idx]={}; arr[idx][subKey]=String(value==null?'':value).slice(0,4000); }
+    else { arr[idx]=String(value==null?'':value).slice(0,200000); }   // scalar list (gallery image URL -- allow data: URLs)
+    save(); _webRefreshPreview(); }   // preview-only -- keeps focus while typing
+  function webPageSectionListAdd(pageId, secId, key){ if(!_guard('webEdit'))return; var sec=_webPageSection(pageId,secId); if(!sec)return; if(!sec.props)sec.props={}; var arr=Array.isArray(sec.props[key])?sec.props[key]:(sec.props[key]=[]); var f=_pgFieldByKey(sec.type,key), cap=(f&&f.cap)||8; if(arr.length>=cap){ toast('Up to '+cap); return; } arr.push((f&&f.scalar)?'':_pgBlankListItem(f)); save(); _webRefreshPages(); _webRefreshPreview(); }
+  function webPageSectionListRemove(pageId, secId, key, idx){ if(!_guard('webEdit'))return; var sec=_webPageSection(pageId,secId); if(!sec)return; var arr=Array.isArray(sec.props&&sec.props[key])?sec.props[key]:[]; idx=parseInt(idx,10); if(isNaN(idx)||idx<0||idx>=arr.length)return; arr.splice(idx,1); save(); _webRefreshPages(); _webRefreshPreview(); }
+  function webPageAddFromForm(){ if(!_guard('webEdit'))return; var t=(val('webPageNewTitle')||'').trim(); if(t.length<2){ toast('Give the page a title (2+ characters)'); return; } var id=webPageAdd(t); if(id){ _webEditPageId=id; _webRefreshPages(); _webRefreshPreview(); } }
+  function webPageStarterLanding(){ if(!_guard('webEdit'))return; var id=webPageAdd('Welcome to '+String(S.brand.name||'us'), undefined, _pgStarter(['hero','fleet','features','cta','contact'])); if(id){ _webEditPageId=id; _webRefreshPages(); _webRefreshPreview(); toast('Starter landing page added \u2014 edit anything'); } }
+  function webEditPage(id){ if(!_canCap('webEdit'))return; _webEditPageId=String(id||''); _webRefreshPages(); _webRefreshPreview(); var el=document.getElementById('webPagesBox'); if(el&&el.scrollIntoView){ try{ el.scrollIntoView({block:'nearest'}); }catch(e){} } }
+  function webPagesBack(){ _webEditPageId=''; _webRefreshPages(); _webRefreshPreview(); }
+  // ---- Pages editor UI (a "Pages" set-block in the builder). List view -> per-page rows; Edit -> the section stack. ----
+  function _webPagesHtml(){ return '<div id="webPagesBox">'+_webPagesInner()+'</div>'; }
+  function _webRefreshPages(){ var el=document.getElementById('webPagesBox'); if(el) el.innerHTML=_webPagesInner(); }
+  function _webPagesInner(){ var w=_web(), pages=Array.isArray(w.pages)?w.pages:[];
+    if(_webEditPageId){ var pg=_webPage(_webEditPageId); if(pg) return _webPageEditorHtml(pg); _webEditPageId=''; }
+    var rows=pages.map(function(p){ var secN=Array.isArray(p.sections)?p.sections.length:0;
+      return '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
+        +'<div style="display:flex;align-items:center;gap:8px;justify-content:space-between">'
+          +'<div style="min-width:0"><b style="font-size:14px">'+esc(p.title||'Untitled page')+'</b><div class="desc" style="margin:0">/p/'+esc(p.slug||'')+' &middot; '+secN+' section'+(secN===1?'':'s')+'</div></div>'
+          +'<div style="display:flex;gap:6px;flex-shrink:0"><button class="btn btn--ghost btn--sm" onclick="Atlas.webEditPage(\''+esc(p.id)+'\')">Edit</button>'
+          +'<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="if(confirm(\'Delete this page?\'))Atlas.webPageRemove(\''+esc(p.id)+'\')">Remove</button></div>'
+        +'</div>'
+        +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
+          +'<label class="cfg-check" style="margin:0"><input type="checkbox" '+((p.published!==false)?'checked':'')+' onchange="Atlas.webPageToggle(\''+esc(p.id)+'\')">Published</label>'
+          +'<label class="cfg-check" style="margin:0"><input type="checkbox" '+(p.nav?'checked':'')+' onchange="Atlas.webPageNavToggle(\''+esc(p.id)+'\')">Show in nav</label>'
+        +'</div></div>'; }).join('');
+    return (rows||'<div class="bk-lenhint" style="margin:0 0 8px">No custom pages yet. Build a landing page, an about page, a services page &mdash; anything beyond your booking home. Each gets its own <b>/p/</b> link and helps your SEO.</div>')
+      +'<div style="border-top:1px solid var(--line);margin-top:8px;padding-top:10px">'
+        +'<input class="input" id="webPageNewTitle" style="margin-bottom:6px" placeholder="New page title (e.g. About us)">'
+        +'<div class="row2"><button class="btn btn--ghost btn--sm btn--full" onclick="Atlas.webPageAddFromForm()">+ Add page</button>'
+        +'<button class="btn btn--ghost btn--sm btn--full" onclick="Atlas.webPageStarterLanding()">Starter: Landing</button></div>'
+      +'</div>'; }
+  function _webPageEditorHtml(pg){ var pid=pg.id;
+    var head='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.webPagesBack()">&larr; All pages</button><span class="desc" style="margin:0">/p/'+esc(pg.slug||'')+'</span></div>';
+    var seo='<div class="field"><label>Page title</label><input class="input" value="'+esc(pg.title||'')+'" oninput="Atlas.webPageSet(\''+esc(pid)+'\',{title:this.value})"></div>'
+      +'<div class="field"><label>SEO description <span style="color:var(--muted);font-weight:500">(optional)</span></label><textarea class="input" rows="2" maxlength="300" placeholder="A short summary for search results." oninput="Atlas.webPageSet(\''+esc(pid)+'\',{seoDesc:this.value})">'+esc(pg.seoDesc||'')+'</textarea></div>';
+    var arr=Array.isArray(pg.sections)?pg.sections:[];
+    var stack=arr.map(function(sec,i){ return _webSectionCardHtml(pid, sec, i, arr.length); }).join('');
+    if(!stack) stack='<div class="bk-lenhint" style="margin:8px 0">No sections yet. Add one below to start building this page.</div>';
+    var picker='<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px"><div class="desc" style="margin:0 0 6px">Add a section</div><div style="display:flex;flex-wrap:wrap;gap:6px">'
+      +_PG_TYPE_ORDER.map(function(t){ var e=SECTION_REG[t]; return '<button class="btn btn--ghost btn--sm" title="'+esc(e.label)+'" onclick="Atlas.webPageSectionAdd(\''+esc(pid)+'\',\''+t+'\')"><b style="color:var(--brand);font-size:10px;letter-spacing:.4px">'+esc(e.icon)+'</b> '+esc(e.label)+'</button>'; }).join('')
+      +'</div></div>';
+    return head+seo+'<div style="margin-top:6px">'+stack+'</div>'+picker; }
+  function _webSectionCardHtml(pid, sec, idx, total){ var e=SECTION_REG[sec.type]; if(!e) return ''; var props=sec.props||{};
+    var tone=(props.tone==='dark'||props.tone==='brand')?props.tone:'light';
+    var fields=(e.fields||[]).map(function(f){ return _pgFieldHtml(pid, sec, f); }).join('');
+    var toneSel='<div class="field" style="margin-bottom:0"><label>Background tone</label><select class="select" onchange="Atlas.webPageSectionSet(\''+esc(pid)+'\',\''+esc(sec.id)+'\',{tone:this.value})">'
+      +[['light','Light'],['dark','Dark'],['brand','Brand']].map(function(o){ return '<option value="'+o[0]+'"'+((tone===o[0])?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select></div>';
+    return '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px">'
+        +'<b style="font-size:13px"><span style="color:var(--brand);font-size:10px;letter-spacing:.4px">'+esc(e.icon)+'</span> '+esc(e.label)+'</b>'
+        +'<div style="display:flex;gap:4px;flex-shrink:0">'
+          +'<button class="btn btn--ghost btn--sm"'+(idx<=0?' disabled':'')+' title="Move up" onclick="Atlas.webPageSectionMove(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\'up\')">&uarr;</button>'
+          +'<button class="btn btn--ghost btn--sm"'+(idx>=total-1?' disabled':'')+' title="Move down" onclick="Atlas.webPageSectionMove(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\'down\')">&darr;</button>'
+          +'<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="if(confirm(\'Remove this section?\'))Atlas.webPageSectionRemove(\''+esc(pid)+'\',\''+esc(sec.id)+'\')">Remove</button>'
+        +'</div></div>'
+      +fields+toneSel
+      +'</div>'; }
+  function _pgFieldHtml(pid, sec, f){ var p=sec.props||{}, v=p[f.key];
+    var set=function(expr){ return 'Atlas.webPageSectionSet(\''+esc(pid)+'\',\''+esc(sec.id)+'\',{'+f.key+':'+expr+'})'; };
+    if(f.kind==='textarea') return '<div class="field"><label>'+esc(f.label)+'</label><textarea class="input" rows="'+(f.rows||3)+'" oninput="'+set('this.value')+'">'+esc(String(v==null?'':v))+'</textarea></div>';
+    if(f.kind==='select') return '<div class="field"><label>'+esc(f.label)+'</label><select class="select" onchange="'+set('this.value')+'">'+(f.opts||[]).map(function(o){ return '<option value="'+esc(o[0])+'"'+((String(v)===String(o[0]))?' selected':'')+'>'+esc(o[1])+'</option>'; }).join('')+'</select></div>';
+    if(f.kind==='toggle') return '<label class="cfg-check"><input type="checkbox" '+(v!==false?'checked':'')+' onchange="'+set('this.checked')+'">'+esc(f.label)+'</label>';
+    if(f.kind==='list') return _pgListHtml(pid, sec, f);
+    return '<div class="field"><label>'+esc(f.label)+'</label><input class="input" value="'+esc(String(v==null?'':v))+'" oninput="'+set('this.value')+'"></div>'; }
+  function _pgListHtml(pid, sec, f){ var p=sec.props||{}, arr=Array.isArray(p[f.key])?p[f.key]:[], scalar=!!f.scalar, subs=f.sub||[], cap=f.cap||8;
+    var rows=arr.map(function(it,i){
+      var inner=scalar
+        ? '<input class="input" value="'+esc(String(it==null?'':it))+'" placeholder="'+esc((subs[0]&&subs[0].label)||'')+'" oninput="Atlas.webPageSectionListSet(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\''+f.key+'\','+i+',\'\',this.value)">'
+        : subs.map(function(sf){ var sv=(it&&it[sf.key]!=null)?it[sf.key]:'';
+            if(sf.kind==='textarea') return '<textarea class="input" rows="2" style="margin-bottom:5px" placeholder="'+esc(sf.label)+'" oninput="Atlas.webPageSectionListSet(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\''+f.key+'\','+i+',\''+sf.key+'\',this.value)">'+esc(String(sv))+'</textarea>';
+              return '<input class="input" style="margin-bottom:5px" value="'+esc(String(sv))+'" placeholder="'+esc(sf.label)+'" oninput="Atlas.webPageSectionListSet(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\''+f.key+'\','+i+',\''+sf.key+'\',this.value)">'; }).join('');
+      return '<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">'+inner+'<div style="text-align:right;margin-top:2px"><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.webPageSectionListRemove(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\''+f.key+'\','+i+')">Remove</button></div></div>'; }).join('');
+    var add=(arr.length<cap)?('<button class="btn btn--ghost btn--sm btn--full" onclick="Atlas.webPageSectionListAdd(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\''+f.key+'\')">+ '+esc(f.addLabel||'Add item')+'</button>'):('<div class="desc" style="margin:0">Up to '+cap+'.</div>');
+    return '<div class="field"><label>'+esc(f.label)+'</label>'+rows+add+'</div>'; }
+  // ---- Preview renderer: mirrors the worker's _renderSection output (SAME pg-sec pg-<type> tone-<tone> classes + inner
+  //      structure) so the dashboard preview ~= the served page. Buttons render as non-navigating spans in the preview. ----
+  var _PG_PREVIEW_CSS='<style>'
+    +'.pg-page{display:block}'
+    +'.pg-sec{padding:30px 18px;text-align:center}'
+    +'.pg-sec h2{font-size:22px;margin:0 0 10px}'
+    +'.pg-sec .muted{color:var(--muted)}'
+    +'.pg-sec.tone-light{background:#ffffff;color:#111111}'
+    +'.pg-sec.tone-dark{background:#10161c;color:#f4f5f7}'
+    +'.pg-sec.tone-dark .muted{color:#c4c9d2}'
+    +'.pg-sec.tone-dark .pg-card{border-color:rgba(255,255,255,.16);background:rgba(255,255,255,.05)}'
+    +'.pg-sec.tone-brand{background:var(--brand);color:#ffffff}'
+    +'.pg-sec.tone-brand .muted{color:rgba(255,255,255,.85)}'
+    +'.pg-hero{padding:52px 18px}'
+    +'.pg-hero.tone-light{background:var(--brand);color:#ffffff}'
+    +'.pg-hero-inner{max-width:640px;margin:0 auto}'
+    +'.pg-hero h2{font-size:26px;margin:0 0 8px}'
+    +'.pg-inner{max-width:720px;margin:0 auto}'
+    +'.pg-rich{white-space:pre-wrap;text-align:left}'
+    +'.pg-split-inner{display:flex;gap:18px;align-items:center;flex-wrap:wrap;text-align:left;max-width:920px;margin:0 auto}'
+    +'.pg-split-inner .pg-col{flex:1 1 240px;min-width:220px}'
+    +'.pg-split-inner img{width:100%;border-radius:10px;display:block}'
+    +'.pg-grid{display:grid;gap:14px;max-width:960px;margin:12px auto 0}'
+    +'.pg-grid.cols2{grid-template-columns:repeat(2,1fr)}'
+    +'.pg-grid.cols3{grid-template-columns:repeat(3,1fr)}'
+    +'.pg-grid.cols4{grid-template-columns:repeat(4,1fr)}'
+    +'.pg-card{border:1px solid rgba(0,0,0,.1);border-radius:10px;padding:12px;text-align:left;background:rgba(0,0,0,.02)}'
+    +'.pg-gimg{width:100%;height:120px;object-fit:cover;border-radius:8px;display:block}'
+    +'.pg-stats-row{display:flex;gap:24px;justify-content:center;flex-wrap:wrap}'
+    +'.pg-stat{font-size:30px;font-weight:800;line-height:1}'
+    +'.pg-faq-item{border-top:1px solid rgba(0,0,0,.1);padding:8px 0}'
+    +'.pg-contact-row{margin:4px 0}'
+    +'.pg-cta-btn{display:inline-block;margin-top:12px;padding:9px 18px;border-radius:10px;background:#111111;color:#ffffff;font-weight:700;font-size:13px}'
+    +'.pg-sec.tone-brand .pg-cta-btn,.pg-hero .pg-cta-btn{background:#ffffff;color:var(--brand)}'
+    +'.pg-sec.tone-dark .pg-cta-btn{background:#ffffff;color:#111111}'
+    +'@media(max-width:640px){.pg-grid.cols3,.pg-grid.cols4{grid-template-columns:repeat(2,1fr)}.pg-split-inner{flex-direction:column}}'
+    +'</style>';
+  function _pgCols(v){ var c=String(v==null?3:v).replace(/[^0-9]/g,'')||'3'; if(c!=='2'&&c!=='3'&&c!=='4')c='3'; return c; }
+  function _pgPvBtn(lbl){ lbl=String(lbl||'').trim(); return lbl?('<span class="pg-cta-btn">'+esc(lbl)+'</span>'):''; }
+  function _renderSectionPreview(s){ s=s||{}; var p=s.props||{}, type=s.type; var tone=(p.tone==='dark'||p.tone==='brand')?p.tone:'light';
+    switch(type){
+      case 'hero':{ var hHead=String(p.heading||'').trim(), hSub=String(p.subheading||'').trim(); if(!hHead&&!hSub) return '';
+        var img=String(p.image||'').trim(); var st=img?(' style="background-image:linear-gradient(rgba(0,0,0,.45),rgba(0,0,0,.45)),url(\''+_cssUrl(img)+'\');background-size:cover;background-position:center;color:#ffffff"'):'';
+        return '<section class="pg-sec pg-hero tone-'+tone+'"'+st+'><div class="pg-hero-inner">'+(hHead?'<h2>'+esc(hHead)+'</h2>':'')+(hSub?'<p>'+esc(hSub)+'</p>':'')+_pgPvBtn(p.btnLabel)+'</div></section>'; }
+      case 'text':{ var tHead=String(p.heading||'').trim(), tBody=String(p.body||'').trim(); if(!tHead&&!tBody) return '';
+        return '<section class="pg-sec pg-text tone-'+tone+'"><div class="card" style="max-width:720px;margin:0 auto;text-align:left">'+(tHead?'<h2 style="text-align:left">'+esc(tHead)+'</h2>':'')+(tBody?'<div class="pg-rich">'+esc(tBody)+'</div>':'')+'</div></section>'; }
+      case 'split':{ var sHead=String(p.heading||'').trim(), sBody=String(p.body||'').trim(), sImg=String(p.image||'').trim(); if(!sHead&&!sBody&&!sImg) return '';
+        var imgCol=sImg?('<div class="pg-col"><img src="'+esc(sImg)+'" alt="'+esc(sHead)+'" loading="lazy" width="480" height="320"></div>'):'';
+        var txtCol='<div class="pg-col">'+(sHead?'<h2 style="text-align:left">'+esc(sHead)+'</h2>':'')+(sBody?'<div class="pg-rich">'+esc(sBody)+'</div>':'')+_pgPvBtn(p.btnLabel)+'</div>';
+        var order=(p.side==='right')?(txtCol+imgCol):(imgCol+txtCol);
+        return '<section class="pg-sec pg-split tone-'+tone+'"><div class="pg-split-inner">'+order+'</div></section>'; }
+      case 'features':{ var fHead=String(p.heading||'').trim(); var items=(Array.isArray(p.items)?p.items:[]).filter(function(x){ return x&&(String(x.title||'').trim()||String(x.text||'').trim()); }); if(!fHead&&!items.length) return '';
+        var cols=_pgCols(p.columns); var grid=items.slice(0,6).map(function(x){ return '<div class="pg-card"><b>'+esc(String(x.title||'').trim())+'</b>'+(String(x.text||'').trim()?('<div class="muted" style="margin-top:4px">'+esc(String(x.text).trim())+'</div>'):'')+'</div>'; }).join('');
+        return '<section class="pg-sec pg-features tone-'+tone+'">'+(fHead?'<h2>'+esc(fHead)+'</h2>':'')+'<div class="pg-grid cols'+cols+'">'+grid+'</div></section>'; }
+      case 'fleet':{ var flHead=String(p.heading||'').trim()||('Our '+String(S.fleet.nouns||'fleet')); var cols=_pgCols(p.columns); var showP=(p.showPrice!==false); var rm=S.money.rateModel[0];
+        var assets=(DATA.assets||[]).filter(function(a){ return a&&a.status!=='Maintenance'; }).slice(0, (parseInt(cols,10)||3)*2);
+        if(!assets.length) return '<section class="pg-sec pg-fleet tone-'+tone+'"><h2>'+esc(flHead)+'</h2><div class="muted">Your published '+esc(S.fleet.nouns)+' will appear here.</div></section>';
+        var grid=assets.map(function(a){ return '<div class="pg-card">'+(a.photo?('<div class="pg-gimg" style="background-image:url(\''+_cssUrl(a.photo)+'\');background-size:cover;background-position:center"></div>'):'')+'<b style="display:block;margin-top:6px">'+esc(a.name)+'</b>'+(showP?('<div class="muted">'+money(a.rate!=null?a.rate:S.money.baseRate)+'/'+rm+'</div>'):'')+_pgPvBtn(p.btnLabel||'Book')+'</div>'; }).join('');
+        return '<section class="pg-sec pg-fleet tone-'+tone+'"><h2>'+esc(flHead)+'</h2><div class="pg-grid cols'+cols+'">'+grid+'</div></section>'; }
+      case 'cta':{ var cHead=String(p.heading||'').trim(), cSub=String(p.subtext||'').trim(); if(!cHead&&!cSub&&!String(p.btnLabel||'').trim()) return '';
+        return '<section class="pg-sec pg-cta tone-'+tone+'"><div class="pg-hero-inner">'+(cHead?'<h2>'+esc(cHead)+'</h2>':'')+(cSub?'<p>'+esc(cSub)+'</p>':'')+_pgPvBtn(p.btnLabel)+'</div></section>'; }
+      case 'gallery':{ var gHead=String(p.heading||'').trim(); var imgs=(Array.isArray(p.images)?p.images:[]).filter(function(u){ return String(u||'').trim(); }); if(!gHead&&!imgs.length) return '';
+        var gc=_pgCols(p.columns); var grid=imgs.slice(0,12).map(function(u){ return '<img class="pg-gimg" src="'+esc(String(u).trim())+'" alt="" loading="lazy" width="300" height="200">'; }).join('');
+        return '<section class="pg-sec pg-gallery tone-'+tone+'">'+(gHead?'<h2>'+esc(gHead)+'</h2>':'')+'<div class="pg-grid cols'+gc+'">'+grid+'</div></section>'; }
+      case 'faq':{ var qHead=String(p.heading||'').trim()||'Frequently asked questions'; var qs=(Array.isArray(p.items)?p.items:[]).filter(function(x){ return x&&String(x.q||'').trim()&&String(x.a||'').trim(); }); if(!qs.length) return '';
+        var body=qs.slice(0,12).map(function(x,i){ return '<details'+(i===0?' open':'')+' class="pg-faq-item"><summary style="font-weight:700;cursor:pointer">'+esc(String(x.q).trim())+'</summary><div class="muted" style="margin-top:4px">'+esc(String(x.a).trim())+'</div></details>'; }).join('');
+        return '<section class="pg-sec pg-faq tone-'+tone+'"><h2>'+esc(qHead)+'</h2><div class="pg-inner" style="text-align:left">'+body+'</div></section>'; }
+      case 'stats':{ var stHead=String(p.heading||'').trim(); var st=(Array.isArray(p.items)?p.items:[]).filter(function(x){ return x&&(String(x.number||'').trim()||String(x.label||'').trim()); }); if(!stHead&&!st.length) return '';
+        var row=st.slice(0,4).map(function(x){ return '<div class="pg-stat-item"><div class="pg-stat">'+esc(String(x.number||'').trim())+'</div><div class="muted">'+esc(String(x.label||'').trim())+'</div></div>'; }).join('');
+        return '<section class="pg-sec pg-stats tone-'+tone+'">'+(stHead?'<h2>'+esc(stHead)+'</h2>':'')+'<div class="pg-stats-row">'+row+'</div></section>'; }
+      case 'contact':{ var coHead=String(p.heading||'').trim()||'Contact us'; var rows='';
+        if(String(p.phone||'').trim()) rows+='<div class="pg-contact-row">Phone: '+esc(String(p.phone).trim())+'</div>';
+        if(String(p.email||'').trim()) rows+='<div class="pg-contact-row">Email: '+esc(String(p.email).trim())+'</div>';
+        if(String(p.address||'').trim()) rows+='<div class="pg-contact-row">'+esc(String(p.address).trim())+'</div>';
+        return '<section class="pg-sec pg-contact tone-'+tone+'"><h2>'+esc(coHead)+'</h2><div class="pg-inner">'+rows+_pgPvBtn(p.btnLabel||'Book')+'</div></section>'; }
+      default: return '';
+    } }
+  function _webPagePreviewHtml(pg, fontStack, a2){
+    var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" alt="business logo">'):esc(S.brand.initial);
+    var secs=(Array.isArray(pg.sections)?pg.sections:[]).map(_renderSectionPreview).join('');
+    return '<div class="site" data-tpl="'+esc(_web().template||'classic')+'" style="font-family:'+fontStack+(a2?(';--accent2:'+a2):'')+'">'+_PG_PREVIEW_CSS
+      +'<div class="site__hero" style="padding:28px 16px"><div class="site__logo">'+logo+'</div><h1 style="margin:6px 0 0">'+esc(pg.title||'Untitled page')+'</h1>'+(pg.seoDesc?('<p>'+esc(pg.seoDesc)+'</p>'):'')+'</div>'
+      +'<div class="pg-page">'+(secs||'<div class="site__sec"><div class="sub">No sections yet. Add one from the editor on the left.</div></div>')+'</div>'
+      +'<div class="site__foot">&copy; '+esc(S.brand.name)+' &middot; '+esc(_siteUrl())+(S.hideAtlasBadge?'':'<div class="site__foot-sub">Powered by Atlas Rental.io</div>')+'</div></div>'; }
   function _webBuilderHtml(w){
     var side='<div class="web-side">'
       +'<div class="web-live"><span class="dot"></span><div>'+(_bookingSitePublished()?('Live at <b>'+esc(_bookingLink())+'</b>'):'Preview &mdash; <b>publish below</b> to go live')+'</div></div>'
@@ -9546,6 +9795,7 @@ const Atlas = (function(){
       +'</div>'
       +'<div class="set-block"><h3>FAQ</h3><div class="desc">Answer common questions right on your site.</div>'+_webFaqHtml()+'</div>'
       +'<div class="set-block"><h3>Blog / Content</h3><div class="desc">Publish posts, news and guides &mdash; each becomes a page on your site, great for SEO and returning customers. Atlas.io can also draft one from chat.</div>'+_webPostsHtml()+'</div>'
+      +'<div class="set-block"><h3>Pages</h3><div class="desc">Build freeform pages from sections &mdash; a landing page, about, services, anything. Reorder with the arrows; each gets its own <b>/p/</b> link. Atlas.io can also make one from chat.</div>'+_webPagesHtml()+'</div>'
       +'<div class="set-block"><h3>Sections</h3><div class="desc">Show or hide parts of your site.</div>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showFleet?'checked':'')+' onchange="Atlas.toggleWebSection(\'showFleet\',this.checked)">Fleet listings ('+DATA.assets.length+' '+esc(S.fleet.nouns)+')</label>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showAbout?'checked':'')+' onchange="Atlas.toggleWebSection(\'showAbout\',this.checked)">About section</label>'
@@ -9573,6 +9823,7 @@ const Atlas = (function(){
   function _webPreviewHtml(){ var w=_web(), rm=S.money.rateModel[0];
     var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" alt="business logo">'):esc(S.brand.initial);
     var _fontStack=_webFontStack(w.font), _a2=(_aioHex(w.accent2)||'');   // live-preview the font + secondary accent (template full styling is applied by the worker on the served page)
+    if(_webEditPageId){ var _pgSel=_webPage(_webEditPageId); if(_pgSel) return _webPagePreviewHtml(_pgSel,_fontStack,_a2); }   // a custom page is open in the editor -> preview its section stack (mirrors the worker's /p/<slug> render)
     var h='<div class="site" data-tpl="'+esc(w.template||'classic')+'" style="font-family:'+_fontStack+(_a2?(';--accent2:'+_a2):'')+'"><div class="site__hero"><div class="site__logo">'+logo+'</div>'
       +'<h1>'+esc(w.headline||S.brand.name)+'</h1><p>'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
       +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>'
@@ -9596,6 +9847,9 @@ const Atlas = (function(){
       +'<div style="max-width:640px;margin:0 auto">'+_pp.slice(0,3).map(function(p){ var ex=_postExcerpt(p.excerpt||p.body); return '<div style="text-align:left;border-top:1px solid var(--line);padding:12px 0"><div style="font-weight:700;margin-bottom:3px">'+esc(p.title)+'</div>'+(ex?('<div style="color:var(--muted);font-size:14px">'+esc(ex)+'</div>'):'')+'</div>'; }).join('')+'</div></div>'; }
     h+=_sitePromoSection();
     if(w.showContact){ h+='<div class="site__sec"><h2>Ready to book?</h2><div class="sub">Reserve online in minutes.</div><button class="site__cta" style="background:var(--brand);color:#fff" onclick="Atlas.webBookNow(\'\')">Start your booking</button></div>'; }
+    var _cpg=(Array.isArray(w.pages)?w.pages:[]).filter(function(p){ return p&&p.published!==false&&String((p&&p.title)||'').trim()&&Array.isArray(p.sections)&&p.sections.length; });   // published custom pages -> a small "more pages" link list on the home preview (click opens one in the editor)
+    if(_cpg.length){ h+='<div class="site__sec site__pages"><h2>More from '+esc(S.brand.name)+'</h2><div class="sub">Explore our pages</div><div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center">'
+      +_cpg.slice(0,12).map(function(p){ return '<a onclick="Atlas.webEditPage(\''+esc(p.id)+'\')" style="cursor:pointer;text-decoration:underline;color:var(--brand);font-weight:600;font-size:14px">'+esc(p.title)+'</a>'; }).join('')+'</div></div>'; }
     h+='<div class="site__foot">&copy; '+esc(S.brand.name)+' &middot; '+esc(_siteUrl())
       +(function(){ var lg=_legal(), a=[], mk=function(k,l){ return '<a onclick="Atlas.webViewLegal(\''+k+'\')" style="color:inherit;text-decoration:underline;cursor:pointer">'+l+'</a>'; };
         if(lg.tos.status!=='none')a.push(mk('tos','Terms of Service')); if(lg.privacy.status!=='none')a.push(mk('privacy','Privacy Policy')); if(lg.agreement.status!=='none')a.push(mk('agreement','Rental Agreement'));
@@ -10528,7 +10782,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,

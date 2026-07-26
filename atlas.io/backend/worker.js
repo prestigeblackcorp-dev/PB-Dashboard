@@ -3347,7 +3347,7 @@ export default {
     // shared securityHeaders (marketing pages -> not the frameable booking form). Additive; never touches the booking form,
     // /book intake, pricing, or availability. Any error / unresolved / unpublished domain falls through to normal routing.
     if (method === 'GET' && host && host !== 'atlasrental.io' && host !== 'www.atlasrental.io' && host.indexOf('.workers.dev') < 0 && host !== 'localhost' && host !== '127.0.0.1'
-        && (/^\/v\/[a-z0-9-]{1,80}$/.test(path) || path === '/about' || path === '/faq' || path === '/contact' || path === '/blog' || /^\/blog\/[a-z0-9-]{1,80}$/.test(path))) {
+        && (/^\/v\/[a-z0-9-]{1,80}$/.test(path) || path === '/about' || path === '/faq' || path === '/contact' || path === '/blog' || /^\/blog\/[a-z0-9-]{1,80}$/.test(path) || /^\/p\/[a-z0-9-]{1,80}$/.test(path))) {
       try {
         await ensurePlatformSchema(env);
         const _hb2 = host.replace(/^www\./, '');
@@ -3363,6 +3363,7 @@ export default {
             if (path === '/contact') return _ok2(_contactPageHtml(_pr2, _color2, _seob2));
             if (path === '/blog') return _ok2(_blogIndexHtml(_pr2, _color2, _seob2));
             if (path.indexOf('/blog/') === 0) { const _bpost2 = _blogBySlug(_pr2, path.slice(6)); return _ok2(_bpost2 ? _blogPostHtml(_pr2, _color2, _seob2, _bpost2) : _blogIndexHtml(_pr2, _color2, _seob2)); }   // strip '/blog/'; unknown slug -> index (never a hard 404)
+            if (path.indexOf('/p/') === 0) { const _cpg2 = _customPageBySlug(_pr2, path.slice(3)); if (_cpg2) return _ok2(_customPageHtml(_pr2, _color2, _seob2, _cpg2)); return new Response('', { status: 302, headers: Object.assign({}, securityHeaders(), { 'Location': _seob2.home }) }); }   // strip '/p/'; unknown slug -> booking home (never a hard 404)
             const _asset2 = _assetBySlug(_pr2, path.slice(3));   // strip '/v/'
             if (_asset2) {
               let _rev2 = { count: 0, avg: 0, recent: [] }; try { _rev2 = await _publicReviewSummary(env, _cd2.id); } catch (e) {}
@@ -6152,7 +6153,7 @@ function doReset(){
       }
       // ---- PER-TENANT served MULTI-PAGES for the path-based booking surface: /api/book/<slug>/{v/<asset-slug>,about,faq,contact}.
       // Additive; the /api/book/<slug> booking page below is untouched. Fail-open 404 on anything unresolved/unpublished.
-      const bpage = path.match(/^\/api\/book\/([a-z0-9-]{1,63})\/(about|faq|contact|blog|blog\/[a-z0-9-]{1,80}|v\/[a-z0-9-]{1,80})$/);
+      const bpage = path.match(/^\/api\/book\/([a-z0-9-]{1,63})\/(about|faq|contact|blog|blog\/[a-z0-9-]{1,80}|p\/[a-z0-9-]{1,80}|v\/[a-z0-9-]{1,80})$/);
       if (bpage && method === 'GET') {
         const _pgslug = bpage[1], _pgsub = bpage[2];
         const _pgtr = await env.DB.prepare('SELECT id,name,subdomain,brand,settings FROM tenants WHERE subdomain=?').bind(_pgslug).first();
@@ -6167,6 +6168,7 @@ function doReset(){
         if (_pgsub === 'contact') return _pgok(_contactPageHtml(_pgpr, _pgcolor, _pgseob));
         if (_pgsub === 'blog') return _pgok(_blogIndexHtml(_pgpr, _pgcolor, _pgseob));
         if (_pgsub.indexOf('blog/') === 0) { const _pgbpost = _blogBySlug(_pgpr, _pgsub.slice(5)); return _pgok(_pgbpost ? _blogPostHtml(_pgpr, _pgcolor, _pgseob, _pgbpost) : _blogIndexHtml(_pgpr, _pgcolor, _pgseob)); }   // strip 'blog/'; unknown slug -> index (never a hard 404)
+        if (_pgsub.indexOf('p/') === 0) { const _pgcpg = _customPageBySlug(_pgpr, _pgsub.slice(2)); if (_pgcpg) return _pgok(_customPageHtml(_pgpr, _pgcolor, _pgseob, _pgcpg)); return new Response('', { status: 302, headers: Object.assign({}, securityHeaders(), { 'Location': _pgseob.home }) }); }   // strip 'p/'; unknown slug -> booking home (never a hard 404)
         const _pgasset = _assetBySlug(_pgpr, _pgsub.slice(2));   // strip 'v/'
         if (_pgasset) {
           let _pgrev = { count: 0, avg: 0, recent: [] }; try { _pgrev = await _publicReviewSummary(env, _pgtr.id); } catch (e) {}
@@ -6553,6 +6555,7 @@ function doReset(){
         pages.push({ url: _seob.base + '/faq', label: 'FAQ', indexable: _published });
         pages.push({ url: _seob.base + '/contact', label: 'Contact', indexable: _published });
         if (_hasBlog) pages.push({ url: _seob.base + '/blog', label: 'Blog', indexable: _published });
+        try { _seoCustomPages(_pr, _seob).forEach(function (p) { pages.push({ url: p.url, label: p.slug, indexable: _published }); }); } catch (e) {}
         _assetPages.slice(0, 24).forEach(function (a) { pages.push({ url: a.url, label: a.name, indexable: _published }); });
         try { _seoLandings(_pr, _seob.base).forEach(function (l) { pages.push({ url: l.url, label: l.h1, indexable: _published }); }); } catch (e) {}
         return json({ ok: true, score: _score, checks: checks, pages: pages, recommendations: recommendations,
@@ -8837,6 +8840,7 @@ function _seoSitemapXml(prof, seob) {
   _seoAssetPages(prof, seob).forEach(function (a) { urls.push(a.url); });     // per-asset DETAIL pages (/v/<slug>)
   _seoStaticPages(prof, seob).forEach(function (p) { urls.push(p.url); });    // About (if authored) / FAQ / Contact
   _seoBlogPages(prof, seob).forEach(function (a) { urls.push(a.url); });      // Blog index + one /blog/<slug> per post
+  _seoCustomPages(prof, seob).forEach(function (p) { urls.push(p.url); });    // Freeform custom pages (/p/<slug>)
   var seen = {}, out = [];
   urls.forEach(function (u) { if (u && !seen[u]) { seen[u] = 1; out.push(u); } });
   return '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
@@ -8994,6 +8998,7 @@ function _servedNav(prof, seob, active) {
     var items = [['home', 'Home', home], ['fleet', 'Fleet', home + '#fleet']];
     if (about) items.push(['about', 'About', base + '/about']);
     if (_blogPosts(prof).length) items.push(['blog', 'Blog', base + '/blog']);
+    _customPages(prof).forEach(function (pg) { if (pg && pg.nav === true) { var _ps = slugify(String(pg.slug || pg.title)); if (_ps) items.push(['p:' + _ps, String(pg.title), base + '/p/' + _ps]); } });
     items.push(['faq', 'FAQ', base + '/faq']);
     items.push(['contact', 'Contact', base + '/contact']);
     var links = items.map(function (it) {
@@ -9334,6 +9339,284 @@ function _blogPostHtml(prof, color, seob, post) {
   var title = (biz ? (biz + ' — ') : '') + titleTxt;
   var head = _servedPageHead(prof, cfg, color, { title: title, desc: (descSrc || titleTxt), canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph, ogType: 'article', noindex: bodyTxt.trim().length < 200 });
   return _pageDoc(title, color, body, '', head);
+}
+// ---- served FREEFORM CUSTOM PAGES (additive) -------------------------------------------------------------------------
+// Owner-composed pages beyond the fixed home/about/faq/contact/blog: an ordered list of content SECTIONS, stored by the
+// client at publicSite.config.pages as {id,slug,title,seoDesc,published,nav,at,sections:[{id,type,props}]}. Rides the SAME
+// publish/serve pipeline as config.posts. Every function here is pure, synchronous, and fail-open (throw -> '' or []) so a
+// malformed tenant blob can never break a page load. NONE of this touches the booking page renderer, the /book intake, pricing, or Stripe.
+// Published custom pages for a tenant's public site. Pure + fail-open (-> []). Valid = non-empty title AND >=1 section AND
+// published !== false; newest-first by numeric `at` (NEVER reads the clock); capped at 30. Clone of _blogPosts.
+function _customPages(prof) {
+  try {
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+    var raw = Array.isArray(cfg.pages) ? cfg.pages : [];
+    var out = raw.filter(function (p) {
+      return p && String(p.title || '').trim() && Array.isArray(p.sections) && p.sections.length && p.published !== false;
+    });
+    out.sort(function (a, b) { return (Number(b.at) || 0) - (Number(a.at) || 0); });
+    return out.slice(0, 30);
+  } catch (e) { return []; }
+}
+// First published custom page whose slugified slug|title matches. null when none. Mirrors _blogBySlug.
+function _customPageBySlug(prof, slug) {
+  try {
+    var pages = _customPages(prof);
+    for (var i = 0; i < pages.length; i++) {
+      var p = pages[i];
+      if (slugify(String(p.slug || p.title)) === slug) return p;
+    }
+  } catch (e) {}
+  return null;
+}
+// Sanitize an owner-supplied button link: allow only http(s)/mailto/tel/root-relative/hash; anything else (incl. javascript:)
+// falls back to the booking home (home + '#app'). Empty -> booking home. The href is still esc()'d at the call site.
+function _pgHref(link, home) {
+  var s = String(link || '').trim();
+  if (/^(https?:\/\/|mailto:|tel:|\/|#)/i.test(s)) return s.slice(0, 400);
+  return (home || '') + '#app';
+}
+// Sanitize an owner-supplied image URL for use INSIDE a CSS url() context (the hero background). Only http(s)/data:, and
+// only when it carries no quote/paren/backslash/whitespace that could break out of url('...'). Otherwise '' (-> gradient).
+function _pgSafeImg(u) {
+  u = String(u || '');
+  if (!/^(https?:|data:)/i.test(u)) return '';
+  if (/["'()\\]/.test(u) || /\s/.test(u)) return '';
+  return u.slice(0, 4000);
+}
+// One <style> block (added once in _customPageHtml head) for the .pg-sec/.pg-* responsive rules. Mobile stacks at <=640px;
+// grids are CSS grid auto-fit; hero/cta are full-width bands; tone-dark/tone-brand recolor the section. All rules are
+// hard-coded constants -> no tenant string is ever interpolated into CSS here.
+function _pgStyle() {
+  return '<style>'
+    + '.pg-sec{margin:14px 0}.pg-sec h2{margin:0 0 8px}'
+    + '.pg-hero-inner{border-radius:14px;padding:46px 22px;text-align:center}'
+    + '.pg-hero-inner h2{margin:0 0 8px;font-size:28px;color:inherit}.pg-hero-inner p{margin:0 auto 14px;max-width:520px;font-size:15px;opacity:.95}'
+    + '.pg-hero-inner .btn,.pg-cta-inner .btn{display:inline-block;width:auto;padding:12px 26px;background:#fff;color:var(--brand);margin-top:6px}'
+    + '.pg-cta-inner{border-radius:14px;padding:36px 22px;text-align:center;background:linear-gradient(135deg,var(--brand),var(--accent2,var(--brand)));color:#fff}'
+    + '.pg-cta-inner h2{margin:0 0 8px;color:#fff}.pg-cta-inner p{margin:0 auto 14px;max-width:520px;opacity:.95}'
+    + '.pg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:10px}'
+    + '.pg-gallery-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}'
+    + '.pg-split{display:flex;gap:18px;align-items:center}.pg-split-r{flex-direction:row-reverse}'
+    + '.pg-split-media{flex:1 1 0;min-width:0}.pg-split-text{flex:1 1 0;min-width:0}'
+    + '.pg-stats-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px}.pg-stat{flex:1 1 120px;text-align:center}'
+    + '.pg-faq-item{border-top:1px solid #eee}.pg-faq-item:first-child{border-top:0}'
+    + '.tone-dark{background:#141414;color:#f6f7f9;border-radius:14px;padding:8px 16px}.tone-dark h2{color:#fff}.tone-dark .muted{color:#b9b9b9}.tone-dark .card{background:#1f1f1f;border-color:#333;color:#f6f7f9}'
+    + '.tone-brand{background:var(--brand);color:#fff;border-radius:14px;padding:8px 16px}.tone-brand h2{color:#fff}.tone-brand .muted{color:rgba(255,255,255,.85)}.tone-brand .card{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.25);color:#fff}'
+    + '@media(max-width:640px){.pg-split,.pg-split-r{flex-direction:column}.pg-hero-inner{padding:34px 16px}.pg-hero-inner h2{font-size:23px}}'
+    + '</style>';
+}
+// Render ONE section to its served HTML, wrapped in <section class="pg-sec pg-<type> tone-<tone>">...</section>. A switch over
+// the 10 registry types; ALL owner text flows through esc(); images are lazy + width/height (CLS). Unknown type OR empty props
+// -> '' (renders nothing). Pure + fail-open + NO external calls. `color` is accepted for signature parity (theme is via CSS vars).
+function _renderSection(s, prof, color, seob) {
+  try {
+    if (!s || typeof s !== 'object') return '';
+    var type = String(s.type || '').toLowerCase();
+    var p = (s.props && typeof s.props === 'object') ? s.props : {};
+    var tone = ({ light: 1, dark: 1, brand: 1 })[String(p.tone || '').toLowerCase()] ? String(p.tone).toLowerCase() : 'light';
+    var home = (seob && seob.home) || '';
+    var inner = '';
+    switch (type) {
+      case 'hero': {
+        var hh = String(p.heading || '').trim(), hs = String(p.subheading || '').trim(), hbtn = String(p.btnLabel || '').trim();
+        if (!hh && !hs && !hbtn) return '';
+        var himg = _pgSafeImg(p.image);
+        var bg = himg
+          ? ("background-image:linear-gradient(rgba(0,0,0,.45),rgba(0,0,0,.45)),url('" + esc(himg) + "');background-size:cover;background-position:center;color:#fff")
+          : 'background:linear-gradient(135deg,var(--brand),var(--accent2,var(--brand)));color:#fff';
+        inner = '<div class="pg-hero-inner" style="' + bg + '">'
+          + (hh ? ('<h2>' + esc(hh) + '</h2>') : '')
+          + (hs ? ('<p>' + esc(hs) + '</p>') : '')
+          + (hbtn ? ('<a class="btn" href="' + esc(_pgHref(p.btnLink, home)) + '">' + esc(hbtn) + '</a>') : '')
+          + '</div>';
+        break;
+      }
+      case 'text': {
+        var th = String(p.heading || '').trim(), tb = String(p.body || '').trim();
+        if (!th && !tb) return '';
+        inner = '<div class="card">'
+          + (th ? ('<h2>' + esc(th) + '</h2>') : '')
+          + (tb ? ('<div class="pg-rich" style="color:#444;font-size:15px;line-height:1.7;white-space:pre-wrap">' + esc(tb) + '</div>') : '')
+          + '</div>';
+        break;
+      }
+      case 'split': {
+        var xh = String(p.heading || '').trim(), xb = String(p.body || '').trim(), xbtn = String(p.btnLabel || '').trim();
+        var ximg = String(p.image || ''), xHasImg = /^(https?:|data:)/i.test(ximg);
+        if (!xh && !xb && !xHasImg) return '';
+        var xside = String(p.side || 'left').toLowerCase() === 'right' ? 'right' : 'left';
+        var xMedia = xHasImg ? ('<div class="pg-split-media"><img src="' + esc(ximg) + '" alt="' + esc(xh || '') + '" width="560" height="360" loading="lazy" decoding="async" style="width:100%;height:auto;object-fit:cover;display:block;border-radius:12px;background:#eee"></div>') : '';
+        var xText = '<div class="pg-split-text">'
+          + (xh ? ('<h2>' + esc(xh) + '</h2>') : '')
+          + (xb ? ('<div class="pg-rich" style="color:#444;font-size:15px;line-height:1.7;white-space:pre-wrap">' + esc(xb) + '</div>') : '')
+          + (xbtn ? ('<a class="btn" href="' + esc(_pgHref(p.btnLink, home)) + '" style="max-width:220px">' + esc(xbtn) + '</a>') : '')
+          + '</div>';
+        inner = '<div class="pg-split' + (xside === 'right' ? ' pg-split-r' : '') + '">' + xMedia + xText + '</div>';
+        break;
+      }
+      case 'features': {
+        var fh = String(p.heading || '').trim();
+        var fitems = (Array.isArray(p.items) ? p.items : []).slice(0, 6).filter(function (it) { return it && (String(it.title || '').trim() || String(it.text || '').trim()); });
+        if (!fh && !fitems.length) return '';
+        var fcards = fitems.map(function (it) {
+          var t = String(it.title || '').trim(), x = String(it.text || '').trim();
+          return '<div class="card pg-feat-item">'
+            + (t ? ('<div style="font-weight:700">' + esc(t) + '</div>') : '')
+            + (x ? ('<div class="muted" style="margin-top:5px">' + esc(x) + '</div>') : '') + '</div>';
+        }).join('');
+        inner = (fh ? ('<h2>' + esc(fh) + '</h2>') : '') + (fcards ? ('<div class="pg-grid">' + fcards + '</div>') : '');
+        break;
+      }
+      case 'fleet': {
+        var lh = String(p.heading || '').trim();
+        var showPrice = p.showPrice !== false;
+        var lbtn = String(p.btnLabel || 'Book').trim() || 'Book';
+        var lpub = (prof && prof.settings && prof.settings.publicSite) || {}, lcfg = lpub.config || {};
+        var unit = String(lcfg.unit || 'day');
+        var assets = (Array.isArray(lpub.assets) ? lpub.assets : []).filter(function (a) { return a && String((a && a.name) || '').trim(); }).slice(0, 12);
+        if (!assets.length) return '';
+        var bookHref = home + '#app';
+        var lcards = assets.map(function (a) {
+          var nm = String((a && a.name) || '').trim(), ty = String((a && a.type) || '').trim(), ph = String((a && a.photo) || '');
+          var rate = Number(a && a.rate) || 0;
+          var alt = esc(nm + (ty ? (' - ' + ty) : ''));
+          var im = /^(https?:|data:)/i.test(ph)
+            ? ('<img src="' + esc(ph) + '" alt="' + alt + '" width="320" height="180" loading="lazy" decoding="async" style="width:100%;height:150px;object-fit:cover;display:block;background:#eee">')
+            : ('<div style="height:150px;display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:800;color:#c4c4c4;background:#f3f3f3">' + esc((ty || nm || '?').slice(0, 1).toUpperCase()) + '</div>');
+          return '<div class="pg-fleet-card" style="border:1px solid #ececec;border-radius:12px;overflow:hidden;background:#fff">' + im
+            + '<div style="padding:10px 12px"><div style="font-weight:700">' + esc(nm) + '</div>'
+            + (ty ? ('<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999">' + esc(ty) + '</div>') : '')
+            + (showPrice && rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + money2(Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
+            + '<a class="btn" href="' + esc(bookHref) + '">' + esc(lbtn) + '</a></div></div>';
+        }).join('');
+        inner = (lh ? ('<h2>' + esc(lh) + '</h2>') : '') + '<div class="pg-grid">' + lcards + '</div>';
+        break;
+      }
+      case 'cta': {
+        var ch = String(p.heading || '').trim(), cx = String(p.subtext || '').trim(), cbtn = String(p.btnLabel || '').trim();
+        if (!ch && !cx && !cbtn) return '';
+        inner = '<div class="pg-cta-inner">'
+          + (ch ? ('<h2>' + esc(ch) + '</h2>') : '')
+          + (cx ? ('<p>' + esc(cx) + '</p>') : '')
+          + (cbtn ? ('<a class="btn" href="' + esc(_pgHref(p.btnLink, home)) + '">' + esc(cbtn) + '</a>') : '')
+          + '</div>';
+        break;
+      }
+      case 'gallery': {
+        var gh = String(p.heading || '').trim();
+        var gimgs = (Array.isArray(p.images) ? p.images : []).filter(function (u) { return /^(https?:|data:)/i.test(String(u || '')); }).slice(0, 12);
+        if (!gh && !gimgs.length) return '';
+        var gcells = gimgs.map(function (u) {
+          return '<img src="' + esc(String(u)) + '" alt="' + esc(gh || 'Gallery image') + '" width="320" height="220" loading="lazy" decoding="async" style="width:100%;height:180px;object-fit:cover;display:block;border-radius:10px;background:#eee">';
+        }).join('');
+        inner = (gh ? ('<h2>' + esc(gh) + '</h2>') : '') + (gcells ? ('<div class="pg-grid pg-gallery-grid">' + gcells + '</div>') : '');
+        break;
+      }
+      case 'faq': {
+        var qh = String(p.heading || '').trim();
+        var qitems = (Array.isArray(p.items) ? p.items : []).slice(0, 12).filter(function (it) { return it && String(it.q || '').trim(); });
+        if (!qh && !qitems.length) return '';
+        var qhtml = qitems.map(function (it, i) {
+          var q = String(it.q || '').trim(), a = String(it.a || '').trim();
+          return '<details class="pg-faq-item"' + (i === 0 ? ' open' : '') + '><summary style="font-weight:700;cursor:pointer;padding:11px 0">' + esc(q) + '</summary>'
+            + (a ? ('<div class="muted" style="padding:0 0 11px">' + esc(a) + '</div>') : '') + '</details>';
+        }).join('');
+        inner = (qh ? ('<h2>' + esc(qh) + '</h2>') : '') + (qhtml ? ('<div class="card">' + qhtml + '</div>') : '');
+        break;
+      }
+      case 'stats': {
+        var nh = String(p.heading || '').trim();
+        var nitems = (Array.isArray(p.items) ? p.items : []).slice(0, 4).filter(function (it) { return it && (String(it.number || '').trim() || String(it.label || '').trim()); });
+        if (!nh && !nitems.length) return '';
+        var ncells = nitems.map(function (it) {
+          var n = String(it.number || '').trim(), l = String(it.label || '').trim();
+          return '<div class="pg-stat">'
+            + (n ? ('<div class="pg-stat-n" style="font-size:30px;font-weight:800;color:var(--brand)">' + esc(n) + '</div>') : '')
+            + (l ? ('<div class="muted" style="margin-top:3px">' + esc(l) + '</div>') : '') + '</div>';
+        }).join('');
+        inner = (nh ? ('<h2>' + esc(nh) + '</h2>') : '') + (ncells ? ('<div class="pg-stats-row">' + ncells + '</div>') : '');
+        break;
+      }
+      case 'contact': {
+        var yh = String(p.heading || '').trim();
+        var yphone = String(p.phone || '').trim(), yemail = String(p.email || '').trim(), yaddr = String(p.address || '').trim();
+        var ybtn = String(p.btnLabel || 'Book').trim() || 'Book';
+        var rows = '';
+        if (yphone) rows += '<div class="row"><span>Phone</span><span><a href="tel:' + esc(yphone.replace(/[^0-9+]/g, '')) + '" style="color:var(--brand);text-decoration:none">' + esc(yphone) + '</a></span></div>';
+        if (yemail) rows += '<div class="row"><span>Email</span><span><a href="mailto:' + esc(yemail.replace(/[\s<>"'()]/g, '')) + '" style="color:var(--brand);text-decoration:none">' + esc(yemail) + '</a></span></div>';
+        if (yaddr) rows += '<div class="row"><span>Address</span><span>' + esc(yaddr) + '</span></div>';
+        if (!yh && !rows) return '';
+        inner = '<div class="card">'
+          + (yh ? ('<h2>' + esc(yh) + '</h2>') : '')
+          + (rows ? ('<div style="margin:6px 0 4px">' + rows + '</div>') : '')
+          + '<a class="btn" href="' + esc(_pgHref(p.btnLink, home)) + '" style="max-width:220px">' + esc(ybtn) + '</a></div>';
+        break;
+      }
+      default: return '';
+    }
+    if (!inner) return '';
+    return '<section class="pg-sec pg-' + type + ' tone-' + tone + '">' + inner + '</section>';
+  } catch (e) { return ''; }
+}
+// A full, standalone, crawlable custom page (/p/<slug>): shared top-nav (active 'p:'+slug), the page title printed ONCE as the
+// sole <h1>, then the sections rendered via _renderSection, and WebPage + BreadcrumbList JSON-LD (+ a FAQPage node when the page
+// has any faq section). NOINDEX when 0 sections render. Clones _blogPostHtml's shell -> the shared _pageDoc. Never touches booking.
+function _customPageHtml(prof, color, seob, page) {
+  var biz = String((prof && prof.name) || '');
+  var pub = (prof && prof.settings && prof.settings.publicSite) || {}, cfg = pub.config || {};
+  var home = seob.home;
+  var titleTxt = String((page && page.title) || '');
+  var slug = slugify(String((page && page.slug) || (page && page.title) || ''));
+  var canon = seob.base + '/p/' + slug;
+  var sections = Array.isArray(page && page.sections) ? page.sections : [];
+  var rendered = sections.map(function (s) { return _renderSection(s, prof, color, seob); }).filter(function (h) { return !!h; });
+  var body = _servedNav(prof, seob, 'p:' + slug)
+    + '<div class="hd">' + esc(biz || titleTxt) + '</div>'
+    + '<h1 class="pg-title" style="margin:16px 2px 4px;font-size:26px">' + esc(titleTxt) + '</h1>'
+    + rendered.join('')
+    + '<div style="margin-top:16px;padding:0 2px"><a href="' + esc(home + '#app') + '" style="color:var(--brand);text-decoration:none;font-size:13.5px">Check availability &rsaquo;</a></div>';
+  var desc = String((page && page.seoDesc) || '').replace(/\s+/g, ' ').trim();
+  if (!desc) {
+    for (var i = 0; i < sections.length; i++) {
+      var s0 = sections[i];
+      if (s0 && String(s0.type || '').toLowerCase() === 'text' && s0.props && String(s0.props.body || '').trim()) { desc = String(s0.props.body).replace(/\s+/g, ' ').trim().slice(0, 160); break; }
+    }
+  }
+  if (!desc) desc = titleTxt + (biz ? (' | ' + biz) : '');
+  var logo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
+  var graph = [
+    { '@type': 'WebPage', name: titleTxt.slice(0, 120), url: canon, description: desc.slice(0, 300), isPartOf: { '@type': 'WebSite', name: biz || titleTxt, url: home } },
+    { '@type': 'BreadcrumbList', itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: home },
+      { '@type': 'ListItem', position: 2, name: titleTxt.slice(0, 110), item: canon } ] }
+  ];
+  var faqQ = [];
+  sections.forEach(function (s) {
+    if (s && String(s.type || '').toLowerCase() === 'faq' && s.props && Array.isArray(s.props.items)) {
+      s.props.items.slice(0, 12).forEach(function (it) {
+        if (it && String(it.q || '').trim()) faqQ.push({ '@type': 'Question', name: String(it.q).slice(0, 200), acceptedAnswer: { '@type': 'Answer', text: String(it.a || '').slice(0, 600) } });
+      });
+    }
+  });
+  if (faqQ.length) graph.push({ '@type': 'FAQPage', mainEntity: faqQ });
+  var title = (biz ? (biz + ' — ') : '') + titleTxt;
+  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph, noindex: rendered.length === 0 }) + _pgStyle();
+  return _pageDoc(title, color, body, '', head);
+}
+// Custom-page descriptors: one /p/<slug> per published page, deduped on slug. [] when none. Mirrors _seoBlogPages; used by
+// _seoSitemapXml + the SEO-health served-pages list.
+function _seoCustomPages(prof, seob) {
+  try {
+    var pages = _customPages(prof);
+    if (!pages.length) return [];
+    var out = [], seen = {};
+    pages.forEach(function (p) {
+      var slug = slugify(String(p.slug || p.title)); if (!slug || seen[slug]) return; seen[slug] = 1;
+      out.push({ slug: slug, url: seob.base + '/p/' + slug });
+    });
+    return out;
+  } catch (e) { return []; }
 }
 // Server-rendered SEO / social head. `reviews` (optional, _publicReviewSummary output) threads aggregateRating + Review
 // nodes into the LocalBusiness node; absent -> byte-identical to no-reviews. Still pure + synchronous (no DB, no await).
