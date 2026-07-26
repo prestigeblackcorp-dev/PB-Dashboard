@@ -7297,6 +7297,7 @@ const Atlas = (function(){
     }).catch(function(){ _councilRenderPreview(q); });
   }
   function buildAio(){
+    try{ _aioUndoBoot(); }catch(e){}   // restore the persisted undo stack once per tenant session
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
     document.getElementById('aioBody').innerHTML='';
     aioMsg('bot',`Hi ${_ownerName()} \u{1F44B} I'm Atlas.io. I work from your live ${S.fleet.label.toLowerCase()} setup and money rules. You have <b>${_credits().toLocaleString()}</b> credits this week \u2014 ask me anything, or tap a suggestion.`);
@@ -7315,6 +7316,7 @@ const Atlas = (function(){
         _aioOffer('Opening everything I dreamed up.', function(){ openDreaming(); });
       }
     }catch(e){}
+    _aioRenderRestoredUndos();   // one-tap undo cards for prior-session AI changes survive a reload
     document.getElementById('aioQuick').innerHTML=_aioQuicks().map(q=>`<button onclick="Atlas.aioAsk('${q.replace(/'/g,"\\'")}')">${q}</button>`).join('');
     var _qb=document.getElementById('aioQuickBar'); if(_qb) _qb.style.display=_aioQuicksOff?'none':'';
   }
@@ -7488,6 +7490,21 @@ const Atlas = (function(){
     if(!r) return null;
     setRule(r.id,'name',name); setRule(r.id,'kind',kind); setRule(r.id,'value',value); setRule(r.id,'taxable',!!taxable);
     return r.id; }
+  // asset.add: reuse the SAME asset-creation path as saveVehicle (push {id,name,rate,status,util,tenant} -> _saveAssets),
+  // honoring the plan's UNIT cap. The id is pre-generated in snapshot() (which runs synchronously right before apply(),
+  // nothing else can create an asset in between) and couriered via _aioNewAssetId so undo() can remove exactly this row.
+  var _aioNewAssetId='';
+  function _aioAddAsset(id,p){
+    if(!_canCap('fleetEdit')) return false;
+    var cap=_vehCap(); if(cap!==Infinity && _fleetUnits()>=cap) return false;   // plan/unit cap -- same gate as addVehicle()
+    var sel=_fleetSel(), multi=sel.length>1, tid=(p&&p.type&&_aioTypeId(p.type))||sel[0];
+    var rate=parseFloat(p&&p.rate); if(!(rate>=0)) rate=_typeRate(tid);
+    var nm=String((p&&p.name)||'').trim().slice(0,60); if(!nm) return false;
+    var a={ id:id, name:nm, rate:_r2(rate), status:'Available', util:0, tenant:null }; if(multi) a.type=tid;
+    DATA.assets.push(a); _saveAssets();
+    try{ renderFleet(); }catch(e){} try{ renderOverview(); }catch(e){}
+    try{ var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length; }catch(e){}
+    return true; }
   // promo.add: promos have no per-field setter (savePromo builds the object inline) -- mirrors savePromo()
   // exactly (same id scheme, same shape, same save()+log()+refresh tail) so a chat-created promo is
   // indistinguishable from a manually-created one.
@@ -7771,6 +7788,40 @@ const Atlas = (function(){
       snapshot:function(){ return {}; },
       apply:function(p){ if(!_canMod('settings')) return false; var id=_aioAddPromo(p); if(!id) return false; },
       undo:function(snap,p){ var pr=_findPromo(_aioPromoCode(p.code)); if(!pr) return; S.promos=_promos().filter(function(x){return x.id!==pr.id;}); save(); try{renderSet();}catch(e){} }
+    },
+    /* ---- Fleet + SEO verbs: asset.add reuses the saveVehicle creation path (cap-gated, undoable); seo.set* write
+       _web().metaTitle/metaDescription which flow to config.metaTitle/metaDescription -> the worker head tags. ---- */
+    'asset.add':{
+      params:['name','type','rate'], hint:function(){ var t='name is what to call it (e.g. "Lamborghini Huracan").'; if(_fleetSel().length>1) t+=' type is one of: '+_fleetSel().map(function(id){return _aioTypeLabel(id);}).join(', ')+' (optional).'; t+=' rate is the price per '+(S.money.rateModel||'day')+' (optional -- defaults to your type rate).'; return t; },
+      cap:'fleetEdit', money:false, tier:'confirm',
+      label:function(p){ return 'Add "'+esc(String(p.name||'').trim())+'" to your '+esc(S.fleet.nouns); },
+      summary:function(p){ var tid=(p.type&&_aioTypeId(p.type))||_fleetSel()[0]; var r=(p.rate!=null&&String(p.rate).trim()!=='')?parseFloat(p.rate):_typeRate(tid); return {field:cap(S.fleet.noun||'asset'), before:'(new)', after:String(p.name||'').trim()+' \u2014 '+money(r>=0?r:0)+' / '+S.money.rateModel}; },
+      validate:function(p){ var nm=String(p.name||'').trim(); if(!nm) return {ok:false,msg:'What should I name it? e.g. "add a Lamborghini Huracan".'}; if(nm.length>60) return {ok:false,msg:'Keep the name under 60 characters.'};
+        var cap=_vehCap(); if(cap!==Infinity && _fleetUnits()>=cap) return {ok:false,msg:'You are at your '+esc(_curTier().name)+' plan cap of '+cap+' '+esc(S.fleet.nouns)+'. Upgrade to add more.'};
+        if(p.rate!=null && String(p.rate).trim()!==''){ var v=parseFloat(p.rate); if(isNaN(v)||v<0) return {ok:false,msg:'Give me a rate of 0 or more.'}; if(v>1000000) return {ok:false,msg:'That rate looks too high \u2014 try a smaller number.'}; } return {ok:true}; },
+      snapshot:function(){ _aioNewAssetId=_assetId(); return {newId:_aioNewAssetId}; },
+      apply:function(p){ var id=_aioNewAssetId||_assetId(); _aioNewAssetId=''; return _aioAddAsset(id,p); },
+      undo:function(snap){ if(!snap||!snap.newId) return; DATA.assets=(DATA.assets||[]).filter(function(a){return a.id!==snap.newId;}); _saveAssets(); try{renderFleet();}catch(e){} try{renderOverview();}catch(e){} var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length; }
+    },
+    'seo.setTitle':{
+      params:['value'], hint:'value is the browser/search title for your booking site (aim for under 60 characters).',
+      cap:'webEdit', money:false, tier:'auto',
+      label:function(p){ return 'Set your site\u2019s SEO title to "'+esc(String(p.value||'').trim())+'"'; },
+      summary:function(p){ return {field:'SEO title', before:_web().metaTitle||'(default)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What should the SEO title say?'}; if(v.length>70) return {ok:false,msg:'Keep the SEO title under 70 characters so search results don\u2019t cut it off.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:_web().metaTitle||''}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; setWebField('metaTitle', String(p.value).trim()); try{buildSettings();}catch(e){} },
+      undo:function(snap){ setWebField('metaTitle', snap.prevValue); try{buildSettings();}catch(e){} }
+    },
+    'seo.setDescription':{
+      params:['value'], hint:'value is the search-result description for your booking site (aim for under 160 characters).',
+      cap:'webEdit', money:false, tier:'auto',
+      label:function(){ return 'Update your site\u2019s SEO description'; },
+      summary:function(p){ return {field:'SEO description', before:_web().metaDescription||'(default)', after:String(p.value||'').trim()}; },
+      validate:function(p){ var v=String(p.value||'').trim(); if(!v) return {ok:false,msg:'What should the SEO description say?'}; if(v.length>300) return {ok:false,msg:'Keep the SEO description under 300 characters.'}; return {ok:true}; },
+      snapshot:function(){ return {prevValue:_web().metaDescription||''}; },
+      apply:function(p){ if(!_canCap('webEdit')) return false; setWebField('metaDescription', String(p.value).trim()); try{buildSettings();}catch(e){} },
+      undo:function(snap){ setWebField('metaDescription', snap.prevValue); try{buildSettings();}catch(e){} }
     }
   };
   // Phase 3 (deferred, not built here): nav.reorder (needs new S.nav.order state), per-asset booking
@@ -7799,9 +7850,21 @@ const Atlas = (function(){
   // [Undo]. tier:'confirm' shows a before/after diff with [Apply]/[Cancel] and only runs on the explicit
   // tap -- this generalizes the existing _aioOffer say/run closure (still used for plain nav offers) into
   // a structured, allow-listed, reversible pipeline.
-  var _aioUndoStack=[];     // {id,type,params,snap,label} for APPLIED actions -- undo runs entry.undo(snap,params)
+  var _aioUndoStack=[];     // {id,type,params,snap,label,t} for APPLIED actions -- undo runs entry.undo(snap,params)
   var _aioConfirmQ={};      // id -> {type,entry,params} for PROPOSED confirm-tier actions awaiting a tap
   var _aioActSeq=0;
+  // Persist the undo stack per-tenant in localStorage so the one-tap undo cards survive a reload (the chat drawer
+  // itself is rebuilt fresh each load). Device-local by design -- an undo is a local affordance, not cloud state.
+  var _AIO_UNDO_MAX=24, _aioUndoBooted='', _AIO_BOOT_T=Date.now();
+  function _aioUndoKey(){ try{ var s=store.session(); return s? 'atlas_aio_undo_'+s.tenantId : ''; }catch(e){ return ''; } }
+  function _aioUndoPersist(){ var k=_aioUndoKey(); if(!k) return; if(_aioUndoStack.length>_AIO_UNDO_MAX) _aioUndoStack=_aioUndoStack.slice(-_AIO_UNDO_MAX); try{ _lsSet(k,_aioUndoStack); }catch(e){} }
+  function _aioUndoBoot(){ var k=_aioUndoKey(); if(!k||_aioUndoBooted===k) return; _aioUndoBooted=k; var a=_lsGet(k,[]); _aioUndoStack=Array.isArray(a)?a:[]; }   // load once per tenant session (re-keys on account switch)
+  // Re-surface undo cards for changes made in a PRIOR session (t < this page load) so a one-tap undo survives a reload.
+  // In-session cards are still emitted inline by _aioProposeActions/aioBundleApply -- these are only the restored ones.
+  function _aioRenderRestoredUndos(){ try{ var prior=(_aioUndoStack||[]).filter(function(it){ return it&&it.t&&it.t<_AIO_BOOT_T; }); if(!prior.length) return;
+    var rows=prior.slice(-5).map(function(it){ var label=(it.label||(it.bundle?(it.bundle.length+' changes'):'Change'));
+      return '<div class="cx-card" id="'+esc(it.id)+'"><div class="cx-card__h">'+esc(label)+'</div><div class="cx-card__b"><div style="margin-top:2px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+esc(it.id)+'\')">Undo</button></div></div></div>'; }).join('');
+    aioMsg('bot','<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Recent changes you can still undo:</div>'+rows); }catch(e){} }
   function _aioNextId(){ _aioActSeq++; return 'aa'+_aioActSeq+'_'+Date.now().toString(36); }
   function _aioDiffHtml(sum){ if(!sum) return ''; return '<div style="margin-bottom:2px"><b>'+esc(sum.field)+':</b> '+esc(String(sum.before))+' &rarr; <b style="color:var(--ink)">'+esc(String(sum.after))+'</b></div>'; }
   // Runs ONE already-validated action: summary+snapshot (read-only, for the card + undo) -> apply (the real
@@ -7814,7 +7877,7 @@ const Atlas = (function(){
     catch(e){ return {ok:false,msg:'That could not be applied ('+(e&&e.message?e.message:'unexpected error')+').'}; }
     return {ok:true, sum:sum, snap:snap};
   }
-  function _aioPushUndo(type,params,snap,label,useId){ var id=useId||_aioNextId(); _aioUndoStack.push({id:id,type:type,params:params,snap:snap,label:label}); return id; }
+  function _aioPushUndo(type,params,snap,label,useId){ var id=useId||_aioNextId(); _aioUndoStack.push({id:id,type:type,params:params,snap:snap,label:label,t:Date.now()}); _aioUndoPersist(); return id; }
   // Proposes a whole plan (one or more actions) from the live planner or the offline fallback. Each action
   // is re-validated here regardless of where it came from -- the AI only ever NAMES a type; this decides
   // whether it actually runs.
@@ -7864,7 +7927,7 @@ const Atlas = (function(){
     var item=_aioUndoStack[idx];
     if(item.bundle){   // #271 pt2: reverse the whole bundle, last change first (so dependent changes unwind cleanly)
       var okN=0; for(var b=item.bundle.length-1;b>=0;b--){ var st=item.bundle[b]; var e2=AIO_ACTIONS[st.type]; if(!e2||!e2.undo) continue; try{ e2.undo(st.snap, st.params); okN++; }catch(e){} }
-      _aioUndoStack.splice(idx,1);
+      _aioUndoStack.splice(idx,1); _aioUndoPersist();
       var cardB=document.getElementById(id); if(cardB) cardB.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+okN+' change'+(okN===1?'':'s')+' reverted</div>';
       try{ (item.bundle||[]).forEach(function(st){ _aioEmit('undone',st.type,'bad'); }); }catch(e){}
       _logEvent('aio','Undid bundle: '+okN,{}); toast('Undone'); return;
@@ -7872,7 +7935,7 @@ const Atlas = (function(){
     var entry=AIO_ACTIONS[item.type];
     if(!entry){ toast('Could not undo that.'); return; }
     try{ entry.undo(item.snap, item.params); }catch(e){ toast('Could not undo that.'); return; }
-    _aioUndoStack.splice(idx,1);
+    _aioUndoStack.splice(idx,1); _aioUndoPersist();
     var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+esc(item.label||'')+'</div>';
     _logEvent('aio','Undid: '+item.label,{type:item.type}); _aioEmit('undone',item.type,'bad');
     toast('Undone');
@@ -7900,7 +7963,7 @@ const Atlas = (function(){
     var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id];
     var applied=[], failed=null;
     for(var i=0;i<b.steps.length;i++){ var s=b.steps[i]; var res=_aioRunAction(s.entry, s.params); if(!res.ok){ failed={label:s.entry.label(s.params), msg:res.msg, type:s.type}; break; } applied.push({type:s.type, params:s.params, snap:res.snap, label:s.entry.label(s.params)}); }
-    if(applied.length) _aioUndoStack.push({id:id, bundle:applied, label:b.label});
+    if(applied.length){ _aioUndoStack.push({id:id, bundle:applied, label:b.label, t:Date.now()}); _aioUndoPersist(); }
     var doneRows=applied.map(function(a){ return '<div style="font-size:12px;color:var(--muted)">\u2713 '+esc(a.label)+'</div>'; }).join('');
     var failRow=failed?('<div style="font-size:12px;color:var(--danger);margin-top:4px">Stopped at "'+esc(failed.label)+'" &mdash; '+esc(failed.msg||'could not apply')+'. The steps above were applied and can be undone.</div>'):'';
     var undoBtn=applied.length?('<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+id+'\')">Undo all</button></div>'):'';
@@ -7937,7 +8000,14 @@ const Atlas = (function(){
       || /\bpromo(tion)?s?\b|\bpromo code\b|\bcoupon\b|\bdiscount code\b/.test(s)
       // Appearance: brand color / palette / luxury look (maps to brand.setColor [+ theme.set + headline/about]).
       || /\b(colou?rs?|palette|accent|brand colou?r|theme colou?r)\b/.test(s)
-      || /\bblack and gold\b|\bgold and black\b|\bluxur(y|ious)\b|\bmore (upscale|premium|high.?end|elegant)\b/.test(s);
+      || /\bblack and gold\b|\bgold and black\b|\bluxur(y|ious)\b|\bmore (upscale|premium|high.?end|elegant)\b/.test(s)
+      // Fleet: add an asset by name ("add a Lamborghini", "add a car", "list it on my fleet"). Broad on purpose --
+      // the planner + asset.add validate() are the real authority; a false match just gets a normal helpful reply.
+      || /\badd (a |an |another |some |my |your )?(new )?(car|cars|vehicle|vehicles|asset|assets|unit|units|boat|boats|yacht|jet|plane|aircraft|bike|motorcycle|scooter|rv|trailer|van|truck|suv|home|house|villa|condo|apartment|room|suite|listing|property)\b/.test(s)
+      || /\b(add|create|list|register)\b[a-z0-9' .,-]{0,40}\bto (my |the |our )?(fleet|inventory|roster|lineup|listings?)\b/.test(s)
+      || /\badd (a |an |another )[a-z0-9]/.test(s)
+      // SEO: browser/search title + description -> seo.setTitle / seo.setDescription.
+      || /\bseo\b|\bmeta ?(title|description|tag|tags)\b|\b(page|browser|site|search) title\b|\bsearch (result )?(description|snippet)\b/.test(s);
   }
   function _aioLooksActionable(s){
     if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
@@ -9052,6 +9122,7 @@ const Atlas = (function(){
   function _publicSiteConfig(){ var wk=_webKeys(), w=_web(); return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
     collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
     showFleet:w.showFleet!==false, showAbout:w.showAbout!==false, showReviews:w.showReviews!==false, showContact:w.showContact!==false,   // P0-1: owner section toggles now reach the served page (worker _sec() hides a section only on explicit false)
+    faq:_webFaqList(), font:(w.font||'system'), template:(w.template||'classic'), metaTitle:String(w.metaTitle||'').trim().slice(0,70), metaDescription:String(w.metaDescription||'').trim().slice(0,300), accent2:(_aioHex(w.accent2)||''),   // Website builder (AI + owner controls): worker RENDERS these from config -- faq[{q,a}], font system|serif|modern|elegant, template classic|luxury|bold|minimal, meta tags + secondary accent. Defaults ''/'system'/'classic' = current look.
     analytics:{ ga:String(wk.ga||'').trim(), pixel:String(wk.pixel||'').trim() } }; }   // #24: GA + Meta/TikTok pixel actually injected into the served booking page (see worker _bookPageHtml)
   // Cross-sys G4: a signature of what the PUBLIC site would serve, captured at publish time. If the live Fleet/pricing/copy later diverges, the owner sees an "unpublished changes" badge (the served site keeps the last snapshot until re-publish).
   function _sitePubSig(){ try{ return JSON.stringify({a:_publicSiteAssets(),c:_publicSiteConfig(),h:_web().headline||'',ab:_web().about||''}); }catch(e){ return ''; } }
@@ -9188,6 +9259,42 @@ const Atlas = (function(){
   function setWebField(f,v){ var w=_web(); w[f]=v; save(); _webRefreshPreview(); }
   function toggleWebSection(sec,on){ var w=_web(); w[sec]=!!on; save(); _webRefreshPreview(); }
   function _webRefreshPreview(){ var p=document.getElementById('webPrev'); if(p) p.innerHTML=_webPreviewHtml(); }
+  // ---- Website builder: font / template / accent / FAQ. All persist to _web() and publish via _publicSiteConfig()
+  //      (the worker renders font/template/faq/accent2 on the served page). Reuses save/_web/setBrandColor/_aioHex. ----
+  var WEB_FONTS=[['system','System (clean sans-serif)'],['serif','Serif (editorial)'],['modern','Modern (geometric sans)'],['elegant','Elegant (luxury serif)']];
+  var WEB_TEMPLATES=[['classic','Classic'],['luxury','Luxury'],['bold','Bold'],['minimal','Minimal']];
+  function _webFontStack(f){ return f==='serif'?'Georgia,\'Times New Roman\',serif':f==='modern'?'\'Segoe UI\',\'Helvetica Neue\',Arial,sans-serif':f==='elegant'?'\'Playfair Display\',Georgia,\'Didot\',serif':'system-ui,-apple-system,\'Segoe UI\',Roboto,sans-serif'; }
+  function _webFaqList(){ var w=_web(); return (Array.isArray(w.faq)?w.faq:[]).filter(function(f){ return f&&String(f.q||'').trim()&&String(f.a||'').trim(); }).map(function(f){ return {q:String(f.q).trim().slice(0,200), a:String(f.a).trim().slice(0,1000)}; }); }   // config: only complete Q&amp;A pairs reach the published site
+  function setWebFont(v){ if(!_guard('webEdit'))return; var ok=WEB_FONTS.some(function(f){return f[0]===v;}); _web().font=ok?v:'system'; save(); _webRefreshPreview(); toast('Website font updated'); }
+  function setWebTemplate(v){ if(!_guard('webEdit'))return; var ok=WEB_TEMPLATES.some(function(t){return t[0]===v;}); _web().template=ok?v:'classic'; save(); _webRefreshPreview(); toast('Website template updated'); }
+  function setWebAccent(){ if(!_guard('webEdit'))return;
+    var r1=(val('webAccent1')||'').trim(), r2=(val('webAccent2')||'').trim();
+    var a1=r1?_aioHex(r1):'', a2=r2?_aioHex(r2):'';
+    if(r1 && !a1){ toast('Enter the accent as a hex like #C6A15B'); return; }
+    if(r2 && !a2){ toast('Enter the second accent as a hex like #10161C'); return; }
+    _web().accent2=a2||'';
+    if(a1){ setBrandColor(a1); }   // primary accent = brand color; setBrandColor re-themes + re-renders (incl. this tab)
+    else { save(); renderWebsite(); }
+    toast('Accent colors updated'); }
+  function _webDesignHtml(){ var w=_web();
+    return '<div class="field"><label>Font</label><select class="select" onchange="Atlas.setWebFont(this.value)">'+WEB_FONTS.map(function(f){ return '<option value="'+f[0]+'"'+(((w.font||'system')===f[0])?' selected':'')+'>'+esc(f[1])+'</option>'; }).join('')+'</select></div>'
+      +'<div class="field"><label>Template</label><select class="select" onchange="Atlas.setWebTemplate(this.value)">'+WEB_TEMPLATES.map(function(t){ return '<option value="'+t[0]+'"'+(((w.template||'classic')===t[0])?' selected':'')+'>'+esc(t[1])+'</option>'; }).join('')+'</select></div>'
+      +'<div class="row2"><div class="field"><label>Accent color</label><input class="input" id="webAccent1" placeholder="#C6A15B" value="'+esc(S.brand.color||'')+'"></div>'
+      +'<div class="field"><label>Second accent <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="webAccent2" placeholder="#10161C" value="'+esc(w.accent2||'')+'"></div></div>'
+      +'<button class="btn btn--ghost btn--sm" onclick="Atlas.setWebAccent()">Apply colors</button>'
+      +'<div class="bk-lenhint" style="margin:8px 0 0">Accents take a hex like <b>#C6A15B</b> or <b>#FFF</b>. The first sets your brand color across the dashboard, site and emails.</div>'; }
+  function _webFaqHtml(){ return '<div id="webFaqBox">'+_webFaqInner()+'</div>'; }
+  function _webRefreshFaq(){ var el=document.getElementById('webFaqBox'); if(el) el.innerHTML=_webFaqInner(); }
+  function _webFaqInner(){ var w=_web(), faq=Array.isArray(w.faq)?w.faq:[];
+    var rows=faq.map(function(f,i){ return '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
+      +'<input class="input" style="margin-bottom:6px" placeholder="Question (e.g. Do you require a deposit?)" value="'+esc((f&&f.q)||'')+'" oninput="Atlas.webFaqSet('+i+',\'q\',this.value)">'
+      +'<textarea class="input" rows="2" placeholder="Answer" oninput="Atlas.webFaqSet('+i+',\'a\',this.value)">'+esc((f&&f.a)||'')+'</textarea>'
+      +'<div style="text-align:right;margin-top:6px"><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.webFaqRemove('+i+')">Remove</button></div></div>'; }).join('');
+    return (rows||'<div class="bk-lenhint" style="margin:0 0 8px">No FAQs yet. Answer common questions (deposit, delivery, mileage, insurance) to build trust and cut the back-and-forth.</div>')
+      +'<button class="btn btn--ghost btn--sm btn--full" onclick="Atlas.webFaqAdd()">+ Add FAQ</button>'; }
+  function webFaqAdd(){ if(!_guard('webEdit'))return; var w=_web(); if(!Array.isArray(w.faq))w.faq=[]; if(w.faq.length>=20){ toast('Up to 20 FAQs'); return; } w.faq.push({q:'',a:''}); save(); _webRefreshFaq(); }
+  function webFaqSet(i,field,v){ var w=_web(); if(!Array.isArray(w.faq)||!w.faq[i])return; var k=(field==='a')?'a':'q'; w.faq[i][k]=String(v||'').slice(0, k==='a'?1000:200); save(); _webRefreshPreview(); }
+  function webFaqRemove(i){ if(!_guard('webEdit'))return; var w=_web(); if(!Array.isArray(w.faq))return; w.faq.splice(i,1); save(); _webRefreshFaq(); _webRefreshPreview(); }
   function _webBuilderHtml(w){
     var side='<div class="web-side">'
       +'<div class="web-live"><span class="dot"></span><div>'+(_bookingSitePublished()?('Live at <b>'+esc(_bookingLink())+'</b>'):'Preview &mdash; <b>publish below</b> to go live')+'</div></div>'
@@ -9196,6 +9303,12 @@ const Atlas = (function(){
         +'<div class="field"><label>Tagline</label><input class="input" value="'+esc(w.tagline)+'" oninput="Atlas.setWebField(\'tagline\',this.value)"></div>'
         +'<div class="field" style="margin-bottom:0"><label>About</label><textarea class="input" rows="3" oninput="Atlas.setWebField(\'about\',this.value)">'+esc(w.about)+'</textarea></div>'
       +'</div>'
+      +'<div class="set-block"><h3>Design</h3><div class="desc">Fonts, layout template and your brand accents.</div>'+_webDesignHtml()+'</div>'
+      +'<div class="set-block"><h3>Search &amp; SEO</h3><div class="desc">How your site shows up in Google and when shared. Atlas.io can also set these from chat.</div>'
+        +'<div class="field"><label>SEO title <span style="color:var(--muted);font-weight:500">&mdash; browser tab &amp; search result</span></label><input class="input" maxlength="70" placeholder="'+esc((S.brand.name||'Your business')+' \u2014 book online')+'" value="'+esc(w.metaTitle||'')+'" oninput="Atlas.setWebField(\'metaTitle\',this.value)"></div>'
+        +'<div class="field" style="margin-bottom:0"><label>SEO description</label><textarea class="input" rows="2" maxlength="300" placeholder="A short summary that shows under your title in search results." oninput="Atlas.setWebField(\'metaDescription\',this.value)">'+esc(w.metaDescription||'')+'</textarea></div>'
+      +'</div>'
+      +'<div class="set-block"><h3>FAQ</h3><div class="desc">Answer common questions right on your site.</div>'+_webFaqHtml()+'</div>'
       +'<div class="set-block"><h3>Sections</h3><div class="desc">Show or hide parts of your site.</div>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showFleet?'checked':'')+' onchange="Atlas.toggleWebSection(\'showFleet\',this.checked)">Fleet listings ('+DATA.assets.length+' '+esc(S.fleet.nouns)+')</label>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showAbout?'checked':'')+' onchange="Atlas.toggleWebSection(\'showAbout\',this.checked)">About section</label>'
@@ -9222,9 +9335,11 @@ const Atlas = (function(){
   }
   function _webPreviewHtml(){ var w=_web(), rm=S.money.rateModel[0];
     var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" alt="business logo">'):esc(S.brand.initial);
-    var h='<div class="site"><div class="site__hero"><div class="site__logo">'+logo+'</div>'
+    var _fontStack=_webFontStack(w.font), _a2=(_aioHex(w.accent2)||'');   // live-preview the font + secondary accent (template full styling is applied by the worker on the served page)
+    var h='<div class="site" data-tpl="'+esc(w.template||'classic')+'" style="font-family:'+_fontStack+(_a2?(';--accent2:'+_a2):'')+'"><div class="site__hero"><div class="site__logo">'+logo+'</div>'
       +'<h1>'+esc(w.headline||S.brand.name)+'</h1><p>'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
-      +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>';
+      +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>'
+      +(_a2?('<div style="height:3px;background:'+_a2+'"></div>'):'');
     if(w.showFleet){ var _bookable=(DATA.assets||[]).filter(function(a){return a.status!=='Maintenance';});
       var _card=function(a){ return '<div class="site__car"><div class="site__car__img"'+(a.photo?(' style="background-image:url(\''+_cssUrl(a.photo)+'\');background-size:cover;background-position:center"'):'')+'>'+(a.photo?'':'<svg viewBox="0 0 24 24" fill="none" style="width:34px;height:34px"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>')+'</div>'
         +'<div class="site__car__b"><b>'+esc(a.name)+'</b><div class="row"><span class="price">'+money(a.rate)+'/'+rm+'</span><button class="site__car__book" onclick="Atlas.webBookNow(\''+esc(a.name).replace(/'/g,"\\'")+'\')">Book</button></div></div></div>'; };
@@ -9238,6 +9353,7 @@ const Atlas = (function(){
     }
     if(w.showAbout){ h+='<div class="site__sec site__about"><h2>About '+esc(S.brand.name)+'</h2><p>'+esc(w.about||'')+'</p></div>'; }
     if(w.showReviews!==false) h+=_siteReviewsHtml();   // owner can hide the reviews section from the public site
+    var _faq=_webFaqList(); if(_faq.length){ h+='<div class="site__sec site__faq"><h2>Frequently asked questions</h2>'+_faq.slice(0,10).map(function(f){ return '<div style="text-align:left;max-width:640px;margin:0 auto 12px"><div style="font-weight:700;margin-bottom:3px">'+esc(f.q)+'</div><div style="color:var(--muted);font-size:14px">'+esc(f.a)+'</div></div>'; }).join('')+'</div>'; }   // live FAQ preview (published via config.faq)
     h+=_sitePromoSection();
     if(w.showContact){ h+='<div class="site__sec"><h2>Ready to book?</h2><div class="sub">Reserve online in minutes.</div><button class="site__cta" style="background:var(--brand);color:#fff" onclick="Atlas.webBookNow(\'\')">Start your booking</button></div>'; }
     h+='<div class="site__foot">&copy; '+esc(S.brand.name)+' &middot; '+esc(_siteUrl())
@@ -10172,7 +10288,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
