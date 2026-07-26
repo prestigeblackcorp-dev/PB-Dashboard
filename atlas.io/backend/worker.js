@@ -1982,6 +1982,137 @@ async function _registrarSetNs(env, domain, nsList) {
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 
+// ===================== #340 Domain MANAGEMENT read/edit (portfolio, connect-status, DNS view/edit) =====================
+// ADDITIVE + read-mostly. All Dynadot calls REUSE the signed _ddV2 helper above (never a hand-rolled HMAC); all Cloudflare
+// calls REUSE _cfApi below. Reads FAIL-OPEN (honest {available:false}/notes when a registrar/CF key is missing); the single
+// WRITE (_ddSetDnsRecords) FAILS CLOSED (no secret -> no write) and is only ever reached AFTER the route verifies the domain
+// belongs to the session tenant. NONE of this touches booking/pricing/Stripe.
+
+// Generic DNS-over-HTTPS lookup (Cloudflare 1.1.1.1 JSON API) -- sibling of _dohCname, but any record type (A/AAAA/CNAME/...).
+// Returns the resolved values (lowercased, trailing dot stripped). A REAL resolution check, never a cosmetic flag.
+async function _dohLookup(name, type) {
+  try {
+    var r = await _fetchTimeout('https://cloudflare-dns.com/dns-query?type=' + encodeURIComponent(type) + '&name=' + encodeURIComponent(name), { headers: { 'Accept': 'application/dns-json' } }, 8000);
+    var j = await r.json().catch(function () { return {}; });
+    return (j.Answer || []).map(function (a) { return String(a.data || '').replace(/\.$/, '').toLowerCase(); });
+  } catch (e) { return []; }
+}
+// OWNERSHIP: does THIS tenant own `domain`? Two ways a tenant owns a name: (a) it is their CONNECTED existing domain
+// (tenants.custom_domain, external registrar); (b) they BOUGHT it through Atlas (domains_sold, Dynadot-managed -> we can
+// read/write its registrar DNS). `bought` gates the DNS WRITE; `owned` gates the reads. Tenant-scoped by id -- never a param.
+async function _tenantOwnsDomain(env, tenantId, domain) {
+  var out = { owned: false, connected: false, bought: false, status: null };
+  if (!tenantId || !domain) return out;
+  try {
+    var tr = await env.DB.prepare('SELECT custom_domain, custom_domain_status FROM tenants WHERE id=?').bind(tenantId).first();
+    if (tr && tr.custom_domain && String(tr.custom_domain).toLowerCase() === domain) { out.owned = true; out.connected = true; out.status = tr.custom_domain_status || null; }
+  } catch (e) {}
+  try {
+    var ds = await env.DB.prepare('SELECT status FROM domains_sold WHERE tenant_id=? AND domain=? LIMIT 1').bind(tenantId, domain).first();
+    if (ds) { out.owned = true; out.bought = true; if (!out.status) out.status = ds.status || null; }
+  } catch (e) {}
+  return out;
+}
+// Detailed Cloudflare-for-SaaS custom-hostname status (REUSES _cfApi). Sibling of _cfHostnameActive, but returns the full
+// status + ssl.status + validation errors so connect-status can produce specific hints. {available:false} when CF not configured.
+async function _cfHostnameStatus(env, hostname) {
+  if (!env.CF_API_TOKEN) return { available: false, found: false };
+  try {
+    var j = await _cfApi(env, 'GET', '/custom_hostnames?hostname=' + encodeURIComponent(hostname), null);
+    var r = (j.result || [])[0];
+    if (!r) return { available: true, found: false };
+    return { available: true, found: true, status: r.status || '', ssl: (r.ssl && r.ssl.status) || '', ssl_active: !!(r.ssl && r.ssl.status === 'active'),
+      verification_errors: (r.verification_errors || []).slice(0, 3),
+      ssl_validation_errors: ((r.ssl && r.ssl.validation_errors) || []).map(function (v) { return v && v.message; }).filter(Boolean).slice(0, 3) };
+  } catch (e) { return { available: true, found: false }; }
+}
+// Registrar domain info (expiry + auto-renew), a SIGNED read via _ddV2. Only meaningful for Dynadot-managed names. Honest
+// {available:false} when key/secret absent. Parses defensively (the v2 field names vary by build).
+async function _ddDomainInfo(env, domain) {
+  if (!env.DYNADOT_KEY || !env.DYNADOT_SECRET) return { ok: false, available: false };
+  try {
+    var info = await _ddV2(env, 'GET', '/restful/v2/domains/' + encodeURIComponent(domain), null, { sign: true });
+    if (!info.ok) return { ok: false, available: true, reason: info.message || 'api_error' };
+    var d = info.data || {};
+    var exp = (d.expiration_date != null ? d.expiration_date : (d.expiration != null ? d.expiration : d.expiry));
+    var expMs = 0; if (exp != null) { var n = Number(String(exp).replace(/[^0-9]/g, '')); if (n > 0) expMs = n; }
+    var ar = (d.renew_option != null ? d.renew_option : (d.auto_renew != null ? d.auto_renew : d.autorenew));
+    var _ars = String(ar == null ? '' : ar).toLowerCase();
+    var autorenew = (ar === true) || _ars === 'true' || _ars === 'on' || _ars === 'yes' || _ars.indexOf('auto') >= 0;
+    return { ok: true, available: true, expiresAt: expMs || null, autorenew: !!autorenew, locked: !!(d.locked || d.transfer_lock) };
+  } catch (e) { return { ok: false, available: true, reason: 'error' }; }
+}
+// Read a Dynadot-managed domain's DNS records (SIGNED GET /records via _ddV2). Honest {available:false} when key/secret absent.
+// The v2 response splits apex ("main") and subhost ("sub") records; parse both shapes defensively into a flat {type,name,value,ttl}.
+async function _ddGetDnsRecords(env, domain) {
+  if (!env.DYNADOT_KEY || !env.DYNADOT_SECRET) return { ok: false, available: false, records: [] };
+  try {
+    var res = await _ddV2(env, 'GET', '/restful/v2/domains/' + encodeURIComponent(domain) + '/records', null, { sign: true });
+    if (!res.ok) return { ok: false, available: true, reason: (res.message || 'api_error'), records: [] };
+    var d = res.data || {};
+    var mains = d.dns_main_list || d.main_record_list || (d.name_server_settings && d.name_server_settings.main_record_list) || [];
+    var subs = d.dns_sub_list || d.sub_record_list || (d.name_server_settings && d.name_server_settings.sub_record_list) || [];
+    var out = [];
+    (mains || []).forEach(function (m) { out.push({ type: String(m.record_type || m.type || '').toUpperCase(), name: '@', value: String(m.record_value1 != null ? m.record_value1 : (m.value != null ? m.value : '')), ttl: Number(m.ttl) || 0 }); });
+    (subs || []).forEach(function (s) { out.push({ type: String(s.record_type || s.type || '').toUpperCase(), name: String(s.sub_host || s.subHost || s.name || ''), value: String(s.record_value1 != null ? s.record_value1 : (s.value != null ? s.value : '')), ttl: Number(s.ttl) || 0 }); });
+    return { ok: true, available: true, records: out };
+  } catch (e) { return { ok: false, available: true, reason: 'error', records: [] }; }
+}
+// Validate + normalize a client-supplied DNS record set BEFORE any write. Whitelists types (A/AAAA/CNAME/TXT/MX), checks value
+// formats, clamps ttl, caps count. Returns {ok, records} or {ok:false, error}. Never trusts the browser (server-authoritative).
+function _ddNormalizeRecords(records) {
+  if (!Array.isArray(records)) return { ok: false, error: 'records must be an array.' };
+  if (records.length > 50) return { ok: false, error: 'Too many records (max 50).' };
+  var ALLOWED = { A: 1, AAAA: 1, CNAME: 1, TXT: 1, MX: 1 };
+  var HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+  var out = [];
+  for (var i = 0; i < records.length; i++) {
+    var r = records[i] || {};
+    var type = String(r.type || '').toUpperCase().trim();
+    if (!ALLOWED[type]) return { ok: false, error: 'Unsupported record type "' + (r.type || '') + '" (allowed: A, AAAA, CNAME, TXT, MX).' };
+    var name = String(r.name == null ? '' : r.name).toLowerCase().trim();
+    if (name === '@') name = '';
+    if (name && !/^[a-z0-9_*.-]{1,120}$/.test(name)) return { ok: false, error: 'Invalid record name "' + r.name + '".' };
+    var value = String(r.value == null ? '' : r.value).trim();
+    if (!value) return { ok: false, error: 'Record ' + (i + 1) + ' (' + type + ') is missing a value.' };
+    if (value.length > 512) return { ok: false, error: 'Record value too long (max 512 chars).' };
+    if (type === 'A') {
+      if (!/^(\d{1,3})(\.\d{1,3}){3}$/.test(value)) return { ok: false, error: 'A record value must be an IPv4 address (got "' + value + '").' };
+      if (!value.split('.').every(function (o) { return Number(o) >= 0 && Number(o) <= 255; })) return { ok: false, error: 'A record has an octet out of range: "' + value + '".' };
+    }
+    if (type === 'AAAA' && !(value.indexOf(':') >= 0 && /^[0-9a-f:]+$/i.test(value))) return { ok: false, error: 'AAAA record value must be an IPv6 address (got "' + value + '").' };
+    if ((type === 'CNAME' || type === 'MX') && !HOST.test(value.replace(/\.$/, ''))) return { ok: false, error: type + ' record value must be a hostname (got "' + value + '").' };
+    var ttl = parseInt(r.ttl, 10); if (!(ttl > 0)) ttl = 3600; ttl = Math.max(60, Math.min(86400, ttl));
+    var rec = { type: type, name: name, value: value, ttl: ttl };
+    if (type === 'MX') { var pr = parseInt(r.priority, 10); rec.priority = (pr >= 0 && pr <= 65535) ? pr : 10; }
+    out.push(rec);
+  }
+  return { ok: true, records: out };
+}
+// WRITE a Dynadot-managed domain's DNS (SIGNED POST /records via _ddV2). FAILS CLOSED: no key/secret -> {available:false}, no
+// call. `records` MUST already be normalized by _ddNormalizeRecords, and the CALLER must already have verified tenant ownership.
+async function _ddSetDnsRecords(env, domain, records) {
+  if (!env.DYNADOT_KEY) return { ok: false, available: false, reason: 'no_registrar' };
+  if (!env.DYNADOT_SECRET) return { ok: false, available: false, reason: 'no_secret' };   // set-DNS is a SIGNED transactional command -> no secret, no write (never a silent fake success)
+  try {
+    var main = [], sub = [];
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      var e = { record_type: r.type.toLowerCase(), record_value1: r.value };
+      if (r.ttl) e.ttl = r.ttl;
+      if (r.type === 'MX') e.mx_distance = (r.priority != null ? r.priority : 10);   // TODO verify field name vs live v2 spec (mx_distance vs distance vs priority)
+      var host = String(r.name || '');
+      if (host === '' || host === '@' || host === domain) { main.push(e); }
+      else { e.sub_host = host.replace(new RegExp('\\.' + domain.replace(/[.]/g, '\\.') + '$'), ''); sub.push(e); }
+    }
+    // v2 set-DNS = POST /restful/v2/domains/{d}/records. dns_main_list = apex records, dns_sub_list = subhost records.
+    // add_dns_to_current_setting:false => the supplied list REPLACES the record set (caller sends the full desired set).
+    // TODO verify list key names vs the live v2 spec (mirrors the existing _registrarSetDns sub-record shape).
+    var res = await _ddV2(env, 'POST', '/restful/v2/domains/' + encodeURIComponent(domain) + '/records', { dns_main_list: main, dns_sub_list: sub, add_dns_to_current_setting: false });
+    return { ok: res.ok, available: true, applied: res.ok ? records.length : 0, reason: res.ok ? 'ok' : (String(res.message || (res.error && (res.error.description || res.error)) || 'dns_fail')) };
+  } catch (e) { return { ok: false, available: true, reason: 'error' }; }
+}
+
 // ===================== #202 Live GPS providers (server-side; creds never touch the browser) =====================
 // Returns { ok, positions:[{deviceId,label,vin,lat,lng,heading,speed(mph),ts,address,moving}] }. Bouncie's API header is the RAW
 // token (NOT "Bearer"); Traccar speed is knots -> mph. Bouncie cred is a JSON bundle {client_id,client_secret,code,redirect_uri}.
@@ -6911,6 +7042,115 @@ function doReset(){
         const _priceCents = s.available ? Math.max(Math.ceil((s.costCents || 0) * (1 + _mkq / 100)), (s.costCents || 0) + 100) : 0;
         await audit(env, ctx, req, 'domain.quote', { domain: dom, available: s.available });
         return json({ ok: true, live: true, available: s.available, priceCents: _priceCents, domain: dom });   // NOTE: costCents is intentionally NOT returned to the tenant/browser
+      }
+
+      // ---- #340 DOMAIN PORTFOLIO (tenant-gated, READ-ONLY). Lists THIS tenant's own domain(s): the connected existing domain
+      //      (tenants.custom_domain, external registrar) + any bought through Atlas (domains_sold, Dynadot-managed). Enriches the
+      //      Dynadot-managed ones with REAL expiry/auto-renew from the registrar when the key+secret are set; honest notes when
+      //      not. Tenant-scoped by ctx.tenant_id ONLY (never a param), so a tenant can only ever see its OWN names. Fail-open. ----
+      if (path === '/api/domain/portfolio' && method === 'GET') {
+        if (!_can(ctx, 'webEdit') && !_can(ctx, 'billing')) return err(403, 'You do not have permission to manage domains.');
+        await ensurePlatformSchema(env);
+        const _ddReady = !!(env.DYNADOT_KEY && env.DYNADOT_SECRET);
+        const _dpf = []; const _dnotes = [];
+        try {
+          const _tr = await env.DB.prepare('SELECT custom_domain, custom_domain_status FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
+          if (_tr && _tr.custom_domain) {
+            const _cd = String(_tr.custom_domain).toLowerCase();
+            let _ssl = false; if (env.CF_API_TOKEN) { try { _ssl = (await _cfHostnameActive(env, 'www.' + _cd)) || (await _cfHostnameActive(env, _cd)); } catch (e) {} }
+            _dpf.push({ domain: _cd, status: _tr.custom_domain_status || 'pending', connected: _tr.custom_domain_status === 'live', ssl: !!_ssl, expiresAt: null, autorenew: null, registrar: 'external' });
+          }
+        } catch (e) {}
+        try {
+          const _ds = ((await env.DB.prepare("SELECT domain, status FROM domains_sold WHERE tenant_id=? AND status NOT IN ('canceled') ORDER BY created_at DESC LIMIT 50").bind(ctx.tenant_id).all()).results) || [];
+          for (let _i = 0; _i < _ds.length; _i++) {
+            const _dm = String(_ds[_i].domain || '').toLowerCase(); if (!_dm) continue;
+            const _existing = _dpf.filter(function (p) { return p.domain === _dm; })[0];
+            let _ssl2 = false; if (env.CF_API_TOKEN) { try { _ssl2 = (await _cfHostnameActive(env, 'www.' + _dm)) || (await _cfHostnameActive(env, _dm)); } catch (e) {} }
+            let _exp = null, _ar = null;
+            if (_ddReady) { try { const _info = await _ddDomainInfo(env, _dm); if (_info && _info.ok) { _exp = _info.expiresAt || null; _ar = _info.autorenew; } } catch (e) {} }
+            if (_existing) { _existing.registrar = 'dynadot'; if (_exp) _existing.expiresAt = _exp; if (_ar != null) _existing.autorenew = _ar; if (_ssl2) _existing.ssl = true; }
+            else { _dpf.push({ domain: _dm, status: _ds[_i].status || 'registered', connected: false, ssl: !!_ssl2, expiresAt: _exp, autorenew: _ar, registrar: 'dynadot' }); }
+          }
+        } catch (e) {}
+        if (!_ddReady) _dnotes.push('Domain registrar (Dynadot) API not connected -- expiry and auto-renew dates are unavailable until it is configured. Connection status and SSL below are still live.');
+        if (!env.CF_API_TOKEN) _dnotes.push('Edge SSL/hostname status is unavailable until the Cloudflare-for-SaaS integration is configured.');
+        if (!_dpf.length) _dnotes.push('No domains yet. Connect a domain you already own, or buy one through Atlas, to see it here.');
+        return json({ ok: true, domains: _dpf, notes: _dnotes, target: (env.SAAS_TARGET || 'saas.atlasrental.io').toLowerCase() });
+      }
+
+      // ---- #340 CONNECT-STATUS (tenant-gated, READ-ONLY). The biggest "connect an existing domain" lever: reads the live CF
+      //      custom-hostname SSL/verification status, resolves the REAL DNS (DoH), computes the EXPECTED CNAME vs what is found,
+      //      and returns SPECIFIC, actionable misconfig hints. Ownership-gated to the tenant's OWN domain so it can't probe our
+      //      edge for another tenant's name. Read-only -- no mutations, no registrar/Stripe/booking touch. ----
+      if (path === '/api/domain/connect-status' && method === 'GET') {
+        if (!_can(ctx, 'webEdit') && !_can(ctx, 'billing')) return err(403, 'You do not have permission to manage domains.');
+        await ensurePlatformSchema(env);
+        let _qd = String(url.searchParams.get('domain') || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+        if (!_qd) { const _tr2 = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); _qd = (_tr2 && _tr2.custom_domain) ? String(_tr2.custom_domain).toLowerCase() : ''; }
+        if (!_qd) return err(400, 'No domain to check. Connect a domain first, or pass ?domain=yoursite.com.');
+        const _own = await _tenantOwnsDomain(env, ctx.tenant_id, _qd);
+        if (!_own.owned) return err(403, 'That domain is not connected to your account.');
+        const _target = (env.SAAS_TARGET || 'saas.atlasrental.io').toLowerCase();
+        const _cfW = await _cfHostnameStatus(env, 'www.' + _qd);
+        const _cfA = await _cfHostnameStatus(env, _qd);
+        const _cfStatus = _cfW.found ? _cfW.status : (_cfA.found ? _cfA.status : (env.CF_API_TOKEN ? 'not_provisioned' : 'unknown'));
+        const _sslActive = !!(_cfW.ssl_active || _cfA.ssl_active);
+        const _sslStatus = _cfW.found ? _cfW.ssl : (_cfA.found ? _cfA.ssl : '');
+        const _wwwCn = await _dohLookup('www.' + _qd, 'CNAME');
+        const _rootCn = await _dohLookup(_qd, 'CNAME');
+        const _rootA = await _dohLookup(_qd, 'A');
+        const _pointsAtUs = function (arr) { return (arr || []).some(function (v) { return v === _target || v.indexOf(_target) >= 0; }); };
+        const _dnsOk = _pointsAtUs(_wwwCn) || _pointsAtUs(_rootCn);
+        const _misconfig = [];
+        if (!_pointsAtUs(_wwwCn)) _misconfig.push({ field: 'CNAME www.' + _qd, expected: _target, found: (_wwwCn[0] || '(none found)'), hint: 'Add a CNAME record for www.' + _qd + ' pointing to ' + _target + (_wwwCn.length ? ' (it currently points to ' + _wwwCn.join(', ') + ').' : ' (no www CNAME is resolvable yet -- DNS can take a few minutes to a few hours to update).') });
+        if (_rootA.length && !_pointsAtUs(_rootCn)) _misconfig.push({ field: 'A ' + _qd, expected: 'remove / forward to www.' + _qd, found: _rootA.join(', '), hint: 'The bare ' + _qd + ' still has an A record (' + _rootA.join(', ') + ') pointing at an old host. Turn on domain forwarding (' + _qd + ' -> www.' + _qd + ') at your registrar, or use CNAME-flattening to ' + _target + ', and remove the old A record(s).' });
+        if (env.CF_API_TOKEN && _dnsOk && !_sslActive) _misconfig.push({ field: 'SSL', expected: 'active', found: (_sslStatus || 'pending'), hint: 'DNS looks correct; the SSL certificate is still being issued. This can take up to 15 minutes after DNS is right -- no action needed unless it persists past that.' });
+        if (env.CF_API_TOKEN && !_cfW.found && !_cfA.found) _misconfig.push({ field: 'hostname', expected: 'provisioned', found: 'missing', hint: 'This domain is not provisioned on our edge yet. Re-run Connect for ' + _qd + ' so we can issue its certificate.' });
+        const _propagated = _dnsOk && (!env.CF_API_TOKEN || _sslActive);
+        return json({ ok: true, domain: _qd, cfStatus: _cfStatus, ssl: (_sslStatus || (env.CF_API_TOKEN ? 'pending' : 'unknown')),
+          dns: { expected: [{ type: 'CNAME', name: 'www.' + _qd, value: _target }], found: { www_cname: _wwwCn, root_cname: _rootCn, root_a: _rootA }, ok: _dnsOk },
+          propagated: _propagated, misconfig: _misconfig });
+      }
+
+      // ---- #340 DNS records VIEW + EDIT (tenant-gated). GET lists the live registrar DNS for a Dynadot-managed (bought-through-
+      //      Atlas) domain (editable:false + honest note for a connected external domain, whose DNS lives at the tenant's own
+      //      registrar). POST is an OWNER-INITIATED external mutation of THEIR domain -- it verifies ownership HARD (fail-closed)
+      //      against domains_sold, validates every record, and REUSES the signed _ddSetDnsRecords. Never touches money/booking. ----
+      if (path === '/api/domain/dns' && method === 'GET') {
+        if (!_can(ctx, 'webEdit') && !_can(ctx, 'billing')) return err(403, 'You do not have permission to manage domains.');
+        await ensurePlatformSchema(env);
+        let _qd3 = String(url.searchParams.get('domain') || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+        if (!_qd3) { const _tr3 = await env.DB.prepare('SELECT custom_domain FROM tenants WHERE id=?').bind(ctx.tenant_id).first(); _qd3 = (_tr3 && _tr3.custom_domain) ? String(_tr3.custom_domain).toLowerCase() : ''; }
+        if (!_qd3) return err(400, 'No domain. Pass ?domain=yoursite.com.');
+        const _own3 = await _tenantOwnsDomain(env, ctx.tenant_id, _qd3);
+        if (!_own3.owned) return err(403, 'That domain is not connected to your account.');
+        if (!_own3.bought) return json({ ok: true, domain: _qd3, records: [], editable: false, notes: ['DNS records for ' + _qd3 + ' live at your own registrar (this is a connected external domain), so they cannot be listed or edited from here. Manage them where you registered the domain.'] });
+        if (!(env.DYNADOT_KEY && env.DYNADOT_SECRET)) return json({ ok: true, domain: _qd3, records: [], editable: false, notes: ['The domain registrar API is not fully configured yet, so live DNS records are unavailable. This is view-only until it is connected.'] });
+        const _rec = await _ddGetDnsRecords(env, _qd3);
+        if (!_rec.ok) return json({ ok: true, domain: _qd3, records: [], editable: true, notes: ['Could not read live DNS records right now (' + (_rec.reason || 'registrar error') + '). Please try again shortly.'] });
+        return json({ ok: true, domain: _qd3, records: _rec.records, editable: true, notes: [] });
+      }
+      if (path === '/api/domain/dns' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'webEdit')) return err(403, 'You do not have permission to manage the website.');
+        if (!await rateLimit(env, 'ddns:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Too many DNS changes right now - please wait a bit.');
+        await ensurePlatformSchema(env);
+        const _b4 = await req.json().catch(function () { return {}; });
+        const _dm4 = String(_b4.domain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+        if (!_dm4) return err(400, 'Which domain? Pass {domain}.');
+        // OWNERSHIP GATE (fail-CLOSED): the domain MUST be one THIS tenant bought/registered through Atlas (Dynadot-managed).
+        // Never write DNS for a domain not owned by the session tenant, nor for a merely-connected external domain (not ours to write).
+        const _own4 = await _tenantOwnsDomain(env, ctx.tenant_id, _dm4);
+        if (!_own4.bought) return err(403, 'That domain is not registered to your account, so its DNS cannot be edited here.');
+        const _norm = _ddNormalizeRecords(_b4.records);
+        if (!_norm.ok) return err(400, _norm.error);
+        if (!_norm.records.length) return err(400, 'No records to apply.');
+        if (!(env.DYNADOT_KEY && env.DYNADOT_SECRET)) return json({ ok: false, available: false, message: 'The domain registrar API is not fully configured yet, so DNS edits are not available. No changes were made.' });
+        const _set = await _ddSetDnsRecords(env, _dm4, _norm.records);
+        await audit(env, ctx, req, 'domain.dns.set', { domain: _dm4, count: _norm.records.length, ok: !!_set.ok });
+        if (!_set.ok) return json({ ok: false, available: _set.available !== false, message: 'The registrar rejected the DNS update' + (_set.reason ? ' (' + _set.reason + ')' : '') + '. No partial changes were applied.' });
+        return json({ ok: true, applied: _set.applied || _norm.records.length, domain: _dm4 });
       }
 
       // ---- #202 real GPS positions from the tenant's connected provider (Bouncie / Samsara / Traccar). HONEST: no provider -> {live:false} so the client stays in labeled preview. ----

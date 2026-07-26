@@ -9436,6 +9436,7 @@ const Atlas = (function(){
     if(!w.built){ el.innerHTML=_webStartHtml(); return; }
     el.innerHTML=_webBuilderHtml(w);
     try{ seoHealthLoad(); }catch(e){}   // lazy: renders the SEO Health card once the builder mounts (cache-guarded -- fetches only on first open / Re-check)
+    try{ webDomLoad(); }catch(e){}   // lazy: My-domains portfolio loads when the builder (Domain block) mounts; cache-guarded -- fetches only on first open / Refresh
   }
   function _webHead(sub){ return '<div style="margin-bottom:18px"><h2 style="font-size:22px">Website</h2><p style="color:var(--muted);font-size:14px">'+sub+'</p></div>'; }
   function _webGateHtml(){
@@ -10518,9 +10519,9 @@ const Atlas = (function(){
     else if(mode==='connect'){ body='<div style="margin-top:12px"><div class="field"><label>Your domain</label><input class="input" id="domIn" placeholder="mysite.com" value="'+esc(d._pending||'')+'"></div>'
       +'<button class="btn btn--primary btn--sm btn--full" onclick="Atlas.webConnectDomain()">Show connection steps</button><div id="domSteps"></div></div>'; }
     else if(mode==='buy'){ body='<div style="margin-top:12px"><div class="field"><label>Find your domain</label><div style="display:flex;gap:8px"><input class="input" id="domSearch" placeholder="mysite.com"><button class="btn btn--primary btn--sm" onclick="Atlas.webSearchDomain()">Check</button></div></div><div id="domResult"></div></div>'; }
-    return head+opts+body;
+    return head+opts+body+'<div id="domPortfolio" style="margin-top:16px;border-top:1px solid var(--line);padding-top:16px"><div class="bk-lenhint" style="margin:0">Loading your domains&hellip;</div></div>';
   }
-  function webDomainMode(mode){ var w=_web(); w._ui=mode; var el=document.getElementById('domBlock'); if(el) el.innerHTML='<h3>Domain</h3><div class="desc">Swap your web address anytime.</div>'+_domainHtml(); }
+  function webDomainMode(mode){ var w=_web(); w._ui=mode; var el=document.getElementById('domBlock'); if(el) el.innerHTML='<h3>Domain</h3><div class="desc">Swap your web address anytime.</div>'+_domainHtml(); try{ webDomLoad(); }catch(e){} }
   function webRevertDomain(){ if(ATLAS_BACKEND && _apiCsrf){ _api('/api/domain/disconnect',{method:'POST',body:{}}).catch(function(){}); } var w=_web(); w.domain.mode='sub'; w.domain.custom=''; w.domain.status='live'; w.domain._pending=''; w._ui='sub'; save(); renderWebsite(); toast('Reverted to your free Atlas subdomain'); }   // disconnect server-side + go back to the free subdomain
   // Wave 3 (connect-existing UX): exact per-registrar click-paths for adding the www CNAME shown above. Collapsible so
   // the panel stays clean; all reference "the target above" so they track whatever record the worker returned.
@@ -10603,6 +10604,168 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" style="margin:0 0 12px">To buy a brand-new domain in one step, connect a registrar first (Settings &gt; Website). For now it is quick to do yourself:</div>'
       +'<ol style="margin:0 0 14px;padding-left:18px;font-size:13px;color:var(--ink);line-height:1.8"><li>Register <b>'+esc(domain)+'</b> at any registrar (Namecheap, GoDaddy, Cloudflare &mdash; about '+money(yr)+'/yr).</li><li>Come back to <b>Connect a domain you own</b> and point it here in two clicks.</li></ol>'
       +'<button class="btn btn--primary btn--full" onclick="Atlas.closeModal();Atlas.webDomainMode(\'connect\')">Connect a domain I own</button></div>'); }
+  /* ---- Domain management: My-domains portfolio + connection health + DNS record viewer/editor. Additive; all fetches
+     go through the tenant _api() helper (cookie auth + X-CSRF on writes + central 402). Worker endpoints:
+       GET  /api/domain/portfolio            -> {domains:[{domain,status,connected,ssl,expiresAt,autorenew,registrar}],notes:[]}
+       GET  /api/domain/connect-status?domain=-> {domain,cfStatus,ssl,dns:{expected,found,ok},propagated,misconfig:[{field,expected,found,hint}]}
+       GET  /api/domain/dns?domain=          -> {records:[{type,name,value,ttl}],editable,notes:[]}
+       POST /api/domain/dns  {domain,records} -> {ok,applied} | {ok:false,available:false}
+     All state is in module vars so a re-render (mode switch / manage toggle) rebuilds from cache -- no refetch, no lost edits. ---- */
+  var _domPortfolio=null, _domManageOpen='', _domConn={}, _domDnsData={}, _domDnsOpen={};
+  var _DOM_DNS_TYPES=['A','AAAA','CNAME','TXT','MX'];
+  function _domKey(d){ return String(d||'').replace(/[^a-z0-9]/gi,'_'); }
+  function _domArg(d){ return esc(String(d||'')).replace(/'/g,"\\'"); }
+  function _domFmtDate(v){ if(v==null||v==='') return ''; var t=(typeof v==='number')?v:Date.parse(v); if(!isFinite(t)) return ''; try{ return new Date(t).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }catch(e){ return ''; } }
+  // Lazy portfolio load (mirrors seoHealthLoad): re-open / mode switch renders from cache; only first open or Refresh (force) fetches.
+  function webDomLoad(force){ var el=document.getElementById('domPortfolio'); if(!el) return;
+    if(!ATLAS_BACKEND || !_apiCsrf){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Your domain portfolio goes live once your Atlas backend is connected. You can still connect or buy a domain above.</div>'; return; }
+    if(!force && _domPortfolio){ _domPortfolioRender(); return; }
+    el.innerHTML='<div class="bk-lenhint" style="margin:0">Loading your domains&hellip;</div>';
+    _api('/api/domain/portfolio',{method:'GET'}).then(function(res){ var j=res&&res.json, e2=document.getElementById('domPortfolio'); if(!e2) return;
+      if(!(res.status>=200&&res.status<300&&j&&Array.isArray(j.domains))){ e2.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">'+esc((j&&j.error)||'Could not load your domains')+' &mdash; <a onclick="Atlas.webDomLoad(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; return; }
+      _domPortfolio=j; _domPortfolioRender();
+    }).catch(function(){ var e3=document.getElementById('domPortfolio'); if(e3) e3.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">Could not load your domains &mdash; <a onclick="Atlas.webDomLoad(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; }); }
+  function _domPortfolioRender(){ var el=document.getElementById('domPortfolio'); if(!el) return; var j=_domPortfolio||{}; var doms=Array.isArray(j.domains)?j.domains:[];
+    var head='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px"><div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">My domains</div><button class="btn btn--ghost btn--sm" style="flex:none" onclick="Atlas.webDomLoad(true)">Refresh</button></div>';
+    if(!doms.length){ el.innerHTML=head+'<div class="bk-lenhint" style="margin:0">No domains yet &mdash; search + connect one above.</div>'; return; }
+    var rows=doms.map(function(d){ return _domRowHtml(d||{}); }).join('');
+    var notes=Array.isArray(j.notes)?j.notes.filter(Boolean):[];
+    var noteHtml=notes.length?('<div style="margin-top:6px;font-size:11.5px;color:var(--muted);line-height:1.6">'+notes.map(function(n){return esc(String(n));}).join('<br>')+'</div>'):'';
+    el.innerHTML=head+rows+noteHtml; }
+  function _domRowHtml(d){ var name=String(d.domain||''); if(!name) return ''; var open=(_domManageOpen===name);
+    var st=String(d.status||'').toLowerCase(); var isConn=(d.connected===true)||st==='live'||st==='active'||st==='owned'||st==='connected';
+    var connChip=isConn?('<span class="chip chip--ok"><span class="dot"></span>'+(st==='owned'?'Owned':'Connected')+'</span>'):(st==='pending'?'<span class="chip chip--warn"><span class="dot"></span>Pending DNS</span>':('<span class="chip chip--muted"><span class="dot"></span>'+(st?esc(st.charAt(0).toUpperCase()+st.slice(1)):'Not connected')+'</span>'));
+    var sslChip=d.ssl?'<span class="chip chip--ok">SSL</span>':'<span class="chip chip--muted">SSL pending</span>';
+    var arChip=(d.autorenew===true)?'<span class="chip chip--ok">Auto-renew on</span>':(d.autorenew===false?'<span class="chip chip--muted">Auto-renew off</span>':'');
+    var exp=_domFmtDate(d.expiresAt); var expHtml=exp?('<span style="font-size:11.5px;color:var(--muted)">'+(isConn?'Renews ':'Expires ')+esc(exp)+'</span>'):'';
+    var regHtml=d.registrar?('<span style="font-size:11.5px;color:var(--muted)">'+esc(String(d.registrar))+'</span>'):'';
+    var meta=[expHtml,regHtml].filter(Boolean).join(' <span style="color:var(--line)">&middot;</span> ');
+    var top='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+      +'<div style="min-width:0"><div class="mono" style="font-size:13.5px;font-weight:700;color:var(--ink);word-break:break-all">'+esc(name)+'</div>'+(meta?('<div style="margin-top:2px">'+meta+'</div>'):'')+'</div>'
+      +'<button class="btn btn--ghost btn--sm" style="flex:none" onclick="Atlas.webDomManage(\''+_domArg(name)+'\')">'+(open?'Close':'Manage')+'</button></div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+connChip+sslChip+arChip+'</div>';
+    return '<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--bg)">'+top+(open?_domManagePanelHtml(name):'')+'</div>'; }
+  function _domManagePanelHtml(name){ var k=_domKey(name); var dnsOpen=!!_domDnsOpen[name];
+    var conn='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2)"><button class="btn btn--ghost btn--sm" onclick="Atlas.webDomCheckConn(\''+_domArg(name)+'\')">Check connection</button>'
+      +'<div id="domConn_'+k+'" style="margin-top:10px">'+(_domConn[name]?_domConnBodyHtml(name):'')+'</div></div>';
+    var dns='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2)"><button class="btn btn--ghost btn--sm btn--full" style="text-align:left" onclick="Atlas.webDomDns(\''+_domArg(name)+'\')">'+(dnsOpen?'&#9662;':'&#9656;')+' DNS records</button>'
+      +'<div id="domDns_'+k+'" style="margin-top:10px'+(dnsOpen?'':';display:none')+'">'+(dnsOpen?_domDnsBodyHtml(name):'')+'</div></div>';
+    return conn+dns; }
+  function webDomManage(name){ _domManageOpen=(_domManageOpen===name)?'':name; _domPortfolioRender(); }
+  // Connection health: cfStatus + SSL + propagation + a plain-English "Needs attention" list of each misconfigured record.
+  function webDomCheckConn(name){ if(!(ATLAS_BACKEND&&_apiCsrf)){ toast('Sign in to check your connection'); return; }
+    var k=_domKey(name); var box=document.getElementById('domConn_'+k); if(box) box.innerHTML='<div class="bk-lenhint" style="margin:0">Checking '+esc(name)+'&hellip;</div>';
+    _api('/api/domain/connect-status?domain='+encodeURIComponent(name),{method:'GET'}).then(function(res){ var j=res&&res.json;
+      if(!(res.status>=200&&res.status<300&&j&&(j.domain||j.cfStatus!=null||j.dns||Array.isArray(j.misconfig)))){ var b0=document.getElementById('domConn_'+k); if(b0) b0.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">'+esc((j&&j.error)||'Could not check this domain right now')+' &mdash; try again in a moment.</div>'; return; }
+      _domConn[name]=j; _domConnRender(name);
+    }).catch(function(){ var b1=document.getElementById('domConn_'+k); if(b1) b1.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">Network error checking '+esc(name)+' &mdash; try again.</div>'; }); }
+  function _domConnRender(name){ var box=document.getElementById('domConn_'+_domKey(name)); if(box) box.innerHTML=_domConnBodyHtml(name); }
+  function _domConnBodyHtml(name){ var j=_domConn[name]; if(!j) return '';
+    var cf=String(j.cfStatus||''); var cfOk=/^(active|live|ok|connected)$/i.test(cf);
+    var cfChip='<span class="chip '+(cfOk?'chip--ok':(cf?'chip--warn':'chip--muted'))+'"><span class="dot"></span>Atlas: '+(cf?esc(cf):'unknown')+'</span>';
+    var sslChip='<span class="chip '+(j.ssl?'chip--ok':'chip--warn')+'"><span class="dot"></span>'+(j.ssl?'SSL active':'SSL pending')+'</span>';
+    var propChip='<span class="chip '+(j.propagated?'chip--ok':'chip--warn')+'"><span class="dot"></span>'+(j.propagated?'DNS propagated':'Propagation pending')+'</span>';
+    var dnsLine=''; if(j.dns){ var okv=(j.dns.ok===true);
+      var expv=(j.dns.expected!=null&&j.dns.expected!=='')?esc(String(j.dns.expected)):'&mdash;';
+      var fndv=(j.dns.found!=null&&j.dns.found!=='')?esc(String(j.dns.found)):'(nothing found yet)';
+      dnsLine='<div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px"><span style="color:'+(okv?'var(--ok)':'var(--warn)')+';font-weight:800;flex:none;font-size:14px">'+(okv?'&#10003;':'!')+'</span><div style="font-size:12px;color:var(--muted);min-width:0"><div>Expected: <span class="mono" style="color:var(--ink);word-break:break-all">'+expv+'</span></div><div>Found: <span class="mono" style="color:var(--ink);word-break:break-all">'+fndv+'</span></div></div></div>'; }
+    var mis=Array.isArray(j.misconfig)?j.misconfig:[]; var misHtml;
+    if(mis.length){ misHtml='<div style="margin-top:10px;border:1px solid var(--danger);border-radius:10px;padding:10px 12px;background:var(--danger-bg)">'
+        +'<div style="margin-bottom:4px"><span class="chip chip--danger"><span class="dot"></span>Needs attention</span></div>'
+        +'<div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">Fix these DNS records at your registrar, then check again:</div>'
+        +mis.map(function(m){ m=m||{};
+            var exv=(m.expected!=null&&m.expected!=='')?esc(String(m.expected)):'&mdash;';
+            var fnv=(m.found!=null&&m.found!=='')?esc(String(m.found)):'(missing)';
+            return '<div style="padding:6px 0;border-top:1px solid rgba(0,0,0,.06)"><b style="font-size:12.5px;color:var(--ink)">'+esc(String(m.field||'DNS record'))+'</b>'
+              +'<div style="font-size:12px;color:var(--muted);margin-top:2px">Should be: <span class="mono" style="color:var(--ink);word-break:break-all">'+exv+'</span></div>'
+              +'<div style="font-size:12px;color:var(--muted)">Currently: <span class="mono" style="color:var(--ink);word-break:break-all">'+fnv+'</span></div>'
+              +(m.hint?('<div style="font-size:12px;color:var(--body);margin-top:3px">'+esc(String(m.hint))+'</div>'):'')+'</div>'; }).join('')
+        +'</div>';
+    } else { misHtml='<div style="margin-top:10px;display:flex;gap:8px;align-items:center"><span class="chip chip--ok"><span class="dot"></span>All set</span><span style="font-size:12px;color:var(--muted)">No DNS problems detected.</span></div>'; }
+    var reassure=(!j.propagated||mis.length)?'<div style="font-size:11.5px;color:var(--muted);margin-top:10px">DNS changes can take up to 15 minutes (sometimes longer) to take effect everywhere. If you just edited a record, wait a few minutes and check again.</div>':'';
+    return '<div style="display:flex;gap:6px;flex-wrap:wrap">'+cfChip+sslChip+propChip+'</div>'+dnsLine+misHtml+reassure; }
+  // DNS viewer/editor expander. GET loads records; editable=true unlocks add/edit/delete + Save (behind a confirm()).
+  function webDomDns(name){ _domDnsOpen[name]=!_domDnsOpen[name]; _domPortfolioRender();
+    if(_domDnsOpen[name] && !(_domDnsData[name]&&_domDnsData[name].loaded)) _domDnsLoad(name); }
+  function webDomDnsReload(name){ if(_domDnsData[name]) _domDnsData[name].loaded=false; _domDnsRender(name); _domDnsLoad(name); }
+  function _domDnsLoad(name){ if(!(ATLAS_BACKEND&&_apiCsrf)){ _domDnsData[name]={loaded:true,editable:false,records:[],notes:['Sign in to view your DNS records.'],dirty:false,err:''}; _domDnsRender(name); return; }
+    _api('/api/domain/dns?domain='+encodeURIComponent(name),{method:'GET'}).then(function(res){ var j=res&&res.json;
+      if(!(res.status>=200&&res.status<300&&j&&Array.isArray(j.records))){ _domDnsData[name]={loaded:true,editable:false,records:[],notes:[],dirty:false,err:((j&&j.error)||'Could not load DNS records')}; _domDnsRender(name); return; }
+      var recs=j.records.map(function(r){ r=r||{}; return {type:String(r.type||'A').toUpperCase(),name:String(r.name||''),value:String(r.value||''),ttl:(r.ttl==null?3600:r.ttl)}; });
+      _domDnsData[name]={loaded:true,editable:(j.editable===true),records:recs,notes:(Array.isArray(j.notes)?j.notes.filter(Boolean):[]),dirty:false,err:''}; _domDnsRender(name);
+    }).catch(function(){ _domDnsData[name]={loaded:true,editable:false,records:[],notes:[],dirty:false,err:'Network error loading DNS records'}; _domDnsRender(name); }); }
+  function _domDnsRender(name){ var box=document.getElementById('domDns_'+_domKey(name)); if(box) box.innerHTML=_domDnsBodyHtml(name); }
+  function _domDnsBodyHtml(name){ var st=_domDnsData[name]; var k=_domKey(name);
+    if(!st||!st.loaded){ return '<div class="bk-lenhint" style="margin:0">Loading DNS records&hellip;</div>'; }
+    if(st.err){ return '<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">'+esc(st.err)+' &mdash; <a onclick="Atlas.webDomDnsReload(\''+_domArg(name)+'\')" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; }
+    var recs=st.records||[]; var editable=!!st.editable;
+    var notes=(st.notes||[]).filter(Boolean);
+    var noteHtml=notes.length?('<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-bottom:8px">'+notes.map(function(n){return esc(String(n));}).join('<br>')+'</div>'):'';
+    var hdr='<div style="display:grid;grid-template-columns:72px 1.1fr 1.6fr 58px'+(editable?' 30px':'')+';gap:6px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);padding:0 2px 4px"><div>Type</div><div>Name</div><div>Value</div><div>TTL</div>'+(editable?'<div></div>':'')+'</div>';
+    var body;
+    if(!recs.length){ body='<div class="bk-lenhint" style="margin:6px 0">No DNS records'+(editable?' yet -- add one below.':' returned.')+'</div>'; }
+    else if(editable){ body=recs.map(function(r,i){ return _domDnsEditRowHtml(name,r,i); }).join(''); }
+    else { body=recs.map(function(r){ return _domDnsReadRowHtml(r); }).join(''); }
+    var wrap='<div style="overflow-x:auto"><div style="min-width:360px">'+hdr+body+'</div></div>';
+    var foot;
+    if(editable){ var ready=_domDnsValid(name)&&st.dirty;
+      foot='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">'
+        +'<button class="btn btn--ghost btn--sm" onclick="Atlas.webDomDnsAdd(\''+_domArg(name)+'\')">Add record</button>'
+        +'<button class="btn btn--primary btn--sm" id="domDnsSaveBtn_'+k+'"'+(ready?'':' disabled')+' onclick="Atlas.webDomDnsSave(\''+_domArg(name)+'\')">Save DNS</button>'
+        +'<span id="domDnsHint_'+k+'" style="font-size:11.5px;color:var(--muted)">'+_domDnsHintText(name)+'</span></div>'
+        +'<div style="font-size:11.5px;color:var(--muted);margin-top:8px">These edits apply to your live domain. DNS changes can take up to 15 minutes to take effect.</div>';
+    } else {
+      foot='<div style="font-size:11.5px;color:var(--muted);margin-top:10px">These records are managed at your registrar &mdash; edit them there, then use <b>Check connection</b> above. Exact steps by registrar:</div>'+_domRegistrarGuides();
+    }
+    return noteHtml+wrap+foot; }
+  function _domDnsReadRowHtml(r){ r=r||{}; return '<div style="display:grid;grid-template-columns:72px 1.1fr 1.6fr 58px;gap:6px;align-items:center;padding:5px 2px;border-top:1px solid var(--line-2)">'
+    +'<div><span class="chip chip--muted" style="padding:2px 7px;font-size:11px">'+esc(String(r.type||''))+'</span></div>'
+    +'<div class="mono" style="font-size:12px;color:var(--ink);word-break:break-all">'+esc(String(r.name||''))+'</div>'
+    +'<div class="mono" style="font-size:12px;color:var(--ink);word-break:break-all">'+esc(String(r.value||''))+'</div>'
+    +'<div class="mono" style="font-size:12px;color:var(--muted)">'+esc(String(r.ttl==null?'':r.ttl))+'</div></div>'; }
+  function _domDnsEditRowHtml(name,r,i){ r=r||{}; var a=_domArg(name);
+    var opts=_DOM_DNS_TYPES.map(function(t){ return '<option value="'+t+'"'+((String(r.type||'').toUpperCase()===t)?' selected':'')+'>'+t+'</option>'; }).join('');
+    return '<div style="display:grid;grid-template-columns:72px 1.1fr 1.6fr 58px 30px;gap:6px;align-items:center;padding:5px 2px;border-top:1px solid var(--line-2)">'
+      +'<select class="input" style="padding:6px;font-size:12px" onchange="Atlas.webDomDnsSet(\''+a+'\','+i+',\'type\',this.value)">'+opts+'</select>'
+      +'<input class="input mono" style="padding:6px;font-size:12px" value="'+esc(String(r.name||''))+'" placeholder="www" oninput="Atlas.webDomDnsSet(\''+a+'\','+i+',\'name\',this.value)">'
+      +'<input class="input mono" style="padding:6px;font-size:12px" value="'+esc(String(r.value||''))+'" placeholder="target or IP" oninput="Atlas.webDomDnsSet(\''+a+'\','+i+',\'value\',this.value)">'
+      +'<input class="input mono" style="padding:6px;font-size:12px" value="'+esc(String(r.ttl==null?'':r.ttl))+'" placeholder="3600" oninput="Atlas.webDomDnsSet(\''+a+'\','+i+',\'ttl\',this.value)">'
+      +'<button class="btn btn--ghost btn--sm" style="padding:6px 8px;color:var(--danger)" title="Delete record" onclick="Atlas.webDomDnsDel(\''+a+'\','+i+')">&times;</button></div>'; }
+  function webDomDnsSet(name,i,field,value){ var st=_domDnsData[name]; if(!st||!st.records||!st.records[i]) return;
+    if(field==='type') value=String(value||'').toUpperCase();
+    st.records[i][field]=value; st.dirty=true; _domDnsRefreshSave(name); }   // no full re-render on keystroke (would drop focus) -- just refresh Save + hint
+  function _domDnsRefreshSave(name){ var k=_domKey(name); var st=_domDnsData[name]; if(!st) return;
+    var btn=document.getElementById('domDnsSaveBtn_'+k), hint=document.getElementById('domDnsHint_'+k);
+    if(btn){ if(_domDnsValid(name)&&st.dirty) btn.removeAttribute('disabled'); else btn.setAttribute('disabled','disabled'); }
+    if(hint) hint.innerHTML=_domDnsHintText(name); }
+  function _domDnsHintText(name){ var st=_domDnsData[name]; if(!st) return '';
+    if(!st.records.length) return 'Add at least one record.';
+    var probs=[];
+    for(var i=0;i<st.records.length;i++){ var r=st.records[i]||{}, t=String(r.type||'').toUpperCase();
+      if(_DOM_DNS_TYPES.indexOf(t)<0) probs.push('Row '+(i+1)+': choose a valid type');
+      else if(!String(r.name||'').trim()) probs.push('Row '+(i+1)+': name is required');
+      else if(!String(r.value||'').trim()) probs.push('Row '+(i+1)+': value is required'); }
+    if(probs.length) return probs.slice(0,3).join(' <span style="color:var(--line)">&middot;</span> ');
+    if(!st.dirty) return 'No changes yet.';
+    return 'Ready to save.'; }
+  function _domDnsRowValid(r){ r=r||{}; var t=String(r.type||'').toUpperCase(); return _DOM_DNS_TYPES.indexOf(t)>=0 && !!String(r.name||'').trim() && !!String(r.value||'').trim(); }
+  function _domDnsValid(name){ var st=_domDnsData[name]; if(!st||!st.records||!st.records.length) return false; for(var i=0;i<st.records.length;i++){ if(!_domDnsRowValid(st.records[i])) return false; } return true; }
+  function webDomDnsAdd(name){ var st=_domDnsData[name]; if(!st||!st.editable) return; st.records.push({type:'A',name:'',value:'',ttl:3600}); st.dirty=true; _domDnsRender(name); }
+  function webDomDnsDel(name,i){ var st=_domDnsData[name]; if(!st||!st.records||i<0||i>=st.records.length) return; st.records.splice(i,1); st.dirty=true; _domDnsRender(name); }
+  function webDomDnsSave(name){ if(!(ATLAS_BACKEND&&_apiCsrf)){ toast('Sign in to save DNS'); return; }
+    var st=_domDnsData[name]; if(!st||!st.editable) return;
+    if(!_domDnsValid(name)){ toast('Fix the flagged records first'); _domDnsRefreshSave(name); return; }
+    if(!confirm('This changes your live domain\'s DNS -- continue?')) return;
+    var payload=st.records.map(function(r){ var ttl=parseInt(r.ttl,10); return {type:String(r.type||'').toUpperCase(),name:String(r.name||'').trim(),value:String(r.value||'').trim(),ttl:(isFinite(ttl)?ttl:3600)}; });
+    var k=_domKey(name); var btn=document.getElementById('domDnsSaveBtn_'+k); if(btn){ btn.setAttribute('disabled','disabled'); btn.textContent='Saving...'; }
+    _api('/api/domain/dns',{method:'POST',body:{domain:name,records:payload}}).then(function(res){ var j=(res&&res.json)||{};
+      if(res.status>=200&&res.status<300&&j.ok){ st.dirty=false; _domConn[name]=null;
+        toast('DNS saved'+(j.applied!=null?(' -- '+j.applied+' record'+(Number(j.applied)===1?'':'s')+' applied'):'')+'. Changes can take up to 15 minutes.');
+        var cb=document.getElementById('domConn_'+k); if(cb) cb.innerHTML='<div class="bk-lenhint" style="margin:0">Saved. Click <b>Check connection</b> to confirm the new records.</div>';
+        _domDnsRender(name); }
+      else if(j.ok===false && j.available===false){ st.editable=false; toast('DNS could not be edited here -- manage it at your registrar.'); _domDnsRender(name); }
+      else { toast(j.error?('Could not save: '+j.error):'Could not save DNS'); var b2=document.getElementById('domDnsSaveBtn_'+k); if(b2){ b2.removeAttribute('disabled'); b2.textContent='Save DNS'; } }
+    }).catch(function(){ toast('Network error saving DNS'); var b3=document.getElementById('domDnsSaveBtn_'+_domKey(name)); if(b3){ b3.removeAttribute('disabled'); b3.textContent='Save DNS'; } }); }
   function _buyStep(i,domain){ var rows=document.querySelectorAll('#buySteps [data-step]'); if(!rows||i>=rows.length){
       var w=_web(); w.domain.mode='custom'; w.domain.custom=domain; w.domain.status='owned'; w._ui='sub'; save();
       var db=document.getElementById('buyDone'); if(db) db.style.display='block'; return; }
@@ -10850,7 +11013,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
