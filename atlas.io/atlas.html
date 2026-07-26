@@ -9367,10 +9367,75 @@ const Atlas = (function(){
       else if(res.status===402 && res.json && res.json.error==='website_addon_required'){ toast('Add the website ($199 once or $19/mo) or upgrade to Enterprise to publish'); buyWebsiteAddon(); }   // #278: honest gate, same $199/$19-or-upgrade copy as _webGateHtml
       else toast((res.json&&res.json.error)||'Could not publish \u2014 please try again'); }).catch(function(){ toast('Network error while publishing'); }); }
   function _bookingSitePublished(){ return !!(ATLAS_BACKEND && _web().published); }
+  // ---- SEO Health card (website builder). Read-only checkup: GET /api/seo/health (already deployed, tenant-session
+  //      gated) through the SHARED _api() helper -- same cookie auth + 402 interception as every other tenant call.
+  //      ADDITIVE + money-safe: nothing here touches calcQuote/pricing/booking. The last result is cached on _seoHealth
+  //      so re-opening the Website tab re-renders from memory (no re-fetch) -- only "Re-check" forces a fresh call. ----
+  var _seoHealth=null;   // cache of the last successful /api/seo/health payload (rendered on panel re-open without re-fetching)
+  // Map a recommendation string onto an EXISTING builder sub-block so trivial ones get a one-click jump. Order matters:
+  // title/description/meta -> the SEO fields BEFORE the generic "page" rule (so "page title" lands on SEO, not Pages).
+  function _seoRecAction(t){ var s=String(t||'').toLowerCase();
+    if(/blog|\bpost\b/.test(s)) return {key:'blog',label:'Open blog manager'};
+    if(/faq|frequently asked/.test(s)) return {key:'faq',label:'Add an FAQ'};
+    if(/meta|description|title tag|seo title|page title|\btitle\b/.test(s)) return {key:'seo',label:'Edit SEO fields'};
+    if(/\bpage\b|landing/.test(s)) return {key:'pages',label:'Build a page'};
+    if(/publish|go live|not live/.test(s)) return {key:'publish',label:'Publish site'};
+    if(/domain|custom url|\bhttps\b|\bssl\b|\bhttp\b/.test(s)) return {key:'domain',label:'Set up domain'};
+    return null; }
+  // Scroll the matching builder set-block into view + a brief brand highlight. Matches on the block's <h3> text so it
+  // never depends on ids the existing blocks may not have (truly additive -- no existing markup is touched).
+  function seoHealthJump(key){ var map={seo:'search',faq:'faq',blog:'blog',pages:'pages',publish:'public booking',domain:'domain'}, pref=map[key]; if(!pref) return;
+    var blocks=document.querySelectorAll('.web-side .set-block');
+    for(var i=0;i<blocks.length;i++){ var h=blocks[i].querySelector('h3'); if(!h) continue; var tx=String(h.textContent||'').replace(/\s+/g,' ').trim().toLowerCase();
+      if(tx.indexOf(pref)===0){ var b=blocks[i]; try{ b.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){ try{ b.scrollIntoView(); }catch(e2){} }
+        try{ var _o=b.style.boxShadow; b.style.transition='box-shadow .25s'; b.style.boxShadow='0 0 0 2px var(--brand)'; setTimeout(function(){ b.style.boxShadow=_o||''; },1300); }catch(e3){} return; } } }
+  function _seoHealthRender(data){ var el=document.getElementById('seoHealthBody'); if(!el||!data) return;
+    var score=Number(data.score); if(!isFinite(score)) score=0; var pct=Math.max(0,Math.min(100,Math.round(score)));
+    var col=pct>=80?'var(--ok)':(pct>=50?'var(--warn)':'var(--danger)'), lbl=pct>=80?'Strong':(pct>=50?'Fair':'Needs work');
+    var checks=Array.isArray(data.checks)?data.checks:[]; var okN=0; for(var i=0;i<checks.length;i++){ if(checks[i]&&checks[i].ok) okN++; }
+    var sub=checks.length?(okN+' of '+checks.length+' checks passing'):'SEO health score';
+    var ring='<div style="display:flex;align-items:center;gap:16px;margin-bottom:4px">'
+      +'<div style="flex:none;width:66px;height:66px;border-radius:50%;display:grid;place-items:center;background:conic-gradient('+col+' '+(pct*3.6)+'deg,var(--surface-2) 0)">'
+        +'<div class="tnum" style="width:52px;height:52px;border-radius:50%;background:var(--surface);display:grid;place-items:center;font-size:19px;font-weight:850;color:var(--ink)">'+pct+'</div></div>'
+      +'<div style="flex:1;min-width:0"><div style="font-weight:800;color:'+col+';font-size:15px">'+lbl+'</div>'
+        +'<div style="font-size:12.5px;color:var(--muted)">'+sub+'</div>'
+        +'<div style="height:7px;border-radius:999px;background:var(--surface-2);margin-top:8px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+col+';border-radius:999px"></div></div></div></div>';
+    var crows=checks.map(function(c){ var ok=!!(c&&c.ok), sev=String((c&&c.severity)||'').toLowerCase();
+      var chip=ok?'<span class="chip chip--ok" style="flex:none">Pass</span>':('<span class="chip chip--'+(sev==='high'?'danger':(sev==='med'?'warn':'muted'))+'" style="flex:none">'+(sev==='high'?'High':(sev==='med'?'Medium':'Low'))+'</span>');
+      var mark=ok?'<span style="color:var(--ok);font-weight:800;flex:none;font-size:15px">&#10003;</span>':'<span style="color:var(--danger);font-weight:800;flex:none;font-size:15px">&#10007;</span>';
+      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid var(--line-2)">'+mark
+        +'<div style="flex:1;min-width:0"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:13.5px;color:var(--ink)">'+esc((c&&(c.label||c.key))||'Check')+'</b>'+chip+'</div>'
+        +((c&&c.note)?('<div style="font-size:12.5px;color:var(--muted);margin-top:2px">'+esc(c.note)+'</div>'):'')+'</div></div>'; }).join('');
+    var recs=Array.isArray(data.recommendations)?data.recommendations:[];
+    var rrows=recs.map(function(r){ var t=String(r||''); if(!t) return ''; var m=_seoRecAction(t);
+      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line-2)"><span style="color:var(--brand);flex:none;font-weight:800;font-size:15px">&#8250;</span>'
+        +'<div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--body)">'+esc(t)+'</div>'
+        +(m?('<button class="btn btn--ghost btn--sm" style="margin-top:6px" onclick="Atlas.seoHealthJump(\''+m.key+'\')">'+esc(m.label)+'</button>'):'')+'</div></div>'; }).join('');
+    var pages=Array.isArray(data.pages)?data.pages:[];
+    var prows=pages.map(function(p){ if(!p) return ''; var ix=(p.indexable!==false), u=String(p.url||''), la=String(p.label||u);
+      return '<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line-2)"><div style="min-width:0;overflow:hidden"><div style="font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(la)+'</div>'
+        +((u&&p.label)?('<div class="mono" style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(u)+'</div>'):'')+'</div>'
+        +'<span class="chip '+(ix?'chip--ok':'chip--muted')+'" style="flex:none">'+(ix?'Indexable':'Not indexed')+'</span></div>'; }).join('');
+    var html=ring;
+    html+=crows?('<div style="margin-top:12px">'+crows+'</div>'):'<div class="bk-lenhint" style="margin:12px 0 0">No specific checks were returned.</div>';
+    if(rrows) html+='<div style="margin-top:16px"><div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Recommended next steps</div>'+rrows+'</div>';
+    if(prows) html+='<div style="margin-top:16px"><div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Pages</div>'+prows+'</div>';
+    el.innerHTML=html; }
+  function seoHealthLoad(force){ var el=document.getElementById('seoHealthBody'); if(!el) return;
+    if(!ATLAS_BACKEND || !_apiCsrf){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Your SEO health check goes live once your Atlas backend is connected.</div>'; return; }
+    if(!_bookingSitePublished()){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Publish your site first to see its SEO health.</div>'; return; }
+    if(!force && _seoHealth){ _seoHealthRender(_seoHealth); return; }   // re-open uses the cache -- only "Re-check" (force) re-fetches
+    el.innerHTML='<div class="bk-lenhint" style="margin:0">Checking your SEO health&hellip;</div>';
+    _api('/api/seo/health',{method:'GET'}).then(function(res){ var j=res&&res.json, e2=document.getElementById('seoHealthBody'); if(!e2) return;
+      if(!(res.status>=200 && res.status<300 && j && (typeof j.score!=='undefined' || Array.isArray(j.checks)))){
+        e2.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">'+esc((j&&j.error)||'Could not load your SEO health')+' &mdash; <a onclick="Atlas.seoHealthLoad(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; return; }
+      _seoHealth=j; _seoHealthRender(j);
+    }).catch(function(){ var e3=document.getElementById('seoHealthBody'); if(e3) e3.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">Could not load &mdash; <a onclick="Atlas.seoHealthLoad(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; }); }
   function renderWebsite(){ var el=document.getElementById('webBody'); if(!el||!S) return; var w=_web();
     if(!_canBuildSite() && !w.built){ el.innerHTML=_webGateHtml(); return; }
     if(!w.built){ el.innerHTML=_webStartHtml(); return; }
     el.innerHTML=_webBuilderHtml(w);
+    try{ seoHealthLoad(); }catch(e){}   // lazy: renders the SEO Health card once the builder mounts (cache-guarded -- fetches only on first open / Re-check)
   }
   function _webHead(sub){ return '<div style="margin-bottom:18px"><h2 style="font-size:22px">Website</h2><p style="color:var(--muted);font-size:14px">'+sub+'</p></div>'; }
   function _webGateHtml(){
@@ -9792,6 +9857,9 @@ const Atlas = (function(){
       +'<div class="set-block"><h3>Search &amp; SEO</h3><div class="desc">How your site shows up in Google and when shared. Atlas.io can also set these from chat.</div>'
         +'<div class="field"><label>SEO title <span style="color:var(--muted);font-weight:500">&mdash; browser tab &amp; search result</span></label><input class="input" maxlength="70" placeholder="'+esc((S.brand.name||'Your business')+' \u2014 book online')+'" value="'+esc(w.metaTitle||'')+'" oninput="Atlas.setWebField(\'metaTitle\',this.value)"></div>'
         +'<div class="field" style="margin-bottom:0"><label>SEO description</label><textarea class="input" rows="2" maxlength="300" placeholder="A short summary that shows under your title in search results." oninput="Atlas.setWebField(\'metaDescription\',this.value)">'+esc(w.metaDescription||'')+'</textarea></div>'
+      +'</div>'
+      +'<div class="set-block"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3>SEO health</h3><div class="desc" style="margin-bottom:0">A live checkup of how well your site is set up to be found on Google. Fix the flagged items to climb the rankings.</div></div><button class="btn btn--ghost btn--sm" style="flex:none" onclick="Atlas.seoHealthLoad(true)">Re-check</button></div>'
+        +'<div id="seoHealthBody" style="margin-top:14px"><div class="bk-lenhint" style="margin:0">Loading your SEO health&hellip;</div></div>'
       +'</div>'
       +'<div class="set-block"><h3>FAQ</h3><div class="desc">Answer common questions right on your site.</div>'+_webFaqHtml()+'</div>'
       +'<div class="set-block"><h3>Blog / Content</h3><div class="desc">Publish posts, news and guides &mdash; each becomes a page on your site, great for SEO and returning customers. Atlas.io can also draft one from chat.</div>'+_webPostsHtml()+'</div>'
@@ -10782,7 +10850,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,
+    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,

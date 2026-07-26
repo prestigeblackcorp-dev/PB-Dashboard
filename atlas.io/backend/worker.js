@@ -9008,6 +9008,38 @@ function _servedNav(prof, seob, active) {
     return '<nav aria-label="Site" style="display:flex;gap:20px;align-items:center;overflow-x:auto;padding:10px 2px;margin-bottom:4px;border-bottom:1px solid #eee">' + links + '</nav>';
   } catch (e) { return ''; }
 }
+// Internal-link footer for the served SUB-pages (about / faq / contact / blog / custom /p/). Links EVERY published surface
+// (Home, Fleet, About-if-authored, FAQ, Contact, Blog-if-posts, and each published custom /p/ page) so a crawler landing on
+// any leaf can reach the whole site and internal-link depth stays shallow. Unlike _servedNav (which lists a custom page only
+// when its nav flag is set), the footer lists ALL published custom pages -- its job is crawl reach, not top-of-page chrome.
+// Inline-styled, uses --brand-agnostic muted greys, and fully fail-open (throw -> ''). Deliberately NOT added to the booking
+// home (_bookPageHtml) so that page stays byte-identical to before.
+function _servedFooter(prof, seob) {
+  try {
+    if (!seob) return '';
+    var pub = (prof && prof.settings && prof.settings.publicSite) || {};
+    var about = String(pub.about || '').trim();
+    var biz = String((prof && prof.name) || '');
+    var home = seob.home, base = seob.base;
+    var items = [['Home', home], ['Fleet', home + '#fleet']];
+    if (about) items.push(['About', base + '/about']);
+    items.push(['FAQ', base + '/faq']);
+    items.push(['Contact', base + '/contact']);
+    if (_blogPosts(prof).length) items.push(['Blog', base + '/blog']);
+    _customPages(prof).forEach(function (pg) {
+      if (!pg) return;
+      var _ps = slugify(String(pg.slug || pg.title));
+      if (_ps) items.push([String(pg.title), base + '/p/' + _ps]);
+    });
+    var links = items.map(function (it) {
+      return '<a href="' + esc(it[1]) + '" style="color:#555;text-decoration:none;font-size:13px;white-space:nowrap">' + esc(it[0]) + '</a>';
+    }).join('<span style="color:#ccc" aria-hidden="true"> &middot; </span>');
+    return '<footer style="margin-top:22px;padding:16px 4px 8px;border-top:1px solid #eee">'
+      + '<nav aria-label="Site links" style="display:flex;flex-wrap:wrap;gap:6px 2px;justify-content:center;align-items:center;line-height:1.9">' + links + '</nav>'
+      + (biz ? ('<div style="color:#9aa0a6;font-size:12px;margin-top:10px;text-align:center">&copy; ' + new Date().getFullYear() + ' ' + esc(biz) + '</div>') : '')
+      + '</footer>';
+  } catch (e) { return ''; }
+}
 // Resolve a published asset by the slugified form of its name (the /v/<slug> key). First match wins -> mirrors the
 // dedupe in _seoAssetAnchors/_seoAssetPages so a card, its sitemap entry, and its detail page all agree.
 function _assetBySlug(prof, slug) {
@@ -9196,7 +9228,8 @@ function _aboutPageHtml(prof, color, seob) {
     + '<div class="hd">' + esc(biz || 'About') + '</div>'
     + '<div class="card"><h1 style="margin:0 0 10px;font-size:24px">About ' + esc(biz) + '</h1>'
     + '<div style="color:#444;font-size:15px;line-height:1.7;white-space:pre-wrap">' + esc(about) + '</div>'
-    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a></div>';
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a></div>'
+    + _servedFooter(prof, seob);
   var graph = [
     { '@type': 'AboutPage', name: 'About ' + biz, url: canon, description: String(about).replace(/\s+/g, ' ').slice(0, 300), isPartOf: { '@type': 'WebSite', name: biz, url: home } },
     { '@type': 'Organization', name: biz, url: home },
@@ -9219,7 +9252,8 @@ function _faqPageHtml(prof, color, seob) {
     + '<div class="hd">' + esc(biz || 'FAQ') + '</div>'
     + '<div class="card"><h1 style="margin:0 0 6px;font-size:24px">Frequently asked questions</h1>'
     + (faqHtml || '<p class="muted">No questions yet.</p>')
-    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Book online</a></div>';
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Book online</a></div>'
+    + _servedFooter(prof, seob);
   var graph = [
     { '@type': 'FAQPage', mainEntity: faq.map(function (f) { return { '@type': 'Question', name: String(f.q).slice(0, 200), acceptedAnswer: { '@type': 'Answer', text: String(f.a).slice(0, 600) } }; }) },
     { '@type': 'BreadcrumbList', itemListElement: [
@@ -9248,7 +9282,8 @@ function _contactPageHtml(prof, color, seob) {
     + '<div class="card"><h1 style="margin:0 0 8px;font-size:24px">Contact ' + esc(biz) + '</h1>'
     + '<p class="muted" style="font-size:14.5px">The fastest way to reserve is right here — booking is online and confirmed in minutes.</p>'
     + (rows ? ('<div style="margin:6px 0 4px">' + rows + '</div>') : '')
-    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Start your booking</a></div>';
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Start your booking</a></div>'
+    + _servedFooter(prof, seob);
   var org = { '@type': 'Organization', name: biz, url: home };
   if (lc.phone) org.contactPoint = { '@type': 'ContactPoint', telephone: lc.phone, contactType: 'reservations' };
   var logo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
@@ -9286,7 +9321,8 @@ function _blogIndexHtml(prof, color, seob) {
     + '<div class="hd">' + esc(biz || 'Blog') + '</div>'
     + '<div class="card"><h1 style="margin:0 0 6px;font-size:24px">News &amp; guides</h1>'
     + (rows || '<p class="muted">No posts yet.</p>')
-    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a></div>';
+    + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a></div>'
+    + _servedFooter(prof, seob);
   var logo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
   var org = { '@type': 'Organization', name: biz, url: home };
   if (logo) org.logo = logo;
@@ -9321,7 +9357,8 @@ function _blogPostHtml(prof, color, seob, post) {
     + (dt ? ('<div class="muted" style="margin-bottom:12px;font-size:12.5px">' + esc(dt) + '</div>') : '')
     + '<div style="color:#444;font-size:15px;line-height:1.7;white-space:pre-wrap">' + esc(bodyTxt) + '</div>'
     + '<a class="btn" href="' + esc(home + '#app') + '" style="max-width:220px">Check availability</a>'
-    + '<div style="margin-top:12px"><a href="' + esc(seob.base + '/blog') + '" style="color:var(--brand);text-decoration:none;font-size:13.5px">&lsaquo; Back to all posts</a></div></div>';
+    + '<div style="margin-top:12px"><a href="' + esc(seob.base + '/blog') + '" style="color:var(--brand);text-decoration:none;font-size:13.5px">&lsaquo; Back to all posts</a></div></div>'
+    + _servedFooter(prof, seob);
   var logo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
   var org = { '@type': 'Organization', name: biz, url: home };
   if (logo) org.logo = logo;
@@ -9575,7 +9612,8 @@ function _customPageHtml(prof, color, seob, page) {
     + '<div class="hd">' + esc(biz || titleTxt) + '</div>'
     + '<h1 class="pg-title" style="margin:16px 2px 4px;font-size:26px">' + esc(titleTxt) + '</h1>'
     + rendered.join('')
-    + '<div style="margin-top:16px;padding:0 2px"><a href="' + esc(home + '#app') + '" style="color:var(--brand);text-decoration:none;font-size:13.5px">Check availability &rsaquo;</a></div>';
+    + '<div style="margin-top:16px;padding:0 2px"><a href="' + esc(home + '#app') + '" style="color:var(--brand);text-decoration:none;font-size:13.5px">Check availability &rsaquo;</a></div>'
+    + _servedFooter(prof, seob);
   var desc = String((page && page.seoDesc) || '').replace(/\s+/g, ' ').trim();
   if (!desc) {
     for (var i = 0; i < sections.length; i++) {
@@ -9816,7 +9854,25 @@ function _bookPageHtml(slug, color, seo, prof, reviews, seob) {
   var _contact = _sec('showContact') ? '<div class="mkt-sec" style="text-align:center"><h2>Ready to book?</h2><div class="mkt-sub" style="margin-bottom:0">Reserve online in minutes.</div><a class="mkt-cta" href="#app">Start your booking</a></div>' : '';
   // LEGAL FOOTER -- copyright line (only when the marketing site is on; the Atlas badge below stays separate/unchanged).
   var _footer = _anyOn ? ('<div class="mkt-foot">© ' + new Date().getFullYear() + ' ' + esc(_biz) + '</div>') : '';
-  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + _mktStyle + ((_anyOn && seob) ? _servedNav(prof, seob, 'home') : '') + ((seo && seo.noscript) || '') + _hero + _fleet + _aboutSec + _reviewsSec + '<div id="app" class="card">Loading&hellip;</div>' + _contact + _footer + _atlasBadge;
+  // FAQ -- AUTHORED FAQ ONLY (never the grounded/derived FAQ). Gated purely on _seoFaq(prof).length, so a tenant who never
+  // wrote FAQ keeps a BYTE-IDENTICAL home page (this whole string stays '' -> the body concatenation below is unchanged).
+  // Accordion via <details>/<summary> (first item open). Fully inline-styled so it renders correctly even when the
+  // marketing sections are off (i.e. _mktStyle/_mktCss absent). The matching FAQPage JSON-LD node is ALREADY emitted by
+  // _bookHeadTags on the SAME _seoFaq(prof).length condition -> the visible accordion and the schema node stay in lockstep.
+  var _faqSec = '';
+  try {
+    var _faqA = _seoFaq(prof);
+    if (_faqA && _faqA.length) {
+      _faqSec = '<div class="mkt-sec" id="faq" style="background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:18px;margin-top:14px"><h2 style="margin:0 0 4px;font-size:19px">Frequently asked questions</h2>'
+        + _faqA.map(function (f, i) {
+            return '<details' + (i === 0 ? ' open' : '') + ' style="border-top:1px solid #eee">'
+              + '<summary style="font-weight:700;cursor:pointer;padding:12px 0;font-size:15px;list-style:none">' + esc(f.q) + '</summary>'
+              + '<div style="color:#555;font-size:14px;line-height:1.55;padding:0 0 12px;white-space:pre-wrap">' + esc(f.a) + '</div></details>';
+          }).join('')
+        + '</div>';
+    }
+  } catch (e) { _faqSec = ''; }
+  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + _mktStyle + ((_anyOn && seob) ? _servedNav(prof, seob, 'home') : '') + ((seo && seo.noscript) || '') + _hero + _fleet + _aboutSec + _reviewsSec + _faqSec + '<div id="app" class="card">Loading&hellip;</div>' + _contact + _footer + _atlasBadge;
   var js = `
 var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
