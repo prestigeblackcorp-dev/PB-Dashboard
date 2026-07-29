@@ -627,12 +627,15 @@ function _fetchTimeout(url, opts, ms) {
 // Sonnet-5 runs adaptive thinking by default, so content[0] can be a THINKING block and content[0].text is undefined.
 // Concatenate every TEXT block instead of trusting index 0, and disable thinking on these short latency-sensitive calls.
 function _claudeText(j) { try { return (j && Array.isArray(j.content)) ? j.content.filter(function (b) { return b && b.type === 'text' && b.text; }).map(function (b) { return b.text; }).join('').trim() : ''; } catch (e) { return ''; } }
+// The Claude model the council uses. Overridable via the ANTHROPIC_MODEL secret so an account that lacks access to the
+// default (a 404 not_found) can point at a model it does have -- no code change needed. Default is a current model.
+function _claudeModel(env) { try { return (env && env.ANTHROPIC_MODEL) ? String(env.ANTHROPIC_MODEL) : 'claude-sonnet-5'; } catch (e) { return 'claude-sonnet-5'; } }
 async function askClaude(key, q, context, _mEnv, _mCtx) {
   try {
     const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 700, thinking: { type: 'disabled' },
+      body: JSON.stringify({ model: _claudeModel(_mEnv), max_tokens: 700, thinking: { type: 'disabled' },
         system: AIO_SAFETY_PROMPT + _aioCtx(context), messages: [{ role: 'user', content: q }] })
     }, 12000);
     const j = await r.json().catch(() => ({}));
@@ -645,7 +648,7 @@ async function askClaudeSchedule(key, system, userMsg, _mEnv, _mCtx, source) {  
     const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 3000, thinking: { type: 'disabled' }, system: system, messages: [{ role: 'user', content: userMsg }] })
+      body: JSON.stringify({ model: _claudeModel(_mEnv), max_tokens: 3000, thinking: { type: 'disabled' }, system: system, messages: [{ role: 'user', content: userMsg }] })
     }, 15000);
     const j = await r.json().catch(() => ({}));
     if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'claude-sonnet-5', _aiUsageFrom('anthropic', j), source);   // #286/#286f: never affects the line below -- source distinguishes /api/schedule ('schedule') from /api/aio/plan ('aio_plan')
@@ -679,6 +682,40 @@ async function askGemini(key, q, context, _mEnv, _mCtx) {
   } catch (e) { return ''; }
 }
 
+// Owner diagnostic: ping each configured AI provider once and report the REAL status/error, so a silent council failure
+// (key set but no answer -- exactly the "only Gemini responds" symptom) becomes visible: nokey / 401 / 404 / 400 / ok.
+// Never throws; returns a plain array. Uses a tiny max_tokens so it is nearly free.
+async function _aiSelfTest(env) {
+  var out = [];
+  var a = { provider: 'anthropic', keyPresent: !!env.ANTHROPIC_KEY, model: _claudeModel(env) };
+  if (env.ANTHROPIC_KEY) {
+    try {
+      var ra = await _fetchTimeout('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model: _claudeModel(env), max_tokens: 16, thinking: { type: 'disabled' }, messages: [{ role: 'user', content: 'ping' }] }) }, 12000);
+      a.status = ra.status; a.ok = ra.ok; var ja = await ra.json().catch(function () { return {}; });
+      if (!ra.ok) a.error = String((ja && ja.error && ((ja.error.type || 'error') + ': ' + (ja.error.message || ''))) || ('HTTP ' + ra.status)).slice(0, 300);
+    } catch (e) { a.ok = false; a.error = 'network: ' + String(e).slice(0, 200); }
+  }
+  out.push(a);
+  var o = { provider: 'openai', keyPresent: !!env.OPENAI_KEY, model: 'gpt-4o' };
+  if (env.OPENAI_KEY) {
+    try {
+      var ro = await _fetchTimeout('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'authorization': 'Bearer ' + env.OPENAI_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-4o', max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] }) }, 12000);
+      o.status = ro.status; o.ok = ro.ok; var jo = await ro.json().catch(function () { return {}; });
+      if (!ro.ok) o.error = String((jo && jo.error && (((jo.error.type || jo.error.code) || 'error') + ': ' + (jo.error.message || ''))) || ('HTTP ' + ro.status)).slice(0, 300);
+    } catch (e) { o.ok = false; o.error = 'network: ' + String(e).slice(0, 200); }
+  }
+  out.push(o);
+  var g = { provider: 'gemini', keyPresent: !!env.GEMINI_KEY, model: 'gemini-3.6-flash' };
+  if (env.GEMINI_KEY) {
+    try {
+      var rg = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: 'ping' }] }] }) }, 12000);
+      g.status = rg.status; g.ok = rg.ok; var jg = await rg.json().catch(function () { return {}; });
+      if (!rg.ok) g.error = String((jg && jg.error && ((jg.error.status || 'error') + ': ' + (jg.error.message || ''))) || ('HTTP ' + rg.status)).slice(0, 300);
+    } catch (e) { g.ok = false; g.error = 'network: ' + String(e).slice(0, 200); }
+  }
+  out.push(g);
+  return out;
+}
 // ---- Web-grounded RESEARCH askers: each model searches the web ITS OWN way (Anthropic web_search / OpenAI web_search /
 // Google Search grounding), so the council pulls DIFFERENT sources. A synthesis pass then reconciles them. No Brave key
 // needed -- this uses the AI provider keys you already set. Each returns {name,text,sources[]} or null on any failure. ----
@@ -686,7 +723,7 @@ async function _researchClaude(key, prompt, _mEnv, _mCtx, source) {
   try {
     const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1500, thinking: { type: 'disabled' }, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }], messages: [{ role: 'user', content: prompt }] })
+      body: JSON.stringify({ model: _claudeModel(_mEnv), max_tokens: 1500, thinking: { type: 'disabled' }, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }], messages: [{ role: 'user', content: prompt }] })
     }, 28000);
     const j = await r.json().catch(() => ({})); let src = [];
     try { (j.content || []).forEach(function (b) { if (b && b.type === 'web_search_tool_result' && Array.isArray(b.content)) b.content.forEach(function (x) { if (x && x.url) src.push({ title: String(x.title || '').slice(0, 160), url: x.url }); }); }); } catch (e) {}
@@ -879,7 +916,7 @@ async function _hqAsk(env, system, user, maxTok, opts, ectx) {
   // when the caller did not thread `ectx` through -- most of _hqAsk's ~17 call sites don't, see the report -- still fires, never blocks).
   var fleet = [
     { p: 'anthropic', has: !!env.ANTHROPIC_KEY, call: async function () {
-      const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: mt, thinking: { type: 'disabled' }, system: system, messages: [{ role: 'user', content: user }] }) }, 22000);
+      const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model: _claudeModel(env), max_tokens: mt, thinking: { type: 'disabled' }, system: system, messages: [{ role: 'user', content: user }] }) }, 22000);
       if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'claude-sonnet-5', _aiUsageFrom('anthropic', j), opts.source); return _claudeText(j); } },
     { p: 'openai', has: !!env.OPENAI_KEY, call: async function () {
       const r = await _fetchTimeout('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'authorization': 'Bearer ' + env.OPENAI_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-4o', max_tokens: mt, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) }, 22000);
@@ -5585,6 +5622,14 @@ function doReset(){
           const cr = await _counselCompute(env, { force: true });
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.counsel.run', { findings: (cr && cr.findings) || 0 });
           return json({ ok: true, ran: cr });
+        }
+
+        // Owner AI self-test: pings each configured provider and returns the REAL per-provider status (nokey/401/404/400/ok).
+        // Works regardless of the AI-Command-Center flag so a silent "only Gemini answers" council can be diagnosed instantly.
+        if (path === '/api/admin/ai-selftest' && method === 'GET') {
+          const _st = await _aiSelfTest(env);
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.ai.selftest', { r: _st.map(function (x) { return x.provider + ':' + (x.ok ? 'ok' : (x.keyPresent ? ('err' + (x.status || '')) : 'nokey')); }).join(',') });
+          return json({ ok: true, providers: _st });
         }
 
         // ---- AI Command Center: intelligence routes. Flag-gated OFF; honest {ai:false} with no provider key. ----
