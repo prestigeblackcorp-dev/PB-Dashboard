@@ -1911,7 +1911,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
