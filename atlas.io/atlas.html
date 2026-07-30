@@ -2157,9 +2157,10 @@ const Atlas = (function(){
     ['instantPatch','Apply owner hot-fixes without a reload (coming soon)'],
     ['aiActions','Atlas.io can make changes for you (preview + one-tap undo)'],
     ['aiSiteCopy','Atlas.io writes your website copy with live AI (falls back to the built-in template)'],
-    ['livePoll','Live dashboard &mdash; new website bookings appear on their own, no manual refresh']
+    ['livePoll','Live dashboard &mdash; new website bookings appear on their own, no manual refresh'],
+    ['dreaming','Dreaming &mdash; while you are away, Atlas studies YOUR numbers for gaps + plays (free: 0 credits/day, 0/week)']
   ];
-  function _flags(){ if(!S.flags)S.flags={}; if(S.flags.aiActions==null) S.flags.aiActions=true; if(S.flags.aiSiteCopy==null) S.flags.aiSiteCopy=true; return S.flags; }   // aiActions defaults ON: the edit engine is RBAC-gated + preview-before-apply on money + fully undoable; owner can still toggle it off in Settings.
+  function _flags(){ if(!S.flags)S.flags={}; if(S.flags.aiActions==null) S.flags.aiActions=true; if(S.flags.aiSiteCopy==null) S.flags.aiSiteCopy=true; if(S.flags.dreaming==null) S.flags.dreaming=true; return S.flags; }   // aiActions defaults ON: the edit engine is RBAC-gated + preview-before-apply on money + fully undoable; owner can still toggle it off in Settings.
   /* ---- Team roles & granular, enforced permissions ---- */
   // Modules = which tabs a worker can SEE. Caps = what they can DO. Every action re-checks a cap (client guard;
   // the real backend must mirror the same check server-side so a hidden button can't be forced).
@@ -7353,12 +7354,12 @@ const Atlas = (function(){
     var models=[{n:'Claude',c:_AIO_COLORS.Claude,a:t.claude},{n:'GPT-4o',c:_AIO_COLORS['GPT-4o'],a:t.gpt},{n:'Gemini',c:_AIO_COLORS.Gemini,a:t.gemini}];
     var synth='<div class="cx-synth"><div class="cx-synth__h">The council\u2019s answer <span class="cx-agree">3 models weighed in</span></div>'+base+'</div>';
     var note='<div class="cx-note">Preview of the council &mdash; these are example perspectives showing how it works. Live Claude + GPT + Gemini synthesis is included with your plan and runs on your Atlas.io credits &mdash; no API keys to set up.</div>';
-    aioMsg('bot', _councilCardsHtml(models)+synth+note); _aioArmFromText(base);
+    aioMsg('bot', _councilCardsHtml(models)+synth+note); _aioArmFromText(base); _aioTurnPush('a', base);
   }
   function _aioCouncil(q){
     aioMsg('bot','<div class="cx-think"><span class="cx-dot"></span><span class="cx-dot"></span><span class="cx-dot"></span> Convening the council &mdash; Claude, GPT-4o and Gemini are weighing in\u2026</div>');
     // Try the LIVE three-model council; on no-backend / no-keys / any error, fall back to the built-in preview.
-    _api('/api/aio',{method:'POST',body:{q:String(q),context:_aioBizContext()}}).then(function(res){
+    _api('/api/aio',{method:'POST',body:{q:String(q),context:_aioChatContext()}}).then(function(res){
       var j=res&&res.json;
       if(j && typeof j.credits==='number'){ try{ if(!S.credits)S.credits={}; S.credits.bal=j.credits; save(); var _cc=document.getElementById('aioCreditCount'); if(_cc)_cc.textContent=j.credits.toLocaleString(); }catch(e){} }   // adopt the server-authoritative credit balance
       if(j && j.error==='out_of_credits'){ _aioDropThink(); aioMsg('bot','You are out of Atlas.io credits for this week. Your free '+_curTier().credits.toLocaleString()+' refill Monday &mdash; or grab more now.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openCredits()">Buy credits</button>'); return; }
@@ -7367,6 +7368,7 @@ const Atlas = (function(){
         var synthTxt=esc(String(j.synthesis||'')).replace(/\n/g,'<br>')||models[0].a;
         var synth='<div class="cx-synth"><div class="cx-synth__h">The council\u2019s answer <span class="cx-agree">'+models.length+' model'+(models.length===1?'':'s')+' weighed in</span></div>'+synthTxt+'</div>';
         _aioDropThink(); aioMsg('bot', _councilCardsHtml(models)+synth); _aioArmFromText(String(j.synthesis||''));
+        try{ _aioTurnPush('a', String(j.synthesis||'')); }catch(e){}   // record the council's answer so the next turn stays on-thread
         return;
       }
       _councilRenderPreview(q);
@@ -7375,13 +7377,15 @@ const Atlas = (function(){
   function buildAio(){
     try{ _aioUndoBoot(); }catch(e){}   // restore the persisted undo stack once per tenant session
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
-    document.getElementById('aioBody').innerHTML='';
+    document.getElementById('aioBody').innerHTML=''; _aioTurns=[];
     aioMsg('bot',`Hi ${_ownerName()} \u{1F44B} I'm Atlas.io. I work from your live ${S.fleet.label.toLowerCase()} setup and money rules. You have <b>${_credits().toLocaleString()}</b> credits this week \u2014 ask me anything, or tap a suggestion.`);
     // Idle-time learning: open with the CURRENT researched finding for the owner's market (rotates over time).
     try{
       if(!_aioHasBiz() && !(S.setup&&S.setup.done)){
         aioMsg('bot','Want me to <b>finish building your dashboard</b>? I will use what you told me, ask a couple of quick things and grab a photo of your '+esc(S.fleet.noun)+' if you have one &mdash; then it is all yours to edit.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.setupAssistant()">Finish my dashboard</button>');
         _aioOffer('Great - let me finish your dashboard.', function(){ setupAssistant(); });
+      } else if(typeof _flags==='function' && !_flags().dreaming){
+        aioMsg('bot','\u{1F4A4} Dreaming is <b>off</b> &mdash; I am not studying your numbers in the background. It is free (0 credits) &mdash; turn it back on anytime in Settings &gt; Upgrades.');
       } else {
         var _dh=aioMsg('bot','\u{1F4AD} While you were away, I was <b>dreaming</b> about your '+esc(S.fleet.noun)+' business &mdash; combing your numbers for gaps and opportunities&hellip;');
         _dreamFetch(function(ins){ var f=(ins&&ins.findings&&ins.findings[0])||null, html;
@@ -7408,6 +7412,16 @@ const Atlas = (function(){
     if(_isDemoTenant()){ aioMsg('me',q); aioMsg('bot','You are exploring the demo &mdash; <b>start your free 7-day trial</b> to chat with Atlas.io and put its dreaming to work for your business.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.goAuth(\'signup\')">Start free</button>'); return true; }
     if(!_isActive() && _trialDaysLeft()<=0 && !S.card){ aioMsg('me',q); aioMsg('bot','Your free trial has ended. <b>Add a card</b> to keep Atlas.io working for you &mdash; it autopays your plan, and you can cancel anytime.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openPlans()">Add a card</button>'); return true; }
     return false; }
+  // ===== Conversation coherence: a short rolling transcript so the council + planner stay IN TUNE across turns.
+  // Without it every message was answered standalone (biz-context only), so a follow-up like "what about the second
+  // one?" had no idea what "the first one" was and could drift off-thread. Bounded HARD (last 8 turns, 300 chars
+  // each, history string capped ~1400) so it can never bloat the request -- and it does NOT change the credit math
+  // (council still bills N providers, plan still 1); it only makes each metered call smarter. Owner's own words (not
+  // a trust boundary), but tag-stripped + whitespace-collapsed so it stays compact + predictable. =====
+  var _aioTurns=[];
+  function _aioTurnPush(role,text){ try{ var t=String(text==null?'':text).replace(/<[^>]*>/g,' ').replace(/&[a-z]+;/gi,' ').replace(/\s+/g,' ').trim(); if(!t) return; _aioTurns.push({r:(role==='a'?'a':'u'),t:t.slice(0,300)}); if(_aioTurns.length>8) _aioTurns=_aioTurns.slice(-8); }catch(e){} }
+  function _aioHistoryStr(){ try{ if(_aioTurns.length<2) return ''; var lines=_aioTurns.slice(-6).map(function(x){ return (x.r==='a'?'Atlas.io':'Owner')+': '+x.t; }); var s=lines.join('\n'); return s.length>1400 ? s.slice(s.length-1400) : s; }catch(e){ return ''; } }
+  function _aioChatContext(){ var biz=''; try{ biz=_aioBizContext(); }catch(e){} var h=_aioHistoryStr(); return h ? (biz+'\n\nRecent conversation (most recent last) -- answer the LATEST message and stay on THIS thread; do not change the subject:\n'+h) : biz; }
   function aioAsk(q){
     if(_aioGate(q)) return;
     aioMsg('me',q);
@@ -7435,9 +7449,10 @@ const Atlas = (function(){
       return;
     }
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
+    _aioTurnPush('u',q);   // record the owner's message so the council/planner stay in tune across turns
     if(_wantsPlan){ _aioPlan(q); return; }
     if(_aioCouncilOn){ _aioCouncil(q); return; }
-    setTimeout(function(){ var _r=aioReply(q); aioMsg('bot',_r); _aioArmFromText(_r); },450);
+    setTimeout(function(){ var _r=aioReply(q); aioMsg('bot',_r); _aioArmFromText(_r); _aioTurnPush('a',_r); },450);
   }
   // Any reply that ends in an offer ("Want me to ...?") arms a pending action so a plain "yes" runs the right thing.
   function _aioArmFromText(t){
@@ -8233,14 +8248,14 @@ const Atlas = (function(){
   function _aioPlan(q){
     if(!(ATLAS_BACKEND && _apiCsrf)){ _aioPlanFallback(q); return; }
     aioMsg('bot','<div class="cx-think"><span class="cx-dot"></span><span class="cx-dot"></span><span class="cx-dot"></span> Working on it&hellip;</div>');
-    _api('/api/aio/plan',{method:'POST',body:{q:String(q),context:_aioBizContext(),allowed:_aioManifest()}}).then(function(res){
+    _api('/api/aio/plan',{method:'POST',body:{q:String(q),context:_aioChatContext(),allowed:_aioManifest()}}).then(function(res){
       var j=res&&res.json;
       _aioDropThink();
       if(j && typeof j.credits==='number'){ try{ if(!S.credits)S.credits={}; S.credits.bal=j.credits; save(); var _cc=document.getElementById('aioCreditCount'); if(_cc)_cc.textContent=j.credits.toLocaleString(); }catch(e){} }
       if(j && j.error==='out_of_credits'){ aioMsg('bot','You are out of Atlas.io credits for this week. Your free '+_curTier().credits.toLocaleString()+' refill Monday &mdash; or grab more now.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openCredits()">Buy credits</button>'); return; }
       if(res.status>=200 && res.status<300 && j && j.live===true){
         if(j.ok===false){ aioMsg('bot', esc(j.error||'I could not read a plan from that \u2014 try rephrasing.')); return; }
-        if(j.reply) aioMsg('bot', esc(j.reply));
+        if(j.reply){ aioMsg('bot', esc(j.reply)); _aioTurnPush('a', j.reply); }
         if(j.actions && j.actions.length) _aioProposeActions(j.actions);
         if(j.clarify && j.clarify.length) aioMsg('bot', j.clarify.map(function(c){return esc(c);}).join('<br>'));
         if(j.unsupported && j.unsupported.length) aioMsg('bot', 'From chat I cannot yet '+esc(j.unsupported[0])+' \u2014 you can still do that from the right tab.');
@@ -8517,7 +8532,8 @@ const Atlas = (function(){
   // Dreaming has BEGUN: stamp a start time on first app load so the panel can show it's been running + accumulating.
   // Real "dreaming": pull the overnight insights the worker computed from THIS owner's own data (idle assets, revenue trend, unpaid, overdue).
   var _dreamIns=null, _dreamInsTried=false;
-  function _dreamFetch(cb){ if(_dreamInsTried){ cb(_dreamIns); return; }
+  function _dreamFetch(cb){ try{ if(typeof _flags==='function' && !_flags().dreaming){ _dreamIns=null; cb(null); return; } }catch(e){}   // dreaming off -> never fetch (respects the owner toggle; it is free either way)
+    if(_dreamInsTried){ cb(_dreamIns); return; }
     if(typeof ATLAS_BACKEND==='undefined' || !ATLAS_BACKEND){ _dreamInsTried=true; cb(null); return; }
     try{ _api('/api/aio/insights').then(function(res){ _dreamInsTried=true; var j=res&&res.json; _dreamIns=(j&&j.ok&&j.insights)?j.insights:null; cb(_dreamIns); }).catch(function(){ _dreamInsTried=true; cb(null); }); }catch(e){ _dreamInsTried=true; cb(null); } }
   function _dreamFindHtml(ins){ var fs=(ins&&ins.findings)||[]; if(!fs.length) return ''; return fs.slice(0,4).map(function(f){ return '<div class="dream-row"><span class="dream-row__i">'+_notifIcon('spark')+'</span><div><b>'+esc(f.title)+'</b><span>'+esc(f.detail)+'</span></div></div>'; }).join(''); }
@@ -8536,13 +8552,15 @@ const Atlas = (function(){
     var connRow='<div class="dream-conns">'+['facebook','instagram','google'].map(function(ch){ var cc=conn[ch], on=!!cc, hnd=(cc&&cc.handle)?cc.handle:''; return '<button class="dream-conn'+(on?' on':'')+'" onclick="Atlas.dreamConnect(\''+ch+'\')" title="'+(on?'Edit or remove':'Link account')+'">'+_chIcon(ch)+_chName(ch)+(on?(' &#10003;'+(hnd?(' <span style="opacity:.7">'+esc(hnd)+'</span>'):'')):'')+'</button>'; }).join('')+'</div>';
     openModal('<div class="modal__head"><h3>Atlas.io has been dreaming</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="dream-lead">While your account was quiet, I went hunting for ways to grow your <b>'+one+'</b> business around '+city+' and out-work your competition. Here is what I dreamed up &mdash; all editable, nothing goes out without your yes.</div>'
-      +'<div class="dream-status"><span class="dream-dot"></span>Dreaming is <b>on</b> &mdash; running '+_dreamSinceTxt()+'. I comb your real numbers every night, so you wake up to fresh findings.</div>'
+      +'<div class="dream-status"><span class="dream-dot"></span>Dreaming is <b>'+(_flags().dreaming?'on':'off')+'</b>'+(_flags().dreaming?(' &mdash; running '+_dreamSinceTxt()+'. I comb your real numbers every night, so you wake up to fresh findings.'):' &mdash; turn it on to get plays from your real numbers.')+' <b style="color:var(--brand-700)">Free: 0 credits/day, 0/week</b> &mdash; it runs on your own data, never the paid AI council.<button class="btn btn--ghost btn--sm" style="margin-left:8px" onclick="Atlas.dreamToggle('+(_flags().dreaming?'false':'true')+')">Turn '+(_flags().dreaming?'off':'on')+'</button></div>'
       +'<div class="dream-sec">What I found in your numbers</div><div id="dreamReal"><div class="dream-hint">Reading your latest numbers&hellip;</div></div>'
       +'<div class="dream-sec">Campaigns I would run</div><div class="dream-hint">Built from the gaps above. I create + optimize; you approve every budget. Connect an ad account to launch.</div>'+campHtml
       +connRow
       +'<div class="dream-sec">People &amp; partners to connect with</div><div class="dream-hint">Warm channels that can push your '+esc(S.fleet.nouns)+' to more clients &mdash; brokers, planners, local businesses. I draft it; you approve every send.</div>'+partHtml
       +'</div>');
     _dreamFetch(function(ins){ var _re=document.getElementById('dreamReal'); if(!_re)return; var _h=_dreamFindHtml(ins); _re.innerHTML=_h||'<div class="dream-hint">Add a booking or two and I will surface gaps specific to your real numbers.</div>'; }); }
+  // Owner control + honest cost: Dreaming is FREE -- deterministic insights from the tenant's OWN D1 data via /api/aio/insights (no LLM, no credits, ever). This toggles the same owner-flag as Settings > Upgrades, then re-renders the panel so the on/off state + the cost line update in place.
+  function dreamToggle(on){ try{ toggleFlag('dreaming', on); }catch(e){} try{ closeModal(); }catch(e){} openDreaming(); }
   // Ad channels: real OAuth needs a backend, so we honestly LINK an ad-account handle/ID (persist, edit, remove) instead of faking a live integration. [FLAG: true Meta/Google OAuth requires server work.]
   function dreamConnect(ch){ var c=_dreamConn(), cur=(c[ch]&&c[ch].handle)?c[ch].handle:'';
     openModal('<div class="modal__head"><h3>'+(cur?'Edit':'Link')+' your '+_chName(ch)+' ad account</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -11088,7 +11106,7 @@ const Atlas = (function(){
 
   return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
-    openDreaming,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
+    openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
