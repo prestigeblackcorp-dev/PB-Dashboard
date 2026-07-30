@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30f';
+const ATLAS_BUILD = '2026.07.30g';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -6846,6 +6846,51 @@ function doReset(){
         if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to manage the team.');   // teamManage, NOT settings: a manager has the Settings module but is configured WITHOUT team management (client preset caps.teamManage=false), so gating on 'settings' over-granted team admin. Owner-only unless a custom role is explicitly granted teamManage.
         const rows = (await env.DB.prepare("SELECT id,email,role,caps,status,created_at,last_login FROM users WHERE tenant_id=? ORDER BY (role='owner') DESC, created_at").bind(ctx.tenant_id).all()).results || [];
         return json({ ok: true, team: rows.map(function (u) { return { id: u.id, email: u.email, role: u.role, caps: jparse(u.caps, null), status: u.status || 'active', pending: u.status === 'invited', isOwner: u.role === 'owner', self: u.id === ctx.user.id, created_at: u.created_at, last_login: u.last_login || null }; }) });
+      }
+      if (path === '/api/team/activity' && method === 'GET') {
+        // #ops: tenant-facing activity log -- the owner/team-admin can review their OWN team.*/billing.*/pay.*/tenant.* audit
+        // trail (RBAC changes, money ops, exports). Tenant-scoped (WHERE tenant_id) so it can never surface another tenant's rows.
+        if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to view team activity.');
+        await ensurePlatformSchema(env);
+        const _u = new URL(req.url);
+        const _lim = Math.min(200, Math.max(1, parseInt(_u.searchParams.get('limit') || '50', 10) || 50));
+        const _off = Math.max(0, parseInt(_u.searchParams.get('offset') || '0', 10) || 0);
+        const _rows = await env.DB.prepare('SELECT actor,action,meta,ip,at FROM audit_log WHERE tenant_id=? ORDER BY at DESC LIMIT ? OFFSET ?').bind(ctx.tenant_id, _lim, _off).all();
+        const _TEAM_ACT = /^(team\.|billing\.|pay\.|tenant\.|charge\.)/;
+        const _events = (_rows.results || []).filter(function (r) { return _TEAM_ACT.test(String(r.action || '')); }).map(function (r) { const m = jparse(r.meta, {}); return { at: r.at, actor: r.actor || '', action: r.action, ip: r.ip || '', meta: (m && typeof m === 'object') ? m : {} }; });
+        return json({ ok: true, events: _events, count: _events.length, offset: _off });
+      }
+      { const _erm = path.match(/^\/api\/customers\/([^\/]+)\/erase$/);
+        if (_erm && method === 'POST') {
+          // #ops GDPR/CCPA right-to-erasure: redact a customer's PII across the customers row, their bookings' data blob, AND the
+          // signature trail -- while KEEPING the financial record (revenue_cents/quote/paid) intact for tax/audit. customersEdit-gated
+          // + CSRF; idempotent (skips already-erased bookings); booking writes go through the CAS _bkPatch so a racing webhook is safe.
+          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
+          if (!_can(ctx, 'customersEdit')) return err(403, 'You do not have permission to erase a customer.');
+          await ensurePlatformSchema(env);
+          const _cid = _erm[1];
+          const _crow = await env.DB.prepare('SELECT id FROM customers WHERE id=? AND tenant_id=?').bind(_cid, ctx.tenant_id).first();
+          if (!_crow) return err(404, 'Customer not found.');
+          try { await env.DB.prepare("UPDATE customers SET name='[erased]', email='', phone='', data=? WHERE id=? AND tenant_id=?").bind(JSON.stringify({ erased: true, erasedAt: Date.now() }), _cid, ctx.tenant_id).run(); } catch (e) {}
+          const _bks = ((await env.DB.prepare('SELECT id FROM bookings WHERE tenant_id=? AND customer_id=? LIMIT 5000').bind(ctx.tenant_id, _cid).all()).results) || [];
+          let _n = 0;
+          for (const _bk of _bks) {
+            try {
+              const _ok = await _bkPatch(env, _bk.id, ctx.tenant_id, function (fd) {
+                if (fd._erased) return false;   // idempotent: already redacted
+                fd.cust = '[erased]'; fd.custEmail = ''; fd.custPhone = '';
+                if (fd.customer != null) fd.customer = '[erased]'; if (fd.custName != null) fd.custName = '[erased]';
+                if (fd.portal && typeof fd.portal === 'object') { fd.portal.email = ''; if (fd.portal.signerName != null) fd.portal.signerName = '[erased]'; }
+                fd._erased = true; fd._t = Date.now();
+              });
+              if (_ok) _n++;
+              try { await env.DB.prepare("UPDATE signatures SET signer_name='[erased]', ip='', ua='' WHERE tenant_id=? AND booking_id=?").bind(ctx.tenant_id, _bk.id).run(); } catch (e) {}
+            } catch (e) {}
+          }
+          await audit(env, ctx, req, 'tenant.customer_erase', { customer: _cid, bookings: _n });
+          return json({ ok: true, erased: true, customer: _cid, bookings_redacted: _n });
+        }
       }
       if (path === '/api/team/invite' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
