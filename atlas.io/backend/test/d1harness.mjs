@@ -6,6 +6,7 @@
 // Run: node --experimental-sqlite test/d1harness.mjs        (needs Node >= 22.5 for node:sqlite)
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
@@ -139,6 +140,40 @@ __resetSchemaReady();
 env.DB._db.exec("UPDATE platform_config SET v='STALE' WHERE k='_schema_ver'");
 await ensurePlatformSchema(env);   // version mismatch -> RE-RUN -> table recreated (a schema change auto-invalidates)
 ok('version-gate RE-RUNS on version mismatch (table recreated -> auto-invalidation works)', !!env.DB._db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='platform_feedback'").get());
+
+// ---- MONEY PATH (real SQLite): a signature-verified Stripe webhook credits revenue correctly, and a dual-fire / replay is
+// idempotent (never double-counts). This is the exact webhook CAS + revenue math the regex mocks (run()->{changes:1}) can't exercise.
+{
+  const envP = makeEnv(); await ensurePlatformSchema(envP);
+  envP.STRIPE_WEBHOOK_SECRET = 'whsec_harness';
+  const _realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.resolve({ ok: false, status: 0, headers: { get: () => null }, text: async () => '', json: async () => ({}) });   // stub network (receipt email) so no throw/real request
+  await envP.DB.prepare("INSERT INTO tenants (id,name,created_at,updated_at) VALUES (?,?,?,?)").bind('TENP', 'Pay Co', 1, 1).run();
+  // a confirmed booking carrying a G5 cash-ESTIMATE (revenue_cents == quote total, no prior online payment)
+  await envP.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKP', 'TENP', 'C', 'A', 1, 2, 'confirmed', 50000, JSON.stringify({ quote: { totalCents: 50000 }, paid: {} }), 1, 1000).run();
+  const evt = { id: 'evt_pay1', type: 'payment_intent.succeeded', data: { object: { id: 'pi_h1', object: 'payment_intent', amount: 50000, payment_intent: 'pi_h1', metadata: { booking: 'BKP', tenant: 'TENP', kind: 'reserve' } } } };
+  const body = JSON.stringify(evt);
+  const ts = Math.floor(Date.now() / 1000);
+  const mkSig = () => 't=' + ts + ',v1=' + createHmac('sha256', 'whsec_harness').update(ts + '.' + body).digest('hex');
+  // (a) first delivery -> credits the reserve, settles the G5 estimate (REPLACE not stack): revenue stays 50000
+  const rp = await worker.fetch(mkReq('POST', '/api/stripe/webhook', { headers: { 'stripe-signature': mkSig() }, body: body }), envP, ctx);
+  const jp = await rp.json();
+  const row1 = envP.DB._db.prepare("SELECT revenue_cents,data FROM bookings WHERE id='BKP'").get();
+  const d1 = JSON.parse(row1.data);
+  ok('money: signature-verified webhook accepted (200)', rp.status === 200 && jp && jp.ok !== false, 'status=' + rp.status + ' ' + JSON.stringify(jp).slice(0, 80));
+  ok('money: reserve recorded in d.paid (real DB write)', !!(d1.paid && d1.paid.reserve && d1.paid.reserve.amountCents === 50000), JSON.stringify(d1.paid));
+  ok('money: revenue settled to 50000 (G5 estimate REPLACED, not stacked to 100000)', Number(row1.revenue_cents) === 50000, 'revenue_cents=' + row1.revenue_cents);
+  // (b) DUAL-FIRE / replay of the SAME event -> idempotent: revenue must NOT double
+  const rp2 = await worker.fetch(mkReq('POST', '/api/stripe/webhook', { headers: { 'stripe-signature': mkSig() }, body: body }), envP, ctx);
+  const row2 = envP.DB._db.prepare("SELECT revenue_cents FROM bookings WHERE id='BKP'").get();
+  ok('money: replayed webhook stays 200 (idempotent ACK)', rp2.status === 200, 'status=' + rp2.status);
+  ok('money: DUAL-FIRE did NOT double-count revenue (still 50000, not 100000)', Number(row2.revenue_cents) === 50000, 'revenue_cents=' + row2.revenue_cents);
+  // (c) a tampered/bad signature can never credit revenue
+  const rp3 = await worker.fetch(mkReq('POST', '/api/stripe/webhook', { headers: { 'stripe-signature': 't=' + ts + ',v1=deadbeef' }, body: body }), envP, ctx);
+  ok('money: bad Stripe signature -> 400 (unsigned event rejected)', rp3.status === 400, 'status=' + rp3.status);
+  globalThis.fetch = _realFetch;
+}
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise
 // force-logout a signed-in owner. A cookie-authenticated logout with NO CSRF token must be rejected AND must not revoke;
