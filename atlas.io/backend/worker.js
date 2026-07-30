@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30a';
+const ATLAS_BUILD = '2026.07.30b';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1756,13 +1756,14 @@ async function _totpAt(keyBytes, unixSeconds, step, digits) {
   return await _hotp(keyBytes, Math.floor(unixSeconds / (step || 30)), digits || 6);
 }
 // Accepts the current 30s step AND its immediate neighbors (clock drift), per RFC 6238. Constant-time compare per candidate.
-async function _totpMatchesWindow(keyBytes, code) {
+async function _totpMatchStep(keyBytes, code) {
   const c = String(code || '').replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(c)) return false;
+  if (!/^\d{6}$/.test(c)) return -1;
   const now = Math.floor(Date.now() / 1000);
-  for (const d of [0, -1, 1]) { if (_ctEq(await _totpAt(keyBytes, now + d * 30, 30, 6), c)) return true; }
-  return false;
+  for (const d of [0, -1, 1]) { const t = now + d * 30; if (_ctEq(await _totpAt(keyBytes, t, 30, 6), c)) return Math.floor(t / 30); }   // return the absolute 30s step so the login path can enforce single-use (anti-replay)
+  return -1;
 }
+async function _totpMatchesWindow(keyBytes, code) { return (await _totpMatchStep(keyBytes, code)) >= 0; }   // setup/confirm path keeps the simple boolean contract (no anti-replay -- first use)
 // AAD for the encrypted TOTP secret -- binds ciphertext to this exact user (see encSecret/decSecret doc above).
 function _mfaAad(uid) { return 'mfa:' + uid; }
 
@@ -1854,8 +1855,21 @@ async function _mfaCheckEmailCode(env, uid, code) {
 }
 async function _mfaCheckTotp(env, user, code) {
   if (!user.mfa_secret_enc) return false;
-  try { const b32 = await decSecret(env, user.mfa_secret_enc, _mfaAad(user.id)); return await _totpMatchesWindow(_b32decode(b32), code); }
-  catch (e) { return false; }
+  try {
+    const b32 = await decSecret(env, user.mfa_secret_enc, _mfaAad(user.id));
+    const step = await _totpMatchStep(_b32decode(b32), code);
+    if (step < 0) return false;
+    // ANTI-REPLAY: a valid TOTP stays valid for ~90s (the +/-1 drift window), so a sniffed code could be replayed. Record
+    // the highest consumed 30s step per user and refuse any code at or below it. Fail-OPEN on a KV error so a transient
+    // store outage never locks a legitimate login out -- the TOTP was already proven valid above.
+    try {
+      const _k = 'mfastep:' + user.id;
+      const _last = parseInt(await _pcfgGet(env, _k, '0'), 10) || 0;
+      if (step <= _last) return false;
+      await _pcfgSet(env, _k, String(step));
+    } catch (e) {}
+    return true;
+  } catch (e) { return false; }
 }
 async function _mfaCheckBackupCode(env, user, code) {
   try {

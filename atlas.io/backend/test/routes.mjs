@@ -528,10 +528,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
   j = await r.json();
   const challenge2 = j.challenge;
-  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge: challenge2, code: await totpNow(), remember_device: true }), mfaEnv, ctx);
+  const _codeC = await totpNow();
+  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge: challenge2, code: _codeC, remember_device: true }), mfaEnv, ctx);
   j = await r.json();
   ok(r.status === 200 && j.ok === true && !!j.csrf && !!j.trusted_device, 'MFA: correct TOTP code -> real session + a trusted_device token (remember_device:true)');
   const trustedToken = j.trusted_device;
+
+  // (d2) ANTI-REPLAY: the code just consumed at (d) is single-use -- replaying it on a FRESH challenge (still inside its
+  // ~90s window) is refused, even though the code itself is still arithmetically valid. Reset the shared login-rate-limit
+  // buckets around this so my extra login is transparent to the later steps (login:<email> caps at 8/15min).
+  const _clr = () => { rateLimits.delete('mfabad:' + usersByEmail.get('mfauser@x.com')); rateLimits.delete('login:mfauser@x.com'); rateLimits.delete('login:x'); };
+  _clr();
+  r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple' }), mfaEnv, ctx);
+  j = await r.json();
+  r = await worker.fetch(mfaReq('POST', '/api/auth/mfa/verify', { challenge: j.challenge, code: _codeC }), mfaEnv, ctx);
+  ok(r.status === 401, 'MFA anti-replay: a TOTP code already consumed on a prior verify is refused on reuse (got ' + r.status + ')');
+  _clr();
 
   // (e) that trusted-device token skips the challenge on the next login
   r = await worker.fetch(mfaReq('POST', '/api/auth/login', { email: 'mfauser@x.com', password: 'correcthorsebatterystaple', trusted_device: trustedToken }), mfaEnv, ctx);
