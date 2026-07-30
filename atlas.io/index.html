@@ -3466,7 +3466,7 @@ const Atlas = (function(){
     if(reseed){ DATA.assets.forEach(function(a,i){ a.name = t.sample[i] || (cap(t.noun)+' '+('0'+(i+1)).slice(-2)); }); _saveAssets(); }
     buildApp(); goSettings('branding'); toast('Now set up for '+t.nouns);
   }
-  function setCustomNoun(which,val){ val=(val||'').trim(); if(!val)return; S.fleet[which]=val;
+  function setCustomNoun(which,val){ val=(val||'').replace(/[<>&"']/g,'').trim().slice(0,40); if(!val)return; S.fleet[which]=val;   // SECURITY: strip HTML-breakout chars + cap length at the ONLY noun write path, so a custom fleet noun can never carry a script payload into the toast / AI-chat innerHTML sinks (fleet-noun stored-XSS; manager-tier -> owner priv-esc chain)
     if(which==='noun'){ if(!S.fleet.nouns||S.fleet.nouns==='assets') S.fleet.nouns=(/(ss|x|z|ch|sh)$/i.test(val)?val+'es':(/[^aeiou]y$/i.test(val)?val.slice(0,-1)+'ies':(/s$/.test(val)?val:val+'s'))); if(!S.fleet.label||S.fleet.label==='Something else') S.fleet.label=cap(val); }   // off-the-wall nouns: box->boxes, dress->dresses, watch->watches, party->parties, canopy->canopies; already-plural (tools) kept (was naive +'s')
     save(); if(S.onboarded){ buildApp(); goSettings('branding'); }   // in-onboarding: just persist (navigating to Settings would break the flow)
   }
@@ -4312,12 +4312,22 @@ const Atlas = (function(){
   // #361: availability + per-asset revenue are keyed by the asset NAME stored on each booking (b.asset -> worker d.asset).
   // On a rename, migrate every existing booking/waitlist row off the old name so the name-keyed overlap check can't miss
   // them and open a double-book window. Bump _t so each migrated booking re-syncs (newest-wins) to the server the worker reads.
-  function _assetRenameCascade(oldNm, newNm){ if(!oldNm||!newNm||oldNm===newNm) return; var n=0;
-    (DATA.bookings||[]).forEach(function(b){ if(b && b.asset===oldNm){ b.asset=newNm; if(b.data&&b.data.asset===oldNm) b.data.asset=newNm; b._t=Date.now(); n++; } });
+  function _assetRenameCascade(oldNm, newNm, aid){ if(!oldNm||!newNm||oldNm===newNm) return; var n=0;
+    (DATA.bookings||[]).forEach(function(b){ if(b && (b.asset===oldNm || (aid && String(b.assetId)===String(aid)))){ b.asset=newNm; if(b.data&&b.data.asset===oldNm) b.data.asset=newNm; if(aid){ b.assetId=aid; if(b.data) b.data.assetId=aid; } b._t=Date.now(); n++; } });   // #367: also match by stable id (catches a stale-named row) + stamp the id so future checks are rename-proof
     try{ (_waitlist()||[]).forEach(function(w){ if(w && w.asset===oldNm) w.asset=newNm; }); }catch(e){}
-    if(n){ try{ _logEvent('fleet','Renamed '+S.fleet.noun+' "'+oldNm+'" to "'+newNm+'" ('+n+' booking'+(n===1?'':'s')+' updated)',{}); }catch(e){} } }
+    if(n){ try{ _logEvent('fleet','Renamed '+S.fleet.noun+' "'+oldNm+'" to "'+newNm+'" ('+n+' booking'+(n===1?'':'s')+' updated)',{}); }catch(e){} }
+    return n; }
+  // #367: a public booking created via /book but NOT yet pulled into this dashboard at rename time keeps the OLD name and
+  // misses the local cascade -> the double-book window reopens server-side. Pull the latest rows (the proven hydrate path),
+  // re-run the SAME cascade against the freshly-merged set (migrates name + stamps the stable id + bumps _t), then persist +
+  // push. Best-effort + guarded: offline/demo does nothing; a no-match run is a harmless no-op (never a server blob rewrite).
+  function _renameCatchStragglers(oldNm, newNm, aid){ try{
+      if(!(ATLAS_BACKEND && _apiCsrf)) return;
+      var sess=(typeof store!=='undefined'&&store.session)?store.session():null; var tid=sess&&sess.tenantId; if(!tid) return;
+      _srvHydrate(tid).then(function(){ try{ DATA.bookings=_bookings(); var n=_assetRenameCascade(oldNm, newNm, aid); if(n){ _saveBookings(DATA.bookings); try{ _srvSyncPush(); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } }catch(e){} }).catch(function(){});
+    }catch(e){} }
   function saveAsset(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
-    var _oldNm=a.name; a.name=(val('aName')||a.name).trim(); if(_oldNm!==a.name) _assetRenameCascade(_oldNm, a.name);   // #361 rename cascade -> keep name-keyed availability/revenue consistent
+    var _oldNm=a.name; a.name=(val('aName')||a.name).trim(); if(_oldNm!==a.name){ var _cn=_assetRenameCascade(_oldNm, a.name, a.id); if(_cn) _saveBookings(DATA.bookings); _renameCatchStragglers(_oldNm, a.name, a.id); }   // #361 cascade + #367 FIX: PERSIST the renamed bookings (saveAsset saved only assets before, so the in-memory rename evaporated on reload / never synced) + pull-and-migrate any not-yet-synced public bookings
     var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
     var _lcc=(val('aLocCity')||'').trim(); if(_lcc)a.locCity=_lcc; else delete a.locCity;   // per-asset market -> feeds location-aware dreaming
     var _lcz=(val('aLocZip')||'').trim(); if(_lcz)a.locZip=_lcz; else delete a.locZip;
@@ -5064,11 +5074,11 @@ const Atlas = (function(){
   function _rangesOverlap(a1,a2,b1,b2){ return a1 < b2 && b1 < a2; }
   function _availabilityConflict(assetName, startTs, endTs, excludeId){
     startTs=Number(startTs)||0; endTs=Number(endTs)||(startTs+_periodMs()); if(endTs<=startTs) endTs=startTs+_periodMs();
-    var a=(DATA.assets||[]).filter(function(x){return x.name===assetName;})[0];
+    var a=(DATA.assets||[]).filter(function(x){return x.name===assetName;})[0]; var _aid=(a&&a.id)||'';   // #367: prefer the STABLE id so a renamed asset's own bookings still register as conflicts (name is the fallback)
     if(a && a.status==='Maintenance') return {type:'maintenance', reason:'in maintenance'};   // fix: a unit marked out of service is not bookable (owner can still knowingly override the confirm in createBooking)
     if(a && a.blackouts){ for(var i=0;i<a.blackouts.length;i++){ var bl=a.blackouts[i], f=Number(bl.from)||0, t=Number(bl.to)||0; if(t<f){var x=f;f=t;t=x;}
       if(_rangesOverlap(startTs,endTs,f,t+86400000)) return {type:'blackout', reason:(bl.reason||'blocked dates')}; } }   // blackout is a day range -> include the whole end day
-    var c=(DATA.bookings||[]).filter(function(b){ return b.id!==excludeId && b.asset===assetName && b.status!=='Cancelled' && b.status!=='Completed'; })
+    var c=(DATA.bookings||[]).filter(function(b){ return b.id!==excludeId && ((_aid&&b.assetId)?(String(b.assetId)===_aid):(b.asset===assetName)) && b.status!=='Cancelled' && b.status!=='Completed'; })
       .filter(function(b){ var s=Number(b.startTs)||0, e=Number(b.endTs)||(s+_periodMs()); if(e<=s)e=s+_periodMs(); return _rangesOverlap(startTs,endTs,s,e); })[0];
     if(c) return {type:'booking', reason:c.id+(c.cust?(' \u2014 '+c.cust):'')};
     return null; }
@@ -5146,7 +5156,7 @@ const Atlas = (function(){
     if(_cf && !confirm(esc(asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates ('+_cf.reason+')'):(_cf.type==='maintenance'?('marked out of service ('+_cf.reason+')'):('already booked for those dates ('+_cf.reason+')')))+'.\n\nBook it anyway?')) return;
     var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc,startsAt:w.startTs});
     var b= editId? _getBooking(editId) : {id:_nextBkId(), createdAt:Date.now()};
-    b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.rate=mEff.baseRate;
+    b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.assetId=(_ao&&_ao.id)||b.assetId||undefined; b.rate=mEff.baseRate;   // #367: stamp the STABLE asset id so the conflict check survives a rename (name kept as the fallback)
     if(document.getElementById('bkPhone')) b.phone=val('bkPhone');       // only touch fields the operator's form collects
     if(document.getElementById('bkNotes')) b.notes=val('bkNotes');
     if(document.getElementById('bkDeliv')) b.deliveryAddr=val('bkDeliv');   // G4: delivery/pickup address
