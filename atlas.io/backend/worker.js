@@ -10188,7 +10188,7 @@ var _avT=null;function checkAvail(){var av=el('avail');if(!av)return;var an=el('
 var _selEx={};
 function _exOffered(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var all=D.extras||[];if(!a.extraIds)return all;return all.filter(function(e){return a.extraIds.indexOf(e.id)>=0})}
 function _exPerLbl(p){return p==='flat'?'':(p==='unit'?('/ '+esc(D.unit)):(p==='hour'?'/hr':(p==='pday'?'/day':(p==='week'?'/wk':(p==='pmonth'?'/mo':'')))))}
-function renderExtras(){var w=el('exWrap');if(!w)return;var ofr=_exOffered();if(!ofr.length){w.innerHTML='';return}w.innerHTML='<label>Add-ons</label>'+ofr.map(function(e){return '<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin:5px 0"><input type=checkbox value="'+esc(e.id)+'"'+(_selEx[e.id]?' checked':'')+' onchange="_toggleEx(this)"><span style="flex:1">'+esc(e.name)+'</span><span class=muted>'+money(e.price*100)+' '+esc(_exPerLbl(e.per))+'</span></label>'}).join('')}
+function renderExtras(){var w=el('exWrap');if(!w)return;var ofr=_exOffered();if(!ofr.length){w.innerHTML='';return}w.innerHTML='<label>Add-ons</label>'+ofr.map(function(e){return '<label class=xrow><input type=checkbox value="'+esc(e.id)+'"'+(_selEx[e.id]?' checked':'')+' onchange="_toggleEx(this)"><span class=exnm>'+esc(e.name)+'</span><span class="muted expr">'+money(e.price*100)+' '+esc(_exPerLbl(e.per))+'</span></label>'}).join('')}
 function _toggleEx(cb){if(cb.checked)_selEx[cb.value]=1;else delete _selEx[cb.value];qt()}
 function _selExArr(){return Object.keys(_selEx).map(function(id){return {id:id,qty:1}})}
 function _exCost(periods){var ofr=_exOffered(),rm=(D.config||{}).rateModel||'day',pms=(rm==='hour'?3600000:(rm==='week'?604800000:(rm==='month'?2592000000:86400000))),bkMs=periods*pms,t=0;ofr.forEach(function(e){if(!_selEx[e.id])return;var each=e.price,amt;if(e.per==='unit')amt=each*periods;else if(e.per==='hour'||e.per==='pday'||e.per==='week'||e.per==='pmonth'){var epm=(e.per==='hour'?3600000:(e.per==='week'?604800000:(e.per==='pmonth'?2592000000:86400000)));amt=each*Math.max(1,Math.ceil(bkMs/epm))}else amt=each;t+=amt});return t}
@@ -10236,7 +10236,7 @@ function _bookingReceiptInner(pr, d, md, amt) {
     + '</table><p style="color:#888;font-size:12px">Booking reference ' + esc(md.booking) + '.</p>';
 }
 function _portalPageHtml(token, color) {
-  var body = '<style>.upl{display:block;font-size:12.5px;color:#555;margin:8px 0 2px}.upl input{display:block;margin-top:3px;font-size:13px}.dlbtn{display:block;text-align:center;text-decoration:none}</style><div id="app" class="card">Loading&hellip;</div>';
+  var body = '<style>.xrow{display:flex;align-items:center;gap:8px;width:100%;margin:5px 0;font-weight:400}.xrow input{flex:none;margin:0;width:auto}.xrow .exnm{flex:1;min-width:0}.xrow .expr{flex:none;white-space:nowrap}.upl{display:block;font-size:12.5px;color:#555;margin:8px 0 2px}.upl input{display:block;margin-top:3px;font-size:13px}.dlbtn{display:block;text-align:center;text-decoration:none}</style><div id="app" class="card">Loading&hellip;</div>';
   var js = `
 var T=${JSON.stringify(token)};
 function el(i){return document.getElementById(i)}
