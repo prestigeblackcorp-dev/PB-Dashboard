@@ -344,6 +344,8 @@ img{max-width:100%}
 .ob-actions{display:flex;justify-content:space-between;align-items:center;margin-top:28px;gap:12px}
 .ob-skip{font-size:13.5px;color:var(--muted);font-weight:600;background:none;border:none}
 .ob-skip:hover{color:var(--brand)}
+.skip-link{position:absolute;left:-9999px;top:0;z-index:2000;background:var(--brand,#237E54);color:#fff;padding:10px 16px;border-radius:0 0 8px 0;font-weight:600;font-size:14px;text-decoration:none}
+.skip-link:focus{left:0}
 
 .tile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .tile{position:relative;min-width:0;border:1.5px solid var(--line);border-radius:12px;padding:15px;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s;background:var(--surface);text-align:left;display:flex;gap:11px;align-items:center;min-height:72px;-webkit-tap-highlight-color:transparent}
@@ -1476,6 +1478,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 <!-- ============================================================ APP -->
 <div id="view-app">
   <div class="app">
+    <a href="#mainContent" class="skip-link">Skip to main content</a>
     <aside class="side">
       <div class="side__brand">
         <div class="side__logo" id="sideLogo"><span id="sideLogoTxt">A</span></div>
@@ -1492,7 +1495,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       </div>
     </aside>
 
-    <div class="main">
+    <div class="main" role="main" id="mainContent" tabindex="-1">
       <div id="previewBar" class="preview-bar" style="display:none"></div>
       <nav id="mobileNav" class="mnav"></nav>
       <div class="drawer-scrim" id="drawerScrim" onclick="Atlas.closeMenu()"></div>
@@ -3810,7 +3813,7 @@ const Atlas = (function(){
       if(cfg.off){ mob.innerHTML=''; mob.style.display='none'; document.body.classList.add('mnav-off'); }
       else { mob.style.display=''; document.body.classList.remove('mnav-off');
         var vis=all.filter(function(n){ return cfg.hidden.indexOf(n[0])<0; });
-        mob.innerHTML=vis.map(function(n){ return '<button class="mnav__i'+(n[0]===active?' active':'')+'" data-mnav="'+n[0]+'" onclick="Atlas.go(\''+n[0]+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(_navLabelFor(n))+(n[3]?'<span class="badge" id="m_'+n[3]+'"></span>':'')+'</button>'; }).join('');
+        mob.innerHTML=vis.map(function(n){ return '<button class="mnav__i'+(n[0]===active?' active':'')+'"'+(n[0]===active?' aria-current="page"':'')+' data-mnav="'+n[0]+'" onclick="Atlas.go(\''+n[0]+'\')"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+esc(_navLabelFor(n))+(n[3]?'<span class="badge" id="m_'+n[3]+'"></span>':'')+'</button>'; }).join('');
         try{ var _am=mob.querySelector('.mnav__i.active'); if(_am&&_am.scrollIntoView) _am.scrollIntoView({inline:'center',block:'nearest'}); }catch(e){}   // keep the active tab visible in the horizontally-scrolling bar (Settings/Website were off-screen at 375px)
       }
     }
@@ -3862,7 +3865,7 @@ const Atlas = (function(){
     var shown=NAV.filter(function(n){return _canMod(n[0]);});
     var lbl=function(n){ return esc(_navLabelFor(n)); };   // honors owner tab renames
     var act=(document.querySelector('.nav-item.active')||{}).dataset; var active=act?act.nav:'overview';
-    var item=function(n){ return '<button class="nav-item '+(n[0]===active?'active':'')+'" onclick="Atlas.go(\''+n[0]+'\');Atlas.closeMenu()"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+lbl(n)+'</button>'; };
+    var item=function(n){ return '<button class="nav-item '+(n[0]===active?'active':'')+'"'+(n[0]===active?' aria-current="page"':'')+' onclick="Atlas.go(\''+n[0]+'\');Atlas.closeMenu()"><svg viewBox="0 0 20 20" fill="none"><path d="'+n[2]+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'+lbl(n)+'</button>'; };
     var dark=_theme()==='dark';
     d.innerHTML='<div class="drawer__head"><div class="drawer__logo">'+(S.brand.logo?'<img src="'+esc(S.brand.logo)+'" alt="business logo">':esc(S.brand.initial))+'</div>'
       +'<div style="min-width:0;flex:1"><b style="color:#fff;font-size:15px;display:block;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(S.brand.name)+'</b><small style="color:var(--sidebar-text);font-size:11.5px">'+esc(_tierCap(_curTier()))+' plan</small></div>'
@@ -3882,8 +3885,8 @@ const Atlas = (function(){
   function closeMenu(){ var d=document.getElementById('navDrawer'); if(d)d.classList.remove('on'); var s=document.getElementById('drawerScrim'); if(s)s.classList.remove('on'); }
   function go(nav){
     if(!_canMod(nav)) nav=_firstMod();   // safeguard: a worker can't land on an area they weren't granted
-    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.nav===nav));
-    document.querySelectorAll('.mnav__i').forEach(b=>b.classList.toggle('active',b.dataset.mnav===nav));
+    document.querySelectorAll('.nav-item').forEach(b=>{ var _on=b.dataset.nav===nav; b.classList.toggle('active',_on); if(_on) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); });   // #a11y WCAG 4.1.2: keep aria-current in sync on client-side nav (was set once at render -> went stale after every tab switch)
+    document.querySelectorAll('.mnav__i').forEach(b=>{ var _on=b.dataset.mnav===nav; b.classList.toggle('active',_on); if(_on) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); });
     document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.panel===nav));
     var _navRow=NAV.find(n=>n[0]===nav);   // never let an unknown nav id hard-crash the whole switch
     document.getElementById('pageTitle').textContent=(nav==='fleet')?cap(S.fleet.nouns):(nav==='bookings'?cap(_fterm('books')):(_navRow?_navRow[1]:cap(nav)));
@@ -11047,7 +11050,8 @@ const Atlas = (function(){
   }
   function toast(msg){ const w=document.getElementById('toastWrap'); const t=document.createElement('div'); t.className='toast';
     t.innerHTML=`<svg viewBox="0 0 16 16" fill="none"><path d="M13 4.5L6.5 11 3 7.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-    t.appendChild(document.createTextNode(msg==null?'':String(msg)));   // #sec: msg is TEXT, never HTML -- a public-form customer name reaching toast() must not execute in the owner's authenticated dashboard (stored XSS)
+    var _ts=String(msg==null?'':msg).replace(/&(mdash|ndash|rsquo|lsquo|hellip|amp|nbsp|quot|lt|gt|#39);/g,function(m,e){return {mdash:'\u2014',ndash:'\u2013',rsquo:'\u2019',lsquo:'\u2018',hellip:'\u2026',amp:'&',nbsp:'\u00a0',quot:'"',lt:'<',gt:'>','#39':"'"}[e];});   // decode the few named entities callers pass so em-dashes etc. render (not literal "&mdash;")
+    t.appendChild(document.createTextNode(_ts));   // #sec: msg becomes a TEXT node -- a decoded "<" OR a raw public-form customer name shows literally and can NEVER execute (stored XSS stays closed)
     w.appendChild(t); setTimeout(()=>{t.style.opacity='0';t.style.transform='translateY(8px)';setTimeout(()=>t.remove(),300);},2400); }
   function copyPortal(){ const u=S.brand.subdomain+'.atlasrental.io/portal'; try{navigator.clipboard.writeText('https://'+u);}catch(e){} toast('Portal link copied'); }
   function setBrandName(v){S.brand.name=v;S.brand.initial=(v.trim()[0]||'Y').toUpperCase();save();buildApp();buildSettings();toast('Brand updated');}
