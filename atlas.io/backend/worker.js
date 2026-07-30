@@ -8275,14 +8275,15 @@ function doReset(){
           { name: 'Gemini', ask: askGemini, key: env.GEMINI_KEY }
         ].filter(m => m.key);
         if (!panelDefs.length) return json({ live: false });   // no keys yet -> client uses its built-in council
-        const _cr = await _creditOp(env, ctx.tenant_id, null, 1);   // server-authoritative: spend 1 credit for a live council call
+        const _crN = panelDefs.length;   // #tokens: a council call fans out to N live providers (Claude/GPT/Gemini) -> ONE token per real provider call = N (3 when all three keys are set), not a flat 1. This same spend point also bills the web-builder AI copy + contract-audit gap pass (both route through /api/aio), so they cost N too.
+        const _cr = await _creditOp(env, ctx.tenant_id, null, _crN);   // server-authoritative: spend N credits for a live N-provider council call
         if (!_cr.ok) return json({ live: true, models: [], synthesis: '', error: 'out_of_credits', credits: 0 });
         // ask every configured model in parallel; a failed one just drops out
         const settled = await Promise.all(panelDefs.map(m =>
           m.ask(m.key, q, context, env, _ectx).then(text => ({ name: m.name, text })).catch(() => ({ name: m.name, text: '' }))
         ));
         const models = settled.filter(m => m.text);
-        if (!models.length) { try { await _creditAdd(env, ctx.tenant_id, 1); } catch (e) {} return json({ live: true, models: [], synthesis: '', error: 'The council could not be reached - try again. Your credit was refunded.' }); }   // total provider outage -> give the spent credit back
+        if (!models.length) { try { await _creditAdd(env, ctx.tenant_id, _crN); } catch (e) {} return json({ live: true, models: [], synthesis: '', error: 'The council could not be reached - try again. Your credits were refunded.' }); }   // total provider outage -> give ALL N spent credits back
         // one model synthesizes the panel into a single owner-facing answer
         let synthesis = models[0].text;
         if (models.length > 1) {
@@ -8308,6 +8309,8 @@ function doReset(){
         const sbody = await req.json().catch(() => ({}));
         const freeText = (typeof sbody.freeText === 'string' ? sbody.freeText : '').slice(0, 4000).trim();
         if (!freeText) return err(400, 'Describe the schedule you want.');
+        const _scr = await _creditOp(env, ctx.tenant_id, null, 1);   // #tokens: a schedule build is ONE live single-model (Claude) call -> 1 credit, matching /api/aio/plan. This was a 0-credit LEAK (owner's API key billed, tenant charged nothing). Refunded below if no usable schedule comes back.
+        if (!_scr.ok) return json({ live: true, ok: false, error: 'out_of_credits', credits: 0 });
         const roster = Array.isArray(sbody.roster) ? sbody.roster.slice(0, 60) : [];
         const positions = Array.isArray(sbody.positions) ? sbody.positions.slice(0, 30) : [];
         const weekStart = (typeof sbody.weekStart === 'string' ? sbody.weekStart : '').slice(0, 10);
@@ -8322,10 +8325,11 @@ function doReset(){
           let raw = await askClaudeSchedule(env.ANTHROPIC_KEY, sys, freeText, env, _ectx, 'schedule');
           raw = String(raw || '').replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim();
           let parsed = null; try { parsed = JSON.parse(raw); } catch (e) { parsed = null; }
-          if (!parsed || typeof parsed !== 'object') return json({ live: true, ok: false, error: 'Could not read a schedule from that - try rephrasing.' });
+          if (!parsed || typeof parsed !== 'object') { try { await _creditAdd(env, ctx.tenant_id, 1); } catch (e) {} return json({ live: true, ok: false, error: 'Could not read a schedule from that - try rephrasing.' }); }   // no usable result -> refund the credit (symmetric with /api/aio/plan + council)
           await audit(env, ctx, req, 'schedule.ai', { chars: freeText.length });
           return json({ live: true, ok: true, result: parsed });
         } catch (e) {
+          try { await _creditAdd(env, ctx.tenant_id, 1); } catch (e2) {}   // AI unreachable -> refund the credit (symmetric)
           return json({ live: true, ok: false, error: 'The scheduler could not be reached - built locally instead.' });
         }
       }

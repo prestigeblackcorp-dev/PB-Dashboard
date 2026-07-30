@@ -1956,6 +1956,30 @@ const Atlas = (function(){
     for(var pk in parts){ var pjs=JSON.stringify(parts[pk]===undefined?null:parts[pk]); if(_pushedKeys[pk]!==pjs){ S._kt[pk]=nowT; _pushedKeys[pk]=pjs; changed=true; } }
     if(changed){ S._t=nowT; _srvMirrorProfile(); }
   }
+  // #360 Live dashboard: a flag-gated (livePoll, DEFAULT OFF) poll so a website booking appears in an already-open
+  // dashboard WITHOUT a manual refresh. Safety first (see project_sync_deep_audit): it FLUSHES local edits (_srvSyncPush
+  // stamps a newer _t on every dirty record) BEFORE hydrating, so the newest-wins merge can never strand/clobber a local
+  // edit; it skips a hidden tab and any open modal (never yanks the UI mid-edit); and it re-renders ONLY when the booking
+  // COUNT actually grew (a genuinely new booking), so it is silent otherwise. Toggling the owner flag takes effect next tick.
+  var _livePolling=false;
+  function _livePollTick(){
+    try{
+      if(_livePolling||document.hidden) return;
+      if(!ATLAS_BACKEND||!_apiCsrf) return;
+      if(!(typeof S!=='undefined'&&S&&(S.onboarded||_profileHydrated))) return;
+      if(!(typeof _flags==='function'&&_flags().livePoll)) return;
+      var sc=document.getElementById('modalScrim'); if(sc&&sc.classList.contains('on')) return;
+      var sess=(typeof store!=='undefined'&&store.session)?store.session():null; var tid=sess&&sess.tenantId; if(!tid) return;
+      _livePolling=true;
+      var before=(typeof _bookings==='function'?_bookings():[]).length;
+      try{ _srvSyncPush(); }catch(e){}
+      _srvHydrate(tid).then(function(){
+        var after=(typeof _bookings==='function'?_bookings():[]).length;
+        if(after>before){ try{ if(typeof buildApp==='function') buildApp(); }catch(e){} try{ toast((after-before)+' new booking'+((after-before)>1?'s':'')); }catch(e){} }
+      }).catch(function(){}).then(function(){ _livePolling=false; });
+    }catch(e){ _livePolling=false; }
+  }
+  setInterval(_livePollTick, 45000);
   // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
   function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
     return Promise.all([_api('/api/data/bookings'),_api('/api/data/assets'),_api('/api/tenant/profile'),_api('/api/data/customers')]).then(function(r){
@@ -2132,7 +2156,8 @@ const Atlas = (function(){
     ['betaForecast','Predictive utilization + revenue forecast'],
     ['instantPatch','Apply owner hot-fixes without a reload (coming soon)'],
     ['aiActions','Atlas.io can make changes for you (preview + one-tap undo)'],
-    ['aiSiteCopy','Atlas.io writes your website copy with live AI (falls back to the built-in template)']
+    ['aiSiteCopy','Atlas.io writes your website copy with live AI (falls back to the built-in template)'],
+    ['livePoll','Live dashboard &mdash; new website bookings appear on their own, no manual refresh']
   ];
   function _flags(){ if(!S.flags)S.flags={}; if(S.flags.aiActions==null) S.flags.aiActions=true; if(S.flags.aiSiteCopy==null) S.flags.aiSiteCopy=true; return S.flags; }   // aiActions defaults ON: the edit engine is RBAC-gated + preview-before-apply on money + fully undoable; owner can still toggle it off in Settings.
   /* ---- Team roles & granular, enforced permissions ---- */
