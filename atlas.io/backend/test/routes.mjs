@@ -465,7 +465,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           else if (/mfa_method=NULL, mfa_secret_enc=NULL/.test(sql)) { const u = users.get(a[0]); if (u) { u.mfa_method = null; u.mfa_secret_enc = null; u.mfa_pending_enc = null; u.mfa_backup_json = null; u.mfa_enabled_at = null; } }
           else if (/UPDATE users SET mfa_backup_json=\? WHERE id=\?/.test(sql)) { const u = users.get(a[1]); if (u) u.mfa_backup_json = a[0]; }
           else if (/INSERT INTO rate_limits/.test(sql)) rateLimits.set(a[0], { count: 1, window_start: a[1] });
-          else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const r = rateLimits.get(a[0]); if (r) r.count++; }
+          else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const r = rateLimits.get(a[0]); if (r && (a.length < 2 || r.count < a[1])) { r.count++; return { success: true, meta: { changes: 1 } }; } return { success: true, meta: { changes: 0 } }; }
           else if (/INSERT INTO platform_config/.test(sql)) platformConfig.set(a[0], a[1]);
           else if (/INSERT INTO mfa_codes/.test(sql)) mfaCodes.set(a[0], { code_hash: a[1], expires_at: a[2], created_at: a[3] });
           else if (/DELETE FROM mfa_codes WHERE uid=\?/.test(sql)) mfaCodes.delete(a[0]);
@@ -1004,7 +1004,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         run: async () => {
           if (/INSERT INTO platform_errors/.test(sql)) inserted.push(a);
           else if (/INSERT INTO rate_limits/.test(sql)) rl.set(a[0], { count: 1, window_start: a[1] });
-          else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const row = rl.get(a[0]); if (row) row.count++; }
+          else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const row = rl.get(a[0]); if (row && (a.length < 2 || row.count < a[1])) { row.count++; return { success: true, meta: { changes: 1 } }; } return { success: true, meta: { changes: 0 } }; }
           return { success: true, meta: { changes: 1 } };
         },
       };
@@ -1143,7 +1143,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
             if (/INSERT INTO page_views/.test(sql)) pv.set(a[0], (pv.get(a[0]) || 0) + 1);
             else if (/INSERT INTO active_now/.test(sql)) an.set(a[0], { last_at: a[1], src: a[2] });
             else if (/INSERT INTO rate_limits/.test(sql)) rl.set(a[0], { count: 1, window_start: a[1] });
-            else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const row = rl.get(a[0]); if (row) row.count++; }
+            else if (/UPDATE rate_limits SET count=count\+1/.test(sql)) { const row = rl.get(a[0]); if (row && (a.length < 2 || row.count < a[1])) { row.count++; return { success: true, meta: { changes: 1 } }; } return { success: true, meta: { changes: 0 } }; }
             return { success: true, meta: { changes: 1 } };
           },
         };
@@ -1816,7 +1816,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM platform_config WHERE k=\?/.test(sql)) return null;   // payment_gate_enabled / trial_requires_card / payments_test_mode all read their fallback (off/live)
           if (/SELECT website_sub, website_addon, stripe_customer FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
           if (/SELECT custom_domain FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
-          if (/SELECT stripe_sub FROM domains_sold WHERE tenant_id=\? AND domain=\?/.test(sql)) return domainRow;
+          if (/SELECT stripe_sub, buyer_email FROM domains_sold WHERE tenant_id=\? AND domain=\?/.test(sql)) return domainRow;
           if (/FROM rate_limits/.test(sql)) return null;
           if (/sqlite_master/.test(sql)) return { n: 30 };
           return null;
