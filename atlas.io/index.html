@@ -1239,6 +1239,9 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 .site__car__b .price{font-weight:800;color:var(--brand-700);font-size:14px}
 .site__car__book{border:1px solid var(--brand);color:var(--brand-700);background:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
 .site__about{background:var(--surface-2);color:#3a423e;font-size:14px;line-height:1.6}
+.site [data-ie]{outline:1.5px dashed transparent;outline-offset:3px;border-radius:5px;transition:outline-color .15s,background .15s;cursor:text}
+.site [data-ie]:hover{outline-color:var(--brand)}
+.site [data-ie]:focus{outline:2px solid var(--brand);background:rgba(0,0,0,.03)}
 .site__foot{padding:22px 30px;background:#141a17;color:#cfd6d2;font-size:12.5px;text-align:center}
 .site__foot b{color:#fff}
 .site__foot-sub{font-size:10px;color:#8a938e;margin-top:7px;letter-spacing:.02em}
@@ -9580,6 +9583,19 @@ const Atlas = (function(){
     return parts.join('\n\n').slice(0,1000);
   }
   function setWebField(f,v){ var w=_web(); w[f]=v; save(); _webRefreshPreview(); }
+  // Inline WYSIWYG edit: the owner clicks a headline/tagline/about IN the live preview and types. On blur we
+  // commit textContent to _web()[field] + sync the matching left-panel input, WITHOUT a full re-render (keeps
+  // it feeling direct). Same _web() store + save() as setWebField, so publish/dirty/served-page all inherit.
+  function _webInlineEdit(el){ if(!el)return; var field=el.getAttribute('data-ie'); if(!field)return;
+    if(!_guard('webEdit','Editing your site')){ renderWebsite(); return; }
+    var v=String(el.innerText||el.textContent||'').replace(/\u00a0/g,' ');
+    v=(field==='about')? v.replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim() : v.replace(/\s+/g,' ').trim();
+    var w=_web(); if(String(w[field]==null?'':w[field])===v){ return; }
+    w[field]=v; save();
+    var inp=document.querySelector('[data-webfield="'+field+'"]'); if(inp&&inp.value!==v) inp.value=v;   // keep the left-panel field in step
+    _webRefreshPreview(); }
+  // Single-line fields (headline/tagline): Enter commits instead of inserting a newline.
+  function _webInlineKey(ev,el){ if(ev&&ev.key==='Enter'&&el&&el.getAttribute('data-ie')!=='about'){ ev.preventDefault(); el.blur(); } }
   function toggleWebSection(sec,on){ var w=_web(); w[sec]=!!on; save(); _webRefreshPreview(); }
   function _webRefreshPreview(){ var p=document.getElementById('webPrev'); if(p) p.innerHTML=_webPreviewHtml(); }
   // ---- Website builder: font / template / accent / FAQ. All persist to _web() and publish via _publicSiteConfig()
@@ -9881,9 +9897,9 @@ const Atlas = (function(){
     var side='<div class="web-side">'
       +'<div class="web-live"><span class="dot"></span><div>'+(_bookingSitePublished()?('Live at <b>'+esc(_bookingLink())+'</b>'):'Preview &mdash; <b>publish below</b> to go live')+'</div></div>'
       +'<div class="set-block"><h3>Content</h3><div class="desc">Atlas.io drafted this. Edit anything.</div>'
-        +'<div class="field"><label>Headline</label><input class="input" value="'+esc(w.headline)+'" oninput="Atlas.setWebField(\'headline\',this.value)"></div>'
-        +'<div class="field"><label>Tagline</label><input class="input" value="'+esc(w.tagline)+'" oninput="Atlas.setWebField(\'tagline\',this.value)"></div>'
-        +'<div class="field" style="margin-bottom:0"><label>About</label><textarea class="input" rows="3" oninput="Atlas.setWebField(\'about\',this.value)">'+esc(w.about)+'</textarea></div>'
+        +'<div class="field"><label>Headline</label><input class="input" data-webfield="headline" value="'+esc(w.headline)+'" oninput="Atlas.setWebField(\'headline\',this.value)"></div>'
+        +'<div class="field"><label>Tagline</label><input class="input" data-webfield="tagline" value="'+esc(w.tagline)+'" oninput="Atlas.setWebField(\'tagline\',this.value)"></div>'
+        +'<div class="field" style="margin-bottom:0"><label>About</label><textarea class="input" data-webfield="about" rows="3" oninput="Atlas.setWebField(\'about\',this.value)">'+esc(w.about)+'</textarea></div>'
       +'</div>'
       +'<div class="set-block"><h3>Design</h3><div class="desc">Fonts, layout template and your brand accents.</div>'+_webDesignHtml()+'</div>'
       +'<div class="set-block"><h3>Search &amp; SEO</h3><div class="desc">How your site shows up in Google and when shared. Atlas.io can also set these from chat.</div>'
@@ -9925,7 +9941,7 @@ const Atlas = (function(){
     var _fontStack=_webFontStack(w.font), _a2=(_aioHex(w.accent2)||'');   // live-preview the font + secondary accent (template full styling is applied by the worker on the served page)
     if(_webEditPageId){ var _pgSel=_webPage(_webEditPageId); if(_pgSel) return _webPagePreviewHtml(_pgSel,_fontStack,_a2); }   // a custom page is open in the editor -> preview its section stack (mirrors the worker's /p/<slug> render)
     var h='<div class="site" data-tpl="'+esc(w.template||'classic')+'" style="font-family:'+_fontStack+(_a2?(';--accent2:'+_a2):'')+'"><div class="site__hero"><div class="site__logo">'+logo+'</div>'
-      +'<h1>'+esc(w.headline||S.brand.name)+'</h1><p>'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
+      +'<h1 contenteditable="true" data-ie="headline" spellcheck="false" onblur="Atlas._webInlineEdit(this)" onkeydown="Atlas._webInlineKey(event,this)" title="Click to edit">'+esc(w.headline||S.brand.name)+'</h1><p contenteditable="true" data-ie="tagline" spellcheck="false" onblur="Atlas._webInlineEdit(this)" onkeydown="Atlas._webInlineKey(event,this)" title="Click to edit">'+esc(w.tagline||'')+'</p>'+_sitePromoBanner()
       +'<button class="site__cta" onclick="Atlas.webBookNow(\'\')">Book now</button></div>'
       +(_a2?('<div style="height:3px;background:'+_a2+'"></div>'):'');
     if(w.showFleet){ var _bookable=(DATA.assets||[]).filter(function(a){return a.status!=='Maintenance';});
@@ -9939,7 +9955,7 @@ const Atlas = (function(){
         h+='<div class="site__sec"><h2>Our '+esc(S.fleet.nouns)+'</h2><div class="sub">'+_bookable.length+' available to book</div><div class="site__cars">'+_bookable.slice(0,6).map(_card).join('')+'</div></div>';
       }
     }
-    if(w.showAbout){ h+='<div class="site__sec site__about"><h2>About '+esc(S.brand.name)+'</h2><p>'+esc(w.about||'')+'</p></div>'; }
+    if(w.showAbout){ h+='<div class="site__sec site__about"><h2>About '+esc(S.brand.name)+'</h2><p contenteditable="true" data-ie="about" spellcheck="false" onblur="Atlas._webInlineEdit(this)" onkeydown="Atlas._webInlineKey(event,this)" title="Click to edit" style="white-space:pre-wrap">'+esc(w.about||'')+'</p></div>'; }
     if(w.showReviews!==false) h+=_siteReviewsHtml();   // owner can hide the reviews section from the public site
     var _faq=_webFaqList(); if(_faq.length){ h+='<div class="site__sec site__faq"><h2>Frequently asked questions</h2>'+_faq.slice(0,10).map(function(f){ return '<div style="text-align:left;max-width:640px;margin:0 auto 12px"><div style="font-weight:700;margin-bottom:3px">'+esc(f.q)+'</div><div style="color:var(--muted);font-size:14px">'+esc(f.a)+'</div></div>'; }).join('')+'</div>'; }   // live FAQ preview (published via config.faq)
     var _pp=(Array.isArray(w.posts)?w.posts:[]).filter(function(p){ return p&&p.published!==false&&String((p&&p.title)||'').trim(); });   // live "Latest posts" strip approximates the served /blog surface
@@ -11045,7 +11061,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
     setFleetType,setCustomNoun,demoBig,demoPick,fleetLoc,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
