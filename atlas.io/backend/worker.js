@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30d';
+const ATLAS_BUILD = '2026.07.30e';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4140,7 +4140,7 @@ function doReset(){
           } catch (e) {}
           try {   // double-booking guard: overlap vs this tenant's active bookings (match asset name in data; asset_id column is null for dashboard-synced rows).
             // X3 stock: COUNT overlapping active bookings of this asset and block only once the count reaches the asset's unit count (qty). qty absent/1 => block on the first overlap => byte-identical to the old .some() any-overlap gate.
-            const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed')").bind(prof.id).all();
+            const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed') AND starts < ? AND ends > ?").bind(prof.id, endTs, startTs).all();   // PERF: bound to date-overlapping rows (mirrors the post-check at ~4210) so the revenue path doesn't scan+JSON.parse every active booking; the JS filter below still gates on _sameAsset
             const _qtyCap = Math.max(1, Number(_pa.qty) || 1);
             const _overlap = (_act.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return _sameAsset(d) && Number(r.starts) < endTs && Number(r.ends) > startTs; }).length;
             if (_overlap >= _qtyCap) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
@@ -9015,7 +9015,7 @@ async function _availabilityCheck(env, prof, pubAssets, cfg, assetName, startTs,
   if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))) + 86400000; return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return { available: false, reason: 'Unavailable on these dates.' };
   try {
     // X3 stock: COUNT overlapping active bookings of this asset; unavailable only once the count reaches the asset's unit count (qty from the matched pubAsset). qty absent/1 => first overlap blocks => byte-identical to the old any-overlap check.
-    const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed')").bind(prof.id).all();
+    const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed') AND starts < ? AND ends > ?").bind(prof.id, endTs, startTs).all();   // PERF: bound to date-overlapping rows so /availability doesn't scan+parse every active booking; the JS filter still gates on d.asset
     const _qtyCap = Math.max(1, Number(_pa.qty) || 1);
     const _overlap = (_act.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return d && d.asset === assetName && Number(r.starts) < endTs && Number(r.ends) > startTs; }).length;
     if (_overlap >= _qtyCap) return { available: false, reason: 'Already booked on these dates.' };
