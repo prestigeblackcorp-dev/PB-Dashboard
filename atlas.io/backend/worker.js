@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30e';
+const ATLAS_BUILD = '2026.07.30f';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3382,7 +3382,7 @@ const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-stat
 // so a query-construction mistake can never silently under- or over-expose rows -- same fail-safe posture as the
 // OWNER_ONLY/RBAC allow-lists above.
 const SECURITY_ACTIONS = ['login', 'login_fail', 'logout', 'email_verified', 'connect.onboard', 'domain.connect', 'domain.verified', 'domain.disconnect', 'integration.connect'];
-const SECURITY_PREFIXES = ['auth.', 'mfa.', 'admin.', 'owner.', 'comp.', 'tenant.apikey.', 'tenant.webhook.'];
+const SECURITY_PREFIXES = ['auth.', 'mfa.', 'admin.', 'owner.', 'comp.', 'tenant.', 'team.', 'billing.', 'pay.'];   // #ops: team.* (RBAC/permission changes), billing.*/pay.* (money), and all tenant.* (incl tenant.export) were invisible in the security-log; broadened tenant.apikey./tenant.webhook. -> tenant.
 function _isSecurityAction(a) {
   a = String(a || '');
   if (SECURITY_ACTIONS.indexOf(a) >= 0) return true;
@@ -4086,7 +4086,7 @@ function doReset(){
             analytics: { ga: String((cfg.analytics && cfg.analytics.ga) || '').slice(0, 40), pixel: String((cfg.analytics && cfg.analytics.pixel) || '').slice(0, 40) },
             sections: { fleet: _pubSecOn('showFleet'), about: _pubSecOn('showAbout'), reviews: _pubSecOn('showReviews'), contact: _pubSecOn('showContact') }, tagline: pubSite.tagline || '', reviews: _revSummary,   // P0-1: section toggles + tagline + aggregated reviews summary (all additive; the byte-identical booking form ignores unknown fields)
             locations: Array.isArray(prof.settings && prof.settings.locations) ? prof.settings.locations.slice(0, 50).map(function (x) { return String(x && x.name || x || '').slice(0, 80); }).filter(Boolean) : [],   // X4: tenant's configured locations (names only) published for the booking form. Additive; the client authors settings.locations + the form UI separately.
-            capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } });
+            capabilities: { payments: !!(await tenantStripeKey(env, prof.id)), email: !!env.RESEND_KEY } }, 200, { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=120' });   // PERF: non-personalized tenant config -> edge-cacheable; s-maxage=60 cuts the ~3-4 D1 reads per public-page load on a spiking booking site (owner config changes reflect within ~60s)
         }
 
         if (method === 'GET' && sub === 'availability') {

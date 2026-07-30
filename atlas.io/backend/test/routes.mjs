@@ -1097,7 +1097,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     { tenant_id: null, actor: 'a@x.com', action: 'login_fail', meta: '{"email":"a@x.com"}', ip: '1.1.1.1', ua: 'UA', at: NOW - 2000 },
     { tenant_id: null, actor: 'b@x.com', action: 'mfa.verify_fail', meta: '{}', ip: '2.2.2.2', ua: 'UA', at: NOW - 3000 },
     { tenant_id: null, actor: 'atlas-hq', action: 'admin.denied', meta: '{"reason":"role"}', ip: '3.3.3.3', ua: 'UA', at: NOW - 4000 },
-    { tenant_id: null, actor: 'checkout', action: 'billing.checkout', meta: '{}', ip: '4.4.4.4', ua: 'UA', at: NOW - 5000 }   // NOT in the security allow-list -- must be excluded entirely
+    { tenant_id: null, actor: 'checkout', action: 'billing.checkout', meta: '{}', ip: '4.4.4.4', ua: 'UA', at: NOW - 5000 },   // now IN the allow-list -- billing.* is a money/security event the owner must see
+    { tenant_id: null, actor: 'a@x.com', action: 'booking.update', meta: '{}', ip: '5.5.5.5', ua: 'UA', at: NOW - 6000 }   // routine CRUD -- NOT security -- must be excluded entirely
   ];
   function slDB() {
     function stmt(sql) {
@@ -1117,8 +1118,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   let r = await worker.fetch(mkReq('GET', '/api/admin/security-log', { headers: H }), slEnv, ctx);
   let j = await r.json();
   ok(r.status === 200 && j.ok === true && Array.isArray(j.events), 'security-log: 200 + events array');
-  ok(!j.events.some((e) => e.action === 'billing.checkout'), 'security-log: an action outside the allow-list is excluded even if the mock DB returned it');
-  ok(j.total === 4 && j.events.length === 4, 'security-log: default filter=all returns all 4 allow-listed rows (got ' + j.events.length + ')');
+  ok(!j.events.some((e) => e.action === 'booking.update'), 'security-log: a routine (non-security) action is excluded even if the mock DB returned it');
+  ok(j.events.some((e) => e.action === 'billing.checkout'), 'security-log: billing.* is now allow-listed (money/permission events are visible to the owner)');
+  ok(j.total === 5 && j.events.length === 5, 'security-log: default filter=all returns all 5 allow-listed rows incl billing.* (got ' + j.events.length + ')');
 
   r = await worker.fetch(mkReq('GET', '/api/admin/security-log?filter=fail', { headers: H }), slEnv, ctx);
   j = await r.json();
