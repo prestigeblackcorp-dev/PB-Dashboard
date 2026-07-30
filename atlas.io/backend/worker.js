@@ -4150,10 +4150,14 @@ function doReset(){
           } catch (e) {}
           const token = randId(24), bref = 'BK-' + randId(8);
           let _vc = null; try { await ensurePlatformSchema(env); _vc = await _lookupVerified(env, prof.id, b.email); } catch (e) {}   // Customers C: returning, already-ID-verified customer (valid DL) -> auto-carry so they are NOT asked to re-upload
+          // #5 (audit): the auto-carry skips the ID upload keyed on EMAIL alone, which is trivially spoofable on the public
+          // form. Tighten it: ALSO require the booking NAME to match the verified name (case-insensitive). A real returning
+          // customer uses their own name+email (still carries); someone who only knows the email can no longer skip KYC.
+          const _vcOk = !!(_vc && String(b.name || '').trim() && String(_vc.name || '').trim().toLowerCase() === String(b.name || '').trim().toLowerCase());
           const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
             asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, location: String(b.location || '').slice(0, 120) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined,   // X4: optional pickup/return location captured on the booking (additive; absent when empty, no availability impact)
             extras: _resolvedExtras.length ? _resolvedExtras : undefined, pickupTime: /^\d{1,2}:\d{2}$/.test(String(b.time || '')) ? String(b.time) : undefined,   // G5: paid extras (server-priced) + pickup time-of-day
-            idVerified: _vc ? true : undefined, idVerifiedCarriedAt: _vc ? now : undefined };   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification.
+            idVerified: _vcOk ? true : undefined, idVerifiedCarriedAt: _vcOk ? now : undefined };   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification (#5: gated on email+name match).
           let _myRowid = 0;
           try {
             const _ins = await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
