@@ -3330,7 +3330,7 @@ const Atlas = (function(){
     connect:()=>`
       <h2>Connect your tools</h2><p class="ob-card__lead">Guided, one-at-a-time. You keep your own accounts &mdash; money and messages flow straight through you. All optional to start.</p>
       ${[['S','Stripe','Take deposits &amp; payments','stripe'],['@','Email','Confirmations &amp; reminders','email'],['M','Maps','Delivery &amp; address lookup','maps'],['W','Your website','Embed booking on your site','web']].map(c=>`
-        <div class="conn-row"><div class="conn-row__ic">${c[0]}</div><div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
+        <div class="conn-row">${_connBadge(c[3])}<div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
         <div class="conn-act" id="conn-${c[3]}">${S.integrations[c[3]]?`<span class="chip chip--ok"><span class="dot"></span>Connected</span>`:`<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1]}')">Connect</button>`}</div></div>`).join('')}
       <p style="font-size:12.5px;color:var(--muted);margin-top:10px">You can connect these anytime from Settings &rarr; Integrations, with step-by-step guides for each.</p>
       ${obNav()}`,
@@ -3371,6 +3371,17 @@ const Atlas = (function(){
           <svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>`
   };
+  // Brand-recognizable tile + white SVG icon for an integration/connect row (replaces the plain letter badge).
+  function _connBadge(k){ var I={
+    stripe:['#635BFF','<rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 9.7h19" stroke-width="2.4"/>'],
+    email:['#2563EB','<rect x="2.5" y="4.8" width="19" height="14.4" rx="2.5"/><path d="M3.4 7l8.6 5.9L20.6 7"/>'],
+    maps:['#EA4335','<path d="M12 21.5c4.3-4.2 7-7.5 7-11a7 7 0 10-14 0c0 3.5 2.7 6.8 7 11z"/><circle cx="12" cy="10.3" r="2.5"/>'],
+    web:['#0EA5E9','<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.7 2.6 14.3 0 17M12 3.5c-2.6 2.7-2.6 14.3 0 17"/>'],
+    sms:['#7C3AED','<path d="M20.5 11.4a8 8 0 01-11.5 7.2L4 20.5l1.9-4.6A8 8 0 1120.5 11.4z"/>'],
+    qb:['#2CA01C','<circle cx="12" cy="12" r="8.5"/><path d="M12 7.4v9.2M14.1 9.1a3 3 0 00-2.1-.8c-1.6 0-2.5.8-2.5 1.9 0 2.5 5 1.3 5 3.8 0 1.1-.9 1.9-2.5 1.9a3 3 0 01-2.2-.9" stroke-width="1.7"/>']
+  }; var m=I[k]; if(!m) return '<div class="conn-row__ic">'+(k?String(k).charAt(0).toUpperCase():'?')+'</div>';
+    return '<div class="conn-row__ic" style="background:'+m[0]+';color:#fff">'
+      +'<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+m[1]+'</svg></div>'; }
   function obNav(lbl){ return `<div class="ob-actions">
     <button class="ob-skip" onclick="Atlas.back()">&larr; Back</button>
     <button class="btn btn--primary" onclick="Atlas.next()">${lbl||'Continue'}<svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>`; }
@@ -5738,6 +5749,7 @@ const Atlas = (function(){
     var nav=LIVE_TOUR_TABS[idx];
     if(!_canMod(nav)){ _liveTourAt(idx+1); return; }           // skip any tab this user cannot access
     try{ closeAio(); }catch(e){}
+    try{ closeModal(); }catch(e){}
     try{ go(nav); }catch(e){}
     setTimeout(function(){
       var steps=(nav==='bookings')? _liveBkSteps() : _tabTourSteps(nav);
@@ -5749,6 +5761,7 @@ const Atlas = (function(){
   // ---- Per-tab first-visit walkthroughs ------------------------------------------------------------------
   // Every tab runs its OWN in-depth guided tour the first time it is opened. Steps adapt to the business type
   // (nouns) AND to what the owner already set up, so it acknowledges done work instead of re-explaining it.
+  function _tourOpenFirstAsset(){ if(document.getElementById('aLoc')) return; var a=(DATA.assets||[])[0]; if(a){ try{ openAsset(a.id); }catch(e){} } }
   function _tabTourSteps(nav){
     var noun=esc(S.fleet.noun), nouns=esc(S.fleet.nouns);
     var A=(DATA.assets||[]).length, B=(DATA.bookings||[]).length, C=(DATA.customers||[]).length, T=((S.team||[]).length);
@@ -5758,11 +5771,15 @@ const Atlas = (function(){
       {sel:'[data-panel="overview"] .grid-2 .card', title:'Trends &amp; top performers', body:("See revenue and bookings over time, and which "+nouns+" earn you the most &mdash; so you always know your next move.")},
       {sel:'.aio-btn', title:'Atlas.io never sleeps', body:"Your AI is one tap away &mdash; it prices, finds idle days, drafts messages and researches your market while you are away."}
     ];
-    if(nav==='fleet') return [
-      {sel:'#addAssetBtn', click:true, title:(A?"Add another ":"Add your first ")+noun, body:("Give it a name, photo, rate and status. "+(A? ("You have "+A+" already &mdash; add as many as you like.") : ("This is where your whole "+nouns+" inventory lives.")))},
-      {sel:'#assetGrid', title:(A? ("Your "+nouns) : ("Your "+nouns+" show here")), body: A? "Each card shows status, utilization and who has it. Tap one to edit its rate, photo, availability or location." : ("Once you add "+nouns+", each appears here as a card you can tap to manage.")},
-      {sel:'#fleetLocs', title:'Locations &amp; availability', body:("Group "+nouns+" by location and block out dates something cannot be booked &mdash; Atlas keeps double-bookings out.")}
-    ];
+    if(nav==='fleet') return (A? [
+      {sel:'#addAssetBtn', title:'Add another '+noun, body:('You have '+A+' already &mdash; add as many '+nouns+' as you like: name, photo, rate and status.')},
+      {before:function(){ try{ closeModal(); }catch(e){} }, sel:'#assetGrid .asset', click:true, title:'Open a '+noun, body:'Each card shows status and utilization. <b>Tap it to open</b> &mdash; let us set its location and availability.'},
+      {before:_tourOpenFirstAsset, sel:'#aLoc', title:'Location', body:('Set where this '+noun+' is based. Group '+nouns+' by location so the right ones show for each spot &mdash; add a city and ZIP for delivery too.')},
+      {before:_tourOpenFirstAsset, sel:'#aStatus', title:'Availability', body:'<b>Available</b>, <b>On rent</b> or <b>Maintenance</b> &mdash; this is what controls whether it can be booked right now.'},
+      {before:_tourOpenFirstAsset, sel:'[onclick^="Atlas.assetBlock"]', pad:6, title:'Block out dates', body:'Tap <b>+ Block days</b> to mark dates it cannot be booked &mdash; service, personal use, anything. Atlas keeps double-bookings out.'}
+    ] : [
+      {sel:'#addAssetBtn', click:true, title:'Add your first '+noun, body:('Give it a name, photo and rate &mdash; then open it to set its <b>location</b> and <b>availability</b>, and block out any dates it cannot be booked. This is where your whole '+nouns+' inventory lives.')}
+    ]);
     if(nav==='customers') return [
       {sel:'[data-panel="customers"] .card', title:'Your branded member portal', body:"Every renter gets a self-service portal under YOUR brand &mdash; they book, pay a deposit, e-sign and message you. No marketplace taking a cut."},
       {sel:'[data-panel="customers"] button[onclick*="openPortal"]', click:true, title:'Preview it', body:"See exactly what your customers see. Copy the link to drop it on your site or in a text."},
@@ -7042,7 +7059,7 @@ const Atlas = (function(){
       </div>
       <div class="set-block"><h3>Connections</h3><div class="desc">Bring your own accounts. Each has a step-by-step guide.</div>
         ${[['@','Email (Resend / SMTP)','Confirmations &amp; reminders','email'],['#','SMS (Twilio)','Text your customers','sms'],['M','Maps','Delivery &amp; addresses','maps'],['Q','QuickBooks','Sync accounting','qb'],['W','Website embed','Booking widget for your site','web']].map(c=>`
-          <div class="conn-row"><div class="conn-row__ic">${c[0]}</div><div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
+          <div class="conn-row">${_connBadge(c[3])}<div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
           <div class="conn-act">${S.integrations[c[3]]?`<span class="chip chip--ok"><span class="dot"></span>Connected</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Manage</button>`:`<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Connect</button>`}</div></div>`).join('')}
       </div>
       <div class="set-block"><h3>Developer API</h3><div class="desc">Read-only programmatic access to your own bookings, assets and customers &mdash; wire Atlas into your tools, spreadsheets or Zapier. Create a key and send it as a Bearer token to <code>${(ATLAS_API||'https://atlasrental.io')}/api/v1</code>.</div>
