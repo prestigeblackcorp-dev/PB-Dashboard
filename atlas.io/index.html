@@ -2001,6 +2001,22 @@ const Atlas = (function(){
   _a11yPass._n=0;
   try{ new MutationObserver(function(){ if(_a11yPass._t) return; _a11yPass._t=setTimeout(function(){ _a11yPass._t=0; _a11yPass(); },300); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(e){}
   try{ _a11yPass(); }catch(e){}
+  // #a11y WCAG 2.4.3: focus-trap for the custom overlays openModal's trap doesn't cover (nav drawer / AIO drawer / verify gate / paywall).
+  // Bound once; Tab wraps focus within the topmost OPEN overlay, and Escape closes the dismissible ones (the mobile nav drawer had no
+  // Escape before). The two gates (verify/paywall) trap focus but are NOT Escape-dismissible -- you must complete or pay, not tab past.
+  try{ if(!window._ovTrapBound){ window._ovTrapBound=1; document.addEventListener('keydown', function(e){
+    if(e.key!=='Tab' && e.key!=='Escape') return;
+    var OV=[['navDrawer','on',closeMenu],['aioDrawer','open',null],['verifyGate','on',null],['paywallGate','on',null]], md=null, closeFn=null;
+    for(var i=0;i<OV.length;i++){ var el=document.getElementById(OV[i][0]); if(el && el.classList.contains(OV[i][1])){ md=el; closeFn=OV[i][2]; } }   // last match wins = topmost (gates outrank drawers)
+    if(!md) return;
+    if(e.key==='Escape'){ if(closeFn){ e.preventDefault(); closeFn(); } return; }
+    var f=Array.prototype.slice.call(md.querySelectorAll('a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(function(x){ return x.offsetWidth>0||x.offsetHeight>0||x===document.activeElement; });
+    if(!f.length){ e.preventDefault(); try{md.focus();}catch(_e){} return; }
+    var first=f[0],last=f[f.length-1],a=document.activeElement;
+    if(!md.contains(a)){ e.preventDefault(); first.focus(); return; }
+    if(e.shiftKey&&a===first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey&&a===last){ e.preventDefault(); first.focus(); }
+  }); } }catch(e){}
   // GAP (silent data loss): the server pages /api/data/<coll> at LIMIT 1000 + returns hasMore, but the client fetched
   // ONE page -> a tenant with >1000 bookings/assets/customers silently dropped the tail from the calendar/reports/rollups.
   // _apiAll follows hasMore (offset += limit) and returns the SAME { json:{ items:[...] } } shape the merge code expects.
