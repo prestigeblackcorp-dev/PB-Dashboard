@@ -409,7 +409,7 @@ function _whBackoffMs(attempts) { const s = [60000, 300000, 1800000, 7200000, 21
 async function _whAttempt(env, ep, event, body, id) {
   const ts = Date.now(); let status = 0, errTxt = '';
   try { const sig = await _whSignHex(ep.secret, body);
-    const resp = await _fetchTimeout(ep.url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Atlas-Webhooks/1.0', 'X-Atlas-Event': event, 'X-Atlas-Delivery': id, 'X-Atlas-Signature': 'sha256=' + sig }, body: body }, 12000);
+    const resp = await _fetchTimeout(ep.url, { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Atlas-Webhooks/1.0', 'X-Atlas-Event': event, 'X-Atlas-Delivery': id, 'X-Atlas-Signature': 'sha256=' + sig }, body: body }, 12000);
     status = (resp && resp.status) || 0;
   } catch (e) { status = 0; errTxt = String((e && e.message) || e || 'error').slice(0, 200); }
   const ok = status >= 200 && status < 300;
@@ -482,9 +482,9 @@ async function rateLimit(env, bucket, max, windowMs) {
     await env.DB.prepare('INSERT INTO rate_limits (bucket,count,window_start) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=1,window_start=?').bind(bucket, now, now).run();
     return true;
   }
-  if (row.count >= max) return false;
-  await env.DB.prepare('UPDATE rate_limits SET count=count+1 WHERE bucket=?').bind(bucket).run();
-  return true;
+  // ATOMIC: increment only while still under the cap, so a concurrent burst can't all read a stale count and pass (TOCTOU fix)
+  const _rl = await env.DB.prepare('UPDATE rate_limits SET count=count+1 WHERE bucket=? AND count<?').bind(bucket, max).run();
+  return !!(_rl && _rl.meta && _rl.meta.changes);
 }
 
 async function audit(env, ctx, req, action, meta) {
@@ -1252,8 +1252,9 @@ function _partnerChannels(type) {
 }
 // ---- Competitor intelligence: fetch a watched public page + extract a light title/pricing signal (first-party, public data).
 async function _competitorFetch(u) {
+  if (!_whUrlOk(u)) return { status: 0, title: '', prices: [], sample: '', error: 'blocked-url' };   // SSRF guard: reject internal/no-dot/metadata targets
   try {
-    const r = await _fetchTimeout(u, { headers: { 'User-Agent': 'AtlasRentalBot/1.0 (+https://atlasrental.io)', 'Accept': 'text/html' } }, 10000);
+    const r = await _fetchTimeout(u, { redirect: 'manual', headers: { 'User-Agent': 'AtlasRentalBot/1.0 (+https://atlasrental.io)', 'Accept': 'text/html' } }, 10000);
     var html = ''; try { html = (await r.text()).slice(0, 250000); } catch (e) {}
     return _compExtract(html, r.status);
   } catch (e) { return { status: 0, title: '', prices: [], sample: '', error: String((e && e.message) || e).slice(0, 120) }; }
@@ -10187,7 +10188,7 @@ function _bookPageHtml(slug, color, seo, prof, reviews, seob) {
 var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
 function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 var _promo=null;
 function applyPromo(){var c=(el('promo')?el('promo').value:'').trim().toUpperCase();var m=el('promsg');var per=Math.max(1,parseInt(el('per').value,10)||1);if(!c){_promo=null;if(m)m.textContent='';return qt()}var p=(D.promos||[]).filter(function(x){return x.code===c})[0];if(!p){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Code not found'}return qt()}if(p.minDays&&per<p.minDays){_promo=null;if(m){m.style.color='#c0392b';m.textContent='Needs at least '+p.minDays+' '+esc(D.unit)+(p.minDays>1?'s':'')}return qt()}_promo=p;if(m){m.style.color='#0a0';m.textContent=(p.type==='pct'?(p.value+'% off'):('$'+p.value+' off'))+' applied'}qt()}
 function qt(){var a=(D.assets||[]).filter(function(x){return x.name===el('asset').value})[0]||{};var p=Math.max(1,parseInt(el('per').value,10)||1);var C=D.config||{};var g=(a.rate||0)*p;
@@ -10259,7 +10260,7 @@ function _portalPageHtml(token, color) {
 var T=${JSON.stringify(token)};
 function el(i){return document.getElementById(i)}
 function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 var _payBusy=false;function pay(kind,chg){if(_payBusy)return;_payBusy=true;fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}_payBusy=false;alert(j.message||'Payment is not available right now.')}).catch(function(){_payBusy=false;alert('Network error')})}
 function sign(){var nm=(el('sgName')?el('sgName').value:'').trim();var ag=el('sgAgree')&&el('sgAgree').checked;if(nm.length<2){alert('Please type your full legal name');return}if(!ag){alert('Please check the box to agree to the rental agreement');return}var b=el('sgBtn');if(b){b.disabled=true;b.textContent='Signing...'}fetch('/api/portal/'+T+'/sign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,sig:nm,agree:true})}).then(function(r){return r.json()}).then(function(j){if(j.ok){location.reload()}else{alert(j.error||'Could not sign');if(b){b.disabled=false;b.textContent='Agree & sign'}}}).catch(function(){alert('Network error');if(b){b.disabled=false;b.textContent='Agree & sign'}})}
 function up(inp,kind){var f=inp.files&&inp.files[0];if(!f)return;if(f.size>6000000){alert('That file is too large (max 6MB).');inp.value='';return}var rd=new FileReader();rd.onload=function(){fetch('/api/portal/'+T+'/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,data:rd.result,name:f.name})}).then(function(r){return r.json()}).then(function(j){if(j.ok){var l=el('uplist');if(l)l.textContent='Uploaded '+(j.count||1)+' file(s). Thank you.';inp.value=''}else{alert(j.message||j.error||'Could not upload.')}}).catch(function(){alert('Network error')})};rd.readAsDataURL(f)}
