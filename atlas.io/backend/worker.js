@@ -2220,6 +2220,20 @@ async function _promoServerUses(env, tenant, code) {
 async function _promoBump(env, tenant, code) {
   try { await env.DB.prepare("INSERT INTO promo_uses (tenant_id,code,n) VALUES (?,?,1) ON CONFLICT(tenant_id,code) DO UPDATE SET n=n+1").bind(tenant, String(code).toUpperCase()).run(); } catch (e) {}
 }
+// Atomic promo-cap claim: reserve ONE redemption slot iff (client-synced baseUsed + server n) is still under cap, in a
+// single conditional UPDATE, so a concurrent burst can't all read an under-cap count and over-redeem (revenue leak).
+// Returns true iff a slot was claimed; the /book path releases it via _promoUnclaim if the booking then fails to save.
+async function _promoClaim(env, tenant, code, baseUsed, cap) {
+  try {
+    const c = String(code).toUpperCase();
+    await env.DB.prepare("INSERT INTO promo_uses (tenant_id,code,n) VALUES (?,?,0) ON CONFLICT(tenant_id,code) DO NOTHING").bind(tenant, c).run();
+    const r = await env.DB.prepare("UPDATE promo_uses SET n=n+1 WHERE tenant_id=? AND code=? AND (?+n) < ?").bind(tenant, c, Number(baseUsed) || 0, Number(cap) || 0).run();
+    return !!(r && r.meta && r.meta.changes);
+  } catch (e) { return false; }   // fail-CLOSED: on any DB error, don't grant a CAPPED promo (better to under-grant than over-redeem)
+}
+async function _promoUnclaim(env, tenant, code) {
+  try { await env.DB.prepare("UPDATE promo_uses SET n=n-1 WHERE tenant_id=? AND code=? AND n>0").bind(tenant, String(code).toUpperCase()).run(); } catch (e) {}
+}
 // Twilio SMS. HONEST: no creds -> {sent:false,reason:'no_sms'}. Respects the suppression list (a STOP reply).
 async function sendSms(env, tenant, msg) {
   var sid = env.TWILIO_SID, tok = env.TWILIO_TOKEN, from = (msg && msg.from) || env.TWILIO_FROM;
@@ -4133,19 +4147,19 @@ function doReset(){
           }
           const q = priceQuote(prof.money, pubAssets, assetName, periods, _resolvedExtras, startTs);   // Smart Pricing Increment 1: the /book handler already parsed this booking's real start (line ~3779) -- thread it so the SERVER charge reflects the same weekend/season/lead-time multiplier the client quoted
           // #206: apply a promo code if the customer entered a valid one (server-authoritative; discount off the pre-tax subtotal, ON TOP of any auto discount).
-          let promoCode = '', _bumpPromo = '';
+          let promoCode = '', _promoClaimedCode = '';
           if (vStr(b.promo, 40)) {
             const pv = _promoApply(prof, b.promo, periods, q.subtotalCents);
             if (pv.ok && pv.discountCents > 0) {
               // enforce the redemption cap counting PUBLIC redemptions (the client-synced `used` misses public traffic).
               const _pRow = ((prof.settings && prof.settings.promos) || []).filter(function (x) { return String(x.code || '').toUpperCase() === String(pv.code).toUpperCase(); })[0] || {};
               const _cap = Number(_pRow.cap) || 0; let _capOk = true;
-              if (_cap) { await ensurePlatformSchema(env); if ((Number(_pRow.used) || 0) + (await _promoServerUses(env, prof.id, pv.code)) >= _cap) _capOk = false; }
+              if (_cap) { await ensurePlatformSchema(env); _capOk = await _promoClaim(env, prof.id, pv.code, Number(_pRow.used) || 0, _cap); }   // atomic: reserve a slot now (released below if the booking fails) so concurrent submits can't over-redeem
               if (_capOk) {
                 promoCode = pv.code; q.discountCents = (q.discountCents || 0) + pv.discountCents;   // ADD to the auto discount, don't overwrite it
                 q.subtotalCents = Math.max(0, q.subtotalCents - pv.discountCents);
                 _reprice(prof.money, q);   // recompute fees + tax + total + deposit on the discounted subtotal (fees track the promo, deposit tracks the discounted total)
-                if (_cap) _bumpPromo = pv.code;   // record the redemption AFTER the booking row is saved (so a failed insert doesn't burn a cap slot)
+                if (_cap) _promoClaimedCode = pv.code;   // slot already atomically claimed above; released via _promoUnclaim if the insert / double-book check below fails
               }
             }
           }
@@ -4172,7 +4186,7 @@ function doReset(){
             const _ins = await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .bind(bref, prof.id, custId, assetName, startTs, endTs, 'pending', 0, JSON.stringify(data), token, now, now).run();
             _myRowid = (_ins && _ins.meta && Number(_ins.meta.last_row_id)) || 0;   // #297b: DB-assigned rowid = true commit order for the tie-break below
-          } catch (e) { return err(500, 'Could not save your booking. Please try again.'); }
+          } catch (e) { if (_promoClaimedCode) { try { await _promoUnclaim(env, prof.id, _promoClaimedCode); } catch (_e) {} } return err(500, 'Could not save your booking. Please try again.'); }
           try {   // #297 DOUBLE-BOOKING RACE (TOCTOU close): the pre-check above can be raced by a concurrent submit that also passed it. After
             // inserting, re-check for overlapping ACTIVE bookings of the SAME asset (DIFFERENT rows); the SAME deterministic tie-break (earliest
             // created_at, then smallest id) orders them. X3 stock: I only lose if at least qty OTHER rows rank AHEAD of me in that order (so exactly
@@ -4185,9 +4199,9 @@ function doReset(){
             const _ahead = (_post.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} if (!_sameAsset(d)) return false;
               var rr = Number(r._rid) || 0; if (_myRowid > 0 && rr > 0) return rr < _myRowid;
               var rc = Number(r.created_at) || 0; return (rc < now) || (rc === now && String(r.id) < String(bref)); }).length;
-            if (_ahead >= _qtyCapP) { try { await env.DB.prepare('DELETE FROM bookings WHERE id=?').bind(bref).run(); } catch (e) {} return err(409, 'Those dates were just taken by another guest. Please choose different dates.'); }
+            if (_ahead >= _qtyCapP) { try { await env.DB.prepare('DELETE FROM bookings WHERE id=?').bind(bref).run(); } catch (e) {} if (_promoClaimedCode) { try { await _promoUnclaim(env, prof.id, _promoClaimedCode); } catch (_e) {} } return err(409, 'Those dates were just taken by another guest. Please choose different dates.'); }
           } catch (e) {}
-          if (_bumpPromo) { try { await _promoBump(env, prof.id, _bumpPromo); } catch (e) {} }   // count the redemption only after the booking actually saved
+          // promo redemption was counted atomically at claim-time above (and released on the failure paths); no post-save bump
           const _portalUrl = url.origin + '/api/portal/' + token;   // the tokenized link the customer signs + pays + manages from
           const comms = prof.settings.comms || {};
           const vars = { name: String(b.name).split(' ')[0], business: prof.name, asset: assetName, periods: periods, unit: cfg.unit || 'day', total: money2(q.totalCents), deposit: money2(q.depositCents), ref: bref };
