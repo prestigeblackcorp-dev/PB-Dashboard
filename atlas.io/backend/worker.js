@@ -4090,6 +4090,14 @@ function doReset(){
           const _unit = cfg.unit || 'day';
           if (startTs < now - 86400000) return err(400, 'Please choose a start date that is not in the past.');
           const _pa = pubAssets.filter(function (a) { return a && a.name === assetName; })[0] || {};
+          // #361 asset_id rekey: prefer a STABLE per-asset id over the mutable name for conflict detection. _aid is the
+          // published asset's stable id when the snapshot carries one ('' for sites published before this -> pure name match,
+          // byte-identical to the old behavior). _sameAsset uses the id ONLY when BOTH the incoming asset and the stored row
+          // have one; otherwise it falls back to the exact name match. Effect: renaming an asset can no longer hide its own
+          // active bookings from the overlap guard (the double-book window), and two DIFFERENT assets that share a name stop
+          // cross-blocking each other. Non-money change to the count logic below -- it just swaps the per-row asset predicate.
+          const _aid = (_pa && _pa.id != null && _pa.id !== '') ? String(_pa.id) : '';
+          const _sameAsset = function (d) { return (_aid && d && d.assetId) ? (String(d.assetId) === _aid) : (!!d && d.asset === assetName); };
           if (Number(_pa.minLen) > 0 && periods < Number(_pa.minLen)) return err(400, 'This option needs at least ' + _pa.minLen + ' ' + _unit + (Number(_pa.minLen) > 1 ? 's' : '') + '.');
           if (Number(_pa.maxLen) > 0 && periods > Number(_pa.maxLen)) return err(400, 'This option allows at most ' + _pa.maxLen + ' ' + _unit + (Number(_pa.maxLen) > 1 ? 's' : '') + '.');
           if (Array.isArray(_pa.blackouts) && _pa.blackouts.some(function (bl) { var s = Number(bl && bl.startTs != null ? bl.startTs : (bl && bl.from != null ? bl.from : Date.parse((bl && bl.start) || ''))); var e = Number(bl && bl.endTs != null ? bl.endTs : (bl && bl.to != null ? bl.to : Date.parse((bl && bl.end) || ''))) + 86400000; return isFinite(s) && isFinite(e) && s < endTs && e > startTs; })) return err(409, 'Those dates are unavailable for this option. Please choose different dates.');
@@ -4104,7 +4112,7 @@ function doReset(){
             // X3 stock: COUNT overlapping active bookings of this asset and block only once the count reaches the asset's unit count (qty). qty absent/1 => block on the first overlap => byte-identical to the old .some() any-overlap gate.
             const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed')").bind(prof.id).all();
             const _qtyCap = Math.max(1, Number(_pa.qty) || 1);
-            const _overlap = (_act.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return d && d.asset === assetName && Number(r.starts) < endTs && Number(r.ends) > startTs; }).length;
+            const _overlap = (_act.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return _sameAsset(d) && Number(r.starts) < endTs && Number(r.ends) > startTs; }).length;
             if (_overlap >= _qtyCap) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
           } catch (e) {}
           // Booking G5: resolve the customer's selected EXTRAS SERVER-SIDE against the tenant catalog + the asset's allow-list.
@@ -4156,7 +4164,7 @@ function doReset(){
           // customer uses their own name+email (still carries); someone who only knows the email can no longer skip KYC.
           const _vcOk = !!(_vc && String(b.name || '').trim() && String(_vc.name || '').trim().toLowerCase() === String(b.name || '').trim().toLowerCase());
           const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
-            asset: assetName, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, location: String(b.location || '').slice(0, 120) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined,   // X4: optional pickup/return location captured on the booking (additive; absent when empty, no availability impact)
+            asset: assetName, assetId: _aid || undefined, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, location: String(b.location || '').slice(0, 120) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined,   // X4: optional pickup/return location captured on the booking (additive; absent when empty, no availability impact). #361: stamp the stable asset id so future conflict checks survive a rename.
             extras: _resolvedExtras.length ? _resolvedExtras : undefined, pickupTime: /^\d{1,2}:\d{2}$/.test(String(b.time || '')) ? String(b.time) : undefined,   // G5: paid extras (server-priced) + pickup time-of-day
             idVerified: _vcOk ? true : undefined, idVerifiedCarriedAt: _vcOk ? now : undefined };   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification (#5: gated on email+name match).
           let _myRowid = 0;
@@ -4174,7 +4182,7 @@ function doReset(){
             // #297b TOCTOU FIX: tie-break on the DB-assigned rowid (true commit order), NOT the request-start wall-clock `now`
             // (captured before several awaited round-trips, so two concurrent inserts could BOTH pass the old created_at check).
             // A lower rowid committed first and wins; the loser(s) delete + 409. Fall back to created_at+id only if rowid is 0.
-            const _ahead = (_post.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} if (!d || d.asset !== assetName) return false;
+            const _ahead = (_post.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} if (!_sameAsset(d)) return false;
               var rr = Number(r._rid) || 0; if (_myRowid > 0 && rr > 0) return rr < _myRowid;
               var rc = Number(r.created_at) || 0; return (rc < now) || (rc === now && String(r.id) < String(bref)); }).length;
             if (_ahead >= _qtyCapP) { try { await env.DB.prepare('DELETE FROM bookings WHERE id=?').bind(bref).run(); } catch (e) {} return err(409, 'Those dates were just taken by another guest. Please choose different dates.'); }
@@ -10063,12 +10071,12 @@ function _bookHeadTags(prof, canonicalUrl, reviews) {
 // inside booking data blobs (d.review = {rating,text,by,at,hidden}); owner-hidden ones are moderated OUT (mirrors the
 // atlas.html owner preview _siteReviewsHtml). Never throws -- any error yields an EMPTY summary so the page/JSON stays
 // byte-identical to "no reviews yet". Bounded scan (LIMIT 5000, same discipline as other per-tenant booking scans).
-async function _publicReviewSummary(env, tenantId) {
+async function _reviewStatsCompute(env, tenantId) {
   var out = { count: 0, avg: 0, recent: [] };
   try {
     // Prefilter to rows whose blob actually carries a review (d.review -> serialized "review":{...}); keeps the per-page-load
     // scan cheap on large tenants. The post-parse rating/hidden checks below stay authoritative, so a LIKE false-positive is harmless.
-    var rows = ((await env.DB.prepare('SELECT data FROM bookings WHERE tenant_id=? AND data LIKE ? LIMIT 5000').bind(tenantId, '%"review"%').all()).results) || [];
+    var rows = ((await env.DB.prepare('SELECT data FROM bookings WHERE tenant_id=? AND data LIKE ? ORDER BY created_at DESC LIMIT 5000').bind(tenantId, '%"review"%').all()).results) || [];
     var rv = [];
     rows.forEach(function (b) {
       var d = {}; try { d = JSON.parse(b.data || '{}'); } catch (e) { return; }
@@ -10084,6 +10092,17 @@ async function _publicReviewSummary(env, tenantId) {
     if (!feat.length) feat = rv.slice(0, 3);
     out.recent = feat.map(function (r) { return { rating: r.rating, text: r.text, by: r.by }; });
   } catch (e) {}
+  return out;
+}
+// PERF: serve the review summary from a 10-min TTL cache in platform_config so the unindexed LIKE scan runs at
+// most once per tenant per window instead of on every public-page view (was called from 9 sites, one in a 60x loop).
+async function _publicReviewSummary(env, tenantId) {
+  try {
+    var _c = await _pcfgGet(env, 'revstats:' + tenantId, null);
+    if (_c) { try { var _p = JSON.parse(_c); if (_p && (Date.now() - (_p._at || 0)) < 600000) { delete _p._at; return _p; } } catch (e) {} }
+  } catch (e) {}
+  var out = await _reviewStatsCompute(env, tenantId);
+  try { var _s = Object.assign({ _at: Date.now() }, out); await _pcfgSet(env, 'revstats:' + tenantId, JSON.stringify(_s)); } catch (e) {}
   return out;
 }
 // Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
