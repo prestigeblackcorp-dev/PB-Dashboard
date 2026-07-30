@@ -1985,6 +1985,18 @@ const Atlas = (function(){
     }catch(e){ _livePolling=false; }
   }
   setInterval(_livePollTick, 45000);
+  // A11Y (WCAG 1.3.1/4.1.2): programmatically associate every .field's <label> with its control -- screen readers otherwise
+  // announce most of the ~176 inputs as unnamed -- and make leaf clickable div/span[onclick] keyboard-operable (Enter/Space).
+  // Runtime + observed so it covers static AND JS-rendered forms uniformly without hand-editing each; idempotent + fail-safe.
+  function _a11yPass(){
+    try{
+      document.querySelectorAll('.field').forEach(function(f){ var lab=f.querySelector('label'), inp=f.querySelector('input,select,textarea'); if(lab&&inp){ if(!inp.id) inp.id='_af'+(++_a11yPass._n); if(!lab.getAttribute('for')) lab.setAttribute('for',inp.id); } });
+      document.querySelectorAll('div[onclick],span[onclick]').forEach(function(el){ if(el.getAttribute('role')||el.getAttribute('tabindex')!==null) return; if(el.classList.contains('modal-scrim')||el.classList.contains('scrim')||el.querySelector('button,a,input,select,textarea')) return; el.setAttribute('role','button'); el.setAttribute('tabindex','0'); if(!el._a11yk){ el._a11yk=1; el.addEventListener('keydown',function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); el.click(); } }); } });
+    }catch(e){}
+  }
+  _a11yPass._n=0;
+  try{ new MutationObserver(function(){ if(_a11yPass._t) return; _a11yPass._t=setTimeout(function(){ _a11yPass._t=0; _a11yPass(); },300); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(e){}
+  try{ _a11yPass(); }catch(e){}
   // GAP (silent data loss): the server pages /api/data/<coll> at LIMIT 1000 + returns hasMore, but the client fetched
   // ONE page -> a tenant with >1000 bookings/assets/customers silently dropped the tail from the calendar/reports/rollups.
   // _apiAll follows hasMore (offset += limit) and returns the SAME { json:{ items:[...] } } shape the merge code expects.
