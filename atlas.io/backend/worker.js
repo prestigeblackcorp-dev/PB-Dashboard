@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30k';
+const ATLAS_BUILD = '2026.07.30l';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4118,8 +4118,11 @@ function doReset(){
         if (method === 'POST' && sub === 'book') {
           if (!published) return err(403, 'This booking site is not accepting bookings yet.');
           const ip = req.headers.get('CF-Connecting-IP') || 'x';
-          if (!await rateLimit(env, 'pubbook:' + ip, 8, 3600000)) return err(429, 'Too many booking attempts. Please try again later.');
-          if (!await rateLimit(env, 'pubbookT:' + prof.id, 120, 3600000)) return err(429, 'This site is busy. Please try again shortly.');
+          // PERF: the per-IP and per-tenant limiters hit DIFFERENT buckets (no row contention) -> run them concurrently so the
+          // booking path waits ONE rate-limit round-trip instead of two serial ones. (The full fix is a KV-backed limiter -- infra.)
+          const [_rlIp, _rlTn] = await Promise.all([rateLimit(env, 'pubbook:' + ip, 8, 3600000), rateLimit(env, 'pubbookT:' + prof.id, 120, 3600000)]);
+          if (!_rlIp) return err(429, 'Too many booking attempts. Please try again later.');
+          if (!_rlTn) return err(429, 'This site is busy. Please try again shortly.');
           const b = await req.json().catch(function () { return {}; });
           if (!vStr(b.name, 120)) return err(400, 'Your name is required.');
           if (!vEmail(b.email)) return err(400, 'A valid email is required.');
@@ -4348,6 +4351,11 @@ function doReset(){
         let evt = {}; try { evt = JSON.parse(raw); } catch (e) { return err(400, 'Bad payload.'); }
         const obj = (evt.data && evt.data.object) || {};
         const md = obj.metadata || {};
+        // #sec (latent Connect cross-account spoof): this platform runs Stripe in DIRECT mode, where a legitimate event never carries a
+        // top-level `account` (that field only appears on CONNECT events for a connected account). If one arrives it's a misconfiguration
+        // or a cross-account spoof of the md.tenant the handlers below trust -- so ACK (200, no Stripe retry storm) and process NOTHING.
+        // When Connect is built, replace this with a real account->tenant binding check.
+        if (evt.account && String(evt.account) !== String(env.STRIPE_ACCOUNT_ID || '')) { try { await audit(env, md.tenant ? { tenant_id: md.tenant } : null, req, 'stripe.webhook_account_ignored', { account: String(evt.account).slice(0, 40), type: String(evt.type || '').slice(0, 40) }); } catch (e) {} return json({ ok: true, ignored: 'account_scoped_event' }, 200); }
         let _whErr = null;   // #eng: capture an unexpected throw in either block below so we return non-2xx (Stripe retries) instead of swallowing it + 200'ing a lost paid/refund effect
         if ((evt.type === 'checkout.session.completed' || evt.type === 'payment_intent.succeeded') && md.booking && md.tenant) {
           try {
@@ -6873,9 +6881,10 @@ function doReset(){
         const _u = new URL(req.url);
         const _lim = Math.min(200, Math.max(1, parseInt(_u.searchParams.get('limit') || '50', 10) || 50));
         const _off = Math.max(0, parseInt(_u.searchParams.get('offset') || '0', 10) || 0);
-        const _rows = await env.DB.prepare('SELECT actor,action,meta,ip,at FROM audit_log WHERE tenant_id=? ORDER BY at DESC LIMIT ? OFFSET ?').bind(ctx.tenant_id, _lim, _off).all();
-        const _TEAM_ACT = /^(team\.|billing\.|pay\.|tenant\.|charge\.)/;
-        const _events = (_rows.results || []).filter(function (r) { return _TEAM_ACT.test(String(r.action || '')); }).map(function (r) { const m = jparse(r.meta, {}); return { at: r.at, actor: r.actor || '', action: r.action, ip: r.ip || '', meta: (m && typeof m === 'object') ? m : {} }; });
+        // #ops: filter to the security-relevant action allow-list IN SQL (was a post-query JS .filter AFTER LIMIT/OFFSET, which
+        // returned short/wrong pages -- LIMIT counted rows that were then dropped). Now LIMIT/OFFSET page the already-filtered set.
+        const _rows = await env.DB.prepare("SELECT actor,action,meta,ip,at FROM audit_log WHERE tenant_id=? AND (action LIKE 'team.%' OR action LIKE 'billing.%' OR action LIKE 'pay.%' OR action LIKE 'tenant.%' OR action LIKE 'charge.%') ORDER BY at DESC LIMIT ? OFFSET ?").bind(ctx.tenant_id, _lim, _off).all();
+        const _events = (_rows.results || []).map(function (r) { const m = jparse(r.meta, {}); return { at: r.at, actor: r.actor || '', action: r.action, ip: r.ip || '', meta: (m && typeof m === 'object') ? m : {} }; });
         return json({ ok: true, events: _events, count: _events.length, offset: _off });
       }
       { const _erm = path.match(/^\/api\/customers\/([^\/]+)\/erase$/);
@@ -6892,22 +6901,26 @@ function doReset(){
           if (!_crow) return err(404, 'Customer not found.');
           try { await env.DB.prepare("UPDATE customers SET name='[erased]', email='', phone='', data=? WHERE id=? AND tenant_id=?").bind(JSON.stringify({ erased: true, erasedAt: Date.now() }), _cid, ctx.tenant_id).run(); } catch (e) {}
           const _bks = ((await env.DB.prepare('SELECT id FROM bookings WHERE tenant_id=? AND customer_id=? LIMIT 5000').bind(ctx.tenant_id, _cid).all()).results) || [];
-          let _n = 0;
+          const _erR2 = _r2(env);   // #ops RTBF: DB redaction leaves the customer's uploaded ID/licence SCANS in R2 (the most sensitive PII) -- purge them too
+          let _n = 0, _files = 0;
           for (const _bk of _bks) {
             try {
+              let _upKeys = [];
               const _ok = await _bkPatch(env, _bk.id, ctx.tenant_id, function (fd) {
                 if (fd._erased) return false;   // idempotent: already redacted
+                if (fd.portal && Array.isArray(fd.portal.uploads)) { _upKeys = fd.portal.uploads.map(function (u) { return u && u.key; }).filter(Boolean); fd.portal.uploads = []; }   // capture R2 keys to purge; drop the upload list (filenames are PII too)
                 fd.cust = '[erased]'; fd.custEmail = ''; fd.custPhone = '';
                 if (fd.customer != null) fd.customer = '[erased]'; if (fd.custName != null) fd.custName = '[erased]';
                 if (fd.portal && typeof fd.portal === 'object') { fd.portal.email = ''; if (fd.portal.signerName != null) fd.portal.signerName = '[erased]'; }
                 fd._erased = true; fd._t = Date.now();
               });
               if (_ok) _n++;
+              if (_erR2 && _upKeys.length) { for (const _uk of _upKeys) { try { await _erR2.delete(_uk); _files++; } catch (e) {} } }   // purge the scans from object storage (best-effort; idempotent on re-run since uploads[] is now empty)
               try { await env.DB.prepare("UPDATE signatures SET signer_name='[erased]', ip='', ua='' WHERE tenant_id=? AND booking_id=?").bind(ctx.tenant_id, _bk.id).run(); } catch (e) {}
             } catch (e) {}
           }
-          await audit(env, ctx, req, 'tenant.customer_erase', { customer: _cid, bookings: _n });
-          return json({ ok: true, erased: true, customer: _cid, bookings_redacted: _n });
+          await audit(env, ctx, req, 'tenant.customer_erase', { customer: _cid, bookings: _n, files_purged: _files });
+          return json({ ok: true, erased: true, customer: _cid, bookings_redacted: _n, files_purged: _files });
         }
       }
       if (path === '/api/team/invite' && method === 'POST') {
