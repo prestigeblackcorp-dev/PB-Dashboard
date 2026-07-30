@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30b';
+const ATLAS_BUILD = '2026.07.30c';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4333,6 +4333,7 @@ function doReset(){
         let evt = {}; try { evt = JSON.parse(raw); } catch (e) { return err(400, 'Bad payload.'); }
         const obj = (evt.data && evt.data.object) || {};
         const md = obj.metadata || {};
+        let _whErr = null;   // #eng: capture an unexpected throw in either block below so we return non-2xx (Stripe retries) instead of swallowing it + 200'ing a lost paid/refund effect
         if ((evt.type === 'checkout.session.completed' || evt.type === 'payment_intent.succeeded') && md.booking && md.tenant) {
           try {
             // #344 OPTIMISTIC-LOCK read-modify-write: two webhooks for DIFFERENT slots on the SAME booking (e.g. a deposit and an
@@ -4405,7 +4406,7 @@ function doReset(){
               await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid', { booking: md.booking, kind: md.kind, cents: amt });
               _fireWebhook(_ectx, env, md.tenant, 'booking.paid', { id: md.booking, ref: md.booking, kind: md.kind || 'payment', amount_cents: amt, currency: 'usd', asset: d.asset || '', status: 'confirmed', paid_at: Math.floor(Date.now() / 1000) });
             }
-          } catch (e) {}
+          } catch (e) { _whErr = _whErr || e; }
         }
         // ---- PLATFORM billing (Atlas's OWN revenue): server-authoritative. Flip plan/tier/card columns (client can't write them) + log every paid cent to platform_transactions. ----
         try {
@@ -4739,7 +4740,8 @@ function doReset(){
               }
             }
           }
-        } catch (e) {}
+        } catch (e) { _whErr = _whErr || e; }
+        if (_whErr) { try { await audit(env, null, req, 'stripe.webhook_exception', { type: (evt && evt.type) || '', msg: String((_whErr && _whErr.message) || _whErr).slice(0, 300) }); } catch (_e) {} return err(500, 'Webhook processing error.'); }   // #eng: don't swallow a thrown (non-signature) error + 200 it -- Stripe would stop retrying and the effect is lost; every effect is idempotent so redelivery is safe
         return json({ ok: true, received: true });
       }
 
