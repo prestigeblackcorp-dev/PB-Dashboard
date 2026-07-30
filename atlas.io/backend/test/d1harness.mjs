@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -188,6 +188,35 @@ ok('version-gate RE-RUNS on version mismatch (table recreated -> auto-invalidati
   const rp3 = await worker.fetch(mkReq('POST', '/api/stripe/webhook', { headers: { 'stripe-signature': 't=' + ts + ',v1=deadbeef' }, body: body }), envP, ctx);
   ok('money: bad Stripe signature -> 400 (unsigned event rejected)', rp3.status === 400, 'status=' + rp3.status);
   globalThis.fetch = _realFetch;
+}
+
+// ---- INTEGRATIONS (BYO-sender, "make it real"): a tenant's OWN Twilio/Resend creds are stored ENCRYPTED via the real
+// owner-gated route and are actually USED by sendSms/sendEmail; with no tenant integration, sends fall back to the platform. ----
+if (sess) {
+  const tidP = env.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const HI = { cookie: 'atlas_sid=' + sess.id, 'x-csrf-token': sess.csrf };
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HI, body: { provider: 'twilio', secret: 'TENANT_TWILIO_TOKEN', meta: { sid: 'ACtenant', from: '+15550001111' } } }), env, ctx);
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HI, body: { provider: 'resend', secret: 're_tenantkey', meta: { from: 'noreply@tenant.com' } } }), env, ctx);
+  const twRow = env.DB._db.prepare("SELECT secret_enc FROM integrations WHERE tenant_id=? AND provider='twilio'").get(tidP);
+  ok('integrations: tenant Twilio token stored ENCRYPTED (route encrypts; not plaintext at rest)', !!(twRow && twRow.secret_enc) && String(twRow.secret_enc).indexOf('TENANT_TWILIO_TOKEN') < 0, 'row=' + JSON.stringify(twRow));
+  const _rf = globalThis.fetch; let _cap = [];
+  globalThis.fetch = (url, opts) => { _cap.push({ url: String(url), opts: opts || {} }); return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ sid: 'SM1', id: 'em1' }), text: async () => '' }); };
+  env.TWILIO_SID = 'ACplatform'; env.TWILIO_TOKEN = 'PLATTOKEN'; env.TWILIO_FROM = '+15559999999'; env.RESEND_KEY = 're_platform'; env.MAIL_FROM = 'hello@atlasrental.io';
+  _cap = []; await sendSms(env, tidP, { to: '+15551234567', body: 'hi' });
+  const sReq = _cap.find(c => c.url.indexOf('api.twilio.com') >= 0);
+  ok('integrations: sendSms used the TENANT Twilio account (URL carries ACtenant, not ACplatform)', !!sReq && sReq.url.indexOf('ACtenant') >= 0, sReq && sReq.url);
+  ok('integrations: sendSms authed with the TENANT token (Basic ACtenant:token)', !!sReq && String((sReq.opts.headers || {}).Authorization || '').indexOf(btoa('ACtenant:TENANT_TWILIO_TOKEN')) >= 0);
+  _cap = []; await sendSms(env, 'TEN_NONE', { to: '+15551234567', body: 'hi' });
+  const sReq2 = _cap.find(c => c.url.indexOf('api.twilio.com') >= 0);
+  ok('integrations: sendSms FALLS BACK to the platform Twilio when the tenant has none', !!sReq2 && sReq2.url.indexOf('ACplatform') >= 0, sReq2 && sReq2.url);
+  _cap = []; await sendEmail(env, { tenant: tidP, to: 'x@y.com', subject: 's', html: 'h', transactional: true });
+  const eReq = _cap.find(c => c.url.indexOf('api.resend.com') >= 0);
+  ok('integrations: sendEmail authed with the TENANT Resend key', !!eReq && String((eReq.opts.headers || {}).Authorization || '').indexOf('re_tenantkey') >= 0);
+  ok('integrations: sendEmail sent from the TENANT verified sender', !!eReq && String(eReq.opts.body || '').indexOf('noreply@tenant.com') >= 0);
+  _cap = []; await sendEmail(env, { tenant: 'TEN_NONE', to: 'x@y.com', subject: 's', html: 'h', transactional: true });
+  const eReq2 = _cap.find(c => c.url.indexOf('api.resend.com') >= 0);
+  ok('integrations: sendEmail FALLS BACK to the platform Resend key when the tenant has none', !!eReq2 && String((eReq2.opts.headers || {}).Authorization || '').indexOf('re_platform') >= 0);
+  globalThis.fetch = _rf;
 }
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise

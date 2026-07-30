@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30m';
+const ATLAS_BUILD = '2026.07.30n';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1582,13 +1582,14 @@ function _quoteCents(q) {
 
 // Resend mailer. HONEST: no RESEND_KEY -> {sent:false,reason:'no_mailer'} so a caller records "not sent", never "delivered".
 async function sendEmail(env, msg) {
-  if (!env.RESEND_KEY) return { sent: false, reason: 'no_mailer' };
   if (!msg || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(msg.to || ''))) return { sent: false, reason: 'bad_recipient' };
+  var resendKey = env.RESEND_KEY, fromAddr = env.MAIL_FROM || 'hello@atlasrental.io';
+  if (msg.tenant) { try { var _ti = await _tenantIntegration(env, msg.tenant, 'resend'); if (_ti && _ti.secret && _ti.meta && _ti.meta.from) { resendKey = _ti.secret; fromAddr = _ti.meta.from; } } catch (e) {} }   // own-Resend: send from the tenant's OWN account + verified sender when connected (else Atlas's shared mailer)
+  if (!resendKey) return { sent: false, reason: 'no_mailer' };
   try {
     var to = String(msg.to).toLowerCase();
     // marketing sends respect the unsubscribe list; transactional (booking confirm / receipt) always go through
     if (msg.tenant && !msg.transactional && await isSuppressed(env, msg.tenant, to)) return { sent: false, reason: 'suppressed' };
-    var fromAddr = env.MAIL_FROM || 'hello@atlasrental.io';
     var from = (msg.fromName ? (String(msg.fromName).replace(/[<>"\r\n]/g, '') + ' ') : '') + '<' + fromAddr + '>';
     var html = msg.html || ''; var xHeaders;
     if (msg.tenant) {   // real one-tap unsubscribe (CAN-SPAM): a working link + List-Unsubscribe header
@@ -1598,7 +1599,7 @@ async function sendEmail(env, msg) {
       xHeaders = { 'List-Unsubscribe': '<' + link + '>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' };
     }
     var r = await _fetchTimeout('https://api.resend.com/emails', {
-      method: 'POST', headers: { 'Authorization': 'Bearer ' + env.RESEND_KEY, 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + resendKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({ from: from, to: [msg.to], subject: String(msg.subject || '').slice(0, 240), html: html, reply_to: msg.replyTo || undefined, headers: xHeaders })
     }, 10000);
     var j = await r.json().catch(function () { return {}; });
@@ -1924,7 +1925,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -2264,6 +2265,7 @@ async function _promoUnclaim(env, tenant, code) {
 // Twilio SMS. HONEST: no creds -> {sent:false,reason:'no_sms'}. Respects the suppression list (a STOP reply).
 async function sendSms(env, tenant, msg) {
   var sid = env.TWILIO_SID, tok = env.TWILIO_TOKEN, from = (msg && msg.from) || env.TWILIO_FROM;
+  if (tenant) { try { var _ti = await _tenantIntegration(env, tenant, 'twilio'); if (_ti && _ti.secret && _ti.meta && _ti.meta.sid && _ti.meta.from) { sid = _ti.meta.sid; tok = _ti.secret; from = _ti.meta.from; } } catch (e) {} }   // BYO-Twilio: send from the tenant's OWN account+number when connected (else Atlas's shared number)
   if (!sid || !tok || !from) return { sent: false, reason: 'no_sms' };
   if (!msg || !msg.to) return { sent: false, reason: 'bad_recipient' };
   if (tenant && await isSuppressed(env, tenant, String(msg.to).toLowerCase())) return { sent: false, reason: 'suppressed' };
@@ -3492,6 +3494,18 @@ async function tenantStripeKey(env, tenantId) {
     if (!row || !row.secret_enc) return '';
     return await decSecret(env, row.secret_enc, tenantId + '|stripe');
   } catch (e) { return ''; }
+}
+// A tenant's connected integration for `provider` -> { secret, meta } (decrypted secret_enc + parsed meta), or null. Mirrors
+// tenantStripeKey's AAD scheme (tenant|provider). Used so notifications can send from the tenant's OWN Twilio/Resend when they
+// have connected one (BYO-sender); fail-SAFE to null on ANY error so the caller always falls back to the platform sender.
+async function _tenantIntegration(env, tenantId, provider) {
+  try {
+    var row = await env.DB.prepare('SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider=?').bind(tenantId, provider).first();
+    if (!row || !row.secret_enc) return null;
+    var secret = await decSecret(env, row.secret_enc, tenantId + '|' + provider);
+    if (!secret) return null;
+    return { secret: secret, meta: (_hqJson(row.meta, {}) || {}) };
+  } catch (e) { return null; }
 }
 // Generic form-encoded Stripe POST (capture / cancel a hold / refund). HONEST: no key -> {ok:false,reason:'no_stripe'}.
 async function stripePost(secretKey, path, params, idemKey) {
