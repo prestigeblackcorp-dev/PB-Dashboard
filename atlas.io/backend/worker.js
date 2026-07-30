@@ -3473,12 +3473,14 @@ async function tenantStripeKey(env, tenantId) {
   } catch (e) { return ''; }
 }
 // Generic form-encoded Stripe POST (capture / cancel a hold / refund). HONEST: no key -> {ok:false,reason:'no_stripe'}.
-async function stripePost(secretKey, path, params) {
+async function stripePost(secretKey, path, params, idemKey) {
   if (!secretKey) return { ok: false, reason: 'no_stripe' };
   try {
     var form = []; for (var k in (params || {})) if (params[k] != null) form.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    var _sh = { 'Authorization': 'Bearer ' + secretKey, 'Content-Type': 'application/x-www-form-urlencoded' };
+    if (idemKey) _sh['Idempotency-Key'] = String(idemKey).slice(0, 255);   // #eng: Stripe-side dedup so a retried refund/capture (lost response, 12s timeout) can't double-issue
     var r = await _fetchTimeout('https://api.stripe.com/v1' + path, {
-      method: 'POST', headers: { 'Authorization': 'Bearer ' + secretKey, 'Content-Type': 'application/x-www-form-urlencoded' }, body: form.join('&')
+      method: 'POST', headers: _sh, body: form.join('&')
     }, 12000);
     var j = await r.json().catch(function () { return {}; });
     return r.ok ? { ok: true, obj: j } : { ok: false, reason: (j.error && j.error.message) || ('http_' + r.status) };
@@ -7492,9 +7494,9 @@ function doReset(){
         const p = (d.paid && d.paid[kind]) || null;
         if (!p || !p.pi) return json({ ok: false, reason: 'no_payment', message: 'No ' + kind + ' payment on file to ' + op + '.' });
         let r2;
-        if (op === 'capture') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/capture', (vInt(body.amountCents) && body.amountCents > 0) ? { amount_to_capture: body.amountCents } : {}); if (r2.ok) { p.captured = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; delete p.hold; } }
-        else if (op === 'release') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/cancel', {}); if (r2.ok) { p.released = { at: Date.now() }; delete p.hold; } }
-        else { const rp = { payment_intent: p.pi }; if (vInt(body.amountCents) && body.amountCents > 0) rp.amount = body.amountCents; r2 = await stripePost(sk, '/refunds', rp); if (r2.ok) { p.refunded = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; if (r2.obj && r2.obj.id) { d.refundIds = d.refundIds || []; d.refundIds.push(r2.obj.id); } } }   // P1-regression: stamp the Stripe refund id so the charge.refunded webhook (which now resolves the booking after P1) does NOT re-decrement revenue_cents -- this path already recomputed it absolutely below
+        if (op === 'capture') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/capture', (vInt(body.amountCents) && body.amountCents > 0) ? { amount_to_capture: body.amountCents } : {}, 'cap:' + p.pi + ':' + ((body.amountCents || p.amountCents) || '')); if (r2.ok) { p.captured = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; delete p.hold; } }
+        else if (op === 'release') { r2 = await stripePost(sk, '/payment_intents/' + p.pi + '/cancel', {}, 'rel:' + p.pi); if (r2.ok) { p.released = { at: Date.now() }; delete p.hold; } }
+        else { const rp = { payment_intent: p.pi }; if (vInt(body.amountCents) && body.amountCents > 0) rp.amount = body.amountCents; r2 = await stripePost(sk, '/refunds', rp, 'rf:' + p.pi + ':' + ((body.amountCents || p.amountCents) || '')); if (r2.ok) { p.refunded = { at: Date.now(), amountCents: (body.amountCents || p.amountCents) }; if (r2.obj && r2.obj.id) { d.refundIds = d.refundIds || []; d.refundIds.push(r2.obj.id); } } }   // P1-regression: stamp the Stripe refund id so the charge.refunded webhook (which now resolves the booking after P1) does NOT re-decrement revenue_cents -- this path already recomputed it absolutely below
         if (!r2.ok) return json({ ok: false, reason: r2.reason });
         // #346 OPTIMISTIC-LOCK persist: the Stripe op above already succeeded and fires exactly ONCE. Re-apply its outcome onto a
         // FRESHLY-read row via CAS so a payment webhook / another op racing on THIS same booking is never clobbered (the old blind
@@ -7557,8 +7559,8 @@ function doReset(){
           const caps = []; for (const k in d.paid) { const p = d.paid[k]; if (p && p.pi && !p.hold && k !== 'security' && !p.refunded) caps.push({ k: k, p: p }); }
           let captured = 0; caps.forEach(function (c) { captured += (Number(c.p.amountCents) || 0); });
           let toRefund = Math.max(0, captured - keepCents);   // keep the policy fee, refund the rest of what was actually captured
-          for (const c of caps) { if (toRefund <= 0) break; const amt = Math.min(Number(c.p.amountCents) || 0, toRefund); if (amt <= 0) continue; const rr = await stripePost(sk, '/refunds', { payment_intent: c.p.pi, amount: amt }); if (rr.ok) { refundedCents += amt; toRefund -= amt; _patches.push({ key: c.k, refunded: { at: Date.now(), amountCents: amt } }); if (rr.obj && rr.obj.id) _refIds.push(String(rr.obj.id)); } }   // Stripe refund fires ONCE here; the d.paid[k].refunded stamp + refund-id are re-applied in the CAS so a race can't lose them
-          const sec = d.paid.security; if (sec && sec.pi && sec.hold) { const rc = await stripePost(sk, '/payment_intents/' + sec.pi + '/cancel', {}); if (rc.ok) { released = true; } }   // release the refundable-deposit hold on cancel
+          for (const c of caps) { if (toRefund <= 0) break; const amt = Math.min(Number(c.p.amountCents) || 0, toRefund); if (amt <= 0) continue; const rr = await stripePost(sk, '/refunds', { payment_intent: c.p.pi, amount: amt }, 'rfc:' + c.p.pi + ':' + amt); if (rr.ok) { refundedCents += amt; toRefund -= amt; _patches.push({ key: c.k, refunded: { at: Date.now(), amountCents: amt } }); if (rr.obj && rr.obj.id) _refIds.push(String(rr.obj.id)); } }   // Stripe refund fires ONCE here; the d.paid[k].refunded stamp + refund-id are re-applied in the CAS so a race can't lose them
+          const sec = d.paid.security; if (sec && sec.pi && sec.hold) { const rc = await stripePost(sk, '/payment_intents/' + sec.pi + '/cancel', {}, 'rel:' + sec.pi); if (rc.ok) { released = true; } }   // release the refundable-deposit hold on cancel
         }
         // #340 + #346: kept revenue can never exceed what was actually COLLECTED (prior revenue_cents: online captures + cash/G5) -- the
         // "Keep 50%" preset is 50% of the RENTAL TOTAL not of collected, so an unclamped keepCents booked phantom revenue. Persist via
