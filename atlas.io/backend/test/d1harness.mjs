@@ -98,6 +98,22 @@ if (sess) {
   ok('RTBF: signature signer_name redacted', sig === '[erased]');
 } else { ok('RTBF setup: found a session', false, 'no session from signup'); }
 
+// signature-fabrication: the generic booking write drops a "signed" claim unless a real signatures row backs it -- but keeps it when one does.
+if (sess) {
+  const H = { cookie: 'atlas_sid=' + sess.id, 'x-csrf-token': sess.csrf };
+  // (a) FABRICATE on create: no signatures row -> portal.signedAt must be stripped
+  await worker.fetch(mkReq('POST', '/api/data/bookings', { headers: H, body: { id: 'FAKEBK', asset_id: 'A', starts: 1, ends: 2, status: 'confirmed', data: { cust: 'X', portal: { signedAt: 999999, signerName: 'Forged' }, quote: { totalCents: 100 } } } }), env, ctx);
+  const fbRow = env.DB._db.prepare("SELECT data FROM bookings WHERE id='FAKEBK'").get();
+  const fb = fbRow ? JSON.parse(fbRow.data) : { portal: { signedAt: 'MISSING' } };
+  ok('sig-fab: unbacked signedAt STRIPPED on create (no signatures row)', !fb.portal.signedAt && !fb.portal.signerName, JSON.stringify(fb.portal));
+  // (b) LEGIT: a booking WITH a real signatures row keeps signedAt on update
+  await env.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").bind('REALBK', tid, 'C', 'A', 1, 2, 'confirmed', 100, '{}', 'ptok', 1, 1).run();
+  await env.DB.prepare("INSERT INTO signatures (id,tenant_id,booking_id,signer_name,signed_at) VALUES (?,?,?,?,?)").bind('SIGR', tid, 'REALBK', 'Real Signer', 123).run();
+  await worker.fetch(mkReq('PUT', '/api/data/bookings/REALBK', { headers: H, body: { data: { cust: 'Y', portal: { signedAt: 555, signerName: 'Real Signer' } } } }), env, ctx);
+  const rb = JSON.parse(env.DB._db.prepare("SELECT data FROM bookings WHERE id='REALBK'").get().data);
+  ok('sig-fab: signedAt KEPT when a real signatures row backs it (legit sign not broken)', rb.portal.signedAt === 555, JSON.stringify(rb.portal));
+}
+
 // CAS-monotonic: updated_at must strictly advance even when the wall clock is frozen (the same-ms ABA where two writers
 // read the same stamp, both write it back unchanged, and BOTH pass "WHERE updated_at IS ?"). Fails on the bug, passes on the fix.
 {

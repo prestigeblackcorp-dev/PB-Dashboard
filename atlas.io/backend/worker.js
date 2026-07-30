@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30i';
+const ATLAS_BUILD = '2026.07.30j';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1369,6 +1369,13 @@ function _graftServerPay(clientD, serverD) {
 // 4th non-atomic sibling: an owner edit racing a Stripe webhook could overwrite the webhook's d.paid ledger. Every attempt re-reads
 // the fresh server blob, grafts its payment fields onto the client data, and CAS-writes on updated_at so a webhook landing mid-write
 // is re-read (not clobbered). `cols`/`vals` are the whitelisted columns; `clientData` is the parsed body.data (null -> no data write).
+// #sec (signature-fabrication): the generic booking write must not let a bookEdit member forge a SIGNED contract. portal.signedAt
+// may only be truthy if a real signatures row exists for this booking (the e-sign flow appends one). Clearing it (owner Override)
+// or a legit re-sync of an already-signed booking (row exists) is unaffected -- only an UNBACKED 'signed' claim is dropped.
+async function _stripUnbackedSig(env, tenantId, bookingId, data) {
+  if (!data || typeof data !== 'object' || !data.portal || typeof data.portal !== 'object' || !data.portal.signedAt) return;
+  try { const _r = await env.DB.prepare('SELECT id FROM signatures WHERE tenant_id=? AND booking_id=? LIMIT 1').bind(tenantId, bookingId || '').first(); if (!_r) { data.portal.signedAt = 0; delete data.portal.signerName; delete data.sigTrail; } } catch (e) {}
+}
 async function _bookingMirrorWrite(env, tenantId, id, cols, vals, clientData) {
   const dataIdx = cols.indexOf('data');
   if (dataIdx < 0 || !clientData || typeof clientData !== 'object') {   // no data blob at risk -> plain scoped UPDATE
@@ -1376,6 +1383,7 @@ async function _bookingMirrorWrite(env, tenantId, id, cols, vals, clientData) {
     return true;
   }
   const revIdx = cols.indexOf('revenue_cents');   // G5 may inject a DERIVED cash-quote revenue estimate -- valid ONLY while the column is still 0
+  await _stripUnbackedSig(env, tenantId, id, clientData);
   for (var _i = 0; _i < 6; _i++) {
     const row = await env.DB.prepare('SELECT data, revenue_cents, updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(id, tenantId).first();
     if (!row) return false;
@@ -7666,6 +7674,7 @@ function doReset(){
           if (coll === 'charges' && vStr(body.booking_id, 40)) { const _bok = await env.DB.prepare('SELECT id FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking_id, ctx.tenant_id).first(); if (!_bok) delete body.booking_id; }   // defense-in-depth: never let a charge reference another tenant's booking id
           // Booking #4 stale-push guard: never let an OLDER client blob overwrite a newer server booking (e.g. wipe a webhook-set charge.paidAt / d.paid, re-opening a paid charge as payable). Newest-wins on data._t, matching the client's own merge. Other columns still update.
           if (coll === 'bookings' && body.data && typeof body.data === 'object' && vStr(body.id, 40)) { try { const _curB = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(body.id, ctx.tenant_id).first(); if (_curB) { const _cdB = jparse(_curB.data, {}); if (Number(body.data._t || 0) < Number(_cdB._t || 0)) delete body.data; } } catch (e) {} }
+          if (coll === 'bookings' && body.data && typeof body.data === 'object') await _stripUnbackedSig(env, ctx.tenant_id, body.id, body.data);   // #sec: also strip an unbacked signedAt on CREATE (a fresh INSERT bypasses _bookingMirrorWrite)
           const { cols, vals } = patchFields(coll, body);       // whitelisted domain fields
           // Payments G5: reflect an OFFLINE/cash COMMITTED booking's revenue in the SERVER revenue_cents (platform GMV + /api/v1 read it; the owner dashboard already uses accrual for these via _bkEarned's fallback). ONLY when the Stripe webhook never set it (no online d.paid) -> never lowers/overwrites a collected figure. Derived from the booking's own quote, server-side.
           if (coll === 'bookings' && body.data && typeof body.data === 'object' && cols.indexOf('revenue_cents') < 0) {
