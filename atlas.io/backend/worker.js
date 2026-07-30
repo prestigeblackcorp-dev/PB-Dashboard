@@ -6797,7 +6797,7 @@ function doReset(){
         if (existing) return err(409, existing.tenant_id === ctx.tenant_id ? 'That person is already on your team.' : 'That email already has an Atlas account.');
         const uid = 'U' + randId(14), token = randId(28), now = Date.now();
         await env.DB.prepare("INSERT INTO users (id,email,pw_hash,pw_salt,tenant_id,role,caps,invite_token,invited_by,status,email_verified,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-          .bind(uid, email, null, null, ctx.tenant_id, role, caps, token, ctx.user.email, 'invited', 1, now).run();
+          .bind(uid, email, '', '', ctx.tenant_id, role, caps, token, ctx.user.email, 'invited', 1, now).run();   // pw_hash/pw_salt are NOT NULL -> use '' (invitee has no password until they accept; the accept flow UPDATEs the real hash). null here threw D1 NOT NULL constraint -> invites silently failed.
         await audit(env, ctx, req, 'team.invite', { email: email, role: role });
         const origin = env.APP_ORIGIN || 'https://atlasrental.io';
         const link = origin + '/?invite=' + token;
@@ -8981,11 +8981,18 @@ async function _uptimeTargets(env, cap) {
 // any network error / timeout -> up:false, status:0. Never throws.
 async function _uptimeProbe(tg) {
   const t0 = Date.now();
-  try {
-    const r = await _fetchTimeout(tg.url, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'AtlasUptime/1' } }, 4000);
-    const status = (r && r.status) || 0;
-    return { t: Date.now(), up: !!(status >= 200 && status < 400), status: status, ms: Date.now() - t0 };
-  } catch (e) { return { t: Date.now(), up: false, status: 0, ms: Date.now() - t0 }; }
+  async function one(timeout) {
+    try {
+      const r = await _fetchTimeout(tg.url, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'AtlasUptime/1' } }, timeout);
+      const status = (r && r.status) || 0;
+      return { up: !!(status >= 200 && status < 400), status: status };
+    } catch (e) { return { up: false, status: 0 }; }
+  }
+  // Two-strikes: a single cold-start / slow response must NOT flag a live site down. First try 8s; only if that
+  // fails do we retry once at 10s. "Down" requires BOTH to fail -- kills the false-positive from one transient miss.
+  let a = await one(8000);
+  if (!a.up) a = await one(10000);
+  return { t: Date.now(), up: a.up, status: a.status, ms: Date.now() - t0 };
 }
 // Bounded-concurrency sweep: at most `poolN` (default 4) in-flight probes so a batch of slow sites can never open N
 // simultaneous subrequests or stall the caller. Returns { tenantId: {t,up,status,ms} }.

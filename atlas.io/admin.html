@@ -360,6 +360,10 @@
     <div class="card-h"><h2>Error log (24h)</h2><span class="sub" id="errSub"></span><div class="sp"></div><button class="chip" onclick="loadErrors(true)">Refresh</button></div>
     <div class="card-b pad" id="errBody"><div class="mut">Loading&hellip;</div></div>
   </div>
+  <div class="card" id="aiTestCard">
+    <div class="card-h"><h2>AI providers</h2><span class="sub">Claude / GPT / Gemini council</span><div class="sp"></div><button class="chip" onclick="aiSelfTest()">Test now</button></div>
+    <div class="card-b pad" id="aiTestBody"><div class="mut">Click <b>Test now</b> to ping each provider and see the real status (no key / 401 / 404 / OK) &mdash; this is why "only Gemini answers" happens silently.</div></div>
+  </div>
   </section>
 
   <section class="hqsec" data-sec="security">
@@ -1295,6 +1299,20 @@ function _monRecs(){ var out=[];
   (DATA.members||[]).forEach(function(m){ var ts=m.fleet_updated_at||m.assets_updated_at||m.last_asset_update_at||m.last_activity_at||m.last_active_at||m.last_seen_at; if(ts){ var days=Math.floor((Date.now()-Number(ts))/86400000); if(days>=14){ out.push({sev:'low', title:esc(m.name||m.email||'A tenant')+" hasn't updated their fleet in "+nfmt(days)+' days', body:esc(m.email||'')}); } } });
   var rank={high:0,med:1,low:2}; out.sort(function(a,b){ return (rank[a.sev]-rank[b.sev]); });
   return out;
+}
+async function aiSelfTest(){
+  var el=$('aiTestBody'); if(!el) return;
+  el.innerHTML='<div class="mut">Testing&hellip;</div>';
+  try{
+    var r=await api('/api/admin/ai-selftest');
+    var d=(r&&r.json)||{};
+    if(!d.ok||!Array.isArray(d.providers)){ el.innerHTML='<div class="mut">Could not run the test (HTTP '+esc(String((r&&r.status)||'?'))+'). Make sure the console is unlocked.</div>'; return; }
+    el.innerHTML=d.providers.map(function(p){
+      var badge=!p.keyPresent?'<span style="color:var(--warn);font-weight:700">NO KEY</span>':(p.ok?'<span style="color:var(--ok);font-weight:700">OK</span>':'<span style="color:var(--danger);font-weight:700">FAIL '+esc(String(p.status||''))+'</span>');
+      var detail=!p.keyPresent?('No key set. Add '+esc(p.provider.toUpperCase())+'_KEY as a worker secret.'):('model '+esc(p.model||'')+(p.error?(' &mdash; '+esc(p.error)):''));
+      return '<div style="padding:9px 0;border-top:1px solid var(--line)"><b style="text-transform:capitalize">'+esc(p.provider)+'</b> &nbsp;'+badge+'<div class="mut" style="margin-top:3px">'+detail+'</div></div>';
+    }).join('');
+  }catch(e){ el.innerHTML='<div class="mut">Error running the test: '+esc(String(e))+'</div>'; }
 }
 function renderMon(){ var el=$('monBody'); if(!el) return; var sub=$('monSub'), recs=_monRecs();
   if(sub) sub.textContent=recs.length?(nfmt(recs.length)+' item'+(recs.length===1?'':'s')):'';
