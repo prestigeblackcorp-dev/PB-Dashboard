@@ -4214,10 +4214,18 @@ function doReset(){
           const custMail = await sendEmail(env, { to: b.email, tenant: prof.id, transactional: true, fromName: comms.fromName || prof.name, replyTo: comms.replyTo,
             subject: renderTpl(cTpl.subject || 'Your booking with {business} is received', vars),
             html: _emailShell(prof, _cBody + _cBtn) });
-          const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
-          if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
-            subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
-            html: _emailShell(prof, '<h2>New website booking</h2><p><b>' + esc(String(b.name)) + '</b> (' + esc(b.email) + (b.phone ? ', ' + esc(String(b.phone)) : '') + ') requested <b>' + esc(assetName) + '</b> for ' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + '.</p><p>Estimated <b>' + money2(q.totalCents) + '</b>. Reference <b>' + esc(bref) + '</b>. Open Atlas to confirm.</p>') });
+          // PERF: the owner-notification email doesn't gate the customer's response (the customer confirm + the Stripe payUrl below do),
+          // so defer the owner-row lookup + send off the response path -- the booking POST returns ~one email round-trip sooner, and
+          // waitUntil keeps the worker alive so the owner is still notified.
+          const _ownerNotify = (async function () {
+            try {
+              const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
+              if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
+                subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
+                html: _emailShell(prof, '<h2>New website booking</h2><p><b>' + esc(String(b.name)) + '</b> (' + esc(b.email) + (b.phone ? ', ' + esc(String(b.phone)) : '') + ') requested <b>' + esc(assetName) + '</b> for ' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + '.</p><p>Estimated <b>' + money2(q.totalCents) + '</b>. Reference <b>' + esc(bref) + '</b>. Open Atlas to confirm.</p>') });
+            } catch (e) {}
+          })();
+          if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_ownerNotify); else if (_ownerNotify && _ownerNotify.catch) _ownerNotify.catch(function () {});
           await audit(env, { tenant_id: prof.id }, req, 'public.book', { ref: bref, asset: assetName });
           _fireWebhook(_ectx, env, prof.id, 'booking.created', { id: bref, ref: bref, status: 'pending', asset: assetName, periods: periods, unit: cfg.unit || 'day', total_cents: q.totalCents, deposit_cents: q.depositCents, currency: 'usd', source: 'website', portal: url.origin + '/api/portal/' + token, customer: { name: String(b.name).slice(0, 120), email: b.email.toLowerCase(), phone: String(b.phone || '').slice(0, 40) }, created: Math.floor(now / 1000) });
           let payUrl = null;
@@ -8090,7 +8098,7 @@ function doReset(){
             // TCPA/CTIA: every marketing text MUST carry an opt-out. The dashboard promises "every text ends with Reply STOP to opt out", so ENFORCE it server-side. Applied AFTER _fillTokens (per recipient) so token expansion ({name}/{business}) can never push the suffix past the 1500 cap and clip it: if the FILLED body already contains STOP we just cap it, else we reserve exactly the suffix length (23) and append. sendSms adds no STOP of its own, so there's no double-append.
             const _appendStop = function (t) { t = String(t || ''); return /\bstop\b/i.test(t) ? t.slice(0, 1500) : (t.slice(0, 1477) + ' Reply STOP to opt out.'); };
             let _rows = [];
-            try { _rows = ((await env.DB.prepare('SELECT id,data FROM bookings WHERE tenant_id=? LIMIT 5000').bind(ctx.tenant_id).all()).results) || []; } catch (e) { _rows = []; }
+            try { _rows = ((await env.DB.prepare('SELECT id,data FROM bookings WHERE tenant_id=? ORDER BY created_at DESC LIMIT 5000').bind(ctx.tenant_id).all()).results) || []; } catch (e) { _rows = []; }
             const _seen = {}, _recips = [];
             for (const _r of _rows) {
               let _d = {}; try { _d = JSON.parse(_r.data || '{}'); } catch (e) { continue; }
