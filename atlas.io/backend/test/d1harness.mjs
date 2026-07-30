@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -140,6 +140,21 @@ __resetSchemaReady();
 env.DB._db.exec("UPDATE platform_config SET v='STALE' WHERE k='_schema_ver'");
 await ensurePlatformSchema(env);   // version mismatch -> RE-RUN -> table recreated (a schema change auto-invalidates)
 ok('version-gate RE-RUNS on version mismatch (table recreated -> auto-invalidation works)', !!env.DB._db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='platform_feedback'").get());
+
+// ---- rateLimit() single-hop UPSERT...RETURNING (real SQLite): exactly `max` calls per window pass, then refused; a
+// rolled-over window allows again. Proves the new one-statement limiter against a real DB (the money/auth-critical gate). ----
+{
+  const envR = makeEnv(); await ensurePlatformSchema(envR);
+  let allowed = 0;
+  for (let i = 0; i < 6; i++) { if (await rateLimit(envR, 'rl_test', 3, 60000)) allowed++; }
+  ok('rateLimit: exactly max(3) calls allowed in a window, the rest refused', allowed === 3, 'allowed=' + allowed);
+  const cRow = envR.DB._db.prepare("SELECT count FROM rate_limits WHERE bucket='rl_test'").get();
+  ok('rateLimit: single row, count advanced past the cap (one UPSERT per call, no 2nd statement)', cRow && Number(cRow.count) === 6, 'count=' + (cRow && cRow.count));
+  envR.DB._db.prepare("UPDATE rate_limits SET window_start=1 WHERE bucket='rl_test'").run();   // force the window to have expired
+  ok('rateLimit: allows again after the window rolls over (reset branch)', (await rateLimit(envR, 'rl_test', 3, 60000)) === true);
+  const rRow = envR.DB._db.prepare("SELECT count FROM rate_limits WHERE bucket='rl_test'").get();
+  ok('rateLimit: window reset dropped count back to 1', rRow && Number(rRow.count) === 1, 'count=' + (rRow && rRow.count));
+}
 
 // ---- MONEY PATH (real SQLite): a signature-verified Stripe webhook credits revenue correctly, and a dual-fire / replay is
 // idempotent (never double-counts). This is the exact webhook CAS + revenue math the regex mocks (run()->{changes:1}) can't exercise.

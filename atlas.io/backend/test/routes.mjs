@@ -446,7 +446,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM users WHERE email=\?/.test(sql)) { const id = usersByEmail.get(a[0]); return id ? users.get(id) : null; }
           if (/FROM users WHERE id=\?/.test(sql)) return users.get(a[0]) || null;
           if (/mfa_pending_enc FROM users/.test(sql)) return users.get(a[0]) || null;
-          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
+          if (/INSERT INTO rate_limits/.test(sql)) { let _rl=rateLimits.get(a[0]); if(!_rl||_rl.window_start<a[2]){_rl={count:1,window_start:a[1]};}else{_rl.count++;} rateLimits.set(a[0],_rl); return {count:_rl.count}; } if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
           if (/FROM platform_config WHERE k=\?/.test(sql)) { const v = platformConfig.get(a[0]); return v === undefined ? null : { v }; }
           if (/code_hash, expires_at FROM mfa_codes WHERE uid=\?/.test(sql)) return mfaCodes.get(a[0]) || null;
           if (/sqlite_master/.test(sql)) return { n: 25 };
@@ -820,7 +820,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM comp_grants/.test(sql)) return null;
           if (/FROM tenants WHERE id/.test(sql)) return tenants.get(a[0]) || null;
           if (/FROM platform_config WHERE k=\?/.test(sql)) { const v = platformConfig.get(a[0]); return v === undefined ? null : { v }; }
-          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
+          if (/INSERT INTO rate_limits/.test(sql)) { let _rl=rateLimits.get(a[0]); if(!_rl||_rl.window_start<a[2]){_rl={count:1,window_start:a[1]};}else{_rl.count++;} rateLimits.set(a[0],_rl); return {count:_rl.count}; } if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
           if (/sqlite_master/.test(sql)) return { n: 30 };
           return null;
         },
@@ -1008,7 +1008,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         first: async () => {
           if (/FROM platform_transactions/.test(sql)) throw new Error('sentinel boom: platform_transactions unreachable');
           if (/sqlite_master/.test(sql)) return { n: 30 };
-          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rl.get(a[0]) || null;
+          if (/INSERT INTO rate_limits/.test(sql)) { let _rl=rl.get(a[0]); if(!_rl||_rl.window_start<a[2]){_rl={count:1,window_start:a[1]};}else{_rl.count++;} rl.set(a[0],_rl); return {count:_rl.count}; } if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rl.get(a[0]) || null;
           if (/FROM platform_config/.test(sql)) return null;
           return null;
         },
@@ -1148,7 +1148,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           bind: (...x) => { a = x; return api; },
           first: async () => {
             if (/FROM sqlite_master/.test(sql)) return { n: 30 };
-            if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rl.get(a[0]) || null;
+            if (/INSERT INTO rate_limits/.test(sql)) { let _rl=rl.get(a[0]); if(!_rl||_rl.window_start<a[2]){_rl={count:1,window_start:a[1]};}else{_rl.count++;} rl.set(a[0],_rl); return {count:_rl.count}; } if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rl.get(a[0]) || null;
             if (/FROM platform_config/.test(sql)) return null;
             return null;
           },
@@ -1556,7 +1556,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/card_on_file,stripe_sub(?:,plan)? FROM tenants WHERE id=\?/.test(sql)) return tenants.get(a[0]) || null;
           if (/FROM tenants WHERE id/.test(sql)) return tenants.get(a[0]) || null;
           if (/FROM platform_config WHERE k=\?/.test(sql)) { const v = platformConfig.get(a[0]); return v === undefined ? null : { v }; }
-          if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
+          if (/INSERT INTO rate_limits/.test(sql)) { let _rl=rateLimits.get(a[0]); if(!_rl||_rl.window_start<a[2]){_rl={count:1,window_start:a[1]};}else{_rl.count++;} rateLimits.set(a[0],_rl); return {count:_rl.count}; } if (/FROM rate_limits WHERE bucket=\?/.test(sql)) return rateLimits.get(a[0]) || null;
           if (/sqlite_master/.test(sql)) return { n: 30 };
           return null;
         },

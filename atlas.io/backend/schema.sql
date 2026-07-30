@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS bookings (
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant ON bookings(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_tenant_status ON bookings(tenant_id, status);
 CREATE INDEX IF NOT EXISTS idx_bookings_portal ON bookings(portal_token);
+CREATE INDEX IF NOT EXISTS idx_bookings_tenant_ends ON bookings(tenant_id, ends);
 
 -- ---- Customers ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS customers (

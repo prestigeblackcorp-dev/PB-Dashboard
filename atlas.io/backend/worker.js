@@ -476,15 +476,20 @@ function csrfOk(req, ctx) {
 
 // ---------------------------------------------------------------- rate limiting
 async function rateLimit(env, bucket, max, windowMs) {
-  const now = Date.now();
-  const row = await env.DB.prepare('SELECT count,window_start FROM rate_limits WHERE bucket=?').bind(bucket).first();
-  if (!row || now - row.window_start > windowMs) {
-    await env.DB.prepare('INSERT INTO rate_limits (bucket,count,window_start) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=1,window_start=?').bind(bucket, now, now).run();
-    return true;
-  }
-  // ATOMIC: increment only while still under the cap, so a concurrent burst can't all read a stale count and pass (TOCTOU fix)
-  const _rl = await env.DB.prepare('UPDATE rate_limits SET count=count+1 WHERE bucket=? AND count<?').bind(bucket, max).run();
-  return !!(_rl && _rl.meta && _rl.meta.changes);
+  const now = Date.now(), cutoff = now - windowMs;
+  // SINGLE-HOP atomic limiter (PERF: was SELECT + conditional UPDATE = 2 D1 round-trips): ONE upsert that RESETS an
+  // expired window or INCREMENTS within it, RETURNING the new count -- halves the D1 hops on EVERY limited route
+  // (auth, /book, portal, webhook-mgmt, ...). Semantics preserved: the first `max` calls in a window pass, the rest are
+  // refused until it rolls over. Fully atomic under a concurrent burst (the row's count is read+written in one statement,
+  // closing the read-stale-count TOCTOU the old two-statement form only partly guarded). Needs SQLite RETURNING (D1 + node:sqlite).
+  const row = await env.DB.prepare(
+    'INSERT INTO rate_limits (bucket,count,window_start) VALUES (?,1,?) ' +
+    'ON CONFLICT(bucket) DO UPDATE SET ' +
+    'count=CASE WHEN rate_limits.window_start<? THEN 1 ELSE rate_limits.count+1 END, ' +
+    'window_start=CASE WHEN rate_limits.window_start<? THEN ? ELSE rate_limits.window_start END ' +
+    'RETURNING count'
+  ).bind(bucket, now, cutoff, cutoff, now).first();
+  return !row || Number(row.count) <= max;   // fail-OPEN if the row is missing (matches the old `if(!row)->allow`; never lock everyone out on a transient read)
 }
 
 async function audit(env, ctx, req, action, meta) {
@@ -563,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30l';
+const ATLAS_BUILD = '2026.07.30m';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1919,7 +1924,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -2905,6 +2910,7 @@ async function ensurePlatformSchema(env) {
   // the "ORDER BY created_at DESC" list reads (incl. the new pagination below) without a full per-tenant sort scan.
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_assets_tenant_created ON assets(tenant_id, created_at)').run(); } catch (e) {}
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_tenant_created ON bookings(tenant_id, created_at)').run(); } catch (e) {}
+  try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_tenant_ends ON bookings(tenant_id, ends)').run(); } catch (e) {}   // PERF: /book + /availability overlap scan filters tenant_id AND ends>startTs -- (tenant_id,ends) is more selective than the single-col idx_bookings_ends. (Adding this bumps _schemaVer -> the version gate auto-applies it on the next cold isolate.)
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_customers_tenant_created ON customers(tenant_id, created_at)').run(); } catch (e) {}
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_charges_tenant_created ON charges(tenant_id, created_at)').run(); } catch (e) {}
   try { await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_tenant_created ON ledger(tenant_id, created_at)').run(); } catch (e) {}
@@ -3837,8 +3843,10 @@ export default {
         const ip = req.headers.get('CF-Connecting-IP') || 'x';
         const body = await req.json().catch(() => ({}));
         if (!vEmail(body.email) || !vStr(body.password, 200)) return err(400, 'Email and password required.');
-        if (!await rateLimit(env, 'login:' + ip, 10, 900000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'login_ip', key: ip }); return err(429, 'Too many attempts. Try again in a few minutes.'); }
-        if (!await rateLimit(env, 'login:' + body.email.toLowerCase(), 8, 900000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'login_email', key: body.email.toLowerCase() }); return err(429, 'Too many attempts for this account.'); }
+        // PERF: the per-IP and per-email login limiters are independent buckets -> run them concurrently (one round-trip, not two serial).
+        const [_rlLip, _rlLem] = await Promise.all([rateLimit(env, 'login:' + ip, 10, 900000), rateLimit(env, 'login:' + body.email.toLowerCase(), 8, 900000)]);
+        if (!_rlLip) { await audit(env, null, req, 'auth.rate_limited', { kind: 'login_ip', key: ip }); return err(429, 'Too many attempts. Try again in a few minutes.'); }
+        if (!_rlLem) { await audit(env, null, req, 'auth.rate_limited', { kind: 'login_email', key: body.email.toLowerCase() }); return err(429, 'Too many attempts for this account.'); }
         const user = await env.DB.prepare('SELECT * FROM users WHERE email=?').bind(body.email.toLowerCase()).first();
         // Always run the FULL 600k KDF (even when the email is unknown) so response time can't reveal
         // whether an account exists.
