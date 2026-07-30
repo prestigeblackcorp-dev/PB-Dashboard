@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30j';
+const ATLAS_BUILD = '2026.07.30k';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -6681,7 +6681,10 @@ function doReset(){
       try { if (ctx && ctx.user && _isOwnerEmail(env, ctx.user.email)) { const _tcs = await _ownerControlState(env, ctx.user.email); if (_tcs.trapped) _trapCapture(env, _ectx, req, ctx.user.email, method + ' ' + path + (url && url.search ? url.search : '')); } } catch (e) {}
 
       if (path === '/api/auth/logout' && method === 'POST') {
-        if (ctx) { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(Date.now(), ctx.session.id).run(); await audit(env, ctx, req, 'logout', {}); }
+        // #sec (logout CSRF): atlas_sid is SameSite=None, so a cross-site POST could otherwise force-logout a signed-in owner.
+        // Require the CSRF token on the mutating (revoke) path -- consistent with every other mutating route; a no-ctx logout stays a
+        // harmless cookie-clear. No first-party client calls this route (they drop the local token), so nothing legitimate breaks.
+        if (ctx) { if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.'); await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(Date.now(), ctx.session.id).run(); await audit(env, ctx, req, 'logout', {}); }
         return json({ ok: true }, 200, { 'Set-Cookie': 'atlas_sid=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0' });
       }
       if (!ctx) return err(401, 'Not signed in.');

@@ -140,5 +140,19 @@ env.DB._db.exec("UPDATE platform_config SET v='STALE' WHERE k='_schema_ver'");
 await ensurePlatformSchema(env);   // version mismatch -> RE-RUN -> table recreated (a schema change auto-invalidates)
 ok('version-gate RE-RUNS on version mismatch (table recreated -> auto-invalidation works)', !!env.DB._db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='platform_feedback'").get());
 
+// logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise
+// force-logout a signed-in owner. A cookie-authenticated logout with NO CSRF token must be rejected AND must not revoke;
+// WITH the token it still works. (Run LAST -- it revokes `sess`.)
+if (sess) {
+  const rNo = await worker.fetch(mkReq('POST', '/api/auth/logout', { headers: { cookie: 'atlas_sid=' + sess.id } }), env, ctx);   // forged: cookie, no token
+  const revNo = env.DB._db.prepare('SELECT revoked_at FROM sessions WHERE id=?').get(sess.id).revoked_at;
+  ok('logout CSRF: tokenless cross-site logout -> 403 (force-logout blocked)', rNo.status === 403, 'status=' + rNo.status);
+  ok('logout CSRF: session NOT revoked by the tokenless request', revNo == null, 'revoked_at=' + revNo);
+  const rYes = await worker.fetch(mkReq('POST', '/api/auth/logout', { headers: { cookie: 'atlas_sid=' + sess.id, 'x-csrf-token': sess.csrf } }), env, ctx);   // legit: cookie + token
+  const revYes = env.DB._db.prepare('SELECT revoked_at FROM sessions WHERE id=?').get(sess.id).revoked_at;
+  ok('logout CSRF: with token -> 200 (real logout still works)', rYes.status === 200, 'status=' + rYes.status);
+  ok('logout CSRF: session revoked after a valid logout', revYes != null && Number(revYes) > 0, 'revoked_at=' + revYes);
+}
+
 console.log('\nD1 HARNESS: PASS=' + PASS + ' FAIL=' + FAIL + (FAIL ? '  -- FAILURES' : '  -- all green'));
 process.exit(FAIL ? 1 : 0);
