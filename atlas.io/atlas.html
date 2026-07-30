@@ -1985,9 +1985,17 @@ const Atlas = (function(){
     }catch(e){ _livePolling=false; }
   }
   setInterval(_livePollTick, 45000);
+  // GAP (silent data loss): the server pages /api/data/<coll> at LIMIT 1000 + returns hasMore, but the client fetched
+  // ONE page -> a tenant with >1000 bookings/assets/customers silently dropped the tail from the calendar/reports/rollups.
+  // _apiAll follows hasMore (offset += limit) and returns the SAME { json:{ items:[...] } } shape the merge code expects.
+  function _apiAll(path){
+    var items=[];
+    function page(off){ return _api(path+(path.indexOf('?')<0?'?':'&')+'offset='+off).then(function(r){ var j=r&&r.json; if(!j||!Array.isArray(j.items)) return { json:{ items:items } }; items=items.concat(j.items); var lim=Number(j.limit)||j.items.length||1000; if(j.hasMore && j.items.length>0 && off<100000) return page(off+lim); return { json:{ items:items } }; }); }
+    return page(0);
+  }
   // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
   function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
-    return Promise.all([_api('/api/data/bookings'),_api('/api/data/assets'),_api('/api/tenant/profile'),_api('/api/data/customers')]).then(function(r){
+    return Promise.all([_apiAll('/api/data/bookings'),_apiAll('/api/data/assets'),_api('/api/tenant/profile'),_apiAll('/api/data/customers')]).then(function(r){
       _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items);
       _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items);
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
