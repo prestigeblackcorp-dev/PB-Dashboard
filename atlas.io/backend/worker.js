@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30g';
+const ATLAS_BUILD = '2026.07.30h';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1338,7 +1338,7 @@ async function _bkRMW(env, id, tid, mutate) {
     const rev = (typeof out.rev === 'number') ? Math.max(0, Math.round(out.rev)) : (Number(row.revenue_cents) || 0);
     const st = (out.status != null) ? out.status : row.status;
     const _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
-      .bind(JSON.stringify(d), rev, st, Date.now(), id, tid, row.updated_at).run();
+      .bind(JSON.stringify(d), rev, st, Math.max(Date.now(), (Number(row.updated_at) || 0) + 1), id, tid, row.updated_at).run();
     committed = !!(_u && _u.meta && _u.meta.changes);
   }
   return { committed: committed, d: d, missing: false };
@@ -1385,7 +1385,7 @@ async function _bookingMirrorWrite(env, tenantId, id, cols, vals, clientData) {
     var wCols = cols, wVals = vals;
     if (revIdx >= 0 && (Number(row.revenue_cents) || 0) > 0) { wCols = cols.slice(); wVals = vals.slice(); wCols.splice(revIdx, 1); wVals.splice(revIdx, 1); }
     const dIdx = wCols.indexOf('data'), uIdx = wCols.indexOf('updated_at');
-    const v = wVals.slice(); v[dIdx] = JSON.stringify(clientData); if (uIdx >= 0) v[uIdx] = Date.now();
+    const v = wVals.slice(); v[dIdx] = JSON.stringify(clientData); if (uIdx >= 0) v[uIdx] = Math.max(Date.now(), (Number(row.updated_at) || 0) + 1);
     const _u = await env.DB.prepare('UPDATE bookings SET ' + wCols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=? AND updated_at IS ?').bind(...v, id, tenantId, row.updated_at).run();
     if (_u && _u.meta && _u.meta.changes) return true;
   }
@@ -1402,7 +1402,7 @@ async function _bkPatch(env, id, tid, patch) {
     if (!row) return false;
     const fd = jparse(row.data, {});
     if (patch(fd) === false) return true;
-    const _u = await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?').bind(JSON.stringify(fd), Date.now(), id, tid, row.updated_at).run();
+    const _u = await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?').bind(JSON.stringify(fd), Math.max(Date.now(), (Number(row.updated_at) || 0) + 1), id, tid, row.updated_at).run();
     if (_u && _u.meta && _u.meta.changes) return true;
   }
   return false;
@@ -1911,7 +1911,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -4390,7 +4390,7 @@ function doReset(){
               }
               d._t = Date.now();
               const _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
-                .bind(JSON.stringify(d), rev, (_isCanx ? row.status : 'confirmed'), Date.now(), md.booking, md.tenant, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT; never overwrite a 'cancelled' status column with 'confirmed' (E1)
+                .bind(JSON.stringify(d), rev, (_isCanx ? row.status : 'confirmed'), Math.max(Date.now(), (Number(row.updated_at) || 0) + 1), md.booking, md.tenant, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT; never overwrite a 'cancelled' status column with 'confirmed' (E1)
               _committed = !!(_u && _u.meta && _u.meta.changes);
               if (_committed) { _wasNew = !_slotHad; _wasCancelled = _isCanx; }   // #346: fire receipt/audit/webhook ONCE per NEW payment, not per delivery; _wasCancelled -> reconciliation note instead of a confirm-receipt (E1)
             }

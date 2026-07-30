@@ -6,7 +6,7 @@
 // Run: node --experimental-sqlite test/d1harness.mjs        (needs Node >= 22.5 for node:sqlite)
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import worker, { ensurePlatformSchema } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -97,6 +97,19 @@ if (sess) {
   ok('RTBF: booking financials KEPT (revenue + quote + paid)', b.quote.totalCents === 45000 && Number(bkRow.revenue_cents) === 45000 && b.paid.reserve.amountCents === 10000);
   ok('RTBF: signature signer_name redacted', sig === '[erased]');
 } else { ok('RTBF setup: found a session', false, 'no session from signup'); }
+
+// CAS-monotonic: updated_at must strictly advance even when the wall clock is frozen (the same-ms ABA where two writers
+// read the same stamp, both write it back unchanged, and BOTH pass "WHERE updated_at IS ?"). Fails on the bug, passes on the fix.
+{
+  const env2 = makeEnv(); await ensurePlatformSchema(env2);
+  const Tm = 5000000;
+  await env2.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)').bind('BKM', 'TENM', 'C', 'A', 1, 2, 'confirmed', 100, '{}', 1, Tm).run();
+  const realNow = Date.now; globalThis.Date.now = () => Tm;   // freeze the clock to the row's current updated_at (same ms)
+  await _bkPatch(env2, 'BKM', 'TENM', function (fd) { fd.m = 1; });
+  globalThis.Date.now = realNow;
+  const uaM = env2.DB._db.prepare("SELECT updated_at FROM bookings WHERE id='BKM'").get().updated_at;
+  ok('CAS-monotonic: updated_at advances even at same-ms clock (ABA closed)', uaM === Tm + 1, 'updated_at=' + uaM + ' (the bug leaves it ' + Tm + ')');
+}
 
 console.log('\nD1 HARNESS: PASS=' + PASS + ' FAIL=' + FAIL + (FAIL ? '  -- FAILURES' : '  -- all green'));
 process.exit(FAIL ? 1 : 0);
