@@ -6603,6 +6603,7 @@ function doReset(){
 
       // ---- EMAIL VERIFICATION: the click-through link (public, signed token) ---------------------------
       if (path === '/api/verify-email' && method === 'GET') {
+        if (!await rateLimit(env, 'vemail:' + ((req.headers.get('CF-Connecting-IP')) || 'x'), 60, 60000)) return err(429, 'Too many requests - please wait a moment.');   // consistency hardening: throttle the public verify-email endpoint per IP (each valid hit does a DB write; the 160-bit sig already makes brute impractical)
         const u = url.searchParams.get('u') || '', ve = (url.searchParams.get('e') || '').toLowerCase(), vx = parseInt(url.searchParams.get('x') || '0', 10) || 0, vs = url.searchParams.get('s') || '';
         await ensurePlatformSchema(env);
         const vOk = !!(u && ve && vx && vs && (vx > Date.now()) && _ctEq(vs, await _verifySig(env, u, ve, vx)));
@@ -7457,6 +7458,7 @@ function doReset(){
         if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
         if (pym[1] === 'refund' ? !_can(ctx, 'billing') : !_can(ctx, 'bookEdit')) return err(403, 'You do not have permission for this payment operation.');
         const op = pym[1];
+        if (!await rateLimit(env, 'payop:' + op + ':' + ctx.tenant_id, 30, 60000)) return err(429, 'Too many payment operations - please wait a moment.');   // SECURITY: cap capture/release/refund velocity so a compromised billing/bookEdit token cannot drain the account via rapid refunds
         const body = await req.json().catch(function () { return {}; });
         if (!vStr(body.booking, 40)) return err(400, 'Booking id required.');
         const row = await env.DB.prepare('SELECT id,data,revenue_cents FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking, ctx.tenant_id).first();
