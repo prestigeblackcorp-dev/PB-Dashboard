@@ -4283,8 +4283,16 @@ const Atlas = (function(){
           : '<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveAsset(\''+id+'\')">Save</button><button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.delAsset(\''+id+'\')">Remove this '+esc(S.fleet.noun)+'</button>')
       +'</div>');
   }
+  // #361: availability + per-asset revenue are keyed by the asset NAME stored on each booking (b.asset -> worker d.asset).
+  // On a rename, migrate every existing booking/waitlist row off the old name so the name-keyed overlap check can't miss
+  // them and open a double-book window. Bump _t so each migrated booking re-syncs (newest-wins) to the server the worker reads.
+  function _assetRenameCascade(oldNm, newNm){ if(!oldNm||!newNm||oldNm===newNm) return; var n=0;
+    (DATA.bookings||[]).forEach(function(b){ if(b && b.asset===oldNm){ b.asset=newNm; if(b.data&&b.data.asset===oldNm) b.data.asset=newNm; b._t=Date.now(); n++; } });
+    try{ (_waitlist()||[]).forEach(function(w){ if(w && w.asset===oldNm) w.asset=newNm; }); }catch(e){}
+    if(n){ try{ _logEvent('fleet','Renamed '+S.fleet.noun+' "'+oldNm+'" to "'+newNm+'" ('+n+' booking'+(n===1?'':'s')+' updated)',{}); }catch(e){} } }
   function saveAsset(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
-    a.name=(val('aName')||a.name).trim(); var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
+    var _oldNm=a.name; a.name=(val('aName')||a.name).trim(); if(_oldNm!==a.name) _assetRenameCascade(_oldNm, a.name);   // #361 rename cascade -> keep name-keyed availability/revenue consistent
+    var lc=(val('aLoc')||'').trim(); if(lc)a.loc=lc; else delete a.loc;
     var _lcc=(val('aLocCity')||'').trim(); if(_lcc)a.locCity=_lcc; else delete a.locCity;   // per-asset market -> feeds location-aware dreaming
     var _lcz=(val('aLocZip')||'').trim(); if(_lcz)a.locZip=_lcz; else delete a.locZip;
     var _r=parseFloat(val('aRate')); var _rPrev=a.rate; a.rate=(_r>=0?_r:a.rate); if(Number(a.rate)!==Number(_rPrev) && _sp().autoApply && _sp().autoApply.on) a.rateBaseline=a.rate;   /* Inc3: a manual rate edit re-anchors the auto-optimize band to the owner's new deliberate rate */ a.status=val('aStatus')||a.status;   // fix: accept a valid 0 rate (comp/loaner/free asset); blank/NaN keeps the old rate. Mirrors saveVehicle.

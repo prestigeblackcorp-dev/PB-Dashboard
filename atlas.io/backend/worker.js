@@ -4299,6 +4299,10 @@ function doReset(){
               // G1: a paid owner-added charge gets its OWN d.paid key ('charge:'+id) so multiple charges each count toward revenue.
               var _pkKey = (md.kind === 'charge' && md.charge) ? ('charge:' + md.charge) : (md.kind || 'payment');
               const _slotHad = !!d.paid[_pkKey];   // #339: was this exact payment slot already recorded? (idempotent guard for a webhook replay / checkout.session.completed + payment_intent.succeeded dual-fire)
+              // #363: were there ANY prior ONLINE (captured, non-hold, non-security, non-archived) payments before this one? A
+              // committed booking with NO prior online payment may carry a G5 cash-ESTIMATE in revenue_cents (= quote total); a
+              // first online reserve/balance is SETTLING that estimate, so we must replace it, not stack on top (double-count).
+              const _hadOnlinePrior = Object.keys(d.paid || {}).some(function (k) { const p = d.paid[k]; return p && !p.hold && k !== 'security' && String(k).indexOf('#') < 0; });
               // #345 dual-checkout: if the slot already holds a DIFFERENT pi (two DISTINCT completed checkouts for the same kind), archive
               // the prior payment under a pi-suffixed key so its Stripe id stays findable for a refund (never re-counted as revenue).
               if (_slotHad && d.paid[_pkKey] && d.paid[_pkKey].pi && String(d.paid[_pkKey].pi) !== String(pi)) d.paid[_pkKey + '#' + String(d.paid[_pkKey].pi).slice(0, 40)] = d.paid[_pkKey];
@@ -4313,7 +4317,13 @@ function doReset(){
               // amount) and never flip status back to confirmed. Read from the FRESH row each retry so a cancel landing mid-loop is seen.
               var _isCanx = (String(row.status || '').toLowerCase() === 'cancelled') || !!(d.status && /cancel/i.test(String(d.status)));
               const _addRev = (!_slotHad && !_piRefunded && !_isCanx && !(_isSec && md.hold === '1') && md.kind !== 'security') ? (Number(amt) || 0) : 0;
-              const rev = Math.max(0, (Number(row.revenue_cents) || 0) + _addRev);
+              // #363: a FIRST online reserve/balance/generic payment (not a charge/security) on a committed booking is settling the
+              // G5 cash-estimate that was injected as revenue_cents (= quote total). REPLACE the estimate with the real collected
+              // amount rather than add on top -- otherwise a $1000 confirm-then-pay-online booking reported $2000. Non-committed
+              // bookings had revenue_cents=0, so the reset is a no-op; a 2nd+ online payment (or a charge) adds normally.
+              const _g5corePay = (md.kind !== 'charge' && md.kind !== 'security');
+              const _estBase = (!_hadOnlinePrior && _addRev > 0 && _g5corePay) ? 0 : (Number(row.revenue_cents) || 0);
+              const rev = Math.max(0, _estBase + _addRev);
               if (md.kind === 'charge' && md.charge && Array.isArray(d.charges)) {   // stamp the specific charge paid so the portal shows it settled
                 for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(md.charge)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }   // paidOnline: this charge IS inside revenue_cents so the client must NOT re-add it to _bkEarned
               }
@@ -4718,7 +4728,7 @@ function doReset(){
         // Non-id kinds (pickup/condition/return/photo) are unchanged: they still serve on the (now-strong) key alone.
         const _idm = key.match(/\/portal\/([^/]+)\/id-/);
         if (_idm) {
-          const _bookingId = _idm[1], _tenantId = key.split('/')[1] || '';
+          const _bookingId = _idm[1], _tenantId = key.split('/')[2] || '';   // #364: key is atlas/t/<tenant>/portal/<booking>/id-... -> tenant is index [2], not [1] (which is the literal 't'). Was failing CLOSED (owner session ID review always 403); now the same-tenant check actually passes.
           let _authed = false;
           try { const _sctx = await resolveSession(env, req); if (_sctx && _sctx.tenant_id === _tenantId) _authed = true; } catch (e) {}
           if (!_authed) {
