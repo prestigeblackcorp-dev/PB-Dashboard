@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30h';
+const ATLAS_BUILD = '2026.07.30i';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1911,7 +1911,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -2700,8 +2700,14 @@ async function _lookupVerified(env, tenantId, email) {
     return { verified: true, name: row.name || '', dl_expiry: Number(row.dl_expiry) || 0 };
   } catch (e) { return null; }
 }
+let _schemaVerCache = null;
+// Schema version = a hash of ensurePlatformSchema's OWN source, so ANY change to a CREATE/INDEX/ALTER auto-invalidates it
+// -> a cold isolate whose DB is already at this version skips the ~138 serial statements, with no manual version bump to forget.
+function _schemaVer() { if (_schemaVerCache) return _schemaVerCache; try { const s = ensurePlatformSchema.toString(); let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; _schemaVerCache = 'sv1.' + (h >>> 0).toString(36) + '.' + s.length; } catch (e) { _schemaVerCache = 'sv1.err'; } return _schemaVerCache; }
+function __resetSchemaReady() { _pReady = false; _schemaVerCache = null; }   // test hook only: simulate a cold isolate
 async function ensurePlatformSchema(env) {
   if (_pReady) return;
+  try { if ((await _pcfgGet(env, '_schema_ver', '')) === _schemaVer()) { _pReady = true; return; } } catch (e) {}   // PERF: DB already at THIS schema version -> skip the ~138 serial CREATE/INDEX/ALTER statements on this cold isolate
   try {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_transactions (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, kind TEXT, tier TEXT, pack TEXT, amount_cents INTEGER DEFAULT 0, currency TEXT DEFAULT 'usd', stripe_id TEXT, created_at INTEGER)").run();
     await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_ptxn_stripe ON platform_transactions(stripe_id)").run();
@@ -2958,6 +2964,7 @@ async function ensurePlatformSchema(env) {
   // every existing asset row reads as 1 unit and the availability guards (all use Math.max(1, qty||1)) make ZERO
   // different decisions than before this shipped -- byte-identical until a tenant actually raises an asset's qty.
   try { await env.DB.prepare("ALTER TABLE assets ADD COLUMN qty INTEGER DEFAULT 1").run(); } catch (e) {}
+  try { await _pcfgSet(env, '_schema_ver', _schemaVer()); } catch (e) {}   // stamp the applied version so the next cold isolate can skip the whole pass
   _pReady = true;
 }
 // Owner master-dashboard gate: a dedicated ADMIN_TOKEN secret (NOT a tenant session), constant-time compared via the existing _ctEq. Fail-closed when unset.

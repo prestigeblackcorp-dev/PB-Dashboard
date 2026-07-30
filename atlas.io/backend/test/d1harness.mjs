@@ -6,7 +6,7 @@
 // Run: node --experimental-sqlite test/d1harness.mjs        (needs Node >= 22.5 for node:sqlite)
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import worker, { ensurePlatformSchema, _bkPatch } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -110,6 +110,19 @@ if (sess) {
   const uaM = env2.DB._db.prepare("SELECT updated_at FROM bookings WHERE id='BKM'").get().updated_at;
   ok('CAS-monotonic: updated_at advances even at same-ms clock (ABA closed)', uaM === Tm + 1, 'updated_at=' + uaM + ' (the bug leaves it ' + Tm + ')');
 }
+
+// schema-gate: a cold isolate whose DB is already at this schema version SKIPS the ~138 CREATE/INDEX/ALTER statements;
+// a version mismatch (a schema edit changes the source-hash version) RE-RUNS them. Proven WITHOUT a call counter by
+// dropping a table and checking whether the gated pass recreates it.
+ok('schema version stamped in platform_config after warmup', (await env.DB.prepare("SELECT v FROM platform_config WHERE k='_schema_ver'").first('v')) === _schemaVer());
+__resetSchemaReady();
+env.DB._db.exec('DROP TABLE platform_feedback');
+await ensurePlatformSchema(env);   // version still matches -> SKIP -> the dropped table must NOT be recreated
+ok('version-gate SKIPS on matching version (dropped table NOT recreated -> ~138 statements skipped)', !env.DB._db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='platform_feedback'").get());
+__resetSchemaReady();
+env.DB._db.exec("UPDATE platform_config SET v='STALE' WHERE k='_schema_ver'");
+await ensurePlatformSchema(env);   // version mismatch -> RE-RUN -> table recreated (a schema change auto-invalidates)
+ok('version-gate RE-RUNS on version mismatch (table recreated -> auto-invalidation works)', !!env.DB._db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='platform_feedback'").get());
 
 console.log('\nD1 HARNESS: PASS=' + PASS + ' FAIL=' + FAIL + (FAIL ? '  -- FAILURES' : '  -- all green'));
 process.exit(FAIL ? 1 : 0);
