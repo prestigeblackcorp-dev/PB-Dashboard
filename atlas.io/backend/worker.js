@@ -563,7 +563,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30c';
+const ATLAS_BUILD = '2026.07.30d';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1811,10 +1811,10 @@ async function _mfaIssueChallenge(env, user) {
 // ---- trusted device: signed uid|exp|method token (same HMAC family as above, fail-closed with no SESSION_KEY).
 // Binding the CURRENT mfa_method into the signature means changing OR disabling the method silently invalidates
 // every previously-issued trust token for that user -- no revocation list to store or clean up. ----
-async function _trustedDeviceSig(env, uid, exp, method) {
+async function _trustedDeviceSig(env, uid, exp, method, pwEpoch) {
   if (!env.SESSION_KEY) return '';
   try { const key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(exp) + '|' + String(method) + '|trustdevice'));
+    const s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(exp) + '|' + String(method) + '|' + String(pwEpoch || '') + '|trustdevice'));   // #sec: bind to the password salt so a password reset (new salt) invalidates EVERY remembered device
     return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
   } catch (e) { return ''; }
 }
@@ -1823,7 +1823,7 @@ async function _mfaDeviceTrusted(env, body, user) {
     const tok = String((body && body.trusted_device) || ''); if (!tok) return false;
     const p = tok.split('.'); if (p.length !== 3 || p[0] !== user.id) return false;
     const exp = parseInt(p[1], 10) || 0; if (!exp || exp < Date.now()) return false;
-    const expect = await _trustedDeviceSig(env, user.id, exp, user.mfa_method || 'off');
+    const expect = await _trustedDeviceSig(env, user.id, exp, user.mfa_method || 'off', user.pw_salt);
     return !!expect && _ctEq(p[2], expect);
   } catch (e) { return false; }   // fail-closed: any parse/crypto error -> not trusted -> challenge still required
 }
@@ -3969,7 +3969,7 @@ function doReset(){
         await env.DB.prepare('UPDATE users SET last_login=? WHERE id=?').bind(Date.now(), user.id).run();
         const sess = await createSession(env, user, req);
         let deviceToken = null;
-        if (body.remember_device) { const dexp = Date.now() + 30 * 24 * 3600 * 1000; deviceToken = user.id + '.' + dexp + '.' + (await _trustedDeviceSig(env, user.id, dexp, user.mfa_method || 'off')); }
+        if (body.remember_device) { const dexp = Date.now() + 30 * 24 * 3600 * 1000; deviceToken = user.id + '.' + dexp + '.' + (await _trustedDeviceSig(env, user.id, dexp, user.mfa_method || 'off', user.pw_salt)); }
         await audit(env, { tenant_id: user.tenant_id, user }, req, 'mfa.verify_ok', { backup: result.backup });
         // #276: this completes login for an MFA-enabled account (the plain /api/auth/login above returned a
         // challenge instead of a session) -- same flag-gated billing_state as login/signup, so an MFA account
@@ -7314,6 +7314,7 @@ function doReset(){
         if (method === 'POST') {
           if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
           if (!_can(ctx, 'settings')) return err(403, 'You do not have permission to manage webhooks.');
+          if (!await rateLimit(env, 'whmgmt:' + ctx.tenant_id, 20, 60000)) return err(429, 'Too many webhook operations - please wait a moment.');   // #sec: throttle create + the external test-send (a blind-SSRF-ish egress amplifier)
           const b = await req.json().catch(function () { return {}; });
           if (b.test) {   // fire a test 'ping' at one existing endpoint (awaited so the tenant sees the delivery result live)
             const ep = await env.DB.prepare('SELECT id,url,secret,events,fail_count FROM webhook_endpoints WHERE id=? AND tenant_id=?').bind(String(b.test), ctx.tenant_id).first();
