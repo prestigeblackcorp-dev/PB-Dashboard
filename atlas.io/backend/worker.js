@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30t';
+const ATLAS_BUILD = '2026.07.30u';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2427,6 +2427,61 @@ async function _geotabAuth(env, server, database, user, password) {
   if (path && path !== 'ThisServer') { var ph = _trkSafeHost('https://' + String(path).replace(/^https?:\/\//, '').replace(/\/.*$/, '')); if (ph.ok && /\.geotab\.com$/.test(ph.hostname)) srv = ph.origin; }
   return { ok: true, server: srv, credentials: j.result.credentials };
 }
+// Dot-path resolver for the generic GPS connector: walk 'a.b.c' (numeric segments index into arrays). Returns undefined if absent.
+function _dpath(obj, path) {
+  if (path == null || path === '') return undefined;
+  var parts = String(path).split('.'), cur = obj;
+  for (var i = 0; i < parts.length; i++) {
+    if (cur == null) return undefined;
+    var k = parts[i];
+    cur = (Array.isArray(cur) && /^\d+$/.test(k)) ? cur[parseInt(k, 10)] : cur[k];
+  }
+  return cur;
+}
+// Resolve the configured path first, then a list of common fallback field names; return the first meaningful (non empty) value.
+function _dfirst(obj, primary, fallbacks) {
+  var v = _dpath(obj, primary);
+  if (v !== undefined && v !== null && v !== '') return v;
+  for (var i = 0; i < (fallbacks || []).length; i++) { var f = _dpath(obj, fallbacks[i]); if (f !== undefined && f !== null && f !== '') return f; }
+  return undefined;
+}
+// Normalize a speed value to mph given a declared source unit ('mph' default -> no change; 'kmh'/'kph' -> *0.621371; 'knots' -> *1.15078).
+function _trkSpeedToMph(v, unit) { var s = Number(v) || 0; var u = String(unit || 'mph').toLowerCase(); if (u === 'kmh' || u === 'kph' || u === 'km/h') return s * 0.621371; if (u === 'knots' || u === 'kn' || u === 'kt') return s * 1.15078; return s; }
+// Normalize a timestamp (unix seconds, unix ms, or an ISO/string) to an ISO string; '' if absent/unparseable.
+function _trkTsIso(ts) {
+  if (ts == null || ts === '') return '';
+  try { if (typeof ts === 'number' || /^\d+$/.test(String(ts))) { var n = Number(ts); return new Date(n < 1e12 ? n * 1000 : n).toISOString(); } var d = new Date(String(ts)); return isNaN(d.getTime()) ? String(ts) : d.toISOString(); } catch (e) { return String(ts); }
+}
+// Resolve the device array out of an arbitrary JSON response: an explicit dot-path wins; else a top-level array; else the first
+// array found under a common container key; else the object itself (an id->device map, normalized to values by _trkExtract).
+function _trkResolveList(gj, listPath) {
+  if (listPath) return _dpath(gj, listPath);
+  if (Array.isArray(gj)) return gj;
+  var _c = ['data', 'items', 'devices', 'results', 'units', 'list', 'objects', 'vehicles', 'trackers'];
+  for (var i = 0; i < _c.length; i++) { if (gj && Array.isArray(gj[_c[i]])) return gj[_c[i]]; }
+  return gj;
+}
+// Shared position extractor for the generic connector (and any brand whose response is a device array with mappable fields).
+// `paths` are dot-paths (each with a default); unmapped fields fall back to a broad set of common field names. NOTHING is
+// fabricated -- a device that does not yield a finite lat/lng is DROPPED, never invented. speedUnit normalizes speed to mph.
+function _trkExtract(list, paths, speedUnit) {
+  var gp = paths || {};
+  if (list && !Array.isArray(list) && typeof list === 'object') list = Object.keys(list).map(function (k) { return list[k]; });
+  if (!Array.isArray(list)) return [];
+  return list.map(function (d) {
+    if (d == null || typeof d !== 'object') return null;
+    var lat = Number(_dfirst(d, gp.lat || 'lat', ['latitude', 'position.latitude', 'position.lat', 'location.lat', 'location.latitude', 'gps.location.lat', 'latest_device_point.lat', 'last_position.lat', 'y']));
+    var lng = Number(_dfirst(d, gp.lng || 'lng', ['longitude', 'position.longitude', 'position.lng', 'position.lon', 'location.lng', 'location.lon', 'location.longitude', 'gps.location.lng', 'latest_device_point.lng', 'last_position.lng', 'lon', 'x']));
+    var sp = Number(_dfirst(d, gp.speed || 'speed', ['speed', 'velocity', 'position.speed', 'gps.speed', 'inst_speed'])) || 0;
+    var head = Number(_dfirst(d, gp.heading || 'heading', ['heading', 'course', 'bearing', 'angle', 'direction', 'position.course', 'gps.heading'])) || 0;
+    var nm = _dfirst(d, gp.name || 'name', ['name', 'label', 'title', 'nickName', 'device_name', 'display_name', 'objectname', 'number', 'nm']);
+    var idv = _dfirst(d, gp.id || 'id', ['id', 'device_id', 'deviceId', 'imei', 'objectno', 'source_id']);
+    var vin = _dfirst(d, gp.vin || 'vin', ['vin', 'vehicleIdentificationNumber']);
+    var addr = _dfirst(d, gp.address || 'address', ['address', 'description', 'postext', 'formattedLocation']);
+    var sMph = _trkSpeedToMph(sp, speedUnit);
+    return { deviceId: String(idv == null ? '' : idv), label: nm == null ? '' : String(nm), vin: vin == null ? '' : String(vin), lat: lat, lng: lng, heading: head, speed: sMph, ts: _trkTsIso(_dfirst(d, gp.ts || 'ts', ['timestamp', 'time', 'ts', 'updated', 'fixTime', 'dt_tracker', 'located_at', 'last_update', 'fix_time_gmt', 'gps.updated'])), address: addr == null ? '' : String(addr), moving: sMph > 1 };
+  }).filter(function (p) { return p && isFinite(p.lat) && isFinite(p.lng); });
+}
 async function _trackerFetch(env, provider, cred, meta) {
   try {
     if (provider === 'bouncie') {
@@ -2498,13 +2553,96 @@ async function _trackerFetch(env, provider, cred, meta) {
         return { deviceId: String(d.id || ''), label: '', vin: '', lat: lat, lng: lng, heading: dir, speed: sp * 0.621371, ts: ts ? new Date(ts * 1000).toISOString() : '', address: '', moving: sp > 1 };
       }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
     }
+    if (provider === 'wialon') {
+      // Wialon (Gurtam) Remote API. cred = access token; meta.host optional (Wialon Local self-host; default Hosting SaaS).
+      // token/login -> eid session; core/search_items(avl_unit, flags 1+1024=1025) -> items[].pos {x:lng,y:lat,s:km/h,c:course,t:unix}, .nm name. km/h -> mph.
+      var wHost = _trkSafeHost((meta && meta.host) || 'https://hst-api.wialon.com'); if (!wHost.ok) return { ok: false, reason: wHost.reason };
+      var wL = await _fetchTimeout(wHost.origin + '/wialon/ajax.html?svc=token/login&params=' + encodeURIComponent(JSON.stringify({ token: cred || '' })), {}, 12000);
+      var wlj = await wL.json().catch(function () { return {}; }); if (!wlj || !wlj.eid) return { ok: false, reason: 'auth' };
+      var wParams = JSON.stringify({ spec: { itemsType: 'avl_unit', propName: 'sys_name', propValueMask: '*', sortType: 'sys_name' }, force: 1, flags: 1025, from: 0, to: 4294967295 });
+      var wS = await _fetchTimeout(wHost.origin + '/wialon/ajax.html', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'svc=core/search_items&sid=' + encodeURIComponent(wlj.eid) + '&params=' + encodeURIComponent(wParams) }, 12000);
+      var wsj = await wS.json().catch(function () { return {}; }); var wItems = (wsj && wsj.items) || []; if (!Array.isArray(wItems)) return { ok: false, reason: 'shape' };
+      return { ok: true, positions: wItems.map(function (it) { var p = it.pos || {}, s = Number(p.s) || 0; return { deviceId: String(it.id || ''), label: it.nm || '', vin: '', lat: Number(p.y), lng: Number(p.x), heading: Number(p.c) || 0, speed: s * 0.621371, ts: p.t ? new Date(Number(p.t) * 1000).toISOString() : '', address: '', moving: s > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    if (provider === 'navixy') {
+      // Navixy API v2. cred = session hash or API key; meta.host = full API base (region/self-host), default api.us.navixy.com/v2.
+      // /tracker/list -> {list:[{id,label}]}; /tracker/get_states -> {states:{<id>:{gps:{location:{lat,lng},speed(km/h),heading}}}}. km/h -> mph.
+      var _nu; try { _nu = new URL(String((meta && meta.host) || 'https://api.us.navixy.com/v2').trim()); } catch (e) { return { ok: false, reason: 'bad_host' }; }
+      var nGuard = _trkSafeHost(_nu.origin); if (!nGuard.ok) return { ok: false, reason: nGuard.reason };
+      var nBase = _nu.origin + _nu.pathname.replace(/\/+$/, '');
+      var nLR = await _fetchTimeout(nBase + '/tracker/list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash: cred || '' }) }, 12000);
+      var nlj = await nLR.json().catch(function () { return {}; }); if (!nlj || nlj.success === false) return { ok: false, reason: 'auth' };
+      var nList = (nlj && nlj.list) || []; if (!Array.isArray(nList)) return { ok: false, reason: 'shape' }; if (!nList.length) return { ok: true, positions: [] };
+      var nLabels = {}, nIds = nList.map(function (t) { nLabels[String(t.id)] = t.label || ''; return t.id; });
+      var nSR = await _fetchTimeout(nBase + '/tracker/get_states', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash: cred || '', trackers: nIds }) }, 12000);
+      var nsj = await nSR.json().catch(function () { return {}; }); var nStates = (nsj && nsj.states) || {}; if (typeof nStates !== 'object') return { ok: false, reason: 'shape' };
+      var nOut = []; Object.keys(nStates).forEach(function (id) { var st = nStates[id] || {}, g = st.gps || {}, loc = g.location || {}, s = Number(g.speed) || 0, lat = Number(loc.lat), lng = Number(loc.lng); if (!(isFinite(lat) && isFinite(lng))) return; nOut.push({ deviceId: String(id), label: nLabels[String(id)] || '', vin: '', lat: lat, lng: lng, heading: Number(g.heading) || 0, speed: s * 0.621371, ts: g.updated ? _trkTsIso(g.updated) : '', address: '', moving: String(st.movement_status || '') === 'moving' || s > 1 }); });
+      return { ok: true, positions: nOut };
+    }
+    if (provider === 'motive') {
+      // Motive (formerly KeepTruckin) Fleet API. cred = API key -> header 'X-Api-Key'. Fixed host. GET /v1/vehicle_locations ->
+      // vehicles[].vehicle.current_location {lat, lon, speed(MPH), located_at, description}; vehicle.number=name, vehicle.vin. (v1 has no heading; first page of vehicles.)
+      var mR = await _fetchTimeout('https://api.gomotive.com/v1/vehicle_locations', { headers: { 'X-Api-Key': cred || '' } }, 12000);
+      var mj = await mR.json().catch(function () { return {}; }); var mRows = (mj && mj.vehicles) || []; if (!Array.isArray(mRows)) return { ok: false, reason: (mj && mj.error) ? 'auth' : 'shape' };
+      return { ok: true, positions: mRows.map(function (row) { var v = (row && row.vehicle) || {}, c = v.current_location || {}, s = Number(c.speed) || 0; return { deviceId: String(v.id || ''), label: v.number || ((v.make || '') + ' ' + (v.model || '')).trim() || '', vin: v.vin || '', lat: Number(c.lat), lng: Number(c.lon), heading: Number(c.bearing) || 0, speed: s, ts: c.located_at || '', address: c.description || '', moving: s > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    if (provider === 'webfleet') {
+      // Webfleet (TomTom) WEBFLEET.connect. cred = JSON {account,username,password,apikey}. Fixed host. showObjectReportExtern (JSON)
+      // -> bare array; coords are MICRO-degrees latitude_mdeg/longitude_mdeg (/1e6); speed km/h -> mph; course=heading; pos_time=ts; objectname=name.
+      var wf; try { wf = JSON.parse(cred); } catch (e) { wf = {}; }
+      if (!wf.account || !wf.username || !wf.password) return { ok: false, reason: 'auth' };
+      var wfUrl = 'https://csv.webfleet.com/extern?lang=en&action=showObjectReportExtern&outputformat=json&useUTF8=true&useISO8601=true&account=' + encodeURIComponent(wf.account) + (wf.apikey ? ('&apikey=' + encodeURIComponent(wf.apikey)) : '');
+      var wfr = await _fetchTimeout(wfUrl, { headers: { 'Authorization': 'Basic ' + btoa(wf.username + ':' + wf.password) } }, 12000);
+      var wfj = await wfr.json().catch(function () { return null; }); if (!Array.isArray(wfj)) return { ok: false, reason: 'auth' };
+      return { ok: true, positions: wfj.map(function (o) { var s = Number(o.speed) || 0; return { deviceId: String(o.objectno || o.objectuid || ''), label: o.objectname || '', vin: '', lat: Number(o.latitude_mdeg) / 1e6, lng: Number(o.longitude_mdeg) / 1e6, heading: Number(o.course) || 0, speed: s * 0.621371, ts: o.pos_time ? _trkTsIso(o.pos_time) : '', address: o.postext || '', moving: s > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng) && (p.lat !== 0 || p.lng !== 0); }) };
+    }
+    if (provider === 'zubie') {
+      // Zubie (Zinc v2). cred = account API key -> header 'Zubie-Api-Key'. Fixed host api.zubiecar.com. GET /api/v2/zinc/vehicles ->
+      // vehicles[].vehicle_location {point:{lat,lon}, speed_mph(mph, nullable), heading(nullable), timestamp, motion_status}; nickname/key/vin.
+      var zr = await _fetchTimeout('https://api.zubiecar.com/api/v2/zinc/vehicles', { headers: { 'Zubie-Api-Key': cred || '' } }, 12000);
+      var zj = await zr.json().catch(function () { return {}; }); var zRows = (zj && zj.vehicles) || []; if (!Array.isArray(zRows)) return { ok: false, reason: (zj && (zj.error || zj.message)) ? 'auth' : 'shape' };
+      return { ok: true, positions: zRows.map(function (v) { var l = v.vehicle_location || {}, pt = l.point || {}, s = Number(l.speed_mph) || 0; return { deviceId: String(v.key || ''), label: v.nickname || '', vin: v.vin || '', lat: Number(pt.lat), lng: Number(pt.lon), heading: Number(l.heading) || 0, speed: s, ts: l.timestamp || '', address: '', moving: String(l.motion_status || '') === 'moving' || s > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    if (provider === 'azuga') {
+      // Azuga. cred = OAuth2 Bearer access token (tenant-supplied; token refresh is onboarding-gated). Fixed host services.azuga.com.
+      // POST /azuga-ws-oauth/v3/vehicles/latestlocation -> data[] {lat,lng, speed(km/h), cog(heading), dateAndTime(epoch ms), trackeeName, trackeeId}. km/h -> mph.
+      var ar = await _fetchTimeout('https://services.azuga.com/azuga-ws-oauth/v3/vehicles/latestlocation', { method: 'POST', headers: { 'Authorization': 'Bearer ' + (cred || ''), 'Content-Type': 'application/json' }, body: '{}' }, 12000);
+      var aj = await ar.json().catch(function () { return {}; }); var aRows = (aj && aj.data) || []; if (!Array.isArray(aRows)) return { ok: false, reason: (aj && aj.error) ? 'auth' : 'shape' };
+      return { ok: true, positions: aRows.map(function (v) { var s = Number(v.speed) || 0; return { deviceId: String(v.trackeeId || v.deviceId || ''), label: v.trackeeName || '', vin: '', lat: Number(v.lat), lng: Number(v.lng), heading: Number(v.cog) || 0, speed: s * 0.621371, ts: v.dateAndTime ? _trkTsIso(v.dateAndTime) : '', address: v.address || '', moving: s > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng) && (p.lat !== 0 || p.lng !== 0); }) };
+    }
+    if (provider === 'onestepgps') {
+      // One Step GPS. cred = api key (query 'api-key'). Endpoint + auth + fixed host are confirmed real (live-probed); the exact
+      // inner position field NAMES are not officially published pre-key, so extract DEFENSIVELY (primary guess latest_device_point.*)
+      // via _trkExtract's fallbacks -- a device that yields no finite lat/lng is DROPPED, never invented (honest, never fabricated).
+      var oR = await _fetchTimeout('https://track.onestepgps.com/v3/api/public/device?latest_point=true&api-key=' + encodeURIComponent(cred || ''), {}, 12000);
+      var oj = await oR.json().catch(function () { return null; }); if (oj == null) return { ok: false, reason: 'shape' };
+      if (oj && !Array.isArray(oj) && (oj.code === 401 || oj.code === 403 || oj.code === 400)) return { ok: false, reason: 'auth' };
+      return { ok: true, positions: _trkExtract(_trkResolveList(oj, ''), { lat: 'latest_device_point.lat', lng: 'latest_device_point.lng', heading: 'latest_device_point.angle', ts: 'latest_device_point.dt_tracker', name: 'display_name', id: 'device_id' }, (meta && meta.speedUnit) || 'mph') };
+    }
+    // ===== Universal REST GPS connector (mechanism #1): makes ANY REST platform real. The tenant supplies meta.api_url + an
+    // auth spec (meta.auth) + JSON dot-paths (meta.paths); the token lives in cred (encrypted). We fetch THEIR endpoint
+    // (SSRF-guarded on the host, original path+query preserved) and extract positions via the configured paths -- nothing
+    // simulated. Sensible field-name fallbacks let a plain {lat,lng} feed work with zero path config. Speed unit via meta.speedUnit.
+    if (provider === 'generic') {
+      var gm = meta || {};
+      var gSafe = _trkSafeHost(gm.api_url || ''); if (!gSafe.ok) return { ok: false, reason: gSafe.reason };
+      var _gu; try { _gu = new URL(String(gm.api_url).trim()); } catch (e) { return { ok: false, reason: 'bad_host' }; }   // host already vetted; keep the tenant's full path+query
+      var gAuth = gm.auth || {}, gHeaders = {}, gType = String(gAuth.type || (cred ? 'bearer' : 'none')).toLowerCase();
+      if (gType === 'bearer') { if (cred) gHeaders['Authorization'] = 'Bearer ' + cred; }
+      else if (gType === 'header') { if (cred) gHeaders[String(gAuth.name || 'Authorization')] = (gAuth.prefix ? (gAuth.prefix + ' ') : '') + cred; }
+      else if (gType === 'query') { _gu.searchParams.set(String(gAuth.name || 'api_key'), cred || ''); }
+      var gr = await _fetchTimeout(_gu.href, { headers: gHeaders }, 12000);
+      var gj = await gr.json().catch(function () { return null; }); if (gj == null) return { ok: false, reason: 'shape' };
+      return { ok: true, positions: _trkExtract(_trkResolveList(gj, (gm.paths || {}).list), gm.paths, gm.speedUnit) };
+    }
     return { ok: false, reason: 'unknown_provider' };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
 // Providers with a REAL server-side live-GPS integration (mirrors the _trackerFetch blocks). The live-position route polls
-// ONLY these; every other brand the client offers stays in labeled preview (never fed a fabricated position). Keep in sync
-// with _trackerFetch + the client TRK_LIVE map.
-const TRK_PROVIDERS = ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi'];
+// ONLY these. Includes 'generic' -- the universal connector -- so any REST GPS platform a tenant configures is polled for
+// REAL too; a brand with no real path is simply never in this list, so it is NEVER fed a fabricated position. Keep in sync
+// with _trackerFetch + the client TRK_LIVE / TRK_CONN maps. (The original 6 blocks are byte-unchanged; the rest are additive.)
+const TRK_PROVIDERS = ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi', 'wialon', 'navixy', 'motive', 'webfleet', 'zubie', 'azuga', 'onestepgps', 'generic'];
 
 // #206 validate + price a promo code at the PUBLIC customer checkout (server-authoritative, from the owner's published promos).
 // Mirrors the dashboard's _validatePromo rules; anonymous visitors can never redeem a personal/loyalty coupon.

@@ -6350,8 +6350,18 @@ const Atlas = (function(){
     {id:'meitrack',name:'Meitrack'},{id:'concox',name:'Concox / Jimi IoT'},{id:'navixy',name:'Navixy'},{id:'flespi',name:'flespi'},
     {id:'other',name:'Other (generic API)'}
   ];
-  var TRK_LIVE={bouncie:1,samsara:1,traccar:1,geotab:1,gpswox:1,flespi:1};   // providers with a real live-sync backend integration today (mirrors the worker's TRK_PROVIDERS); every other brand connects in preview (simulated positions)
-  function _trkLiveNames(){ return TRACKERS.filter(function(x){return TRK_LIVE[x.id];}).map(function(x){return x.name;}); }   // human names of the really-integrated providers, derived from TRK_LIVE (never hand-maintained copy that can drift)
+  var TRK_LIVE={bouncie:1,samsara:1,traccar:1,geotab:1,gpswox:1,flespi:1,wialon:1,navixy:1,motive:1,webfleet:1,zubie:1,azuga:1,onestepgps:1};   // brands with a DEDICATED one-tap live-sync backend block (mirrors the worker's dedicated _trackerFetch providers in TRK_PROVIDERS)
+  // Connection PATH per brand. EVERY brand has a REAL path -- none simulate: 'dedicated' (its own live-sync form), 'generic'
+  // (the universal REST connector -- tenant supplies api_url + auth + JSON field paths), or 'platform' (a device MAKER with no
+  // cloud API of its own -- connect via the tracking platform its hardware reports into). Dedicated brands are in TRK_LIVE above.
+  var TRK_CONN={ teltonika:'platform', queclink:'platform', meitrack:'platform', concox:'platform' };   // everything not in TRK_LIVE and not here defaults to 'generic'
+  function _trkConn(id){ return TRK_LIVE[id]?'dedicated':(TRK_CONN[id]||'generic'); }
+  // Device makers report into a platform Atlas DOES integrate for real -- offer those as the connect route (honest, no fake direct link).
+  var TRK_MAKER_PLATFORMS={ teltonika:['flespi','wialon','traccar','navixy'], queclink:['flespi','wialon','traccar','navixy'], meitrack:['wialon','traccar','flespi'], concox:['wialon','traccar','flespi'] };
+  // Honest PRE-FILL for a generic-routed brand whose real endpoint + fields are known from its public docs -- the tenant only
+  // pastes their token and can edit any field. Only brands confirmed to the field level are prefilled; the rest start blank.
+  var TRK_GENERIC_PREFILL={ gpsinsight:{ api_url:'https://api.gpsinsight.com/v2/vehicle/location/json', authType:'query', authName:'session_token', speedUnit:'mph', paths:{ lat:'latitude', lng:'longitude', speed:'inst_speed', heading:'heading', ts:'fix_time_gmt', name:'label' } } };
+  function _trkLiveNames(){ return TRACKERS.filter(function(x){return TRK_LIVE[x.id];}).map(function(x){return x.name;}); }   // human names of the DEDICATED-sync providers, derived from TRK_LIVE (never hand-maintained copy that can drift)
   function _trkLiveList(){ var n=_trkLiveNames(); return n.length>1?(n.slice(0,-1).join(', ')+' and '+n[n.length-1]):(n[0]||''); }
   var TRK_BOX={minLat:30.20,maxLat:30.34,minLng:-97.82,maxLng:-97.66};
   var TRK_STREETS=['Congress Ave','S Lamar Blvd','E 6th St','Guadalupe St','Riverside Dr','Cesar Chavez St','Burnet Rd','Manor Rd','Airport Blvd','Barton Springs Rd','MoPac Expy','I-35 Frontage'];
@@ -6399,7 +6409,7 @@ const Atlas = (function(){
   // #202: pull REAL positions from the worker (which holds the provider creds) and map each device to a fleet asset by VIN, then name.
   function _trkFetchLive(first){ if(!(ATLAS_BACKEND && _apiCsrf)) return; var t=_trackers(); if(!t.live) return;
     _api('/api/trackers/positions',{method:'POST'}).then(function(res){ var j=(res&&res.json)||{}; if(!(j&&j.ok)) return;
-      if(!j.live){ t.live=false; save(); return; }   // provider was disconnected server-side -> fall back to preview state
+      if(!j.live){ t.live=false; t.connected=false; _trkStop(); save(); try{ renderTracking(); }catch(e){} return; }   // no live provider on the server -> honest reconnect/empty screen; NEVER fall back to a simulated "connected" map
       if(j.error && first){ toast('Connected, but the provider returned no data ('+esc(j.error)+'). Check the key.'); }
       var ps=j.positions||[]; if(!ps.length){ if(first) toast('Connected -- positions appear once a device reports in.'); return; }
       var assets=DATA.assets||[], byVin={}, byName={}; assets.forEach(function(a){ if(a.vin)byVin[String(a.vin).toUpperCase()]=a; byName[String(a.name).toLowerCase()]=a; });
@@ -6427,7 +6437,7 @@ const Atlas = (function(){
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
     body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); if(t.live) _trkFetchLive(true); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
-    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers to map every '+esc(S.fleet.noun)+' &mdash; live positions on '+esc(_trkLiveList())+'; every other brand shows the same layout with simulated positions. Location, trips, mileage, geofences and alerts.</p>'
+    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers to map every '+esc(S.fleet.noun)+' with <b>real live positions</b> &mdash; one-tap sync for '+esc(_trkLiveList())+', plus a universal connector for any other REST GPS platform. Location, trips, mileage, geofences and alerts.</p>'
     +'<button class="btn btn--primary" onclick="Atlas.openTrackerConnect()">Connect a tracker</button>'
     +'<div class="trk-logos">'+TRACKERS.map(function(x){return '<span class="trk-logo">'+esc(x.name)+'</span>';}).join('')+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:6px">Works with '+TRACKERS.length+'+ providers &mdash; bring your API key or account login.</div></div>'; }
@@ -6437,15 +6447,15 @@ const Atlas = (function(){
     samsara:{need:'API token',steps:['Log in to the Samsara dashboard (cloud.samsara.com)','Open Settings > API Tokens','Create a token with read access to Vehicle Stats + Locations','Paste the token above']},
     geotab:{need:'server, database, username, password',steps:['Sign in to MyGeotab','Note your database name (in the URL after /database/, or under About)','Use your own login, or add a read-only user for Atlas','Enter the server (usually my.geotab.com), database, username and password above']},
     vyncs:{need:'API key',steps:['Sign in to your Vyncs account','Request API access via Vyncs support / developer program','Copy the API key they issue','Paste it above']},
-    zubie:{need:'API key',steps:['Log in to Zubie','Open Account > Developer / API Keys','Create an API key with location read access','Paste it above']},
-    motive:{need:'API access token',steps:['Log in to Motive (formerly KeepTruckin) as an Admin','Open Admin > Integrations / API','Generate an API access token','Paste it above']},
+    zubie:{need:'API key',steps:['Log in to Zubie','Request an account API key from support@zubie.com (sent as the Zubie-Api-Key header)','Copy the API key with location read access','Paste it above']},
+    motive:{need:'API key',steps:['Log in to Motive (formerly KeepTruckin) as an Admin','Open Admin > Developers > API Keys and request/generate a key','Copy the API key (Atlas sends it as X-API-Key)','Paste it above']},
     verizon:{need:'API credentials',steps:['Sign in to Verizon Connect Reveal','Open Admin > Integration / API','Request or generate your API credentials','Paste your key above']},
     spytec:{need:'API key',steps:['Sign in to your Spytec GPS / ClearPathGPS account','Request API access from support','Copy the issued API key','Paste it above']},
     tracki:{need:'API key',steps:['Log in to your Tracki account','Open Settings > API','Generate an API key','Paste it above']},
-    azuga:{need:'API token',steps:['Log in to Azuga as an Admin','Open Admin > API Tokens','Generate a token with vehicle + location read access','Paste it above']},
+    azuga:{need:'OAuth access token (Bearer)',steps:['Log in to Azuga as an Admin','Request API access from integration@azuga.com and obtain your OAuth2 access token','Copy the access token (Bearer)','Paste it above']},
     calamp:{need:'API key/secret',steps:['Sign in to CalAmp iOn / Telematics Cloud','Open Settings > API credentials','Generate an API key and secret','Paste your key above']},
-    onestepgps:{need:'API key',steps:['Log in to One Step GPS','Open Settings > API Keys','Create a read-only API key','Paste it above']},
-    lojack:{need:'API credentials',steps:['Contact your LoJack / Spireon fleet account rep for API access','They enable the FleetLocate / NSpire API for your account','Copy the API key / credentials provided','Paste it above']},
+    onestepgps:{need:'API key',steps:['Log in to One Step GPS','Request an API key (integrations@onestepgps.com) with device read access','Copy the API key','Paste it above -- your device fields map automatically on the first sync']},
+    lojack:{need:'a REST API from your fleet platform (if any)',steps:['LoJack is a stolen-vehicle recovery service and has no public GPS API of its own','If your vehicles are on Spireon FleetLocate (or another platform) that exposes a REST API, use that','Get that platform API endpoint URL + token','Enter them in the connector above -- otherwise LoJack cannot provide live GPS']},
     trackmate:{need:'API key',steps:['Log in to your TrackMate GPS account','Open Account > API access','Generate an API key','Paste it above']},
     spireon:{need:'API credentials',steps:['Sign in to Spireon FleetLocate / NSpire','Open Admin > API / Integrations','Generate API credentials','Paste your key above']},
     gpsinsight:{need:'API token',steps:['Log in to GPS Insight (Verizon Connect)','Open Settings > API','Generate an API token','Paste it above']},
@@ -6453,47 +6463,75 @@ const Atlas = (function(){
     fleetup:{need:'API key',steps:['Log in to FleetUp','Open Settings > API / Developer','Generate an API key','Paste it above']},
     linxup:{need:'API key',steps:['Log in to Linxup','Open Account > API access','Generate an API key','Paste it above']},
     ram:{need:'API credentials',steps:['Contact your RAM Tracking account manager for API access','They provide API credentials for live location','Copy the key','Paste it above']},
-    teltonika:{need:'server token',steps:['Open your Teltonika platform (e.g. FMB device / server config)','Enable the data API / server credentials','Copy the API key or server token','Paste it above']},
-    queclink:{need:'API token',steps:['Open your Queclink device-management platform','Enable API / server-push credentials','Copy the API token','Paste it above']},
+    teltonika:{need:'the tracking platform your devices report into',steps:['Teltonika makes GPS hardware (FMB/FMC), not a cloud service of its own','Your devices stream to a platform -- flespi, Wialon, Traccar or Navixy all connect to Atlas for REAL live GPS','In the box above, pick that platform instead of Teltonika','Follow that platform steps to paste its token']},
+    queclink:{need:'the tracking platform your devices report into',steps:['Queclink makes GPS hardware (GV/GL), not a cloud service of its own','Your devices stream to a platform -- flespi, Wialon, Traccar or Navixy all connect to Atlas for REAL live GPS','In the box above, pick that platform instead of Queclink','Follow that platform steps to paste its token']},
     gpswox:{need:'server URL + API hash',steps:['Log in to your GPSWOX server as an admin','Open Settings > API and copy your API hash (user_api_hash)','Confirm your server URL (e.g. https://your-host.com)','Paste the server URL and API hash above']},
     optimuspro:{need:'API key',steps:['Sign in to your Optimus Pro / Optimus GPS account','Open Settings > API access','Generate a read-only API key','Paste it above']},
     a3lert:{need:'API key',steps:['Sign in to your A3lert account','Open Settings > API / Integrations','Generate an API key or access token','Paste it above']},
-    wialon:{need:'API token',steps:['Log in to Wialon (Gurtam) hosting','Open User Settings > Access tokens','Create a token with read access to units + messages','Paste the token above']},
+    wialon:{need:'access token (+ server URL for Wialon Local)',steps:['Log in to Wialon (Gurtam)','Open User Settings > Access tokens and create a token with read access to units + messages','Copy the token','Paste it above (add your server URL only if you run Wialon Local self-hosted)']},
     traccar:{need:'server URL + API token',steps:['Open your Traccar server web app','Go to Settings > Account > Token and generate one','Confirm your server URL (e.g. https://demo.traccar.org)','Paste the API token above']},
-    webfleet:{need:'API credentials',steps:['Sign in to Webfleet (TomTom) as an admin','Open Settings > WEBFLEET.connect / API','Create API credentials (account, username, password/key)','Paste your key above']},
+    webfleet:{need:'account, username, password and API key',steps:['Sign in to WEBFLEET (TomTom) as an admin','Open the WEBFLEET.connect area and note your account name + API key','Use your own login, or add a read-only WEBFLEET.connect user','Enter the account, username, password and API key above']},
     fleetcomplete:{need:'API key',steps:['Log in to Fleet Complete','Open Admin > Integrations / API','Request or generate an API key','Paste it above']},
-    meitrack:{need:'API token',steps:['Log in to the Meitrack MS03 / platform','Open Settings > API','Generate an API token','Paste it above']},
-    concox:{need:'server token',steps:['Open your Concox / Jimi IoT platform (e.g. tracksolidpro)','Open Settings > API / Open Platform','Create API credentials','Paste your key above']},
-    navixy:{need:'API hash/key',steps:['Log in to Navixy','Open Account > API keys','Generate a user API key (hash)','Paste it above']},
+    meitrack:{need:'the tracking platform your devices report into',steps:['Meitrack makes GPS hardware (T/MVT), not a cloud service of its own','Your devices stream to a platform -- Wialon, Traccar or flespi all connect to Atlas for REAL live GPS (or the Meitrack MS03 platform via the universal connector if it exposes a REST API)','In the box above, pick that platform instead of Meitrack','Follow that platform steps to paste its token']},
+    concox:{need:'the tracking platform your devices report into',steps:['Concox / Jimi IoT makes GPS hardware (GT06/JC), not a cloud service of its own','Your devices stream to a platform -- Wialon, Traccar or flespi all connect to Atlas for REAL live GPS','In the box above, pick that platform instead of Concox','Follow that platform steps to paste its token']},
+    navixy:{need:'API key or session hash (+ API base URL)',steps:['Log in to Navixy','Open Account > API keys and generate a user API key (hash)','Note your API base URL (api.us.navixy.com/v2, api.eu.navixy.com/v2, or your self-hosted base)','Paste the key and base URL above']},
     flespi:{need:'flespi token',steps:['Sign in to flespi.io','Open the Tokens section','Create a token with read access to your devices','Paste the token above']}
   };
   function _trackerGuide(id,name){ var g=TRACKER_GUIDES[id]; if(g) return g;
-    return {need:'API key', steps:['Log in to your '+name+' account on their website (use the web dashboard, not the phone app)','Open Settings / Admin > API or Integrations','Generate a read-only API key or access token','Paste it above and connect']}; }
+    return {need:'API endpoint URL + key', steps:['Log in to your '+name+' account on their website (use the web dashboard, not the phone app)','Open Settings / Admin > API or Integrations and generate a read-only API key or token','Find your API endpoint URL -- the REST/JSON URL that lists your devices with their location','Enter the endpoint URL, choose how it authenticates, and paste the key above']}; }
   function _trkGuideHtml(id){ var t=TRACKERS.filter(function(x){return x.id===id;})[0]||{name:id}; var g=_trackerGuide(id,t.name);
     return '<div class="trk-guide"><div class="trk-guide__hd">How to connect '+esc(t.name)+' <span>You will need: '+esc(g.need)+'</span></div><ol class="trk-guide__steps">'+g.steps.map(function(s){return '<li>'+esc(s)+'</li>';}).join('')+'</ol></div>'; }
   function trkGuideUpdate(){ var el=document.getElementById('trkGuide'); if(el) el.innerHTML=_trkGuideHtml(val('trkProv')); }
   // ONE unified list (was two provider dropdowns in two tabs). Pick a provider -> the correct fields for THAT provider
   // render below (real multi-field forms for the 3 live integrations; a URL+key form for the rest) + its own how-to steps.
-  function openTrackerConnect(){ var opts=TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+(TRK_LIVE[x.id]?' (live sync)':'')+'</option>';}).join('');
+  function openTrackerConnect(){ var opts=TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){ var c=_trkConn(x.id), tag=(c==='dedicated'?' (live sync)':(c==='platform'?' (via platform)':' (API connector)')); return '<option value="'+x.id+'">'+esc(x.name)+tag+'</option>';}).join('');
     openModal('<div class="modal__head"><h3>Connect a tracker</h3>'+_xBtn()+'</div><div class="modal__body">'
-    +'<p class="bk-lenhint" style="margin:0 0 12px">Pick your GPS provider, follow the steps, and paste your keys. Live sync is supported for <b>'+esc(_trkLiveList())+'</b> today; every other brand connects in <b>preview</b> (the live-map layout with simulated positions) while live sync rolls out.</p>'
+    +'<p class="bk-lenhint" style="margin:0 0 12px">Pick your GPS provider and paste your keys. <b>'+_trkLiveNames().length+' brands</b> have one-tap live sync; any other REST GPS platform connects through the <b>universal connector</b>; hardware makers connect via the platform their devices report into. Every connection pulls <b>real</b> positions &mdash; nothing simulated.</p>'
     +'<div class="field"><label>Your GPS provider</label><select class="select" id="trkProv" onchange="Atlas.trkFieldsUpdate()">'+opts+'</select></div>'
     +'<div id="trkGuide"></div>'
     +'<div id="trkFields"></div>'
     +'<div id="trkConnNote"></div>'
     +'<button class="btn btn--primary btn--full btn--lg" id="trkConnBtn" onclick="Atlas.trkConnect()">Connect</button>'
     +'</div>'); trkFieldsUpdate(); }
-  // correct inputs per provider: the 3 real integrations get their exact multi-field forms; everyone else gets an
-  // optional Server/API URL (some providers require one) + an API key/login field. Guide steps come from _trackerGuide.
-  function _trkConnFields(prov){ if(TRK_LIVE[prov]) return _trkLiveFields(prov);
-    return '<div class="field"><label>Server / API URL <span style="color:var(--muted);font-weight:400">(only if your provider gives you one)</span></label><input class="input mono" id="trkUrl" placeholder="https://api.your-provider.com"></div>'
-      +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" placeholder="Paste your API key, token, or login"></div>'; }
+  // Correct inputs per CONNECTION PATH: 'dedicated' brands get their exact multi-field live-sync form; device 'platform' makers
+  // get routed to the real platform their hardware reports into; everyone else gets the universal REST connector. All real.
+  function _trkConnFields(prov){ var c=_trkConn(prov); if(c==='dedicated') return _trkLiveFields(prov); if(c==='platform') return _trkPlatformFields(prov); return _trkGenericFields(prov); }
+  // Device MAKER (Teltonika/Queclink/Meitrack/Concox): no cloud API of its own -> route to the platform its hardware reports
+  // into (each of which Atlas integrates for real). NO credential fields here -> picking a platform switches to that real provider.
+  function _trkPlatformFields(prov){ var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name, plats=TRK_MAKER_PLATFORMS[prov]||['wialon','traccar','flespi'];
+    var btns=plats.map(function(p){ var pn=(TRACKERS.filter(function(x){return x.id===p;})[0]||{name:p}).name; return '<button type="button" class="btn btn--ghost btn--sm" onclick="Atlas.trkPickProvider(\''+p+'\')">Connect via '+esc(pn)+'</button>'; }).join('');
+    return '<div class="bk-lenhint" style="margin:0 0 10px">'+esc(nm)+' makes GPS <b>hardware</b>, not a cloud service. Your devices stream to a tracking <b>platform</b> &mdash; connect Atlas to that platform for real live GPS:</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px">'+btns+'<button type="button" class="btn btn--ghost btn--sm" onclick="Atlas.trkPickProvider(\'other\')">Universal API connector</button></div>'; }
+  // Universal REST connector (mechanism #1): tenant supplies the endpoint URL + how it authenticates + (optional) JSON field
+  // paths. Real for ANY REST GPS platform. Prefilled for brands whose endpoint + fields are known from public docs (else blank).
+  function _trkGenericFields(prov){ var pf=TRK_GENERIC_PREFILL[prov]||{}, pp=pf.paths||{}, authType=pf.authType||'bearer'; function _v(x){ return x?(' value="'+esc(x)+'"'):''; }
+    return '<div class="field"><label>API endpoint URL</label><input class="input mono" id="gcUrl"'+_v(pf.api_url)+' placeholder="https://api.your-platform.com/devices"></div>'
+      +'<div class="field"><label>Authentication</label><select class="select" id="gcAuthType" onchange="Atlas.trkGenericAuthUpdate()">'
+        +'<option value="bearer"'+(authType==='bearer'?' selected':'')+'>Bearer token (Authorization: Bearer ...)</option>'
+        +'<option value="header"'+(authType==='header'?' selected':'')+'>Custom header</option>'
+        +'<option value="query"'+(authType==='query'?' selected':'')+'>Query parameter</option>'
+        +'<option value="none"'+(authType==='none'?' selected':'')+'>None / already in the URL</option>'
+      +'</select></div>'
+      +'<div class="field" id="gcAuthNameWrap" style="'+((authType==='header'||authType==='query')?'':'display:none')+'"><label id="gcAuthNameLbl">'+(authType==='query'?'Query parameter name':'Header name')+'</label><input class="input mono" id="gcAuthName"'+_v(pf.authName)+' placeholder="'+(authType==='query'?'api_key':'X-Api-Key')+'"></div>'
+      +'<div class="field"><label>API key / token</label><input class="input mono" id="gcKey" placeholder="Paste your API key or token"></div>'
+      +'<details style="margin:0 0 12px"><summary style="cursor:pointer;font-size:12.5px;color:var(--brand-700)">Advanced: JSON field paths (only if auto-detect misses your fields)</summary>'
+        +'<div class="bk-lenhint" style="margin:8px 0">Dot-paths into your API response. Leave blank to auto-detect common names (lat/latitude, lng/lon, speed, heading).</div>'
+        +'<div class="row2"><div class="field"><label>Devices list path</label><input class="input mono" id="gcpList"'+_v(pp.list)+' placeholder="e.g. data (blank = top-level array)"></div><div class="field"><label>Speed unit</label><select class="select" id="gcSpeedUnit"><option value="mph"'+((pf.speedUnit||'mph')==='mph'?' selected':'')+'>mph</option><option value="kmh"'+(pf.speedUnit==='kmh'?' selected':'')+'>km/h</option><option value="knots"'+(pf.speedUnit==='knots'?' selected':'')+'>knots</option></select></div></div>'
+        +'<div class="row2"><div class="field"><label>Latitude path</label><input class="input mono" id="gcpLat"'+_v(pp.lat)+' placeholder="lat"></div><div class="field"><label>Longitude path</label><input class="input mono" id="gcpLng"'+_v(pp.lng)+' placeholder="lng"></div></div>'
+        +'<div class="row2"><div class="field"><label>Speed path</label><input class="input mono" id="gcpSpeed"'+_v(pp.speed)+' placeholder="speed"></div><div class="field"><label>Heading path</label><input class="input mono" id="gcpHeading"'+_v(pp.heading)+' placeholder="heading"></div></div>'
+        +'<div class="row2"><div class="field"><label>Name path</label><input class="input mono" id="gcpName"'+_v(pp.name)+' placeholder="name"></div><div class="field"><label>Timestamp path</label><input class="input mono" id="gcpTs"'+_v(pp.ts)+' placeholder="timestamp"></div></div>'
+      +'</details>'; }
+  function trkGenericAuthUpdate(){ var t=val('gcAuthType'), w=document.getElementById('gcAuthNameWrap'), lbl=document.getElementById('gcAuthNameLbl'), nm=document.getElementById('gcAuthName'); if(!w)return; var show=(t==='header'||t==='query'); w.style.display=show?'':'none'; if(lbl)lbl.textContent=(t==='query'?'Query parameter name':'Header name'); if(nm&&!nm.value)nm.placeholder=(t==='query'?'api_key':'X-Api-Key'); }
+  function trkPickProvider(id){ var sel=document.getElementById('trkProv'); if(sel){ sel.value=id; trkFieldsUpdate(); } }
   function trkFieldsUpdate(){ var prov=val('trkProv'); var g=document.getElementById('trkGuide'), f=document.getElementById('trkFields'), n=document.getElementById('trkConnNote'), b=document.getElementById('trkConnBtn');
     if(g) g.innerHTML=_trkGuideHtml(prov); if(f) f.innerHTML=_trkConnFields(prov);
-    var live=!!TRK_LIVE[prov], nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;
-    if(n) n.innerHTML='<div class="bk-lenhint" style="margin:0 0 14px">'+(live?'Your keys are stored <b>encrypted on the server</b> (never in your browser) and positions refresh automatically every 30 seconds.':'<b>Live sync for '+esc(nm)+' is coming.</b> Connect now to explore the live-map layout with simulated positions &mdash; your key is not stored until live sync is ready.')+'</div>';
-    if(b) b.textContent=live?'Connect live tracking':'Preview the live map'; }
-  function trkConnect(){ if(TRK_LIVE[val('trkProv')]) return connectTrackerLive(); return connectTracker(); }
+    var c=_trkConn(prov), nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;
+    var note=(c==='platform')
+      ? '<b>'+esc(nm)+' is a hardware maker.</b> Pick the platform your devices report into above &mdash; that connects Atlas to real live GPS. Nothing is simulated.'
+      : 'Your keys are stored <b>encrypted on the server</b> (never in your browser) and positions refresh automatically every 30 seconds.'+(c==='generic'?' Atlas polls the endpoint you enter and maps its JSON to live positions &mdash; real data only.':'');
+    if(n) n.innerHTML='<div class="bk-lenhint" style="margin:0 0 14px">'+note+'</div>';
+    if(b){ b.textContent=(c==='platform'?'Choose a platform above':'Connect live tracking'); b.disabled=(c==='platform'); b.style.opacity=(c==='platform'?'0.55':''); } }
+  function trkConnect(){ var c=_trkConn(val('trkProv')); if(c==='dedicated') return connectTrackerLive(); if(c==='platform'){ toast('Choose the platform your devices report into above'); return; } return connectTrackerGeneric(); }
   function trkConnTab(which){ var lp=document.getElementById('trkLivePane'), pp=document.getElementById('trkPrevPane'), lt=document.getElementById('trkTabLive'), pt=document.getElementById('trkTabPrev'); if(!lp||!pp)return; var live=which!=='prev'; lp.style.display=live?'':'none'; pp.style.display=live?'none':''; if(lt)lt.className='btn btn--sm '+(live?'btn--primary':'btn--ghost'); if(pt)pt.className='btn btn--sm '+(live?'btn--ghost':'btn--primary'); }
   function trkLiveFieldsUpdate(){ var el=document.getElementById('trkLiveFields'); if(el) el.innerHTML=_trkLiveFields(val('trkLiveProv')); }
   function _trkLiveFields(prov){
@@ -6508,6 +6546,18 @@ const Atlas = (function(){
     if(prov==='gpswox') return '<div class="field"><label>Server URL</label><input class="input mono" id="gwHost" placeholder="https://your-gpswox-host.com"></div>'
       +'<div class="field"><label>API hash</label><input class="input mono" id="gwHash" placeholder="user_api_hash from Settings &gt; API"></div>';
     if(prov==='flespi') return '<div class="field"><label>flespi token</label><input class="input mono" id="flTok" placeholder="from flespi.io &gt; Tokens (read access)"></div>';
+    if(prov==='wialon') return '<div class="field"><label>Access token</label><input class="input mono" id="wiTok" placeholder="User Settings &gt; Access tokens (read units + messages)"></div>'
+      +'<div class="field"><label>Server URL <span style="color:var(--muted);font-weight:400">(only for Wialon Local self-hosted)</span></label><input class="input mono" id="wiHost" placeholder="https://hst-api.wialon.com"></div>';
+    if(prov==='navixy') return '<div class="field"><label>API key or session hash</label><input class="input mono" id="nvHash" placeholder="Account &gt; API keys"></div>'
+      +'<div class="field"><label>API base URL</label><input class="input mono" id="nvHost" value="https://api.us.navixy.com/v2" placeholder="https://api.us.navixy.com/v2"></div>';
+    if(prov==='motive') return '<div class="field"><label>API key</label><input class="input mono" id="moKey" placeholder="Admin &gt; Developers &gt; API Keys (sent as X-API-Key)"></div>';
+    if(prov==='webfleet') return '<div class="field"><label>Account</label><input class="input mono" id="wfAcct" placeholder="your WEBFLEET account name"></div>'
+      +'<div class="field"><label>Username</label><input class="input mono" id="wfUser" placeholder="a WEBFLEET.connect user"></div>'
+      +'<div class="field"><label>Password</label><input class="input mono" id="wfPass" type="password" placeholder="that user\'s password"></div>'
+      +'<div class="field"><label>API key</label><input class="input mono" id="wfApiKey" placeholder="your WEBFLEET.connect API key"></div>';
+    if(prov==='zubie') return '<div class="field"><label>API key</label><input class="input mono" id="zbKey" placeholder="Zubie-Api-Key (request via support@zubie.com)"></div>';
+    if(prov==='azuga') return '<div class="field"><label>Access token (Bearer)</label><input class="input mono" id="azTok" placeholder="Azuga OAuth2 access token"></div>';
+    if(prov==='onestepgps') return '<div class="field"><label>API key</label><input class="input mono" id="osKey" placeholder="One Step GPS API key (api-key)"></div>';
     return '<div class="field"><label>Client ID</label><input class="input mono" id="bnCid" placeholder="from bouncie.dev"></div>'
       +'<div class="field"><label>Client Secret</label><input class="input mono" id="bnSec" placeholder="from bouncie.dev"></div>'
       +'<div class="field"><label>Authorization Code</label><input class="input mono" id="bnCode" placeholder="Users &amp; Devices &gt; Expand your account"></div>'
@@ -6519,29 +6569,40 @@ const Atlas = (function(){
     else if(prov==='geotab'){ var gs=(val('gtServer')||'').trim()||'my.geotab.com', gd=(val('gtDb')||'').trim(), gu=(val('gtUser')||'').trim(), gp=(val('gtPass')||'').trim(); if(!gd||!gu||!gp){ toast('Enter your Geotab database, username and password'); return; } secret=JSON.stringify({server:gs,database:gd,user:gu,password:gp}); }
     else if(prov==='gpswox'){ var gwh=(val('gwHost')||'').trim(); secret=(val('gwHash')||'').trim(); if(!gwh||!secret){ toast('Enter your GPSWOX server URL and API hash'); return; } meta={host:gwh}; }
     else if(prov==='flespi'){ secret=(val('flTok')||'').trim(); if(!secret){ toast('Paste your flespi token'); return; } }
+    else if(prov==='wialon'){ secret=(val('wiTok')||'').trim(); if(!secret){ toast('Paste your Wialon access token'); return; } var wih=(val('wiHost')||'').trim(); if(wih)meta={host:wih}; }
+    else if(prov==='navixy'){ secret=(val('nvHash')||'').trim(); var nvh=(val('nvHost')||'').trim(); if(!secret){ toast('Paste your Navixy API key or session hash'); return; } if(nvh)meta={host:nvh}; }
+    else if(prov==='motive'){ secret=(val('moKey')||'').trim(); if(!secret){ toast('Paste your Motive API key'); return; } }
+    else if(prov==='webfleet'){ var wfa=(val('wfAcct')||'').trim(), wfu=(val('wfUser')||'').trim(), wfp=(val('wfPass')||'').trim(), wfk=(val('wfApiKey')||'').trim(); if(!wfa||!wfu||!wfp){ toast('Enter your WEBFLEET account, username and password'); return; } secret=JSON.stringify({account:wfa,username:wfu,password:wfp,apikey:wfk}); }
+    else if(prov==='zubie'){ secret=(val('zbKey')||'').trim(); if(!secret){ toast('Paste your Zubie API key'); return; } }
+    else if(prov==='azuga'){ secret=(val('azTok')||'').trim(); if(!secret){ toast('Paste your Azuga access token'); return; } }
+    else if(prov==='onestepgps'){ secret=(val('osKey')||'').trim(); if(!secret){ toast('Paste your One Step GPS API key'); return; } }
     else { var ci=(val('bnCid')||'').trim(), cs=(val('bnSec')||'').trim(), cd=(val('bnCode')||'').trim(), rd=(val('bnRedir')||'').trim(); if(!ci||!cs||!cd){ toast('Fill in Client ID, Secret and Authorization Code'); return; } secret=JSON.stringify({client_id:ci,client_secret:cs,code:cd,redirect_uri:rd}); }
-    toast('Connecting '+esc(prov)+'...');
+    var nm0=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;
+    toast('Connecting '+esc(nm0)+'...');
     _api('/api/integrations/connect',{method:'POST',body:{provider:prov,secret:secret,kind:'tracker',meta:meta}}).then(function(res){
       if(!(res.status>=200&&res.status<300&&res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not save the connection'); return; }
-      var t=_trackers(); t.provider=prov; t.connected=true; t.live=true; delete t.apiKey; _logEvent('tracker','Connected live GPS provider ('+prov+')',{provider:prov}); save(); closeModal(); renderTracking(); _trkFetchLive(true); _trkStart();
+      var t=_trackers(); t.provider=prov; t.connected=true; t.live=true; delete t.apiKey; delete t.brand; _logEvent('tracker','Connected live GPS provider ('+prov+')',{provider:prov}); save(); closeModal(); renderTracking(); _trkFetchLive(true); _trkStart();
     }).catch(function(){ toast('Network error connecting'); }); }
-  function connectTracker(){ var prov=val('trkProv');   // preview path: key is NOT stored (real polling not wired for this brand yet), so it's optional -- no friction
-    var t=_trackers(); t.provider=prov; t.connected=true; var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;   // do NOT store the pasted key: real provider polling is not wired yet, so keeping a key would be collecting an unused credential
-    _trkSeed(); _logEvent('tracker','Live-map preview started ('+nm+') -- '+(DATA.assets||[]).length+' '+S.fleet.nouns+' shown with simulated positions',{provider:prov}); save(); closeModal(); renderTracking(); toast('Preview ready -- showing simulated positions'); }
-  // Edit a connection. For a REALLY-integrated provider the credential lives ENCRYPTED on the server, so editing must re-run
-  // the encrypted connect flow (re-POST to /api/integrations/connect) -- never the legacy client-side apiKey field below, which
-  // would put a live credential into S/save(). Preview-only brands (no server cred) keep the lightweight in-place editor.
-  function editTrackerConnect(){ var t=_trackers();
-    if(TRK_LIVE[t.provider]){ openTrackerConnect(); var _sel=document.getElementById('trkProv'); if(_sel){ _sel.value=t.provider; trkFieldsUpdate(); } return; }
-    openModal('<div class="modal__head"><h3>Edit tracker connection</h3>'+_xBtn()+'</div><div class="modal__body">'
-    +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.map(function(x){return '<option value="'+x.id+'"'+(x.id===t.provider?' selected':'')+'>'+esc(x.name)+'</option>';}).join('')+'</select></div>'
-    +'<div id="trkGuide">'+_trkGuideHtml(t.provider||TRACKERS[0].id)+'</div>'
-    +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" value="'+esc(t.apiKey||'')+'" placeholder="Paste your API key or access token"></div>'
-    +'<div class="bk-lenhint" style="margin:0 0 14px">Rotate your key or switch provider without dropping the live session &mdash; your tracked '+esc(S.fleet.nouns)+' stay connected.</div>'
-    +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveTrackerConn()">Save changes</button></div>'); }
-  function saveTrackerConn(){ var prov=val('trkProv'), key=(val('trkKey')||'').trim(); if(!key){ toast('Paste your API key or login'); return; }
-    var t=_trackers(), nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name; t.provider=prov; t.apiKey=key;   // in-place update; t.vehicles + live session preserved
-    save(); _logEvent('tracker','Tracker connection updated ('+nm+')',{provider:prov}); closeModal(); renderTracking(); toast('Tracker connection updated'); }
+  // Universal connector connect: real for ANY REST GPS platform. Collects endpoint URL + auth + optional JSON paths, POSTs them
+  // ENCRYPTED (provider='generic'; config in meta, token in secret) -- never stored in S/save(). No brand ever simulates here.
+  function connectTrackerGeneric(){ if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to connect a tracker'); return; }
+    var prov=val('trkProv'), url=(val('gcUrl')||'').trim(), authType=val('gcAuthType')||'bearer', key=(val('gcKey')||'').trim();
+    if(!url){ toast('Enter your API endpoint URL'); return; }
+    if(!/^https:\/\//i.test(url)){ toast('The endpoint URL must start with https://'); return; }
+    if(authType!=='none' && !key){ toast('Paste your API key or token'); return; }
+    var auth={type:authType}; if(authType==='header'||authType==='query'){ var an=(val('gcAuthName')||'').trim(); if(!an){ toast('Enter the '+(authType==='query'?'query parameter':'header')+' name'); return; } auth.name=an; }
+    var paths={}; [['list','gcpList'],['lat','gcpLat'],['lng','gcpLng'],['speed','gcpSpeed'],['heading','gcpHeading'],['name','gcpName'],['ts','gcpTs']].forEach(function(p){ var v=(val(p[1])||'').trim(); if(v)paths[p[0]]=v; });
+    var meta={api_url:url,auth:auth,paths:paths,speedUnit:(val('gcSpeedUnit')||'mph'),brand:prov};
+    var secret=(authType==='none')?(key||'none'):key;   // the connect route requires a non-empty secret; 'none'-auth sends a harmless sentinel (cred is ignored server-side)
+    var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;
+    toast('Connecting '+esc(nm)+'...');
+    _api('/api/integrations/connect',{method:'POST',body:{provider:'generic',secret:secret,kind:'tracker',meta:meta}}).then(function(res){
+      if(!(res.status>=200&&res.status<300&&res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not save the connection'); return; }
+      var t=_trackers(); t.provider='generic'; t.brand=prov; t.connected=true; t.live=true; delete t.apiKey; _logEvent('tracker','Connected live GPS via universal connector ('+nm+')',{provider:'generic',brand:prov}); save(); closeModal(); renderTracking(); _trkFetchLive(true); _trkStart();
+    }).catch(function(){ toast('Network error connecting'); }); }
+  // Edit a connection: EVERY connection is now real + encrypted server-side (the credential never lives in S/save()), so editing
+  // always re-runs the encrypted connect flow prefilled to the current brand (rotate the key, switch provider, or re-map fields).
+  function editTrackerConnect(){ var t=_trackers(); openTrackerConnect(); var _sel=document.getElementById('trkProv'); if(_sel){ _sel.value=(t.provider==='generic'?(t.brand||'other'):(t.provider||TRACKERS[0].id)); trkFieldsUpdate(); } }
   function disconnectTracker(){ if(!confirm('Disconnect the tracker? Live location will stop.'))return; var t=_trackers(); t.connected=false; t.live=false; t.vehicles={}; _trkLiveBox=null; _trkSel=null; _trkRoute=null; _trkStop(); _logEvent('tracker','Tracker disconnected'); save(); renderTracking(); toast('Tracker disconnected'); }
   /* ---- Geofences: owner-defined zone per asset (center + radius). Real entry/exit indicator vs the tracker's live position; in-app
          entry/exit alerts fire when the Owner Console "Geofence entry/exit alerts" flag is on. [FLAG: true push-when-app-closed needs a backend.] ---- */
@@ -11432,7 +11493,7 @@ const Atlas = (function(){
     setCommsMode,setCommsField,setPendingResend,setPendingSmsToken,connectSms,toggleAuto,setAutoDays,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,drillReportRow,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
-    renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
+    renderTracking,openTrackerConnect,connectTrackerLive,connectTrackerGeneric,trkPickProvider,trkGenericAuthUpdate,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,

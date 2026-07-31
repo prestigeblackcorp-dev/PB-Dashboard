@@ -608,9 +608,115 @@ if (sess) {
   const sRes = await _trackerFetch(env, 'gpswox', 'HASH', { host: 'https://169.254.169.254' });
   ok('ssrf: gpswox private/metadata host refused (blocked_host), NO position', sRes.ok === false && !sRes.positions, JSON.stringify(sRes));
 
-  ok('TRK_PROVIDERS lists exactly the 6 really-integrated providers', Array.isArray(TRK_PROVIDERS) && TRK_PROVIDERS.length === 6 && ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi'].every((p) => TRK_PROVIDERS.indexOf(p) >= 0), JSON.stringify(TRK_PROVIDERS));
+  ok('TRK_PROVIDERS lists the 6 original + 7 new dedicated + generic (all really-integrated)', Array.isArray(TRK_PROVIDERS) && TRK_PROVIDERS.length === 14 && ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi', 'wialon', 'navixy', 'motive', 'webfleet', 'zubie', 'azuga', 'onestepgps', 'generic'].every((p) => TRK_PROVIDERS.indexOf(p) >= 0), JSON.stringify(TRK_PROVIDERS));
 
   globalThis.fetch = _rfTrk;
+}
+
+// ===================== #202b UNIVERSAL generic connector: ANY REST GPS platform connects for real (no simulation) =====================
+// The tenant supplies api_url + an auth spec + JSON dot-paths; the token lives in the encrypted secret. We assert we parse REAL
+// {lat,lng} from a mock feed, honor the configured field paths + auth styles, and REFUSE a private/SSRF host (no fake position).
+{
+  const _rfG = globalThis.fetch;
+
+  // (a) plain array feed, default field names, Bearer auth, km/h -> mph
+  globalThis.fetch = (u, o) => {
+    const hdr = (o && o.headers) || {};
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ([{ id: 'd1', name: 'Van 1', lat: '30.27', lng: '-97.74', speed: 50, heading: 90, timestamp: '2026-07-31T00:00:00Z', _auth: hdr['Authorization'] }]) });
+  };
+  let g = await _trackerFetch(env, 'generic', 'TOK123', { api_url: 'https://gps.example.com/api/devices', auth: { type: 'bearer' }, speedUnit: 'kmh' });
+  ok('generic: parses REAL {lat,lng} from a plain array feed (default paths)', g.ok && g.positions.length === 1 && g.positions[0].lat === 30.27 && g.positions[0].lng === -97.74, JSON.stringify(g).slice(0, 160));
+  ok('generic: km/h -> mph + label/id/heading mapped', Math.round(g.positions[0].speed) === 31 && g.positions[0].label === 'Van 1' && g.positions[0].deviceId === 'd1' && g.positions[0].heading === 90, JSON.stringify(g.positions[0]));
+
+  // (b) nested container + CUSTOM dot-paths + query-param auth (token appended to the URL)
+  let capUrl = '';
+  globalThis.fetch = (u) => { capUrl = String(u); return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: { devices: [{ serial: 'X9', gps: { coords: { y: 40.7128, x: -74.006 }, spd: 12 } }] } }) }); };
+  g = await _trackerFetch(env, 'generic', 'KEY9', { api_url: 'https://host.example.com/v1/list', auth: { type: 'query', name: 'api-key' }, paths: { list: 'result.devices', lat: 'gps.coords.y', lng: 'gps.coords.x', speed: 'gps.spd', id: 'serial' } });
+  ok('generic: custom dot-paths resolve nested lat/lng/id', g.ok && g.positions.length === 1 && g.positions[0].lat === 40.7128 && g.positions[0].lng === -74.006 && g.positions[0].deviceId === 'X9', JSON.stringify(g).slice(0, 160));
+  ok('generic: query-param auth appends the token to the URL', capUrl.indexOf('api-key=KEY9') >= 0, capUrl);
+
+  // (c) object-map of id->device (no list path) + custom header auth
+  let capHdr = null;
+  globalThis.fetch = (u, o) => { capHdr = (o && o.headers) || {}; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ '55': { latitude: 51.5074, longitude: -0.1278, course: 180 }, '56': { latitude: 52.0, longitude: -1.0 } }) }); };
+  g = await _trackerFetch(env, 'generic', 'SEKRET', { api_url: 'https://y.example.com/all', auth: { type: 'header', name: 'X-Api-Key' } });
+  ok('generic: object-map of devices -> array of positions', g.ok && g.positions.length === 2 && g.positions[0].lat === 51.5074, JSON.stringify(g).slice(0, 160));
+  ok('generic: custom header auth sets the named header to the token', capHdr && capHdr['X-Api-Key'] === 'SEKRET', JSON.stringify(capHdr));
+
+  // (d) SSRF + honesty: a private/metadata/non-https api_url is REFUSED with NO fetch and NO fabricated position
+  let fetched = false; globalThis.fetch = () => { fetched = true; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ([{ lat: 1, lng: 2 }]) }); };
+  const gSsrf = await _trackerFetch(env, 'generic', 'T', { api_url: 'https://169.254.169.254/latest/meta', auth: { type: 'bearer' } });
+  ok('generic SSRF: metadata host refused, NO network call, NO position', gSsrf.ok === false && !gSsrf.positions && fetched === false, JSON.stringify(gSsrf) + ' fetched=' + fetched);
+  const gHttp = await _trackerFetch(env, 'generic', 'T', { api_url: 'http://gps.example.com/x', auth: { type: 'bearer' } });
+  ok('generic SSRF: non-https api_url refused (https_required), NO position', gHttp.ok === false && !gHttp.positions, JSON.stringify(gHttp));
+  const gPriv = await _trackerFetch(env, 'generic', 'T', { api_url: 'https://10.0.0.5/x', auth: { type: 'bearer' } });
+  ok('generic SSRF: private 10.x api_url refused (blocked_host), NO position', gPriv.ok === false && !gPriv.positions, JSON.stringify(gPriv));
+
+  globalThis.fetch = _rfG;
+}
+
+// ===================== #202c newly-real DEDICATED providers parse REAL {lat,lng} from mocked official-API responses =====================
+// Each brand's block is validated against a response shaped like its vendor's documented API (Wialon pos{x,y,s,c,t};
+// Navixy get_states gps.location; Motive vehicle.current_location; Webfleet micro-degrees; Zubie vehicle_location.point;
+// Azuga data[] epoch-ms; One Step GPS defensive latest_device_point). Speed-unit conversions + auth failures are asserted too.
+{
+  const _rfD = globalThis.fetch;
+  const R = (json) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => json });
+
+  // Wialon: token/login -> eid, then core/search_items -> items[].pos {x:lng, y:lat, s:km/h, c:course, t:unix}
+  globalThis.fetch = (u) => { const s = String(u); if (s.indexOf('svc=token/login') >= 0) return R({ eid: 'SID123', user: { nm: 'a' } }); if (s.indexOf('/wialon/ajax.html') >= 0) return R({ items: [{ nm: 'Truck 1', id: 501, cls: 2, pos: { t: 1785000000, y: 30.27, x: -97.74, s: 100, c: 90 } }] }); return R({}); };
+  let d = await _trackerFetch(env, 'wialon', 'WTOKEN', {});
+  ok('wialon: REAL {lat,lng} from items[].pos (x=lng,y=lat) + km/h->mph + name', d.ok && d.positions.length === 1 && d.positions[0].lat === 30.27 && d.positions[0].lng === -97.74 && Math.round(d.positions[0].speed) === 62 && d.positions[0].label === 'Truck 1', JSON.stringify(d).slice(0, 180));
+  globalThis.fetch = (u) => { if (String(u).indexOf('token/login') >= 0) return R({ error: 8 }); return R({}); };
+  d = await _trackerFetch(env, 'wialon', 'BAD', {});
+  ok('wialon: bad token -> auth, NO position (never fabricated)', d.ok === false && d.reason === 'auth' && !d.positions, JSON.stringify(d));
+
+  // Navixy: /tracker/list then /tracker/get_states -> states{<id>:{gps:{location{lat,lng},speed(km/h),heading}}}
+  globalThis.fetch = (u) => { const s = String(u); if (s.indexOf('/tracker/list') >= 0) return R({ success: true, list: [{ id: 111, label: 'Sprinter' }] }); if (s.indexOf('/tracker/get_states') >= 0) return R({ success: true, states: { '111': { gps: { updated: '2024-08-01 13:45:18', location: { lat: 45.0888968, lng: 10.0343262 }, speed: 64, heading: 304 }, movement_status: 'moving' } } }); return R({}); };
+  d = await _trackerFetch(env, 'navixy', 'HASH', {});
+  ok('navixy: REAL {lat,lng} from gps.location + km/h->mph + heading + label + moving', d.ok && d.positions.length === 1 && d.positions[0].lat === 45.0888968 && d.positions[0].lng === 10.0343262 && Math.round(d.positions[0].speed) === 40 && d.positions[0].heading === 304 && d.positions[0].label === 'Sprinter' && d.positions[0].moving === true, JSON.stringify(d).slice(0, 200));
+  let navUrl = ''; globalThis.fetch = (u) => { navUrl = String(u); return R({ success: true, list: [] }); };
+  d = await _trackerFetch(env, 'navixy', 'H', { host: 'https://api.eu.navixy.com/v2' });
+  ok('navixy: honors the tenant region base host+path (eu /v2)', navUrl.indexOf('https://api.eu.navixy.com/v2/tracker/list') >= 0, navUrl);
+  d = await _trackerFetch(env, 'navixy', 'H', { host: 'https://10.1.2.3/v2' });
+  ok('navixy: SSRF private host refused, NO position', d.ok === false && !d.positions, JSON.stringify(d));
+
+  // Motive v1: vehicles[].vehicle.current_location {lat, lon, speed(MPH), located_at, description}
+  globalThis.fetch = (u, o) => R({ vehicles: [{ vehicle: { id: 23, number: 'V-1000', vin: '1FT123', current_location: { lat: 47.565647, lon: -122.276261, description: 'Seattle, WA', speed: 65.1, located_at: '2016-03-17T12:12:07Z', _k: ((o && o.headers) || {})['X-Api-Key'] } } }] });
+  d = await _trackerFetch(env, 'motive', 'MKEY', {});
+  ok('motive: REAL {lat,lon} from vehicle.current_location + MPH (no convert) + vin + number', d.ok && d.positions.length === 1 && d.positions[0].lat === 47.565647 && d.positions[0].lng === -122.276261 && Math.round(d.positions[0].speed) === 65 && d.positions[0].vin === '1FT123' && d.positions[0].label === 'V-1000', JSON.stringify(d).slice(0, 200));
+
+  // Webfleet: bare array, MICRO-degrees latitude_mdeg/longitude_mdeg (/1e6), speed km/h, course=heading
+  globalThis.fetch = (u, o) => R([{ objectno: 'OBJ7', objectname: 'Van 7', latitude_mdeg: 52123456, longitude_mdeg: -1234567, speed: 80, course: 270, pos_time: '2026-07-31T00:00:00Z', postext: 'M1', _auth: ((o && o.headers) || {})['Authorization'] }]);
+  d = await _trackerFetch(env, 'webfleet', JSON.stringify({ account: 'a', username: 'u', password: 'p', apikey: 'k' }), {});
+  ok('webfleet: micro-degrees /1e6 -> decimal {lat,lng} + km/h->mph + course', d.ok && d.positions.length === 1 && Math.abs(d.positions[0].lat - 52.123456) < 1e-9 && Math.abs(d.positions[0].lng - (-1.234567)) < 1e-9 && Math.round(d.positions[0].speed) === 50 && d.positions[0].heading === 270, JSON.stringify(d).slice(0, 200));
+  globalThis.fetch = (u) => R([{ objectno: 'X', objectname: 'nofix', latitude_mdeg: 0, longitude_mdeg: 0 }]);
+  d = await _trackerFetch(env, 'webfleet', JSON.stringify({ account: 'a', username: 'u', password: 'p' }), {});
+  ok('webfleet: 0/0 no-fix sentinel dropped (not shown as a real position)', d.ok && d.positions.length === 0, JSON.stringify(d));
+  d = await _trackerFetch(env, 'webfleet', JSON.stringify({ account: 'a' }), {});
+  ok('webfleet: missing credentials -> auth, NO position', d.ok === false && d.reason === 'auth' && !d.positions, JSON.stringify(d));
+
+  // Zubie (Zinc v2): vehicles[].vehicle_location.point {lat,lon}, speed_mph (nullable), nickname/key/vin
+  globalThis.fetch = (u, o) => R({ vehicles: [{ key: 'veh_1', nickname: 'Blue Car', vin: 'ZUB123', vehicle_location: { point: { lat: 35.2271, lon: -80.8431 }, speed_mph: 42, heading: 120, timestamp: '2025-07-01T09:32:11-05:00', motion_status: 'moving', _auth: ((o && o.headers) || {})['Zubie-Api-Key'] } }] });
+  d = await _trackerFetch(env, 'zubie', 'ZKEY', {});
+  ok('zubie: REAL {lat,lon} from vehicle_location.point + mph + vin + nickname', d.ok && d.positions.length === 1 && d.positions[0].lat === 35.2271 && d.positions[0].lng === -80.8431 && d.positions[0].speed === 42 && d.positions[0].vin === 'ZUB123' && d.positions[0].label === 'Blue Car', JSON.stringify(d).slice(0, 200));
+  globalThis.fetch = (u) => R({ vehicles: [{ key: 'k', nickname: 'n', vehicle_location: { point: { lat: 35, lon: -80 }, speed_mph: null, heading: null, motion_status: 'stopped' } }] });
+  d = await _trackerFetch(env, 'zubie', 'K', {});
+  ok('zubie: null speed/heading coerced to 0 (never fabricated)', d.ok && d.positions[0].speed === 0 && d.positions[0].heading === 0 && d.positions[0].moving === false, JSON.stringify(d.positions[0]));
+
+  // Azuga: {data:[{lat,lng,speed(km/h),cog,dateAndTime(epoch ms),trackeeName,trackeeId}]}
+  globalThis.fetch = (u, o) => R({ generatedAtInMillis: 1672843335000, data: [{ trackeeId: 't1', trackeeName: 'Pickup', lat: 33.5, lng: -112.1, speed: 64, cog: 45, dateAndTime: 1672843335000, deviceId: 'dev1', address: 'Phoenix' }], error: null });
+  d = await _trackerFetch(env, 'azuga', 'ABEARER', {});
+  ok('azuga: REAL {lat,lng} from data[] + km/h->mph + cog heading + epoch-ms ts', d.ok && d.positions.length === 1 && d.positions[0].lat === 33.5 && d.positions[0].lng === -112.1 && Math.round(d.positions[0].speed) === 40 && d.positions[0].heading === 45 && d.positions[0].ts === '2023-01-04T14:42:15.000Z', JSON.stringify(d.positions[0]));
+
+  // One Step GPS: confirmed endpoint/auth; DEFENSIVE field extraction (latest_device_point.*); never fabricates on failure
+  globalThis.fetch = (u) => R([{ device_id: 'osg1', display_name: 'Fleet 1', latest_device_point: { lat: 29.76, lng: -95.37, angle: 180, dt_tracker: '2026-07-31T00:00:00Z' } }]);
+  d = await _trackerFetch(env, 'onestepgps', 'OKEY', {});
+  ok('onestepgps: defensive parse of latest_device_point {lat,lng} + name/id/heading', d.ok && d.positions.length === 1 && d.positions[0].lat === 29.76 && d.positions[0].lng === -95.37 && d.positions[0].label === 'Fleet 1' && d.positions[0].deviceId === 'osg1' && d.positions[0].heading === 180, JSON.stringify(d).slice(0, 200));
+  globalThis.fetch = (u) => R({ code: 403, message: 'login required' });
+  d = await _trackerFetch(env, 'onestepgps', 'BAD', {});
+  ok('onestepgps: bad key (code 403) -> auth, NO position (honest, no fake)', d.ok === false && d.reason === 'auth' && !d.positions, JSON.stringify(d));
+
+  globalThis.fetch = _rfD;
 }
 
 // Route: /api/trackers/positions polls a NEWLY-REAL provider end-to-end; unconnected + unsupported-row tenants stay live:false.
@@ -629,6 +735,22 @@ if (sess) {
   const jPos = await rPos.json();
   ok('route: /api/trackers/positions live:true + REAL geotab position (end-to-end, encrypted cred)', jPos.ok === true && jPos.live === true && jPos.provider === 'geotab' && jPos.positions && jPos.positions.length === 1 && jPos.positions[0].lat === 29.76, JSON.stringify(jPos).slice(0, 180));
   globalThis.fetch = _rfR;
+
+  // Universal GENERIC connector end-to-end (fresh tenant so the WHERE provider IN(...) LIMIT 1 is unambiguous): the encrypted
+  // meta (api_url + auth spec + JSON dot-paths) round-trips through the DB and the route parses a REAL {lat,lng} from the
+  // tenant's OWN REST feed -- proving ANY REST GPS platform connects for real (no simulation, token applied from secret).
+  const rEnv3 = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(rEnv3);
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'trk3@x.com', password: 'correcthorsebatterystaple', business: 'Trk3' } }), rEnv3, ctx);
+  const s3 = rEnv3.DB._db.prepare('SELECT id,csrf FROM sessions ORDER BY created_at DESC LIMIT 1').get();
+  const H3 = { cookie: 'atlas_sid=' + s3.id, 'x-csrf-token': s3.csrf };
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: H3, body: { provider: 'generic', secret: 'GKEY', kind: 'tracker', meta: { api_url: 'https://gps.example.com/v1/list', auth: { type: 'query', name: 'api-key' }, paths: { list: 'result.devices', lat: 'gps.coords.y', lng: 'gps.coords.x' }, speedUnit: 'kmh' } } }), rEnv3, ctx);
+  const _rfG3 = globalThis.fetch; let gCapUrl = '';
+  globalThis.fetch = (u) => { gCapUrl = String(u); return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: { devices: [{ gps: { coords: { y: 30.2672, x: -97.7431 } } }] } }) }); };
+  const rG = await worker.fetch(mkReq('POST', '/api/trackers/positions', { headers: H3, body: {} }), rEnv3, ctx);
+  const jG = await rG.json();
+  ok('route: GENERIC connector live:true + REAL {lat,lng} via stored meta dot-paths (encrypted end-to-end)', jG.ok === true && jG.live === true && jG.provider === 'generic' && jG.positions && jG.positions.length === 1 && jG.positions[0].lat === 30.2672 && jG.positions[0].lng === -97.7431, JSON.stringify(jG).slice(0, 200));
+  ok('route: GENERIC honored the tenant api_url + query-param auth token from encrypted meta', gCapUrl.indexOf('https://gps.example.com/v1/list') >= 0 && gCapUrl.indexOf('api-key=GKEY') >= 0, gCapUrl);
+  globalThis.fetch = _rfG3;
 
   // a fresh tenant with NO connected tracker -> live:false, no positions (the server never emits a simulated one)
   const rEnv2 = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(rEnv2);   // fresh DB -> full migration pass (the module _pReady flag would otherwise skip the ALTER-only columns signup INSERTs)
