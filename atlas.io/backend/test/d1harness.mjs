@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -290,6 +290,102 @@ if (sess) {
   ok('qbo(d): 2nd sync is IDEMPOTENT (no duplicate SalesReceipt POST)', !srReq2, srReq2 && srReq2.url);
 
   globalThis.fetch = _rfQ;
+}
+
+// ---- PAYPAL MONEY PATH (BYO per-tenant, Orders v2, "make it real"): (a) create-order authenticates with the tenant's OWN
+// client-id (HTTP Basic) + posts the correct 2dp decimal amount; (b) the return route captures the order and CREDITS the
+// booking -- revenue_cents += amount, d.paid[kind] carries the capture id, status -> confirmed; (c) a SECOND return of the
+// same order is IDEMPOTENT (no re-capture, revenue does NOT double); (d) G5 -- a PayPal payment settling a cash-ESTIMATE
+// booking (revenue_cents == quote total, no prior online pay) REPLACES the estimate, it does not stack. All PayPal endpoints
+// are mocked; globalThis.fetch is restored after. This MIRRORS the Stripe money-path test above and never touches it.
+{
+  const envPP = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envPP);   // fresh DB -> full migration pass
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'pp@x.com', password: 'correcthorsebatterystaple', business: 'PayPal Co' } }), envPP, ctx);
+  const tidPP = envPP.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sPP = envPP.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidPP);
+  const HPP = { cookie: 'atlas_sid=' + sPP.id, 'x-csrf-token': sPP.csrf };
+
+  // owner connects their OWN PayPal REST app via the SAME encrypted /api/integrations/connect (secret -> secret_enc; client-id + sandbox -> meta)
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HPP, body: { provider: 'paypal', secret: 'PP_SECRET_XYZ', meta: { client_id: 'PPCLIENTID', sandbox: true } } }), envPP, ctx);
+  const ppRow = envPP.DB._db.prepare("SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider='paypal'").get(tidPP);
+  ok('paypal: secret stored ENCRYPTED at rest (route encrypts; plaintext secret never stored)', !!(ppRow && ppRow.secret_enc) && String(ppRow.secret_enc).indexOf('PP_SECRET_XYZ') < 0, 'row=' + JSON.stringify(ppRow && ppRow.meta));
+  ok('paypal: client-id + sandbox flag stored in meta (non-secret)', !!(ppRow && String(ppRow.meta).indexOf('PPCLIENTID') >= 0 && /"sandbox":true/.test(String(ppRow.meta))), ppRow && ppRow.meta);
+
+  // status route reports a TRUTHFUL connected badge (no secret leaked)
+  let rStat = await worker.fetch(mkReq('GET', '/api/integrations/paypal/status', { headers: HPP }), envPP, ctx);
+  let jStat = await rStat.json();
+  ok('paypal: /status -> connected:true, sandbox:true, last-4 hint, NO secret', jStat && jStat.ok === true && jStat.connected === true && jStat.sandbox === true && /ID$/.test(String(jStat.clientHint || '')) && JSON.stringify(jStat).indexOf('PP_SECRET_XYZ') < 0, JSON.stringify(jStat));
+
+  // a booking with a portal token + a quote (deposit $200 of a $500 total); revenue starts at 0 (not an estimate yet). ends is in
+  // the FUTURE so the portal link is not treated as expired (the START route is a portal action; the expiry check runs before it).
+  const NOWPP = Date.now();
+  await envPP.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKPP', tidPP, 'C', 'A', NOWPP, NOWPP + 3 * 86400000, 'pending', 0, JSON.stringify({ asset: 'Model S', periods: 2, custEmail: 'cust@x.com', quote: { totalCents: 50000, depositCents: 20000 }, paid: {} }), 'PPTOKEN12345678', 1, 1000).run();
+
+  // mock the PayPal endpoints (capture matched BEFORE create -- the capture URL also contains /v2/checkout/orders)
+  const _rfPP = globalThis.fetch; let _capPP = [];
+  const _respPP = (obj) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => obj, text: async () => '' });
+  globalThis.fetch = (u, o) => {
+    const su = String(u); _capPP.push({ url: su, opts: o || {} });
+    if (su.indexOf('/v1/oauth2/token') >= 0) return _respPP({ access_token: 'PP-ACCESS-TOK', token_type: 'Bearer', expires_in: 32400 });
+    if (/\/v2\/checkout\/orders\/[^/]+\/capture$/.test(su)) return _respPP({ id: 'ORDER-PP1', status: 'COMPLETED', purchase_units: [{ custom_id: 'BKPP|deposit', payments: { captures: [{ id: 'CAP-PP1', status: 'COMPLETED', amount: { currency_code: 'USD', value: '200.00' }, custom_id: 'BKPP|deposit' }] } }] });
+    if (su.indexOf('/v2/checkout/orders') >= 0) return _respPP({ id: 'ORDER-PP1', status: 'CREATED', links: [{ rel: 'approve', href: 'https://www.sandbox.paypal.com/checkoutnow?token=ORDER-PP1' }, { rel: 'self', href: 'https://api-m.sandbox.paypal.com/v2/checkout/orders/ORDER-PP1' }] });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => '' });
+  };
+
+  // (a) START creates a PayPal order for the deposit; authenticates Basic with the tenant's client-id + posts the correct decimal amount
+  _capPP = [];
+  const rStart = await worker.fetch(mkReq('POST', '/api/portal/PPTOKEN12345678/paypal', { body: { kind: 'deposit' } }), envPP, ctx);
+  const jStart = await rStart.json();
+  ok('paypal(a): START -> approve URL + order id (offered because PayPal is connected)', jStart && jStart.ok === true && String(jStart.payUrl || '').indexOf('checkoutnow') >= 0 && jStart.orderId === 'ORDER-PP1', JSON.stringify(jStart).slice(0, 140));
+  const tokReqPP = _capPP.find(c => c.url.indexOf('/v1/oauth2/token') >= 0);
+  ok('paypal(a): token obtained with HTTP Basic of the TENANT client-id:secret', !!tokReqPP && String((tokReqPP.opts.headers || {}).Authorization || '') === ('Basic ' + Buffer.from('PPCLIENTID:PP_SECRET_XYZ').toString('base64')), tokReqPP && JSON.stringify(tokReqPP.opts.headers));
+  ok('paypal(a): create used the tenant SANDBOX base (meta.sandbox=true)', !!tokReqPP && tokReqPP.url.indexOf('api-m.sandbox.paypal.com') >= 0, tokReqPP && tokReqPP.url);
+  const createReqPP = _capPP.find(c => /\/v2\/checkout\/orders$/.test(c.url));
+  const createBody = createReqPP ? JSON.parse(createReqPP.opts.body || '{}') : {};
+  ok('paypal(a): create-order intent CAPTURE + amount "200.00" (cents/100, 2dp) + custom_id booking|kind', !!(createBody.intent === 'CAPTURE' && createBody.purchase_units && createBody.purchase_units[0].amount.value === '200.00' && createBody.purchase_units[0].custom_id === 'BKPP|deposit'), JSON.stringify(createBody.purchase_units && createBody.purchase_units[0]));
+
+  // (b) RETURN captures the order + credits the booking (revenue += amount, d.paid.deposit carries the capture id, status confirmed)
+  _capPP = [];
+  const rRet = await worker.fetch(mkReq('GET', '/api/paypal/return?pt=PPTOKEN12345678&token=ORDER-PP1'), envPP, ctx);
+  const bkPP1 = envPP.DB._db.prepare("SELECT revenue_cents,status,data FROM bookings WHERE id='BKPP'").get();
+  const dPP1 = JSON.parse(bkPP1.data);
+  ok('paypal(b): return route 302-redirects back to the portal as paid', rRet.status === 302 && String(rRet.headers.get('Location') || '').indexOf('/api/portal/PPTOKEN12345678?paid=1') >= 0, 'status=' + rRet.status + ' loc=' + rRet.headers.get('Location'));
+  ok('paypal(b): capture recorded in d.paid.deposit with the PayPal capture id + amount', !!(dPP1.paid && dPP1.paid.deposit && dPP1.paid.deposit.paypal === 'CAP-PP1' && dPP1.paid.deposit.amountCents === 20000 && dPP1.paid.deposit.order === 'ORDER-PP1'), JSON.stringify(dPP1.paid));
+  ok('paypal(b): revenue credited to 20000 + booking confirmed', Number(bkPP1.revenue_cents) === 20000 && bkPP1.status === 'confirmed' && dPP1.status === 'Confirmed', 'rev=' + bkPP1.revenue_cents + ' status=' + bkPP1.status);
+
+  // (c) a SECOND return of the SAME order is idempotent: NO second capture call, and revenue does NOT double
+  _capPP = [];
+  const rRet2 = await worker.fetch(mkReq('GET', '/api/paypal/return?pt=PPTOKEN12345678&token=ORDER-PP1'), envPP, ctx);
+  const bkPP2 = envPP.DB._db.prepare("SELECT revenue_cents FROM bookings WHERE id='BKPP'").get();
+  const captured2 = _capPP.find(c => /\/capture$/.test(c.url));
+  ok('paypal(c): duplicate return did NOT re-capture (order-level idempotency)', !captured2 && rRet2.status === 302, 'reCaptured=' + !!captured2 + ' status=' + rRet2.status);
+  ok('paypal(c): duplicate return did NOT double revenue (still 20000, not 40000)', Number(bkPP2.revenue_cents) === 20000, 'revenue_cents=' + bkPP2.revenue_cents);
+
+  // credit-level idempotency: crediting the SAME capture id twice via _paypalCreditBooking is a no-op the 2nd time (keyed on the capture id in d.paid)
+  const dupRes = await _paypalCreditBooking(envPP, tidPP, 'BKPP', 'deposit', 'CAP-PP1', 'ORDER-PP1', 20000);
+  const bkPP3 = envPP.DB._db.prepare("SELECT revenue_cents FROM bookings WHERE id='BKPP'").get();
+  ok('paypal(c): re-crediting the same capture id is a dup no-op (revenue unchanged)', dupRes.dup === true && dupRes.credited === false && Number(bkPP3.revenue_cents) === 20000, 'dup=' + dupRes.dup + ' rev=' + bkPP3.revenue_cents);
+
+  // (d) G5: a committed booking carrying a cash-ESTIMATE (revenue_cents == quote total, no prior online pay). A first PayPal
+  // payment SETTLES it -> REPLACE the estimate (revenue stays == the amount), never stack to double.
+  await envPP.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKPPG5', tidPP, 'C', 'A', 1, 2, 'confirmed', 50000, JSON.stringify({ asset: 'Model X', quote: { totalCents: 50000 }, paid: {} }), 'PPTOKENG5000000', 1, 1000).run();
+  const g5Res = await _paypalCreditBooking(envPP, tidPP, 'BKPPG5', 'paypal', 'CAP-G5', 'ORDER-G5', 50000);
+  const bkG5 = envPP.DB._db.prepare("SELECT revenue_cents,status,data FROM bookings WHERE id='BKPPG5'").get();
+  const dG5 = JSON.parse(bkG5.data);
+  ok('paypal(d): G5 estimate REPLACED, not stacked (revenue stays 50000, not 100000)', g5Res.credited === true && Number(bkG5.revenue_cents) === 50000, 'rev=' + bkG5.revenue_cents);
+  ok('paypal(d): the generic d.paid.paypal slot carries the capture id', !!(dG5.paid && dG5.paid.paypal && dG5.paid.paypal.paypal === 'CAP-G5' && dG5.paid.paypal.amountCents === 50000), JSON.stringify(dG5.paid));
+
+  // honest gating: a tenant with NO PayPal connected is never offered the option (the START route returns no_paypal)
+  await envPP.DB.prepare("INSERT INTO tenants (id,name,created_at,updated_at) VALUES (?,?,?,?)").bind('TEN_NOPP', 'No PayPal Co', 1, 1).run();
+  await envPP.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKNOPP', 'TEN_NOPP', 'C', 'A', NOWPP, NOWPP + 3 * 86400000, 'pending', 0, JSON.stringify({ quote: { totalCents: 10000, depositCents: 5000 }, paid: {} }), 'NOPPTOKEN00000', 1, 1).run();
+  const rNoPP = await worker.fetch(mkReq('POST', '/api/portal/NOPPTOKEN00000/paypal', { body: { kind: 'deposit' } }), envPP, ctx);
+  const jNoPP = await rNoPP.json();
+  ok('paypal: honest gating -> no connected PayPal, START returns no_paypal (never offered)', jNoPP && jNoPP.ok === false && jNoPP.reason === 'no_paypal', JSON.stringify(jNoPP));
+
+  globalThis.fetch = _rfPP;
 }
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise

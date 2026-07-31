@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30p';
+const ATLAS_BUILD = '2026.07.30q';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2034,7 +2034,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _qbToken, _qbSyncBooking, _qbPaidCents };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _qbToken, _qbSyncBooking, _qbPaidCents, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -3629,6 +3629,151 @@ async function stripePost(secretKey, path, params, idemKey) {
     var j = await r.json().catch(function () { return {}; });
     return r.ok ? { ok: true, obj: j } : { ok: false, reason: (j.error && j.error.message) || ('http_' + r.status) };
   } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// ================================================================ PayPal (BYO per-tenant, Orders v2) -- ADDITIVE
+// The tenant connects their OWN PayPal REST app (client-id + secret) through the SAME encrypted /api/integrations/connect
+// used for Stripe/Twilio/Resend (provider='paypal'; the REST secret goes in `secret` -> encrypted at rest; the client-id +
+// a `sandbox` bool go in `meta`). This mirrors the BYO pattern exactly. None of the code below touches the Stripe checkout,
+// the Stripe webhook, or any existing revenue/CAS logic -- it is a parallel, opt-in money path that only ever runs for a
+// tenant who has connected PayPal. Amounts are cents internally; PayPal wants 2-decimal-place currency strings.
+function _paypalBase(meta) { return (meta && meta.sandbox) ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com'; }   // live vs sandbox chosen from the tenant's meta.sandbox
+function _ppMoney(cents) { return (Math.max(0, Math.round(Number(cents) || 0)) / 100).toFixed(2); }   // cents -> PayPal decimal string (e.g. 20000 -> "200.00")
+
+// The tenant's connected PayPal credentials -> { clientId, secret, meta } or null. Mirrors tenantStripeKey/_tenantIntegration
+// (same tenant|provider AAD). HONEST: no row, no secret, or no client-id in meta -> null, so the caller never offers PayPal.
+async function _paypalCreds(env, tenantId) {
+  try {
+    var ti = await _tenantIntegration(env, tenantId, 'paypal');
+    if (!ti || !ti.secret) return null;
+    var cid = String((ti.meta && ti.meta.client_id) || '');
+    if (!cid) return null;
+    return { clientId: cid, secret: String(ti.secret), meta: ti.meta || {} };
+  } catch (e) { return null; }
+}
+
+// OAuth2 client-credentials token from the tenant's OWN client-id:secret (HTTP Basic). Returns '' on any failure (HONEST --
+// a missing/expired/wrong credential yields no token, so create/capture below return {ok:false} and the Stripe path stays the default).
+async function _paypalToken(env, creds) {
+  try {
+    var cid = String((creds && creds.clientId) || ''), sec = String((creds && creds.secret) || '');
+    if (!cid || !sec) return '';
+    var r = await _fetchTimeout(_paypalBase(creds && creds.meta) + '/v1/oauth2/token', {
+      method: 'POST',
+      headers: { 'Authorization': 'Basic ' + btoa(cid + ':' + sec), 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body: 'grant_type=client_credentials'
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    return (r.ok && j && j.access_token) ? String(j.access_token) : '';
+  } catch (e) { return ''; }
+}
+
+// Create a PayPal Orders v2 order (intent CAPTURE) for a booking payment. custom_id encodes the booking id + kind so the
+// return route credits the right slot. Returns { ok, id, approveUrl } (the approve URL the customer is sent to), or { ok:false, reason }.
+async function _paypalCreateOrder(env, tenantId, opts) {
+  var creds = await _paypalCreds(env, tenantId);
+  if (!creds) return { ok: false, reason: 'no_paypal' };
+  var tok = await _paypalToken(env, creds);
+  if (!tok) return { ok: false, reason: 'auth' };
+  try {
+    var body = {
+      intent: 'CAPTURE',
+      purchase_units: [{
+        amount: { currency_code: String(opts.currency || 'USD'), value: _ppMoney(opts.amountCents) },
+        custom_id: (String(opts.bookingId || '') + '|' + String(opts.kind || 'paypal')).slice(0, 127),
+        description: String(opts.name || 'Atlas Rental.io').slice(0, 127)
+      }],
+      application_context: {
+        return_url: opts.returnUrl, cancel_url: opts.cancelUrl,
+        brand_name: String(opts.brandName || 'Atlas Rental.io').slice(0, 127),
+        shipping_preference: 'NO_SHIPPING', user_action: 'PAY_NOW'
+      }
+    };
+    var r = await _fetchTimeout(_paypalBase(creds.meta) + '/v2/checkout/orders', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body)
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    if (!(r.ok && j && j.id)) return { ok: false, reason: (j && (j.message || (j.details && j.details[0] && j.details[0].description))) || ('http_' + r.status) };
+    var approve = '', links = j.links || [];
+    for (var i = 0; i < links.length; i++) { if (links[i] && links[i].rel === 'approve' && links[i].href) { approve = String(links[i].href); break; } }
+    return { ok: true, id: String(j.id), approveUrl: approve };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// Capture an approved PayPal order. Returns { ok, captureId, amountCents, currency, custom_id, status } or { ok:false, reason, status }.
+// The capture id is what the crediting keys idempotency on. amountCents is the PayPal-authoritative captured amount (its decimal * 100).
+async function _paypalCapture(env, tenantId, orderId) {
+  var creds = await _paypalCreds(env, tenantId);
+  if (!creds) return { ok: false, reason: 'no_paypal' };
+  var tok = await _paypalToken(env, creds);
+  if (!tok) return { ok: false, reason: 'auth' };
+  try {
+    var r = await _fetchTimeout(_paypalBase(creds.meta) + '/v2/checkout/orders/' + encodeURIComponent(String(orderId)) + '/capture', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: '{}'
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    var pu = (j && j.purchase_units && j.purchase_units[0]) || {};
+    var cap = (pu.payments && pu.payments.captures && pu.payments.captures[0]) || null;
+    if (!(r.ok && cap && cap.id)) return { ok: false, reason: (j && (j.message || (j.name) || (j.details && j.details[0] && j.details[0].issue))) || ('http_' + r.status), status: String((j && j.status) || '') };
+    var cents = Math.round(parseFloat(String((cap.amount && cap.amount.value) || '0')) * 100);
+    return { ok: true, captureId: String(cap.id), amountCents: cents, currency: String((cap.amount && cap.amount.currency_code) || 'USD'), custom_id: String(cap.custom_id || pu.custom_id || ''), status: String(cap.status || j.status || '') };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// Credit a CAPTURED PayPal payment to a booking. This is the money-critical part and it MIRRORS the Stripe webhook's
+// CAS crediting EXACTLY (see the checkout.session.completed handler): a 6-try optimistic-lock read-modify-write, revenue
+// added ONLY when newly recorded, the #363 G5 cash-estimate REPLACE rule, and the same portal-stamp / status-Confirmed
+// core-loop -- with two PayPal specifics: (1) idempotency is keyed on the PayPal CAPTURE id stored in d.paid, so a
+// duplicate return/refresh/replay can NEVER double-credit; (2) a PayPal Orders-v2 CAPTURE is always real captured money
+// (never an auth-only hold), so hold is always false. Returns { credited, dup, committed, wasNew, cancelled, amountCents, d }.
+async function _paypalCreditBooking(env, tenantId, bookingId, kind, captureId, orderId, amountCents) {
+  var amt = Math.max(0, Math.round(Number(amountCents) || 0));
+  var _pkKey = String(kind || 'paypal');                       // 'deposit' | 'balance' | 'security' | 'charge:<id>' | 'paypal'
+  var _isCharge = _pkKey.indexOf('charge:') === 0;
+  var _bareKind = _isCharge ? 'charge' : _pkKey;               // portal-stamp / status semantics key off the bare kind
+  var _isSec = (_pkKey === 'security');
+  var _committed = false, _dup = false, _wasNew = false, _isCanx = false, _outD = null;
+  for (var _wtry = 0; _wtry < 6 && !_committed; _wtry++) {
+    var row = await env.DB.prepare('SELECT id,data,revenue_cents,status,updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(bookingId, tenantId).first();
+    if (!row) return { credited: false, dup: false, committed: false, notfound: true, amountCents: amt, d: null };
+    var d = jparse(row.data, {});
+    d.paid = d.paid || {};
+    // (a) IDEMPOTENT keyed on the PayPal CAPTURE id: if this exact capture already sits in ANY paid slot (incl. an archived
+    // '#'-suffixed one), this is a duplicate return/refresh/webhook -- record nothing, add no revenue, report it as already-paid.
+    if (Object.keys(d.paid).some(function (k) { var p = d.paid[k]; return p && String(p.paypal || '') === String(captureId); })) { _dup = true; _outD = d; break; }
+    var _slotHad = !!d.paid[_pkKey];   // was this slot already filled by a DIFFERENT prior payment?
+    // #363: were there ANY prior ONLINE (captured, non-hold, non-security, non-archived) payments before this one?
+    var _hadOnlinePrior = Object.keys(d.paid).some(function (k) { var p = d.paid[k]; return p && !p.hold && k !== 'security' && String(k).indexOf('#') < 0; });
+    // #345: a DIFFERENT prior payment already in this slot -> archive it under a suffixed key so its id stays findable for a refund (never re-counted).
+    if (_slotHad && d.paid[_pkKey] && (d.paid[_pkKey].paypal || d.paid[_pkKey].pi) && String(d.paid[_pkKey].paypal || d.paid[_pkKey].pi) !== String(captureId)) d.paid[_pkKey + '#' + String(d.paid[_pkKey].paypal || d.paid[_pkKey].pi).slice(0, 40)] = d.paid[_pkKey];
+    d.paid[_pkKey] = { at: Date.now(), amountCents: amt, paypal: String(captureId), order: String(orderId || ''), hold: false };
+    _isCanx = (String(row.status || '').toLowerCase() === 'cancelled') || !!(d.status && /cancel/i.test(String(d.status)));
+    // (b) add revenue ONLY when this slot is newly recorded (mirror Stripe's _addRev): not on a resurrected-cancelled booking, and
+    // NEVER for a refundable security deposit (not revenue). A PayPal CAPTURE is never a hold, so there is no hold branch to gate.
+    var _addRev = (!_slotHad && !_isCanx && !_isSec) ? amt : 0;
+    // (c) #363 G5 REPLACE: a FIRST online reserve/balance/generic payment on a committed booking is settling the cash ESTIMATE that
+    // was injected as revenue_cents (= quote total). REPLACE it with the real collected amount rather than stack (double-count). A
+    // charge / security never triggers the reset; a non-committed booking had revenue_cents=0 so the reset is a no-op.
+    var _g5corePay = (_bareKind !== 'charge' && !_isSec);
+    var _estBase = (!_hadOnlinePrior && _addRev > 0 && _g5corePay) ? 0 : (Number(row.revenue_cents) || 0);
+    var rev = Math.max(0, _estBase + _addRev);
+    if (_isCharge && Array.isArray(d.charges)) {   // stamp the specific owner-added charge paid (mirror Stripe G1); paidOnline: it IS inside revenue_cents
+      var _cidStamp = _pkKey.slice(7);
+      for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(_cidStamp)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }
+    }
+    // (d) reflect the payment in the OWNER's dashboard (d.portal.*PaidAt + d.status), mirroring the Stripe core-loop.
+    d.portal = d.portal || {};
+    if (_bareKind === 'balance') d.portal.balancePaidAt = d.portal.balancePaidAt || Date.now();
+    else if (_bareKind === 'security') d.portal.depositPaidAt = d.portal.depositPaidAt || Date.now();   // captured refundable deposit
+    else if (_bareKind !== 'charge') d.portal.reservePaidAt = d.portal.reservePaidAt || Date.now();      // reserve down-payment or generic PayPal payment
+    if (_bareKind !== 'security' && _bareKind !== 'charge' && !_isCanx) d.status = 'Confirmed';           // a real reserve/balance/payment confirms -- never resurrect a cancelled booking
+    d._t = Date.now();
+    var _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
+      .bind(JSON.stringify(d), rev, (_isCanx ? row.status : 'confirmed'), Math.max(Date.now(), (Number(row.updated_at) || 0) + 1), bookingId, tenantId, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT; never flip a 'cancelled' column to 'confirmed'
+    _committed = !!(_u && _u.meta && _u.meta.changes);
+    if (_committed) { _wasNew = !_slotHad; _outD = d; }
+  }
+  return { credited: (_committed && !_dup), dup: _dup, committed: _committed, wasNew: _wasNew, cancelled: _isCanx, amountCents: amt, d: _outD };
 }
 
 // ================================================================ router
@@ -6624,7 +6769,47 @@ function doReset(){
         const _revSumB = await _publicReviewSummary(env, tr.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
         return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname, _revSumB), pr, _revSumB, _seoBase(url.origin, bp[1], false)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
-      const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|sign|receipt|agreement|upload|extend|prefs))?$/);
+      // ---- PayPal RETURN (public; the customer's browser lands here after approving on PayPal): capture the approved order and
+      // credit the booking, then 302 back to the portal. PayPal appends ?token=<orderId>&PayerID=... to our return_url; we also
+      // carry ?pt=<portalToken> to resolve the booking+tenant (same capability the Stripe successUrl round-trips). Crediting goes
+      // through _paypalCreditBooking, which mirrors the Stripe webhook's CAS + idempotency + G5 EXACTLY. Idempotent at BOTH levels:
+      // an order already recorded (any paid slot's .order === this orderId) is NOT re-captured; and the capture id itself is the
+      // dedup key inside the crediting. On cancel, PayPal hits our cancel_url (the plain portal) directly -- no capture happens.
+      if (path === '/api/paypal/return' && method === 'GET') {
+        const _ptok = String(url.searchParams.get('pt') || '');
+        const _orderId = String(url.searchParams.get('token') || '');   // PayPal's order id, appended as ?token=
+        const _pback = function (qs) { return new Response('', { status: 302, headers: { 'Location': url.origin + '/api/portal/' + encodeURIComponent(_ptok) + (qs || '') } }); };
+        if (!_ptok || !_orderId) return _ptok ? _pback('') : err(400, 'Missing payment reference.');
+        const _pbrow = await env.DB.prepare('SELECT id, tenant_id, data FROM bookings WHERE portal_token=? LIMIT 1').bind(_ptok).first();
+        if (!_pbrow) return err(404, 'Booking not found.');
+        // ORDER-level idempotency (refresh / double-land): if this order was already credited, don't re-capture -- just bounce to paid.
+        try { const _d0 = jparse(_pbrow.data, {}); if (_d0 && _d0.paid && Object.keys(_d0.paid).some(function (k) { var p = _d0.paid[k]; return p && String(p.order || '') === String(_orderId); })) return _pback('?paid=1'); } catch (e) {}
+        const _cap = await _paypalCapture(env, _pbrow.tenant_id, _orderId);
+        if (!_cap.ok) { try { await audit(env, { tenant_id: _pbrow.tenant_id }, req, 'paypal.capture_failed', { booking: _pbrow.id, order: String(_orderId).slice(0, 40), reason: String(_cap.reason || '').slice(0, 80) }); } catch (e) {} return _pback('?payerror=1'); }
+        // Defense in depth: the captured order's custom_id encodes the booking it was created for -- it MUST match this portal token's
+        // booking, or we refuse to credit (a mixed-up / replayed order can't credit the wrong booking).
+        const _cidBooking = String(_cap.custom_id || '').split('|')[0];
+        const _cidKind = String(_cap.custom_id || '').split('|')[1] || 'paypal';
+        if (_cidBooking && _cidBooking !== String(_pbrow.id)) { try { await audit(env, { tenant_id: _pbrow.tenant_id }, req, 'paypal.custom_id_mismatch', { booking: _pbrow.id, order: String(_orderId).slice(0, 40), custom: String(_cap.custom_id).slice(0, 60) }); } catch (e) {} return _pback('?payerror=1'); }
+        const _res = await _paypalCreditBooking(env, _pbrow.tenant_id, _pbrow.id, _cidKind, _cap.captureId, _orderId, _cap.amountCents);
+        if (_res.credited && !_res.cancelled) {   // fire the receipt/audit/webhook/QBO ONCE per NEW payment (mirror the Stripe post-commit block)
+          const _bareK = _cidKind.indexOf('charge:') === 0 ? 'charge' : _cidKind;
+          try { await audit(env, { tenant_id: _pbrow.tenant_id }, req, 'paypal.paid', { booking: _pbrow.id, kind: _cidKind, cents: _cap.amountCents, capture: String(_cap.captureId).slice(0, 40) }); } catch (e) {}
+          try { _fireWebhook(_ectx, env, _pbrow.tenant_id, 'booking.paid', { id: _pbrow.id, ref: _pbrow.id, kind: _bareK, amount_cents: _cap.amountCents, currency: (_cap.currency || 'USD').toLowerCase(), asset: (_res.d && _res.d.asset) || '', status: 'confirmed', paid_at: Math.floor(Date.now() / 1000), processor: 'paypal' }); } catch (e) {}
+          try {
+            const _tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(_pbrow.tenant_id).first();
+            const _dd = _res.d || jparse(_pbrow.data, {});
+            if (_tr && _dd.custEmail) { const _pp = tenantProfile(_tr);
+              const _smartR = !!(_pp.settings && _pp.settings.flags && _pp.settings.flags.smartReceipts);
+              await sendEmail(env, { to: _dd.custEmail, transactional: true, fromName: _pp.name,
+                subject: (_smartR ? 'Receipt - ' : 'Payment received - ') + _pp.name,
+                html: _emailShell(_pp, _smartR ? _bookingReceiptInner(_pp, _dd, { booking: _pbrow.id, kind: _bareK }, _cap.amountCents) : ('<h2>Payment received</h2><p>Thanks! We received ' + money2(_cap.amountCents) + ' for booking <b>' + esc(_pbrow.id) + '</b> (' + esc(_dd.asset || '') + ') via PayPal.</p>')) }); }
+          } catch (e) {}
+          try { if (_ectx && _ectx.waitUntil && _res.d) { _res.d.id = _res.d.id || _pbrow.id; _ectx.waitUntil(_qbSyncBooking(env, _pbrow.tenant_id, _res.d)); } } catch (e) {}   // accounting sync (best-effort, off the money path) -- same shape as the Stripe handler
+        }
+        return _pback('?paid=1');
+      }
+      const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|paypal|sign|receipt|agreement|upload|extend|prefs))?$/);
       if (ptp) {
         const token = ptp[1], psub = ptp[2];
         const brow = await env.DB.prepare('SELECT * FROM bookings WHERE portal_token=? LIMIT 1').bind(token).first();
@@ -6654,7 +6839,8 @@ function doReset(){
             reviewed: !!(d.review && d.review.rating), reviewRating: (d.review && d.review.rating) || 0, reviewReply: (d.review && String(d.review.reply || '').slice(0, 2000)) || '',   // G1: reviews are collectable in the SERVED portal, not just the owner's preview. C4: surface the owner's reply back to the customer.
             commsPref: (d.commsPref && typeof d.commsPref === 'object') ? { email: d.commsPref.email !== false, sms: !!d.commsPref.sms } : { email: true, sms: false },   // C1/C2: pre-fill the "how should we reach you?" card. SMS defaults OFF (no consent) so nothing is inflated; email defaults ON (they gave one at booking).
             agreement: _agrText, signed: !!(d.portal && d.portal.signedAt), signerName: (d.portal && d.portal.signerName) || '', signedAt: (d.portal && d.portal.signedAt) || 0,
-            uploads: (((d.portal && d.portal.uploads) || []).map(function (u) { return { kind: u.kind, url: u.url, at: u.at }; })), requests: ((d.portal && d.portal.requests) || []), storage: !!_r2(env) });
+            uploads: (((d.portal && d.portal.uploads) || []).map(function (u) { return { kind: u.kind, url: u.url, at: u.at }; })), requests: ((d.portal && d.portal.requests) || []), storage: !!_r2(env),
+            paypalOn: !!(await _paypalCreds(env, brow.tenant_id)) });   // capability flag: the customer portal offers a PayPal button ONLY when the owner has connected their own PayPal (honest gating)
         }
         if (psub === 'pay' && method === 'POST') {
           if (!await rateLimit(env, 'ppay:' + token, 20, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
@@ -6694,6 +6880,36 @@ function doReset(){
             successUrl: url.origin + '/api/portal/' + token + '?paid=1', cancelUrl: url.origin + '/api/portal/' + token,
             metadata: { booking: brow.id, tenant: brow.tenant_id, kind: kind, charge: (kind === 'charge' ? String(_chg.id) : ''), hold: (kind === 'security' && _secHold) ? '1' : '0' } });
           return co.ok ? json({ ok: true, payUrl: co.url, charged: (kind === 'security' && !_secHold), message: (kind === 'security' && !_secHold && _holdWouldExpire) ? 'Because this rental runs longer than a card hold can last, your refundable deposit is charged now and refunded at return.' : '' }) : json({ ok: false, reason: co.reason, message: 'Could not start checkout.' });
+        }
+        // ---- PayPal START (ADDITIVE, parallel to /pay): create a PayPal Orders-v2 order for this booking payment and return the
+        // approve URL. Offered ONLY when the tenant has connected their OWN PayPal (else honest {ok:false,no_paypal}); the Stripe
+        // /pay flow above is completely unchanged and stays the default. Amount is computed the SAME way as /pay. Reserve/balance
+        // and owner-added charges only -- a PayPal CAPTURE cannot place the $0-fee refundable-security HOLD Stripe does, so security
+        // stays on the Stripe path. On approve, PayPal redirects the customer to /api/paypal/return (below), which captures + credits.
+        if (psub === 'paypal' && method === 'POST') {
+          if (!await rateLimit(env, 'pppay:' + token, 20, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
+          const creds = await _paypalCreds(env, brow.tenant_id);
+          if (!creds) return json({ ok: false, reason: 'no_paypal', message: 'PayPal is not enabled for this booking.' });
+          const q = _quoteCents(d.quote || {}); const body = await req.json().catch(function () { return {}; });
+          const kind = (body.kind === 'balance') ? 'balance' : (body.kind === 'charge') ? 'charge' : 'deposit';
+          var _chg = null;
+          if (kind === 'charge') {   // paying a SPECIFIC owner-added charge (mirror /pay's per-charge lookup + guard)
+            var _cid = String(body.chargeId || '');
+            _chg = (Array.isArray(d.charges) ? d.charges : []).filter(function (c) { return String(c.id) === _cid; })[0];
+            if (!_chg) return json({ ok: false, reason: 'not_found', message: 'That charge was not found.' });
+            if (_chg.paidAt || (d.paid && d.paid['charge:' + _cid])) return json({ ok: false, reason: 'already_paid', message: 'That charge has already been paid - thank you.' });
+          }
+          if (kind !== 'charge' && d.paid && d.paid[kind] && (Number(d.paid[kind].amountCents) || 0) > 0) return json({ ok: false, reason: 'already_paid', message: 'Your ' + kind + ' has already been paid - thank you.' });   // same idempotency guard as /pay: refuse a 2nd order for a kind already recorded paid
+          var amt;
+          if (kind === 'charge') amt = Math.round((Number(_chg.amount) || 0) * 100);
+          else if (kind === 'balance') amt = Math.max(0, (Number(q.totalCents) || 0) - (Number(q.depositCents) || 0));
+          else amt = (Number(q.depositCents) || Number(q.totalCents) || 0);
+          if (amt < 50) return json({ ok: false, reason: 'nothing_due', message: 'Nothing is due online right now.' });
+          var _ppKind = (kind === 'charge') ? ('charge:' + String(_chg.id)) : kind;   // encoded into custom_id so the return route credits the right slot
+          const co = await _paypalCreateOrder(env, brow.tenant_id, { amountCents: amt, bookingId: brow.id, kind: _ppKind, brandName: pr.name,
+            name: pr.name + ' - ' + (kind === 'charge' ? String(_chg.label || 'Charge') : kind) + ' - ' + (d.asset || ''),
+            returnUrl: url.origin + '/api/paypal/return?pt=' + encodeURIComponent(token), cancelUrl: url.origin + '/api/portal/' + token });
+          return co.ok ? json({ ok: true, payUrl: co.approveUrl, orderId: co.id }) : json({ ok: false, reason: co.reason, message: 'Could not start PayPal checkout.' });
         }
         // #205 remote e-signature with a server-captured legal trail: real IP (CF-Connecting-IP) + user-agent + server timestamp +
         // a SHA-256 fingerprint of the exact agreement text signed. None of these can be spoofed by the client, so it's defensible.
@@ -8570,6 +8786,18 @@ function doReset(){
           if (row) { connected = true; realmId = ((_hqJson(row.meta, {}) || {}).realmId) || ''; }
         } catch (e) {}
         return json({ ok: true, connected: connected, configured: !!(env[cfg.id] && env[cfg.secret]), realmId: realmId });
+      }
+
+      // ---- PayPal connection status (session-gated read): is this tenant's OWN PayPal connected, and is it in sandbox mode? The
+      // server integrations table is authoritative, so the client shows a TRUTHFUL Connected badge on any load. NO secret is ever
+      // returned -- only the connected flag, the sandbox flag, and a last-4 hint of the (non-secret) client-id. ----
+      if (path === '/api/integrations/paypal/status' && method === 'GET') {
+        let connected = false, sandbox = false, clientHint = '';
+        try {
+          const row = await env.DB.prepare('SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider=?').bind(ctx.tenant_id, 'paypal').first();
+          if (row && row.secret_enc) { const m = (_hqJson(row.meta, {}) || {}); if (m.client_id) { connected = true; sandbox = !!m.sandbox; clientHint = '\u2026' + String(m.client_id).slice(-4); } }
+        } catch (e) {}
+        return json({ ok: true, connected: connected, sandbox: sandbox, clientHint: clientHint });
       }
 
       // ---- Atlas.io council: Claude + GPT + Gemini in concert, one synthesis --
@@ -10598,6 +10826,7 @@ function el(i){return document.getElementById(i)}
 function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 var _payBusy=false;function pay(kind,chg){if(_payBusy)return;_payBusy=true;fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}_payBusy=false;alert(j.message||'Payment is not available right now.')}).catch(function(){_payBusy=false;alert('Network error')})}
+function ppay(kind,chg){if(_payBusy)return;_payBusy=true;fetch('/api/portal/'+T+'/paypal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}_payBusy=false;alert(j.message||'PayPal is not available right now.')}).catch(function(){_payBusy=false;alert('Network error')})}
 function sign(){var nm=(el('sgName')?el('sgName').value:'').trim();var ag=el('sgAgree')&&el('sgAgree').checked;if(nm.length<2){alert('Please type your full legal name');return}if(!ag){alert('Please check the box to agree to the rental agreement');return}var b=el('sgBtn');if(b){b.disabled=true;b.textContent='Signing...'}fetch('/api/portal/'+T+'/sign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,sig:nm,agree:true})}).then(function(r){return r.json()}).then(function(j){if(j.ok){location.reload()}else{alert(j.error||'Could not sign');if(b){b.disabled=false;b.textContent='Agree & sign'}}}).catch(function(){alert('Network error');if(b){b.disabled=false;b.textContent='Agree & sign'}})}
 function up(inp,kind){var f=inp.files&&inp.files[0];if(!f)return;if(f.size>6000000){alert('That file is too large (max 6MB).');inp.value='';return}var rd=new FileReader();rd.onload=function(){fetch('/api/portal/'+T+'/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,data:rd.result,name:f.name})}).then(function(r){return r.json()}).then(function(j){if(j.ok){var l=el('uplist');if(l)l.textContent='Uploaded '+(j.count||1)+' file(s). Thank you.';inp.value=''}else{alert(j.message||j.error||'Could not upload.')}}).catch(function(){alert('Network error')})};rd.readAsDataURL(f)}
 function reqExt(){var ex=(el('extExtra')?el('extExtra').value:'').trim();var nt=(el('extNote')?el('extNote').value:'').trim();if(!ex&&!nt){alert('Tell the owner what you would like.');return}fetch('/api/portal/'+T+'/extend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({extra:ex,note:nt})}).then(function(r){return r.json()}).then(function(j){var m=el('extMsg');if(j.ok){if(m){m.style.color='#12813f';m.textContent=j.message||'Sent to the owner.'}if(el('extExtra'))el('extExtra').value='';if(el('extNote'))el('extNote').value=''}else{if(m){m.style.color='#c0392b';m.textContent=j.error||j.message||'Could not send.'}}}).catch(function(){var m=el('extMsg');if(m){m.style.color='#c0392b';m.textContent='Network error'}})}
@@ -10605,7 +10834,7 @@ var _rvR=0;function setStar(n){_rvR=n;for(var i=1;i<=5;i++){var s=el('rs'+i);if(
 function submitReview(){if(!_rvR){alert('Tap the stars to rate first');return}var tx=(el('rvText')?el('rvText').value:'').trim();var bt=el('rvBtn');if(bt){bt.disabled=true;bt.textContent='Sending...'}fetch('/api/portal/'+T+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rating:_rvR,text:tx})}).then(function(r){return r.json()}).then(function(j){if(j.ok){var c=el('reviewCard');if(c)c.innerHTML='<h2>Thank you!</h2><p class=muted>Your '+(j.rating||_rvR)+'-star review has been sent.</p>'}else{alert(j.message||j.error||'Could not submit your review');if(bt){bt.disabled=false;bt.textContent='Submit review'}}}).catch(function(){alert('Network error');if(bt){bt.disabled=false;bt.textContent='Submit review'}})}
 function renderUploads(list){var l=el('uplist');if(!l)return;var n=(list||[]).length;l.textContent=n?(n+' file(s) uploaded. Thank you.'):''}
 function savePrefs(){var em=el('cpEmail')&&el('cpEmail').checked;var sm=el('cpSms')&&el('cpSms').checked;var bt=el('cpBtn');if(bt){bt.disabled=true;bt.textContent='Saving...'}fetch('/api/portal/'+T+'/prefs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:!!em,sms:!!sm})}).then(function(r){return r.json()}).then(function(j){var m=el('cpMsg');if(j.ok){if(m){m.style.color='#12813f';m.textContent=j.message||'Saved.'}}else{if(m){m.style.color='#c0392b';m.textContent=j.message||j.error||'Could not save.'}}if(bt){bt.disabled=false;bt.textContent='Save preferences'}}).catch(function(){var m=el('cpMsg');if(m){m.style.color='#c0392b';m.textContent='Network error'}if(bt){bt.disabled=false;bt.textContent='Save preferences'}})}
-fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>'}else{pays='<p class=muted>All settled. Thank you!</p>'}if(q.securityCents>0){if(paid.security){pays+='<p class=muted style="margin-top:8px">Refundable deposit '+money(q.securityCents)+' authorized &mdash; released after a clean return.</p>'}else{pays+='<button class=btn onclick="pay(\\'security\\')" style="background:#0E1C15;margin-top:8px">Authorize refundable deposit '+money(q.securityCents)+'</button><p class=muted style="font-size:11px;margin-top:6px">Refundable &mdash; a temporary hold, released after a clean return.</p>'}}var chargesCard='';if(j.charges&&j.charges.length){var cr='';j.charges.forEach(function(c){cr+='<div class=row><span>'+esc(c.label)+'</span><span>'+(c.paid?'<span style="color:#12813f">Paid</span>':'<button class=btn style="width:auto;display:inline-block;padding:6px 12px;font-size:13px" onclick="pay(\\'charge\\',\\''+esc(c.id)+'\\')">Pay '+money(c.amountCents)+'</button>')+'</span></div>';});chargesCard='<div class=card><h2>Additional charges</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Charges added by '+esc(j.business)+' for this rental.</p>'+cr+'</div>';}var agree='';if(j.agreement){if(j.signed){agree='<div class=card><h2>Rental agreement</h2><p class=muted>Signed'+(j.signerName?(' by '+esc(j.signerName)):'')+' &mdash; thank you.</p></div>'}else{agree='<div class=card><h2>Rental agreement</h2><div style="max-height:170px;overflow:auto;font-size:12px;white-space:pre-wrap;border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:10px;margin:8px 0;line-height:1.5">'+esc(j.agreement)+'</div><label style="font-size:12.5px;display:flex;gap:7px;align-items:flex-start;margin:8px 0"><input type=checkbox id=sgAgree style="margin-top:2px"> <span>I have read and agree to this rental agreement.</span></label><input id=sgName placeholder="Type your full legal name" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:2px 0 8px;font-size:14px"><button class=btn id=sgBtn onclick=sign()>Agree & sign</button><p class=muted style="font-size:11px;margin-top:8px">Your typed name is your electronic signature. We record your name, the date and time, your IP address, and a fingerprint of this exact agreement.</p></div>'}}var docsCard='<div class=card><h2>Documents</h2><a class="btn dlbtn" href="/api/portal/'+T+'/receipt" target="_blank">Download receipt</a>'+(j.signed?'<a class="btn dlbtn" href="/api/portal/'+T+'/agreement" target="_blank" style="margin-top:8px;background:#333">Download signed agreement</a>':'')+'</div>';var uploadCard=j.storage?('<div class=card><h2>Upload documents</h2><p class=muted style="font-size:12.5px">Share your ID or pickup / condition photos with the owner.</p><label class=upl>ID / license<input type=file accept="image/*,application/pdf" onchange="up(this,\\'id\\')"></label><label class=upl>Pickup / condition photos<input type=file accept="image/*" onchange="up(this,\\'condition\\')"></label><div id=uplist class=muted style="font-size:12px;margin-top:6px"></div></div>'):'';var reqCard='<div class=card><h2>Need changes?</h2><p class=muted style="font-size:12.5px">Request more time or an add-on. The owner confirms any change and price with you.</p><input id=extExtra placeholder="e.g. 3 more days, or a child seat" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:4px 0;font-size:14px"><textarea id=extNote placeholder="Anything else? (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px"></textarea><button class=btn onclick=reqExt()>Send request</button><div id=extMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';var cp=j.commsPref||{};var prefsCard='<div class=card><h2>How should we reach you?</h2><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpEmail'+(cp.email!==false?' checked':'')+' style="margin-top:2px"> <span>Email me booking updates and receipts</span></label><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpSms'+(cp.sms?' checked':'')+' style="margin-top:2px"> <span>Text me (SMS) about this booking</span></label><p class=muted style="font-size:11px;line-height:1.5;margin:6px 0 8px">By checking &quot;Text me&quot; you agree to receive booking &amp; marketing text messages from '+esc(j.business)+' at the number on file. Msg &amp; data rates may apply. Reply STOP to opt out.</p><button class=btn id=cpBtn onclick=savePrefs()>Save preferences</button><div id=cpMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div>'+agree+'<div class=card>'+pays+'</div>'+chargesCard+docsCard+uploadCard+reqCard+prefsCard+(function(){if(j.reviewed){return '<div class=card id=reviewCard><h2>Thank you!</h2><p class=muted>You left a '+(j.reviewRating||5)+'-star review.</p>'+(j.reviewReply?('<div style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--brand);background:rgba(0,0,0,.04);border-radius:6px"><div style="font-weight:600;font-size:12.5px;margin-bottom:3px">Response from '+esc(j.business)+'</div><div class=muted style="font-size:13px;white-space:pre-wrap">'+esc(j.reviewReply)+'</div></div>'):'')+'</div>'}var _rs='';for(var _si=1;_si<=5;_si++){_rs+='<span id=rs'+_si+' onclick="setStar('+_si+')" style="color:#ccc;font-size:30px;cursor:pointer">&#9733;</span>'}return '<div class=card id=reviewCard><h2>How was it?</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Leave a quick review for '+esc(j.business)+'.</p><div>'+_rs+'</div><textarea id=rvText placeholder="Tell others about your experience (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px;margin-top:8px"></textarea><button class=btn id=rvBtn onclick=submitReview() style="margin-top:6px">Submit review</button></div>'})();renderUploads(j.uploads)}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
+fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>';if(j.paypalOn){pays+='<button class=btn onclick="ppay(\\''+((q.depositCents&&!paid.deposit)?'deposit':'balance')+'\\')" style="background:#ffc439;color:#003087;font-weight:600">Pay with PayPal</button>'}}else{pays='<p class=muted>All settled. Thank you!</p>'}if(q.securityCents>0){if(paid.security){pays+='<p class=muted style="margin-top:8px">Refundable deposit '+money(q.securityCents)+' authorized &mdash; released after a clean return.</p>'}else{pays+='<button class=btn onclick="pay(\\'security\\')" style="background:#0E1C15;margin-top:8px">Authorize refundable deposit '+money(q.securityCents)+'</button><p class=muted style="font-size:11px;margin-top:6px">Refundable &mdash; a temporary hold, released after a clean return.</p>'}}var chargesCard='';if(j.charges&&j.charges.length){var cr='';j.charges.forEach(function(c){cr+='<div class=row><span>'+esc(c.label)+'</span><span>'+(c.paid?'<span style="color:#12813f">Paid</span>':'<button class=btn style="width:auto;display:inline-block;padding:6px 12px;font-size:13px" onclick="pay(\\'charge\\',\\''+esc(c.id)+'\\')">Pay '+money(c.amountCents)+'</button>')+'</span></div>';});chargesCard='<div class=card><h2>Additional charges</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Charges added by '+esc(j.business)+' for this rental.</p>'+cr+'</div>';}var agree='';if(j.agreement){if(j.signed){agree='<div class=card><h2>Rental agreement</h2><p class=muted>Signed'+(j.signerName?(' by '+esc(j.signerName)):'')+' &mdash; thank you.</p></div>'}else{agree='<div class=card><h2>Rental agreement</h2><div style="max-height:170px;overflow:auto;font-size:12px;white-space:pre-wrap;border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:10px;margin:8px 0;line-height:1.5">'+esc(j.agreement)+'</div><label style="font-size:12.5px;display:flex;gap:7px;align-items:flex-start;margin:8px 0"><input type=checkbox id=sgAgree style="margin-top:2px"> <span>I have read and agree to this rental agreement.</span></label><input id=sgName placeholder="Type your full legal name" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:2px 0 8px;font-size:14px"><button class=btn id=sgBtn onclick=sign()>Agree & sign</button><p class=muted style="font-size:11px;margin-top:8px">Your typed name is your electronic signature. We record your name, the date and time, your IP address, and a fingerprint of this exact agreement.</p></div>'}}var docsCard='<div class=card><h2>Documents</h2><a class="btn dlbtn" href="/api/portal/'+T+'/receipt" target="_blank">Download receipt</a>'+(j.signed?'<a class="btn dlbtn" href="/api/portal/'+T+'/agreement" target="_blank" style="margin-top:8px;background:#333">Download signed agreement</a>':'')+'</div>';var uploadCard=j.storage?('<div class=card><h2>Upload documents</h2><p class=muted style="font-size:12.5px">Share your ID or pickup / condition photos with the owner.</p><label class=upl>ID / license<input type=file accept="image/*,application/pdf" onchange="up(this,\\'id\\')"></label><label class=upl>Pickup / condition photos<input type=file accept="image/*" onchange="up(this,\\'condition\\')"></label><div id=uplist class=muted style="font-size:12px;margin-top:6px"></div></div>'):'';var reqCard='<div class=card><h2>Need changes?</h2><p class=muted style="font-size:12.5px">Request more time or an add-on. The owner confirms any change and price with you.</p><input id=extExtra placeholder="e.g. 3 more days, or a child seat" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:4px 0;font-size:14px"><textarea id=extNote placeholder="Anything else? (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px"></textarea><button class=btn onclick=reqExt()>Send request</button><div id=extMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';var cp=j.commsPref||{};var prefsCard='<div class=card><h2>How should we reach you?</h2><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpEmail'+(cp.email!==false?' checked':'')+' style="margin-top:2px"> <span>Email me booking updates and receipts</span></label><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpSms'+(cp.sms?' checked':'')+' style="margin-top:2px"> <span>Text me (SMS) about this booking</span></label><p class=muted style="font-size:11px;line-height:1.5;margin:6px 0 8px">By checking &quot;Text me&quot; you agree to receive booking &amp; marketing text messages from '+esc(j.business)+' at the number on file. Msg &amp; data rates may apply. Reply STOP to opt out.</p><button class=btn id=cpBtn onclick=savePrefs()>Save preferences</button><div id=cpMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div>'+agree+'<div class=card>'+pays+'</div>'+chargesCard+docsCard+uploadCard+reqCard+prefsCard+(function(){if(j.reviewed){return '<div class=card id=reviewCard><h2>Thank you!</h2><p class=muted>You left a '+(j.reviewRating||5)+'-star review.</p>'+(j.reviewReply?('<div style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--brand);background:rgba(0,0,0,.04);border-radius:6px"><div style="font-weight:600;font-size:12.5px;margin-bottom:3px">Response from '+esc(j.business)+'</div><div class=muted style="font-size:13px;white-space:pre-wrap">'+esc(j.reviewReply)+'</div></div>'):'')+'</div>'}var _rs='';for(var _si=1;_si<=5;_si++){_rs+='<span id=rs'+_si+' onclick="setStar('+_si+')" style="color:#ccc;font-size:30px;cursor:pointer">&#9733;</span>'}return '<div class=card id=reviewCard><h2>How was it?</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Leave a quick review for '+esc(j.business)+'.</p><div>'+_rs+'</div><textarea id=rvText placeholder="Tell others about your experience (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px;margin-top:8px"></textarea><button class=btn id=rvBtn onclick=submitReview() style="margin-top:6px">Submit review</button></div>'})();renderUploads(j.uploads)}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
 `;
   return _pageDoc('Your booking', color, body, js);
 }
