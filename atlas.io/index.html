@@ -1617,7 +1617,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 
         <!-- TRACKING (live GPS map) -->
         <section class="panel" data-panel="tracking">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px;flex-wrap:wrap"><div><h2 style="font-size:22px">Live map</h2><p style="color:var(--muted);font-size:14px">Live GPS for connected trackers (Bouncie, Samsara, Traccar) &mdash; every other brand shows the live-map layout with simulated positions.</p></div><div id="trkTopActions"></div></div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:18px;flex-wrap:wrap"><div><h2 style="font-size:22px">Live map</h2><p style="color:var(--muted);font-size:14px">Live GPS for connected trackers (Bouncie, Samsara, Traccar, Geotab, GPSWOX and flespi) &mdash; every other brand shows the live-map layout with simulated positions.</p></div><div id="trkTopActions"></div></div>
           <div id="trkBody"></div>
         </section>
 
@@ -6317,7 +6317,9 @@ const Atlas = (function(){
     {id:'meitrack',name:'Meitrack'},{id:'concox',name:'Concox / Jimi IoT'},{id:'navixy',name:'Navixy'},{id:'flespi',name:'flespi'},
     {id:'other',name:'Other (generic API)'}
   ];
-  var TRK_LIVE={bouncie:1,samsara:1,traccar:1};   // providers with a real live-sync backend integration today; every other brand connects in preview (simulated positions)
+  var TRK_LIVE={bouncie:1,samsara:1,traccar:1,geotab:1,gpswox:1,flespi:1};   // providers with a real live-sync backend integration today (mirrors the worker's TRK_PROVIDERS); every other brand connects in preview (simulated positions)
+  function _trkLiveNames(){ return TRACKERS.filter(function(x){return TRK_LIVE[x.id];}).map(function(x){return x.name;}); }   // human names of the really-integrated providers, derived from TRK_LIVE (never hand-maintained copy that can drift)
+  function _trkLiveList(){ var n=_trkLiveNames(); return n.length>1?(n.slice(0,-1).join(', ')+' and '+n[n.length-1]):(n[0]||''); }
   var TRK_BOX={minLat:30.20,maxLat:30.34,minLng:-97.82,maxLng:-97.66};
   var TRK_STREETS=['Congress Ave','S Lamar Blvd','E 6th St','Guadalupe St','Riverside Dr','Cesar Chavez St','Burnet Rd','Manor Rd','Airport Blvd','Barton Springs Rd','MoPac Expy','I-35 Frontage'];
   var _trkTimer=null, _trkSaveTick=0, _trkSel=null;
@@ -6392,7 +6394,7 @@ const Atlas = (function(){
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
     body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); if(t.live) _trkFetchLive(true); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
-    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers to map every '+esc(S.fleet.noun)+' &mdash; live positions on Bouncie, Samsara and Traccar; every other brand shows the same layout with simulated positions. Location, trips, mileage, geofences and alerts.</p>'
+    +'<h3>See your whole fleet, live</h3><p>Connect your GPS trackers to map every '+esc(S.fleet.noun)+' &mdash; live positions on '+esc(_trkLiveList())+'; every other brand shows the same layout with simulated positions. Location, trips, mileage, geofences and alerts.</p>'
     +'<button class="btn btn--primary" onclick="Atlas.openTrackerConnect()">Connect a tracker</button>'
     +'<div class="trk-logos">'+TRACKERS.map(function(x){return '<span class="trk-logo">'+esc(x.name)+'</span>';}).join('')+'</div>'
     +'<div style="font-size:12px;color:var(--muted);margin-top:6px">Works with '+TRACKERS.length+'+ providers &mdash; bring your API key or account login.</div></div>'; }
@@ -6400,7 +6402,7 @@ const Atlas = (function(){
   var TRACKER_GUIDES={
     bouncie:{need:'OAuth access token',steps:['Sign in at bouncie.dev (the Bouncie developer portal)','Create an application to get your Client ID and secret','Authorize read access to vehicle GPS + status','Paste the access token above']},
     samsara:{need:'API token',steps:['Log in to the Samsara dashboard (cloud.samsara.com)','Open Settings > API Tokens','Create a token with read access to Vehicle Stats + Locations','Paste the token above']},
-    geotab:{need:'API key / credentials',steps:['Sign in to MyGeotab','Open Administration > System Settings > API','Note your database name, username and generate an API key','Paste the API key above']},
+    geotab:{need:'server, database, username, password',steps:['Sign in to MyGeotab','Note your database name (in the URL after /database/, or under About)','Use your own login, or add a read-only user for Atlas','Enter the server (usually my.geotab.com), database, username and password above']},
     vyncs:{need:'API key',steps:['Sign in to your Vyncs account','Request API access via Vyncs support / developer program','Copy the API key they issue','Paste it above']},
     zubie:{need:'API key',steps:['Log in to Zubie','Open Account > Developer / API Keys','Create an API key with location read access','Paste it above']},
     motive:{need:'API access token',steps:['Log in to Motive (formerly KeepTruckin) as an Admin','Open Admin > Integrations / API','Generate an API access token','Paste it above']},
@@ -6420,7 +6422,7 @@ const Atlas = (function(){
     ram:{need:'API credentials',steps:['Contact your RAM Tracking account manager for API access','They provide API credentials for live location','Copy the key','Paste it above']},
     teltonika:{need:'server token',steps:['Open your Teltonika platform (e.g. FMB device / server config)','Enable the data API / server credentials','Copy the API key or server token','Paste it above']},
     queclink:{need:'API token',steps:['Open your Queclink device-management platform','Enable API / server-push credentials','Copy the API token','Paste it above']},
-    gpswox:{need:'API key',steps:['Log in to GPSWOX','Open Settings > API','Generate an API key','Paste it above']},
+    gpswox:{need:'server URL + API hash',steps:['Log in to your GPSWOX server as an admin','Open Settings > API and copy your API hash (user_api_hash)','Confirm your server URL (e.g. https://your-host.com)','Paste the server URL and API hash above']},
     optimuspro:{need:'API key',steps:['Sign in to your Optimus Pro / Optimus GPS account','Open Settings > API access','Generate a read-only API key','Paste it above']},
     a3lert:{need:'API key',steps:['Sign in to your A3lert account','Open Settings > API / Integrations','Generate an API key or access token','Paste it above']},
     wialon:{need:'API token',steps:['Log in to Wialon (Gurtam) hosting','Open User Settings > Access tokens','Create a token with read access to units + messages','Paste the token above']},
@@ -6441,7 +6443,7 @@ const Atlas = (function(){
   // render below (real multi-field forms for the 3 live integrations; a URL+key form for the rest) + its own how-to steps.
   function openTrackerConnect(){ var opts=TRACKERS.slice().sort(function(a,b){return a.name.localeCompare(b.name);}).map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+(TRK_LIVE[x.id]?' (live sync)':'')+'</option>';}).join('');
     openModal('<div class="modal__head"><h3>Connect a tracker</h3>'+_xBtn()+'</div><div class="modal__body">'
-    +'<p class="bk-lenhint" style="margin:0 0 12px">Pick your GPS provider, follow the steps, and paste your keys. Live sync is supported for <b>Bouncie</b>, <b>Samsara</b> and <b>Traccar</b> today; every other brand connects in <b>preview</b> (the live-map layout with simulated positions) while live sync rolls out.</p>'
+    +'<p class="bk-lenhint" style="margin:0 0 12px">Pick your GPS provider, follow the steps, and paste your keys. Live sync is supported for <b>'+esc(_trkLiveList())+'</b> today; every other brand connects in <b>preview</b> (the live-map layout with simulated positions) while live sync rolls out.</p>'
     +'<div class="field"><label>Your GPS provider</label><select class="select" id="trkProv" onchange="Atlas.trkFieldsUpdate()">'+opts+'</select></div>'
     +'<div id="trkGuide"></div>'
     +'<div id="trkFields"></div>'
@@ -6466,6 +6468,13 @@ const Atlas = (function(){
     if(prov==='traccar') return '<div class="field"><label>Server URL</label><input class="input mono" id="tcHost" placeholder="https://your-traccar-host:8082"></div>'
       +'<div class="field"><label>Username (optional)</label><input class="input mono" id="tcUser" placeholder="email -- leave blank if using a token"></div>'
       +'<div class="field"><label>Token or password</label><input class="input mono" id="tcPass" placeholder="API token, or your account password"></div>';
+    if(prov==='geotab') return '<div class="field"><label>Server</label><input class="input mono" id="gtServer" value="my.geotab.com" placeholder="my.geotab.com"></div>'
+      +'<div class="field"><label>Database</label><input class="input mono" id="gtDb" placeholder="your MyGeotab database name"></div>'
+      +'<div class="field"><label>Username</label><input class="input mono" id="gtUser" placeholder="a MyGeotab user (email)"></div>'
+      +'<div class="field"><label>Password</label><input class="input mono" id="gtPass" type="password" placeholder="that user\'s MyGeotab password"></div>';
+    if(prov==='gpswox') return '<div class="field"><label>Server URL</label><input class="input mono" id="gwHost" placeholder="https://your-gpswox-host.com"></div>'
+      +'<div class="field"><label>API hash</label><input class="input mono" id="gwHash" placeholder="user_api_hash from Settings &gt; API"></div>';
+    if(prov==='flespi') return '<div class="field"><label>flespi token</label><input class="input mono" id="flTok" placeholder="from flespi.io &gt; Tokens (read access)"></div>';
     return '<div class="field"><label>Client ID</label><input class="input mono" id="bnCid" placeholder="from bouncie.dev"></div>'
       +'<div class="field"><label>Client Secret</label><input class="input mono" id="bnSec" placeholder="from bouncie.dev"></div>'
       +'<div class="field"><label>Authorization Code</label><input class="input mono" id="bnCode" placeholder="Users &amp; Devices &gt; Expand your account"></div>'
@@ -6474,6 +6483,9 @@ const Atlas = (function(){
     var prov=val('trkProv'), secret='', meta={};
     if(prov==='samsara'){ secret=(val('smTok')||'').trim(); if(!secret){ toast('Paste your Samsara API token'); return; } }
     else if(prov==='traccar'){ var h=(val('tcHost')||'').trim(), u=(val('tcUser')||'').trim(); secret=(val('tcPass')||'').trim(); if(!h||!secret){ toast('Enter your server URL and token/password'); return; } meta={host:h}; if(u)meta.user=u; }
+    else if(prov==='geotab'){ var gs=(val('gtServer')||'').trim()||'my.geotab.com', gd=(val('gtDb')||'').trim(), gu=(val('gtUser')||'').trim(), gp=(val('gtPass')||'').trim(); if(!gd||!gu||!gp){ toast('Enter your Geotab database, username and password'); return; } secret=JSON.stringify({server:gs,database:gd,user:gu,password:gp}); }
+    else if(prov==='gpswox'){ var gwh=(val('gwHost')||'').trim(); secret=(val('gwHash')||'').trim(); if(!gwh||!secret){ toast('Enter your GPSWOX server URL and API hash'); return; } meta={host:gwh}; }
+    else if(prov==='flespi'){ secret=(val('flTok')||'').trim(); if(!secret){ toast('Paste your flespi token'); return; } }
     else { var ci=(val('bnCid')||'').trim(), cs=(val('bnSec')||'').trim(), cd=(val('bnCode')||'').trim(), rd=(val('bnRedir')||'').trim(); if(!ci||!cs||!cd){ toast('Fill in Client ID, Secret and Authorization Code'); return; } secret=JSON.stringify({client_id:ci,client_secret:cs,code:cd,redirect_uri:rd}); }
     toast('Connecting '+esc(prov)+'...');
     _api('/api/integrations/connect',{method:'POST',body:{provider:prov,secret:secret,kind:'tracker',meta:meta}}).then(function(res){
@@ -6483,8 +6495,12 @@ const Atlas = (function(){
   function connectTracker(){ var prov=val('trkProv');   // preview path: key is NOT stored (real polling not wired for this brand yet), so it's optional -- no friction
     var t=_trackers(); t.provider=prov; t.connected=true; var nm=(TRACKERS.filter(function(x){return x.id===prov;})[0]||{name:prov}).name;   // do NOT store the pasted key: real provider polling is not wired yet, so keeping a key would be collecting an unused credential
     _trkSeed(); _logEvent('tracker','Live-map preview started ('+nm+') -- '+(DATA.assets||[]).length+' '+S.fleet.nouns+' shown with simulated positions',{provider:prov}); save(); closeModal(); renderTracking(); toast('Preview ready -- showing simulated positions'); }
-  // Edit a LIVE connection's provider / API key in place -- update capability alongside connect (create) + disconnect (delete), without wiping vehicles or dropping the session.
-  function editTrackerConnect(){ var t=_trackers(); openModal('<div class="modal__head"><h3>Edit tracker connection</h3>'+_xBtn()+'</div><div class="modal__body">'
+  // Edit a connection. For a REALLY-integrated provider the credential lives ENCRYPTED on the server, so editing must re-run
+  // the encrypted connect flow (re-POST to /api/integrations/connect) -- never the legacy client-side apiKey field below, which
+  // would put a live credential into S/save(). Preview-only brands (no server cred) keep the lightweight in-place editor.
+  function editTrackerConnect(){ var t=_trackers();
+    if(TRK_LIVE[t.provider]){ openTrackerConnect(); var _sel=document.getElementById('trkProv'); if(_sel){ _sel.value=t.provider; trkFieldsUpdate(); } return; }
+    openModal('<div class="modal__head"><h3>Edit tracker connection</h3>'+_xBtn()+'</div><div class="modal__body">'
     +'<div class="field"><label>Provider</label><select class="select" id="trkProv" onchange="Atlas.trkGuideUpdate()">'+TRACKERS.map(function(x){return '<option value="'+x.id+'"'+(x.id===t.provider?' selected':'')+'>'+esc(x.name)+'</option>';}).join('')+'</select></div>'
     +'<div id="trkGuide">'+_trkGuideHtml(t.provider||TRACKERS[0].id)+'</div>'
     +'<div class="field"><label>API key or account login</label><input class="input mono" id="trkKey" value="'+esc(t.apiKey||'')+'" placeholder="Paste your API key or access token"></div>'

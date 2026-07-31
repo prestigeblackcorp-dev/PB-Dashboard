@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _trackerFetch, TRK_PROVIDERS } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -482,6 +482,90 @@ if (sess) {
   ok('square: honest gating -> no connected Square, START returns no_square (never offered)', jNoSQ && jNoSQ.ok === false && jNoSQ.reason === 'no_square', JSON.stringify(jNoSQ));
 
   globalThis.fetch = _rfSQ;
+}
+
+// ===================== #202 live GPS trackers: newly-real providers parse REAL positions; unsupported/unconnected yield NO fake position =====================
+// _trackerFetch is the server-side poller (provider creds never touch the browser). For each newly-real provider we mock its
+// API and assert the {lat,lng,...} we parse matches the mocked response; and we prove an unconnected/unsupported provider
+// NEVER fabricates a position -- the honesty invariant. (Simulated positions are a CLIENT-only labeled preview, never served.)
+{
+  const _rfTrk = globalThis.fetch;
+
+  // Geotab: Authenticate -> Get DeviceStatusInfo (+ best-effort Get Device for name/VIN). Speed is km/h -> mph.
+  globalThis.fetch = (u, o) => {
+    const url = String(u); let b = {}; try { b = JSON.parse((o && o.body) || '{}'); } catch (e) {}
+    if (url.indexOf('/apiv1') >= 0 && b.method === 'Authenticate') return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: { credentials: { database: 'db', userName: 'u', sessionId: 'SID' }, path: 'ThisServer' } }) });
+    if (url.indexOf('/apiv1') >= 0 && b.method === 'Get' && b.params && b.params.typeName === 'DeviceStatusInfo') return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: [{ device: { id: 'b1' }, latitude: 30.27, longitude: -97.74, speed: 100, bearing: 90, dateTime: '2026-07-31T00:00:00Z', isDriving: true }] }) });
+    if (url.indexOf('/apiv1') >= 0 && b.method === 'Get' && b.params && b.params.typeName === 'Device') return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: [{ id: 'b1', name: 'Unit 7', vehicleIdentificationNumber: '1FT-VIN-777' }] }) });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, text: async () => '', json: async () => ({}) });
+  };
+  const gRes = await _trackerFetch(env, 'geotab', JSON.stringify({ server: 'my.geotab.com', database: 'db', user: 'u', password: 'p' }), {});
+  ok('geotab: _trackerFetch parses REAL {lat,lng} from DeviceStatusInfo', gRes.ok && gRes.positions.length === 1 && gRes.positions[0].lat === 30.27 && gRes.positions[0].lng === -97.74, JSON.stringify(gRes).slice(0, 160));
+  ok('geotab: speed km/h -> mph + device name/VIN mapped', gRes.ok && Math.round(gRes.positions[0].speed) === 62 && gRes.positions[0].vin === '1FT-VIN-777' && gRes.positions[0].label === 'Unit 7', JSON.stringify(gRes.positions[0]));
+
+  // GPSWOX: GET /api/get_devices -> groups[].items[] with (possibly string) lat/lng. Speed km/h -> mph.
+  globalThis.fetch = (u) => {
+    if (String(u).indexOf('/api/get_devices') >= 0) return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ([{ id: 1, title: 'Fleet', items: [{ id: 55, name: 'Van A', lat: '40.7128', lng: '-74.0060', speed: 50, course: 270, time: '2026-07-31 00:00:00', online: 'online' }] }]) });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, text: async () => '', json: async () => ({}) });
+  };
+  const wRes = await _trackerFetch(env, 'gpswox', 'HASH123', { host: 'https://gps.example.com' });
+  ok('gpswox: _trackerFetch parses REAL {lat,lng} from get_devices items (string coords)', wRes.ok && wRes.positions.length === 1 && wRes.positions[0].lat === 40.7128 && wRes.positions[0].lng === -74.006, JSON.stringify(wRes).slice(0, 160));
+  ok('gpswox: label + moving derived, speed km/h -> mph', wRes.positions[0].label === 'Van A' && wRes.positions[0].moving === true && Math.round(wRes.positions[0].speed) === 31, JSON.stringify(wRes.positions[0]));
+
+  // flespi: GET /gw/devices/all/telemetry/position -> result[].telemetry.position (nested {value:{...},ts}). Speed km/h -> mph.
+  globalThis.fetch = (u) => {
+    if (String(u).indexOf('flespi.io/gw/devices') >= 0) return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: [{ id: 900, telemetry: { position: { value: { latitude: 51.5074, longitude: -0.1278, speed: 80, direction: 180 }, ts: 1785000000 } } }] }) });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, text: async () => '', json: async () => ({}) });
+  };
+  const fRes = await _trackerFetch(env, 'flespi', 'FLESPITOKEN', {});
+  ok('flespi: _trackerFetch parses REAL {lat,lng} from telemetry.position', fRes.ok && fRes.positions.length === 1 && fRes.positions[0].lat === 51.5074 && fRes.positions[0].lng === -0.1278, JSON.stringify(fRes).slice(0, 160));
+  ok('flespi: heading + ts + speed km/h -> mph parsed', fRes.positions[0].heading === 180 && Math.round(fRes.positions[0].speed) === 50 && !!fRes.positions[0].ts, JSON.stringify(fRes.positions[0]));
+
+  // HONESTY: an unsupported provider fabricates NOTHING (ok:false, no positions) even though the client offers its name.
+  globalThis.fetch = () => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: [{ latitude: 1, longitude: 2 }] }) });
+  const uRes = await _trackerFetch(env, 'lojack', 'anything', {});
+  ok('honesty: unsupported provider (lojack) -> ok:false unknown_provider, NO position', uRes.ok === false && uRes.reason === 'unknown_provider' && !uRes.positions, JSON.stringify(uRes));
+
+  // SSRF: GPSWOX pointed at a private/metadata host is refused (never probes the internal network), no position.
+  const sRes = await _trackerFetch(env, 'gpswox', 'HASH', { host: 'https://169.254.169.254' });
+  ok('ssrf: gpswox private/metadata host refused (blocked_host), NO position', sRes.ok === false && !sRes.positions, JSON.stringify(sRes));
+
+  ok('TRK_PROVIDERS lists exactly the 6 really-integrated providers', Array.isArray(TRK_PROVIDERS) && TRK_PROVIDERS.length === 6 && ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi'].every((p) => TRK_PROVIDERS.indexOf(p) >= 0), JSON.stringify(TRK_PROVIDERS));
+
+  globalThis.fetch = _rfTrk;
+}
+
+// Route: /api/trackers/positions polls a NEWLY-REAL provider end-to-end; unconnected + unsupported-row tenants stay live:false.
+if (sess) {
+  const _rfR = globalThis.fetch;
+  const HT = { cookie: 'atlas_sid=' + sess.id, 'x-csrf-token': sess.csrf };
+  // owner connects Geotab through the SAME encrypted /api/integrations/connect (creds -> secret_enc; never returned to the client)
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HT, body: { provider: 'geotab', secret: JSON.stringify({ server: 'my.geotab.com', database: 'db', user: 'u', password: 'p' }), kind: 'tracker', meta: {} } }), env, ctx);
+  globalThis.fetch = (u, o) => {
+    const url = String(u); let b = {}; try { b = JSON.parse((o && o.body) || '{}'); } catch (e) {}
+    if (url.indexOf('/apiv1') >= 0 && b.method === 'Authenticate') return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: { credentials: { sessionId: 'S' }, path: 'ThisServer' } }) });
+    if (url.indexOf('/apiv1') >= 0 && b.params && b.params.typeName === 'DeviceStatusInfo') return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: [{ device: { id: 'g1' }, latitude: 29.76, longitude: -95.37, speed: 0, bearing: 0, dateTime: '2026-07-31T00:00:00Z', isDriving: false }] }) });
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ result: [] }) });
+  };
+  const rPos = await worker.fetch(mkReq('POST', '/api/trackers/positions', { headers: HT, body: {} }), env, ctx);
+  const jPos = await rPos.json();
+  ok('route: /api/trackers/positions live:true + REAL geotab position (end-to-end, encrypted cred)', jPos.ok === true && jPos.live === true && jPos.provider === 'geotab' && jPos.positions && jPos.positions.length === 1 && jPos.positions[0].lat === 29.76, JSON.stringify(jPos).slice(0, 180));
+  globalThis.fetch = _rfR;
+
+  // a fresh tenant with NO connected tracker -> live:false, no positions (the server never emits a simulated one)
+  const rEnv2 = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(rEnv2);   // fresh DB -> full migration pass (the module _pReady flag would otherwise skip the ALTER-only columns signup INSERTs)
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'trk2@x.com', password: 'correcthorsebatterystaple', business: 'Trk2' } }), rEnv2, ctx);
+  const s2 = rEnv2.DB._db.prepare('SELECT id,csrf FROM sessions ORDER BY created_at DESC LIMIT 1').get();
+  const H2 = { cookie: 'atlas_sid=' + s2.id, 'x-csrf-token': s2.csrf };
+  const rNo = await worker.fetch(mkReq('POST', '/api/trackers/positions', { headers: H2, body: {} }), rEnv2, ctx);
+  const jNo = await rNo.json();
+  ok('route: no connected provider -> live:false, no positions (honest preview stays client-only)', jNo.ok === true && jNo.live === false && !jNo.positions, JSON.stringify(jNo));
+
+  // a tenant whose ONLY integration is an unsupported brand ('lojack') is NEVER polled -> live:false (the TRK_PROVIDERS gate holds)
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: H2, body: { provider: 'lojack', secret: 'x', kind: 'tracker', meta: {} } }), rEnv2, ctx);
+  const rLj = await worker.fetch(mkReq('POST', '/api/trackers/positions', { headers: H2, body: {} }), rEnv2, ctx);
+  const jLj = await rLj.json();
+  ok('route: unsupported-provider row (lojack) not polled -> live:false, no positions', jLj.ok === true && jLj.live === false && !jLj.positions, JSON.stringify(jLj));
 }
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise

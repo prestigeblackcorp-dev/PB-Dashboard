@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30r';
+const ATLAS_BUILD = '2026.07.30s';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2034,7 +2034,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _qbToken, _qbSyncBooking, _qbPaidCents, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds, _squareCreds, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _trackerFetch, TRK_PROVIDERS, _qbToken, _qbSyncBooking, _qbPaidCents, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds, _squareCreds, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -2299,6 +2299,32 @@ async function _bounceToken(env, cfg) {
     var j = await r.json().catch(function () { return {}; }); return j.access_token || '';
   } catch (e) { return ''; }
 }
+// SSRF guard for a tenant-supplied tracker server URL (Geotab server, GPSWOX host): require https, use ONLY the origin
+// (no attacker-chosen path via #/?), and block localhost / private / link-local / metadata hosts. Mirrors the inline
+// Traccar guard so a self-hosted GPS server can be polled without becoming an internal-network probe. Returns
+// { ok, origin, hostname } or { ok:false, reason }.
+function _trkSafeHost(raw) {
+  var u; try { u = new URL(String(raw || '').trim()); } catch (e) { return { ok: false, reason: 'bad_host' }; }
+  if (u.protocol !== 'https:') return { ok: false, reason: 'https_required' };
+  var hn = u.hostname.toLowerCase();
+  if (hn === 'localhost' || hn === '::1' || hn.indexOf('.') < 0 || hn.indexOf('metadata') >= 0 ||
+    /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(hn) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hn)) return { ok: false, reason: 'blocked_host' };
+  return { ok: true, origin: u.origin, hostname: hn };
+}
+// MyGeotab auth: POST {method:'Authenticate'} to https://<server>/apiv1 -> { credentials, path }. `path` is a federation
+// redirect to the tenant's real Geotab server; follow it ONLY when it is a *.geotab.com host (never an attacker-chosen
+// private host). Returns { ok, server, credentials } or { ok:false, reason }. Read-only; no money movement.
+async function _geotabAuth(env, server, database, user, password) {
+  var h = _trkSafeHost(/^https?:\/\//.test(String(server || '')) ? server : ('https://' + String(server || 'my.geotab.com')));
+  if (!h.ok) return { ok: false, reason: h.reason };
+  var body = JSON.stringify({ method: 'Authenticate', params: { database: database, userName: user, password: password } });
+  var r = await _fetchTimeout(h.origin + '/apiv1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body }, 12000);
+  var j = await r.json().catch(function () { return {}; });
+  if (!j || !j.result || !j.result.credentials) return { ok: false, reason: 'auth' };
+  var srv = h.origin, path = j.result.path;
+  if (path && path !== 'ThisServer') { var ph = _trkSafeHost('https://' + String(path).replace(/^https?:\/\//, '').replace(/\/.*$/, '')); if (ph.ok && /\.geotab\.com$/.test(ph.hostname)) srv = ph.origin; }
+  return { ok: true, server: srv, credentials: j.result.credentials };
+}
 async function _trackerFetch(env, provider, cred, meta) {
   try {
     if (provider === 'bouncie') {
@@ -2326,9 +2352,57 @@ async function _trackerFetch(env, provider, cred, meta) {
       var pos = await rp.json().catch(function () { return []; }); if (!Array.isArray(pos)) return { ok: false, reason: 'shape' };
       return { ok: true, positions: pos.map(function (p) { return { deviceId: String(p.deviceId || ''), label: '', vin: '', lat: Number(p.latitude), lng: Number(p.longitude), heading: Number(p.course) || 0, speed: (Number(p.speed) || 0) * 1.15078, ts: p.fixTime || p.deviceTime || '', address: '', moving: (Number(p.speed) || 0) > 0.5 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
     }
+    if (provider === 'geotab') {
+      // MyGeotab JSON-RPC. cred = JSON {server,database,user,password}. Authenticate -> Get DeviceStatusInfo (live GPS). Speed is km/h -> mph.
+      var gc; try { gc = JSON.parse(cred); } catch (e) { gc = {}; }
+      var gAuth = await _geotabAuth(env, gc.server || (meta && meta.server) || 'my.geotab.com', gc.database || (meta && meta.database) || '', gc.user || (meta && meta.user) || '', gc.password || '');
+      if (!gAuth.ok) return { ok: false, reason: gAuth.reason || 'auth' };
+      var gBody = JSON.stringify({ method: 'Get', params: { typeName: 'DeviceStatusInfo', credentials: gAuth.credentials } });
+      var gr = await _fetchTimeout(gAuth.server + '/apiv1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: gBody }, 12000);
+      var gj = await gr.json().catch(function () { return {}; });
+      var gRows = (gj && gj.result) || []; if (!Array.isArray(gRows)) return { ok: false, reason: 'shape' };
+      var gMap = {};   // best-effort device id -> {name,vin} so devices label + VIN-match to fleet assets (a failure here still returns positions)
+      try {
+        var dBody = JSON.stringify({ method: 'Get', params: { typeName: 'Device', credentials: gAuth.credentials } });
+        var dr = await _fetchTimeout(gAuth.server + '/apiv1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: dBody }, 12000);
+        var dj = await dr.json().catch(function () { return {}; }); ((dj && dj.result) || []).forEach(function (d) { if (d && d.id) gMap[d.id] = { name: d.name || '', vin: d.vehicleIdentificationNumber || '' }; });
+      } catch (e) {}
+      return { ok: true, positions: gRows.map(function (v) { var dev = v.device || {}, inf = gMap[dev.id] || {}; return { deviceId: String(dev.id || ''), label: inf.name || '', vin: inf.vin || '', lat: Number(v.latitude), lng: Number(v.longitude), heading: Number(v.bearing) || 0, speed: (Number(v.speed) || 0) * 0.621371, ts: v.dateTime || '', address: '', moving: !!v.isDriving }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    if (provider === 'gpswox') {
+      // GPSWOX / white-label GpsWox servers: GET <host>/api/get_devices?user_api_hash=<cred>. cred = user_api_hash; meta.host = server URL. Speed km/h -> mph.
+      var gwH = _trkSafeHost((meta && meta.host) || ''); if (!gwH.ok) return { ok: false, reason: gwH.reason };
+      var gwr = await _fetchTimeout(gwH.origin + '/api/get_devices?lang=en&user_api_hash=' + encodeURIComponent(cred || ''), {}, 12000);
+      var gwj = await gwr.json().catch(function () { return null; });
+      var groups = Array.isArray(gwj) ? gwj : ((gwj && (gwj.data || gwj.items)) || []); if (!Array.isArray(groups)) return { ok: false, reason: 'shape' };
+      var gwOut = [];
+      groups.forEach(function (g) {
+        var items = (g && g.items) || (Array.isArray(g) ? g : []); if (!Array.isArray(items)) return;
+        items.forEach(function (it) { if (!it) return; var la = Number(it.lat), ln = Number(it.lng), sp = Number(it.speed) || 0; gwOut.push({ deviceId: String(it.id || it.imei || ''), label: it.name || '', vin: '', lat: la, lng: ln, heading: Number(it.course) || 0, speed: sp * 0.621371, ts: it.time || it.timestamp || '', address: it.address || '', moving: String(it.online || '') === 'online' && sp > 0 }); });
+      });
+      return { ok: true, positions: gwOut.filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
+    if (provider === 'flespi') {
+      // flespi gateway telemetry (hosted, fixed host -> no SSRF): GET /gw/devices/all/telemetry/position, header 'Authorization: FlespiToken <cred>'. Speed km/h -> mph.
+      var fr = await _fetchTimeout('https://flespi.io/gw/devices/all/telemetry/position', { headers: { 'Authorization': 'FlespiToken ' + (cred || '') } }, 12000);
+      var fj = await fr.json().catch(function () { return {}; });
+      var fRows = (fj && fj.result) || []; if (!Array.isArray(fRows)) return { ok: false, reason: 'shape' };
+      return { ok: true, positions: fRows.map(function (d) {
+        var t = d.telemetry || {};
+        var _fv = function (k) { var x = t[k]; return (x && typeof x === 'object' && ('value' in x)) ? x.value : x; };
+        var lat, lng, sp, dir, ts;
+        if (t['position.latitude'] !== undefined) { lat = Number(_fv('position.latitude')); lng = Number(_fv('position.longitude')); sp = Number(_fv('position.speed')) || 0; dir = Number(_fv('position.direction')) || 0; ts = (t['position.latitude'] && t['position.latitude'].ts) || 0; }
+        else { var pos = _fv('position') || {}; lat = Number(pos.latitude); lng = Number(pos.longitude); sp = Number(pos.speed) || 0; dir = Number(pos.direction) || 0; ts = (t.position && t.position.ts) || 0; }
+        return { deviceId: String(d.id || ''), label: '', vin: '', lat: lat, lng: lng, heading: dir, speed: sp * 0.621371, ts: ts ? new Date(ts * 1000).toISOString() : '', address: '', moving: sp > 1 };
+      }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
+    }
     return { ok: false, reason: 'unknown_provider' };
   } catch (e) { return { ok: false, reason: 'error' }; }
 }
+// Providers with a REAL server-side live-GPS integration (mirrors the _trackerFetch blocks). The live-position route polls
+// ONLY these; every other brand the client offers stays in labeled preview (never fed a fabricated position). Keep in sync
+// with _trackerFetch + the client TRK_LIVE map.
+const TRK_PROVIDERS = ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi'];
 
 // #206 validate + price a promo code at the PUBLIC customer checkout (server-authoritative, from the owner's published promos).
 // Mirrors the dashboard's _validatePromo rules; anonymous visitors can never redeem a personal/loyalty coupon.
@@ -7926,12 +8000,16 @@ function doReset(){
         return json({ ok: true, applied: _set.applied || _norm.records.length, domain: _dm4 });
       }
 
-      // ---- #202 real GPS positions from the tenant's connected provider (Bouncie / Samsara / Traccar). HONEST: no provider -> {live:false} so the client stays in labeled preview. ----
+      // ---- #202 real GPS positions from the tenant's connected provider (Bouncie / Samsara / Traccar / Geotab / GPSWOX / flespi
+      //      -- any provider _trackerFetch really supports, listed in TRK_PROVIDERS). HONEST: no connected real provider -> {live:false}
+      //      so the client stays in labeled preview and is NEVER fed a fabricated position. ----
       if (path === '/api/trackers/positions' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         if (!_can(ctx, 'analytics')) return err(403, 'You do not have permission to view tracking.');
         if (!await rateLimit(env, 'trk:' + ctx.tenant_id, 300, 3600000)) return err(429, 'Refreshing too fast - please wait a moment.');
-        const row = await env.DB.prepare("SELECT provider, secret_enc, meta FROM integrations WHERE tenant_id=? AND provider IN ('bouncie','samsara','traccar') LIMIT 1").bind(ctx.tenant_id).first();
+        const _trkIn = TRK_PROVIDERS.map(function () { return '?'; }).join(',');
+        const _trkStmt = env.DB.prepare("SELECT provider, secret_enc, meta FROM integrations WHERE tenant_id=? AND provider IN (" + _trkIn + ") LIMIT 1");
+        const row = await _trkStmt.bind.apply(_trkStmt, [ctx.tenant_id].concat(TRK_PROVIDERS)).first();
         if (!row) return json({ ok: true, live: false });
         let cred = ''; try { cred = await decSecret(env, row.secret_enc, ctx.tenant_id + '|' + row.provider); } catch (e) {}
         let meta = {}; try { meta = JSON.parse(row.meta || '{}'); } catch (e) {}
