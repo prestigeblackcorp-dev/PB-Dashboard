@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -217,6 +217,79 @@ if (sess) {
   const eReq2 = _cap.find(c => c.url.indexOf('api.resend.com') >= 0);
   ok('integrations: sendEmail FALLS BACK to the platform Resend key when the tenant has none', !!eReq2 && String((eReq2.opts.headers || {}).Authorization || '').indexOf('re_platform') >= 0);
   globalThis.fetch = _rf;
+}
+
+// ---- QUICKBOOKS ONLINE (per-tenant OAuth accounting sync, "make it real"): (a) connect is HONEST when the Intuit app is
+// unconfigured; (b) the callback exchanges the code with Basic auth + stores tokens ENCRYPTED per tenant (+ realmId); (c)
+// _qbSyncBooking posts a SalesReceipt carrying the tenant's own Bearer token + realmId + paid total; (d) a 2nd sync of the
+// same booking is IDEMPOTENT (no double-post). All Intuit endpoints are mocked; globalThis.fetch is restored after. ----
+{
+  const envQ = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envQ);   // fresh DB -> run the FULL migration pass (adds the ALTER-only columns signup INSERTs); the module _pReady flag would otherwise skip them
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'qb@x.com', password: 'correcthorsebatterystaple', business: 'QB Co' } }), envQ, ctx);
+  const tidQ = envQ.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sQ = envQ.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidQ);
+  const HQ = { cookie: 'atlas_sid=' + sQ.id, 'x-csrf-token': sQ.csrf };
+
+  // (a) connect with NO Intuit app configured -> honest not_configured (never a fake URL)
+  let rq = await worker.fetch(mkReq('POST', '/api/integrations/quickbooks/connect', { headers: HQ, body: {} }), envQ, ctx);
+  let jq = await rq.json();
+  ok('qbo(a): connect -> not_configured when QBO_CLIENT_ID unset (honest)', jq && jq.ok === false && jq.reason === 'not_configured', JSON.stringify(jq).slice(0, 120));
+
+  // owner registers the Intuit app (sets the Cloudflare secrets)
+  envQ.QBO_CLIENT_ID = 'ABCclientid'; envQ.QBO_CLIENT_SECRET = 'SECRETxyz';
+
+  rq = await worker.fetch(mkReq('POST', '/api/integrations/quickbooks/connect', { headers: HQ, body: {} }), envQ, ctx);
+  jq = await rq.json();
+  ok('qbo(a): connect (configured) -> real Intuit authorize URL bound to a state', !!(jq && jq.ok === true && typeof jq.url === 'string' && jq.url.indexOf('appcenter.intuit.com/connect/oauth2') >= 0 && jq.url.indexOf('client_id=ABCclientid') >= 0 && jq.url.indexOf('com.intuit.quickbooks.accounting') >= 0), (jq && jq.url ? jq.url : JSON.stringify(jq)).slice(0, 180));
+  const stateQ = jq && jq.url ? new URL(jq.url).searchParams.get('state') : '';
+  ok('qbo(a): connect stored a one-time state in platform_config (oauth:<state>)', !!(stateQ && envQ.DB._db.prepare('SELECT v FROM platform_config WHERE k=?').get('oauth:' + stateQ)));
+
+  // mock the Intuit endpoints (token exchange, customer query/create, salesreceipt)
+  const _rfQ = globalThis.fetch; let _capQ = [];
+  const _resp = (obj) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => obj, text: async () => '' });
+  globalThis.fetch = (u, o) => {
+    const su = String(u); _capQ.push({ url: su, opts: o || {} });
+    if (su.indexOf('oauth.platform.intuit.com') >= 0) return _resp({ access_token: 'ACCESS-TOK-QB', refresh_token: 'REFRESH-TOK-QB', expires_in: 3600, token_type: 'bearer' });
+    if (su.indexOf('/query?') >= 0) return _resp({ QueryResponse: {} });                 // customer lookup -> none found
+    if (su.indexOf('/customer') >= 0) return _resp({ Customer: { Id: '77', DisplayName: 'Jane Doe' } });
+    if (su.indexOf('/salesreceipt') >= 0) return _resp({ SalesReceipt: { Id: 'SR-1001' } });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => '' });
+  };
+
+  // (b) callback exchanges the code + stores ENCRYPTED tokens + realmId, then 302s back
+  const cbUrl = '/api/integrations/quickbooks/callback?code=AUTHCODE123&state=' + encodeURIComponent(stateQ) + '&realmId=REALM-42';
+  const rcb = await worker.fetch(mkReq('GET', cbUrl), envQ, ctx);
+  ok('qbo(b): callback 302-redirects back to the dashboard', rcb.status === 302, 'status=' + rcb.status);
+  const tokReq = _capQ.find(c => c.url.indexOf('oauth.platform.intuit.com') >= 0);
+  ok('qbo(b): callback exchanged the code at the Intuit token endpoint with Basic auth', !!tokReq && String((tokReq.opts.headers || {}).Authorization || '') === ('Basic ' + Buffer.from('ABCclientid:SECRETxyz').toString('base64')), tokReq && JSON.stringify(tokReq.opts.headers));
+  const intRow = envQ.DB._db.prepare("SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider='quickbooks'").get(tidQ);
+  ok('qbo(b): tokens stored ENCRYPTED at rest (ciphertext, not the plaintext access/refresh token)', !!(intRow && intRow.secret_enc) && String(intRow.secret_enc).indexOf('ACCESS-TOK-QB') < 0 && String(intRow.secret_enc).indexOf('REFRESH-TOK-QB') < 0, 'enc=' + (intRow && String(intRow.secret_enc).slice(0, 24)));
+  ok('qbo(b): realmId stored in meta', !!(intRow && String(intRow.meta).indexOf('REALM-42') >= 0), intRow && intRow.meta);
+  const stRow = envQ.DB._db.prepare('SELECT v FROM platform_config WHERE k=?').get('oauth:' + stateQ);
+  ok('qbo(b): one-time state CONSUMED after callback (no replay)', !stRow || !stRow.v, 'v=' + (stRow && stRow.v));
+
+  // (c) _qbSyncBooking posts a SalesReceipt carrying the tenant Bearer token + realmId + paid total
+  await envQ.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .bind('BKQ', tidQ, 'C', 'A', 1, 2, 'confirmed', 50000, JSON.stringify({ custName: 'Jane Doe', asset: 'Model X', quote: { totalCents: 50000 }, paid: { reserve: { amountCents: 50000 } } }), 1, 1000).run();
+  _capQ = [];
+  const bkObj = Object.assign({ id: 'BKQ' }, JSON.parse(envQ.DB._db.prepare("SELECT data FROM bookings WHERE id='BKQ'").get().data));
+  await _qbSyncBooking(envQ, tidQ, bkObj);
+  const srReq = _capQ.find(c => c.url.indexOf('/salesreceipt') >= 0);
+  ok('qbo(c): _qbSyncBooking POSTed a SalesReceipt', !!srReq && srReq.opts.method === 'POST', srReq && srReq.url);
+  ok('qbo(c): SalesReceipt carried the tenant OWN Bearer access token', !!srReq && String((srReq.opts.headers || {}).Authorization || '') === 'Bearer ACCESS-TOK-QB', srReq && JSON.stringify(srReq.opts.headers));
+  ok('qbo(c): SalesReceipt POSTed to the tenant realmId company', !!srReq && srReq.url.indexOf('/v3/company/REALM-42/') >= 0, srReq && srReq.url);
+  const srBody = srReq ? JSON.parse(srReq.opts.body || '{}') : {};
+  ok('qbo(c): SalesReceipt line carries the paid total ($500.00) + customer ref', !!(srBody.Line && srBody.Line[0] && srBody.Line[0].Amount === 500 && srBody.CustomerRef && srBody.CustomerRef.value === '77'), JSON.stringify(srBody.Line && srBody.Line[0]) + ' cust=' + JSON.stringify(srBody.CustomerRef));
+  const bkAfter = JSON.parse(envQ.DB._db.prepare("SELECT data FROM bookings WHERE id='BKQ'").get().data);
+  ok('qbo(c): booking stamped qbSyncedAt + qbRef after a successful post', !!bkAfter.qbSyncedAt && bkAfter.qbRef === 'SR-1001', JSON.stringify({ at: bkAfter.qbSyncedAt, ref: bkAfter.qbRef }));
+
+  // (d) a 2nd sync of the SAME booking must NOT double-post (idempotent by the qbSyncedAt marker)
+  _capQ = [];
+  await _qbSyncBooking(envQ, tidQ, bkObj);
+  const srReq2 = _capQ.find(c => c.url.indexOf('/salesreceipt') >= 0);
+  ok('qbo(d): 2nd sync is IDEMPOTENT (no duplicate SalesReceipt POST)', !srReq2, srReq2 && srReq2.url);
+
+  globalThis.fetch = _rfQ;
 }
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise

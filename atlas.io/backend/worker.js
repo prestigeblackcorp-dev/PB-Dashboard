@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30o';
+const ATLAS_BUILD = '2026.07.30p';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -903,6 +903,115 @@ async function _socialStatus(env) {
 // TRUTHFUL pending state rather than faking a post; wire the platform-specific publish call once each app's scope is approved.
 async function _socialPublish(platform, token, text) {
   return { ok: false, reason: 'publish_pending_review', message: (SOCIAL[platform] ? SOCIAL[platform].name : platform) + ' is connected. Direct posting activates once its content-posting scope is approved for your app.' };
+}
+
+// ---- Accounting OAuth2 sync framework. Per-TENANT (never platform): each tenant links its OWN QuickBooks company and
+// paid bookings mirror in as SalesReceipts. Structured generically (add Xero the same way: a config row + a token/sync
+// pair) but QuickBooks Online is implemented now. Mirrors the SOCIAL rails exactly: a one-time HMAC-signed `state` in
+// platform_config (oauth:<state>), tokens stored ENCRYPTED in the same `integrations` table (encSecret/decSecret), and
+// HONEST states -- the connect route returns not_configured until the owner registers an Intuit app and sets
+// QBO_CLIENT_ID / QBO_CLIENT_SECRET as Cloudflare secrets. Nothing here charges or touches the money path. ----
+const ACCT = {
+  quickbooks: {
+    name: 'QuickBooks Online',
+    authorize: 'https://appcenter.intuit.com/connect/oauth2',
+    token: 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
+    scope: 'com.intuit.quickbooks.accounting',
+    api: 'https://quickbooks.api.intuit.com',
+    id: 'QBO_CLIENT_ID', secret: 'QBO_CLIENT_SECRET'
+  }
+};
+function _qbRedirect(env) { return (env.APP_ORIGIN || 'https://atlasrental.io') + '/api/integrations/quickbooks/callback'; }
+// The captured amount a booking has actually been paid, in cents: sum of the non-hold slots in d.paid (mirrors how the
+// Stripe webhook books revenue -- excludes uncaptured security HOLDs). Falls back to the quoted total when d.paid is absent.
+function _qbPaidCents(d) {
+  try {
+    if (d && d.paid && typeof d.paid === 'object') {
+      var s = 0, any = false;
+      for (var k in d.paid) { var p = d.paid[k]; if (p && !p.hold && typeof p.amountCents === 'number') { s += p.amountCents; any = true; } }
+      if (any) return Math.max(0, Math.round(s));
+    }
+    if (d && d.quote && typeof d.quote.totalCents === 'number') return Math.max(0, Math.round(d.quote.totalCents));
+    return 0;
+  } catch (e) { return 0; }
+}
+// Per-tenant QuickBooks access token. Decrypts the stored {access,refresh,expires_at}; if it is expired / within 5 min of
+// expiry, refreshes at the token endpoint (grant_type=refresh_token, Basic client_id:client_secret) and RE-STORES the new
+// pair ENCRYPTED (preserving realmId in meta). Returns {access, realmId} or null on ANY failure (fail-safe -> the caller
+// no-ops, never throws). AAD 'qb:'+tenantId matches how the callback stored the blob.
+async function _qbToken(env, tenantId) {
+  try {
+    var cfg = ACCT.quickbooks;
+    var row = await env.DB.prepare('SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider=?').bind(tenantId, 'quickbooks').first();
+    if (!row || !row.secret_enc) return null;
+    var tok = null; try { tok = JSON.parse(await decSecret(env, row.secret_enc, 'qb:' + tenantId)); } catch (e) { return null; }
+    if (!tok || !tok.access) return null;
+    var meta = _hqJson(row.meta, {}) || {};
+    var realmId = meta.realmId || tok.realmId || '';
+    if (!tok.expires_at || Date.now() < (Number(tok.expires_at) - 300000)) return { access: tok.access, realmId: realmId };   // still fresh
+    if (!tok.refresh || !env[cfg.id] || !env[cfg.secret]) return null;   // expired + cannot refresh -> fail safe (never hand back a dead token)
+    var basic = 'Basic ' + btoa(String(env[cfg.id]) + ':' + String(env[cfg.secret]));
+    var r = await _fetchTimeout(cfg.token, { method: 'POST', headers: { 'Authorization': basic, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(tok.refresh) }, 12000);
+    if (!r || !r.ok) return null;
+    var j = await r.json().catch(function () { return {}; });
+    if (!j || !j.access_token) return null;
+    var next = { access: j.access_token, refresh: j.refresh_token || tok.refresh, expires_at: Date.now() + ((Number(j.expires_in) || 3600) * 1000) };
+    try {
+      var enc2 = await encSecret(env, JSON.stringify(next), 'qb:' + tenantId);
+      await env.DB.prepare('UPDATE integrations SET secret_enc=?, meta=?, connected_at=? WHERE tenant_id=? AND provider=?').bind(enc2, JSON.stringify({ realmId: realmId }), Date.now(), tenantId, 'quickbooks').run();
+    } catch (e) { /* re-store is best-effort; still return the fresh token so this sync proceeds */ }
+    return { access: next.access, realmId: realmId };
+  } catch (e) { return null; }
+}
+// Ensure a QBO Customer with this DisplayName exists (query first, create if missing). `dn` is pre-sanitized (no quotes/
+// backslashes) so it is safe to interpolate into the QBO query language AND matches between the query and the create.
+async function _qbEnsureCustomer(env, base, headers, dn) {
+  try {
+    var q = "select * from Customer where DisplayName = '" + dn + "'";
+    var qr = await _fetchTimeout(base + '/query?query=' + encodeURIComponent(q) + '&minorversion=65', { method: 'GET', headers: { 'Authorization': headers.Authorization, 'Accept': 'application/json' } }, 12000);
+    if (qr && qr.ok) {
+      var qj = await qr.json().catch(function () { return {}; });
+      var found = qj && qj.QueryResponse && Array.isArray(qj.QueryResponse.Customer) && qj.QueryResponse.Customer[0];
+      if (found && found.Id) return String(found.Id);
+    }
+    var cr = await _fetchTimeout(base + '/customer?minorversion=65', { method: 'POST', headers: headers, body: JSON.stringify({ DisplayName: dn }) }, 12000);
+    if (cr && cr.ok) {
+      var cj = await cr.json().catch(function () { return {}; });
+      if (cj && cj.Customer && cj.Customer.Id) return String(cj.Customer.Id);
+    }
+  } catch (e) {}
+  return '';
+}
+// Best-effort: mirror a fully-paid booking into the tenant's QuickBooks as a SalesReceipt (creating the Customer if
+// needed). IDEMPOTENT -- re-reads the booking FRESH and skips if it already carries a qbSyncedAt/qbRef marker, then stamps
+// that marker via _bkPatch after a successful post so a replay / 2nd delivery never double-posts. Never throws (this runs
+// from waitUntil, off the money path). A tenant that has not connected QuickBooks -> _qbToken is null -> pure no-op.
+async function _qbSyncBooking(env, tenantId, booking) {
+  try {
+    var id = booking && (booking.id || booking.ref); if (!id) return;
+    var d = booking;
+    try { var row = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(id, tenantId).first(); if (row) d = jparse(row.data, booking); } catch (e) {}
+    if (d && (d.qbSyncedAt || d.qbRef)) return;   // already synced -> no double-post
+    var tok = await _qbToken(env, tenantId);
+    if (!tok || !tok.access || !tok.realmId) return;   // not connected / no usable token -> pure no-op
+    var cents = _qbPaidCents(d);
+    if (!(cents > 0)) return;
+    var dn = (String((d && (d.custName || d.cust || d.name || d.customer)) || 'Customer').replace(/[\\'"\r\n]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Customer').slice(0, 100);
+    var base = ACCT.quickbooks.api + '/v3/company/' + encodeURIComponent(tok.realmId);
+    var H = { 'Authorization': 'Bearer ' + tok.access, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+    var custId = await _qbEnsureCustomer(env, base, H, dn);
+    if (!custId) return;
+    var amt = Math.round(cents) / 100;
+    var bodyObj = { CustomerRef: { value: custId }, Line: [{ Amount: amt, DetailType: 'SalesItemLineDetail', Description: ('Atlas Rental booking ' + id + ((d && d.asset) ? (' - ' + String(d.asset)) : '')).slice(0, 1000), SalesItemLineDetail: { Qty: 1, UnitPrice: amt } }] };
+    var sr = await _fetchTimeout(base + '/salesreceipt?minorversion=65', { method: 'POST', headers: H, body: JSON.stringify(bodyObj) }, 12000);
+    if (!sr || !sr.ok) return;
+    var sj = await sr.json().catch(function () { return {}; });
+    var ref = (sj && sj.SalesReceipt && sj.SalesReceipt.Id) ? String(sj.SalesReceipt.Id) : '';
+    await _bkPatch(env, id, tenantId, function (fd) {
+      if (fd.qbSyncedAt || fd.qbRef) return false;   // a concurrent sync won the race -> idempotent no-op (never clobber a payment webhook either -- _bkPatch is a CAS re-apply)
+      fd.qbSyncedAt = Date.now(); fd.qbRef = ref || ('sr:' + Date.now());
+    });
+  } catch (e) { /* best-effort; never throw */ }
 }
 
 // ============================================================ Atlas HQ: internal AI Command Center (founder ops)
@@ -1925,7 +2034,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _qbToken, _qbSyncBooking, _qbPaidCents };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -4450,6 +4559,11 @@ function doReset(){
                   html: _emailShell(pr, _smartR ? _bookingReceiptInner(pr, d, md, amt) : ('<h2>Payment received</h2><p>Thanks! We received ' + money2(amt) + ' for booking <b>' + esc(md.booking) + '</b> (' + esc(d.asset || '') + ').</p>')) }); }
               await audit(env, { tenant_id: md.tenant }, req, 'stripe.paid', { booking: md.booking, kind: md.kind, cents: amt });
               _fireWebhook(_ectx, env, md.tenant, 'booking.paid', { id: md.booking, ref: md.booking, kind: md.kind || 'payment', amount_cents: amt, currency: 'usd', asset: d.asset || '', status: 'confirmed', paid_at: Math.floor(Date.now() / 1000) });
+              // Accounting sync (ADDITIVE, best-effort, OFF the money path): mirror this newly-captured payment into the
+              // tenant's QuickBooks as a SalesReceipt. The connection check + all network work run INSIDE _qbSyncBooking,
+              // deferred via waitUntil -> zero added latency, and it never throws. Pure no-op for tenants without QBO
+              // connected (same fire-and-forget shape as _fireWebhook above). Changes NO existing money/revenue logic.
+              try { if (_ectx && _ectx.waitUntil) { d.id = d.id || md.booking; _ectx.waitUntil(_qbSyncBooking(env, md.tenant, d)); } } catch (e) {}
             }
           } catch (e) { _whErr = _whErr || e; }
         }
@@ -4814,6 +4928,38 @@ function doReset(){
           await audit(env, { actor: 'social' }, req, 'social.connected', { platform: platform });
           return done('connected=1');
         } catch (e) { return done('err=exchange'); }
+      }
+
+      // ---- QuickBooks Online OAuth callback (public; the one-time HMAC state is the gate, exactly like the social callback).
+      // Verifies + CONSUMES the state, recovers the tenant it was minted for, exchanges the code for tokens (Basic
+      // client_id:client_secret), stores them ENCRYPTED per-tenant in `integrations` (provider 'quickbooks', meta={realmId}),
+      // and 302s back to the dashboard. No session/admin token here -- the signed state carries the tenant binding. ----
+      if (path === '/api/integrations/quickbooks/callback' && method === 'GET') {
+        await ensurePlatformSchema(env);
+        const cfg = ACCT.quickbooks, u3 = new URL(req.url);
+        const code = u3.searchParams.get('code') || '', qstate = u3.searchParams.get('state') || '', realmId = u3.searchParams.get('realmId') || '';
+        const back = (env.APP_ORIGIN || 'https://atlasrental.io') + '/';
+        const done = function (q) { return new Response('', { status: 302, headers: { 'Location': back + '?quickbooks=' + q } }); };
+        if (!code || !qstate) return done('err_bad_request');
+        let inflight = null; try { inflight = _hqJson(await _pcfgGet(env, 'oauth:' + qstate, ''), null); } catch (e) {}
+        const qtenant = inflight && inflight.tenant;
+        const expSig = (inflight && qtenant) ? await _socialSig(env, 'qb|' + qtenant + '|' + (inflight.n || '')) : '';
+        if (!inflight || inflight.provider !== 'quickbooks' || !qtenant || qstate !== expSig || (Date.now() - (inflight.ts || 0) > 900000)) return done('err_state');
+        try { await _pcfgSet(env, 'oauth:' + qstate, ''); } catch (e) {}   // CONSUME the one-time state BEFORE the exchange -> a replay/double-callback can never reuse it
+        try {
+          const basic = 'Basic ' + btoa(String(env[cfg.id] || '') + ':' + String(env[cfg.secret] || ''));
+          const body = 'grant_type=authorization_code&code=' + encodeURIComponent(code) + '&redirect_uri=' + encodeURIComponent(_qbRedirect(env));
+          const tr = await _fetchTimeout(cfg.token, { method: 'POST', headers: { 'Authorization': basic, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: body }, 12000);
+          const tj = await tr.json().catch(function () { return {}; });
+          if (!tj || !tj.access_token) return done('err_token');
+          const rec = { access: tj.access_token, refresh: tj.refresh_token || '', expires_at: Date.now() + ((Number(tj.expires_in) || 3600) * 1000) };
+          const secret_enc = await encSecret(env, JSON.stringify(rec), 'qb:' + qtenant);   // AAD binds this ciphertext to this tenant's QuickBooks blob
+          const meta = JSON.stringify({ realmId: realmId });
+          await env.DB.prepare('INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,provider) DO UPDATE SET secret_enc=?,meta=?,connected_at=?')
+            .bind(qtenant, 'quickbooks', 'accounting', secret_enc, meta, Date.now(), secret_enc, meta, Date.now()).run();
+          await audit(env, { tenant_id: qtenant, actor: 'quickbooks' }, req, 'integration.connect', { provider: 'quickbooks' });
+          return done('connected');
+        } catch (e) { return done('err_exchange'); }
       }
 
       // ---- E1: public file serve (capability URL -- the key is unguessable). Served from R2 when a bucket is bound. ----
@@ -8395,6 +8541,35 @@ function doReset(){
           .bind(ctx.tenant_id, body.provider, (typeof body.kind === 'string' ? body.kind : ''), secret_enc, JSON.stringify(body.meta || {}), Date.now(), secret_enc, JSON.stringify(body.meta || {}), Date.now()).run();
         await audit(env, ctx, req, 'integration.connect', { provider: body.provider });
         return json({ ok: true, connected: body.provider });       // UI shows masked "Connected", never the key
+      }
+
+      // ---- QuickBooks Online: START the per-tenant OAuth connect (owner-gated + CSRF). HONEST: if no Intuit app is
+      // configured on this server (QBO_CLIENT_ID/SECRET unset) -> {ok:false, reason:'not_configured'}. Else mint a one-time
+      // HMAC state bound to THIS tenant (platform_config oauth:<state>, 15-min TTL, consumed by the callback) and return the
+      // Intuit authorize URL for the client to open. Mirrors the social connect-start rails; opens no popup, charges nothing. ----
+      if (path === '/api/integrations/quickbooks/connect' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!ctx.user || ctx.user.role !== 'owner') return err(403, 'Only the account owner can connect QuickBooks.');
+        if (!await rateLimit(env, 'qbconn:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        const cfg = ACCT.quickbooks;
+        if (!env[cfg.id] || !env[cfg.secret]) return json({ ok: false, reason: 'not_configured', redirect_uri: _qbRedirect(env), need: 'To enable QuickBooks live sync: create an app in the Intuit developer portal, add the redirect URL below as an authorized redirect URI, then set ' + cfg.id + ' + ' + cfg.secret + ' as Cloudflare secrets. Your books-ready CSV export works today either way.' });
+        const nonce = randId(12); const state = await _socialSig(env, 'qb|' + ctx.tenant_id + '|' + nonce);
+        if (!state) return err(500, 'OAuth is not available (server is missing SESSION_KEY).');
+        await _pcfgSet(env, 'oauth:' + state, JSON.stringify({ provider: 'quickbooks', tenant: ctx.tenant_id, n: nonce, ts: Date.now() }));
+        const authUrl = cfg.authorize + '?client_id=' + encodeURIComponent(env[cfg.id]) + '&scope=' + encodeURIComponent(cfg.scope) + '&redirect_uri=' + encodeURIComponent(_qbRedirect(env)) + '&response_type=code&state=' + encodeURIComponent(state);
+        await audit(env, ctx, req, 'integration.connect_start', { provider: 'quickbooks' });
+        return json({ ok: true, url: authUrl, redirect_uri: _qbRedirect(env) });
+      }
+      // ---- QuickBooks connection status (session-gated read): is this tenant connected, and is the Intuit app configured on
+      // this server? Lets the client show a TRUTHFUL "Connected" state on any load (server integrations table is authoritative). ----
+      if (path === '/api/integrations/quickbooks/status' && method === 'GET') {
+        const cfg = ACCT.quickbooks;
+        let connected = false, realmId = '';
+        try {
+          const row = await env.DB.prepare('SELECT meta FROM integrations WHERE tenant_id=? AND provider=?').bind(ctx.tenant_id, 'quickbooks').first();
+          if (row) { connected = true; realmId = ((_hqJson(row.meta, {}) || {}).realmId) || ''; }
+        } catch (e) {}
+        return json({ ok: true, connected: connected, configured: !!(env[cfg.id] && env[cfg.secret]), realmId: realmId });
       }
 
       // ---- Atlas.io council: Claude + GPT + Gemini in concert, one synthesis --
