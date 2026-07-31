@@ -481,7 +481,7 @@ function _fireWebhook(ectx, env, tenantId, event, data) { try { const p = _dispa
 // state-changing requests must present a matching CSRF token + same-origin
 function csrfOk(req, ctx) {
   const tok = req.headers.get('X-CSRF-Token');
-  if (!tok || !ctx || tok !== ctx.session.csrf) return false;
+  if (!tok || !ctx || !_ctEq(tok, ctx.session.csrf)) return false;   // #363 (audit AUTH-P2): constant-time compare, uniform with the rest of the file (no per-session-token timing side-channel)
   const origin = req.headers.get('Origin');
   if (origin && ALLOWED_ORIGINS.indexOf(origin) < 0) return false;   // was compared to req.url.host (the worker's own host) -> self-defeating cross-origin; validate against the allow-list
   return true;
@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.31x';
+const ATLAS_BUILD = '2026.07.31y';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4286,7 +4286,7 @@ async function _squareVerifyPaid(env, tenantId, orderId) {
       var am = Math.round(Number((t.amount_money && t.amount_money.amount) || 0));
       if (am > 0) tenderSum += am;
       var cst = String((t.card_details && t.card_details.status) || '').toUpperCase();
-      if (am > 0 || cst === 'CAPTURED' || cst === 'AUTHORIZED') tenderPaid = true;   // a settled tender = paid
+      if (cst === 'CAPTURED') tenderPaid = true;   // #363 (audit MONEY-P2): ONLY a CAPTURED (settled) tender is collected money -- an AUTHORIZED auth-hold or a bare positive amount is NOT paid. The normal Square Payment-Links quick_pay flow still credits via the order state===COMPLETED check below.
       if (!payId && t.id) payId = String(t.id);
     }
     var paid = (state === 'COMPLETED') || tenderPaid;   // credit on order/tender COMPLETED/paid (the mandate's rule)
