@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30s';
+const ATLAS_BUILD = '2026.07.30t';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -919,6 +919,19 @@ const ACCT = {
     scope: 'com.intuit.quickbooks.accounting',
     api: 'https://quickbooks.api.intuit.com',
     id: 'QBO_CLIENT_ID', secret: 'QBO_CLIENT_SECRET'
+  },
+  // Xero -- the fast-follow twin. Same rails (one-time HMAC state, encrypted per-tenant tokens, honest not_configured
+  // gating). OAuth2 confidential web app (no PKCE); tokens exchanged with Basic client_id:client_secret. After the code
+  // exchange we GET /connections to learn the connected organisation's tenantId, which becomes the required Xero-tenant-id
+  // header on every Accounting API call. Enabled once the owner registers a Xero app and sets XERO_CLIENT_ID/SECRET.
+  xero: {
+    name: 'Xero',
+    authorize: 'https://login.xero.com/identity/connect/authorize',
+    token: 'https://identity.xero.com/connect/token',
+    scope: 'openid accounting.transactions accounting.contacts offline_access',
+    connections: 'https://api.xero.com/connections',
+    api: 'https://api.xero.com',
+    id: 'XERO_CLIENT_ID', secret: 'XERO_CLIENT_SECRET'
   }
 };
 function _qbRedirect(env) { return (env.APP_ORIGIN || 'https://atlasrental.io') + '/api/integrations/quickbooks/callback'; }
@@ -1010,6 +1023,95 @@ async function _qbSyncBooking(env, tenantId, booking) {
     await _bkPatch(env, id, tenantId, function (fd) {
       if (fd.qbSyncedAt || fd.qbRef) return false;   // a concurrent sync won the race -> idempotent no-op (never clobber a payment webhook either -- _bkPatch is a CAS re-apply)
       fd.qbSyncedAt = Date.now(); fd.qbRef = ref || ('sr:' + Date.now());
+    });
+  } catch (e) { /* best-effort; never throw */ }
+}
+
+function _xeroRedirect(env) { return (env.APP_ORIGIN || 'https://atlasrental.io') + '/api/integrations/xero/callback'; }
+// Per-tenant Xero access token (twin of _qbToken). Decrypts the stored {access,refresh,expires_at,xeroTenant}; if it is
+// expired / within 5 min of expiry, refreshes at the Xero token endpoint (grant_type=refresh_token, Basic
+// client_id:client_secret) and RE-STORES the new pair ENCRYPTED. Xero ROTATES the refresh token on every refresh, so the
+// freshly issued one is captured (falling back to the old one only if none is returned). The Xero org tenantId is preserved
+// in meta. Returns {access, xeroTenant} or null on ANY failure (fail-safe -> the caller no-ops, never throws). AAD
+// 'xero:'+tenantId matches how the callback stored the blob.
+async function _xeroToken(env, tenantId) {
+  try {
+    var cfg = ACCT.xero;
+    var row = await env.DB.prepare('SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider=?').bind(tenantId, 'xero').first();
+    if (!row || !row.secret_enc) return null;
+    var tok = null; try { tok = JSON.parse(await decSecret(env, row.secret_enc, 'xero:' + tenantId)); } catch (e) { return null; }
+    if (!tok || !tok.access) return null;
+    var meta = _hqJson(row.meta, {}) || {};
+    var xeroTenant = meta.xeroTenant || tok.xeroTenant || '';
+    if (!tok.expires_at || Date.now() < (Number(tok.expires_at) - 300000)) return { access: tok.access, xeroTenant: xeroTenant };   // still fresh
+    if (!tok.refresh || !env[cfg.id] || !env[cfg.secret]) return null;   // expired + cannot refresh -> fail safe (never hand back a dead token)
+    var basic = 'Basic ' + btoa(String(env[cfg.id]) + ':' + String(env[cfg.secret]));
+    var r = await _fetchTimeout(cfg.token, { method: 'POST', headers: { 'Authorization': basic, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(tok.refresh) }, 12000);
+    if (!r || !r.ok) return null;
+    var j = await r.json().catch(function () { return {}; });
+    if (!j || !j.access_token) return null;
+    var next = { access: j.access_token, refresh: j.refresh_token || tok.refresh, expires_at: Date.now() + ((Number(j.expires_in) || 1800) * 1000), xeroTenant: xeroTenant };   // Xero access tokens live ~30 min
+    try {
+      var enc2 = await encSecret(env, JSON.stringify(next), 'xero:' + tenantId);
+      await env.DB.prepare('UPDATE integrations SET secret_enc=?, meta=?, connected_at=? WHERE tenant_id=? AND provider=?').bind(enc2, JSON.stringify({ xeroTenant: xeroTenant }), Date.now(), tenantId, 'xero').run();
+    } catch (e) { /* re-store is best-effort; still return the fresh token so this sync proceeds */ }
+    return { access: next.access, xeroTenant: xeroTenant };
+  } catch (e) { return null; }
+}
+// Ensure a Xero Contact with this Name exists (query first, create if missing). `dn` is pre-sanitized (no quotes/backslashes)
+// so it is safe to interpolate into the Xero `where` filter AND matches between the query and the create. `headers` carries
+// the Bearer token, the Xero-tenant-id (the connected org) and the JSON Accept/Content-Type; every Accounting API call needs
+// the tenant header, so the GET reuses it too.
+async function _xeroEnsureContact(env, base, headers, dn) {
+  try {
+    var gh = { 'Authorization': headers.Authorization, 'Xero-tenant-id': headers['Xero-tenant-id'], 'Accept': 'application/json' };
+    var qr = await _fetchTimeout(base + '/Contacts?where=' + encodeURIComponent('Name=="' + dn + '"'), { method: 'GET', headers: gh }, 12000);
+    if (qr && qr.ok) {
+      var qj = await qr.json().catch(function () { return {}; });
+      var found = qj && Array.isArray(qj.Contacts) && qj.Contacts[0];
+      if (found && found.ContactID) return String(found.ContactID);
+    }
+    var cr = await _fetchTimeout(base + '/Contacts', { method: 'POST', headers: headers, body: JSON.stringify({ Contacts: [{ Name: dn }] }) }, 12000);
+    if (cr && cr.ok) {
+      var cj = await cr.json().catch(function () { return {}; });
+      var made = cj && Array.isArray(cj.Contacts) && cj.Contacts[0];
+      if (made && made.ContactID) return String(made.ContactID);
+    }
+  } catch (e) {}
+  return '';
+}
+// Best-effort: mirror a fully-paid booking into the tenant's Xero as an AUTHORISED ACCREC (accounts-receivable) Invoice --
+// the twin of _qbSyncBooking's SalesReceipt. Creates the Contact if needed. IDEMPOTENT -- re-reads the booking FRESH and
+// skips if it already carries a xeroSyncedAt/xeroRef marker, then stamps that marker via _bkPatch after a successful post so
+// a replay / 2nd delivery never double-posts. Never throws (this runs from waitUntil, off the money path). A tenant that has
+// not connected Xero -> _xeroToken is null -> pure no-op. Reuses _qbPaidCents (provider-agnostic captured-cents helper).
+async function _xeroSyncBooking(env, tenantId, booking) {
+  try {
+    var id = booking && (booking.id || booking.ref); if (!id) return;
+    var d = booking;
+    try { var row = await env.DB.prepare('SELECT data FROM bookings WHERE id=? AND tenant_id=?').bind(id, tenantId).first(); if (row) d = jparse(row.data, booking); } catch (e) {}
+    if (d && (d.xeroSyncedAt || d.xeroRef)) return;   // already synced -> no double-post
+    var tok = await _xeroToken(env, tenantId);
+    if (!tok || !tok.access || !tok.xeroTenant) return;   // not connected / no usable token -> pure no-op
+    var cents = _qbPaidCents(d);
+    if (!(cents > 0)) return;
+    var dn = (String((d && (d.custName || d.cust || d.name || d.customer)) || 'Customer').replace(/[\\'"\r\n]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Customer').slice(0, 100);
+    var base = ACCT.xero.api + '/api.xro/2.0';
+    var H = { 'Authorization': 'Bearer ' + tok.access, 'Xero-tenant-id': tok.xeroTenant, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+    var contactId = await _xeroEnsureContact(env, base, H, dn);
+    if (!contactId) return;
+    var amt = Math.round(cents) / 100;
+    // AccountCode 200 is Xero's standard "Sales" revenue account (default chart of accounts). An AUTHORISED ACCREC line needs
+    // a revenue account; if a tenant's chart differs, the POST simply fails and this stays a best-effort no-op.
+    var bodyObj = { Type: 'ACCREC', Status: 'AUTHORISED', Contact: { ContactID: contactId }, LineItems: [{ Description: ('Atlas Rental booking ' + id + ((d && d.asset) ? (' - ' + String(d.asset)) : '')).slice(0, 1000), Quantity: 1, UnitAmount: amt, AccountCode: '200' }] };
+    var ir = await _fetchTimeout(base + '/Invoices', { method: 'POST', headers: H, body: JSON.stringify(bodyObj) }, 12000);
+    if (!ir || !ir.ok) return;
+    var ij = await ir.json().catch(function () { return {}; });
+    var inv = ij && Array.isArray(ij.Invoices) && ij.Invoices[0];
+    var ref = (inv && inv.InvoiceID) ? String(inv.InvoiceID) : '';
+    await _bkPatch(env, id, tenantId, function (fd) {
+      if (fd.xeroSyncedAt || fd.xeroRef) return false;   // a concurrent sync won the race -> idempotent no-op (never clobber a payment webhook either -- _bkPatch is a CAS re-apply)
+      fd.xeroSyncedAt = Date.now(); fd.xeroRef = ref || ('inv:' + Date.now());
     });
   } catch (e) { /* best-effort; never throw */ }
 }
@@ -2034,7 +2136,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _trackerFetch, TRK_PROVIDERS, _qbToken, _qbSyncBooking, _qbPaidCents, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds, _squareCreds, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _trackerFetch, TRK_PROVIDERS, _qbToken, _qbSyncBooking, _qbPaidCents, _xeroToken, _xeroSyncBooking, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds, _squareCreds, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -4917,6 +5019,7 @@ function doReset(){
               // deferred via waitUntil -> zero added latency, and it never throws. Pure no-op for tenants without QBO
               // connected (same fire-and-forget shape as _fireWebhook above). Changes NO existing money/revenue logic.
               try { if (_ectx && _ectx.waitUntil) { d.id = d.id || md.booking; _ectx.waitUntil(_qbSyncBooking(env, md.tenant, d)); } } catch (e) {}
+              try { if (_ectx && _ectx.waitUntil) { d.id = d.id || md.booking; _ectx.waitUntil(_xeroSyncBooking(env, md.tenant, d)); } } catch (e) {}   // Xero twin of the QuickBooks accounting sync (ADDITIVE, best-effort, off the money path); pure no-op when Xero isn't connected
             }
           } catch (e) { _whErr = _whErr || e; }
         }
@@ -5311,6 +5414,46 @@ function doReset(){
           await env.DB.prepare('INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,provider) DO UPDATE SET secret_enc=?,meta=?,connected_at=?')
             .bind(qtenant, 'quickbooks', 'accounting', secret_enc, meta, Date.now(), secret_enc, meta, Date.now()).run();
           await audit(env, { tenant_id: qtenant, actor: 'quickbooks' }, req, 'integration.connect', { provider: 'quickbooks' });
+          return done('connected');
+        } catch (e) { return done('err_exchange'); }
+      }
+
+      // ---- Xero OAuth callback (public; the one-time HMAC state is the gate, exactly like the QuickBooks callback). Verifies +
+      // CONSUMES the state, recovers the tenant it was minted for, exchanges the code for tokens (Basic client_id:client_secret),
+      // then GET /connections (Bearer) to learn the connected Xero ORGANISATION's tenantId -- the required Xero-tenant-id header
+      // on every Accounting API call -- stores tokens ENCRYPTED per-tenant in `integrations` (provider 'xero', meta={xeroTenant}),
+      // and 302s back to the dashboard. No session/admin token here -- the signed state carries the tenant binding. ----
+      if (path === '/api/integrations/xero/callback' && method === 'GET') {
+        await ensurePlatformSchema(env);
+        const cfg = ACCT.xero, u3 = new URL(req.url);
+        const code = u3.searchParams.get('code') || '', qstate = u3.searchParams.get('state') || '';
+        const back = (env.APP_ORIGIN || 'https://atlasrental.io') + '/';
+        const done = function (q) { return new Response('', { status: 302, headers: { 'Location': back + '?xero=' + q } }); };
+        if (!code || !qstate) return done('err_bad_request');
+        let inflight = null; try { inflight = _hqJson(await _pcfgGet(env, 'oauth:' + qstate, ''), null); } catch (e) {}
+        const qtenant = inflight && inflight.tenant;
+        const expSig = (inflight && qtenant) ? await _socialSig(env, 'xero|' + qtenant + '|' + (inflight.n || '')) : '';
+        if (!inflight || inflight.provider !== 'xero' || !qtenant || qstate !== expSig || (Date.now() - (inflight.ts || 0) > 900000)) return done('err_state');
+        try { await _pcfgSet(env, 'oauth:' + qstate, ''); } catch (e) {}   // CONSUME the one-time state BEFORE the exchange -> a replay/double-callback can never reuse it
+        try {
+          const basic = 'Basic ' + btoa(String(env[cfg.id] || '') + ':' + String(env[cfg.secret] || ''));
+          const body = 'grant_type=authorization_code&code=' + encodeURIComponent(code) + '&redirect_uri=' + encodeURIComponent(_xeroRedirect(env));
+          const tr = await _fetchTimeout(cfg.token, { method: 'POST', headers: { 'Authorization': basic, 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: body }, 12000);
+          const tj = await tr.json().catch(function () { return {}; });
+          if (!tj || !tj.access_token) return done('err_token');
+          // Learn the connected Xero organisation(s) -> the tenantId that must ride as the Xero-tenant-id header on every API call.
+          let xeroTenant = '';
+          try {
+            const cr = await _fetchTimeout(cfg.connections, { method: 'GET', headers: { 'Authorization': 'Bearer ' + tj.access_token, 'Accept': 'application/json' } }, 12000);
+            const cj = await cr.json().catch(function () { return []; });
+            if (Array.isArray(cj) && cj.length) { const org = cj.find(function (c) { return c && (c.tenantType === 'ORGANISATION' || !c.tenantType); }) || cj[0]; if (org && org.tenantId) xeroTenant = String(org.tenantId); }
+          } catch (e) {}
+          const rec = { access: tj.access_token, refresh: tj.refresh_token || '', expires_at: Date.now() + ((Number(tj.expires_in) || 1800) * 1000), xeroTenant: xeroTenant };
+          const secret_enc = await encSecret(env, JSON.stringify(rec), 'xero:' + qtenant);   // AAD binds this ciphertext to this tenant's Xero blob
+          const meta = JSON.stringify({ xeroTenant: xeroTenant });
+          await env.DB.prepare('INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,provider) DO UPDATE SET secret_enc=?,meta=?,connected_at=?')
+            .bind(qtenant, 'xero', 'accounting', secret_enc, meta, Date.now(), secret_enc, meta, Date.now()).run();
+          await audit(env, { tenant_id: qtenant, actor: 'xero' }, req, 'integration.connect', { provider: 'xero' });
           return done('connected');
         } catch (e) { return done('err_exchange'); }
       }
@@ -7014,6 +7157,7 @@ function doReset(){
                 html: _emailShell(_pp, _smartR ? _bookingReceiptInner(_pp, _dd, { booking: _pbrow.id, kind: _bareK }, _cap.amountCents) : ('<h2>Payment received</h2><p>Thanks! We received ' + money2(_cap.amountCents) + ' for booking <b>' + esc(_pbrow.id) + '</b> (' + esc(_dd.asset || '') + ') via PayPal.</p>')) }); }
           } catch (e) {}
           try { if (_ectx && _ectx.waitUntil && _res.d) { _res.d.id = _res.d.id || _pbrow.id; _ectx.waitUntil(_qbSyncBooking(env, _pbrow.tenant_id, _res.d)); } } catch (e) {}   // accounting sync (best-effort, off the money path) -- same shape as the Stripe handler
+          try { if (_ectx && _ectx.waitUntil && _res.d) { _res.d.id = _res.d.id || _pbrow.id; _ectx.waitUntil(_xeroSyncBooking(env, _pbrow.tenant_id, _res.d)); } } catch (e) {}   // Xero twin (ADDITIVE, best-effort; no-op when Xero not connected)
         }
         return _pback('?paid=1');
       }
@@ -7053,6 +7197,7 @@ function doReset(){
                 html: _emailShell(_sp, _smartR ? _bookingReceiptInner(_sp, _dd, { booking: _sbrow.id, kind: _bareK }, _v.amountCents) : ('<h2>Payment received</h2><p>Thanks! We received ' + money2(_v.amountCents) + ' for booking <b>' + esc(_sbrow.id) + '</b> (' + esc(_dd.asset || '') + ') via Square.</p>')) }); }
           } catch (e) {}
           try { if (_ectx && _ectx.waitUntil && _res.d) { _res.d.id = _res.d.id || _sbrow.id; _ectx.waitUntil(_qbSyncBooking(env, _sbrow.tenant_id, _res.d)); } } catch (e) {}   // accounting sync (best-effort, off the money path) -- same shape as the PayPal/Stripe handler
+          try { if (_ectx && _ectx.waitUntil && _res.d) { _res.d.id = _res.d.id || _sbrow.id; _ectx.waitUntil(_xeroSyncBooking(env, _sbrow.tenant_id, _res.d)); } } catch (e) {}   // Xero twin (ADDITIVE, best-effort; no-op when Xero not connected)
         }
         return _sqback('?paid=1');
       }
@@ -9068,6 +9213,35 @@ function doReset(){
           if (row) { connected = true; realmId = ((_hqJson(row.meta, {}) || {}).realmId) || ''; }
         } catch (e) {}
         return json({ ok: true, connected: connected, configured: !!(env[cfg.id] && env[cfg.secret]), realmId: realmId });
+      }
+
+      // ---- Xero: START the per-tenant OAuth connect (owner-gated + CSRF) -- the twin of the QuickBooks connect. HONEST: if no
+      // Xero app is configured on this server (XERO_CLIENT_ID/SECRET unset) -> {ok:false, reason:'not_configured'}. Else mint a
+      // one-time HMAC state bound to THIS tenant (platform_config oauth:<state>, 15-min TTL, consumed by the callback) and return
+      // the Xero authorize URL for the client to open. Confidential web app -> no PKCE. Opens no popup, charges nothing. ----
+      if (path === '/api/integrations/xero/connect' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!ctx.user || ctx.user.role !== 'owner') return err(403, 'Only the account owner can connect Xero.');
+        if (!await rateLimit(env, 'xeroconn:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        const cfg = ACCT.xero;
+        if (!env[cfg.id] || !env[cfg.secret]) return json({ ok: false, reason: 'not_configured', redirect_uri: _xeroRedirect(env), need: 'To enable Xero live sync: create an app in the Xero developer portal (My Apps), add the redirect URL below as an authorized redirect URI, then set ' + cfg.id + ' + ' + cfg.secret + ' as Cloudflare secrets. Your books-ready CSV export works today either way.' });
+        const nonce = randId(12); const state = await _socialSig(env, 'xero|' + ctx.tenant_id + '|' + nonce);
+        if (!state) return err(500, 'OAuth is not available (server is missing SESSION_KEY).');
+        await _pcfgSet(env, 'oauth:' + state, JSON.stringify({ provider: 'xero', tenant: ctx.tenant_id, n: nonce, ts: Date.now() }));
+        const authUrl = cfg.authorize + '?response_type=code&client_id=' + encodeURIComponent(env[cfg.id]) + '&redirect_uri=' + encodeURIComponent(_xeroRedirect(env)) + '&scope=' + encodeURIComponent(cfg.scope) + '&state=' + encodeURIComponent(state);
+        await audit(env, ctx, req, 'integration.connect_start', { provider: 'xero' });
+        return json({ ok: true, url: authUrl, redirect_uri: _xeroRedirect(env) });
+      }
+      // ---- Xero connection status (session-gated read): is this tenant connected, and is the Xero app configured on this server?
+      // Lets the client show a TRUTHFUL "Connected" state on any load (server integrations table is authoritative). ----
+      if (path === '/api/integrations/xero/status' && method === 'GET') {
+        const cfg = ACCT.xero;
+        let connected = false, xeroTenant = '';
+        try {
+          const row = await env.DB.prepare('SELECT meta FROM integrations WHERE tenant_id=? AND provider=?').bind(ctx.tenant_id, 'xero').first();
+          if (row) { connected = true; xeroTenant = ((_hqJson(row.meta, {}) || {}).xeroTenant) || ''; }
+        } catch (e) {}
+        return json({ ok: true, connected: connected, configured: !!(env[cfg.id] && env[cfg.secret]), xeroTenant: xeroTenant });
       }
 
       // ---- PayPal connection status (session-gated read): is this tenant's OWN PayPal connected, and is it in sandbox mode? The

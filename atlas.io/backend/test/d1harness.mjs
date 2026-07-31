@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _trackerFetch, TRK_PROVIDERS } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _xeroSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _trackerFetch, TRK_PROVIDERS } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -290,6 +290,84 @@ if (sess) {
   ok('qbo(d): 2nd sync is IDEMPOTENT (no duplicate SalesReceipt POST)', !srReq2, srReq2 && srReq2.url);
 
   globalThis.fetch = _rfQ;
+}
+
+// ---- XERO (per-tenant OAuth accounting sync -- the fast-follow TWIN of QuickBooks, "make it real"): (a) connect is HONEST
+// when the Xero app is unconfigured; (b) the callback exchanges the code with Basic auth, GETs /connections for the org
+// tenantId, and stores tokens ENCRYPTED per tenant (+ xeroTenant); (c) _xeroSyncBooking posts a Contact + an AUTHORISED
+// ACCREC Invoice carrying the tenant's own Bearer token + the Xero-tenant-id header + paid total; (d) a 2nd sync of the same
+// booking is IDEMPOTENT (no double-post). All Xero endpoints are mocked; globalThis.fetch is restored after. ----
+{
+  const envX = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envX);   // fresh DB -> full migration pass
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'xero@x.com', password: 'correcthorsebatterystaple', business: 'Xero Co' } }), envX, ctx);
+  const tidX = envX.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sX = envX.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidX);
+  const HX = { cookie: 'atlas_sid=' + sX.id, 'x-csrf-token': sX.csrf };
+
+  // (a) connect with NO Xero app configured -> honest not_configured (never a fake URL)
+  let rx = await worker.fetch(mkReq('POST', '/api/integrations/xero/connect', { headers: HX, body: {} }), envX, ctx);
+  let jx = await rx.json();
+  ok('xero(a): connect -> not_configured when XERO_CLIENT_ID unset (honest)', jx && jx.ok === false && jx.reason === 'not_configured', JSON.stringify(jx).slice(0, 120));
+
+  // owner registers the Xero app (sets the Cloudflare secrets)
+  envX.XERO_CLIENT_ID = 'XEROclientid'; envX.XERO_CLIENT_SECRET = 'XEROsecret';
+
+  rx = await worker.fetch(mkReq('POST', '/api/integrations/xero/connect', { headers: HX, body: {} }), envX, ctx);
+  jx = await rx.json();
+  ok('xero(a): connect (configured) -> real Xero authorize URL bound to a state', !!(jx && jx.ok === true && typeof jx.url === 'string' && jx.url.indexOf('login.xero.com/identity/connect/authorize') >= 0 && jx.url.indexOf('client_id=XEROclientid') >= 0 && jx.url.indexOf('accounting.transactions') >= 0 && jx.url.indexOf('offline_access') >= 0), (jx && jx.url ? jx.url : JSON.stringify(jx)).slice(0, 200));
+  const stateX = jx && jx.url ? new URL(jx.url).searchParams.get('state') : '';
+  ok('xero(a): connect stored a one-time state in platform_config (oauth:<state>)', !!(stateX && envX.DB._db.prepare('SELECT v FROM platform_config WHERE k=?').get('oauth:' + stateX)));
+
+  // mock the Xero endpoints (token exchange, connections, contact query/create, invoice)
+  const _rfX = globalThis.fetch; let _capX = [];
+  const _respX = (obj) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => obj, text: async () => '' });
+  globalThis.fetch = (u, o) => {
+    const su = String(u); const m = (o && o.method) || 'GET'; _capX.push({ url: su, opts: o || {} });
+    if (su.indexOf('identity.xero.com/connect/token') >= 0) return _respX({ access_token: 'ACCESS-TOK-XERO', refresh_token: 'REFRESH-TOK-XERO', expires_in: 1800, token_type: 'Bearer' });
+    if (su.indexOf('/connections') >= 0) return _respX([{ id: 'CONN-1', tenantId: 'XT-ORG-9', tenantType: 'ORGANISATION', tenantName: 'Xero Co' }]);
+    if (su.indexOf('/Contacts') >= 0) return m === 'POST' ? _respX({ Contacts: [{ ContactID: 'CID-77', Name: 'Jane Doe' }] }) : _respX({ Contacts: [] });   // GET -> none found; POST -> created
+    if (su.indexOf('/Invoices') >= 0) return _respX({ Invoices: [{ InvoiceID: 'INV-1001', InvoiceNumber: 'INV-0001' }] });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => '' });
+  };
+
+  // (b) callback exchanges the code + fetches /connections + stores ENCRYPTED tokens + xeroTenant, then 302s back
+  const cbUrlX = '/api/integrations/xero/callback?code=XCODE123&state=' + encodeURIComponent(stateX);
+  const rcbX = await worker.fetch(mkReq('GET', cbUrlX), envX, ctx);
+  ok('xero(b): callback 302-redirects back to the dashboard', rcbX.status === 302, 'status=' + rcbX.status);
+  const tokReqX = _capX.find(c => c.url.indexOf('identity.xero.com/connect/token') >= 0);
+  ok('xero(b): callback exchanged the code at the Xero token endpoint with Basic auth', !!tokReqX && String((tokReqX.opts.headers || {}).Authorization || '') === ('Basic ' + Buffer.from('XEROclientid:XEROsecret').toString('base64')), tokReqX && JSON.stringify(tokReqX.opts.headers));
+  const connReqX = _capX.find(c => c.url.indexOf('/connections') >= 0);
+  ok('xero(b): callback fetched /connections with the fresh Bearer token', !!connReqX && String((connReqX.opts.headers || {}).Authorization || '') === 'Bearer ACCESS-TOK-XERO', connReqX && JSON.stringify(connReqX.opts.headers));
+  const intRowX = envX.DB._db.prepare("SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider='xero'").get(tidX);
+  ok('xero(b): tokens stored ENCRYPTED at rest (ciphertext, not the plaintext access/refresh token)', !!(intRowX && intRowX.secret_enc) && String(intRowX.secret_enc).indexOf('ACCESS-TOK-XERO') < 0 && String(intRowX.secret_enc).indexOf('REFRESH-TOK-XERO') < 0, 'enc=' + (intRowX && String(intRowX.secret_enc).slice(0, 24)));
+  ok('xero(b): xero org tenantId stored in meta (Xero-tenant-id source)', !!(intRowX && String(intRowX.meta).indexOf('XT-ORG-9') >= 0), intRowX && intRowX.meta);
+  const stRowX = envX.DB._db.prepare('SELECT v FROM platform_config WHERE k=?').get('oauth:' + stateX);
+  ok('xero(b): one-time state CONSUMED after callback (no replay)', !stRowX || !stRowX.v, 'v=' + (stRowX && stRowX.v));
+
+  // (c) _xeroSyncBooking posts a Contact + an AUTHORISED ACCREC Invoice carrying the tenant Bearer token + Xero-tenant-id + paid total
+  await envX.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .bind('BKX', tidX, 'C', 'A', 1, 2, 'confirmed', 50000, JSON.stringify({ custName: 'Jane Doe', asset: 'Model X', quote: { totalCents: 50000 }, paid: { reserve: { amountCents: 50000 } } }), 1, 1000).run();
+  _capX = [];
+  const bkObjX = Object.assign({ id: 'BKX' }, JSON.parse(envX.DB._db.prepare("SELECT data FROM bookings WHERE id='BKX'").get().data));
+  await _xeroSyncBooking(envX, tidX, bkObjX);
+  const cPostX = _capX.find(c => c.url.indexOf('/Contacts') >= 0 && (c.opts.method || 'GET') === 'POST');
+  ok('xero(c): _xeroSyncBooking POSTed a Contact when none was found', !!cPostX && String((cPostX.opts.headers || {})['Xero-tenant-id'] || '') === 'XT-ORG-9', cPostX && JSON.stringify(cPostX.opts.headers));
+  const invReq = _capX.find(c => c.url.indexOf('/Invoices') >= 0);
+  ok('xero(c): _xeroSyncBooking POSTed an Invoice', !!invReq && invReq.opts.method === 'POST', invReq && invReq.url);
+  ok('xero(c): Invoice carried the tenant OWN Bearer access token', !!invReq && String((invReq.opts.headers || {}).Authorization || '') === 'Bearer ACCESS-TOK-XERO', invReq && JSON.stringify(invReq.opts.headers));
+  ok('xero(c): Invoice carried the Xero-tenant-id header (connected org)', !!invReq && String((invReq.opts.headers || {})['Xero-tenant-id'] || '') === 'XT-ORG-9', invReq && JSON.stringify(invReq.opts.headers));
+  const invBody = invReq ? JSON.parse(invReq.opts.body || '{}') : {};
+  ok('xero(c): Invoice is an AUTHORISED ACCREC with the paid total ($500.00) + contact ref', !!(invBody.Type === 'ACCREC' && invBody.Status === 'AUTHORISED' && invBody.LineItems && invBody.LineItems[0] && invBody.LineItems[0].UnitAmount === 500 && invBody.Contact && invBody.Contact.ContactID === 'CID-77'), JSON.stringify(invBody.LineItems && invBody.LineItems[0]) + ' contact=' + JSON.stringify(invBody.Contact));
+  const bkAfterX = JSON.parse(envX.DB._db.prepare("SELECT data FROM bookings WHERE id='BKX'").get().data);
+  ok('xero(c): booking stamped xeroSyncedAt + xeroRef after a successful post', !!bkAfterX.xeroSyncedAt && bkAfterX.xeroRef === 'INV-1001', JSON.stringify({ at: bkAfterX.xeroSyncedAt, ref: bkAfterX.xeroRef }));
+
+  // (d) a 2nd sync of the SAME booking must NOT double-post (idempotent by the xeroSyncedAt marker)
+  _capX = [];
+  await _xeroSyncBooking(envX, tidX, bkObjX);
+  const invReq2 = _capX.find(c => c.url.indexOf('/Invoices') >= 0);
+  ok('xero(d): 2nd sync is IDEMPOTENT (no duplicate Invoice POST)', !invReq2, invReq2 && invReq2.url);
+
+  globalThis.fetch = _rfX;
 }
 
 // ---- PAYPAL MONEY PATH (BYO per-tenant, Orders v2, "make it real"): (a) create-order authenticates with the tenant's OWN

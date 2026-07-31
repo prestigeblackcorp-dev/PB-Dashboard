@@ -3879,6 +3879,39 @@ const Atlas = (function(){
     try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
   }catch(e){} }
 
+  // ---- Xero (REAL per-tenant OAuth live sync) -- the fast-follow TWIN of the QuickBooks block above. The server
+  // integrations table is authoritative; _xeroState is a display cache refreshed from /api/integrations/xero/status
+  // whenever the Integrations tab renders. CSV export (Reports -> QuickBooks / Xero) is unchanged either way. ----
+  var _xeroState={loaded:false,connected:false,configured:false};
+  function _xeroActHtml(){
+    if(_xeroState.connected) return '<span class="chip chip--ok"><span class="dot"></span>Connected</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connectXero()">Reconnect</button>';
+    return '<button class="btn btn--ghost btn--sm" onclick="Atlas.connectXero()">Connect Xero</button>';
+  }
+  function connectXero(){
+    if(!_canMod('settings')){ toast('Your role is read-only.'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to connect Xero.'); return; }
+    toast('Opening Xero\u2026');
+    _api('/api/integrations/xero/connect',{method:'POST',body:{}}).then(function(res){
+      var j=res.json||{};
+      if(j.ok && j.url){ var w=null; try{ w=window.open(j.url,'_blank','noopener'); }catch(e){} if(!w){ try{ location.href=j.url; }catch(e2){} } }
+      else if(j.reason==='not_configured'){ toast('Xero live sync is not set up on this server yet. You can still export a books-ready QuickBooks / Xero CSV from Reports.'); }
+      else { toast((j&&j.error)||'Could not start Xero connect \u2014 please try again.'); }
+    }).catch(function(){ toast('Network error \u2014 check your connection.'); });
+  }
+  function _xeroStatusLoad(){
+    if(!(ATLAS_BACKEND && _apiCsrf)) return;
+    _api('/api/integrations/xero/status',{method:'GET'}).then(function(res){
+      var j=res.json||{}; if(!j.ok) return;
+      _xeroState.loaded=true; _xeroState.connected=!!j.connected; _xeroState.configured=!!j.configured; _xeroState.xeroTenant=j.xeroTenant||'';
+      var el=document.getElementById('xeroConnAct'); if(el) el.innerHTML=_xeroActHtml();
+    }).catch(function(){});
+  }
+  function _xeroReturn(){ try{ var xr=new URLSearchParams(location.search).get('xero'); if(!xr) return;
+    if(xr==='connected'){ _xeroState.connected=true; try{ var el=document.getElementById('xeroConnAct'); if(el) el.innerHTML=_xeroActHtml(); }catch(e){} setTimeout(function(){ toast('Xero connected \u2014 paid bookings now sync automatically.'); },400); }
+    else { setTimeout(function(){ toast('Xero connect did not finish. Please try again.'); },400); }
+    try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
+  }catch(e){} }
+
   // ---- PayPal (REAL per-tenant, PayPal Orders v2). The tenant connects their OWN PayPal REST app (Client ID + Secret). The
   // secret is sent straight to the encrypted /api/integrations/connect and is NEVER assigned into S / persisted by save() (it
   // is read from the DOM only at submit time, then discarded). The server integrations table is authoritative; _ppState is a
@@ -7379,14 +7412,14 @@ const Atlas = (function(){
       <div class="set-block"><h3>Connections</h3><div class="desc">Bring your own accounts. Each has a step-by-step guide.</div>
         ${[['@','Email (Resend / SMTP)','Confirmations &amp; reminders','email'],['#','SMS (Twilio)','Text your customers','sms'],['M','Maps','Delivery &amp; addresses','maps'],['Q','QuickBooks / Xero','Live sales sync &middot; books-ready CSV export','qb'],['W','Website embed','Booking widget for your site','web']].map(c=>`
           <div class="conn-row">${_connBadge(c[3])}<div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
-          ${c[3]==='qb'?`<div class="conn-act" id="qbConnAct">${_qbActHtml()}</div>`:`<div class="conn-act">${S.integrations[c[3]]?`<span class="chip chip--ok"><span class="dot"></span>Connected</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Manage</button>`:`<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Connect</button>`}</div>`}</div>`).join('')}
+          ${c[3]==='qb'?`<div class="conn-act" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end"><span id="qbConnAct">${_qbActHtml()}</span><span id="xeroConnAct">${_xeroActHtml()}</span></div>`:`<div class="conn-act">${S.integrations[c[3]]?`<span class="chip chip--ok"><span class="dot"></span>Connected</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Manage</button>`:`<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${c[3]}','${c[1].replace(/&amp;/g,'and')}')">Connect</button>`}</div>`}</div>`).join('')}
       </div>
       <div class="set-block"><h3>Developer API</h3><div class="desc">Read-only programmatic access to your own bookings, assets and customers &mdash; wire Atlas into your tools, spreadsheets or Zapier. Create a key and send it as a Bearer token to <code>${(ATLAS_API||'https://atlasrental.io')}/api/v1</code>.</div>
         <button class="btn btn--primary" onclick="Atlas.openDeveloper()">Manage API keys &amp; docs</button>
       </div>
       <div class="set-block"><h3>Webhooks</h3><div class="desc">Let your other tools react the moment something happens here. Atlas can ping your website, Zapier, or any app your developer builds the instant a booking is created or paid &mdash; no coding needed to set up.</div>
         <button class="btn btn--primary" onclick="Atlas.openWebhooks()">Set up webhooks</button>
-      </div>`; _qboStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); }
+      </div>`; _qboStatusLoad(); _xeroStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); }
     else if(setCur==='portal'){ var pc=_portalCfg(); b.innerHTML=`
       <div class="set-block"><h3>Member portal</h3><div class="desc">Your customers' branded self-service area &mdash; fully generated for you and yours to edit.</div>
         <div class="conn-row"><div class="conn-row__ic" style="background:var(--brand-100);color:var(--brand-700)">&#128279;</div><div class="conn-row__t"><b>${S.brand.subdomain}.atlasrental.io/portal</b><small>Live &middot; branded as ${esc(S.brand.name)}</small></div><button class="btn btn--primary btn--sm conn-act" onclick="Atlas.copyPortal()">Copy link</button></div>
@@ -9373,7 +9406,7 @@ const Atlas = (function(){
       var ok = res && res.status>=200 && res.status<300 && (sid ? !!j.confirmed : (!bs || bs==='ok'));
       if(ok){ _done(); } else { _wait(); }
     }).catch(_wait); }
-  function _billingReturn(){ try{ _qboReturn(); }catch(e){}   // handle a QuickBooks OAuth ?quickbooks= return alongside the Stripe ?billing= return (both land back on the dashboard)
+  function _billingReturn(){ try{ _qboReturn(); }catch(e){} try{ _xeroReturn(); }catch(e){}   // handle QuickBooks ?quickbooks= and Xero ?xero= OAuth returns alongside the Stripe ?billing= return (all land back on the dashboard)
     try{ var q=new URLSearchParams(location.search); var b=q.get('billing'); if(!b) return;
     if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack'), sid=q.get('session_id');
       if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
@@ -11372,7 +11405,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectPaypal,connectSquare,setActivePay,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
