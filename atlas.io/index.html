@@ -3928,6 +3928,55 @@ const Atlas = (function(){
       +'</div>');
   }
 
+  // ---- Square (REAL per-tenant, Square Payment Links / Orders v2). The tenant connects their OWN Square account (Access Token +
+  // Location ID). The Access Token is sent straight to the encrypted /api/integrations/connect and is NEVER assigned into S /
+  // persisted by save() (it is read from the DOM only at submit time, then discarded). The server integrations table is
+  // authoritative; _sqState is a display cache refreshed from /api/integrations/square/status whenever the Integrations tab renders,
+  // so the Connected badge is truthful across reloads and devices. Stripe stays the default; Square is offered in parallel on the
+  // customer portal only when it is really connected (the server /square route + the portal button both gate on the same check).
+  var _sqState={loaded:false,connected:false,sandbox:false,locHint:''};
+  function _sqConnected(){ return !!(_sqState&&_sqState.connected); }
+  function _sqStatusLoad(){
+    if(!(ATLAS_BACKEND && _apiCsrf)) return;
+    _api('/api/integrations/square/status',{method:'GET'}).then(function(res){
+      var j=res.json||{}; if(!j.ok) return;
+      var was=_sqState.connected;
+      _sqState.loaded=true; _sqState.connected=!!j.connected; _sqState.sandbox=!!j.sandbox; _sqState.locHint=j.locHint||'';
+      try{ if(was!==_sqState.connected && document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet(); }catch(e){}
+    }).catch(function(){});
+  }
+  function connectSquare(){
+    if(!_canMod('settings')){ toast('Your role is read-only.'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to connect Square.'); return; }
+    var tok=String((document.getElementById('sqAccessToken')||{}).value||'').trim();   // TRANSIENT: read at submit time, sent encrypted, NEVER assigned to S / save()
+    var loc=String((document.getElementById('sqLocationId')||{}).value||'').trim();
+    var sandbox=!!((document.getElementById('sqSandbox')||{}).checked);
+    if(!tok||!loc){ toast('Paste both your Square Access token and Location ID.'); return; }
+    toast('Connecting to Square\u2026');
+    _api('/api/integrations/connect',{method:'POST',body:{provider:'square', secret:tok, meta:{location_id:loc, sandbox:sandbox}}}).then(function(res){ var j=res.json||{};
+      if(!(res.status>=200&&res.status<300&&j.ok)){ toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to Square'); return; }
+      tok='';   // DISCARD the raw Access Token immediately
+      _sqState.connected=true; _sqState.sandbox=sandbox; _sqState.locHint='\u2026'+loc.slice(-4);
+      _logEvent('billing','Square connected'+(sandbox?' (sandbox)':''),{connected:true});
+      closeModal(); renderSet(); _sqStatusLoad();
+      toast('Square connected'+(sandbox?' (sandbox)':'')+' \u2014 customers can now pay with Square.');
+    }).catch(function(){ toast('Could not reach the server \u2014 try again'); });
+  }
+  function _modalSquare(){
+    var conn=_sqConnected();
+    var locPh=(conn&&_sqState.locHint)?('Connected '+esc(_sqState.locHint)+' \u2014 paste to replace'):'L...';
+    openModal('<div class="modal__head"><h3>Connect Square</h3>'+_xBtn()+'</div>'
+      +'<div class="modal__body">'
+      +'<ol class="step-list"><li>Sign in at <code>developer.squareup.com</code> and open <b>Applications</b>.</li><li>Open (or create) an app and copy its <b>Access token</b> and a <b>Location ID</b>.</li><li>Use <b>Production</b> credentials to take real payments, or tick <b>Sandbox</b> below to test first.</li><li>Paste them in and Connect. Your Access token is sent encrypted to your backend and never stored in this browser.</li></ol>'
+      +'<a class="btn btn--ghost btn--sm" href="https://developer.squareup.com/apps" target="_blank" rel="noopener" style="margin:0 0 12px;text-decoration:none">Open Square to get your keys &#8599;</a>'
+      +'<div class="field"><label>Access token</label><input class="input mono" id="sqAccessToken" type="password" autocomplete="off" placeholder="'+(conn?'Paste to replace':'EAAA...')+'"></div>'
+      +'<div class="field"><label>Location ID</label><input class="input mono" id="sqLocationId" autocomplete="off" placeholder="'+locPh+'"></div>'
+      +'<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:4px 0 12px"><input type="checkbox" id="sqSandbox"'+(_sqState.sandbox?' checked':'')+'> <span>Use Square <b>Sandbox</b> (test mode &mdash; no real money moves)</span></label>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas.connectSquare()">'+(conn?'Update Square':'Connect Square')+'</button>'
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">'+(conn?('Currently connected'+(_sqState.sandbox?' in sandbox (test) mode.':' \u2014 taking live Square payments.')):'\u{1F512} Your Access token is encrypted at rest and never stored in the browser. Disconnect anytime.')+'</p>'
+      +'</div>');
+  }
+
   /* ============================== APP ============================== */
   const NAV=[
     ['overview','Overview','M3 10l7-6 7 6M5 9v7h4v-4h2v4h4V9'],
@@ -7305,9 +7354,9 @@ const Atlas = (function(){
     else if(setCur==='integrations'){ b.innerHTML=`
       <div class="set-block"><h3>Payments &amp; POS</h3><div class="desc">Process payments through <b>Stripe</b> today &mdash; bookings, portal payments and charges route straight to your Stripe account. Save the other processors below and we will use them once direct processing ships. Step-by-step guide for each.</div>
         ${_payProvider()?(_payProvider()==='stripe'?`<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>Active processor: ${esc(_payLabel())}</b> &mdash; portal payments, site checkout and charges run through it.</div>`:`<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>Payments process through Stripe.</b> Your ${esc(_payLabel())} key is saved for when direct ${esc(_payLabel())} processing ships.</div>`):`<div class="bk-lenhint" style="margin:0 0 12px">No processor connected yet &mdash; pick yours below. Nothing charges until you connect one.</div>`}
-        ${PAY_PROVIDERS.map(p=>{ var isStripe=(p[0]==='stripe'), isPaypal=(p[0]==='paypal'), conn=isPaypal?_ppConnected():!!S.integrations[p[0]], active=_payProvider()===p[0];
+        ${PAY_PROVIDERS.map(p=>{ var isStripe=(p[0]==='stripe'), isPaypal=(p[0]==='paypal'), isSquare=(p[0]==='square'), conn=isPaypal?_ppConnected():(isSquare?_sqConnected():!!S.integrations[p[0]]), active=_payProvider()===p[0];
           return `<div class="conn-row"><div class="conn-row__ic">${p[1].charAt(0)}</div><div class="conn-row__t"><b>${p[1]}${active?(isStripe?' <span class="chip chip--brand" style="font-size:10px">Active</span>':' <span class="chip chip--muted" style="font-size:10px">Preferred</span>'):''}</b><small>${p[2]}</small></div>
-            <div class="conn-act">${conn ? (isPaypal ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span>${_ppState.sandbox?` <span class="chip chip--muted" style="font-size:10px">Sandbox</span>`:``} <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('paypal','PayPal')">Manage</button>` : `${isStripe?`<span class="chip ${PAYMENTS_LIVE?'chip--ok':'chip--muted'}"><span class="dot"></span>${PAYMENTS_LIVE?'Connected':'Saved'}</span>`:`<span class="chip chip--muted"><span class="dot"></span>Saved &middot; runs through Stripe</span>`} ${active?'':`<button class="btn btn--ghost btn--sm" onclick="Atlas.setActivePay('${p[0]}')">${isStripe?'Make active':'Set preferred'}</button>`}`) : `<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${p[0]}','${p[1]}')">Connect</button>`}</div></div>`;
+            <div class="conn-act">${conn ? (isPaypal ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span>${_ppState.sandbox?` <span class="chip chip--muted" style="font-size:10px">Sandbox</span>`:``} <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('paypal','PayPal')">Manage</button>` : isSquare ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span>${_sqState.sandbox?` <span class="chip chip--muted" style="font-size:10px">Sandbox</span>`:``} <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('square','Square')">Manage</button>` : `${isStripe?`<span class="chip ${PAYMENTS_LIVE?'chip--ok':'chip--muted'}"><span class="dot"></span>${PAYMENTS_LIVE?'Connected':'Saved'}</span>`:`<span class="chip chip--muted"><span class="dot"></span>Saved &middot; runs through Stripe</span>`} ${active?'':`<button class="btn btn--ghost btn--sm" onclick="Atlas.setActivePay('${p[0]}')">${isStripe?'Make active':'Set preferred'}</button>`}`) : `<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${p[0]}','${p[1]}')">Connect</button>`}</div></div>`;
         }).join('')}
         <div class="bk-lenhint" style="margin:12px 0 0">You keep your processor and your money &mdash; Atlas just routes the charge. Real processing goes live with your backend; today it is a safe test flow.</div>
       </div>
@@ -7321,7 +7370,7 @@ const Atlas = (function(){
       </div>
       <div class="set-block"><h3>Webhooks</h3><div class="desc">Let your other tools react the moment something happens here. Atlas can ping your website, Zapier, or any app your developer builds the instant a booking is created or paid &mdash; no coding needed to set up.</div>
         <button class="btn btn--primary" onclick="Atlas.openWebhooks()">Set up webhooks</button>
-      </div>`; _qboStatusLoad(); _ppStatusLoad(); }
+      </div>`; _qboStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); }
     else if(setCur==='portal'){ var pc=_portalCfg(); b.innerHTML=`
       <div class="set-block"><h3>Member portal</h3><div class="desc">Your customers' branded self-service area &mdash; fully generated for you and yours to edit.</div>
         <div class="conn-row"><div class="conn-row__ic" style="background:var(--brand-100);color:var(--brand-700)">&#128279;</div><div class="conn-row__t"><b>${S.brand.subdomain}.atlasrental.io/portal</b><small>Live &middot; branded as ${esc(S.brand.name)}</small></div><button class="btn btn--primary btn--sm conn-act" onclick="Atlas.copyPortal()">Copy link</button></div>
@@ -8978,6 +9027,7 @@ const Atlas = (function(){
   function modalConnect(id,name){
     if(id==='web'){ return _modalEmbed(); }   // booking-embed connect shows a real, copyable snippet -- there is no key to paste
     if(id==='paypal'){ return _modalPaypal(); }   // PayPal is REAL per-tenant: its own modal collects Client ID (meta) + Secret (transient) + a sandbox flag and truly wires payments
+    if(id==='square'){ return _modalSquare(); }   // Square is REAL per-tenant: its own modal collects Location ID (meta) + Access Token (transient) + a sandbox flag and truly wires payments
     const steps=GUIDES[id]||['Follow the guided steps to connect.'];
     var _cf=CONN_FIELDS[id];
     var fieldsHtml=_cf ? _cf.map(function(f,i){ return '<div class="field"><label>'+f.label+'</label><input class="input" id="connKey'+i+'" placeholder="'+f.ph+'"></div>'; }).join('')
@@ -11306,7 +11356,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectPaypal,setActivePay,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectPaypal,connectSquare,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,

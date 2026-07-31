@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30q';
+const ATLAS_BUILD = '2026.07.30r';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2034,7 +2034,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _qbToken, _qbSyncBooking, _qbPaidCents, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _qbToken, _qbSyncBooking, _qbPaidCents, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds, _squareCreds, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -3766,6 +3766,140 @@ async function _paypalCreditBooking(env, tenantId, bookingId, kind, captureId, o
     if (_bareKind === 'balance') d.portal.balancePaidAt = d.portal.balancePaidAt || Date.now();
     else if (_bareKind === 'security') d.portal.depositPaidAt = d.portal.depositPaidAt || Date.now();   // captured refundable deposit
     else if (_bareKind !== 'charge') d.portal.reservePaidAt = d.portal.reservePaidAt || Date.now();      // reserve down-payment or generic PayPal payment
+    if (_bareKind !== 'security' && _bareKind !== 'charge' && !_isCanx) d.status = 'Confirmed';           // a real reserve/balance/payment confirms -- never resurrect a cancelled booking
+    d._t = Date.now();
+    var _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
+      .bind(JSON.stringify(d), rev, (_isCanx ? row.status : 'confirmed'), Math.max(Date.now(), (Number(row.updated_at) || 0) + 1), bookingId, tenantId, row.updated_at).run();   // CAS: only commit if nobody wrote since our SELECT; never flip a 'cancelled' column to 'confirmed'
+    _committed = !!(_u && _u.meta && _u.meta.changes);
+    if (_committed) { _wasNew = !_slotHad; _outD = d; }
+  }
+  return { credited: (_committed && !_dup), dup: _dup, committed: _committed, wasNew: _wasNew, cancelled: _isCanx, amountCents: amt, d: _outD };
+}
+
+// ================================================================ Square (BYO per-tenant, Payment Links / Orders v2) -- ADDITIVE
+// The tenant connects their OWN Square account through the SAME encrypted /api/integrations/connect used for Stripe/PayPal
+// (provider='square'; the Access Token goes in `secret` -> encrypted at rest; the Location ID + a `sandbox` bool go in `meta`).
+// This mirrors the PayPal BYO pattern EXACTLY and is a parallel, opt-in money path that only ever runs for a tenant who has
+// connected Square. None of the code below touches the Stripe checkout/webhook or the PayPal path -- it is purely additive.
+// Amounts are cents internally, which is also Square's smallest-currency-unit money amount (no decimal conversion needed).
+function _squareBase(meta) { return (meta && meta.sandbox) ? 'https://connect.squareupsandbox.com' : 'https://connect.squareup.com'; }   // live vs sandbox chosen from the tenant's meta.sandbox
+const _SQ_VER = '2024-07-17';   // pinned Square-Version header (sent on every Square call)
+
+// The tenant's connected Square credentials -> { accessToken, locationId, meta } or null. Mirrors _paypalCreds/_tenantIntegration
+// (same tenant|provider AAD). HONEST: no row, no secret, or no location-id in meta -> null, so the caller never offers Square.
+async function _squareCreds(env, tenantId) {
+  try {
+    var ti = await _tenantIntegration(env, tenantId, 'square');
+    if (!ti || !ti.secret) return null;
+    var loc = String((ti.meta && ti.meta.location_id) || '');
+    if (!loc) return null;
+    return { accessToken: String(ti.secret), locationId: loc, meta: ti.meta || {} };
+  } catch (e) { return null; }
+}
+
+// Create a Square hosted checkout (Payment Links quick_pay) for a booking payment. The redirect_url encodes the portal token +
+// booking id + kind so the return route credits the right slot. Returns { ok, url, orderId } (the hosted URL the customer is sent
+// to + the Square order id), or { ok:false, reason }. Authenticates as the TENANT with their Access Token (Bearer).
+async function _squareCreateCheckout(env, tenantId, opts) {
+  var creds = await _squareCreds(env, tenantId);
+  if (!creds) return { ok: false, reason: 'no_square' };
+  try {
+    var body = {
+      idempotency_key: randId(32),   // Square-side dedup for a retried create (lost response / timeout); <=45 chars
+      quick_pay: {
+        name: String(opts.name || 'Atlas Rental.io').slice(0, 255),
+        price_money: { amount: Math.max(0, Math.round(Number(opts.amountCents) || 0)), currency: String(opts.currency || 'USD') },
+        location_id: creds.locationId
+      },
+      checkout_options: { redirect_url: String(opts.redirectUrl || '') }
+    };
+    var r = await _fetchTimeout(_squareBase(creds.meta) + '/v2/online-checkout/payment-links', {
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + creds.accessToken, 'Square-Version': _SQ_VER, 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify(body)
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    var pl = (j && j.payment_link) || {};
+    if (!(r.ok && pl.url && pl.order_id)) return { ok: false, reason: (j && j.errors && j.errors[0] && (j.errors[0].detail || j.errors[0].code)) || ('http_' + r.status) };
+    return { ok: true, url: String(pl.url), orderId: String(pl.order_id), paymentLinkId: String(pl.id || '') };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// Verify a Square order is paid (return-verify; Square also has webhooks, but return-verify is sufficient for v1). Reads the order
+// and reports paid when its state is COMPLETED or a tender settled it. Returns { ok, paid, paymentId, amountCents, currency, state }
+// or { ok:false, reason }. amountCents is the Square-authoritative captured amount (tender sum, else total_money). paymentId (a
+// tender id, else the order id) is what the crediting keys idempotency on.
+async function _squareVerifyPaid(env, tenantId, orderId) {
+  var creds = await _squareCreds(env, tenantId);
+  if (!creds) return { ok: false, reason: 'no_square' };
+  try {
+    var r = await _fetchTimeout(_squareBase(creds.meta) + '/v2/orders/' + encodeURIComponent(String(orderId)), {
+      method: 'GET', headers: { 'Authorization': 'Bearer ' + creds.accessToken, 'Square-Version': _SQ_VER, 'Accept': 'application/json' }
+    }, 12000);
+    var j = await r.json().catch(function () { return {}; });
+    var o = (j && j.order) || {};
+    if (!(r.ok && o && o.id)) return { ok: false, reason: (j && j.errors && j.errors[0] && (j.errors[0].detail || j.errors[0].code)) || ('http_' + r.status) };
+    var state = String(o.state || '').toUpperCase();
+    var tenders = Array.isArray(o.tenders) ? o.tenders : [];
+    var tenderSum = 0, tenderPaid = false, payId = '';
+    for (var i = 0; i < tenders.length; i++) {
+      var t = tenders[i] || {};
+      var am = Math.round(Number((t.amount_money && t.amount_money.amount) || 0));
+      if (am > 0) tenderSum += am;
+      var cst = String((t.card_details && t.card_details.status) || '').toUpperCase();
+      if (am > 0 || cst === 'CAPTURED' || cst === 'AUTHORIZED') tenderPaid = true;   // a settled tender = paid
+      if (!payId && t.id) payId = String(t.id);
+    }
+    var paid = (state === 'COMPLETED') || tenderPaid;   // credit on order/tender COMPLETED/paid (the mandate's rule)
+    var amt = tenderSum > 0 ? tenderSum : Math.round(Number((o.total_money && o.total_money.amount) || 0));
+    return { ok: true, paid: paid, paymentId: payId || String(o.id), amountCents: amt, currency: String((o.total_money && o.total_money.currency) || 'USD'), state: state };
+  } catch (e) { return { ok: false, reason: 'error' }; }
+}
+
+// Credit a PAID Square payment to a booking. This is the money-critical part and it MIRRORS _paypalCreditBooking EXACTLY (which
+// itself mirrors the Stripe webhook's CAS crediting): a 6-try optimistic-lock read-modify-write, revenue added ONLY when newly
+// recorded, the #363 G5 cash-estimate REPLACE rule, and the same portal-stamp / status-Confirmed core-loop -- with two Square
+// specifics: (1) idempotency is keyed on the Square payment id stored in d.paid, so a duplicate return/refresh/replay can NEVER
+// double-credit; (2) a Square Payment-Links payment is captured money (never an auth-only hold), so hold is always false.
+// Returns { credited, dup, committed, wasNew, cancelled, amountCents, d }.
+async function _squareCreditBooking(env, tenantId, bookingId, kind, paymentId, orderId, amountCents) {
+  var amt = Math.max(0, Math.round(Number(amountCents) || 0));
+  var _pkKey = String(kind || 'square');                       // 'deposit' | 'balance' | 'charge:<id>' | 'square'
+  var _isCharge = _pkKey.indexOf('charge:') === 0;
+  var _bareKind = _isCharge ? 'charge' : _pkKey;               // portal-stamp / status semantics key off the bare kind
+  var _isSec = (_pkKey === 'security');
+  var _committed = false, _dup = false, _wasNew = false, _isCanx = false, _outD = null;
+  for (var _wtry = 0; _wtry < 6 && !_committed; _wtry++) {
+    var row = await env.DB.prepare('SELECT id,data,revenue_cents,status,updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(bookingId, tenantId).first();
+    if (!row) return { credited: false, dup: false, committed: false, notfound: true, amountCents: amt, d: null };
+    var d = jparse(row.data, {});
+    d.paid = d.paid || {};
+    // (a) IDEMPOTENT keyed on the Square PAYMENT id: if this exact payment already sits in ANY paid slot (incl. an archived
+    // '#'-suffixed one), this is a duplicate return/refresh/webhook -- record nothing, add no revenue, report it as already-paid.
+    if (Object.keys(d.paid).some(function (k) { var p = d.paid[k]; return p && String(p.square || '') === String(paymentId); })) { _dup = true; _outD = d; break; }
+    var _slotHad = !!d.paid[_pkKey];   // was this slot already filled by a DIFFERENT prior payment?
+    // #363: were there ANY prior ONLINE (captured, non-hold, non-security, non-archived) payments before this one?
+    var _hadOnlinePrior = Object.keys(d.paid).some(function (k) { var p = d.paid[k]; return p && !p.hold && k !== 'security' && String(k).indexOf('#') < 0; });
+    // #345: a DIFFERENT prior payment already in this slot -> archive it under a suffixed key so its id stays findable for a refund (never re-counted).
+    if (_slotHad && d.paid[_pkKey] && (d.paid[_pkKey].square || d.paid[_pkKey].paypal || d.paid[_pkKey].pi) && String(d.paid[_pkKey].square || d.paid[_pkKey].paypal || d.paid[_pkKey].pi) !== String(paymentId)) d.paid[_pkKey + '#' + String(d.paid[_pkKey].square || d.paid[_pkKey].paypal || d.paid[_pkKey].pi).slice(0, 40)] = d.paid[_pkKey];
+    d.paid[_pkKey] = { at: Date.now(), amountCents: amt, square: String(paymentId), order: String(orderId || ''), hold: false };
+    _isCanx = (String(row.status || '').toLowerCase() === 'cancelled') || !!(d.status && /cancel/i.test(String(d.status)));
+    // (b) add revenue ONLY when this slot is newly recorded (mirror Stripe's _addRev): not on a resurrected-cancelled booking, and
+    // NEVER for a refundable security deposit (not revenue). A Square Payment-Links payment is never a hold, so no hold branch to gate.
+    var _addRev = (!_slotHad && !_isCanx && !_isSec) ? amt : 0;
+    // (c) #363 G5 REPLACE: a FIRST online reserve/balance/generic payment on a committed booking is settling the cash ESTIMATE that
+    // was injected as revenue_cents (= quote total). REPLACE it with the real collected amount rather than stack (double-count). A
+    // charge / security never triggers the reset; a non-committed booking had revenue_cents=0 so the reset is a no-op.
+    var _g5corePay = (_bareKind !== 'charge' && !_isSec);
+    var _estBase = (!_hadOnlinePrior && _addRev > 0 && _g5corePay) ? 0 : (Number(row.revenue_cents) || 0);
+    var rev = Math.max(0, _estBase + _addRev);
+    if (_isCharge && Array.isArray(d.charges)) {   // stamp the specific owner-added charge paid (mirror Stripe G1); paidOnline: it IS inside revenue_cents
+      var _cidStamp = _pkKey.slice(7);
+      for (var _ci = 0; _ci < d.charges.length; _ci++) { if (String(d.charges[_ci].id) === String(_cidStamp)) { d.charges[_ci].paidAt = d.charges[_ci].paidAt || Date.now(); d.charges[_ci].paidOnline = true; break; } }
+    }
+    // (d) reflect the payment in the OWNER's dashboard (d.portal.*PaidAt + d.status), mirroring the Stripe core-loop.
+    d.portal = d.portal || {};
+    if (_bareKind === 'balance') d.portal.balancePaidAt = d.portal.balancePaidAt || Date.now();
+    else if (_bareKind === 'security') d.portal.depositPaidAt = d.portal.depositPaidAt || Date.now();   // captured refundable deposit
+    else if (_bareKind !== 'charge') d.portal.reservePaidAt = d.portal.reservePaidAt || Date.now();      // reserve down-payment or generic Square payment
     if (_bareKind !== 'security' && _bareKind !== 'charge' && !_isCanx) d.status = 'Confirmed';           // a real reserve/balance/payment confirms -- never resurrect a cancelled booking
     d._t = Date.now();
     var _u = await env.DB.prepare('UPDATE bookings SET data=?, revenue_cents=?, status=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
@@ -6809,7 +6943,46 @@ function doReset(){
         }
         return _pback('?paid=1');
       }
-      const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|paypal|sign|receipt|agreement|upload|extend|prefs))?$/);
+      // ---- SQUARE RETURN (public; the customer's browser lands here after paying on Square's hosted checkout): verify the order
+      // is paid and credit the booking, then 302 back to the portal. Square appends ?orderId=<id> (& more) to our redirect_url; we
+      // also carry ?pt=<portalToken>&bk=<bookingId>&kind=<kind> (which WE encoded into the redirect_url) to resolve the booking +
+      // credit the right slot. Crediting goes through _squareCreditBooking, which mirrors _paypalCreditBooking / the Stripe webhook's
+      // CAS + idempotency + G5 EXACTLY. Idempotent at BOTH levels: an order already recorded (any paid slot's .order === this orderId)
+      // is NOT re-verified/credited; and the Square payment id itself is the dedup key inside the crediting.
+      if (path === '/api/square/return' && method === 'GET') {
+        const _sqtok = String(url.searchParams.get('pt') || '');
+        const _sqOrderId = String(url.searchParams.get('orderId') || url.searchParams.get('order_id') || '');   // Square's order id, appended as ?orderId=
+        const _sqKind = String(url.searchParams.get('kind') || 'square');
+        const _sqBk = String(url.searchParams.get('bk') || '');
+        const _sqback = function (qs) { return new Response('', { status: 302, headers: { 'Location': url.origin + '/api/portal/' + encodeURIComponent(_sqtok) + (qs || '') } }); };
+        if (!_sqtok || !_sqOrderId) return _sqtok ? _sqback('') : err(400, 'Missing payment reference.');
+        const _sbrow = await env.DB.prepare('SELECT id, tenant_id, data FROM bookings WHERE portal_token=? LIMIT 1').bind(_sqtok).first();
+        if (!_sbrow) return err(404, 'Booking not found.');
+        // ORDER-level idempotency (refresh / double-land): if this order was already credited, don't re-verify -- just bounce to paid.
+        try { const _d0 = jparse(_sbrow.data, {}); if (_d0 && _d0.paid && Object.keys(_d0.paid).some(function (k) { var p = _d0.paid[k]; return p && String(p.order || '') === String(_sqOrderId); })) return _sqback('?paid=1'); } catch (e) {}
+        // Defense in depth: the booking id WE encoded into the redirect_url must match this portal token's booking, or we refuse.
+        if (_sqBk && _sqBk !== String(_sbrow.id)) { try { await audit(env, { tenant_id: _sbrow.tenant_id }, req, 'square.booking_mismatch', { booking: _sbrow.id, order: String(_sqOrderId).slice(0, 40), bk: _sqBk.slice(0, 60) }); } catch (e) {} return _sqback('?payerror=1'); }
+        const _v = await _squareVerifyPaid(env, _sbrow.tenant_id, _sqOrderId);
+        if (!_v.ok || !_v.paid) { try { await audit(env, { tenant_id: _sbrow.tenant_id }, req, 'square.verify_failed', { booking: _sbrow.id, order: String(_sqOrderId).slice(0, 40), reason: String(_v.reason || _v.state || '').slice(0, 80) }); } catch (e) {} return _sqback('?payerror=1'); }
+        const _res = await _squareCreditBooking(env, _sbrow.tenant_id, _sbrow.id, _sqKind, _v.paymentId, _sqOrderId, _v.amountCents);
+        if (_res.credited && !_res.cancelled) {   // fire the receipt/audit/webhook/QBO ONCE per NEW payment (mirror the PayPal/Stripe post-commit block)
+          const _bareK = _sqKind.indexOf('charge:') === 0 ? 'charge' : _sqKind;
+          try { await audit(env, { tenant_id: _sbrow.tenant_id }, req, 'square.paid', { booking: _sbrow.id, kind: _sqKind, cents: _v.amountCents, payment: String(_v.paymentId).slice(0, 40) }); } catch (e) {}
+          try { _fireWebhook(_ectx, env, _sbrow.tenant_id, 'booking.paid', { id: _sbrow.id, ref: _sbrow.id, kind: _bareK, amount_cents: _v.amountCents, currency: (_v.currency || 'USD').toLowerCase(), asset: (_res.d && _res.d.asset) || '', status: 'confirmed', paid_at: Math.floor(Date.now() / 1000), processor: 'square' }); } catch (e) {}
+          try {
+            const _tr = await env.DB.prepare('SELECT * FROM tenants WHERE id=?').bind(_sbrow.tenant_id).first();
+            const _dd = _res.d || jparse(_sbrow.data, {});
+            if (_tr && _dd.custEmail) { const _sp = tenantProfile(_tr);
+              const _smartR = !!(_sp.settings && _sp.settings.flags && _sp.settings.flags.smartReceipts);
+              await sendEmail(env, { to: _dd.custEmail, transactional: true, fromName: _sp.name,
+                subject: (_smartR ? 'Receipt - ' : 'Payment received - ') + _sp.name,
+                html: _emailShell(_sp, _smartR ? _bookingReceiptInner(_sp, _dd, { booking: _sbrow.id, kind: _bareK }, _v.amountCents) : ('<h2>Payment received</h2><p>Thanks! We received ' + money2(_v.amountCents) + ' for booking <b>' + esc(_sbrow.id) + '</b> (' + esc(_dd.asset || '') + ') via Square.</p>')) }); }
+          } catch (e) {}
+          try { if (_ectx && _ectx.waitUntil && _res.d) { _res.d.id = _res.d.id || _sbrow.id; _ectx.waitUntil(_qbSyncBooking(env, _sbrow.tenant_id, _res.d)); } } catch (e) {}   // accounting sync (best-effort, off the money path) -- same shape as the PayPal/Stripe handler
+        }
+        return _sqback('?paid=1');
+      }
+      const ptp = path.match(/^\/api\/portal\/([A-Za-z0-9]{12,64})(?:\/(data|pay|paypal|square|sign|receipt|agreement|upload|extend|prefs))?$/);
       if (ptp) {
         const token = ptp[1], psub = ptp[2];
         const brow = await env.DB.prepare('SELECT * FROM bookings WHERE portal_token=? LIMIT 1').bind(token).first();
@@ -6840,7 +7013,8 @@ function doReset(){
             commsPref: (d.commsPref && typeof d.commsPref === 'object') ? { email: d.commsPref.email !== false, sms: !!d.commsPref.sms } : { email: true, sms: false },   // C1/C2: pre-fill the "how should we reach you?" card. SMS defaults OFF (no consent) so nothing is inflated; email defaults ON (they gave one at booking).
             agreement: _agrText, signed: !!(d.portal && d.portal.signedAt), signerName: (d.portal && d.portal.signerName) || '', signedAt: (d.portal && d.portal.signedAt) || 0,
             uploads: (((d.portal && d.portal.uploads) || []).map(function (u) { return { kind: u.kind, url: u.url, at: u.at }; })), requests: ((d.portal && d.portal.requests) || []), storage: !!_r2(env),
-            paypalOn: !!(await _paypalCreds(env, brow.tenant_id)) });   // capability flag: the customer portal offers a PayPal button ONLY when the owner has connected their own PayPal (honest gating)
+            paypalOn: !!(await _paypalCreds(env, brow.tenant_id)),   // capability flag: the customer portal offers a PayPal button ONLY when the owner has connected their own PayPal (honest gating)
+            squareOn: !!(await _squareCreds(env, brow.tenant_id)) });   // capability flag: the customer portal offers a Square button ONLY when the owner has connected their own Square (honest gating)
         }
         if (psub === 'pay' && method === 'POST') {
           if (!await rateLimit(env, 'ppay:' + token, 20, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
@@ -6910,6 +7084,36 @@ function doReset(){
             name: pr.name + ' - ' + (kind === 'charge' ? String(_chg.label || 'Charge') : kind) + ' - ' + (d.asset || ''),
             returnUrl: url.origin + '/api/paypal/return?pt=' + encodeURIComponent(token), cancelUrl: url.origin + '/api/portal/' + token });
           return co.ok ? json({ ok: true, payUrl: co.approveUrl, orderId: co.id }) : json({ ok: false, reason: co.reason, message: 'Could not start PayPal checkout.' });
+        }
+        // ---- SQUARE START (ADDITIVE, parallel to /pay and /paypal): create a Square hosted checkout (Payment Link) for this booking
+        // payment and return the hosted URL. Offered ONLY when the tenant has connected their OWN Square (else honest {ok:false,no_square});
+        // the Stripe /pay flow and PayPal /paypal flow above are completely unchanged. Amount is computed the SAME way as /pay and /paypal.
+        // Reserve/balance and owner-added charges only -- a Square Payment-Links payment cannot place the $0-fee refundable-security HOLD
+        // Stripe does, so security stays on the Stripe path. On payment, Square redirects the customer to /api/square/return, which verifies + credits.
+        if (psub === 'square' && method === 'POST') {
+          if (!await rateLimit(env, 'sqpay:' + token, 20, 3600000)) return err(429, 'Too many attempts - please wait a moment.');
+          const creds = await _squareCreds(env, brow.tenant_id);
+          if (!creds) return json({ ok: false, reason: 'no_square', message: 'Square is not enabled for this booking.' });
+          const q = _quoteCents(d.quote || {}); const body = await req.json().catch(function () { return {}; });
+          const kind = (body.kind === 'balance') ? 'balance' : (body.kind === 'charge') ? 'charge' : 'deposit';
+          var _chg = null;
+          if (kind === 'charge') {   // paying a SPECIFIC owner-added charge (mirror /pay + /paypal per-charge lookup + guard)
+            var _cid = String(body.chargeId || '');
+            _chg = (Array.isArray(d.charges) ? d.charges : []).filter(function (c) { return String(c.id) === _cid; })[0];
+            if (!_chg) return json({ ok: false, reason: 'not_found', message: 'That charge was not found.' });
+            if (_chg.paidAt || (d.paid && d.paid['charge:' + _cid])) return json({ ok: false, reason: 'already_paid', message: 'That charge has already been paid - thank you.' });
+          }
+          if (kind !== 'charge' && d.paid && d.paid[kind] && (Number(d.paid[kind].amountCents) || 0) > 0) return json({ ok: false, reason: 'already_paid', message: 'Your ' + kind + ' has already been paid - thank you.' });   // same idempotency guard as /pay + /paypal
+          var amt;
+          if (kind === 'charge') amt = Math.round((Number(_chg.amount) || 0) * 100);
+          else if (kind === 'balance') amt = Math.max(0, (Number(q.totalCents) || 0) - (Number(q.depositCents) || 0));
+          else amt = (Number(q.depositCents) || Number(q.totalCents) || 0);
+          if (amt < 50) return json({ ok: false, reason: 'nothing_due', message: 'Nothing is due online right now.' });
+          var _sqKind = (kind === 'charge') ? ('charge:' + String(_chg.id)) : kind;   // encoded into the return URL so the return route credits the right slot
+          const co = await _squareCreateCheckout(env, brow.tenant_id, { amountCents: amt, bookingId: brow.id, kind: _sqKind,
+            name: pr.name + ' - ' + (kind === 'charge' ? String(_chg.label || 'Charge') : kind) + ' - ' + (d.asset || ''),
+            redirectUrl: url.origin + '/api/square/return?pt=' + encodeURIComponent(token) + '&bk=' + encodeURIComponent(brow.id) + '&kind=' + encodeURIComponent(_sqKind) });
+          return co.ok ? json({ ok: true, payUrl: co.url, orderId: co.orderId }) : json({ ok: false, reason: co.reason, message: 'Could not start Square checkout.' });
         }
         // #205 remote e-signature with a server-captured legal trail: real IP (CF-Connecting-IP) + user-agent + server timestamp +
         // a SHA-256 fingerprint of the exact agreement text signed. None of these can be spoofed by the client, so it's defensible.
@@ -8798,6 +9002,18 @@ function doReset(){
           if (row && row.secret_enc) { const m = (_hqJson(row.meta, {}) || {}); if (m.client_id) { connected = true; sandbox = !!m.sandbox; clientHint = '\u2026' + String(m.client_id).slice(-4); } }
         } catch (e) {}
         return json({ ok: true, connected: connected, sandbox: sandbox, clientHint: clientHint });
+      }
+
+      // ---- Square connection status (session-gated read): is this tenant's OWN Square connected, and is it in sandbox mode? The
+      // server integrations table is authoritative, so the client shows a TRUTHFUL Connected badge on any load. NO secret (Access
+      // Token) is ever returned -- only the connected flag, the sandbox flag, and a last-4 hint of the (non-secret) Location ID. ----
+      if (path === '/api/integrations/square/status' && method === 'GET') {
+        let connected = false, sandbox = false, locHint = '';
+        try {
+          const row = await env.DB.prepare('SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider=?').bind(ctx.tenant_id, 'square').first();
+          if (row && row.secret_enc) { const m = (_hqJson(row.meta, {}) || {}); if (m.location_id) { connected = true; sandbox = !!m.sandbox; locHint = '\u2026' + String(m.location_id).slice(-4); } }
+        } catch (e) {}
+        return json({ ok: true, connected: connected, sandbox: sandbox, locHint: locHint });
       }
 
       // ---- Atlas.io council: Claude + GPT + Gemini in concert, one synthesis --
@@ -10827,6 +11043,7 @@ function money(c){return '$'+(Math.round(c)/100).toLocaleString('en-US',{minimum
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 var _payBusy=false;function pay(kind,chg){if(_payBusy)return;_payBusy=true;fetch('/api/portal/'+T+'/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}_payBusy=false;alert(j.message||'Payment is not available right now.')}).catch(function(){_payBusy=false;alert('Network error')})}
 function ppay(kind,chg){if(_payBusy)return;_payBusy=true;fetch('/api/portal/'+T+'/paypal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}_payBusy=false;alert(j.message||'PayPal is not available right now.')}).catch(function(){_payBusy=false;alert('Network error')})}
+function spay(kind,chg){if(_payBusy)return;_payBusy=true;fetch('/api/portal/'+T+'/square',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,chargeId:chg||''})}).then(function(r){return r.json()}).then(function(j){if(j.ok&&j.payUrl){location.href=j.payUrl;return}_payBusy=false;alert(j.message||'Square is not available right now.')}).catch(function(){_payBusy=false;alert('Network error')})}
 function sign(){var nm=(el('sgName')?el('sgName').value:'').trim();var ag=el('sgAgree')&&el('sgAgree').checked;if(nm.length<2){alert('Please type your full legal name');return}if(!ag){alert('Please check the box to agree to the rental agreement');return}var b=el('sgBtn');if(b){b.disabled=true;b.textContent='Signing...'}fetch('/api/portal/'+T+'/sign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:nm,sig:nm,agree:true})}).then(function(r){return r.json()}).then(function(j){if(j.ok){location.reload()}else{alert(j.error||'Could not sign');if(b){b.disabled=false;b.textContent='Agree & sign'}}}).catch(function(){alert('Network error');if(b){b.disabled=false;b.textContent='Agree & sign'}})}
 function up(inp,kind){var f=inp.files&&inp.files[0];if(!f)return;if(f.size>6000000){alert('That file is too large (max 6MB).');inp.value='';return}var rd=new FileReader();rd.onload=function(){fetch('/api/portal/'+T+'/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:kind,data:rd.result,name:f.name})}).then(function(r){return r.json()}).then(function(j){if(j.ok){var l=el('uplist');if(l)l.textContent='Uploaded '+(j.count||1)+' file(s). Thank you.';inp.value=''}else{alert(j.message||j.error||'Could not upload.')}}).catch(function(){alert('Network error')})};rd.readAsDataURL(f)}
 function reqExt(){var ex=(el('extExtra')?el('extExtra').value:'').trim();var nt=(el('extNote')?el('extNote').value:'').trim();if(!ex&&!nt){alert('Tell the owner what you would like.');return}fetch('/api/portal/'+T+'/extend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({extra:ex,note:nt})}).then(function(r){return r.json()}).then(function(j){var m=el('extMsg');if(j.ok){if(m){m.style.color='#12813f';m.textContent=j.message||'Sent to the owner.'}if(el('extExtra'))el('extExtra').value='';if(el('extNote'))el('extNote').value=''}else{if(m){m.style.color='#c0392b';m.textContent=j.error||j.message||'Could not send.'}}}).catch(function(){var m=el('extMsg');if(m){m.style.color='#c0392b';m.textContent='Network error'}})}
@@ -10834,7 +11051,7 @@ var _rvR=0;function setStar(n){_rvR=n;for(var i=1;i<=5;i++){var s=el('rs'+i);if(
 function submitReview(){if(!_rvR){alert('Tap the stars to rate first');return}var tx=(el('rvText')?el('rvText').value:'').trim();var bt=el('rvBtn');if(bt){bt.disabled=true;bt.textContent='Sending...'}fetch('/api/portal/'+T+'/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rating:_rvR,text:tx})}).then(function(r){return r.json()}).then(function(j){if(j.ok){var c=el('reviewCard');if(c)c.innerHTML='<h2>Thank you!</h2><p class=muted>Your '+(j.rating||_rvR)+'-star review has been sent.</p>'}else{alert(j.message||j.error||'Could not submit your review');if(bt){bt.disabled=false;bt.textContent='Submit review'}}}).catch(function(){alert('Network error');if(bt){bt.disabled=false;bt.textContent='Submit review'}})}
 function renderUploads(list){var l=el('uplist');if(!l)return;var n=(list||[]).length;l.textContent=n?(n+' file(s) uploaded. Thank you.'):''}
 function savePrefs(){var em=el('cpEmail')&&el('cpEmail').checked;var sm=el('cpSms')&&el('cpSms').checked;var bt=el('cpBtn');if(bt){bt.disabled=true;bt.textContent='Saving...'}fetch('/api/portal/'+T+'/prefs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:!!em,sms:!!sm})}).then(function(r){return r.json()}).then(function(j){var m=el('cpMsg');if(j.ok){if(m){m.style.color='#12813f';m.textContent=j.message||'Saved.'}}else{if(m){m.style.color='#c0392b';m.textContent=j.message||j.error||'Could not save.'}}if(bt){bt.disabled=false;bt.textContent='Save preferences'}}).catch(function(){var m=el('cpMsg');if(m){m.style.color='#c0392b';m.textContent='Network error'}if(bt){bt.disabled=false;bt.textContent='Save preferences'}})}
-fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>';if(j.paypalOn){pays+='<button class=btn onclick="ppay(\\''+((q.depositCents&&!paid.deposit)?'deposit':'balance')+'\\')" style="background:#ffc439;color:#003087;font-weight:600">Pay with PayPal</button>'}}else{pays='<p class=muted>All settled. Thank you!</p>'}if(q.securityCents>0){if(paid.security){pays+='<p class=muted style="margin-top:8px">Refundable deposit '+money(q.securityCents)+' authorized &mdash; released after a clean return.</p>'}else{pays+='<button class=btn onclick="pay(\\'security\\')" style="background:#0E1C15;margin-top:8px">Authorize refundable deposit '+money(q.securityCents)+'</button><p class=muted style="font-size:11px;margin-top:6px">Refundable &mdash; a temporary hold, released after a clean return.</p>'}}var chargesCard='';if(j.charges&&j.charges.length){var cr='';j.charges.forEach(function(c){cr+='<div class=row><span>'+esc(c.label)+'</span><span>'+(c.paid?'<span style="color:#12813f">Paid</span>':'<button class=btn style="width:auto;display:inline-block;padding:6px 12px;font-size:13px" onclick="pay(\\'charge\\',\\''+esc(c.id)+'\\')">Pay '+money(c.amountCents)+'</button>')+'</span></div>';});chargesCard='<div class=card><h2>Additional charges</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Charges added by '+esc(j.business)+' for this rental.</p>'+cr+'</div>';}var agree='';if(j.agreement){if(j.signed){agree='<div class=card><h2>Rental agreement</h2><p class=muted>Signed'+(j.signerName?(' by '+esc(j.signerName)):'')+' &mdash; thank you.</p></div>'}else{agree='<div class=card><h2>Rental agreement</h2><div style="max-height:170px;overflow:auto;font-size:12px;white-space:pre-wrap;border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:10px;margin:8px 0;line-height:1.5">'+esc(j.agreement)+'</div><label style="font-size:12.5px;display:flex;gap:7px;align-items:flex-start;margin:8px 0"><input type=checkbox id=sgAgree style="margin-top:2px"> <span>I have read and agree to this rental agreement.</span></label><input id=sgName placeholder="Type your full legal name" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:2px 0 8px;font-size:14px"><button class=btn id=sgBtn onclick=sign()>Agree & sign</button><p class=muted style="font-size:11px;margin-top:8px">Your typed name is your electronic signature. We record your name, the date and time, your IP address, and a fingerprint of this exact agreement.</p></div>'}}var docsCard='<div class=card><h2>Documents</h2><a class="btn dlbtn" href="/api/portal/'+T+'/receipt" target="_blank">Download receipt</a>'+(j.signed?'<a class="btn dlbtn" href="/api/portal/'+T+'/agreement" target="_blank" style="margin-top:8px;background:#333">Download signed agreement</a>':'')+'</div>';var uploadCard=j.storage?('<div class=card><h2>Upload documents</h2><p class=muted style="font-size:12.5px">Share your ID or pickup / condition photos with the owner.</p><label class=upl>ID / license<input type=file accept="image/*,application/pdf" onchange="up(this,\\'id\\')"></label><label class=upl>Pickup / condition photos<input type=file accept="image/*" onchange="up(this,\\'condition\\')"></label><div id=uplist class=muted style="font-size:12px;margin-top:6px"></div></div>'):'';var reqCard='<div class=card><h2>Need changes?</h2><p class=muted style="font-size:12.5px">Request more time or an add-on. The owner confirms any change and price with you.</p><input id=extExtra placeholder="e.g. 3 more days, or a child seat" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:4px 0;font-size:14px"><textarea id=extNote placeholder="Anything else? (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px"></textarea><button class=btn onclick=reqExt()>Send request</button><div id=extMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';var cp=j.commsPref||{};var prefsCard='<div class=card><h2>How should we reach you?</h2><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpEmail'+(cp.email!==false?' checked':'')+' style="margin-top:2px"> <span>Email me booking updates and receipts</span></label><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpSms'+(cp.sms?' checked':'')+' style="margin-top:2px"> <span>Text me (SMS) about this booking</span></label><p class=muted style="font-size:11px;line-height:1.5;margin:6px 0 8px">By checking &quot;Text me&quot; you agree to receive booking &amp; marketing text messages from '+esc(j.business)+' at the number on file. Msg &amp; data rates may apply. Reply STOP to opt out.</p><button class=btn id=cpBtn onclick=savePrefs()>Save preferences</button><div id=cpMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div>'+agree+'<div class=card>'+pays+'</div>'+chargesCard+docsCard+uploadCard+reqCard+prefsCard+(function(){if(j.reviewed){return '<div class=card id=reviewCard><h2>Thank you!</h2><p class=muted>You left a '+(j.reviewRating||5)+'-star review.</p>'+(j.reviewReply?('<div style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--brand);background:rgba(0,0,0,.04);border-radius:6px"><div style="font-weight:600;font-size:12.5px;margin-bottom:3px">Response from '+esc(j.business)+'</div><div class=muted style="font-size:13px;white-space:pre-wrap">'+esc(j.reviewReply)+'</div></div>'):'')+'</div>'}var _rs='';for(var _si=1;_si<=5;_si++){_rs+='<span id=rs'+_si+' onclick="setStar('+_si+')" style="color:#ccc;font-size:30px;cursor:pointer">&#9733;</span>'}return '<div class=card id=reviewCard><h2>How was it?</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Leave a quick review for '+esc(j.business)+'.</p><div>'+_rs+'</div><textarea id=rvText placeholder="Tell others about your experience (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px;margin-top:8px"></textarea><button class=btn id=rvBtn onclick=submitReview() style="margin-top:6px">Submit review</button></div>'})();renderUploads(j.uploads)}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
+fetch('/api/portal/'+T+'/data').then(function(r){return r.json()}).then(function(j){if(!j.ok){el('app').innerHTML='<div class=card>Booking not found.</div>';return}var b=j.brand||{};if(b.color)document.documentElement.style.setProperty('--brand',b.color);var q=j.quote||{};var paid=j.paid||{};var got=((paid.deposit&&paid.deposit.amountCents)||0)+((paid.balance&&paid.balance.amountCents)||0)+((paid.payment&&paid.payment.amountCents)||0);var due=Math.max(0,(q.totalCents||0)-got);var rows='<div class=row><span>'+esc(j.asset||'')+' x '+(j.periods||1)+'</span><span>'+money(q.subtotalCents||0)+'</span></div>'+(q.taxCents?'<div class=row><span>Tax</span><span>'+money(q.taxCents)+'</span></div>':'')+'<div class=tot><span>Total</span><span>'+money(q.totalCents||0)+'</span></div>';var pays='';if(due>0){if(q.depositCents&&!paid.deposit){pays+='<button class=btn onclick="pay(\\'deposit\\')">Pay deposit '+money(q.depositCents)+'</button>'}pays+='<button class=btn onclick="pay(\\'balance\\')" style="background:#333">Pay '+money(due)+'</button>';if(j.paypalOn){pays+='<button class=btn onclick="ppay(\\''+((q.depositCents&&!paid.deposit)?'deposit':'balance')+'\\')" style="background:#ffc439;color:#003087;font-weight:600">Pay with PayPal</button>'}if(j.squareOn){pays+='<button class=btn onclick="spay(\\''+((q.depositCents&&!paid.deposit)?'deposit':'balance')+'\\')" style="background:#006AFF;color:#fff;font-weight:600">Pay with Square</button>'}}else{pays='<p class=muted>All settled. Thank you!</p>'}if(q.securityCents>0){if(paid.security){pays+='<p class=muted style="margin-top:8px">Refundable deposit '+money(q.securityCents)+' authorized &mdash; released after a clean return.</p>'}else{pays+='<button class=btn onclick="pay(\\'security\\')" style="background:#0E1C15;margin-top:8px">Authorize refundable deposit '+money(q.securityCents)+'</button><p class=muted style="font-size:11px;margin-top:6px">Refundable &mdash; a temporary hold, released after a clean return.</p>'}}var chargesCard='';if(j.charges&&j.charges.length){var cr='';j.charges.forEach(function(c){cr+='<div class=row><span>'+esc(c.label)+'</span><span>'+(c.paid?'<span style="color:#12813f">Paid</span>':'<button class=btn style="width:auto;display:inline-block;padding:6px 12px;font-size:13px" onclick="pay(\\'charge\\',\\''+esc(c.id)+'\\')">Pay '+money(c.amountCents)+'</button>')+'</span></div>';});chargesCard='<div class=card><h2>Additional charges</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Charges added by '+esc(j.business)+' for this rental.</p>'+cr+'</div>';}var agree='';if(j.agreement){if(j.signed){agree='<div class=card><h2>Rental agreement</h2><p class=muted>Signed'+(j.signerName?(' by '+esc(j.signerName)):'')+' &mdash; thank you.</p></div>'}else{agree='<div class=card><h2>Rental agreement</h2><div style="max-height:170px;overflow:auto;font-size:12px;white-space:pre-wrap;border:1px solid rgba(0,0,0,.15);border-radius:8px;padding:10px;margin:8px 0;line-height:1.5">'+esc(j.agreement)+'</div><label style="font-size:12.5px;display:flex;gap:7px;align-items:flex-start;margin:8px 0"><input type=checkbox id=sgAgree style="margin-top:2px"> <span>I have read and agree to this rental agreement.</span></label><input id=sgName placeholder="Type your full legal name" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:2px 0 8px;font-size:14px"><button class=btn id=sgBtn onclick=sign()>Agree & sign</button><p class=muted style="font-size:11px;margin-top:8px">Your typed name is your electronic signature. We record your name, the date and time, your IP address, and a fingerprint of this exact agreement.</p></div>'}}var docsCard='<div class=card><h2>Documents</h2><a class="btn dlbtn" href="/api/portal/'+T+'/receipt" target="_blank">Download receipt</a>'+(j.signed?'<a class="btn dlbtn" href="/api/portal/'+T+'/agreement" target="_blank" style="margin-top:8px;background:#333">Download signed agreement</a>':'')+'</div>';var uploadCard=j.storage?('<div class=card><h2>Upload documents</h2><p class=muted style="font-size:12.5px">Share your ID or pickup / condition photos with the owner.</p><label class=upl>ID / license<input type=file accept="image/*,application/pdf" onchange="up(this,\\'id\\')"></label><label class=upl>Pickup / condition photos<input type=file accept="image/*" onchange="up(this,\\'condition\\')"></label><div id=uplist class=muted style="font-size:12px;margin-top:6px"></div></div>'):'';var reqCard='<div class=card><h2>Need changes?</h2><p class=muted style="font-size:12.5px">Request more time or an add-on. The owner confirms any change and price with you.</p><input id=extExtra placeholder="e.g. 3 more days, or a child seat" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;margin:4px 0;font-size:14px"><textarea id=extNote placeholder="Anything else? (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px"></textarea><button class=btn onclick=reqExt()>Send request</button><div id=extMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';var cp=j.commsPref||{};var prefsCard='<div class=card><h2>How should we reach you?</h2><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpEmail'+(cp.email!==false?' checked':'')+' style="margin-top:2px"> <span>Email me booking updates and receipts</span></label><label style="font-size:13px;display:flex;gap:8px;align-items:flex-start;margin:6px 0"><input type=checkbox id=cpSms'+(cp.sms?' checked':'')+' style="margin-top:2px"> <span>Text me (SMS) about this booking</span></label><p class=muted style="font-size:11px;line-height:1.5;margin:6px 0 8px">By checking &quot;Text me&quot; you agree to receive booking &amp; marketing text messages from '+esc(j.business)+' at the number on file. Msg &amp; data rates may apply. Reply STOP to opt out.</p><button class=btn id=cpBtn onclick=savePrefs()>Save preferences</button><div id=cpMsg class=muted style="font-size:12.5px;margin-top:6px"></div></div>';el('app').innerHTML='<div class=hd>'+esc(j.business)+'</div><div class=card><h2>Your booking</h2><p class=muted>Reference '+esc(j.ref)+' &middot; '+esc(j.status)+'</p>'+rows+'</div>'+agree+'<div class=card>'+pays+'</div>'+chargesCard+docsCard+uploadCard+reqCard+prefsCard+(function(){if(j.reviewed){return '<div class=card id=reviewCard><h2>Thank you!</h2><p class=muted>You left a '+(j.reviewRating||5)+'-star review.</p>'+(j.reviewReply?('<div style="margin-top:10px;padding:10px 12px;border-left:3px solid var(--brand);background:rgba(0,0,0,.04);border-radius:6px"><div style="font-weight:600;font-size:12.5px;margin-bottom:3px">Response from '+esc(j.business)+'</div><div class=muted style="font-size:13px;white-space:pre-wrap">'+esc(j.reviewReply)+'</div></div>'):'')+'</div>'}var _rs='';for(var _si=1;_si<=5;_si++){_rs+='<span id=rs'+_si+' onclick="setStar('+_si+')" style="color:#ccc;font-size:30px;cursor:pointer">&#9733;</span>'}return '<div class=card id=reviewCard><h2>How was it?</h2><p class=muted style="font-size:12.5px;margin:0 0 6px">Leave a quick review for '+esc(j.business)+'.</p><div>'+_rs+'</div><textarea id=rvText placeholder="Tell others about your experience (optional)" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid rgba(0,0,0,.2);border-radius:6px;min-height:52px;font-size:14px;margin-top:8px"></textarea><button class=btn id=rvBtn onclick=submitReview() style="margin-top:6px">Submit review</button></div>'})();renderUploads(j.uploads)}).catch(function(){el('app').innerHTML='<div class=card>Could not load your booking.</div>'})
 `;
   return _pageDoc('Your booking', color, body, js);
 }

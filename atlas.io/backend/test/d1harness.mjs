@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -386,6 +386,102 @@ if (sess) {
   ok('paypal: honest gating -> no connected PayPal, START returns no_paypal (never offered)', jNoPP && jNoPP.ok === false && jNoPP.reason === 'no_paypal', JSON.stringify(jNoPP));
 
   globalThis.fetch = _rfPP;
+}
+
+// ---- SQUARE money-path (BYO per-tenant, Payment Links / Orders v2), MIRRORS the PayPal test above: (a) the START route creates a
+// Square hosted checkout authenticating as the TENANT (Bearer Access Token) + posts the correct cents amount + location_id to the
+// SANDBOX base; (b) the return route verifies the order paid and CREDITS the booking -- revenue_cents += amount, d.paid[kind] carries
+// the Square payment id, status -> confirmed; (c) a SECOND return of the same order is IDEMPOTENT (no re-verify, revenue does NOT
+// double); (d) G5 -- a Square payment settling a cash-ESTIMATE booking (revenue_cents == quote total, no prior online pay) REPLACES
+// the estimate, it does not stack. All Square endpoints are mocked; globalThis.fetch is restored after. Never touches Stripe/PayPal.
+{
+  const envSQ = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envSQ);   // fresh DB -> full migration pass
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'sq@x.com', password: 'correcthorsebatterystaple', business: 'Square Co' } }), envSQ, ctx);
+  const tidSQ = envSQ.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sSQ = envSQ.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidSQ);
+  const HSQ = { cookie: 'atlas_sid=' + sSQ.id, 'x-csrf-token': sSQ.csrf };
+
+  // owner connects their OWN Square via the SAME encrypted /api/integrations/connect (Access Token -> secret_enc; location-id + sandbox -> meta)
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HSQ, body: { provider: 'square', secret: 'SQ_ACCESS_TOKEN_XYZ', meta: { location_id: 'LOCSQ123', sandbox: true } } }), envSQ, ctx);
+  const sqRow = envSQ.DB._db.prepare("SELECT secret_enc, meta FROM integrations WHERE tenant_id=? AND provider='square'").get(tidSQ);
+  ok('square: Access Token stored ENCRYPTED at rest (route encrypts; plaintext token never stored)', !!(sqRow && sqRow.secret_enc) && String(sqRow.secret_enc).indexOf('SQ_ACCESS_TOKEN_XYZ') < 0, 'row=' + JSON.stringify(sqRow && sqRow.meta));
+  ok('square: location-id + sandbox flag stored in meta (non-secret)', !!(sqRow && String(sqRow.meta).indexOf('LOCSQ123') >= 0 && /"sandbox":true/.test(String(sqRow.meta))), sqRow && sqRow.meta);
+
+  // status route reports a TRUTHFUL connected badge (no Access Token leaked)
+  let rStatSQ = await worker.fetch(mkReq('GET', '/api/integrations/square/status', { headers: HSQ }), envSQ, ctx);
+  let jStatSQ = await rStatSQ.json();
+  ok('square: /status -> connected:true, sandbox:true, last-4 hint, NO secret', jStatSQ && jStatSQ.ok === true && jStatSQ.connected === true && jStatSQ.sandbox === true && /123$/.test(String(jStatSQ.locHint || '')) && JSON.stringify(jStatSQ).indexOf('SQ_ACCESS_TOKEN_XYZ') < 0, JSON.stringify(jStatSQ));
+
+  // a booking with a portal token + a quote (deposit $200 of a $500 total); revenue starts at 0 (not an estimate yet). ends is FUTURE
+  // so the portal link is not treated as expired (the START route is a portal action; the expiry check runs before it).
+  const NOWSQ = Date.now();
+  await envSQ.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKSQ', tidSQ, 'C', 'A', NOWSQ, NOWSQ + 3 * 86400000, 'pending', 0, JSON.stringify({ asset: 'Model S', periods: 2, custEmail: 'cust@x.com', quote: { totalCents: 50000, depositCents: 20000 }, paid: {} }), 'SQTOKEN12345678', 1, 1000).run();
+
+  // mock the Square endpoints (create payment-link + get-order are distinct paths -- no ordering concern)
+  const _rfSQ = globalThis.fetch; let _capSQ = [];
+  const _respSQ = (obj) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => obj, text: async () => '' });
+  globalThis.fetch = (u, o) => {
+    const su = String(u); _capSQ.push({ url: su, opts: o || {} });
+    if (su.indexOf('/v2/online-checkout/payment-links') >= 0) return _respSQ({ payment_link: { id: 'PL-SQ1', version: 1, order_id: 'ORDER-SQ1', url: 'https://square.link/u/checkoutSQ1' } });
+    if (su.indexOf('/v2/orders/') >= 0) return _respSQ({ order: { id: 'ORDER-SQ1', location_id: 'LOCSQ123', state: 'COMPLETED', total_money: { amount: 20000, currency: 'USD' }, net_amount_due_money: { amount: 0, currency: 'USD' }, tenders: [{ id: 'TENDER-SQ1', type: 'CARD', amount_money: { amount: 20000, currency: 'USD' }, card_details: { status: 'CAPTURED' } }] } });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => '' });
+  };
+
+  // (a) START creates a Square checkout for the deposit; authenticates Bearer with the tenant's Access Token + posts the correct cents amount + location_id
+  _capSQ = [];
+  const rStartSQ = await worker.fetch(mkReq('POST', '/api/portal/SQTOKEN12345678/square', { body: { kind: 'deposit' } }), envSQ, ctx);
+  const jStartSQ = await rStartSQ.json();
+  ok('square(a): START -> hosted URL + order id (offered because Square is connected)', jStartSQ && jStartSQ.ok === true && String(jStartSQ.payUrl || '').indexOf('square.link') >= 0 && jStartSQ.orderId === 'ORDER-SQ1', JSON.stringify(jStartSQ).slice(0, 140));
+  const createReqSQ = _capSQ.find(c => c.url.indexOf('/v2/online-checkout/payment-links') >= 0);
+  ok('square(a): create authenticates as the TENANT (Bearer Access Token) + pinned Square-Version', !!createReqSQ && String((createReqSQ.opts.headers || {}).Authorization || '') === 'Bearer SQ_ACCESS_TOKEN_XYZ' && String((createReqSQ.opts.headers || {})['Square-Version'] || '') === '2024-07-17', createReqSQ && JSON.stringify(createReqSQ.opts.headers));
+  ok('square(a): create used the tenant SANDBOX base (meta.sandbox=true)', !!createReqSQ && createReqSQ.url.indexOf('connect.squareupsandbox.com') >= 0, createReqSQ && createReqSQ.url);
+  const createBodySQ = createReqSQ ? JSON.parse(createReqSQ.opts.body || '{}') : {};
+  ok('square(a): quick_pay amount 20000 (cents) + USD + tenant location_id', !!(createBodySQ.quick_pay && createBodySQ.quick_pay.price_money && createBodySQ.quick_pay.price_money.amount === 20000 && createBodySQ.quick_pay.price_money.currency === 'USD' && createBodySQ.quick_pay.location_id === 'LOCSQ123'), JSON.stringify(createBodySQ.quick_pay));
+  ok('square(a): redirect_url encodes the booking id + kind (so the return credits the right slot)', !!(createBodySQ.checkout_options && /[?&]bk=BKSQ(&|$)/.test(String(createBodySQ.checkout_options.redirect_url)) && /[?&]kind=deposit(&|$)/.test(String(createBodySQ.checkout_options.redirect_url))), createBodySQ.checkout_options && createBodySQ.checkout_options.redirect_url);
+
+  // (b) RETURN verifies the order + credits the booking (revenue += amount, d.paid.deposit carries the Square payment id, status confirmed).
+  // Square appends ?orderId=... to our redirect_url; our own pt/bk/kind params ride along (they were baked into redirect_url at create).
+  _capSQ = [];
+  const rRetSQ = await worker.fetch(mkReq('GET', '/api/square/return?pt=SQTOKEN12345678&bk=BKSQ&kind=deposit&orderId=ORDER-SQ1'), envSQ, ctx);
+  const bkSQ1 = envSQ.DB._db.prepare("SELECT revenue_cents,status,data FROM bookings WHERE id='BKSQ'").get();
+  const dSQ1 = JSON.parse(bkSQ1.data);
+  ok('square(b): return route 302-redirects back to the portal as paid', rRetSQ.status === 302 && String(rRetSQ.headers.get('Location') || '').indexOf('/api/portal/SQTOKEN12345678?paid=1') >= 0, 'status=' + rRetSQ.status + ' loc=' + rRetSQ.headers.get('Location'));
+  ok('square(b): payment recorded in d.paid.deposit with the Square payment id + amount + order', !!(dSQ1.paid && dSQ1.paid.deposit && dSQ1.paid.deposit.square === 'TENDER-SQ1' && dSQ1.paid.deposit.amountCents === 20000 && dSQ1.paid.deposit.order === 'ORDER-SQ1'), JSON.stringify(dSQ1.paid));
+  ok('square(b): revenue credited to 20000 + booking confirmed', Number(bkSQ1.revenue_cents) === 20000 && bkSQ1.status === 'confirmed' && dSQ1.status === 'Confirmed', 'rev=' + bkSQ1.revenue_cents + ' status=' + bkSQ1.status);
+
+  // (c) a SECOND return of the SAME order is idempotent: NO second get-order call, and revenue does NOT double
+  _capSQ = [];
+  const rRetSQ2 = await worker.fetch(mkReq('GET', '/api/square/return?pt=SQTOKEN12345678&bk=BKSQ&kind=deposit&orderId=ORDER-SQ1'), envSQ, ctx);
+  const bkSQ2 = envSQ.DB._db.prepare("SELECT revenue_cents FROM bookings WHERE id='BKSQ'").get();
+  const verified2 = _capSQ.find(c => c.url.indexOf('/v2/orders/') >= 0);
+  ok('square(c): duplicate return did NOT re-verify (order-level idempotency)', !verified2 && rRetSQ2.status === 302, 'reVerified=' + !!verified2 + ' status=' + rRetSQ2.status);
+  ok('square(c): duplicate return did NOT double revenue (still 20000, not 40000)', Number(bkSQ2.revenue_cents) === 20000, 'revenue_cents=' + bkSQ2.revenue_cents);
+
+  // credit-level idempotency: crediting the SAME payment id twice via _squareCreditBooking is a no-op the 2nd time (keyed on the payment id in d.paid)
+  const dupResSQ = await _squareCreditBooking(envSQ, tidSQ, 'BKSQ', 'deposit', 'TENDER-SQ1', 'ORDER-SQ1', 20000);
+  const bkSQ3 = envSQ.DB._db.prepare("SELECT revenue_cents FROM bookings WHERE id='BKSQ'").get();
+  ok('square(c): re-crediting the same payment id is a dup no-op (revenue unchanged)', dupResSQ.dup === true && dupResSQ.credited === false && Number(bkSQ3.revenue_cents) === 20000, 'dup=' + dupResSQ.dup + ' rev=' + bkSQ3.revenue_cents);
+
+  // (d) G5: a committed booking carrying a cash-ESTIMATE (revenue_cents == quote total, no prior online pay). A first Square payment
+  // SETTLES it -> REPLACE the estimate (revenue stays == the amount), never stack to double.
+  await envSQ.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKSQG5', tidSQ, 'C', 'A', 1, 2, 'confirmed', 50000, JSON.stringify({ asset: 'Model X', quote: { totalCents: 50000 }, paid: {} }), 'SQTOKENG5000000', 1, 1000).run();
+  const g5ResSQ = await _squareCreditBooking(envSQ, tidSQ, 'BKSQG5', 'square', 'PAY-G5', 'ORDER-G5', 50000);
+  const bkSQG5 = envSQ.DB._db.prepare("SELECT revenue_cents,status,data FROM bookings WHERE id='BKSQG5'").get();
+  const dSQG5 = JSON.parse(bkSQG5.data);
+  ok('square(d): G5 estimate REPLACED, not stacked (revenue stays 50000, not 100000)', g5ResSQ.credited === true && Number(bkSQG5.revenue_cents) === 50000, 'rev=' + bkSQG5.revenue_cents);
+  ok('square(d): the generic d.paid.square slot carries the payment id', !!(dSQG5.paid && dSQG5.paid.square && dSQG5.paid.square.square === 'PAY-G5' && dSQG5.paid.square.amountCents === 50000), JSON.stringify(dSQG5.paid));
+
+  // honest gating: a tenant with NO Square connected is never offered the option (the START route returns no_square)
+  await envSQ.DB.prepare("INSERT INTO tenants (id,name,created_at,updated_at) VALUES (?,?,?,?)").bind('TEN_NOSQ', 'No Square Co', 1, 1).run();
+  await envSQ.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKNOSQ', 'TEN_NOSQ', 'C', 'A', NOWSQ, NOWSQ + 3 * 86400000, 'pending', 0, JSON.stringify({ quote: { totalCents: 10000, depositCents: 5000 }, paid: {} }), 'NOSQTOKEN00000', 1, 1).run();
+  const rNoSQ = await worker.fetch(mkReq('POST', '/api/portal/NOSQTOKEN00000/square', { body: { kind: 'deposit' } }), envSQ, ctx);
+  const jNoSQ = await rNoSQ.json();
+  ok('square: honest gating -> no connected Square, START returns no_square (never offered)', jNoSQ && jNoSQ.ok === false && jNoSQ.reason === 'no_square', JSON.stringify(jNoSQ));
+
+  globalThis.fetch = _rfSQ;
 }
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise
