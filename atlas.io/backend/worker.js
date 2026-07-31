@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30n';
+const ATLAS_BUILD = '2026.07.30o';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -7557,7 +7557,7 @@ function doReset(){
         const to = vEmail(body.to) ? body.to : ctx.user.email;
         const t = await env.DB.prepare('SELECT name,brand FROM tenants WHERE id=?').bind(ctx.tenant_id).first();
         const pr = tenantProfile(t || { name: 'Atlas Rental.io' });
-        const r = await sendEmail(env, { to: to, fromName: pr.name, subject: (pr.name || 'Atlas Rental.io') + ' - test email',
+        const r = await sendEmail(env, { to: to, tenant: ctx.tenant_id, transactional: true, fromName: pr.name, subject: (pr.name || 'Atlas Rental.io') + ' - test email',
           html: _emailShell(pr, '<h2>It works.</h2><p>This is a live test from your Atlas Rental.io mailer. If you can read this, your customers will get booking confirmations and receipts automatically.</p>') });
         return json({ ok: r.sent, sent: r.sent, reason: r.reason, to: to });
       }

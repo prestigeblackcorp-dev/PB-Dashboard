@@ -2247,9 +2247,14 @@ const Atlas = (function(){
   ];
   function _defaultComms(){ return {
     mode:'managed', resendKey:'', resendVerified:false,
+    // Own-Resend connection state -- ALL non-secret. The raw key is NEVER stored here (it lives only in the transient
+    // _pendingResend until the /api/integrations/connect POST succeeds); we keep just a connected flag, the verified
+    // sending address, and a masked hint like 're_...1234'. resendKey stays only as a legacy field to migrate off of.
+    resendConnected:false, resendHint:'', resendFrom:'',
     fromName:'', replyTo:'', inboundForward:true,
     plan:'free', sentThisMonth:0,
-    sms:{ enabled:false, provider:'twilio', fromNumber:'', sentThisMonth:0 },   // TCPA: SMS only to customers who opted in; every text carries "Reply STOP"
+    // sms.sid + sms.connected are non-secret; the Twilio auth token is NEVER stored (transient _pendingSms.token only)
+    sms:{ enabled:false, provider:'twilio', fromNumber:'', sid:'', connected:false, sentThisMonth:0 },   // TCPA: SMS only to customers who opted in; every text carries "Reply STOP"
     business:{ address:'' },   // CAN-SPAM: a physical mailing address in every marketing email
     autos:{
       confirm:{ on:true, subject:'Your {asset} booking is confirmed', body:'Hi {name},\n\nYou are all set. Your booking for the {asset} on {dates} is confirmed.\n\nTotal: {total}\n\nView or manage your booking anytime: {link}\n\nSee you soon,\n{business}' },
@@ -2532,7 +2537,53 @@ const Atlas = (function(){
     save(); if(f==='mode')renderSet(); }
   function toggleAuto(k,on){ if(!_canMod('settings'))return; _comms().autos[k].on=!!on; save(); toast((_comms().autos[k].on?'On':'Off')+': '+(AUTO_META.filter(function(m){return m[0]===k;})[0]||['','email'])[1]); }
   function setAutoDays(k,v){ if(!_canMod('settings'))return; var n=Math.max(0,parseInt(v,10)||0); _comms().autos[k].days=n; save(); }
-  function verifyResendKey(){ if(!_canMod('settings'))return; var cm=_comms(); if(!/^re_/.test((cm.resendKey||'').trim())){ toast('Paste your Resend key (starts with re_)'); return; } cm.resendVerified=true; save(); renderSet(); toast(EMAIL_LIVE?'Resend connected \u2014 sending is live':'Resend key saved. Confirmation & receipt emails start sending once your Atlas backend mailer is live.'); }
+  // ---- Own email (Resend) + own SMS (Twilio) connection ----
+  // SECURITY: the raw Resend key and Twilio auth token live ONLY in these transient, in-memory vars -- just long enough
+  // to POST to /api/integrations/connect (the worker encrypts the secret at rest) -- then they are discarded. They are
+  // NEVER assigned into S.comms / anything save() persists, because S syncs to the cloud in cleartext. S.comms holds
+  // only non-secret state: connected flag, sid/from address, and a masked 're_...1234' hint.
+  var _pendingResend='', _pendingSms={};
+  function setPendingResend(v){ if(!_canMod('settings'))return; _pendingResend=(v||'').trim(); }
+  function setPendingSmsToken(v){ if(!_canMod('settings'))return; _pendingSms.token=(v||'').trim(); }
+  function verifyResendKey(){ if(!_canMod('settings'))return; var cm=_comms();
+    var key=(_pendingResend||'').trim(), from=(cm.resendFrom||'').trim();
+    if(!key && !cm.resendConnected){ toast('Paste your Resend key (it starts with re_)'); return; }
+    if(key && !/^re_/.test(key)){ toast('That does not look like a Resend key (it starts with re_)'); return; }
+    if(!from){ toast('Add the sending address verified in your Resend'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Connect your Atlas backend before verifying'); return; }
+    var testTo=(cm.replyTo||'').trim()||from;
+    // (c)+(d): only a real test send that returns sent:true marks the connection live.
+    var runTest=function(){ _api('/api/email/test',{method:'POST',body:{to:testTo}}).then(function(r2){ var t=r2.json||{};
+      if(t.sent){ cm.resendConnected=true; if(key) cm.resendHint='re_\u2026'+key.slice(-4); _pendingResend='';   // DISCARD the raw key
+        try{ delete cm.resendKey; }catch(e){}   // migrate any legacy cleartext key off S.comms for good
+        _logEvent('email','Own Resend verified + test email to '+testTo+' sent',{connected:true}); save(); renderSet();
+        toast('Resend connected \u2014 test email sent to '+testTo); }
+      else { toast('Not connected \u2014 test send failed: '+(t.reason||'check the key and sending address')); }   // do NOT mark connected
+    }).catch(function(){ toast('Could not reach the mail server to test'); }); };
+    toast('Verifying Resend\u2026');
+    if(key){ _api('/api/integrations/connect',{method:'POST',body:{provider:'resend', secret:key, meta:{from:from}}}).then(function(res){ var j=res.json||{};
+        if(res.status>=200&&res.status<300&&j.ok){ runTest(); }
+        else { toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to Resend'); }
+      }).catch(function(){ toast('Could not reach the server \u2014 try again'); }); }
+    else { runTest(); }   // already connected, no new key pasted -> just re-run the live test against the stored cred
+  }
+  function connectSms(){ if(!_canMod('settings'))return; var cm=_comms(); if(!cm.sms) cm.sms={};
+    var sid=(cm.sms.sid||'').trim(), token=(_pendingSms.token||'').trim(), from=(cm.sms.fromNumber||'').trim();
+    if(!sid){ toast('Add your Twilio Account SID'); return; }
+    if(!token){ toast('Paste your Twilio Auth Token'); return; }
+    if(!from){ toast('Add your SMS number first'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Connect your Atlas backend before verifying'); return; }
+    toast('Connecting to Twilio\u2026');
+    _api('/api/integrations/connect',{method:'POST',body:{provider:'twilio', secret:token, meta:{sid:sid, from:from}}}).then(function(res){ var j=res.json||{};
+      if(!(res.status>=200&&res.status<300&&j.ok)){ toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to Twilio'); return; }   // do NOT mark connected
+      _api('/api/sms/test',{method:'POST',body:{to:from}}).then(function(r2){ var t=r2.json||{};
+        if(t.sent){ cm.sms.connected=true; _pendingSms.token='';   // DISCARD the raw auth token
+          _logEvent('sms','Own Twilio verified + test text to '+from+' sent',{connected:true}); save(); renderSet();
+          toast('Twilio connected \u2014 test text sent to '+from); }
+        else { toast('Not connected \u2014 test text failed: '+(t.reason||'check the SID, token and number')); }   // do NOT mark connected
+      }).catch(function(){ toast('Could not reach the SMS server to test'); });
+    }).catch(function(){ toast('Could not reach the server \u2014 try again'); });
+  }
   function openEmailPlans(){ var cm=_comms();
     var html='<div class="modal__head"><h3>Email plans</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<p style="color:var(--muted);font-size:13.5px;margin:0 0 14px">Every plan includes automated emails and the builder. Pick the monthly volume you need.</p>';
@@ -7112,7 +7163,12 @@ const Atlas = (function(){
           <div style="margin-top:10px;color:var(--body)"><b style="color:var(--ink);font-weight:650">Currently disclosed:</b> ${_subProcessors().map(function(p){return esc(p.name);}).join(', ')}</div></div>
       </div>`+_legalDocsHtml();
     }
-    else if(setCur==='comms'){ var cm=_comms(); var plan=EMAIL_PLANS.filter(function(p){return p.id===cm.plan;})[0]||EMAIL_PLANS[0];
+    else if(setCur==='comms'){ var cm=_comms();
+      // MIGRATION: an older tenant may have a legacy cleartext cm.resendKey saved in the synced blob. Seed it into the
+      // transient _pendingResend once (only while empty + not yet connected) so the owner can Connect & test to move it
+      // off S.comms; a successful connect deletes cm.resendKey. Never copy it back the other way.
+      if(!cm.resendConnected && cm.resendKey && !_pendingResend){ _pendingResend=cm.resendKey; }
+      var plan=EMAIL_PLANS.filter(function(p){return p.id===cm.plan;})[0]||EMAIL_PLANS[0];
       var sub=(S.brand.subdomain||'yourcompany'); var usage=Math.min(100,Math.round(cm.sentThisMonth/Math.max(1,plan.cap)*100));
       var html='<div class="set-block"><h3>How your emails send</h3><div class="desc">Confirmations, reminders and broadcasts all go out from here.</div>'
         +'<div class="mode-pick">'
@@ -7131,10 +7187,11 @@ const Atlas = (function(){
           +'<div style="font-size:12px;color:var(--muted);margin-top:7px">'+(plan.price?('$'+plan.price+'/mo'):'Free')+' &middot; '+Math.max(0,plan.cap-cm.sentThisMonth).toLocaleString()+' left this month</div></div>'
         +'<button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.sendTestEmail(\'setup\')">Send myself a test email</button>';
       } else {
-        html+='<div class="field" style="margin-top:14px"><label>Resend API key</label><input class="input mono" value="'+esc(cm.resendKey)+'" placeholder="re_..." onchange="Atlas.setCommsField(\'resendKey\',this.value)"></div>'
+        html+='<div class="field" style="margin-top:14px"><label>Resend API key</label><input class="input mono" type="password" autocomplete="off" value="'+esc(_pendingResend)+'" placeholder="re_..." onchange="Atlas.setPendingResend(this.value)"></div>'
+          +'<div class="field"><label>Sending address <span style="color:var(--muted);font-weight:500;font-size:12px">&mdash; a domain or address verified in your Resend</span></label><input class="input" value="'+esc(cm.resendFrom||'')+'" placeholder="bookings@yourdomain.com" onchange="Atlas.setCommsField(\'resendFrom\',this.value)"></div>'
           +'<div class="field"><label>From name</label><input class="input" value="'+esc(cm.fromName||S.brand.name)+'" onchange="Atlas.setCommsField(\'fromName\',this.value)"></div>'
-          +'<div style="display:flex;gap:8px;align-items:center">'+(cm.resendVerified?(EMAIL_LIVE?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted"><span class="dot"></span>Key saved &middot; not live yet</span>'):'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.verifyResendKey()">Verify key</button></div>'
-          +'<div class="bk-lenhint" style="margin:10px 0 0">Billed by Resend directly &mdash; your volume, your account. Atlas just orchestrates.</div>';
+          +'<div style="display:flex;gap:8px;align-items:center">'+(cm.resendConnected?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.verifyResendKey()">Connect &amp; test</button></div>'
+          +(cm.resendConnected?('<div class="bk-lenhint" style="margin:10px 0 0">Sending on your own Resend'+(cm.resendHint?(' with key <b class="mono">'+esc(cm.resendHint)+'</b>'):'')+(cm.resendFrom?(' from <b>'+esc(cm.resendFrom)+'</b>'):'')+'. Paste a new key and Connect &amp; test to replace it.</div>'):'<div class="bk-lenhint" style="margin:10px 0 0">Paste your key and a verified sending address, then Connect &amp; test &mdash; Atlas stores the key encrypted and sends you a test email. Billed by Resend directly &mdash; your volume, your account.</div>');
       }
       html+='</div><div class="set-block"><h3>Automated emails</h3><div class="desc">Configure them here &mdash; they send automatically once email delivery is live on your account. Every one is editable.</div>'+(!EMAIL_LIVE?'<div class="bk-lenhint" style="margin:0 0 10px;color:var(--warn,#b45309)">Sending is not live yet &mdash; these turn on when your Atlas backend mailer is deployed (see go-live steps). Until then this is setup only; nothing is emailed.</div>':'');
       html+=AUTO_META.map(function(m){ var a=cm.autos[m[0]]; var metaLine;
@@ -7148,6 +7205,9 @@ const Atlas = (function(){
         +'<label class="cfg-check"><input type="checkbox" '+(cm.sms.enabled?'checked':'')+' onchange="Atlas.setCommsField(\'sms.enabled\',this.checked)">Enable SMS texts</label>'
         +'<div class="row2" style="margin-top:12px"><div class="field"><label>Provider</label><select class="select" onchange="Atlas.setCommsField(\'sms.provider\',this.value)">'+['twilio|Twilio','telnyx|Telnyx','messagebird|MessageBird'].map(function(o){var x=o.split('|');return '<option value="'+x[0]+'"'+(cm.sms.provider===x[0]?' selected':'')+'>'+x[1]+'</option>';}).join('')+'</select></div>'
           +'<div class="field"><label>Your SMS number</label><input class="input" value="'+esc(cm.sms.fromNumber)+'" placeholder="+1 555 123 4567" onchange="Atlas.setCommsField(\'sms.fromNumber\',this.value)"></div></div>'
+        +(cm.sms.provider==='twilio'?('<div class="row2" style="margin-top:12px"><div class="field"><label>Twilio Account SID</label><input class="input mono" value="'+esc(cm.sms.sid||'')+'" placeholder="AC..." onchange="Atlas.setCommsField(\'sms.sid\',this.value)"></div>'
+          +'<div class="field"><label>Twilio Auth Token</label><input class="input mono" type="password" autocomplete="off" value="'+esc(_pendingSms.token||'')+'" placeholder="Your Twilio auth token" onchange="Atlas.setPendingSmsToken(this.value)"></div></div>'
+          +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px">'+(cm.sms.connected?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.connectSms()">Connect &amp; test</button></div>'):'')
         +'<div class="bk-lenhint" style="margin:10px 0 0"><b style="color:var(--ink)">Compliance helpers (TCPA):</b> you can only text customers who opted in from their portal (time-stamped), and every template identifies you and ends with &ldquo;Reply STOP to opt out&rdquo;. Point your SMS number&rsquo;s inbound webhook at <code>atlasrental.io/api/sms/inbound</code> and STOP replies <b>auto-suppress</b> that number for good (START re-subscribes). You stay responsible for honoring opt-outs.</div>';
       html+='</div><div class="set-block"><h3>Sender details</h3><div class="desc">Required so your emails are compliant and land in the inbox.</div>'
         +'<div class="field"><label>Business mailing address</label><input class="input" value="'+esc((cm.business&&cm.business.address)||'')+'" placeholder="123 Main St, Suite 4, Austin, TX 78701" onchange="Atlas.setCommsField(\'business.address\',this.value)"></div>'
@@ -11185,7 +11245,7 @@ const Atlas = (function(){
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
-    setCommsMode,setCommsField,toggleAuto,setAutoDays,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
+    setCommsMode,setCommsField,setPendingResend,setPendingSmsToken,connectSms,toggleAuto,setAutoDays,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,drillReportRow,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTracker,connectTrackerLive,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,saveTrackerConn,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
