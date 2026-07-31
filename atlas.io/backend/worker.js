@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30u';
+const ATLAS_BUILD = '2026.07.30v';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2482,6 +2482,40 @@ function _trkExtract(list, paths, speedUnit) {
     return { deviceId: String(idv == null ? '' : idv), label: nm == null ? '' : String(nm), vin: vin == null ? '' : String(vin), lat: lat, lng: lng, heading: head, speed: sMph, ts: _trkTsIso(_dfirst(d, gp.ts || 'ts', ['timestamp', 'time', 'ts', 'updated', 'fixTime', 'dt_tracker', 'located_at', 'last_update', 'fix_time_gmt', 'gps.updated'])), address: addr == null ? '' : String(addr), moving: sMph > 1 };
   }).filter(function (p) { return p && isFinite(p.lat) && isFinite(p.lng); });
 }
+// Read a single Garmin inReach ExtendedData field: <Data name="X"><value>...</value></Data>. Returns '' if absent.
+function _kmlData(block, name) {
+  var re = new RegExp('<Data\\s+name="' + String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"\\s*>[\\s\\S]*?<value>\\s*([\\s\\S]*?)\\s*<\\/value>', 'i');
+  var m = String(block || '').match(re); return m ? m[1].trim() : '';
+}
+// Parse the NEWEST GPS point from a Garmin inReach MapShare "Raw KML" feed. Each track <Placemark> carries a <Point>
+// <coordinates>lon,lat[,elev]</coordinates>, a <when> ISO timestamp, and ExtendedData (Latitude/Longitude/Velocity(km/h)/
+// Course/Name/IMEI). We pick the placemark with the LATEST timestamp (order-independent) and PREFER the explicit
+// ExtendedData Latitude/Longitude values. Returns a position object, or null when there is no valid fix (never fabricated).
+function _inreachLatest(kml) {
+  var best = null, bestT = -1, pmRe = /<Placemark\b[\s\S]*?<\/Placemark>/g, pm;
+  while ((pm = pmRe.exec(String(kml || '')))) {
+    var block = pm[0];
+    var coordM = block.match(/<coordinates>\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)/);
+    if (!coordM) continue;   // a summary / track-line placemark with no Point is skipped
+    var lng = Number(coordM[1]), lat = Number(coordM[2]);
+    var latX = _kmlData(block, 'Latitude'), lngX = _kmlData(block, 'Longitude');
+    if (latX !== '' && isFinite(Number(latX))) lat = Number(latX);
+    if (lngX !== '' && isFinite(Number(lngX))) lng = Number(lngX);
+    if (!(isFinite(lat) && isFinite(lng))) continue;
+    var whenM = block.match(/<when>\s*([^<]+?)\s*<\/when>/), tuc = _kmlData(block, 'Time UTC') || _kmlData(block, 'Time');
+    var tsStr = whenM ? whenM[1] : tuc, t = Date.parse(tsStr || ''); if (!isFinite(t)) t = 0;
+    if (t >= bestT) {
+      bestT = t;
+      var vel = _kmlData(block, 'Velocity'), spKmh = vel ? (parseFloat(vel) || 0) : 0;   // "12.3 km/h"
+      var crs = _kmlData(block, 'Course');   // "45.00 degrees True" -> parseFloat leads with the number
+      var nm = _kmlData(block, 'Name') || _kmlData(block, 'Map Display Name');
+      if (!nm) { var nmM = block.match(/<name>\s*([^<]*?)\s*<\/name>/); nm = nmM ? nmM[1] : ''; }
+      var imei = _kmlData(block, 'IMEI') || _kmlData(block, 'Id');
+      best = { deviceId: String(imei || nm || ''), label: nm || '', vin: '', lat: lat, lng: lng, heading: crs ? (parseFloat(crs) || 0) : 0, speed: spKmh * 0.621371, ts: _trkTsIso(tsStr), address: '', moving: spKmh > 1 };
+    }
+  }
+  return best;
+}
 async function _trackerFetch(env, provider, cred, meta) {
   try {
     if (provider === 'bouncie') {
@@ -2619,6 +2653,62 @@ async function _trackerFetch(env, provider, cred, meta) {
       if (oj && !Array.isArray(oj) && (oj.code === 401 || oj.code === 403 || oj.code === 400)) return { ok: false, reason: 'auth' };
       return { ok: true, positions: _trkExtract(_trkResolveList(oj, ''), { lat: 'latest_device_point.lat', lng: 'latest_device_point.lng', heading: 'latest_device_point.angle', ts: 'latest_device_point.dt_tracker', name: 'display_name', id: 'device_id' }, (meta && meta.speedUnit) || 'mph') };
     }
+    if (provider === 'marinetraffic') {
+      // MarineTraffic AIS Data API -- Single Vessel Positions (PS01). cred = API key; meta.mmsi = the boat's MMSI(s) (comma/space
+      // separated). GET https://services.marinetraffic.com/api/exportvessel/<key>?v=6&protocol=jsono&mmsi=<MMSI> -> array of
+      // {MMSI,LAT,LON,SPEED(knots x10),COURSE,HEADING,TIMESTAMP,SHIPNAME}. HEADING 511 = "not available" -> fall back to COURSE. knots -> mph.
+      var mtKey = String(cred || '').trim(); if (!mtKey) return { ok: false, reason: 'auth' };
+      var mtIds = String((meta && meta.mmsi) || '').split(/[^0-9]+/).filter(function (x) { return x; });
+      if (!mtIds.length) return { ok: false, reason: 'no_mmsi' };
+      if (mtIds.length > 25) mtIds = mtIds.slice(0, 25);
+      var mtOut = [];
+      for (var mtI = 0; mtI < mtIds.length; mtI++) {
+        try {
+          var mtR = await _fetchTimeout('https://services.marinetraffic.com/api/exportvessel/' + encodeURIComponent(mtKey) + '?v=6&protocol=jsono&mmsi=' + encodeURIComponent(mtIds[mtI]), {}, 12000);
+          var mtJ = await mtR.json().catch(function () { return null; });
+          var mtRows = Array.isArray(mtJ) ? mtJ : ((mtJ && (mtJ.data || mtJ.DATA)) || []); if (!Array.isArray(mtRows)) continue;
+          mtRows.forEach(function (v) {
+            var lat = Number(v.LAT), lng = Number(v.LON); if (!(isFinite(lat) && isFinite(lng))) return;
+            var kn = (Number(v.SPEED) || 0) / 10, hd = Number(v.HEADING); if (!(hd >= 0 && hd < 360)) hd = Number(v.COURSE) || 0;
+            mtOut.push({ deviceId: String(v.MMSI || mtIds[mtI]), label: v.SHIPNAME || ('MMSI ' + (v.MMSI || mtIds[mtI])), vin: '', lat: lat, lng: lng, heading: hd, speed: kn * 1.15078, ts: _trkTsIso(v.TIMESTAMP), address: '', moving: kn > 0.5 });
+          });
+        } catch (e) {}
+      }
+      return { ok: true, positions: mtOut };
+    }
+    if (provider === 'trackunit') {
+      // Trackunit Iris Location API (construction / heavy-equipment telematics). cred = API key (Trackunit Manager > Administration
+      // > API Access), sent as 'Authorization: Bearer <key>'. Fixed host. GET /api/location/v1/locations -> GeoJSON FeatureCollection;
+      // each feature .geometry.coordinates = [lng, lat, (alt)] and .properties carries asset id/name/time. A feature with no finite lat/lng is DROPPED.
+      var tuR = await _fetchTimeout('https://iris.trackunit.com/api/location/v1/locations', { headers: { 'Authorization': 'Bearer ' + (cred || ''), 'Accept': 'application/json' } }, 12000);
+      var tuJ = await tuR.json().catch(function () { return null; }); if (tuJ == null) return { ok: false, reason: 'shape' };
+      var tuFeats = (tuJ && Array.isArray(tuJ.features)) ? tuJ.features : (Array.isArray(tuJ) ? tuJ : ((tuJ && tuJ.data) || []));
+      if (!Array.isArray(tuFeats)) return { ok: false, reason: (tuJ && (tuJ.error || tuJ.message)) ? 'auth' : 'shape' };
+      return { ok: true, positions: tuFeats.map(function (f) {
+        var g = (f && f.geometry) || {}, c = (g && g.coordinates) || [], p = (f && f.properties) || {}, sp = Number(p.speed) || 0;
+        return { deviceId: String(p.assetId || p.id || (f && f.id) || ''), label: p.name || p.assetName || '', vin: '', lat: Number(c[1]), lng: Number(c[0]), heading: Number(p.heading || p.direction || p.course) || 0, speed: sp, ts: _trkTsIso(p.time || p.timestamp || p.lastUpdated || p.locationTime || (f && f.time)), address: p.address || '', moving: sp > 1 };
+      }).filter(function (pt) { return isFinite(pt.lat) && isFinite(pt.lng); }) };
+    }
+    if (provider === 'garmininreach') {
+      // Garmin inReach MapShare "Raw KML" location feed (satellite messenger -- boats, RVs, remote assets). meta.shareUrl = the
+      // per-device feed URL(s) (share.garmin.com / *.inreach.garmin.com / *.explore.garmin.com); cred = the optional feed password
+      // (HTTP Basic, blank username). No public JSON API -- we fetch the KML and parse the newest Point. Only Garmin hosts are followed.
+      var giUrls = String((meta && (meta.shareUrl || meta.host)) || '').split(/[\s,]+/).filter(function (x) { return x; });
+      if (!giUrls.length) return { ok: false, reason: 'no_share_url' };
+      if (giUrls.length > 25) giUrls = giUrls.slice(0, 25);
+      var giPass = (cred && cred !== 'none') ? String(cred) : '', giOut = [];
+      for (var giI = 0; giI < giUrls.length; giI++) {
+        try {
+          var giHost = _trkSafeHost(giUrls[giI]); if (!giHost.ok) continue;
+          if (!/(^|\.)garmin\.com$/.test(giHost.hostname)) continue;   // dedicated Garmin block only follows Garmin MapShare hosts
+          var giHeaders = {}; if (giPass) giHeaders['Authorization'] = 'Basic ' + btoa(':' + giPass);   // inReach feed password: Basic auth, empty username
+          var giR = await _fetchTimeout(giUrls[giI], { headers: giHeaders }, 12000);
+          var giKml = await giR.text().catch(function () { return ''; }); if (!giKml) continue;
+          var giPos = _inreachLatest(giKml); if (giPos) giOut.push(giPos);
+        } catch (e) {}
+      }
+      return { ok: true, positions: giOut };
+    }
     // ===== Universal REST GPS connector (mechanism #1): makes ANY REST platform real. The tenant supplies meta.api_url + an
     // auth spec (meta.auth) + JSON dot-paths (meta.paths); the token lives in cred (encrypted). We fetch THEIR endpoint
     // (SSRF-guarded on the host, original path+query preserved) and extract positions via the configured paths -- nothing
@@ -2642,7 +2732,8 @@ async function _trackerFetch(env, provider, cred, meta) {
 // ONLY these. Includes 'generic' -- the universal connector -- so any REST GPS platform a tenant configures is polled for
 // REAL too; a brand with no real path is simply never in this list, so it is NEVER fed a fabricated position. Keep in sync
 // with _trackerFetch + the client TRK_LIVE / TRK_CONN maps. (The original 6 blocks are byte-unchanged; the rest are additive.)
-const TRK_PROVIDERS = ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi', 'wialon', 'navixy', 'motive', 'webfleet', 'zubie', 'azuga', 'onestepgps', 'generic'];
+// Marine/equipment additions (marinetraffic/trackunit/garmininreach) are keyed per-asset (MMSI / share URL) or fleet-level like Samsara.
+const TRK_PROVIDERS = ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi', 'wialon', 'navixy', 'motive', 'webfleet', 'zubie', 'azuga', 'onestepgps', 'marinetraffic', 'trackunit', 'garmininreach', 'generic'];
 
 // #206 validate + price a promo code at the PUBLIC customer checkout (server-authoritative, from the owner's published promos).
 // Mirrors the dashboard's _validatePromo rules; anonymous visitors can never redeem a personal/loyalty coupon.

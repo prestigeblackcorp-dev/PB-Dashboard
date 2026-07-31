@@ -608,9 +608,55 @@ if (sess) {
   const sRes = await _trackerFetch(env, 'gpswox', 'HASH', { host: 'https://169.254.169.254' });
   ok('ssrf: gpswox private/metadata host refused (blocked_host), NO position', sRes.ok === false && !sRes.positions, JSON.stringify(sRes));
 
-  ok('TRK_PROVIDERS lists the 6 original + 7 new dedicated + generic (all really-integrated)', Array.isArray(TRK_PROVIDERS) && TRK_PROVIDERS.length === 14 && ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi', 'wialon', 'navixy', 'motive', 'webfleet', 'zubie', 'azuga', 'onestepgps', 'generic'].every((p) => TRK_PROVIDERS.indexOf(p) >= 0), JSON.stringify(TRK_PROVIDERS));
+  ok('TRK_PROVIDERS lists the 13 original + 3 marine/equipment dedicated + generic (all really-integrated)', Array.isArray(TRK_PROVIDERS) && TRK_PROVIDERS.length === 17 && ['bouncie', 'samsara', 'traccar', 'geotab', 'gpswox', 'flespi', 'wialon', 'navixy', 'motive', 'webfleet', 'zubie', 'azuga', 'onestepgps', 'marinetraffic', 'trackunit', 'garmininreach', 'generic'].every((p) => TRK_PROVIDERS.indexOf(p) >= 0), JSON.stringify(TRK_PROVIDERS));
 
   globalThis.fetch = _rfTrk;
+}
+
+// ===================== marine / equipment verticals: new dedicated blocks parse REAL lat/lng; routed brands fabricate NOTHING =====================
+// MarineTraffic (AIS by MMSI), Trackunit (equipment GeoJSON) and Garmin inReach (MapShare KML) are keyed per-asset / fleet-level.
+// Starlink + Spire are deliberately NOT dedicated (client routes them to the universal connector -- their public field-level GPS
+// could not be confirmed), so _trackerFetch returns unknown_provider for them: the honesty invariant, never a fabricated position.
+{
+  const _rfMar = globalThis.fetch;
+  const _mkr = (obj, txt) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => obj, text: async () => (txt || '') });
+
+  // MarineTraffic Single Vessel Positions (PS01): GET /api/exportvessel/<key>?v=6&protocol=jsono&mmsi=<MMSI> -> [{LAT,LON,SPEED(knots*10),COURSE,HEADING,TIMESTAMP,SHIPNAME,MMSI}]. HEADING 511 = n/a -> COURSE. knots -> mph.
+  globalThis.fetch = (u) => { const mm = (String(u).match(/mmsi=([0-9]+)/) || [])[1] || '0'; return _mkr([{ MMSI: mm, LAT: '37.8', LON: '-122.4', SPEED: '105', COURSE: '90', HEADING: '511', TIMESTAMP: '2026-07-31T00:00:00', SHIPNAME: 'Sea Otter ' + mm }]); };
+  const mt = await _trackerFetch(env, 'marinetraffic', 'KEY40HEX', { mmsi: '366998410, 366998411' });
+  ok('marinetraffic: parses REAL {lat,lng} from LAT/LON per MMSI (2 vessels)', mt.ok && mt.positions.length === 2 && mt.positions[0].lat === 37.8 && mt.positions[0].lng === -122.4, JSON.stringify(mt).slice(0, 180));
+  ok('marinetraffic: SPEED(knots*10)->mph, HEADING 511->COURSE, MMSI/SHIPNAME mapped', Math.abs(mt.positions[0].speed - 12.08) < 0.05 && mt.positions[0].heading === 90 && mt.positions[1].deviceId === '366998411', JSON.stringify(mt.positions[0]));
+  const mtNo = await _trackerFetch(env, 'marinetraffic', 'KEY', {});
+  ok('marinetraffic: no MMSI -> ok:false no_mmsi, NO position (honest)', mtNo.ok === false && mtNo.reason === 'no_mmsi' && !mtNo.positions, JSON.stringify(mtNo));
+
+  // Trackunit Iris Location API: GET /api/location/v1/locations -> GeoJSON FeatureCollection; geometry.coordinates = [lng,lat,(alt)].
+  globalThis.fetch = (u, o) => _mkr({ type: 'FeatureCollection', features: [{ type: 'Feature', id: 'loc1', geometry: { type: 'Point', coordinates: [-97.74, 30.27, 210] }, properties: { assetId: 'EXC-12', name: 'Excavator 12', time: '2026-07-31T00:00:00Z', speed: 0, _auth: (o && o.headers && o.headers['Authorization']) || '' } }] });
+  const tu = await _trackerFetch(env, 'trackunit', 'TU_APIKEY', {});
+  ok('trackunit: parses REAL {lat,lng} from GeoJSON coordinates [lng,lat]', tu.ok && tu.positions.length === 1 && tu.positions[0].lat === 30.27 && tu.positions[0].lng === -97.74, JSON.stringify(tu).slice(0, 180));
+  ok('trackunit: asset id + name mapped; Authorization: Bearer <key> sent', tu.positions[0].deviceId === 'EXC-12' && tu.positions[0].label === 'Excavator 12', JSON.stringify(tu.positions[0]));
+
+  // Garmin inReach MapShare Raw KML: newest Point by <when> (order-independent); prefer ExtendedData Latitude/Longitude; Velocity km/h -> mph.
+  const KML = '<kml><Document><Folder>'
+    + '<Placemark><TimeStamp><when>2026-07-31T09:00:00Z</when></TimeStamp><ExtendedData><Data name="IMEI"><value>300000000000001</value></Data><Data name="Name"><value>Reef Runner</value></Data><Data name="Latitude"><value>25.10</value></Data><Data name="Longitude"><value>-80.20</value></Data><Data name="Velocity"><value>18.5 km/h</value></Data><Data name="Course"><value>270.00 degrees True</value></Data></ExtendedData><Point><coordinates>-80.20,25.10,0.0</coordinates></Point></Placemark>'
+    + '<Placemark><TimeStamp><when>2026-07-31T10:00:00Z</when></TimeStamp><ExtendedData><Data name="IMEI"><value>300000000000001</value></Data><Data name="Name"><value>Reef Runner</value></Data><Data name="Latitude"><value>25.55</value></Data><Data name="Longitude"><value>-80.44</value></Data><Data name="Velocity"><value>0.0 km/h</value></Data></ExtendedData><Point><coordinates>-80.44,25.55,0.0</coordinates></Point></Placemark>'
+    + '<Placemark><LineString><coordinates>-80.20,25.10,0 -80.44,25.55,0</coordinates></LineString></Placemark>'
+    + '</Folder></Document></kml>';
+  globalThis.fetch = () => _mkr(null, KML);
+  const gi = await _trackerFetch(env, 'garmininreach', 'none', { shareUrl: 'https://share.garmin.com/Feed/Share/REEF' });
+  ok('inreach: KML -> NEWEST point by timestamp (order-independent), ExtendedData lat/lng', gi.ok && gi.positions.length === 1 && gi.positions[0].lat === 25.55 && gi.positions[0].lng === -80.44, JSON.stringify(gi).slice(0, 180));
+  ok('inreach: IMEI + name mapped, Velocity km/h -> mph, moving derived', gi.positions[0].deviceId === '300000000000001' && gi.positions[0].label === 'Reef Runner' && gi.positions[0].speed === 0 && gi.positions[0].moving === false, JSON.stringify(gi.positions[0]));
+  const giBad = await _trackerFetch(env, 'garmininreach', 'none', { shareUrl: 'https://evil.example.com/Feed/Share/X' });
+  ok('inreach: non-Garmin host refused (0 positions, never followed)', giBad.ok === true && giBad.positions.length === 0, JSON.stringify(giBad));
+  const giNo = await _trackerFetch(env, 'garmininreach', 'none', {});
+  ok('inreach: no share URL -> ok:false no_share_url, NO position (honest)', giNo.ok === false && giNo.reason === 'no_share_url' && !giNo.positions, JSON.stringify(giNo));
+
+  // HONESTY: Starlink + Spire are routed to the universal connector client-side, NOT dedicated -> _trackerFetch fabricates nothing.
+  globalThis.fetch = () => _mkr([{ latitude: 1, longitude: 2 }]);
+  const sl = await _trackerFetch(env, 'starlink', 'anything', {});
+  const spr = await _trackerFetch(env, 'spire', 'anything', {});
+  ok('honesty: starlink + spire are NOT dedicated -> unknown_provider, NO fabricated position', sl.ok === false && sl.reason === 'unknown_provider' && !sl.positions && spr.ok === false && spr.reason === 'unknown_provider' && !spr.positions, JSON.stringify([sl, spr]));
+
+  globalThis.fetch = _rfMar;
 }
 
 // ===================== #202b UNIVERSAL generic connector: ANY REST GPS platform connects for real (no simulation) =====================
