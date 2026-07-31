@@ -120,6 +120,7 @@
   .badge-in-progress{background:rgba(59,130,246,.15);color:var(--blue);}
   .badge-completed{background:rgba(107,114,128,.2);color:var(--gray);}
   .badge-cancelled{background:rgba(239,68,68,.15);color:var(--red);}
+  .badge-voided{background:rgba(239,68,68,.22);color:#ff6b6b;}
   .badge-active{background:rgba(34,197,94,.15);color:var(--green);}
   .badge-expired{background:rgba(239,68,68,.15);color:var(--red);}
   .booking-meta{font-size:13px;color:var(--text-muted);margin-bottom:4px;}
@@ -2246,10 +2247,21 @@ function renderAll(){
 
 // --- Bookings --------------------------------------------------------------
 function statusBadge(status){
-  const map={'pending':'pending','confirmed':'confirmed','in-progress':'in-progress','in_progress':'in-progress','completed':'completed','cancelled':'cancelled','active':'in-progress'};
+  const map={'pending':'pending','confirmed':'confirmed','in-progress':'in-progress','in_progress':'in-progress','completed':'completed','cancelled':'cancelled','voided':'voided','active':'in-progress'};
   const cls = map[(status||'').toLowerCase()]||'pending';
-  const labels={'pending':'PENDING','confirmed':'CONFIRMED','in-progress':'IN PROGRESS','completed':'COMPLETED','cancelled':'CANCELLED'};
+  const labels={'pending':'PENDING','confirmed':'CONFIRMED','in-progress':'IN PROGRESS','completed':'COMPLETED','cancelled':'CANCELLED','voided':'VOIDED'};
   return `<span class="badge badge-${cls}">${labels[cls]||status.toUpperCase()}</span>`;
+}
+// #void: banner shown to the renter when their contract was terminated early. Reassures that docs/photos/videos
+// stay available (nothing deleted) + shows the owner's reason + that the trip is over.
+function _voidBanner(b){
+  if(!b || (b.status||'').toLowerCase()!=='voided') return '';
+  var reason = b.voidReason ? esc(String(b.voidReason)) : '';
+  return '<div style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);border-radius:10px;padding:12px 14px;margin:12px 0 2px;font-size:12.5px;line-height:1.6;color:#ffb4b4">'
+    +'<div style="font-weight:800;letter-spacing:.03em;color:#ff6b6b;margin-bottom:5px">&#9940; CONTRACT VOIDED &mdash; TRIP TERMINATED EARLY</div>'
+    +'This rental agreement was terminated by Prestige Black Rentals and the trip is over. Your documents, photos and videos remain available below for your records.'
+    +(reason ? ('<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(239,68,68,.25)"><b style="color:#ff8a8a">Reason:</b> '+reason+'</div>') : '')
+    +'</div>';
 }
 
 function progressBar(status){
@@ -2360,7 +2372,7 @@ function _vidRow(bookingId, vid, who){
 }
 function showCondition(booking){
   const s = (booking.status||'').toLowerCase();
-  if(!['confirmed','in-progress','in_progress','active','completed'].includes(s)) return '';
+  if(!['confirmed','in-progress','in_progress','active','completed','voided'].includes(s)) return '';   // #void: a voided trip still shows the renter their photos/videos/condition (nothing hidden)
   const owner = _ownerPhotos[booking.id]||{};
   if(!_ownerPhotos[booking.id]) setTimeout(()=>_loadOwnerPhotos(booking.id),0);
   const preOwner = owner.checkIn||[];
@@ -2579,7 +2591,7 @@ function showAddUnlimited(b){
   // unlimited (unlimitedRate>0), and only if not already on. Auto-adds the fee to the balance.
   var rate = Number(b.unlimitedRate)||0;
   var signed = b.customerSig && String(b.customerSig).startsWith('data:image/');
-  if(rate<=0 || signed || Number(b.unlimited)>0 || ['cancelled','completed'].includes((b.status||'').toLowerCase())) return '';
+  if(rate<=0 || signed || Number(b.unlimited)>0 || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
   var days = Math.max(1, Number(b.days)||1);
   var fee = Math.round(rate*days*100)/100;
   return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
@@ -2622,7 +2634,7 @@ async function addUnlimited(bookingId){
 
 function showPayBalance(b){
   const bal = Number(b.remainingBalance) || 0;
-  if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed'].includes((b.status||'').toLowerCase())) return '';
+  if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
   const total = Math.round((bal + fee + tax) * 100) / 100;
@@ -2990,6 +3002,7 @@ function renderBookings(){
         </div>
         ${statusBadge(b.status||'pending')}
       </div>
+      ${_voidBanner(b)}
       <div class="booking-meta">${priceStr?`<span>${priceStr}</span> &nbsp;\u00B7&nbsp; `:''}${bookingRef(b.id)}</div>
       ${progressBar(b.status)}
       ${showSignContract(b)}

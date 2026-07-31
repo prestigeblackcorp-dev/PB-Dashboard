@@ -2803,8 +2803,45 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       <button class="btn" id="bdContractBtn" onclick="">&#128221; Contract</button>
       <button class="btn btn-sm" id="bdExtensionBtn" onclick="" style="display:none;border-color:rgba(167,139,250,.5);color:#a78bfa">&#128197; Extension</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">&#9999; Edit</button>
+      <button class="btn btn-sm" id="bdVoidBtn" onclick="" style="display:none;border-color:rgba(239,68,68,.55);color:#fff;background:rgba(239,68,68,.8)">&#9940; Void</button>
+      <button class="btn btn-sm" id="bdVoidReportBtn" onclick="" style="display:none;border-color:rgba(239,68,68,.4);color:#f87171">&#128196; Void Report</button>
+      <button class="btn btn-sm" id="bdUnvoidBtn" onclick="" style="display:none;border-color:rgba(201,169,98,.4);color:var(--gold)">&#8617; Un-void</button>
       <button class="btn btn-sm" id="bdBlacklistBtn" onclick="" style="border-color:rgba(239,68,68,.4);color:#f87171">&#9940; Blacklist</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- VOID / EARLY-TERMINATION MODAL -->
+<div class="modal" id="voidModal">
+  <div class="modal-bg" onclick="closeVoidModal()"></div>
+  <div class="modal-card" style="max-width:480px">
+    <div class="modal-title">
+      <span>&#9940; Void Contract / Terminate Early</span>
+      <button class="modal-close" onclick="closeVoidModal()">&#10005;</button>
+    </div>
+    <div id="voidSummary" style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.7;color:#f5b5b5"></div>
+    <div class="fgrid">
+      <div class="fgroup ffull">
+        <div class="flabel">Why / how was the contract voided? <span style="color:var(--red)">*</span></div>
+        <textarea class="finput" id="voidReason" placeholder="e.g. Renter took the vehicle out of state against the agreement and stopped responding; vehicle recovered." style="resize:vertical;min-height:88px"></textarea>
+        <div class="fhint">Recorded on the trip and printed on the legal termination report.</div>
+      </div>
+      <div class="fgroup ffull">
+        <div class="flabel">Deposit kept ($) &#8212; non-refundable</div>
+        <input type="number" class="finput" id="voidKept" min="0" step="1" value="0">
+        <div class="fhint">Defaults to the full deposit on file. Kept deposit + trip earnings count toward revenue.</div>
+      </div>
+      <div class="fgroup ffull">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;color:var(--text)"><input type="checkbox" id="voidBlacklist" style="width:16px;height:16px;flex:0 0 auto"> &#9940; Also blacklist this renter</label>
+      </div>
+    </div>
+    <div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:11px 14px;margin:4px 0 16px;font-size:12px;line-height:1.7;color:var(--text-muted)">
+      On void: trip earnings + deposit are <b style="color:var(--text)">kept as revenue</b> &#183; the vehicle is <b style="color:var(--text)">released today</b> &#183; the trip files under <b style="color:var(--text)">Previous</b> as <b style="color:var(--text)">Voided</b> &#183; <b style="color:var(--text)">nothing is deleted</b> (contract, photos, videos, signature stay) &#183; it is <b style="color:var(--text)">reversible</b>.
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn" onclick="closeVoidModal()">Cancel</button>
+      <button class="btn btn-sm" style="border-color:rgba(239,68,68,.6);color:#fff;background:rgba(239,68,68,.85)" onclick="confirmVoid()">&#9940; Void Contract</button>
     </div>
   </div>
 </div>
@@ -4751,8 +4788,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v287';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v289';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v288';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v290';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -10210,7 +10247,7 @@ function renderBookingsTable(filtered){
 function renderUpcoming(){
   var today=todayStr();
   var upcoming=bookings.filter(function(b){
-    if(b._deleted||b.status==='cancelled'||b.status==='completed') return false;
+    if(b._deleted||b.status==='cancelled'||b.status==='completed'||b.status==='voided') return false;   // #void: voided is not upcoming
     if(_bkGateHidden(b)) return false;
     var start=normDateStr(b.pickupDate||b.date);
     if(!start) return false;
@@ -11328,7 +11365,7 @@ function _popTabAssignBookings(){
   var tod=(typeof todayStr==='function')?todayStr():'';
   var list=((typeof bookings!=='undefined'&&bookings)?bookings:[]).filter(function(b){
     if(!b||b._deleted) return false;
-    if(b.status==='cancelled'||b.status==='completed') return false;
+    if(b.status==='cancelled'||b.status==='completed'||b.status==='voided') return false;   // #void: not assignable
     var isCh=(b.type==='chauffeur'), isEv=(b.isEvent||b.type==='event');
     if(!isCh&&!isEv) return false;
     var end=(typeof tripEndDate==='function'?tripEndDate(b):'')||b.dropoffDate||b.pickupDate||b.date||'';
@@ -11641,7 +11678,7 @@ function renderPrevious(){
     if(b._deleted) return false;
     if(_bkGateHidden(b)) return false;
     if(b.status==='cancelled') return false;
-    if(b.status==='completed') return true; // completed always files into Previous
+    if(b.status==='completed'||b.status==='voided') return true; // completed/voided always file into Previous
     // Un-completed trips stay in CURRENT (flagged "Awaiting completion") through their whole
     // end day \u2014 they never bounce out at drop-off time. Only once a trip rolls fully past its
     // end day does it file here, so nothing ever disappears. (Mutually exclusive with isCurrentTrip.)
@@ -11994,6 +12031,8 @@ function tripCard(b, showCountdown){
       statusBtn+
       dupBtn+
       reviewToggle+
+      (b.status!=='cancelled'&&b.status!=='voided'&&_voidEnabled()?'<button class="btn btn-sm" style="border-color:rgba(239,68,68,.55);color:#fff;background:rgba(239,68,68,.8)" onclick="openVoidModal(\''+b.id+'\')">\u26d4 Void</button>':'')+
+      (b.status==='voided'?'<button class="btn btn-sm" style="border-color:rgba(239,68,68,.4);color:#f87171" onclick="_genVoidLegalReport(\''+b.id+'\')">\ud83d\udcc4 Void Report</button>':'')+
       (b.status!=='cancelled'?'<button class="btn btn-sm" style="border-color:rgba(255,92,92,.5);color:var(--red)" onclick="cancelTripCard(\''+b.id+'\')">\u2715 Cancel</button>':'')+
     '</div>'+
     '</div>';
@@ -12022,7 +12061,7 @@ function tripReturnMs(b){
   return 0; // no return time known \u2014 stay in Current until midnight
 }
 function isCurrentTrip(b){
-  if(b.status==='cancelled'||b.status==='completed') return false;
+  if(b.status==='cancelled'||b.status==='completed'||b.status==='voided') return false;   // #void: a voided/terminated trip is no longer current -> frees the vehicle same day
   var today=todayStr();
   var start=normDateStr(b.pickupDate||b.date);
   var end=tripEndDate(b);
@@ -12043,7 +12082,7 @@ function isCurrentTrip(b){
 }
 // A started, not-yet-completed trip whose drop-off/return time has already passed.
 function tripIsOverdue(b){
-  if(!b||b.status==='completed'||b.status==='cancelled') return false;
+  if(!b||b.status==='completed'||b.status==='cancelled'||b.status==='voided') return false;   // #void: a voided trip is over, never overdue
   var today=todayStr();
   var end=tripEndDate(b);
   if(!end) return false;
@@ -12146,6 +12185,11 @@ function openBookingDetail(id){
   if(!b) return;
   $d('bdTitle').textContent=b.vehicle+' \u2014 '+b.name;
   $d('bdEditBtn').onclick=function(){ closeBookingDetail(); openModal(b.id); };
+  (function(){ var _vd=(b.status==='voided'), _vOn=_voidEnabled();   // #void: status-aware action buttons
+    var _vb=$d('bdVoidBtn'); if(_vb){ _vb.style.display=(_vOn&&!_vd&&b.status!=='cancelled')?'':'none'; _vb.onclick=function(){ openVoidModal(b.id); }; }
+    var _vr=$d('bdVoidReportBtn'); if(_vr){ _vr.style.display=_vd?'':'none'; _vr.onclick=function(){ _genVoidLegalReport(b.id); }; }
+    var _vu=$d('bdUnvoidBtn'); if(_vu){ _vu.style.display=_vd?'':'none'; _vu.onclick=function(){ unvoidTrip(b.id); closeBookingDetail(); }; }
+  })();
   $d('bdInvoiceBtn').onclick=function(){ generateInvoice(b.id); };
   var bdContractBtn=$d('bdContractBtn');
   if(bdContractBtn){
@@ -16842,7 +16886,7 @@ function renderTodayBanner(){
     return ta<tb?-1:ta>tb?1:0;
   });
   var returns=bookings.filter(function(b){
-    return !b._deleted && !_bkGateHidden(b) && b.status!=='cancelled' && b.status!=='completed' &&
+    return !b._deleted && !_bkGateHidden(b) && b.status!=='cancelled' && b.status!=='completed' && b.status!=='voided' &&
            (b.pickupDate||b.date||'')!==today && // not a pickup today
            tripEndDate(b)===today; // ends today (works for hourly, daily, chauffeur)
   }).sort(function(a,b){
@@ -17864,6 +17908,129 @@ function markTripComplete(id){
   toast('\u2705 '+(b.name||'Trip')+' completed \u2014 now under Previous.');
 }
 
+// \u2550\u2550\u2550 VOID / EARLY TERMINATION \u2014 contract broken: terminate, KEEP earnings+deposit as revenue,
+// free the vehicle SAME DAY, legal record, optional blacklist. Additive + fully reversible (nothing deleted). \u2550\u2550\u2550
+function _voidEnabled(){ try{ return (window.PB_FLAGS||{}).voidContract!==false; }catch(e){ return true; } }   // default ON; kill-switch: PB_FLAGS.voidContract=false
+var _voidId=null;
+function openVoidModal(id){
+  if(!_voidEnabled()){ toast('Void is turned off.'); return; }
+  var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found.'); return; }
+  if(b.status==='voided'){ toast('This trip is already voided.'); return; }
+  _voidId=id;
+  var dep=Number(b.deposit)||0;
+  var sm=$d('voidSummary'); if(sm) sm.innerHTML='<b>'+esc(b.name||'Renter')+'</b> \u00b7 '+esc(b.vehicle||'')+'<br>Trip earnings on file: <b>'+$$(totalRevenue(b))+'</b> \u00b7 deposit: <b>'+$$(dep)+'</b>';
+  var vr=$d('voidReason'); if(vr) vr.value=b.voidReason||'';
+  var vk=$d('voidKept'); if(vk) vk.value=dep;
+  var vb=$d('voidBlacklist'); if(vb) vb.checked=false;
+  try{ closeBookingDetail(); }catch(e){}
+  var m=$d('voidModal'); if(m) m.style.display='flex';
+  try{ if(vr) vr.focus(); }catch(e){}
+}
+function closeVoidModal(){ var m=$d('voidModal'); if(m) m.style.display='none'; _voidId=null; }
+function confirmVoid(){
+  var id=_voidId; var idx=bookings.findIndex(function(b){return b.id===id;}); if(idx===-1){ toast('Booking not found.'); return; }
+  var b=bookings[idx];
+  var reason=((($d('voidReason')||{}).value)||'').trim();
+  if(!reason){ toast('Please enter why the contract was voided.'); try{ $d('voidReason').focus(); }catch(e){} return; }
+  var kept=Math.max(0, Math.round(Number((($d('voidKept')||{}).value))||0));
+  var doBlacklist=!!((($d('voidBlacklist')||{}).checked));
+  if(!confirm('Void this contract?\n\n\u2022 Earnings + $'+kept+' deposit KEPT as revenue (non-refundable)\n\u2022 '+(b.vehicle||'Vehicle')+' released today\n\u2022 Files under Previous as VOIDED \u2014 nothing deleted'+(doBlacklist?'\n\u2022 Renter will be blacklisted':''))) return;
+  var old=b.status;
+  b._preVoidStatus=(old==='voided')?(b._preVoidStatus||'confirmed'):old;   // remember for un-void
+  b._preVoidDropoff=(b.dropoffDate||'');
+  b._preVoidDepositKept=b.depositKept;
+  b._preVoidRefundSent=b.refundSent;
+  b.status='voided';
+  b.voidReason=reason;
+  b.voidedAt=Date.now();
+  b.voidedBy=_currentUser||'owner';
+  b.endedEarly=true;
+  b.depositKept=kept;                 // kept deposit counts toward revenue (totalRevenue adds depositKept when !refundSent)
+  b.refundSent=false;                 // nothing returned
+  b.dropoffDate=todayStr();           // trip ends TODAY -> frees the vehicle same day (availability is derived)
+  b._t=Date.now();
+  b._history=(b._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['status: "'+old+'"\u2192"voided"','void reason: '+reason.slice(0,140),'deposit kept: $'+kept]}]);
+  if(doBlacklist){ try{ blacklistGuest(id); }catch(e){} }
+  save(); try{ syncToGCal(b); }catch(e){} render();
+  closeVoidModal();
+  toast('\u26d4 Contract voided \u2014 '+(b.vehicle||'vehicle')+' released, money kept.');
+  setTimeout(function(){ if(confirm('Contract voided. Open the legal termination report now?')) _genVoidLegalReport(id); }, 250);
+}
+function unvoidTrip(id){
+  var idx=bookings.findIndex(function(b){return b.id===id;}); if(idx===-1) return;
+  var b=bookings[idx]; if(b.status!=='voided'){ toast('This trip is not voided.'); return; }
+  var back=b._preVoidStatus||'confirmed';
+  if(!confirm('Un-void this trip? It returns to "'+back+'" and the vehicle is scheduled again. Nothing is deleted.')) return;
+  b.status=back;
+  if(b._preVoidDropoff) b.dropoffDate=b._preVoidDropoff;
+  if('_preVoidDepositKept' in b) b.depositKept=b._preVoidDepositKept;
+  if('_preVoidRefundSent' in b) b.refundSent=b._preVoidRefundSent;
+  b.endedEarly=false;
+  b._t=Date.now();
+  b._history=(b._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['status: "voided"\u2192"'+back+'" (un-voided)']}]);
+  save(); render();
+  toast('Trip restored from voided.');
+}
+// Legal termination report -> a clean printable record (Print dialog = Save as PDF). Reuses the payment ledger.
+function _genVoidLegalReport(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found.'); return; }
+  var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
+  var mny=function(n){ return '$'+(Math.round((Number(n)||0)*100)/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
+  var when=function(ms){ if(!ms) return '&mdash;'; try{ return E(new Date(ms).toLocaleString()); }catch(e){ return '&mdash;'; } };
+  var row=function(k,v){ return '<tr><td class="k">'+k+'</td><td class="v">'+(v==null||v===''?'&mdash;':v)+'</td></tr>'; };
+  var pays=[]; try{ pays=(typeof _paymentsReceived==='function'?_paymentsReceived(b):[])||[]; }catch(e){}
+  pays.sort(function(a,c){ return (a.ts||0)-(c.ts||0); });
+  var payRows=pays.length ? pays.map(function(p){ return '<tr><td>'+when(p.ts)+'</td><td>'+E(p.label||'')+'</td><td>'+E(p.method||(p.card?'Card':''))+'</td><td class="r">'+mny(p.amount)+'</td></tr>'; }).join('') : '<tr><td colspan="4" class="muted">No payment records on file.</td></tr>';
+  var paysTotal=pays.reduce(function(s,p){ return s+(Number(p.amount)||0); },0);
+  var keptDep=(b.refundSent?0:(Number(b.depositKept)||0));
+  var totalRev=totalRevenue(b); var earnings=totalRev-keptDep;
+  var sig=(b.customerSig&&/^data:image\//.test(b.customerSig)) ? '<img src="'+b.customerSig+'" alt="signature"/>' : '<span class="muted">No signature on file</span>';
+  var ipLine=b.customerSigIP ? (E(b.customerSigIP)+(b.customerSigCountry?(' ('+E(b.customerSigCountry)+')'):'')) : '<span class="muted">not recorded (in-person, or signed before IP capture)</span>';
+  var verify=(b.verify&&(b.verify.idName||b.verify.idType)) ? (E(b.verify.idName||'')+(b.verify.idType?(' \u2014 '+E(b.verify.idType)):'')) : '';
+  var ref=b.id||'';
+  var H=''
+   +'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+   +'<title>Void Legal Record '+E(ref)+'</title><style>'
+   +'*{box-sizing:border-box}body{font-family:Georgia,\'Times New Roman\',serif;color:#111;background:#f2f2f2;margin:0;padding:24px;line-height:1.5}'
+   +'.doc{max-width:760px;margin:0 auto;background:#fff;padding:40px 44px;box-shadow:0 2px 14px rgba(0,0,0,.14)}'
+   +'.hd{border-bottom:3px solid #111;padding-bottom:14px;margin-bottom:20px}.brand{font-size:20px;font-weight:700;letter-spacing:.04em}'
+   +'.title{font-size:15px;font-weight:700;margin-top:6px;color:#7a0000;letter-spacing:.06em}.gen{font-size:11px;color:#666;margin-top:6px}'
+   +'h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#7a0000;border-bottom:1px solid #ddd;padding-bottom:5px;margin:26px 0 10px}'
+   +'table{width:100%;border-collapse:collapse;font-size:13px}td{padding:5px 8px;vertical-align:top;border-bottom:1px solid #eee}'
+   +'td.k{width:38%;color:#555;font-weight:700}td.r,td.v .r{text-align:right}.r{text-align:right}'
+   +'.reason{white-space:pre-wrap;background:#faf6f6;border:1px solid #e6d5d5;border-radius:6px;padding:12px;font-size:13px}'
+   +'.paytbl th{text-align:left;font-size:11px;color:#666;border-bottom:2px solid #ccc;padding:5px 8px;text-transform:uppercase;letter-spacing:.04em}.paytbl td.r{text-align:right}'
+   +'.tot{font-weight:700}.muted{color:#999}img{max-width:300px;max-height:120px;border:1px solid #ccc;background:#fff;padding:4px}'
+   +'.ft{margin-top:30px;border-top:1px solid #ddd;padding-top:12px;font-size:11px;color:#777}'
+   +'.no-print{margin:0 0 18px}.no-print button{font:inherit;font-size:13px;background:#111;color:#fff;border:0;border-radius:6px;padding:9px 16px;cursor:pointer}'
+   +'@media print{body{background:#fff;padding:0}.doc{box-shadow:none;max-width:none;padding:24px}.no-print{display:none}@page{margin:14mm}}'
+   +'</style></head><body><div class="doc">'
+   +'<div class="hd"><div class="brand">Prestige Black Rentals</div><div class="title">Contract Termination / Void \u2014 Legal Record</div><div class="gen">Generated '+when(Date.now())+' \u00b7 Reference '+E(ref)+'</div></div>'
+   +'<div class="no-print"><button onclick="window.print()">&#128424; Print / Save as PDF</button></div>'
+   +'<h2>Trip</h2><table>'
+   +row('Renter', E(b.name||''))+row('Email / Phone', E((b.email||'')+(b.phone?('  \u00b7  '+b.phone):'')))
+   +row('Vehicle', E(b.vehicle||''))+row('Type', E(b.type||'daily'))
+   +row('Pickup', E((b.pickupDate||b.date||'')+(b.pickupTime?(' '+b.pickupTime):'')))+row('Return', E((b._preVoidDropoff||b.dropoffDate||'')+(b.dropoffTime?(' '+b.dropoffTime):'')))
+   +'</table>'
+   +'<h2>Termination</h2><table>'
+   +row('Status','<b style="color:#7a0000">VOIDED / ENDED EARLY</b>')+row('Voided on', when(b.voidedAt))+row('Voided by', E(b.voidedBy||'owner'))
+   +'</table><div style="margin-top:8px"><div class="k" style="color:#555;font-weight:700;font-size:13px;margin-bottom:5px">Reason (verbatim)</div><div class="reason">'+E(b.voidReason||'')+'</div></div>'
+   +'<h2>Signature &amp; Identity</h2><table>'
+   +row('Signature', sig)+row('Signed on', E(b.customerSigDate||'')||'&mdash;')+row('Signed at (exact)', when(b.customerSigAt))
+   +row('Signed for vehicle', E(b.customerSigVehicle||b.vehicle||''))+row('ID verification', verify||'<span class="muted">not on file</span>')+row('Signer IP address', ipLine)
+   +'</table>'
+   +'<h2>Payments Received (proof)</h2><table class="paytbl"><tr><th>Date</th><th>Item</th><th>Method</th><th class="r">Amount</th></tr>'+payRows
+   +'<tr class="tot"><td colspan="3" class="r">Total received</td><td class="r">'+mny(paysTotal)+'</td></tr></table>'
+   +'<h2>Retained (non-refundable)</h2><table>'
+   +row('Trip earnings kept', '<span class="r" style="display:block">'+mny(earnings)+'</span>')+row('Deposit kept', '<span class="r" style="display:block">'+mny(keptDep)+'</span>')
+   +'<tr class="tot"><td class="k">Total retained as revenue</td><td class="v"><span class="r" style="display:block">'+mny(totalRev)+'</span></td></tr>'
+   +'</table>'
+   +'<div class="ft">This is a business record generated by Prestige Black Rentals documenting the early termination of the above rental contract. Signature, timestamps, IP (where captured) and payment records are reproduced from the booking on file. Reference '+E(ref)+'.</div>'
+   +'</div></body></html>';
+  var w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to open the legal report.'); return; }
+  w.document.open(); w.document.write(H); w.document.close(); try{ w.focus(); }catch(e){}
+}
+
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  FEATURE 7: DUPLICATE BOOKING
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -18700,7 +18867,7 @@ function renderOutstanding(){
   var balanceDueIds=balanceDue.reduce(function(m,b){m[b.id]=true;return m;},{});
   var noLock=active.filter(function(b){
     if(balanceDueIds[b.id]) return false;
-    if(b.status==='in-progress'||b.status==='completed') return false;
+    if(b.status==='in-progress'||b.status==='completed'||b.status==='voided') return false;
     if(b.vehicle==='Polaris Slingshot'&&b.type==='hourly') return false;
     return (Number(b.dateLock)||0)===0&&(Number(b.remainingBalance)||0)===0&&(Number(b.deposit)||0)===0;
   }).sort(function(a,b){return (a.pickupDate||a.date).localeCompare(b.pickupDate||b.date);});
@@ -24488,7 +24655,7 @@ function _pIsUpcoming(bk){
   var ds=bk.pickupDate||bk.date; if(!ds) return false;
   var d=parseLocalDate(ds); if(!d||isNaN(d.getTime())) return false;
   var today=new Date(); today.setHours(0,0,0,0);
-  return d>=today && bk.status!=='completed' && bk.status!=='cancelled';
+  return d>=today && bk.status!=='completed' && bk.status!=='cancelled' && bk.status!=='voided';
 }
 
 function _initPortalMode(bookingId){
@@ -24899,7 +25066,7 @@ function _pCheckAvailability(bk, extraDays){
   var newDropMs=parseLocalDate(newDropoff).getTime();
   var conflict=null;
   (_pAllData.bookings||[]).some(function(other){
-    if(other.id===bk.id||other._deleted||other.status==='cancelled') return false;
+    if(other.id===bk.id||other._deleted||other.status==='cancelled'||other.status==='voided') return false;   // #void: a voided trip no longer blocks the vehicle
     if((other.vehicle||'').toLowerCase().trim()!==(bk.vehicle||'').toLowerCase().trim()) return false;
     var oPickup=parseLocalDate(other.pickupDate||other.date);
     if(!oPickup||isNaN(oPickup.getTime())) return false;
