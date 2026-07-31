@@ -887,6 +887,60 @@ if (sess) {
   ok('stepup: disabling MFA clears BOTH method and the step-up flag (no limbo)', (after.mfa_method === null || after.mfa_method === undefined) && Number(after.mfa_stepup || 0) === 0, JSON.stringify(after));
 }
 
+// ---- #363 admin-plane CSRF (audit SEC-P1) + SSRF host guard (SEC-P2). The owner-SESSION admin bridge is cookie-auth'd,
+// so a state-changing admin request must prove same-origin intent (session CSRF token OR allow-listed Origin); a forged
+// cross-site POST (foreign Origin, no token) is rejected. Reads are not gated. And the hardened _hostBlocked closes the
+// IPv6-mapped-IPv4 metadata bypass on the tenant-URL guard. ----
+{
+  const envAC = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envAC);
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'owner@x.com', password: 'correcthorsebatterystaple', business: 'Owner Co', setupToken: 'setup-tok' } }), envAC, ctx);   // owner@x.com == makeEnv OWNER_EMAIL (reserved) -> claim it with OWNER_SETUP_TOKEN so the owner-session bridge activates
+  const tAC = envAC.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sAC = envAC.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tAC);
+  const cookieAC = 'atlas_sid=' + sAC.id;
+  const rEvil = await worker.fetch(mkReq('POST', '/api/admin/competitors', { headers: { cookie: cookieAC, origin: 'https://evil.example' }, body: { url: 'https://good.example/x' } }), envAC, ctx);
+  ok('admin CSRF: owner-session mutation from a FOREIGN origin without a CSRF token -> 403 (forgery blocked)', rEvil.status === 403, 'status=' + rEvil.status);
+  const rOkAC = await worker.fetch(mkReq('POST', '/api/admin/competitors', { headers: { cookie: cookieAC, origin: 'https://atlasrental.io' }, body: { url: 'https://good.example/watch' } }), envAC, ctx);
+  ok('admin CSRF: owner-session mutation from an ALLOW-LISTED origin passes the CSRF gate (console not broken)', rOkAC.status !== 403, 'status=' + rOkAC.status);
+  const rGetAC = await worker.fetch(mkReq('GET', '/api/admin/overview', { headers: { cookie: cookieAC, origin: 'https://evil.example' } }), envAC, ctx);
+  ok('admin CSRF: owner-session GET (read) is never CSRF-gated', rGetAC.status === 200, 'status=' + rGetAC.status);
+  const rSsrf = await worker.fetch(mkReq('POST', '/api/admin/competitors', { headers: { cookie: cookieAC, origin: 'https://atlasrental.io' }, body: { url: 'https://[::ffff:169.254.169.254]/latest/meta-data/' } }), envAC, ctx);
+  ok('SSRF: IPv6-mapped metadata literal rejected by the hardened host guard -> 400', rSsrf.status === 400, 'status=' + rSsrf.status);
+}
+
+// ---- #363 MONEY-OUT path (audit MONEY-P1: refund/capture/release were untested). Real routes + real DB + mocked Stripe:
+// a refund delta-DEDUCTS revenue by exactly the refunded amount, is IDEMPOTENT on a re-click (no double-subtract) and
+// stamps the refund id; capturing the security HOLD moves NO revenue (revenue is a running total; only a refund moves it). ----
+{
+  const envMO = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envMO);
+  envMO.STRIPE_WEBHOOK_SECRET = 'whsec_harness';
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'mo@x.com', password: 'correcthorsebatterystaple', business: 'MoneyOut Co' } }), envMO, ctx);
+  const tMO = envMO.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sMO = envMO.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tMO);
+  const HMO = { cookie: 'atlas_sid=' + sMO.id, 'x-csrf-token': sMO.csrf };
+  await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HMO, body: { provider: 'stripe', secret: 'sk_test_HARNESS' } }), envMO, ctx);   // tenant Stripe key, encrypted at rest via the real route
+  await envMO.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+    .bind('BKMO', tMO, 'C', 'A', 1, 2, 'confirmed', 50000, JSON.stringify({ custEmail: 'c@x.com', paid: { balance: { pi: 'pi_bal', amountCents: 30000 }, security: { pi: 'pi_sec', amountCents: 20000, hold: { at: 1 } } } }), 1, 1000).run();
+  const _rfMO = globalThis.fetch;
+  const _okR = (obj) => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => obj, text: async () => JSON.stringify(obj) });
+  globalThis.fetch = (u) => { const su = String(u);
+    if (su.indexOf('/refunds') >= 0) return _okR({ id: 're_mo1', object: 'refund', status: 'succeeded' });
+    if (/\/payment_intents\/[^/]+\/capture$/.test(su)) return _okR({ id: 'pi_sec', status: 'succeeded' });
+    if (/\/payment_intents\/[^/]+\/cancel$/.test(su)) return _okR({ id: 'pi_sec', status: 'canceled' });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => '' });
+  };
+  const _rev = () => Number(envMO.DB._db.prepare("SELECT revenue_cents FROM bookings WHERE id='BKMO'").get().revenue_cents);
+  const rRef = await worker.fetch(mkReq('POST', '/api/pay/refund', { headers: HMO, body: { booking: 'BKMO', kind: 'balance', amountCents: 10000 } }), envMO, ctx);
+  const jRef = await rRef.json();
+  ok('money-out: refund succeeds + revenue delta-deducted 50000 -> 40000 (exact, never recompute)', rRef.status === 200 && jRef.ok !== false && _rev() === 40000, 'status=' + rRef.status + ' rev=' + _rev());
+  const dMO = JSON.parse(envMO.DB._db.prepare("SELECT data FROM bookings WHERE id='BKMO'").get().data);
+  ok('money-out: refund stamped the Stripe refund id (charge.refunded webhook cannot re-decrement)', Array.isArray(dMO.refundIds) && dMO.refundIds.indexOf('re_mo1') >= 0, JSON.stringify(dMO.refundIds));
+  const rRef2 = await worker.fetch(mkReq('POST', '/api/pay/refund', { headers: HMO, body: { booking: 'BKMO', kind: 'balance', amountCents: 10000 } }), envMO, ctx);
+  ok('money-out: a re-clicked identical refund is IDEMPOTENT -> revenue stays 40000 (no double-subtract)', _rev() === 40000, 'rev=' + _rev() + ' status=' + rRef2.status);
+  const rCap = await worker.fetch(mkReq('POST', '/api/pay/capture', { headers: HMO, body: { booking: 'BKMO', kind: 'security', amountCents: 20000 } }), envMO, ctx);
+  ok('money-out: capturing the security HOLD moves NO revenue (still 40000)', rCap.status === 200 && _rev() === 40000, 'status=' + rCap.status + ' rev=' + _rev());
+  globalThis.fetch = _rfMO;
+}
+
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise
 // force-logout a signed-in owner. A cookie-authenticated logout with NO CSRF token must be rejected AND must not revoke;
 // WITH the token it still works. (Run LAST -- it revokes `sess`.)

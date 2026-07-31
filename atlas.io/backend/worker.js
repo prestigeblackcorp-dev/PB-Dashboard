@@ -400,7 +400,20 @@ async function _apiKeyAuth(env, req) {
 // same dev_api_enabled platform switch as the read API (OFF by default); an endpoint auto-pauses after 15 straight failures.
 const WEBHOOK_EVENTS = ['booking.created', 'booking.paid'];
 async function _whSignHex(secret, body) { try { const key = await crypto.subtle.importKey('raw', enc(String(secret)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const s = await crypto.subtle.sign('HMAC', key, enc(String(body))); return Array.prototype.map.call(new Uint8Array(s), function (x) { return ('0' + x.toString(16)).slice(-2); }).join(''); } catch (e) { return ''; } }
-function _whUrlOk(u) { let _u; try { _u = new URL(String(u || '').trim()); } catch (e) { return false; } if (_u.protocol !== 'https:') return false; const h = _u.hostname.toLowerCase(); if (h === 'localhost' || h === '::1' || h.indexOf('.') < 0 || h.indexOf('metadata') >= 0 || /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(h) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h)) return false; return true; }
+// #363 (audit SEC-P2): one SSRF host guard shared by webhook receivers + tenant GPS servers, hardened against the
+// string-only bypasses the two inline checks missed -- IPv6 literals (::1, ::ffff:<v4>, fc00::/fe80:: unique-local /
+// link-local) and hex-encoded IPv4. These tenant-supplied URLs are always public DNS names or plain public IPv4, so we
+// reject IPv6 literals + numeric encodings outright rather than try to normalize every representation. Returns true = BLOCK.
+function _hostBlocked(hn) {
+  hn = String(hn || '').toLowerCase();
+  if (!hn) return true;
+  if (hn.indexOf(':') >= 0) return true;                                                 // any IPv6 literal (covers ::1, ::ffff:<v4>, fc00::, fe80::)
+  if (hn === 'localhost' || hn.indexOf('.') < 0) return true;                            // localhost + no-dot host (bare name / pure-decimal IPv4 like 2130706433)
+  if (hn.indexOf('metadata') >= 0 || /^0x/i.test(hn)) return true;                       // cloud metadata hostnames + hex-encoded IPv4
+  if (/^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(hn) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hn)) return true;   // loopback / private / link-local IPv4
+  return false;
+}
+function _whUrlOk(u) { let _u; try { _u = new URL(String(u || '').trim()); } catch (e) { return false; } if (_u.protocol !== 'https:') return false; return !_hostBlocked(_u.hostname); }
 function _whWants(eventsJson, event) { try { if (!eventsJson || eventsJson === '*') return true; const arr = JSON.parse(eventsJson); if (!Array.isArray(arr) || !arr.length) return true; return arr.indexOf(event) >= 0 || arr.indexOf('*') >= 0; } catch (e) { return true; } }
 const WH_MAX_ATTEMPTS = 8;   // #257: give up (mark 'dead') after this many total delivery attempts
 function _whBackoffMs(attempts) { const s = [60000, 300000, 1800000, 7200000, 21600000, 86400000]; return s[Math.min(Math.max(1, attempts) - 1, s.length - 1)]; }   // 1m,5m,30m,2h,6h,24h (cron is hourly, so sub-hour delays land on the next tick)
@@ -568,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.31w';
+const ATLAS_BUILD = '2026.07.31x';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -635,6 +648,7 @@ function _claudeText(j) { try { return (j && Array.isArray(j.content)) ? j.conte
 // The Claude model the council uses. Overridable via the ANTHROPIC_MODEL secret so an account that lacks access to the
 // default (a 404 not_found) can point at a model it does have -- no code change needed. Default is a current model.
 function _claudeModel(env) { try { return (env && env.ANTHROPIC_MODEL) ? String(env.ANTHROPIC_MODEL) : 'claude-sonnet-5'; } catch (e) { return 'claude-sonnet-5'; } }
+function _geminiModel(env) { try { return (env && env.GEMINI_MODEL) ? String(env.GEMINI_MODEL) : 'gemini-3.6-flash'; } catch (e) { return 'gemini-3.6-flash'; } }   // #363 (audit AI-P2): overridable like ANTHROPIC_MODEL so a stale/renamed default cannot silently drop the whole Gemini leg from the council with no env escape hatch.
 async function askClaude(key, q, context, _mEnv, _mCtx) {
   try {
     const r = await _fetchTimeout('https://api.anthropic.com/v1/messages', {
@@ -644,7 +658,7 @@ async function askClaude(key, q, context, _mEnv, _mCtx) {
         system: AIO_SAFETY_PROMPT + _aioCtx(context), messages: [{ role: 'user', content: q }] })
     }, 12000);
     const j = await r.json().catch(() => ({}));
-    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'claude-sonnet-5', _aiUsageFrom('anthropic', j), 'inapp_ai');   // #286/#286f: never affects the line below -- askClaude is only ever called from /api/aio
+    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, _claudeModel(_mEnv), _aiUsageFrom('anthropic', j), 'inapp_ai');   // #286/#286f: never affects the line below -- askClaude is only ever called from /api/aio
     return _claudeText(j);
   } catch (e) { return ''; }   // network/DNS reject -> empty, never throws
 }
@@ -656,7 +670,7 @@ async function askClaudeSchedule(key, system, userMsg, _mEnv, _mCtx, source) {  
       body: JSON.stringify({ model: _claudeModel(_mEnv), max_tokens: 3000, thinking: { type: 'disabled' }, system: system, messages: [{ role: 'user', content: userMsg }] })
     }, 15000);
     const j = await r.json().catch(() => ({}));
-    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'claude-sonnet-5', _aiUsageFrom('anthropic', j), source);   // #286/#286f: never affects the line below -- source distinguishes /api/schedule ('schedule') from /api/aio/plan ('aio_plan')
+    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, _claudeModel(_mEnv), _aiUsageFrom('anthropic', j), source);   // #286/#286f: never affects the line below -- source distinguishes /api/schedule ('schedule') from /api/aio/plan ('aio_plan')
     return _claudeText(j);
   } catch (e) { return ''; }
 }
@@ -675,14 +689,14 @@ async function askGPT(key, q, context, _mEnv, _mCtx) {
 }
 async function askGemini(key, q, context, _mEnv, _mCtx) {
   try {
-    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(key), {
+    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(_mEnv) + ':generateContent?key=' + encodeURIComponent(key), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ systemInstruction: { parts: [{ text: AIO_SAFETY_PROMPT + _aioCtx(context) }] },
         contents: [{ parts: [{ text: q }] }] })
     }, 12000);
     const j = await r.json().catch(() => ({}));
-    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'gemini-3.6-flash', _aiUsageFrom('gemini', j), 'inapp_ai');   // #286/#286f: never affects the line below -- askGemini is only ever called from /api/aio
+    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, _geminiModel(_mEnv), _aiUsageFrom('gemini', j), 'inapp_ai');   // #286/#286f: never affects the line below -- askGemini is only ever called from /api/aio
     return ((((((j.candidates || [])[0] || {}).content || {}).parts || [])[0] || {}).text || '').trim();
   } catch (e) { return ''; }
 }
@@ -713,7 +727,7 @@ async function _aiSelfTest(env) {
   var g = { provider: 'gemini', keyPresent: !!env.GEMINI_KEY, model: 'gemini-3.6-flash' };
   if (env.GEMINI_KEY) {
     try {
-      var rg = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: 'ping' }] }] }) }, 12000);
+      var rg = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(env) + ':generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: 'ping' }] }] }) }, 12000);
       g.status = rg.status; g.ok = rg.ok; var jg = await rg.json().catch(function () { return {}; });
       if (!rg.ok) g.error = String((jg && jg.error && ((jg.error.status || 'error') + ': ' + (jg.error.message || ''))) || ('HTTP ' + rg.status)).slice(0, 300);
     } catch (e) { g.ok = false; g.error = 'network: ' + String(e).slice(0, 200); }
@@ -732,7 +746,7 @@ async function _researchClaude(key, prompt, _mEnv, _mCtx, source) {
     }, 28000);
     const j = await r.json().catch(() => ({})); let src = [];
     try { (j.content || []).forEach(function (b) { if (b && b.type === 'web_search_tool_result' && Array.isArray(b.content)) b.content.forEach(function (x) { if (x && x.url) src.push({ title: String(x.title || '').slice(0, 160), url: x.url }); }); }); } catch (e) {}
-    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, 'claude-sonnet-5', _aiUsageFrom('anthropic', j), source);   // #286: token cost only -- Anthropic's web_search tool ALSO carries its own per-1000-searches fee, not captured here (see AI_PRICES comment)
+    if (_mEnv) _meterAIDeferred(_mCtx, _mEnv, _claudeModel(_mEnv), _aiUsageFrom('anthropic', j), source);   // #286: token cost only -- Anthropic's web_search tool ALSO carries its own per-1000-searches fee, not captured here (see AI_PRICES comment)
     const text = _claudeText(j); return text ? { name: 'Claude', text: text, sources: src } : null;
   } catch (e) { return null; }
 }
@@ -750,7 +764,7 @@ async function _researchGPT(key, prompt, _mEnv, _mCtx, source) {
 }
 async function _researchGemini(key, prompt, _mEnv, _mCtx, source) {
   try {
-    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(key), {
+    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(_mEnv) + ':generateContent?key=' + encodeURIComponent(key), {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tools: [{ google_search: {} }], contents: [{ parts: [{ text: prompt }] }] })
     }, 28000);
@@ -1138,7 +1152,7 @@ async function _hqAsk(env, system, user, maxTok, opts, ectx) {
       const r = await _fetchTimeout('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'authorization': 'Bearer ' + env.OPENAI_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-4o', max_tokens: mt, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) }, 22000);
       if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'gpt-4o', _aiUsageFrom('openai', j), opts.source); return (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ? j.choices[0].message.content.trim() : ''; } },
     { p: 'gemini', has: !!env.GEMINI_KEY, call: async function () {
-      const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ parts: [{ text: user }] }] }) }, 22000);
+      const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(env) + ':generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ parts: [{ text: user }] }] }) }, 22000);
       if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'gemini-3.6-flash', _aiUsageFrom('gemini', j), opts.source); return ((((((j.candidates || [])[0] || {}).content || {}).parts || [])[0] || {}).text || '').trim(); } }
   ];
   var order = fleet.filter(function (m) { return m.has; });
@@ -2423,8 +2437,7 @@ function _trkSafeHost(raw) {
   var u; try { u = new URL(String(raw || '').trim()); } catch (e) { return { ok: false, reason: 'bad_host' }; }
   if (u.protocol !== 'https:') return { ok: false, reason: 'https_required' };
   var hn = u.hostname.toLowerCase();
-  if (hn === 'localhost' || hn === '::1' || hn.indexOf('.') < 0 || hn.indexOf('metadata') >= 0 ||
-    /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(hn) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hn)) return { ok: false, reason: 'blocked_host' };
+  if (_hostBlocked(hn)) return { ok: false, reason: 'blocked_host' };   // #363: shared hardened guard (IPv6-literal + hex-IPv4 bypasses closed)
   return { ok: true, origin: u.origin, hostname: hn };
 }
 // MyGeotab auth: POST {method:'Authenticate'} to https://<server>/apiv1 -> { credentials, path }. `path` is a federation
@@ -2860,7 +2873,7 @@ async function _assetCapFor(env, tid) {
   try { const t = await env.DB.prepare('SELECT tier FROM tenants WHERE id=?').bind(tid).first();
     const tier = String((t && t.tier) || '').toLowerCase();
     return (tier && PLAN_ASSET_CAP[tier] != null) ? PLAN_ASSET_CAP[tier] : 50;   // no tier yet (trial/new) -> match the CLIENT's null-tier fallback (TIERS 'pro' = 50 units) so the two sides never disagree and wrongly 402 a legit add; still blocks runaway abuse
-  } catch (e) { return 0; }   // fail OPEN on a DB hiccup -> never wrongly block a legit add
+  } catch (e) { return 500; }   // #363 (audit BILLING-P2): on a DB hiccup fail to the LARGEST FINITE plan cap, not 0=unlimited -- blocks runaway over-provisioning at the monetization boundary while never wrongly blocking a legit add for any finite-plan tenant (transient + self-healing; the published-snapshot gate re-clamps at serve time).
 }
 // PACKAGING (1): the asset cap counts UNITS, not asset ROWS. Every asset carries a stock count in its info blob (info.qty,
 // >=1). Sum Math.max(1, info.qty) across a tenant's assets to get their used units. Kept as a helper so the create-gate and
@@ -3092,19 +3105,27 @@ function _creditWeek() { return Math.floor((Date.now() / 86400000 + 4) / 7); }  
 async function _creditOp(env, tid, tierHint, spend) {
   try {
     await ensurePlatformSchema(env);
-    const row = await env.DB.prepare('SELECT tier, credits_purchased, credits_free, credits_week FROM tenants WHERE id=?').bind(tid).first();
-    if (!row) return { ok: true, balance: 0 };
-    const wk = _creditWeek();
-    const weekly = TIER_CREDITS[row.tier || tierHint || 'pro'] || 500;   // trial defaults to pro-level, matching the client
-    let free = Number(row.credits_free || 0), purchased = Number(row.credits_purchased || 0);
-    if (Number(row.credits_week || 0) !== wk) free = weekly;   // new week -> refill the free allotment
-    if (spend > 0) {
-      if (free + purchased < spend) { if (Number(row.credits_week || 0) !== wk) await env.DB.prepare('UPDATE tenants SET credits_free=?, credits_week=? WHERE id=?').bind(free, wk, tid).run(); return { ok: false, balance: free + purchased, weekly: weekly }; }
-      const uf = Math.min(free, spend); free -= uf; purchased -= (spend - uf);
+    for (let _try = 0; _try < 5; _try++) {   // #363 (audit BILLING-P2): CAS retry so two concurrent AI calls can't BOTH read the old balance and blind-write (a lost update = one free spend). The UPDATE is guarded on the exact row values read; on a conflict we re-read and re-apply.
+      const row = await env.DB.prepare('SELECT tier, credits_purchased, credits_free, credits_week FROM tenants WHERE id=?').bind(tid).first();
+      if (!row) return { ok: true, balance: 0 };
+      const wk = _creditWeek();
+      const weekly = TIER_CREDITS[row.tier || tierHint || 'pro'] || 500;   // trial defaults to pro-level, matching the client
+      const oFree = Number(row.credits_free || 0), oPur = Number(row.credits_purchased || 0), oWk = Number(row.credits_week || 0);
+      let free = oFree, purchased = oPur;
+      if (oWk !== wk) free = weekly;   // new week -> refill the free allotment
+      if (spend > 0) {
+        if (free + purchased < spend) {
+          if (oWk !== wk) { const rf = await env.DB.prepare('UPDATE tenants SET credits_free=?, credits_week=? WHERE id=? AND credits_free=? AND credits_purchased=? AND credits_week=?').bind(free, wk, tid, oFree, oPur, oWk).run(); if (!(rf && rf.meta && rf.meta.changes)) continue; }   // record the week-refill (CAS-guarded); retry if a concurrent write moved the row
+          return { ok: false, balance: free + purchased, weekly: weekly };
+        }
+        const uf = Math.min(free, spend); free -= uf; purchased -= (spend - uf);
+      }
+      const up = await env.DB.prepare('UPDATE tenants SET credits_free=?, credits_purchased=?, credits_week=? WHERE id=? AND credits_free=? AND credits_purchased=? AND credits_week=?').bind(free, purchased, wk, tid, oFree, oPur, oWk).run();
+      if (up && up.meta && up.meta.changes) return { ok: true, balance: free + purchased, free: free, purchased: purchased, weekly: weekly };
+      // else: a concurrent spend changed the row out from under us -> loop and re-read (bounded retries)
     }
-    await env.DB.prepare('UPDATE tenants SET credits_free=?, credits_purchased=?, credits_week=? WHERE id=?').bind(free, purchased, wk, tid).run();
-    return { ok: true, balance: free + purchased, free: free, purchased: purchased, weekly: weekly };
-  } catch (e) { return { ok: true, balance: 999999 }; }   // never block the AI on a credit-store error (credits are UX, not security)
+    return { ok: true, balance: 999999 };   // exhausted CAS retries -> fail OPEN (credits are UX, not security; never block the AI on contention)
+  } catch (e) { return { ok: true, balance: 999999 }; }   // never block the AI on a credit-store error
 }
 async function _creditAdd(env, tid, n) {
   try { await ensurePlatformSchema(env); await env.DB.prepare('UPDATE tenants SET credits_purchased = COALESCE(credits_purchased,0) + ? WHERE id=?').bind(Math.max(0, Math.round(Number(n) || 0)), tid).run(); } catch (e) {}
@@ -4579,9 +4600,9 @@ export default {
         const lim = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
         const off = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
         if (path === '/api/v1/me') { const t = await env.DB.prepare('SELECT id,name,subdomain,fleet_type,plan FROM tenants WHERE id=? AND deleted_at IS NULL').bind(tid).first(); return json({ ok: true, tenant: t || null }); }
-        if (path === '/api/v1/assets') { const r = await env.DB.prepare('SELECT id,name,type,status,day_rate_cents,info FROM assets WHERE tenant_id=? ORDER BY name LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, assets: (r.results || []).map(function (a) { return { id: a.id, name: a.name, type: a.type, status: a.status, day_rate_cents: a.day_rate_cents, info: _hqJson(a.info, {}) }; }) }); }
-        if (path === '/api/v1/bookings') { const r = await env.DB.prepare('SELECT id,customer_id,asset_id,starts,ends,status,revenue_cents,created_at,updated_at FROM bookings WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, bookings: r.results || [] }); }
-        if (path === '/api/v1/customers') { const r = await env.DB.prepare('SELECT id,name,email,phone,created_at FROM customers WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, customers: r.results || [] }); }
+        if (path === '/api/v1/assets') { const r = await env.DB.prepare('SELECT id,name,type,status,day_rate_cents,info FROM assets WHERE tenant_id=? ORDER BY name, id LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, assets: (r.results || []).map(function (a) { return { id: a.id, name: a.name, type: a.type, status: a.status, day_rate_cents: a.day_rate_cents, info: _hqJson(a.info, {}) }; }) }); }
+        if (path === '/api/v1/bookings') { const r = await env.DB.prepare('SELECT id,customer_id,asset_id,starts,ends,status,revenue_cents,created_at,updated_at FROM bookings WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, bookings: r.results || [] }); }
+        if (path === '/api/v1/customers') { const r = await env.DB.prepare('SELECT id,name,email,phone,created_at FROM customers WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?').bind(tid, lim, off).all(); return json({ ok: true, limit: lim, offset: off, count: (r.results || []).length, customers: r.results || [] }); }
         return json({ ok: false, error: 'not_found', message: 'Unknown endpoint. Try /api/v1/me, /api/v1/assets, /api/v1/bookings, /api/v1/customers.' }, 404);
       }
 
@@ -4992,7 +5013,7 @@ function doReset(){
             const _qtyCap = Math.max(1, Number(_pa.qty) || 1);
             const _overlap = (_act.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return _sameAsset(d) && Number(r.starts) < endTs && Number(r.ends) > startTs; }).length;
             if (_overlap >= _qtyCap) return err(409, 'Those dates are no longer available for this option. Please choose different dates.');
-          } catch (e) {}
+          } catch (e) { return err(503, 'We could not confirm availability just now -- please try again.'); }   // #363 fail-CLOSED (audit BOOK-P2): a DB error on the overlap scan must NOT let a possible double-booking through -> reject + retry (pre-insert, no orphan row). Byte-identical under normal operation (the catch fires only on a thrown query).
           // Booking G5: resolve the customer's selected EXTRAS SERVER-SIDE against the tenant catalog + the asset's allow-list.
           // Prices come ONLY from prof.money.extras -- a client-sent price/name is ignored, so nobody can forge a $0 or negative extra.
           const _resolvedExtras = [];
@@ -5064,7 +5085,7 @@ function doReset(){
               var rr = Number(r._rid) || 0; if (_myRowid > 0 && rr > 0) return rr < _myRowid;
               var rc = Number(r.created_at) || 0; return (rc < now) || (rc === now && String(r.id) < String(bref)); }).length;
             if (_ahead >= _qtyCapP) { try { await env.DB.prepare('DELETE FROM bookings WHERE id=?').bind(bref).run(); } catch (e) {} if (_promoClaimedCode) { try { await _promoUnclaim(env, prof.id, _promoClaimedCode); } catch (_e) {} } return err(409, 'Those dates were just taken by another guest. Please choose different dates.'); }
-          } catch (e) {}
+          } catch (e) { try { await env.DB.prepare('DELETE FROM bookings WHERE id=?').bind(bref).run(); } catch (_e) {} if (_promoClaimedCode) { try { await _promoUnclaim(env, prof.id, _promoClaimedCode); } catch (_e) {} } return err(503, 'We could not confirm availability just now -- please try again.'); }   // #363 fail-CLOSED (audit BOOK-P2): if the TOCTOU re-check itself errors, delete our just-inserted row + reject rather than keep a possibly-conflicting booking.
           // promo redemption was counted atomically at claim-time above (and released on the failure paths); no post-save bump
           const _portalUrl = url.origin + '/api/portal/' + token;   // the tokenized link the customer signs + pays + manages from
           const comms = prof.settings.comms || {};
@@ -5855,6 +5876,20 @@ function doReset(){
         if (_role !== 'owner') {
           if (OWNER_ONLY.test(path) && !(path === '/api/admin/config' && method === 'GET')) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'role', role: _role, path: path }); return err(403, 'Your admin role does not permit this action.'); }
           if (method !== 'GET' && !(_role === 'support' && SUPPORT_WRITE.test(path))) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'role', role: _role, path: path }); return err(403, 'Your admin role is read-only.'); }
+        }
+        // #363 (audit SEC-P1): the owner-SESSION bridge is cookie-auth'd -- unlike the X-Admin-Token owner/staff paths,
+        // a cross-site "simple" POST could ride the SameSite=None session cookie into a destructive admin action. Gate
+        // every state-changing owner-session request on same-origin proof: the session CSRF token OR an allow-listed
+        // Origin (a browser ALWAYS attaches Origin on a cross-site request and page JS cannot strip it, so a forged
+        // evil-origin POST satisfies neither). The header-token paths are not cookie-auth'd and never fail this. Mirrors
+        // the csrfOk gate at /api/admin/comp (:8856), adapted for the token-less master-dash session.
+        if (_via === 'owner-session' && method !== 'GET') {
+          const _csOrg = req.headers.get('Origin') || '';
+          const _csSess = await resolveSession(env, req);
+          if (!((_csSess && csrfOk(req, _csSess)) || (_csOrg && ALLOWED_ORIGINS.indexOf(_csOrg) >= 0))) {
+            await audit(env, { actor: _actor }, req, 'admin.denied', { reason: 'csrf', path: path });
+            return err(403, 'Bad or missing CSRF token.');
+          }
         }
 
         if (path === '/api/admin/overview' && method === 'GET') {
@@ -8671,9 +8706,10 @@ function doReset(){
             else if (op === 'release') { pp.released = p.released; delete pp.hold; }
             else if (op === 'refund') { pp.refunded = p.refunded; }
           }
+          var _dupRef = !!(_refId && Array.isArray(dd.refundIds) && dd.refundIds.indexOf(_refId) >= 0);   // #363 (audit MONEY-P1): this refund id already moved revenue on a prior (re-clicked) refund -> do NOT deduct twice. Stripe's idempotency-key returns the SAME refund id on a double-submit, so the second decrement is caught here.
           if (_refId) { dd.refundIds = Array.isArray(dd.refundIds) ? dd.refundIds : []; if (dd.refundIds.indexOf(_refId) < 0) dd.refundIds.push(_refId); }
           dd._t = Date.now();
-          return { rev: (Number(rr.revenue_cents) || 0) - _refThisOp };
+          return { rev: (Number(rr.revenue_cents) || 0) - (_dupRef ? 0 : _refThisOp) };
         });
         if (!_casP.committed) return json({ ok: false, reason: 'persist_failed', message: 'The ' + op + ' completed at Stripe but could not be saved after several tries -- refresh and check this booking before retrying.' });
         await audit(env, ctx, req, 'pay.' + op, { booking: body.booking, kind: kind });
@@ -8754,7 +8790,7 @@ function doReset(){
           // Pagination (optional): with no query params, behavior is IDENTICAL to before (LIMIT 1000, no offset).
           const _lim = Math.min(1000, Math.max(1, parseInt(url.searchParams.get('limit') || '1000', 10) || 1000));
           const _off = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
-          const rows = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?`).bind(ctx.tenant_id, _lim, _off).all();
+          const rows = await env.DB.prepare(`SELECT * FROM ${coll} WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).bind(ctx.tenant_id, _lim, _off).all();   // #363 (audit BOOK-P2): stable secondary key (id is unique) -> equal-created_at ties can't reorder between the client _apiAll page fetches, so a >1000-row hydrate can't silently skip/dup a boundary row.
           const _items = rows.results || [];
           return json({ items: _items, limit: _lim, offset: _off, count: _items.length, hasMore: _items.length === _lim });
         }
