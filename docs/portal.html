@@ -220,6 +220,45 @@
 </head>
 <body>
 
+<!-- &#9552;&#9552;&#9552; SALE BANNER (auto-connects to active promo codes via /promo/active; rotates every 5s) &#9552;&#9552;&#9552; -->
+<div id="pbSaleBanner" role="region" aria-label="Current offers" style="display:none;position:relative;z-index:60;background:linear-gradient(90deg,#0b0b0c 0%,#171310 50%,#0b0b0c 100%);border-bottom:1px solid rgba(201,169,98,.38);box-shadow:0 1px 0 rgba(201,169,98,.10),0 6px 22px -12px rgba(0,0,0,.9);overflow:hidden;">
+  <div style="position:absolute;inset:0;background:radial-gradient(60% 120% at 50% 0%,rgba(201,169,98,.10),transparent 70%);pointer-events:none;"></div>
+  <div id="pbSaleInner" style="position:relative;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;max-width:1200px;margin:0 auto;padding:9px 16px;transition:opacity .24s ease;opacity:1;">
+    <span aria-hidden="true" style="color:#C9A962;font-size:13px;flex-shrink:0;">&#10022;</span>
+    <span id="pbSaleText" style="color:#f4ead2;font-size:13.5px;font-weight:600;letter-spacing:.01em;text-align:center;line-height:1.35;"></span>
+    <button type="button" id="pbSaleCode" aria-label="Copy promo code" style="flex-shrink:0;cursor:pointer;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;font-weight:800;letter-spacing:.09em;color:#0b0b0c;background:linear-gradient(180deg,#e4cd8f,#C9A962);border:none;border-radius:999px;padding:5px 13px;box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 2px 8px -2px rgba(201,169,98,.7);"></button>
+    <span id="pbSaleDots" style="display:inline-flex;gap:5px;flex-shrink:0;align-items:center;"></span>
+  </div>
+</div>
+<script>
+(function(){
+  var W=(typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
+  var el=document.getElementById('pbSaleBanner'); if(!el||el.dataset.pbInit) return; el.dataset.pbInit='1';
+  var inner=document.getElementById('pbSaleInner'), tx=document.getElementById('pbSaleText'), cd=document.getElementById('pbSaleCode'), dots=document.getElementById('pbSaleDots');
+  var promos=[], i=0, timer=null;
+  function paint(){
+    var p=promos[i]; if(!p) return;
+    tx.textContent=(p.title? p.title+' \u2014 ':'')+(p.summary||'Limited-time offer')+'  \u00b7  Code:';
+    cd.textContent=p.code;
+    dots.innerHTML=promos.length>1?promos.map(function(_x,j){return '<i style="width:6px;height:6px;border-radius:50%;background:'+(j===i?'#C9A962':'rgba(201,169,98,.32)')+';display:inline-block;transition:background .2s;"></i>';}).join(''):'';
+  }
+  function show(){ if(!promos.length){ el.style.display='none'; return; } el.style.display='block'; paint(); }
+  function rotate(){ inner.style.opacity='0'; setTimeout(function(){ i=(i+1)%promos.length; paint(); inner.style.opacity='1'; },240); }
+  cd.addEventListener('click',function(){
+    var c=cd.textContent; try{ if(navigator.clipboard) navigator.clipboard.writeText(c); }catch(e){}
+    var inp=document.getElementById('pb_promo_input')||document.querySelector('input[id^="chPromoInput_"]'); if(inp){ inp.value=c; try{ inp.dispatchEvent(new Event('input')); }catch(e){} }
+    var was=c; cd.textContent='Copied \u2713'; setTimeout(function(){ cd.textContent=was; },1100);
+  });
+  try{
+    fetch(W+'/promo/active',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+      promos=(d&&Array.isArray(d.promos))?d.promos:[];
+      show();
+      if(promos.length>1 && !timer) timer=setInterval(rotate,5000);
+    }).catch(function(){ el.style.display='none'; });
+  }catch(e){ el.style.display='none'; }
+})();
+</script>
+
 <!-- &#9552;&#9552;&#9552; SIGNING SCREEN &#9552;&#9552;&#9552; -->
 <div id="signing-screen">
   <div class="sign-header">
@@ -2774,10 +2813,11 @@ async function _chApplyPromo(bid){
   var msg=document.getElementById('chPromoMsg_'+bid), pbtn=document.getElementById('chPromoBtn_'+bid);
   if(pbtn){ pbtn.disabled=true; pbtn.textContent='\u2026'; }
   try{
-    var r=await fetch(`${WORKER}/promo/validate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,kind:'chauffeur',subtotal:subtotal})});
+    var r=await fetch(`${WORKER}/promo/validate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:code,kind:'chauffeur',subtotal:subtotal,vehicle:(b.vehicle||'')})});
     var d=await r.json();
     if(d && d.ok){
-      _chPromoApplied[bid]={code:d.code,discType:d.discType,discValue:Number(d.discValue)||0,minSubtotal:Number(d.minSubtotal)||0,label:d.label};
+      // effType/effValue = the deal THIS vehicle actually gets (rule-aware); fall back to the code default.
+      _chPromoApplied[bid]={code:d.code,discType:d.discType,discValue:Number(d.discValue)||0,effType:(d.effType||d.discType),effValue:(d.effValue!=null?Number(d.effValue):Number(d.discValue)||0),minSubtotal:Number(d.minSubtotal)||0,label:d.label};
       var w=document.getElementById('chPromoWrap_'+bid); if(w) w.innerHTML=_chPromoRowHtml(bid);
       _chEnhRecalc(bid);
     } else {
@@ -2906,7 +2946,11 @@ function _chEnhRecalc(bid){
   var ap=_chPromoApplied[bid], disc=0, belowMin=false;
   if(ap && subtotal>0){
     if(ap.minSubtotal && subtotal<ap.minSubtotal){ belowMin=true; disc=0; }
-    else { disc = ap.discType==='amount' ? Math.min(ap.discValue, subtotal) : Math.round(subtotal*ap.discValue)/100; disc=Math.round(Math.min(Math.max(0,disc),subtotal)*100)/100; }
+    else {
+      // Recompute against the LIVE subtotal using the effective (rule-aware) deal for this vehicle.
+      var _t=ap.effType||ap.discType, _v=(ap.effValue!=null?ap.effValue:ap.discValue);
+      disc = _t==='amount' ? Math.min(_v, subtotal) : Math.round(subtotal*_v)/100; disc=Math.round(Math.min(Math.max(0,disc),subtotal)*100)/100;
+    }
   }
   var net=Math.round((subtotal-disc)*100)/100;
   var pmsg=document.getElementById('chPromoMsg_'+bid);
