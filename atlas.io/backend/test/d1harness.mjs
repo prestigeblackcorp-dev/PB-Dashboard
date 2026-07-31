@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _xeroSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _trackerFetch, TRK_PROVIDERS } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _xeroSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _trackerFetch, TRK_PROVIDERS, _b32decode, _totpAt } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -812,6 +812,79 @@ if (sess) {
   const rLj = await worker.fetch(mkReq('POST', '/api/trackers/positions', { headers: H2, body: {} }), rEnv2, ctx);
   const jLj = await rLj.json();
   ok('route: unsupported-provider row (lojack) not polled -> live:false, no positions', jLj.ok === true && jLj.live === false && !jLj.positions, JSON.stringify(jLj));
+}
+
+// ---- #362 MFA step-up enforcement (opt-in, per-user mfa_stepup). Proves: OFF by default = byte-identical (no gate);
+// enabling requires an active MFA method + proof; ON gates account-delete + payment-processor connect but NOT a
+// tracker/mailer connect; password OR a fresh factor (incl. a backup code = break-glass) satisfies it; disabling MFA
+// clears step-up so there is never a stepup-on/factor-off limbo. Uses password/backup-code proof for determinism --
+// the same _mfaCheckAnyFactor path the disable route (tested elsewhere) uses for emailed/TOTP codes. ----
+{
+  const envSU = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envSU);
+  const PW = 'correcthorsebatterystaple';
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'su@x.com', password: PW, business: 'StepUp Co' } }), envSU, ctx);
+  const tidSU = envSU.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const uidSU = envSU.DB._db.prepare('SELECT id FROM users WHERE tenant_id=? LIMIT 1').get(tidSU).id;
+  const sSU = envSU.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidSU);
+  const HSU = { cookie: 'atlas_sid=' + sSU.id, 'x-csrf-token': sSU.csrf };
+  const suFlag = () => Number(envSU.DB._db.prepare('SELECT mfa_stepup FROM users WHERE id=?').get(uidSU).mfa_stepup || 0);
+
+  // (1) DEFAULT OFF: status stepup:false; a payout-processor connect is NOT gated (byte-identical to pre-#362)
+  let js = await (await worker.fetch(mkReq('GET', '/api/auth/mfa/status', { headers: HSU }), envSU, ctx)).json();
+  ok('stepup: default OFF (status.stepup=false, method=off)', js.ok === true && js.stepup === false && js.method === 'off', JSON.stringify(js));
+  let jc = await (await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HSU, body: { provider: 'paypal', secret: 'PPX', meta: { client_id: 'CID' } } }), envSU, ctx)).json();
+  ok('stepup OFF: paypal connect succeeds with NO code (no gate when off)', jc.ok === true && !jc.mfa_required, JSON.stringify(jc));
+
+  // (2) cannot enable step-up without an MFA method (no-lockout invariant)
+  let je = await (await worker.fetch(mkReq('POST', '/api/auth/mfa/stepup', { headers: HSU, body: { on: true, password: PW } }), envSU, ctx)).json();
+  ok('stepup: enable refused while MFA off (reason:no_mfa) -> never strands a factor-less user', je.ok === false && je.reason === 'no_mfa' && suFlag() === 0, JSON.stringify(je));
+
+  // (3) set up TOTP (yields 10 backup codes), then enable step-up. Enabling REQUIRES proof (wrong -> mfa_required, flag 0)
+  let jSetup = await (await worker.fetch(mkReq('POST', '/api/auth/mfa/totp/setup', { headers: HSU, body: {} }), envSU, ctx)).json();
+  const keyBytes = _b32decode(jSetup.secret), backup = jSetup.backup_codes || [];
+  await worker.fetch(mkReq('POST', '/api/auth/mfa/totp/confirm', { headers: HSU, body: { code: await _totpAt(keyBytes, Math.floor(Date.now() / 1000), 30, 6) } }), envSU, ctx);
+  let jbad = await (await worker.fetch(mkReq('POST', '/api/auth/mfa/stepup', { headers: HSU, body: { on: true, password: 'WRONGPASS' } }), envSU, ctx)).json();
+  ok('stepup: enable with WRONG proof -> mfa_required, flag stays 0', jbad.ok === false && jbad.mfa_required === true && suFlag() === 0, JSON.stringify(jbad));
+  let jon = await (await worker.fetch(mkReq('POST', '/api/auth/mfa/stepup', { headers: HSU, body: { on: true, password: PW } }), envSU, ctx)).json();
+  ok('stepup: enable with correct password -> ok, DB flag=1', jon.ok === true && jon.stepup === true && suFlag() === 1, JSON.stringify(jon));
+  let js2 = await (await worker.fetch(mkReq('GET', '/api/auth/mfa/status', { headers: HSU }), envSU, ctx)).json();
+  ok('stepup: status now reports stepup:true', js2.stepup === true, JSON.stringify(js2));
+
+  // (4) ON: a payout-processor connect now REQUIRES proof; a NON-payment (tracker) connect is UNaffected
+  let jg = await (await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HSU, body: { provider: 'square', secret: 'SQX', meta: { location_id: 'L1' } } }), envSU, ctx)).json();
+  ok('stepup ON: square connect WITHOUT proof -> mfa_required (payout gated)', jg.ok === false && jg.mfa_required === true, JSON.stringify(jg));
+  let jgp = await (await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HSU, body: { provider: 'square', secret: 'SQX', meta: { location_id: 'L1' }, password: PW } }), envSU, ctx)).json();
+  ok('stepup ON: square connect WITH correct password -> succeeds', jgp.ok === true && !jgp.mfa_required, JSON.stringify(jgp));
+  let jtk = await (await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HSU, body: { provider: 'geotab', secret: JSON.stringify({ server: 's', database: 'd', user: 'u', password: 'p' }), kind: 'tracker', meta: {} } }), envSU, ctx)).json();
+  ok('stepup ON: NON-payment connect (geotab tracker) is NOT gated -> succeeds without a code', jtk.ok === true && !jtk.mfa_required, JSON.stringify(jtk));
+
+  // (5) break-glass: a BACKUP CODE (a fresh factor) satisfies the gate on a payout connect
+  let jbg = await (await worker.fetch(mkReq('POST', '/api/integrations/connect', { headers: HSU, body: { provider: 'paypal', secret: 'PPX2', meta: { client_id: 'CID2' }, code: backup[0] } }), envSU, ctx)).json();
+  ok('stepup ON: a BACKUP CODE satisfies the gate (break-glass) -> paypal connect succeeds', jbg.ok === true && !jbg.mfa_required, JSON.stringify(jbg));
+
+  // (6) ON: account-delete requires proof; wrong -> mfa_required (NOT deleted); right password -> deleted
+  const planOf = () => String((envSU.DB._db.prepare('SELECT plan FROM tenants WHERE id=?').get(tidSU) || {}).plan || '');
+  let jd0 = await (await worker.fetch(mkReq('POST', '/api/account/delete', { headers: HSU, body: { confirm: 'DELETE', reason: 'x' } }), envSU, ctx)).json();
+  ok('stepup ON: account-delete WITHOUT proof -> mfa_required (not deleted)', jd0.mfa_required === true && planOf() !== 'deleted', JSON.stringify(jd0) + ' plan=' + planOf());
+  let jd1 = await (await worker.fetch(mkReq('POST', '/api/account/delete', { headers: HSU, body: { confirm: 'DELETE', reason: 'x', password: PW } }), envSU, ctx)).json();
+  ok('stepup ON: account-delete WITH correct password -> deleted', jd1.ok === true && planOf() === 'deleted', JSON.stringify(jd1) + ' plan=' + planOf());
+}
+
+// (7) disabling MFA clears the step-up flag (no stepup-on/factor-off limbo)
+{
+  const envSD = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envSD);
+  const PW = 'correcthorsebatterystaple';
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'sd@x.com', password: PW, business: 'StepDown Co' } }), envSD, ctx);
+  const tidSD = envSD.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const uidSD = envSD.DB._db.prepare('SELECT id FROM users WHERE tenant_id=? LIMIT 1').get(tidSD).id;
+  const sSD = envSD.DB._db.prepare('SELECT id,csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidSD);
+  const HSD = { cookie: 'atlas_sid=' + sSD.id, 'x-csrf-token': sSD.csrf };
+  await worker.fetch(mkReq('POST', '/api/auth/mfa/email/enable', { headers: HSD, body: {} }), envSD, ctx);
+  await worker.fetch(mkReq('POST', '/api/auth/mfa/stepup', { headers: HSD, body: { on: true, password: PW } }), envSD, ctx);
+  ok('stepup: enabled before disable (flag=1)', Number(envSD.DB._db.prepare('SELECT mfa_stepup FROM users WHERE id=?').get(uidSD).mfa_stepup) === 1);
+  await worker.fetch(mkReq('POST', '/api/auth/mfa/disable', { headers: HSD, body: { password: PW } }), envSD, ctx);
+  const after = envSD.DB._db.prepare('SELECT mfa_method, mfa_stepup FROM users WHERE id=?').get(uidSD);
+  ok('stepup: disabling MFA clears BOTH method and the step-up flag (no limbo)', (after.mfa_method === null || after.mfa_method === undefined) && Number(after.mfa_stepup || 0) === 0, JSON.stringify(after));
 }
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise

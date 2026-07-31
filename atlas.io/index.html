@@ -3117,9 +3117,15 @@ const Atlas = (function(){
     if((val('delAcctConfirm')||'').trim().toUpperCase()!=='DELETE'){ toast('Type DELETE to confirm'); return; }
     if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to delete your account'); return; }
     var _rdet=(val('delAcctReasonDetail')||'').trim(); var _reason=_rsel+(_rdet?(' - '+_rdet):'');
+    _doAccountDelete(_reason, null); }
+  // #362: split out so an mfa_required response (owner opted into 2FA step-up) can re-issue the SAME request with a
+  // fresh code via _stepUpPrompt. proof = {code,password} or null.
+  function _doAccountDelete(_reason, proof){
     toast('Deleting your account...');
-    _api('/api/account/delete',{method:'POST',body:{confirm:'DELETE',reason:_reason}}).then(function(res){
-      if(!(res.status>=200&&res.status<300&&res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not delete the account'); return; }
+    var _b={confirm:'DELETE',reason:_reason}; if(proof){ if(proof.code)_b.code=proof.code; if(proof.password)_b.password=proof.password; }
+    _api('/api/account/delete',{method:'POST',body:_b}).then(function(res){ var j=res.json||{};
+      if(j.mfa_required){ _stepUpPrompt(function(p){ _doAccountDelete(_reason, p); }); return; }
+      if(!(res.status>=200&&res.status<300&&j.ok)){ toast(j.error||'Could not delete the account'); return; }
       try{ closeModal(); }catch(e){} try{ store.logout(); }catch(e){} S=null;
       document.body.innerHTML='<div style="max-width:440px;margin:16vh auto;padding:26px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#141414"><h2 style="margin:0 0 8px">Your account has been deleted</h2><p style="color:#667;line-height:1.6">Your Atlas Rental.io account is deactivated and your subscription cancelled. Thanks for trying Atlas.</p><p><a href="/" style="color:#1E6E4E;font-weight:600;text-decoration:none">Back to Atlas Rental.io</a></p></div>';
     }).catch(function(){ toast('Network error - please try again'); }); }
@@ -3937,14 +3943,20 @@ const Atlas = (function(){
     var sandbox=!!((document.getElementById('ppSandbox')||{}).checked);
     if(!cid||!secret){ toast('Paste both your PayPal Client ID and Secret.'); return; }
     toast('Connecting to PayPal\u2026');
-    _api('/api/integrations/connect',{method:'POST',body:{provider:'paypal', secret:secret, meta:{client_id:cid, sandbox:sandbox}}}).then(function(res){ var j=res.json||{};
-      if(!(res.status>=200&&res.status<300&&j.ok)){ toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to PayPal'); return; }
-      secret='';   // DISCARD the raw secret immediately
-      _ppState.connected=true; _ppState.sandbox=sandbox; _ppState.clientHint='\u2026'+cid.slice(-4);
-      _logEvent('billing','PayPal connected'+(sandbox?' (sandbox)':''),{connected:true});
-      closeModal(); renderSet(); _ppStatusLoad();
-      toast('PayPal connected'+(sandbox?' (sandbox)':'')+' \u2014 customers can now pay with PayPal.');
-    }).catch(function(){ toast('Could not reach the server \u2014 try again'); });
+    var _send=function(proof){   // #362: retry-able so an mfa_required (owner opted into 2FA step-up on payout changes) can re-send with a fresh code
+      var _b={provider:'paypal', secret:secret, meta:{client_id:cid, sandbox:sandbox}};
+      if(proof){ if(proof.code)_b.code=proof.code; if(proof.password)_b.password=proof.password; }
+      _api('/api/integrations/connect',{method:'POST',body:_b}).then(function(res){ var j=res.json||{};
+        if(j.mfa_required){ _stepUpPrompt(function(p){ _send(p); }); return; }
+        if(!(res.status>=200&&res.status<300&&j.ok)){ toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to PayPal'); return; }
+        secret='';   // DISCARD the raw secret immediately
+        _ppState.connected=true; _ppState.sandbox=sandbox; _ppState.clientHint='\u2026'+cid.slice(-4);
+        _logEvent('billing','PayPal connected'+(sandbox?' (sandbox)':''),{connected:true});
+        closeModal(); renderSet(); _ppStatusLoad();
+        toast('PayPal connected'+(sandbox?' (sandbox)':'')+' \u2014 customers can now pay with PayPal.');
+      }).catch(function(){ toast('Could not reach the server \u2014 try again'); });
+    };
+    _send(null);
   }
   function _modalPaypal(){
     var conn=_ppConnected();
@@ -3986,14 +3998,20 @@ const Atlas = (function(){
     var sandbox=!!((document.getElementById('sqSandbox')||{}).checked);
     if(!tok||!loc){ toast('Paste both your Square Access token and Location ID.'); return; }
     toast('Connecting to Square\u2026');
-    _api('/api/integrations/connect',{method:'POST',body:{provider:'square', secret:tok, meta:{location_id:loc, sandbox:sandbox}}}).then(function(res){ var j=res.json||{};
-      if(!(res.status>=200&&res.status<300&&j.ok)){ toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to Square'); return; }
-      tok='';   // DISCARD the raw Access Token immediately
-      _sqState.connected=true; _sqState.sandbox=sandbox; _sqState.locHint='\u2026'+loc.slice(-4);
-      _logEvent('billing','Square connected'+(sandbox?' (sandbox)':''),{connected:true});
-      closeModal(); renderSet(); _sqStatusLoad();
-      toast('Square connected'+(sandbox?' (sandbox)':'')+' \u2014 customers can now pay with Square.');
-    }).catch(function(){ toast('Could not reach the server \u2014 try again'); });
+    var _send=function(proof){   // #362: retry-able so an mfa_required (owner opted into 2FA step-up on payout changes) can re-send with a fresh code
+      var _b={provider:'square', secret:tok, meta:{location_id:loc, sandbox:sandbox}};
+      if(proof){ if(proof.code)_b.code=proof.code; if(proof.password)_b.password=proof.password; }
+      _api('/api/integrations/connect',{method:'POST',body:_b}).then(function(res){ var j=res.json||{};
+        if(j.mfa_required){ _stepUpPrompt(function(p){ _send(p); }); return; }
+        if(!(res.status>=200&&res.status<300&&j.ok)){ toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to Square'); return; }
+        tok='';   // DISCARD the raw Access Token immediately
+        _sqState.connected=true; _sqState.sandbox=sandbox; _sqState.locHint='\u2026'+loc.slice(-4);
+        _logEvent('billing','Square connected'+(sandbox?' (sandbox)':''),{connected:true});
+        closeModal(); renderSet(); _sqStatusLoad();
+        toast('Square connected'+(sandbox?' (sandbox)':'')+' \u2014 customers can now pay with Square.');
+      }).catch(function(){ toast('Could not reach the server \u2014 try again'); });
+    };
+    _send(null);
   }
   function _modalSquare(){
     var conn=_sqConnected();
@@ -9243,6 +9261,27 @@ const Atlas = (function(){
       +'</div>');
     _devHooksLoad();
   }
+  // ---- #362 MFA step-up prompt: shown when the server answers a sensitive action with {mfa_required} because this
+  // user turned on "require 2FA for sensitive actions". Collects a current 2FA code (or the account password) and
+  // hands it to the caller, which re-issues the SAME request with the proof attached. Same look as the disable modal;
+  // a backup code works here too. Cancelling (X / scrim) just drops the pending action -- nothing is changed. ----
+  var _stepUpCb=null;
+  function _stepUpPrompt(cb){ _stepUpCb=cb;
+    openModal('<div class="modal__head"><h3>Confirm it&rsquo;s you</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="desc" style="margin:0 0 14px">This is a protected action. Enter a current 2FA code (or your account password) to continue.</div>'
+      +'<div class="field"><label>Current 2FA code</label><input class="input" id="stepUpCode" placeholder="123456 or a backup code" autocomplete="one-time-code" onkeydown="if(event.key===\'Enter\')Atlas._stepUpSubmit()"></div>'
+      +'<div class="desc" style="margin:6px 0;text-align:center">or</div>'
+      +'<div class="field"><label>Account password</label><input class="input" type="password" id="stepUpPass" autocomplete="current-password" onkeydown="if(event.key===\'Enter\')Atlas._stepUpSubmit()"></div>'
+      +'<div id="stepUpErr" style="display:none;background:var(--danger-bg);color:var(--danger);font-size:12.5px;font-weight:600;border-radius:8px;padding:8px 10px;margin:2px 0 10px"></div>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas._stepUpSubmit()">Confirm</button>'
+      +'</div>');
+    setTimeout(function(){ var c=document.getElementById('stepUpCode'); if(c) c.focus(); },70);
+  }
+  function _stepUpSubmit(){ var code=(val('stepUpCode')||'').trim(), pass=(val('stepUpPass')||'').trim();
+    if(!code && !pass){ var e=document.getElementById('stepUpErr'); if(e){ e.textContent='Enter a code or your password.'; e.style.display='block'; } return; }
+    var cb=_stepUpCb; _stepUpCb=null; try{ closeModal(); }catch(_){}
+    if(cb) cb({code:code, password:pass});
+  }
   // ===== 2FA (MFA) Settings module: status + turn on / switch method / turn off. Per-PERSON, not per-tenant --
   // every signed-in team member manages their own, regardless of role (this protects THEIR login, not a shared
   // tenant setting), so it is never gated behind _canMod('settings') the way webhooks/API keys are. =====
@@ -9266,10 +9305,29 @@ const Atlas = (function(){
           +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
           +(method==='email'?'<button class="btn btn--ghost btn--sm" onclick="Atlas.openMfaSetupTotp()">Switch to authenticator app</button>':'<button class="btn btn--ghost btn--sm" onclick="Atlas.mfaEnableEmail()">Switch to email codes</button>')
           +'<button class="btn btn--sm btn--danger" onclick="Atlas.openMfaDisable()">Turn off</button>'
+          +'</div>'
+          +'<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line,rgba(0,0,0,.09))">'
+          +'<b style="color:var(--ink);font-size:14px">Extra protection for sensitive actions</b>'
+          +'<div style="font-size:12.5px;color:var(--muted);margin:2px 0 10px">'+(j.stepup?'A current 2FA code (or your password) is required before changing your payout processor or deleting the account.':'Optionally require a fresh 2FA code before changing your payout processor or deleting the account &mdash; so a stolen session alone cannot move your money or wipe your account.')+'</div>'
+          +(j.stepup?'<button class="btn btn--ghost btn--sm" onclick="Atlas.mfaStepupToggle(false)">Turn off extra protection</button>':'<button class="btn btn--primary btn--sm" onclick="Atlas.mfaStepupToggle(true)">Require 2FA for sensitive actions</button>')
           +'</div>';
       }
       el.innerHTML=html;
     }).catch(function(){ el.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load your 2FA status.</div>'; });
+  }
+  // #362: opt in / out of requiring a fresh 2FA factor for sensitive actions. Always collects a current code (or
+  // password) first via _stepUpPrompt, so a stolen session can't silently flip the protection. Cancelling changes
+  // nothing (the buttons still reflect true server state because we don't re-render on cancel).
+  function mfaStepupToggle(on){
+    _stepUpPrompt(function(p){
+      _api('/api/auth/mfa/stepup',{method:'POST',body:{on:!!on, code:p.code, password:p.password}}).then(function(res){
+        var j=res.json||{};
+        if(j.mfa_required){ toast('That code was not right. Try again.'); _mfaStatusLoad(); return; }
+        if(j.ok){ toast(on?'2FA is now required for sensitive actions':'Extra protection turned off'); }
+        else { toast(j.message||j.error||'Could not update'); }
+        _mfaStatusLoad();
+      }).catch(function(){ toast('Network error'); _mfaStatusLoad(); });
+    });
   }
   function mfaEnableEmail(){
     _api('/api/auth/mfa/email/enable',{method:'POST',body:{}}).then(function(res){
@@ -11459,7 +11517,7 @@ const Atlas = (function(){
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
-    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
+    goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkPortalLink,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,holdAuth,holdRelease,holdCapture,doCapture,
@@ -11484,7 +11542,7 @@ const Atlas = (function(){
     renderTracking,openTrackerConnect,connectTrackerLive,connectTrackerGeneric,trkPickProvider,trkGenericAuthUpdate,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
-    mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,
+    mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,mfaStepupToggle,
     S:()=>S,save2:save,setBackend};
 })();
 </script>

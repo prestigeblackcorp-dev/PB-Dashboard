@@ -568,7 +568,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.30v';
+const ATLAS_BUILD = '2026.07.31w';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2121,6 +2121,20 @@ async function _mfaCheckAnyFactor(env, user, code) {
   if (await _mfaCheckBackupCode(env, user, code)) return { ok: true, backup: true };
   return { ok: false };
 }
+// ---- #362 MFA step-up (opt-in, per-user users.mfa_stepup). A sensitive action -- changing the payout processor or
+// deleting the account -- must carry a FRESH proof-of-presence: the account password OR any current 2FA factor. A
+// stolen session cookie alone can never perform it. Mirrors the /api/auth/mfa/disable check exactly. FAIL-SAFE BY
+// CONSTRUCTION: returns true (satisfied, DO NOT block) when the flag is off (the default -> byte-identical behavior)
+// OR when the user has no MFA method configured, so opting in can never lock a user out of their own account. Backup
+// codes are the break-glass (they satisfy _mfaCheckAnyFactor). `userRow` must be the FULL users row (pw_salt/pw_hash
+// + mfa_* columns). ----
+async function _stepUpSatisfied(env, userRow, body) {
+  if (!userRow || !userRow.mfa_stepup) return true;                 // opt-in, DEFAULT OFF -> never changes existing behavior
+  if (!userRow.mfa_method) return true;                             // no second factor configured -> never block (no-lockout invariant)
+  if (body && vStr(body.password, 200) && await verifyPassword(body.password, userRow.pw_salt, userRow.pw_hash)) return true;
+  if (body && body.code && (await _mfaCheckAnyFactor(env, userRow, String(body.code).trim().slice(0, 24))).ok) return true;
+  return false;
+}
 // Read-only lockout PEEK (never mutates) -- lets the verify handler refuse ANY further attempt, correct code or
 // not, once 5 bad codes have already been recorded via rateLimit() against the SAME bucket (called only on a
 // wrong attempt, below). Fails OPEN on a DB hiccup, matching the "never lock the owner out on our own error"
@@ -3321,6 +3335,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_pending_enc TEXT").run(); } catch (e) { /* already exists -- secret generated at /totp/setup, not yet proven with a real code from the app */ }
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_backup_json TEXT").run(); } catch (e) { /* already exists -- JSON [{h:sha256hex,used:bool}] x10, hashed at rest, shown to the owner ONCE in plaintext at setup */ }
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_enabled_at INTEGER").run(); } catch (e) { /* already exists */ }
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN mfa_stepup INTEGER DEFAULT 0").run(); } catch (e) { /* #362 MFA step-up: opt-in per-user flag. When 1, a FRESH 2FA factor is required for sensitive actions (payout-processor change / account delete). 0=off (default) -> byte-identical behavior; only settable while an MFA method is active, so it can never strand a factor-less user. */ }
   // ---- real multi-user (team): the server RBAC (_can/_roleCaps) is already enforced at every mutating route; these
   // columns are simply what lets a NON-owner user exist + set a password. Additive, all nullable. ----
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN caps TEXT").run(); } catch (e) { /* per-user capability JSON override (null -> role default); read by _can. Usually already present. */ }
@@ -5756,6 +5771,10 @@ function doReset(){
         if (_isOwnerEmail(env, _actx.user.email)) return err(403, 'This account cannot be deleted here.');
         const _ab = await req.json().catch(function () { return {}; });
         if (String(_ab.confirm || '').trim().toUpperCase() !== 'DELETE') return err(400, 'Type DELETE to confirm.');
+        // #362 MFA step-up: deleting the account is irreversible -> when this owner opted in, require a fresh factor.
+        // No-op (byte-identical) when step-up is off, which is the default. Break-glass = a backup code.
+        const _adu = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(_actx.user.id).first();
+        if (!(await _stepUpSatisfied(env, _adu, _ab))) return json({ ok: false, mfa_required: true, method: (_adu && _adu.mfa_method) || 'email' });
         const _areason = String(_ab.reason || '').replace(/\s+/g, ' ').trim().slice(0, 500) || 'Not specified';
         const _atid = _actx.tenant_id;
         const _at = await env.DB.prepare('SELECT id, stripe_sub, stripe_customer FROM tenants WHERE id=?').bind(_atid).first();
@@ -8013,10 +8032,10 @@ function doReset(){
 
       // ---- MFA: current status for Settings (authed; per-USER, not per-tenant -- any team member manages their own) ----
       if (path === '/api/auth/mfa/status' && method === 'GET') {
-        const row = await env.DB.prepare('SELECT mfa_method, mfa_backup_json FROM users WHERE id=?').bind(ctx.user.id).first();
+        const row = await env.DB.prepare('SELECT mfa_method, mfa_backup_json, mfa_stepup FROM users WHERE id=?').bind(ctx.user.id).first();
         const list = row ? jparse(row.mfa_backup_json, []) : [];
         const remaining = Array.isArray(list) ? list.filter(function (c) { return !c.used; }).length : 0;
-        return json({ ok: true, method: (row && row.mfa_method) || 'off', backup_codes_remaining: remaining });
+        return json({ ok: true, method: (row && row.mfa_method) || 'off', backup_codes_remaining: remaining, stepup: !!(row && row.mfa_stepup) });
       }
 
       // ---- MFA: begin authenticator-app setup (authed). Generates a PENDING secret + the 10 backup codes; NOTHING
@@ -8074,9 +8093,30 @@ function doReset(){
         if (full && vStr(body.password, 200)) verified = await verifyPassword(body.password, full.pw_salt, full.pw_hash);
         if (!verified && full && body.code) verified = (await _mfaCheckAnyFactor(env, full, String(body.code).trim().slice(0, 24))).ok;
         if (!verified) { await audit(env, ctx, req, 'mfa.disable_fail', {}); return err(401, 'Enter your account password or a current code to turn off two-factor authentication.'); }
-        await env.DB.prepare("UPDATE users SET mfa_method=NULL, mfa_secret_enc=NULL, mfa_pending_enc=NULL, mfa_backup_json=NULL, mfa_enabled_at=NULL WHERE id=?").bind(ctx.user.id).run();
+        await env.DB.prepare("UPDATE users SET mfa_method=NULL, mfa_secret_enc=NULL, mfa_pending_enc=NULL, mfa_backup_json=NULL, mfa_enabled_at=NULL, mfa_stepup=0 WHERE id=?").bind(ctx.user.id).run();   // #362: clear step-up too -> never leave a stepup-on/factor-off limbo (the gate fail-safes on it anyway)
         await audit(env, ctx, req, 'mfa.disabled', {});
         return json({ ok: true, method: 'off' });
+      }
+
+      // ---- #362 MFA step-up: opt in/out of requiring a fresh 2FA factor for sensitive actions (payout-processor change /
+      // account delete). Per-USER (protects THIS person's login, like the rest of MFA), authed + CSRF. Enabling requires
+      // an ACTIVE MFA method (so a factor-less user can never be locked out of their own sensitive actions) AND -- like
+      // disable -- proof-of-presence (password OR a current code), so a stolen session can't silently flip it on or off. ----
+      if (path === '/api/auth/mfa/stepup' && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!await rateLimit(env, 'mfastepup:' + ctx.user.id, 12, 3600000)) return err(429, 'Please wait a moment before trying again.');
+        const body = await req.json().catch(() => ({}));
+        const full = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(ctx.user.id).first();
+        if (!full) return err(401, 'Sign in again.');
+        const on = !!body.on;
+        if (on && !full.mfa_method) return json({ ok: false, reason: 'no_mfa', message: 'Turn on two-factor authentication first, then you can require it for sensitive actions.' });
+        let verified = false;
+        if (vStr(body.password, 200)) verified = await verifyPassword(body.password, full.pw_salt, full.pw_hash);
+        if (!verified && body.code) verified = (await _mfaCheckAnyFactor(env, full, String(body.code).trim().slice(0, 24))).ok;
+        if (!verified) return json({ ok: false, mfa_required: true, method: full.mfa_method || 'email', message: 'Confirm your password or a current code.' });
+        await env.DB.prepare('UPDATE users SET mfa_stepup=? WHERE id=?').bind(on ? 1 : 0, ctx.user.id).run();
+        await audit(env, ctx, req, on ? 'mfa.stepup_on' : 'mfa.stepup_off', {});
+        return json({ ok: true, stepup: on });
       }
 
       // ---- E1: R2 file upload (session-gated). base64 data URL in -> stored in R2 -> returns a public capability URL.
@@ -9408,6 +9448,12 @@ function doReset(){
         if (!await rateLimit(env, 'intconn:' + ctx.tenant_id, 40, 3600000)) return err(429, 'Please wait a moment before trying again.');
         const body = await req.json().catch(() => ({}));
         if (!vStr(body.provider, 40) || !vStr(body.secret, 800)) return err(400, 'Provider and key required.');   // 800: room for a multi-field GPS-provider credential bundle (e.g. Bouncie client_id+secret+code+redirect)
+        // #362 MFA step-up: connecting a PAYOUT processor reroutes where booking money is captured -> gate it behind a
+        // fresh factor when this owner opted in. Non-payment integrations (GPS trackers, mailer, SMS) are untouched.
+        if (['stripe', 'paypal', 'square'].indexOf(String(body.provider).toLowerCase()) >= 0) {
+          const _icu = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(ctx.user.id).first();
+          if (!(await _stepUpSatisfied(env, _icu, body))) return json({ ok: false, mfa_required: true, method: (_icu && _icu.mfa_method) || 'email' });
+        }
         const secret_enc = await encSecret(env, body.secret, ctx.tenant_id + '|' + body.provider);   // AAD binds this ciphertext to this tenant+provider
         await env.DB.prepare('INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,provider) DO UPDATE SET secret_enc=?,meta=?,connected_at=?')
           .bind(ctx.tenant_id, body.provider, (typeof body.kind === 'string' ? body.kind : ''), secret_enc, JSON.stringify(body.meta || {}), Date.now(), secret_enc, JSON.stringify(body.meta || {}), Date.now()).run();
