@@ -4629,7 +4629,7 @@ export default {
           if (!env.OWNER_SETUP_TOKEN || !_ctEq(String(body.setupToken || ''), String(env.OWNER_SETUP_TOKEN))) { await audit(env, null, req, 'owner.claim_blocked', { email: body.email.toLowerCase() }); return err(403, 'That email is reserved for the platform owner.'); }   // #253: highest-signal denial. Constant-time compare so the setup token can't be recovered byte-by-byte via response timing.
           if (exists) {   // valid token + EXISTING owner account -> Cloudflare-gated password RESET (the owner's ONLY recovery: rotate OWNER_SETUP_TOKEN in Cloudflare, then re-run setup with a new password). No email reset is ever sent for this address.
             const _op = await hashPassword(body.password);
-            await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_op.hash, _op.salt, exists.id).run();
+            await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=?,email_verified=1 WHERE id=?').bind(_op.hash, _op.salt, exists.id).run();   // re-claiming via token also clears the verify gate: the Cloudflare token IS the proof of ownership, so an already-created (but unverified) owner account is repaired the moment it's re-claimed.
             try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=?').bind(Date.now(), exists.id).run(); } catch (e) {}   // a reset kills every stale session
             const _ou = { id: exists.id, email: body.email.toLowerCase(), tenant_id: exists.tenant_id };
             const _os = await createSession(env, _ou, req);
@@ -4669,9 +4669,12 @@ export default {
         // If the mailer is unavailable, auto-verify so a mail outage can never lock a brand-new owner out of their own account.
         await ensurePlatformSchema(env);
         try { await env.DB.prepare('UPDATE tenants SET tos_version=?, tos_accepted_at=?, tos_accepted_ip=? WHERE id=?').bind(POLICY_VERSION, now, ip, tid).run(); } catch (e) {}   // #254: record proof-of-consent (client signup gates the button on the "I agree to the Terms + Privacy Policy" checkbox)
+        // The platform owner proved ownership with OWNER_SETUP_TOKEN (a Cloudflare secret) -> no email verification is
+        // needed; auto-verify AND skip the verify email so the owner is never held at the verify gate on their own account.
+        const _isOwn = _isOwnerEmail(env, body.email);
         let _vSent = false;
-        try { const _vm = await _sendVerifyEmail(env, uid, body.email.toLowerCase()); _vSent = !!(_vm && _vm.sent); } catch (e) {}
-        try { await env.DB.prepare('UPDATE users SET email_verified=? WHERE id=?').bind(_vSent ? 0 : 1, uid).run(); } catch (e) {}
+        if (!_isOwn) { try { const _vm = await _sendVerifyEmail(env, uid, body.email.toLowerCase()); _vSent = !!(_vm && _vm.sent); } catch (e) {} }
+        try { await env.DB.prepare('UPDATE users SET email_verified=? WHERE id=?').bind((_isOwn || !_vSent) ? 1 : 0, uid).run(); } catch (e) {}
         const user = { id: uid, email: body.email.toLowerCase(), tenant_id: tid };
         const sess = await createSession(env, user, req);
         await audit(env, { tenant_id: tid, user }, req, 'signup', { email: user.email, verifyEmail: _vSent });
