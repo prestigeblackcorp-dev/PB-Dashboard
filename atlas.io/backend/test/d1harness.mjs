@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _xeroSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _trackerFetch, TRK_PROVIDERS, _b32decode, _totpAt } from '../worker.js';
+import worker, { ensurePlatformSchema, _bkPatch, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _qbSyncBooking, _xeroSyncBooking, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _trackerFetch, TRK_PROVIDERS, _b32decode, _totpAt, _creditOp, _runDunning } from '../worker.js';
 
 const SCHEMA = readFileSync(import.meta.dirname + '/../schema.sql', 'utf8');
 
@@ -939,6 +939,92 @@ if (sess) {
   const rCap = await worker.fetch(mkReq('POST', '/api/pay/capture', { headers: HMO, body: { booking: 'BKMO', kind: 'security', amountCents: 20000 } }), envMO, ctx);
   ok('money-out: capturing the security HOLD moves NO revenue (still 40000)', rCap.status === 200 && _rev() === 40000, 'status=' + rCap.status + ' rev=' + _rev());
   globalThis.fetch = _rfMO;
+}
+
+// ---- #363 BILLING coverage (audit BILLING-P1/P2: the three auto-charging loops -- dunning, platform-txn double-grant,
+// credit-CAS -- shipped untested). ----
+{
+  // (1) credit CAS: a spend deducts exactly once (free first); insufficient is refused, balance unchanged
+  const envB = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envB);
+  const _wk = Math.floor((Date.now() / 86400000 + 4) / 7);   // current credit week (no refill)
+  await envB.DB.prepare("INSERT INTO tenants (id,name,created_at,updated_at) VALUES ('TB1','CreditCo',1,1)").run();
+  await envB.DB.prepare("UPDATE tenants SET tier='pro', credits_free=10, credits_purchased=5, credits_week=? WHERE id='TB1'").bind(_wk).run();
+  const r1 = await _creditOp(envB, 'TB1', 'pro', 3);
+  const row1 = envB.DB._db.prepare("SELECT credits_free,credits_purchased FROM tenants WHERE id='TB1'").get();
+  ok('billing credit-CAS: spend 3 of 15 -> ok, free 10->7 (deducts free first, persisted via CAS)', r1.ok === true && r1.balance === 12 && Number(row1.credits_free) === 7 && Number(row1.credits_purchased) === 5, JSON.stringify(r1) + ' ' + JSON.stringify(row1));
+  const r2 = await _creditOp(envB, 'TB1', 'pro', 100);
+  ok('billing credit-CAS: spend 100 of remaining 12 -> refused (ok:false), balance unchanged', r2.ok === false && r2.balance === 12, JSON.stringify(r2));
+
+  // (2) dunning sweep: a FAILED retry reschedules +4d + attempts++, a SUCCESS stamps last, and attempts>=10 hits the cap
+  const envD = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envD);
+  envD.PLATFORM_STRIPE_KEY = 'sk_test_dun';
+  const NOWD = 2000000000000;
+  for (const [id, inv, att] of [['TDF', 'inv_fail', 2], ['TDC', 'inv_cap', 10], ['TDS', 'inv_ok', 0]]) {
+    await envD.DB.prepare("INSERT INTO tenants (id,name,created_at,updated_at) VALUES (?,?,1,1)").bind(id, id).run();
+    await envD.DB.prepare("UPDATE tenants SET plan='past_due', dunning_invoice=?, dunning_next=1, dunning_attempts=? WHERE id=?").bind(inv, att, id).run();
+  }
+  const _rfD = globalThis.fetch;
+  globalThis.fetch = (u) => { const su = String(u);
+    if (su.indexOf('inv_fail/pay') >= 0) return Promise.resolve({ ok: false, status: 402, headers: { get: () => null }, json: async () => ({ error: { message: 'card_declined' } }), text: async () => '' });
+    if (su.indexOf('inv_ok/pay') >= 0) return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ id: 'inv_ok', status: 'paid' }), text: async () => '' });
+    return Promise.resolve({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => '' });
+  };
+  await _runDunning(envD, NOWD);
+  const dF = envD.DB._db.prepare("SELECT dunning_next,dunning_attempts,dunning_last FROM tenants WHERE id='TDF'").get();
+  const dC = envD.DB._db.prepare("SELECT dunning_next FROM tenants WHERE id='TDC'").get();
+  const dS = envD.DB._db.prepare("SELECT dunning_last FROM tenants WHERE id='TDS'").get();
+  ok('billing dunning: a FAILED retry reschedules +4d + attempts 2->3', Number(dF.dunning_attempts) === 3 && Number(dF.dunning_next) === NOWD + 4 * 86400000 && Number(dF.dunning_last) === NOWD, JSON.stringify(dF));
+  ok('billing dunning: attempts>=10 hits the SAFETY CAP -> dunning_next cleared (stops auto-retry)', dC.dunning_next === null, JSON.stringify(dC));
+  ok('billing dunning: a SUCCESSFUL pay stamps dunning_last (invoice.paid flips plan separately)', Number(dS.dunning_last) === NOWD, JSON.stringify(dS));
+  globalThis.fetch = _rfD;
+
+  // (3) platform-txn idempotency: a REPLAYED credit-pack checkout grants the 500 pack exactly ONCE (UNIQUE stripe_id + .new gate)
+  const envT = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envT);
+  envT.STRIPE_WEBHOOK_SECRET = 'whsec_harness';
+  await envT.DB.prepare("INSERT INTO tenants (id,name,created_at,updated_at) VALUES ('TTX','TxCo',1,1)").run();
+  await envT.DB.prepare("UPDATE tenants SET credits_purchased=0 WHERE id='TTX'").run();
+  const _rfT = globalThis.fetch;
+  globalThis.fetch = () => Promise.resolve({ ok: false, status: 0, headers: { get: () => null }, json: async () => ({}), text: async () => '' });   // stub the receipt email
+  const evtC = { id: 'evt_credit1', type: 'checkout.session.completed', data: { object: { id: 'cs_credit1', object: 'checkout.session', amount_total: 2500, metadata: { billing: 'credits', tenant: 'TTX', email: 'c@x.com', pack: '500' } } } };
+  const bodyC = JSON.stringify(evtC); const tsC = Math.floor(Date.now() / 1000);
+  const sigC = 't=' + tsC + ',v1=' + createHmac('sha256', 'whsec_harness').update(tsC + '.' + bodyC).digest('hex');
+  await worker.fetch(mkReq('POST', '/api/stripe/webhook', { headers: { 'stripe-signature': sigC }, body: bodyC }), envT, ctx);
+  await worker.fetch(mkReq('POST', '/api/stripe/webhook', { headers: { 'stripe-signature': sigC }, body: bodyC }), envT, ctx);   // REPLAY
+  const cpT = Number(envT.DB._db.prepare("SELECT credits_purchased FROM tenants WHERE id='TTX'").get().credits_purchased);
+  ok('billing platform-txn: a REPLAYED credit-pack checkout grants the 500 pack exactly ONCE (not 1000)', cpT === 500, 'credits_purchased=' + cpT);
+  globalThis.fetch = _rfT;
+}
+
+// ---- #363 BOOKING coverage (audit BOOK-P1: the double-book overlap gate -- the crown-jewel invariant -- was untested).
+// A published qty=1 asset accepts one booking; a SECOND overlapping booking by a DIFFERENT customer (so it is not deduped)
+// is rejected 409, and exactly one active row persists (the loser is not stored). ----
+{
+  const envBK = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envBK);
+  const settings = JSON.stringify({ publicSite: { published: true, assets: [{ name: 'Model S', id: 'A1', qty: 1 }], config: {} } });
+  const money = JSON.stringify({ rateModel: 'day', tax: 0, rules: [], extras: [] });
+  await envBK.DB.prepare("INSERT INTO tenants (id,name,subdomain,plan,tier,money,settings,created_at,updated_at) VALUES ('TBK','BkCo','bkco','active','pro',?,?,1,1)").bind(money, settings).run();
+  const _rfBK = globalThis.fetch; globalThis.fetch = () => Promise.resolve({ ok: false, status: 0, headers: { get: () => null }, json: async () => ({}), text: async () => '' });   // stub the confirmation email
+  const START = Date.now() + 7 * 86400000;
+  const bk = (email) => mkReq('POST', '/api/public/bkco/book', { body: { asset: 'Model S', start: START, periods: 2, email: email, name: 'Cust', phone: '5551234567' } });
+  const rB1 = await worker.fetch(bk('c1@x.com'), envBK, ctx); const jB1 = await rB1.json();
+  ok('booking double-book: first booking of a qty=1 asset succeeds', rB1.status === 200 && jB1.ok === true && !!jB1.ref, 'status=' + rB1.status + ' ' + JSON.stringify(jB1).slice(0, 100));
+  const rB2 = await worker.fetch(bk('c2@x.com'), envBK, ctx); const jB2 = await rB2.json();
+  ok('booking double-book: a SECOND overlapping booking (qty=1, different customer) is rejected 409', rB2.status === 409, 'status=' + rB2.status + ' ' + JSON.stringify(jB2).slice(0, 100));
+  const nBK = Number(envBK.DB._db.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id='TBK' AND LOWER(status) NOT IN ('cancelled','completed')").get().c);
+  ok('booking double-book: exactly ONE active booking persisted (the losing row was not kept)', nBK === 1, 'active=' + nBK);
+  globalThis.fetch = _rfBK;
+}
+
+// ---- #363 LEGAL (audit LEGAL-P1): the owner's posted cancellation policy is DISCLOSED IN the portal agreement the customer
+// reads before paying, not merely referenced -- so a non-refundable term is provably shown before payment. ----
+{
+  const envL = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envL);
+  const settingsL = JSON.stringify({ legal: { cancelPolicy: 'NON-REFUNDABLE within 48 hours of pickup.' } });
+  await envL.DB.prepare("INSERT INTO tenants (id,name,settings,created_at,updated_at) VALUES ('TL','LegalCo',?,1,1)").bind(settingsL).run();
+  await envL.DB.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES ('BKL','TL','C','A',?,?,'pending',0,?,'PORTALTOKENLEGAL1',1,1)")
+    .bind(Date.now() + 86400000, Date.now() + 3 * 86400000, JSON.stringify({ asset: 'Model S', quote: { totalCents: 50000 }, paid: {} })).run();
+  const jL = await (await worker.fetch(mkReq('GET', '/api/portal/PORTALTOKENLEGAL1/data'), envL, ctx)).json();
+  ok('legal: the owner cancellation policy is DISCLOSED in the portal agreement (shown before pay)', typeof jL.agreement === 'string' && jL.agreement.indexOf('NON-REFUNDABLE within 48 hours') >= 0, 'agreement tail=' + String(jL.agreement || '').slice(-70));
 }
 
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise

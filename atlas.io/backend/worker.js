@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.31y';
+const ATLAS_BUILD = '2026.07.31z';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2164,7 +2164,7 @@ async function _mfaAttemptsLocked(env, bucket, max, windowMs) {
 // Named exports alongside the default fetch handler below -- inert for the deployed Worker (Cloudflare only ever
 // calls the default export), but lets backend/test/routes.mjs assert the RFC 6238 vector directly against the
 // REAL implementation instead of a hand-rolled copy.
-export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _trackerFetch, TRK_PROVIDERS, _qbToken, _qbSyncBooking, _qbPaidCents, _xeroToken, _xeroSyncBooking, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds, _squareCreds, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking };
+export { _b32encode, _b32decode, _hotp, _totpAt, _billingState, _websiteEntitled, _cardGateState, _meterAI, _aiUsageFrom, AI_PRICES, ensurePlatformSchema, _bkPatch, _bkRMW, _schemaVer, __resetSchemaReady, rateLimit, sendSms, sendEmail, _tenantIntegration, _trackerFetch, TRK_PROVIDERS, _qbToken, _qbSyncBooking, _qbPaidCents, _xeroToken, _xeroSyncBooking, _paypalToken, _paypalCreateOrder, _paypalCapture, _paypalCreditBooking, _paypalCreds, _squareCreds, _squareCreateCheckout, _squareVerifyPaid, _squareCreditBooking, _creditOp, _runDunning, _hostBlocked };
 
 // ===================== #201 Domain registrar (Dynadot RESTful v2) =====================
 // HONEST: no DYNADOT_KEY -> callers get {ok:false,reason:'no_registrar'} and the client shows an estimate only, never a fake purchase.
@@ -7504,8 +7504,13 @@ function doReset(){
             return new Response(_pageDoc('Link expired', (pr.brand.color || '#1E6E4E'), '<div class="card"><h2>This link ' + (_pRevoked ? 'was revoked' : 'has expired') + '</h2><p class="muted">For security, a booking link expires after the rental is complete. Contact ' + esc(pr.name) + ' if you still need access.</p></div>', ''), { status: 410, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
           }
         }
-        const _agrText = (pr.settings && pr.settings.legal && pr.settings.legal.agreement && pr.settings.legal.agreement.text) ||
-          (pr.name + ' - Rental Agreement.\n\nBy signing below, the renter agrees to rent the item in this booking; to return it on time and in the same condition; to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage; and to the owner\'s posted cancellation policy. The renter is responsible for the item during the rental and represents they carry valid, applicable coverage. This agreement is governed by the laws of the owner\'s jurisdiction.');
+        // #363 (audit LEGAL-P1): the owner's posted cancellation policy is now disclosed IN the agreement the customer reads +
+        // signs on the portal (above the pay buttons), not merely referenced -- so a non-refundable term can never be enforced
+        // without having been shown before payment. Additive: appends only when a policy is actually set.
+        const _cancelPol = (pr.settings && pr.settings.legal && String(pr.settings.legal.cancelPolicy || '').trim()) || '';
+        const _agrText = (((pr.settings && pr.settings.legal && pr.settings.legal.agreement && pr.settings.legal.agreement.text) ||
+          (pr.name + ' - Rental Agreement.\n\nBy signing below, the renter agrees to rent the item in this booking; to return it on time and in the same condition; to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage; and to the owner\'s posted cancellation policy. The renter is responsible for the item during the rental and represents they carry valid, applicable coverage. This agreement is governed by the laws of the owner\'s jurisdiction.'))
+          + (_cancelPol ? ('\n\nCANCELLATION POLICY (please review before you pay): ' + _cancelPol) : ''));
         if (psub === 'data' && method === 'GET') {
           return json({ ok: true, business: pr.name, brand: { color: pr.brand.color || '', logo: pr.brand.logo || '' },
             ref: brow.id, status: brow.status, asset: d.asset || '', periods: d.periods || 1,

@@ -660,7 +660,7 @@
 </div>
 
 <!-- GRANT MODAL -->
-<div id="scrim"><div class="modal" id="modal"></div></div>
+<div id="scrim"><div class="modal" id="modal" role="dialog" aria-modal="true" tabindex="-1"></div></div>
 <div class="toast" id="toast"></div>
 
 <script src="world-geo.js"></script>
@@ -712,9 +712,10 @@ function _ok200(r){ return !!(r && r.status===200 && r.json && typeof r.json==='
 var HQ_SECTIONS=['overview','revenue','members','analytics','support','ai','security','settings','control'];
 var HQ_SEC_KEY='atlas_hq_section';
 function setSection(name){ if(HQ_SECTIONS.indexOf(name)<0) name='overview';
-  var tabs=$('hqTabs'); if(tabs){ Array.prototype.forEach.call(tabs.children,function(b){ b.classList.toggle('on', b.getAttribute('data-sec')===name); }); }
+  var tabs=$('hqTabs'); if(tabs){ Array.prototype.forEach.call(tabs.children,function(b){ var _cur=b.getAttribute('data-sec')===name; b.classList.toggle('on', _cur); if(_cur) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); }); }
   var secs=document.querySelectorAll('.hqsec'); for(var i=0;i<secs.length;i++){ secs[i].classList.toggle('on', secs[i].getAttribute('data-sec')===name); }
   try{ localStorage.setItem(HQ_SEC_KEY,name); }catch(e){}
+  try{ if(window._hqA11yPass) window._hqA11yPass(); }catch(e){}
 }
 function initSections(){ var saved=''; try{ saved=localStorage.getItem(HQ_SEC_KEY)||''; }catch(e){} setSection(HQ_SECTIONS.indexOf(saved)>=0?saved:'overview'); }
 
@@ -1104,13 +1105,42 @@ function grantBody(){ var h='';
 }
 function doGrant(){ var body={tenant_id:_grant.id, action:_grant.action}; if(_grant.action==='tier')body.tier=_grant.tier; else if(_grant.action==='credits')body.credits=_grant.credits; else if(_grant.action==='trial')body.days=_grant.days;
   api('/api/admin/grant',{method:'POST',body:body}).then(function(r){ if(r.json&&r.json.ok){ closeModal(); toast('Grant applied'); loadAll(true); } else toast((r.json&&r.json.error)||'Could not apply grant'); }); }
-function closeModal(){ $('scrim').classList.remove('on'); }
+function closeModal(){ $('scrim').classList.remove('on'); try{ if(window._hqModalRestore) window._hqModalRestore(); }catch(e){} }
 $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) closeModal(); });
+/* ================= #a11y: dialog semantics + focus management + keyboardable click-divs (WCAG 2.1.1 / 2.4.3 / 4.1.2) =================
+   Additive + defensive + reversible -- no money/data/render logic changes. Admin modals open by writing #modal.innerHTML and
+   adding .on to #scrim from several call sites, so this centralizes their dialog behavior WITHOUT editing those sites, and a
+   runtime pass makes JS-rendered div/span[onclick] cards operable by keyboard (Enter/Space). Mirrors atlas.html _a11yPass + trap. */
+(function(){
+  // (A) keyboardable click-divs: role=button + tabindex + Enter/Space -> click; skip scrims + wrappers that already hold a real control.
+  function _a11yPass(){
+    try{
+      document.querySelectorAll('div[onclick],span[onclick]').forEach(function(el){
+        if(el.id==='scrim'||el.classList.contains('scrim')||el.classList.contains('modal')) return;
+        if(el.querySelector('button,a,input,select,textarea')) return;
+        if(!el.getAttribute('role')) el.setAttribute('role','button');
+        if(el.getAttribute('tabindex')===null) el.setAttribute('tabindex','0');
+        if(!el._a11yk){ el._a11yk=1; el.addEventListener('keydown',function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); el.click(); } }); }
+      });
+    }catch(e){}
+  }
+  window._hqA11yPass=_a11yPass;
+  try{ new MutationObserver(function(){ if(_a11yPass._t) return; _a11yPass._t=setTimeout(function(){ _a11yPass._t=0; _a11yPass(); },250); }).observe(document.body||document.documentElement,{childList:true,subtree:true}); }catch(e){}
+  try{ _a11yPass(); }catch(e){}
+  // (B) modal dialog focus: #modal is role=dialog aria-modal; label it from its <h3>, remember the opener, and move focus in on open.
+  var _mLast=null;
+  function _mFocusables(){ var m=$('modal'); if(!m) return []; return Array.prototype.slice.call(m.querySelectorAll('a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(function(el){ return el.offsetWidth>0||el.offsetHeight>0||el===document.activeElement; }); }
+  function _mOpened(){ try{ var m=$('modal'); if(!m) return; _mLast=document.activeElement; var h=m.querySelector('h3'); if(h) m.setAttribute('aria-label',(h.textContent||'').replace(/\s+/g,' ').trim().slice(0,90)); var f=_mFocusables(); if(f.length){ f[0].focus(); } else { m.focus(); } }catch(e){} }
+  window._hqModalRestore=function(){ try{ var el=_mLast; _mLast=null; if(el&&el.focus) el.focus(); }catch(e){} };
+  try{ var sc=$('scrim'); var _was=!!(sc&&sc.classList.contains('on')); new MutationObserver(function(){ var on=!!sc.classList.contains('on'); if(on&&!_was){ _was=true; _mOpened(); } else if(!on&&_was){ _was=false; } }).observe(sc,{attributes:true,attributeFilter:['class']}); }catch(e){}
+  // (C) focus trap: while the modal is open, Escape closes it and Tab/Shift+Tab wrap focus within #modal.
+  try{ document.addEventListener('keydown',function(e){ var sc=$('scrim'); if(!sc||!sc.classList.contains('on')) return; if(e.key==='Escape'){ e.preventDefault(); closeModal(); return; } if(e.key!=='Tab') return; var m=$('modal'); var f=_mFocusables(); if(!f.length){ e.preventDefault(); try{ m.focus(); }catch(_e){} return; } var first=f[0],last=f[f.length-1],a=document.activeElement; if(!m.contains(a)){ e.preventDefault(); first.focus(); return; } if(e.shiftKey&&a===first){ e.preventDefault(); last.focus(); } else if(!e.shiftKey&&a===last){ e.preventDefault(); first.focus(); } }); }catch(e){}
+})();
 
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.07.31y';
+var ATLAS_EXPECT_BUILD='2026.07.31z';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
