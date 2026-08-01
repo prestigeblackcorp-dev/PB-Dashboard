@@ -1,0 +1,23 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# Pre-commit secret guard. Blocks any commit that ADDS a credential-shaped
+# string (GitHub token, Stripe/Atlas key, AWS/Google key, Slack token, or a
+# PRIVATE KEY block). Never prints the secret itself.
+#
+# Activate per clone:  git config core.hooksPath .githooks
+# Deliberate override:  git commit --no-verify
+# ---------------------------------------------------------------------------
+patterns='(ghp_[A-Za-z0-9]{20,})|(github_pat_[A-Za-z0-9_]{20,})|(sk_live_[A-Za-z0-9]{16,})|(sk_test_[A-Za-z0-9]{16,})|(rk_live_[A-Za-z0-9]{16,})|(whsec_[A-Za-z0-9]{16,})|(atl_live_[A-Za-z0-9]{16,})|(AKIA[0-9A-Z]{16})|(AIza[0-9A-Za-z_-]{30,})|(xox[baprs]-[A-Za-z0-9-]{10,})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(x-access-token:ghp_)'
+
+# Scan ONLY the added lines of the staged diff. Exclude .githooks/ (this scanner
+# legitimately contains the pattern strings and would otherwise flag itself).
+if git diff --cached --no-color -U0 -- . ':(exclude).githooks/**' | grep -E '^\+' | grep -qEI "$patterns"; then
+  echo ""
+  echo "  [BLOCKED] pre-commit: a credential-shaped string is in your staged changes."
+  echo "            (GitHub token / Stripe / Atlas / AWS / Google / Slack key, or a PRIVATE KEY.)"
+  echo "            Real secrets belong in Cloudflare env or a secret store -- never in git."
+  echo "            Inspect:  git diff --cached      Override once (deliberate):  git commit --no-verify"
+  echo ""
+  exit 1
+fi
+exit 0
