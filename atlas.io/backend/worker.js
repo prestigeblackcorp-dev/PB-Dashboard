@@ -1732,6 +1732,7 @@ function priceQuote(money, publishedAssets, assetName, periods, extras, startMs)
   var p = Math.max(1, Math.min(3650, parseInt(periods, 10) || 1));
   var a = (publishedAssets || []).filter(function (x) { return x && x.name === assetName; })[0];
   var rate = (a && Number(a.rate) > 0) ? Number(a.rate) : (Number(money.baseRate) || 0);
+  var _pqWeekly = (a && Number(a.weeklyRate) > 0) ? Number(a.weeklyRate) : 0, _pqDep = (a && Number(a.deposit) > 0) ? Number(a.deposit) : 0;   // per-asset flat weekly rate + security deposit (from the published snapshot; 0 = none -> byte-identical to before)
   // Booking G5: paid EXTRAS. Prices are SERVER-AUTHORITATIVE (the caller resolves each id against money.extras -- never trusts a client-sent price). Mirror the client calcQuote exLines exactly so the public estimate == what is charged.
   var _bkMs = p * _periodMsOf(money.rateModel || 'day');
   var _exLines = [], _exTotal = 0;
@@ -1743,18 +1744,21 @@ function priceQuote(money, publishedAssets, assetName, periods, extras, startMs)
     _exLines.push({ name: x.name, amt: amt }); _exTotal += amt;
   });
   var _rm = _smartRateMult(money, startMs || 0, p, money.rateModel);   // Smart Pricing Increment 1: multiplier on the RATE only (extras/fees/tax/discount untouched). DEFAULT OFF or no startMs -> _rm===1, byte-identical to before.
-  var gross = rate * _rm * p + _exTotal;
+  var _pqRent = rate * _rm * p, _pqUsedWeekly = false;
+  if (_pqWeekly > 0 && (money.rateModel || 'day') === 'day' && p >= 7) { var _pqWks = Math.floor(p / 7), _pqRem = p % 7; _pqRent = (_pqWks * _pqWeekly + _pqRem * rate) * _rm; _pqUsedWeekly = true; }   // per-asset weekly: full weeks at the weekly rate + remainder at the daily rate (mirrors client calcQuote)
+  var gross = _pqRent + _exTotal;
   // AUTO long-term discount (mirror the dashboard's calcQuote so the live site charges what the owner's engine promises).
   var rm = money.rateModel || 'day';
   var wkP = (rm === 'hour' ? 168 : rm === 'week' ? 2 : rm === 'month' ? 999999 : 7), moP = (rm === 'hour' ? 672 : rm === 'week' ? 4 : rm === 'month' ? 12 : 28);
   var disc = 0;
-  if (money.monthlyDisc && p >= moP) disc = gross * money.monthlyDisc / 100;
-  else if (money.weeklyDisc && p >= wkP) disc = gross * money.weeklyDisc / 100;
+  if (!_pqUsedWeekly) { if (money.monthlyDisc && p >= moP) disc = gross * money.monthlyDisc / 100;
+  else if (money.weeklyDisc && p >= wkP) disc = gross * money.weeklyDisc / 100; }   // per-asset flat weekly IS the operator's weekly price -> skip the % long-term discount when it applied
   disc = Math.max(0, Math.min(disc, gross));
   var c = function (x) { return Math.round((Number(x) || 0) * 100); };
   var q = { rateCents: c(rate), periods: p, grossCents: c(gross), subtotalCents: c(gross - disc), taxPct: Number(money.tax) || 0, discountCents: c(disc), extrasCents: c(_exTotal), extrasLines: _exLines.map(function (l) { return { name: l.name, amountCents: c(l.amt) }; }) };   // G5: extras itemized (cents) for the receipt + dashboard
   q.rateMult = _rm;   // Smart Pricing Increment 1: expose the applied multiplier (1 when off / no start date) for the dashboard + receipt to show
-  return _reprice(money, q);
+  var _pqMoney = money; if (_pqDep > 0) { _pqMoney = {}; for (var _pqk in money) _pqMoney[_pqk] = money[_pqk]; _pqMoney.hold = { type: 'fixed', value: _pqDep, collect: (money.hold && money.hold.collect) || 'hold', when: (money.hold && money.hold.when) || 'pickup' }; }   // per-asset security deposit -> per-asset hold for securityFor (no _pqDep -> money unchanged)
+  return _reprice(_pqMoney, q);
 }
 // Recompute FEES (owner money-rules: card %, delivery, cleaning), tax + total + deposit from the current subtotal. Mirrors the
 // dashboard's calcQuote so the live site quotes the same, and stays correct after a promo further reduces the subtotal.
@@ -4962,7 +4966,7 @@ function doReset(){
             brand: { color: prof.brand.color || '', logo: prof.brand.logo || '', initial: prof.brand.initial || (prof.name || 'A')[0] },
             headline: pubSite.headline || '', about: pubSite.about || '',
             unit: cfg.unit || 'day', noun: cfg.noun || 'item',
-            assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '', minLen: Number(a.minLen) || 0, maxLen: Number(a.maxLen) || 0, extraIds: Array.isArray(a.extraIds) ? a.extraIds : null, qty: Math.max(1, Number(a.qty) || 1) }; }),   // G5: extraIds = subset of extras this asset offers (null/absent = all). X3: qty = stock/unit count (>=1).
+            assets: pubAssets.map(function (a) { return { name: a.name, rate: Number(a.rate) || 0, type: a.type || '', photo: a.photo || '', desc: a.desc || '', minLen: Number(a.minLen) || 0, maxLen: Number(a.maxLen) || 0, extraIds: Array.isArray(a.extraIds) ? a.extraIds : null, qty: Math.max(1, Number(a.qty) || 1), weeklyRate: Number(a.weeklyRate) || 0, deposit: Number(a.deposit) || 0 }; }),   // G5: extraIds = subset of extras this asset offers (null/absent = all). X3: qty = stock/unit count (>=1).
             extras: ((prof.money && prof.money.extras) || []).map(function (e) { return { id: String(e.id || ''), name: String(e.name || 'Extra').slice(0, 60), price: Number(e.price) || 0, per: String(e.per || 'flat') }; }),   // G5: paid add-on catalog for the public form. The /book intake RE-RESOLVES each selected id against this same server list, so a client can never forge an extra price.
             config: { tax: Number(prof.money.tax) || 0, hasDeposit: depositFor(prof.money, 1) > 0, currency: cfg.currency || 'usd', terms: cfg.terms || '', collectPhone: cfg.collectPhone !== false, collectDelivery: !!(cfg.collectDelivery || (cfg.fields && cfg.fields.delivery)), rateModel: prof.money.rateModel || 'day', weeklyDisc: Number(prof.money.weeklyDisc) || 0, monthlyDisc: Number(prof.money.monthlyDisc) || 0, rules: (prof.money.rules || []).filter(function (r) { return r && r.on; }).map(function (r) { return { name: String(r.name || 'Fee').slice(0, 40), kind: r.kind === 'percent' ? 'percent' : 'flat', value: Number(r.value) || 0, taxable: !!r.taxable }; }) },
             promos: (function () { var _t = new Date().toISOString().slice(0, 10); return ((prof.settings && prof.settings.promos) || []).filter(function (p) { return p && p.active !== false && !p.personal && !p.customer && !p.cust && !(p.expiry && _t > p.expiry) && !(p.cap && (p.used || 0) >= p.cap); }).map(function (p) { return { code: String(p.code || '').toUpperCase(), type: p.type === 'pct' ? 'pct' : 'amt', value: Number(p.value) || 0, minDays: Number(p.minDays) || 0 }; }); })(),
@@ -11765,11 +11769,35 @@ function _pbmCustomer(b) {
   const id = 'pbcust-' + (email ? _pbmSlug(email) : _pbmSlug(b.name) + '-' + String(b.id).slice(-6));
   return { id: id, name: String(b.name || 'Customer'), email: email || '', phone: String(b.phone || ''), data: { source: 'pb-mirror', readOnly: true, pbBookingId: b.id } };
 }
+// EXACT per-vehicle pricing for the Prestige Black fleet (matches PB's VEHICLE_COSTS/VEHICLE_MILEAGE) -- seeded onto a
+// mirrored asset on FIRST create so the owner's Atlas prices exactly like PB. Owner edits win afterward (assets are
+// created once; a re-sync never rewrites them -- see _pbSyncWrite). A vehicle NOT in this table just gets its day-rate
+// (rev/days) and is fully editable. This block is the ONLY PB-specific data; every field it sets is a generic per-asset field.
+const _PB_VEH_CATALOG = {
+  'Corvette': { deposit: 750, weeklyRate: 1900, usageAllow: 150, overageRate: 2, usageUnit: 'miles' },
+  'Corvette Z51': { deposit: 750, weeklyRate: 1900, usageAllow: 150, overageRate: 2, usageUnit: 'miles' },
+  'BMW M3': { deposit: 750, weeklyRate: 2200, usageAllow: 150, overageRate: 3.5, usageUnit: 'miles' },
+  'BMW i4': { deposit: 300, weeklyRate: 950, usageAllow: 200, overageRate: 1.5, usageUnit: 'miles' },
+  'Macan': { deposit: 500, weeklyRate: 1750, usageAllow: 200, overageRate: 2, usageUnit: 'miles' },
+  'Porsche Boxster S': { deposit: 500, weeklyRate: 1250, usageAllow: 150, overageRate: 3, usageUnit: 'miles' },
+  'C300': { deposit: 500, weeklyRate: 1250, usageAllow: 200, overageRate: 1.25, usageUnit: 'miles' },
+  'Accord': { deposit: 200, weeklyRate: 455, usageAllow: 200, overageRate: 0.5, usageUnit: 'miles' },
+  'Lambo Huracan': { deposit: 1000, usageAllow: 125, overageRate: 10, usageUnit: 'miles' },
+  'Lambo Urus': { deposit: 1000, usageAllow: 125, overageRate: 10, usageUnit: 'miles' },
+  'Escalade Rental': { deposit: 500, usageAllow: 150, overageRate: 5, usageUnit: 'miles' },
+  'G Wagon': { deposit: 500, usageAllow: 150, overageRate: 5, usageUnit: 'miles' },
+  'Polaris Slingshot': { deposit: 250, weeklyRate: 1500, usageAllow: 300, overageRate: 1, usageUnit: 'miles' }
+};
 function _pbmAsset(b) {
   const name = String(b.vehicle || 'Vehicle'); const vi = b.vehicleInfo || {};
   const days = Math.max(1, Number(b.days) || 1);
-  const dayRate = (Number(b.revenue) > 0 && b.type !== 'chauffeur') ? _pbmMoney(Number(b.revenue) / days) : 0;   // best-effort rate; a later Atlas edit can refine
-  return { id: 'pbveh-' + _pbmSlug(name), name: name, type: (String(b.type || 'rental') === 'chauffeur') ? 'chauffeur' : 'car', status: 'available', day_rate_cents: dayRate, qty: 1, info: { year: vi.year || '', make: vi.make || '', model: vi.model || '', color: vi.color || '', vin: vi.vin || '', source: 'pb-mirror' } };
+  const dayRateCents = (Number(b.revenue) > 0 && b.type !== 'chauffeur') ? _pbmMoney(Number(b.revenue) / days) : 0;   // best-effort daily rate; the catalog/owner refines
+  const id = 'pbveh-' + _pbmSlug(name), type = (String(b.type || 'rental') === 'chauffeur') ? 'chauffeur' : 'car';
+  // the client's _srvUnshape returns row.info AS the asset, so name/rate/status/pricing MUST all live inside info.
+  const asset = { id: id, name: name, type: type, status: 'available', rate: dayRateCents / 100, qty: 1, year: vi.year || '', make: vi.make || '', model: vi.model || '', color: vi.color || '', vin: vi.vin || '', source: 'pb-mirror', readOnly: true };
+  const cat = _PB_VEH_CATALOG[name];
+  if (cat) { if (cat.deposit) asset.deposit = cat.deposit; if (cat.weeklyRate) asset.weeklyRate = cat.weeklyRate; if (cat.usageAllow) asset.usageAllow = cat.usageAllow; if (cat.overageRate) asset.overageRate = cat.overageRate; if (cat.usageUnit) asset.usageUnit = cat.usageUnit; }
+  return { id: id, name: name, type: type, status: 'available', day_rate_cents: dayRateCents, qty: 1, info: asset };
 }
 function _pbmDocRefs(b) {   // references only -- the bytes never leave PB; viewUrl is a signed, expiring view-through link
   const kinds = [];
@@ -11815,11 +11843,12 @@ function _pbmBooking(b, cust, asset) {
   return { id: b.id, customer_id: cust.id, asset_id: asset.id, starts: starts, ends: ends, status: stD1, data: data, _revenue: total };
 }
 async function _pbSyncWrite(env, tenantId, coll, row) {   // idempotent upsert by preserved PB id; reuses patchFields' domain whitelist
+  const existing = await env.DB.prepare('SELECT id FROM ' + coll + ' WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
+  if (coll === 'assets' && existing) return 'kept';   // assets are CREATED ONCE then owner-managed (rate/deposit/weekly/usage all editable) -> a re-sync must NEVER clobber those edits. Bookings + customers still upsert to reflect PB.
   const pf = patchFields(coll, row); const cols = pf.cols, vals = pf.vals;
   if (coll === 'bookings' && Number(row._revenue) > 0) { cols.push('revenue_cents'); vals.push(_pbmMoney(row._revenue)); }   // committed-offline PB revenue -> server revenue_cents (P&L + GMV)
   if (!cols.length) return 'skip';
   const hasUpd = (coll === 'assets' || coll === 'bookings'); const now = Date.now();
-  const existing = await env.DB.prepare('SELECT id FROM ' + coll + ' WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
   if (existing) {
     const uCols = cols.slice(), uVals = vals.slice(); if (hasUpd) { uCols.push('updated_at'); uVals.push(now); }
     await env.DB.prepare('UPDATE ' + coll + ' SET ' + uCols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=?').bind(...uVals, row.id, tenantId).run();
