@@ -7777,7 +7777,20 @@ function doReset(){
       }
 
       // ---- everything below requires a valid session ------------------------
-      const ctx = await resolveSession(env, req);
+      let ctx = await resolveSession(env, req);
+      // ---- PB<->Atlas BRIDGE: developer-platform WRITE access via a tenant API key -------------------------------
+      // When there is NO browser session, a tenant's OWN API key (atl_live_...) may authorize the generic /api/data
+      // collection CRUD -- and ONLY that (non-GET; reads keep going through the curated, rate-limited /api/v1). Gated
+      // behind the SAME dev_api_enabled platform switch as the read API (OFF by default), so this is completely inert
+      // until the owner turns the developer surface on. The synthetic context is tenant-scoped and carries TENANT-owner
+      // caps (so the existing _can() write-gate at the CRUD block passes) but explicitly NO platform-owner authority
+      // (isOwner:false, comp:null), and is hard-limited to /api/data/* right here -- so a key can never reach the
+      // account / admin / billing / MFA / owner routes below. It then flows through the EXACT same id-preserving,
+      // CAS-guarded, stale-push-guarded write path as a real dashboard edit, so a mirror can never diverge or double-write.
+      if (!ctx && method !== 'GET' && /^\/api\/(data\/[a-z]+|tenant\/profile)(?:\/|$)/.test(path) && (await _pcfgGet(env, 'dev_api_enabled', '0')) === '1') {
+        const _ak = await _apiKeyAuth(env, req);
+        if (_ak && _ak.tenant_id) ctx = { tenant_id: _ak.tenant_id, viaApiKey: true, actor: 'apikey:' + _ak.keyId, isOwner: false, comp: null, user: { role: 'owner', email: '', id: 'apikey:' + _ak.keyId, caps: null }, session: { id: null, csrf: null } };
+      }
       // TAKE CONTROL trap: a TRAPPED owner's every authenticated request is silently logged (IP/geo/ISP/device/action)
       // to the honeypot incident feed, non-blocking. Only reached for an owner session (rare) + only writes when the
       // trap is on -> ~zero cost for normal traffic. The owner still moves freely (decoy) so they don't realize it.
@@ -8553,7 +8566,7 @@ function doReset(){
           return json({ ok: true, profile: t ? tenantProfile(t) : null, credits: t ? (await _creditOp(env, ctx.tenant_id, null, 0)).balance : null, websiteEntitled: t ? _websiteEntitled(t, ctx.isOwner, ctx.comp) : false, domainRenewal: _domRenew282, assetCap: t ? await _assetCapFor(env, ctx.tenant_id) : null, assetUnlocks: t ? (_hqJson(t.asset_unlocks, []) || []) : [], assetUnlockCents: ASSET_UNLOCK_CENTS, assetUnlockUnits: ASSET_UNLOCK_UNITS, referralEnabled: (await _pcfgGet(env, 'referral_enabled', '0')) === '1', policyCurrent: POLICY_VERSION, policyAccepted: (t && t.tos_version) || null });
         }
         if (method === 'PUT') {
-          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (!ctx.viaApiKey && !csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');   // the bridge key is its own bearer credential (CSRF N/A); its writes are hard-restricted to BRAND ONLY below (money/settings branches are gated off for viaApiKey), so it can never touch money rules or the live-site settings
           if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
           if (!_can(ctx, 'pricing') && !_can(ctx, 'webEdit') && !_can(ctx, 'settings')) return err(403, 'You do not have permission to edit money rules, the website, or settings.');
           const body = await req.json().catch(function () { return {}; });
@@ -8563,8 +8576,8 @@ function doReset(){
             const _brand = (typeof _bl === 'string' && _bl && !/^data:image\//i.test(_bl) && !/^https:\/\//i.test(_bl)) ? Object.assign({}, body.brand, { logo: '' }) : body.brand;
             sets.push('brand=?'); vals.push(JSON.stringify(_brand));
           }
-          if (body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }
-          if (body.settings && typeof body.settings === 'object') {
+          if (!ctx.viaApiKey && body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }   // key-auth (bridge) never writes money rules
+          if (!ctx.viaApiKey && body.settings && typeof body.settings === 'object') {   // key-auth (bridge) never writes the live-site settings (publicSite/legal/trackers/etc.)
             // ---- #278 FEATURE-LEVEL PAYMENT GATING: server-authoritative, flag-gated OFF by default (platform_config.
             // feature_gate_enabled). Building/editing/previewing the site (this same PUT, with settings.publicSite.
             // published anything other than true) is ALWAYS free -- only actually GOING live requires entitlement.
@@ -8799,8 +8812,9 @@ function doReset(){
           const _items = rows.results || [];
           return json({ items: _items, limit: _lim, offset: _off, count: _items.length, hasMore: _items.length === _lim });
         }
-        // all writes: CSRF + origin
-        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        // all writes: CSRF + origin -- a tenant API key is its own bearer credential (no cookie/browser to forge), so
+        // CSRF is N/A for key-auth (ctx.viaApiKey); every session-authed write still requires the token exactly as before.
+        if (!ctx.viaApiKey && !csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
         // server-side RBAC floor: a read-only member can never mutate tenant data, even with a valid session + CSRF
         if (ctx.user && ctx.user.role === 'viewer') return err(403, 'Your role is read-only.');
         { const _needW = ({ assets: 'fleetEdit', bookings: 'bookEdit', charges: 'bookEdit', customers: 'customersEdit' })[coll]; if (_needW && !_can(ctx, _needW)) return err(403, 'You do not have permission to modify ' + coll + '.'); }   // X1: dropped promos/ledger (retired collections)   // G7: customer WRITES gate on customersEdit (view stays on the customers module); _can() inherits customersEdit from customers for legacy cap sets
