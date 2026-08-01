@@ -1,7 +1,15 @@
 name: Deploy Atlas Worker
 
 # Automated worker deploy = the end of hand-pasting into Cloudflare (and of the "I pasted it but nothing changed"
-# drift). Every push that touches the worker runs the smoke test FIRST; only a green test deploys.
+# drift). Every push that touches the worker runs the gates FIRST; only all-green deploys.
+#
+# OWNER ACTION (audit OPS-P0): this is the CANONICAL corrected workflow. Copy it over the live file:
+#   cp atlas.io/backend/ci/deploy-worker.yml .github/workflows/deploy-worker.yml
+# Two changes vs. the currently-live .github/workflows/deploy-worker.yml: (1) the runner is bumped to Node 22 so
+# node:sqlite is available; (2) the real-D1 money harness + the two money-CAS/concurrency harnesses are now GATES --
+# a regression that double-credits a Stripe/PayPal/Square webhook, breaks #363 G5, or double-subtracts a refund now
+# FAILS the build instead of deploying. (Verified locally on Node 22: d1harness 188/0, money_cas 51/0,
+# money-concurrency 14/0; smoke + routes green on Node 20.)
 
 on:
   push:
@@ -28,15 +36,28 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'   # was '20'; 22 is needed for node:sqlite (the real-D1 money harness) and runs the Node-20 tests unchanged
 
-      # GATE: a broken worker (won't load, bad build stamp, delete regression, bad auth) fails here and never deploys.
+      # GATE 1: a broken worker (won't load, bad build stamp, delete regression, bad auth) fails here and never deploys.
       - name: Smoke test (mock-D1, no network)
         run: node test/smoke.mjs
 
-      # Second gate: money path (payment go-live self-test) + richer health fields.
+      # GATE 2: money go-live self-test + richer health fields.
       - name: Route tests (money path + health)
         run: node test/routes.mjs
+
+      # GATE 3 (audit OPS-P0): the REAL-D1 money harness -- proves the Stripe/PayPal/Square webhook crediting is
+      # no-double-credit + #363 G5 REPLACE + refund-idempotent, plus the admin-CSRF / SSRF / MFA step-up guards, against
+      # a real sqlite DB the mock-D1 in smoke/routes can never exercise. This is the gate that was missing.
+      - name: Money integrity harness (real-D1)
+        run: node --experimental-sqlite test/d1harness.mjs
+
+      # GATE 4 + 5: the CAS + concurrency invariants (Node-20-compatible, no sqlite needed).
+      - name: Money CAS invariants
+        run: node test/money_cas_harness.mjs
+
+      - name: Money concurrency invariants
+        run: node test/money-concurrency.mjs
 
       # Dry run surfaces any binding it would add/remove before the real deploy touches production.
       - name: Deploy preview (dry run)
@@ -54,9 +75,14 @@ jobs:
       # Post-deploy: confirm the LIVE worker now serves the build we just shipped (catches a silent no-op deploy).
       - name: Verify live build stamp
         run: |
-          sleep 6
           EXPECT=$(grep -oE "ATLAS_BUILD = '[^']+'" worker.js | grep -oE "'[^']+'" | tr -d "'")
-          LIVE=$(curl -s https://atlasrental.io/api/health | grep -oE '"build":"[^"]*"' | head -1 | cut -d'"' -f4)
-          echo "expected=$EXPECT live=$LIVE"
-          if [ "$EXPECT" != "$LIVE" ]; then echo "::error::Live build ($LIVE) != shipped build ($EXPECT)"; exit 1; fi
-          echo "Live worker is serving $LIVE"
+          echo "expecting build $EXPECT"
+          LIVE=""
+          for i in $(seq 1 8); do
+            LIVE=$(curl -s "https://atlasrental.io/api/health?cb=${i}-${GITHUB_RUN_ID}" | grep -oE '"build":"[^"]*"' | head -1 | cut -d'"' -f4)
+            echo "attempt $i: live=$LIVE"
+            [ "$EXPECT" = "$LIVE" ] && break
+            sleep 10
+          done
+          if [ "$EXPECT" != "$LIVE" ]; then echo "::error::Live build ($LIVE) != shipped build ($EXPECT) after 8 tries"; exit 1; fi
+          echo "Live worker is serving $EXPECT"
