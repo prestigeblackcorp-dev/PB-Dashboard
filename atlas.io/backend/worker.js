@@ -4620,13 +4620,24 @@ export default {
         const body = await req.json().catch(() => ({}));
         if (!vEmail(body.email) || !vStr(body.password, 200) || body.password.length < 8) return err(400, 'Valid email and 8+ char password required.');
         if (!vStr(body.business, 120)) return err(400, 'Business name required.');
-        const exists = await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(body.email.toLowerCase()).first();
-        if (exists) return err(409, 'That email already has an account.');
+        const exists = await env.DB.prepare('SELECT id,tenant_id FROM users WHERE email=?').bind(body.email.toLowerCase()).first();
         // Reserve the platform-owner email: isOwner is granted by email match (see resolveSession), so a stranger who
         // registers OWNER_EMAIL first would become platform admin. The real owner claims it with OWNER_SETUP_TOKEN
-        // (a Worker secret set at deploy); without a matching token, the reserved email cannot be signed up.
+        // (a Worker secret); without a matching token, the reserved email cannot be signed up. The owner email is
+        // CLOUDFLARE-TOKEN-GATED end to end -- it is ALSO excluded from every emailed reset (see forgot-password + reset).
         if (_isOwnerEmail(env, body.email)) {
-          if (!env.OWNER_SETUP_TOKEN || !_ctEq(String(body.setupToken || ''), String(env.OWNER_SETUP_TOKEN))) { await audit(env, null, req, 'owner.claim_blocked', { email: body.email.toLowerCase() }); return err(403, 'That email is reserved for the platform owner.'); }   // #253: highest-signal denial -- someone tried to register the reserved owner email. Constant-time compare so the setup token can't be recovered byte-by-byte via response timing.
+          if (!env.OWNER_SETUP_TOKEN || !_ctEq(String(body.setupToken || ''), String(env.OWNER_SETUP_TOKEN))) { await audit(env, null, req, 'owner.claim_blocked', { email: body.email.toLowerCase() }); return err(403, 'That email is reserved for the platform owner.'); }   // #253: highest-signal denial. Constant-time compare so the setup token can't be recovered byte-by-byte via response timing.
+          if (exists) {   // valid token + EXISTING owner account -> Cloudflare-gated password RESET (the owner's ONLY recovery: rotate OWNER_SETUP_TOKEN in Cloudflare, then re-run setup with a new password). No email reset is ever sent for this address.
+            const _op = await hashPassword(body.password);
+            await env.DB.prepare('UPDATE users SET pw_hash=?,pw_salt=? WHERE id=?').bind(_op.hash, _op.salt, exists.id).run();
+            try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=?').bind(Date.now(), exists.id).run(); } catch (e) {}   // a reset kills every stale session
+            const _ou = { id: exists.id, email: body.email.toLowerCase(), tenant_id: exists.tenant_id };
+            const _os = await createSession(env, _ou, req);
+            await audit(env, { tenant_id: exists.tenant_id, user: _ou }, req, 'owner.creds_reset_via_token', {});
+            return json({ ok: true, csrf: _os.csrf, tenant_id: exists.tenant_id, reset: true, ip: (req.headers.get('CF-Connecting-IP') || ''), verified: 1, billing_state: 'ok' }, 200, { 'Set-Cookie': sessionCookie(_os.id) });
+          }
+        } else if (exists) {
+          return err(409, 'That email already has an account.');
         }
         // ---- ABUSE-DEFENSE signup gate: additive, a no-op (one cheap _pcfgGet read) unless a ban actually exists.
         // Checks BOTH the new account's own email and the caller's IP; either match -> the same neutral 403 (never
@@ -4748,7 +4759,9 @@ export default {
         try {
           if (env.SESSION_KEY) {   // no key -> a link could never be validated later; fail-soft, don't send
             const fuser = await env.DB.prepare('SELECT id,email FROM users WHERE email=?').bind(femail).first();
-            if (fuser) { try { await _sendResetEmail(env, fuser.id, fuser.email); await audit(env, null, req, 'auth.forgot_password', { email: fuser.email }); } catch (e) {} }
+            // The platform-owner email is Cloudflare-token-gated ONLY -- it is NEVER sent an emailed reset link (recover
+            // by rotating OWNER_SETUP_TOKEN + re-running setup). Still returns the same GENERIC response, so this leaks nothing.
+            if (fuser && !_isOwnerEmail(env, femail)) { try { await _sendResetEmail(env, fuser.id, fuser.email); await audit(env, null, req, 'auth.forgot_password', { email: fuser.email }); } catch (e) {} }
           }
         } catch (e) { /* DB hiccup: still answer generically -- an error here must never leak account existence */ }
         return json(GENERIC);
@@ -4799,6 +4812,7 @@ function doReset(){
         const ru = String(body.uid || '').slice(0, 64), re = String(body.e || '').toLowerCase(),
           rx = parseInt(body.exp || '0', 10) || 0, rs = String(body.s || '');
         if (!ru) return err(400, 'This reset link is invalid or has expired.');
+        if (re && _isOwnerEmail(env, re)) return err(400, 'This reset link is invalid or has expired.');   // owner email is Cloudflare-token-gated ONLY -- never email-resettable (same generic message, so nothing leaks)
         if (!await rateLimit(env, 'rpw:' + ru, 10, 3600000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'reset_password', key: ru }); return err(429, 'Too many attempts. Try again later.'); }
         const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _ctEq(rs, await _resetSig(env, ru, re, rx)));
         if (!rOk) return err(400, 'This reset link is invalid or has expired.');

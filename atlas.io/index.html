@@ -1459,6 +1459,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       <div id="authErr" role="alert" style="display:none;background:var(--danger-bg);color:var(--danger-text);font-size:13px;font-weight:600;border-radius:9px;padding:10px 12px;margin-bottom:14px"></div>
       <div class="field" id="authEmailField"><label>Email address</label><input class="input" id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
       <div class="field"><label>Password</label><div style="position:relative;display:flex;align-items:center"><input class="input" id="authPass" type="password" placeholder="At least 8 characters" autocomplete="current-password" style="padding-right:60px" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"><button type="button" id="authPassEye" onclick="Atlas.authTogglePass()" style="position:absolute;right:8px;background:none;border:0;color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;padding:6px;line-height:1">Show</button></div></div>
+      <div class="field" id="authTokenField" style="display:none"><label>Owner setup token</label><input class="input" id="authToken" type="password" placeholder="Your OWNER_SETUP_TOKEN" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"><div style="font-size:12px;color:var(--muted);margin-top:4px">This is the platform-owner email. Enter your setup token (the Cloudflare secret) to claim it &mdash; this is NOT your login password.</div></div>
       <p id="authForgot" style="text-align:right;margin:-6px 0 10px;display:none"><a onclick="Atlas.forgotPassword();return false" style="color:var(--muted);font-size:12.5px;cursor:pointer;text-decoration:underline">Forgot password?</a></p>
       <div id="authConsent" style="margin:2px 0 6px"><label class="cfg-check" style="align-items:flex-start;gap:9px;font-size:12px;color:var(--muted);text-align:left"><input type="checkbox" id="authAgree" style="margin-top:2px;flex:none"><span>I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Terms</a> &amp; <a href="/privacy" target="_blank" rel="noopener" style="color:var(--brand);font-weight:600">Privacy Policy</a>. My 7-day free trial converts to $49.99/mo after the trial unless I cancel &mdash; cancel anytime.</span></label></div>
       <button class="btn btn--primary btn--full btn--lg" id="authBtn" onclick="Atlas.authSubmit()" style="margin-top:6px">Create account</button>
@@ -1864,11 +1865,12 @@ const Atlas = (function(){
       setInterval(function(){ try{ if(!document.hidden) _vping(); }catch(e){} }, 60000);   // heartbeat while the tab is visible, so "active now" ages out naturally when a visitor leaves/hides the tab
     }catch(e){} });
   // Server-authoritative signup/login -> the server assigns tenant_id + a CSRF token (held in memory).
-  function _srvAuth(mode,email,pass){
+  function _srvAuth(mode,email,pass,setupToken){
     // A remembered device sends back its trusted_device token (see mfaSubmit) so the server can skip a repeat
     // 2FA challenge; sits in the JSON body (not a header) so it never needs a CORS allow-list change.
     var body = mode==='login' ? {email:email,password:pass,trusted_device:_mfaDeviceToken(email)}
              : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars',ref:_refStoredCode()};
+    if(mode==='signup' && setupToken) body.setupToken=setupToken;   // owner-claim: the OWNER_SETUP_TOKEN rides in the signup body (never a header) so the reserved owner email can be created/recovered right on the website
     return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
       if(res.json && res.json.mfa_required){ return {mfa:true, method:res.json.method, challenge:res.json.challenge}; }
       if(res.status>=200&&res.status<300&&res.json.ok){ _apiCsrf=res.json.csrf; if(res.json.ip) _clientIp=res.json.ip; return {ok:true,tenant_id:res.json.tenant_id,verify:res.json.verify,verified:res.json.verified,billing_state:res.json.billing_state}; }
@@ -3030,9 +3032,19 @@ const Atlas = (function(){
       if(ATLAS_BACKEND){
         // Server owns identity: the Worker verifies + assigns tenant_id. We mirror a local session under that
         // SAME id so every existing (synchronous, instant) render keeps working -- then hydrate the server rows.
-        r = await _srvAuth(_authMode, email, pass);
+        var _tokEl=document.getElementById('authToken'); var _tok=(_tokEl&&_tokEl.value||'').trim();
+        r = await _srvAuth(_authMode, email, pass, _tok);
         if(r.mfa){ _mfaBegin(email, r.method, r.challenge); return; }   // 2FA is on for this account -- show the code screen instead of finishing sign-in
-        if(r.err){ _authErr(r.err); return; }
+        if(r.err){
+          if(_authMode==='signup' && /reserved for the platform owner/i.test(r.err)){   // owner-claim: reveal the setup-token field so the reserved owner email can be claimed (or recovered) right here on the website
+            var _tf=document.getElementById('authTokenField'); if(_tf) _tf.style.display='';
+            var _cb=document.getElementById('authBtn'); if(_cb) _cb.textContent='Claim owner account';
+            _authErr(_tok ? 'That setup token was not accepted. Check the value in Cloudflare and try again.' : 'This is the platform-owner email. Enter your setup token below to claim it.');
+            if(_tokEl) _tokEl.focus();
+            return;
+          }
+          _authErr(r.err); return;
+        }
         await _srvAuthSettle(email, r.tenant_id);
       } else {
         r = _authMode==='login' ? store.login(email,pass) : store.signup(email,pass);
