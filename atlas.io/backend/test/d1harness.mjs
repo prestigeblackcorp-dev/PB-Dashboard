@@ -1027,6 +1027,49 @@ if (sess) {
   ok('legal: the owner cancellation policy is DISCLOSED in the portal agreement (shown before pay)', typeof jL.agreement === 'string' && jL.agreement.indexOf('NON-REFUNDABLE within 48 hours') >= 0, 'agreement tail=' + String(jL.agreement || '').slice(-70));
 }
 
+// ---- LEGAL/portability (audit LEGAL residual): the data-export endpoint returns the tenant's OWN operating+legal data
+// (bookings/customers) as a downloadable JSON attachment scoped to the tenant, and NEVER carries integration API secrets. ----
+{
+  const envEX = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envEX);
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'ex@x.com', password: 'correcthorsebatterystaple', business: 'Export Co' } }), envEX, ctx);
+  const tidEX = envEX.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sEX = envEX.DB._db.prepare('SELECT id, csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidEX);
+  const HEX = { cookie: 'atlas_sid=' + sEX.id, 'x-csrf-token': sEX.csrf };
+  envEX.DB._db.prepare("INSERT INTO customers (id,tenant_id,name,email,phone,data,created_at) VALUES ('CEXP',?,'Ada Rentierova','ada@x.com','',?,1)").run(tidEX, '{}');
+  await worker.fetch(mkReq('POST', '/api/data/bookings', { headers: HEX, body: { id: 'BEXP', asset_id: 'A', starts: 1, ends: 2, status: 'confirmed', data: { cust: 'Ada Rentierova', quote: { totalCents: 12345 } } } }), envEX, ctx);
+  // a stored integration secret must NOT leak into the portability file (export deliberately EXCLUDES the integrations table)
+  let _secretStored = false;
+  try { envEX.DB._db.prepare("INSERT INTO integrations (tenant_id,provider,kind,secret_enc,meta,connected_at) VALUES (?,'stripe','payments','sk_live_LEAKME','{}',1)").run(tidEX); _secretStored = !!envEX.DB._db.prepare("SELECT tenant_id FROM integrations WHERE tenant_id=?").get(tidEX); } catch (e) {}
+  const rEX = await worker.fetch(mkReq('GET', '/api/tenant/export', { headers: HEX }), envEX, ctx);
+  const bodyEX = await rEX.text();
+  let jEX = {}; try { jEX = JSON.parse(bodyEX); } catch (e) {}
+  ok('export: owner can download their data -> 200 + JSON attachment', rEX.status === 200 && (rEX.headers.get('content-disposition') || '').indexOf('attachment') >= 0 && jEX.atlas_tenant_export === true, 'status=' + rEX.status);
+  ok('export: includes the tenant OWN bookings + customers', !!jEX.data && (jEX.data.bookings || []).some(b => b.id === 'BEXP') && (jEX.data.customers || []).some(c => c.id === 'CEXP'), 'bk=' + ((jEX.data && jEX.data.bookings) || []).length + ' cust=' + ((jEX.data && jEX.data.customers) || []).length);
+  ok('export: NEVER carries integration API secrets (no integrations key + secret string absent)', bodyEX.indexOf('sk_live_LEAKME') < 0 && !(jEX.data && jEX.data.integrations), 'secretStored=' + _secretStored);
+}
+
+// ---- #346 BOOKING (audit BOOK residual): the bookings PUT stale-push guard. The client mirrors bookings PUT-first, so an
+// OLDER client blob (lower data._t) must NOT overwrite a NEWER server blob -- doing so would revert a webhook-set paid flag
+// (re-showing a PAID charge as payable = double-charge exposure). Newest-wins on data._t; a fresh blob still commits. ----
+{
+  const envSP = makeEnv(); __resetSchemaReady(); await ensurePlatformSchema(envSP);
+  await worker.fetch(mkReq('POST', '/api/auth/signup', { body: { email: 'sp@x.com', password: 'correcthorsebatterystaple', business: 'StalePush Co' } }), envSP, ctx);
+  const tidSP = envSP.DB._db.prepare('SELECT id FROM tenants LIMIT 1').get().id;
+  const sSP = envSP.DB._db.prepare('SELECT id, csrf FROM sessions WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1').get(tidSP);
+  const HSP = { cookie: 'atlas_sid=' + sSP.id, 'x-csrf-token': sSP.csrf };
+  // server holds the NEWER truth: _t=2000 with a webhook-set paidOnline flag
+  envSP.DB._db.prepare("INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES ('BSP',?,'C','A',1,2,'confirmed',5000,?,'psp',1,1)")
+    .run(tidSP, JSON.stringify({ _t: 2000, cust: 'Server Truth', paid: { reserve: { paidOnline: true } } }));
+  // client pushes a STALE blob (_t=1000) that drops the paid flag -> must be ignored
+  await worker.fetch(mkReq('PUT', '/api/data/bookings/BSP', { headers: HSP, body: { data: { _t: 1000, cust: 'Stale Client', paid: {} } } }), envSP, ctx);
+  const spRow = JSON.parse(envSP.DB._db.prepare("SELECT data FROM bookings WHERE id='BSP'").get().data);
+  ok('booking stale-push: an OLDER client blob (lower _t) does NOT overwrite the newer server blob', spRow.cust === 'Server Truth' && spRow.paid && spRow.paid.reserve && spRow.paid.reserve.paidOnline === true, 'cust=' + spRow.cust + ' paid=' + JSON.stringify(spRow.paid));
+  // a NEWER client blob (_t=3000) DOES commit -> the guard is newest-wins, not a blanket write-block
+  await worker.fetch(mkReq('PUT', '/api/data/bookings/BSP', { headers: HSP, body: { data: { _t: 3000, cust: 'Fresh Client', paid: { reserve: { paidOnline: true } } } } }), envSP, ctx);
+  const spRow2 = JSON.parse(envSP.DB._db.prepare("SELECT data FROM bookings WHERE id='BSP'").get().data);
+  ok('booking stale-push: a NEWER client blob (higher _t) DOES commit (guard is newest-wins, not write-block)', spRow2.cust === 'Fresh Client', 'cust=' + spRow2.cust);
+}
+
 // logout CSRF: /api/auth/logout revokes the session, and atlas_sid is SameSite=None, so a cross-site POST could otherwise
 // force-logout a signed-in owner. A cookie-authenticated logout with NO CSRF token must be rejected AND must not revoke;
 // WITH the token it still works. (Run LAST -- it revokes `sess`.)
