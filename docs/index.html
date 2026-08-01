@@ -4799,8 +4799,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v290';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v292';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v291';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v293';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -18971,9 +18971,10 @@ function getRemainingBalance(b){
 // payment-method picker as the booking form, so marking a balance paid here stamps
 // balancePaidAt (\u2192 shows in Today's KPI) and stays in sync with the form. Setting the
 // balance to 0 auto-checks "paid" so a zeroed balance is always recorded as a payment.
+var _bmOwed=0;   // TRUE amount owed when the modal opened -- partial/paid math settles against THIS, never the (now live-updating) Remaining field
 function editRemainingBalance(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
-  var cur=getRemainingBalance(b);
+  var cur=getRemainingBalance(b); _bmOwed=cur;
   var _old=$d('balanceModalOverlay'); if(_old) _old.remove();
   var paidAlready=!!b.balancePaidAt;
   var methods=['','Cash','Zelle','Venmo','CashApp','Stripe','Card','Apple Pay','Wire','Check','Other'];
@@ -19023,30 +19024,38 @@ function editRemainingBalance(id){
   setTimeout(function(){ var el=$d('bmBalance'); if(el){ el.focus(); if(el.select) el.select(); } },50);
 }
 function _bmSync(){
-  var bal=parseFloat(($d('bmBalance')||{}).value);
   var chk=$d('bmPaidChk');
   var pchk=$d('bmPartialChk');
-  if(bal===0 && chk && !chk.checked && !(pchk&&pchk.checked)) chk.checked=true;   // zero balance \u21D2 paid in full
-  var pf=$d('bmPartialFields'); if(pf) pf.style.display=(pchk&&pchk.checked)?'block':'none';
-  var f=$d('bmPaidFields'); if(f) f.style.display=(chk&&chk.checked)?'block':'none';
-  var _bEl=$d('bmBalance'); if(_bEl){ _bEl.readOnly=!!(pchk&&pchk.checked); _bEl.style.opacity=_bEl.readOnly?'0.6':''; }   // while a partial is being entered, lock Remaining so the payment always draws from the TRUE amount owed
-  // Live hint: show what the balance becomes after this partial
-  var ph=$d('bmPartialHint');
-  if(ph && pchk && pchk.checked){
+  var _bEl=$d('bmBalance');
+  var _isPartial=!!(pchk&&pchk.checked);
+  if(_isPartial){
+    // PARTIAL mode: the Remaining field becomes a LIVE, auto-updating display of what's still owed AFTER
+    // this payment (type $700 on $1000 -> the field shows $300). The money math ALWAYS settles against the
+    // TRUE amount owed (_bmOwed), never this field -- so a partial can never accidentally clear the balance.
     var pa=parseFloat(($d('bmPartialAmt')||{}).value);
-    if(!isNaN(pa)&&pa>0){
-      var _left=Math.max(0,(Number(bal)||0)-pa);
-      ph.textContent=_left>0?('Remaining after this payment: $'+_left.toFixed(2)+'. Repeat until settled.'):'This clears the balance in full.';
-    } else {
-      ph.textContent='Draws the remaining balance down and logs a dated partial. Repeat until settled.';
+    var _owed=Number(_bmOwed)||0;
+    var _left=(!isNaN(pa)&&pa>0)?Math.max(0,Math.round((_owed-pa)*100)/100):_owed;
+    if(_bEl){ _bEl.value=_left; _bEl.readOnly=true; _bEl.style.opacity='0.75'; }
+    var ph=$d('bmPartialHint');
+    if(ph){
+      if(!isNaN(pa)&&pa>0){ ph.innerHTML=(_left>0)?('New balance after this payment: <b style="color:var(--gold)">$'+_left.toFixed(2)+'</b> still due. Repeat until settled.'):'<b style="color:var(--green)">This clears the balance in full.</b>'; }
+      else { ph.textContent='Enter the amount received \u2014 the Remaining balance updates automatically.'; }
     }
+  } else {
+    if(_bEl){ _bEl.readOnly=false; _bEl.style.opacity=''; }
+    var bal=parseFloat((_bEl||{}).value);
+    if(bal===0 && chk && !chk.checked) chk.checked=true;   // zero balance \u21D2 paid in full
   }
+  var pf=$d('bmPartialFields'); if(pf) pf.style.display=_isPartial?'block':'none';
+  var f=$d('bmPaidFields'); if(f) f.style.display=(chk&&chk.checked)?'block':'none';
 }
 // Partial vs Mark-as-Paid are mutually exclusive: checking one clears the other, then re-sync the reveal.
 function _bmToggle(which){
-  var p=$d('bmPartialChk'), k=$d('bmPaidChk');
+  var p=$d('bmPartialChk'), k=$d('bmPaidChk'), _bEl=$d('bmBalance');
   if(which==='partial' && p&&p.checked && k) k.checked=false;
   if(which==='paid' && k&&k.checked && p) p.checked=false;
+  // Leaving partial mode: restore Remaining to the TRUE amount owed (it was showing the live post-payment remaining) + clear the partial amount
+  if(p && !p.checked && _bEl){ _bEl.value=Math.round((Number(_bmOwed)||0)*100)/100; var _pa=$d('bmPartialAmt'); if(_pa) _pa.value=''; }
   _bmSync();
 }
 function saveBalanceModal(id){
@@ -19063,7 +19072,7 @@ function saveBalanceModal(id){
     _pAmt=parseFloat(($d('bmPartialAmt')||{}).value);
     if(isNaN(_pAmt)||_pAmt<=0){ alert('Enter the partial payment amount.'); return; }
     var _pMethod=($d('bmPartialMethod')||{}).value||'';
-    var _pDue=Number(bal)||0;                     // remaining owed before this partial (the Remaining field)
+    var _pDue=Number(_bmOwed)||0;                  // TRUE amount owed before this partial (the Remaining field now shows the live post-payment remaining, so settle against _bmOwed)
     var _pRem=Math.max(0,_pDue-_pAmt);
     var _pExt=0;
     if(_pRem<=0){
@@ -19079,6 +19088,19 @@ function saveBalanceModal(id){
   } else if(paid){
     var amt=parseFloat(($d('bmAmt')||{}).value);
     var _bmMethod=($d('bmMethod')||{}).value||'';
+    var _owedNow=Number(_bmOwed)||0;
+    // SAFETY (never turn a partial into a full payment): if the amount collected is SMALLER than what's
+    // owed, record it as a dated PARTIAL and keep the difference due -- do NOT mark the balance paid.
+    if(!isNaN(amt) && amt>0 && amt < _owedNow-0.005){
+      if(!confirm('You entered $'+amt.toFixed(2)+' but $'+_owedNow.toFixed(2)+' is owed.\n\nOK = record a PARTIAL payment ($'+(Math.round((_owedNow-amt)*100)/100).toFixed(2)+' stays due).\nCancel = go back.')) return;
+      b.remainingBalance=Math.max(0,Math.round((_owedNow-amt)*100)/100);
+      _recordBalancePayment(b, amt, _bmMethod);
+      b._t=Date.now(); save(); if(typeof flushCloudSave==='function') flushCloudSave();
+      if(typeof renderOutstanding==='function') renderOutstanding(); if(typeof render==='function') render();
+      var _ovp=$d('balanceModalOverlay'); if(_ovp) _ovp.remove();
+      toast(b.name+' \u2014 partial payment of $'+amt.toFixed(2)+' recorded \u00b7 $'+Number(b.remainingBalance).toFixed(2)+' still due');
+      return;
+    }
     var _hasPartials=Array.isArray(b.balancePayments)&&b.balancePayments.length;
     // Settle any outstanding extensions on their own paidAt/method first (a re-billed balance, or extensions
     // folded into an as-yet-unpaid base balance). _extPaid>0 means this collection went to extensions.
