@@ -8810,6 +8810,20 @@ function doReset(){
         return json({ ok: true, refundedCents: refundedCents, released: released });
       }
 
+      // ---- OWNER: in-dashboard "Sync from Prestige Black" (replaces the standalone bridge worker; no BRIDGE_SECRET, no
+      // terminal). READ-ONLY on PB. OWNER session only + requires env PB_BRIDGE_URL/PB_BRIDGE_SECRET; inert otherwise.
+      if (path === '/api/pb-sync') {
+        if (!ctx || !ctx.isOwner) return err(403, 'Owner only.');
+        if (method === 'GET') return json({ ok: true, configured: !!(env.PB_BRIDGE_URL && env.PB_BRIDGE_SECRET) });
+        if (method === 'POST') {
+          if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+          if (!env.PB_BRIDGE_URL || !env.PB_BRIDGE_SECRET) return json({ ok: false, error: 'not_configured', message: 'Set PB_BRIDGE_URL and PB_BRIDGE_SECRET in the Atlas worker to enable Sync from Prestige Black.' }, 400);
+          const _pbrep = await _pbSyncRun(env, ctx.tenant_id);
+          return json(_pbrep, _pbrep.ok ? 200 : 500);
+        }
+        return err(405, 'Method not allowed.');
+      }
+
       // ---- generic tenant-scoped collection CRUD (the store seam) -----------
       // /api/data/<collection>[/<id>]  -- every query is scoped to ctx.tenant_id
       const dm = path.match(/^\/api\/data\/([a-z]+)(?:\/([\w-]+))?$/);
@@ -11695,4 +11709,156 @@ function patchFields(coll, body) {
   // X1: the 'ledger' and 'promos' branches were removed -- those collections are retired (never routed here now
   // that they're dropped from COLLECTIONS). REQUIRED still lists them harmlessly (never reached via coll).
   return { cols, vals };
+}
+
+// ============================================================================
+//  PB -> Atlas in-dashboard sync (owner-only POST /api/pb-sync). The standalone
+//  pb-atlas-bridge worker, ported INSIDE Atlas so there's no separate worker, no
+//  BRIDGE_SECRET, and no terminal. READ-ONLY on Prestige Black (only ever calls
+//  PB's /sync/load). Writes bookings/customers/assets into the OWNER's own tenant
+//  through the SAME idempotent path the app uses (patchFields + INSERT/UPDATE by
+//  the preserved PB id -> never a duplicate). Config = Atlas worker env
+//  (PB_BRIDGE_URL + PB_BRIDGE_SECRET, the latter = PB's dashboard secret, used for
+//  both /sync auth and the doc-link HMAC). Absent -> the endpoint 400s and nothing
+//  runs, so every other tenant + the generic product are byte-identical.
+// ============================================================================
+async function _pbBridgeFetch(env, p) {
+  const base = String(env.PB_BRIDGE_URL || '').replace(/\/+$/, '');
+  const r = await fetch(base + '/' + String(p).replace(/^\/+/, ''), { headers: { 'Authorization': 'Bearer ' + env.PB_BRIDGE_SECRET, 'Accept': 'application/json' }, cf: { cacheTtl: 0 } });
+  if (!r.ok) throw new Error('PB ' + p + ' HTTP ' + r.status);
+  return await r.json().catch(function () { return null; });
+}
+function _pbmMoney(x) { return Math.round((Number(x) || 0) * 100); }   // dollars -> integer cents
+function _pbmSlug(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'x'; }
+function _pbmTzOffset(atUTC) {   // America/Chicago offset (DST-correct) so a PB wall-clock date maps to the right epoch ms
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const p = dtf.formatToParts(new Date(atUTC)).reduce(function (a, x) { a[x.type] = x.value; return a; }, {});
+    const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +(p.hour === '24' ? '0' : p.hour), +p.minute, +p.second);
+    return asUTC - atUTC;
+  } catch (e) { return -5 * 3600 * 1000; }
+}
+function _pbmCentralMs(dateStr, timeStr) {
+  if (!dateStr) return null;
+  const t = (timeStr && /^\d{1,2}:\d{2}/.test(String(timeStr))) ? String(timeStr).slice(0, 5) : '12:00';
+  const naive = Date.parse(dateStr + 'T' + t + ':00Z');
+  if (isNaN(naive)) return null;
+  return naive - _pbmTzOffset(naive);
+}
+const _PBM_STATUS = { pending: 'pending', confirmed: 'confirmed', 'in-progress': 'confirmed', completed: 'completed', cancelled: 'cancelled', voided: 'cancelled' };
+const _PBM_STATUS_UI = { pending: 'Pending', confirmed: 'Confirmed', 'in-progress': 'On rent', completed: 'Completed', cancelled: 'Cancelled', voided: 'Cancelled' };
+function _pbmExtractBookings(snap) {   // pb bookings can be an array and/or an id-map -> dedupe by id, keep max _t
+  const raw = (snap && snap.bookings) || [];
+  const list = Array.isArray(raw) ? raw.slice() : Object.values(raw || {});
+  const byId = new Map();
+  for (const b of list) { if (!b || !b.id) continue; const prev = byId.get(b.id); if (!prev || (Number(b._t) || 0) >= (Number(prev._t) || 0)) byId.set(b.id, b); }
+  return Array.from(byId.values());
+}
+function _pbmMirrorable(b) {
+  if (!b || !b.id || b._deleted) return false;
+  if (b.pendingPayment) return false;   // web booking not yet paid/confirmed -> not real yet
+  const t = String(b.type || 'rental').toLowerCase();
+  return t === 'rental' || t === 'event' || t === 'chauffeur' || t === 'hourly' || t === 'daily';
+}
+function _pbmCustomer(b) {
+  const email = String(b.email || b.customerEmail || '').toLowerCase().trim();
+  const id = 'pbcust-' + (email ? _pbmSlug(email) : _pbmSlug(b.name) + '-' + String(b.id).slice(-6));
+  return { id: id, name: String(b.name || 'Customer'), email: email || '', phone: String(b.phone || ''), data: { source: 'pb-mirror', readOnly: true, pbBookingId: b.id } };
+}
+function _pbmAsset(b) {
+  const name = String(b.vehicle || 'Vehicle'); const vi = b.vehicleInfo || {};
+  const days = Math.max(1, Number(b.days) || 1);
+  const dayRate = (Number(b.revenue) > 0 && b.type !== 'chauffeur') ? _pbmMoney(Number(b.revenue) / days) : 0;   // best-effort rate; a later Atlas edit can refine
+  return { id: 'pbveh-' + _pbmSlug(name), name: name, type: (String(b.type || 'rental') === 'chauffeur') ? 'chauffeur' : 'car', status: 'available', day_rate_cents: dayRate, qty: 1, info: { year: vi.year || '', make: vi.make || '', model: vi.model || '', color: vi.color || '', vin: vi.vin || '', source: 'pb-mirror' } };
+}
+function _pbmDocRefs(b) {   // references only -- the bytes never leave PB; viewUrl is a signed, expiring view-through link
+  const kinds = [];
+  if (b.customerSig) kinds.push('contract');
+  if (b.verify) kinds.push('id');
+  if ((Array.isArray(b.checkInPhotoIds) && b.checkInPhotoIds.length) || (Array.isArray(b.checkOutPhotoIds) && b.checkOutPhotoIds.length)) kinds.push('photos');
+  if (!kinds.length) return null;
+  return { viewUrl: '', kinds: kinds, note: 'Served by Prestige Black; not stored in Atlas.' };
+}
+async function _pbmSignDocUrl(env, id) {   // HMAC-SHA256(PB_BRIDGE_SECRET, "<id>|<exp>") -- the exact scheme PB's /portal-docs verifies
+  const base = String(env.PB_BRIDGE_URL || '').replace(/\/+$/, ''); const secret = String(env.PB_BRIDGE_SECRET || '');
+  if (!base || !secret) return '';
+  const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+  try {
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(id + '|' + exp));
+    const sig = Array.from(new Uint8Array(mac)).map(function (x) { return x.toString(16).padStart(2, '0'); }).join('');
+    return base + '/portal-docs?b=' + encodeURIComponent(id) + '&exp=' + exp + '&sig=' + sig;
+  } catch (e) { return ''; }
+}
+function _pbmBooking(b, cust, asset) {
+  const stKey = String(b.status || 'pending').toLowerCase();
+  const stD1 = _PBM_STATUS[stKey] || 'pending', stUI = _PBM_STATUS_UI[stKey] || 'Pending';
+  const starts = _pbmCentralMs(b.pickupDate || b.date, b.pickupTime);
+  const ends = _pbmCentralMs(b.dropoffDate || b.pickupDate || b.date, b.dropoffTime);
+  const baseRev = Number(b.revenue) || 0;
+  const extTotal = Array.isArray(b.extensions) ? b.extensions.reduce(function (s, e) { return s + (e && !e._deleted ? (Number(e.additionalCharge) || 0) : 0); }, 0) : 0;
+  const total = baseRev + extTotal;                                  // pre-tax trip value PB tracks
+  const deposit = Number(b.deposit) || 0;                            // refundable security -> Atlas hold
+  const dateLock = Number(b.dateLock) || 0;                          // non-refundable down -> Atlas reserve
+  const paidSoFar = Array.isArray(b.balancePayments) ? b.balancePayments.reduce(function (s, p) { return s + (Number(p && p.amount) || 0); }, 0) : (Number(b.balancePaidAmount) || 0);
+  const charges = [];
+  if (Array.isArray(b.balancePayments)) for (const p of b.balancePayments) charges.push({ label: 'Balance payment', kind: 'charge', amount_cents: _pbmMoney(p.amount), method: String(p.method || ''), status: 'paid', offline: true, source: 'pb' });
+  const data = {
+    source: 'pb-mirror', readOnly: true, status: stUI,
+    cust: cust.name, custEmail: cust.email, custPhone: cust.phone, asset: asset.name, assetId: asset.id,
+    pickupTime: b.pickupTime || '', dropoffTime: b.dropoffTime || '', location: b.pickupAddress || b.address || '', notes: String(b.notes || ''), promoCode: b.promoCode || '',
+    quote: { subtotalCents: _pbmMoney(baseRev), totalCents: _pbmMoney(total), depositCents: _pbmMoney(dateLock), holdCents: _pbmMoney(deposit), discountCents: _pbmMoney(b.promoDiscount || 0), total: total, subtotal: baseRev },
+    committedOffline: true, paidOfflineCents: _pbmMoney(paidSoFar), charges: charges, docs: _pbmDocRefs(b),
+    _t: Number(b._t) || Number(b.createdAt) || Date.now(),
+    mirror: { source: 'pb', pbId: b.id, pbT: Number(b._t) || 0, syncedAt: Date.now(), pbType: b.type || 'rental', pbStatus: b.status || 'pending', readOnly: true }
+  };
+  return { id: b.id, customer_id: cust.id, asset_id: asset.id, starts: starts, ends: ends, status: stD1, data: data, _revenue: total };
+}
+async function _pbSyncWrite(env, tenantId, coll, row) {   // idempotent upsert by preserved PB id; reuses patchFields' domain whitelist
+  const pf = patchFields(coll, row); const cols = pf.cols, vals = pf.vals;
+  if (coll === 'bookings' && Number(row._revenue) > 0) { cols.push('revenue_cents'); vals.push(_pbmMoney(row._revenue)); }   // committed-offline PB revenue -> server revenue_cents (P&L + GMV)
+  if (!cols.length) return 'skip';
+  const hasUpd = (coll === 'assets' || coll === 'bookings'); const now = Date.now();
+  const existing = await env.DB.prepare('SELECT id FROM ' + coll + ' WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
+  if (existing) {
+    const uCols = cols.slice(), uVals = vals.slice(); if (hasUpd) { uCols.push('updated_at'); uVals.push(now); }
+    await env.DB.prepare('UPDATE ' + coll + ' SET ' + uCols.map(function (c) { return c + '=?'; }).join(',') + ' WHERE id=? AND tenant_id=?').bind(...uVals, row.id, tenantId).run();
+    return 'updated';
+  }
+  const allCols = ['id', 'tenant_id', 'created_at'].concat(hasUpd ? ['updated_at'] : []).concat(cols);
+  const allVals = [row.id, tenantId, now].concat(hasUpd ? [now] : []).concat(vals);
+  if (coll === 'bookings' && allCols.indexOf('portal_token') < 0) { allCols.push('portal_token'); allVals.push(randId(24)); }
+  await env.DB.prepare('INSERT INTO ' + coll + ' (' + allCols.join(',') + ') VALUES (' + allCols.map(function () { return '?'; }).join(',') + ')').bind(...allVals).run();
+  return 'created';
+}
+async function _pbSyncRun(env, tenantId) {
+  const started = Date.now(); const log = [];
+  try {
+    const snap = await _pbBridgeFetch(env, '/sync/load');
+    const bookings = _pbmExtractBookings(snap); const inScope = bookings.filter(_pbmMirrorable);
+    let mirrored = 0, errors = 0; const assetsSeen = new Set(), custSeen = new Set();
+    for (const b of inScope) {
+      try {
+        const cust = _pbmCustomer(b), asset = _pbmAsset(b), bk = _pbmBooking(b, cust, asset);
+        if (bk.data && bk.data.docs && bk.data.docs.kinds && bk.data.docs.kinds.length) { const vu = await _pbmSignDocUrl(env, b.id); if (vu) bk.data.docs.viewUrl = vu; }
+        if (asset && !assetsSeen.has(asset.id)) { await _pbSyncWrite(env, tenantId, 'assets', asset); assetsSeen.add(asset.id); }
+        if (cust && !custSeen.has(cust.id)) { await _pbSyncWrite(env, tenantId, 'customers', cust); custSeen.add(cust.id); }
+        await _pbSyncWrite(env, tenantId, 'bookings', bk); mirrored++;
+      } catch (e) { errors++; if (log.length < 8) log.push('ERR ' + (b && b.id) + ': ' + (e && e.message || e)); }
+    }
+    let brandApplied = false;   // OPTIONAL logo/brand: apply from env (no KV needed) so the owner's Atlas gets PB branding on sync
+    if (env.PB_BRAND_NAME || env.PB_BRAND_COLOR || env.PB_BRAND_LOGO_URL) {
+      try {
+        const tr = await env.DB.prepare('SELECT brand FROM tenants WHERE id=?').bind(tenantId).first();
+        const brand = jparse(tr && tr.brand, {});
+        if (env.PB_BRAND_NAME) { brand.name = String(env.PB_BRAND_NAME); brand.initial = (String(env.PB_BRAND_NAME).trim().charAt(0) || 'A').toUpperCase(); }
+        if (env.PB_BRAND_COLOR) brand.color = String(env.PB_BRAND_COLOR);
+        if (env.PB_BRAND_LOGO_URL && (/^https:\/\//i.test(env.PB_BRAND_LOGO_URL) || /^data:image\//i.test(env.PB_BRAND_LOGO_URL))) brand.logo = String(env.PB_BRAND_LOGO_URL);
+        await env.DB.prepare('UPDATE tenants SET brand=?,updated_at=? WHERE id=?').bind(JSON.stringify(brand), Date.now(), tenantId).run();
+        brandApplied = true;
+      } catch (e) {}
+    }
+    const pbRevenueCents = inScope.reduce(function (s, b) { const ext = Array.isArray(b.extensions) ? b.extensions.reduce(function (a, e) { return a + (e && !e._deleted ? (Number(e.additionalCharge) || 0) : 0); }, 0) : 0; return s + _pbmMoney((Number(b.revenue) || 0) + ext); }, 0);
+    return { ok: true, ms: Date.now() - started, pb: { totalBookings: bookings.length, inScope: inScope.length }, atlas: { mirrored: mirrored, errors: errors }, brandApplied: brandApplied, reconciliation: { pbRevenueCents: pbRevenueCents, pbRevenue: pbRevenueCents / 100 }, log: log };
+  } catch (e) { return { ok: false, error: String(e && e.message || e), ms: Date.now() - started, log: log }; }
 }

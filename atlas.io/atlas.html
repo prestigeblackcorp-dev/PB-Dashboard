@@ -1473,6 +1473,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
     <span class="brandmark"><span class="brandmark__glyph" style="background:linear-gradient(140deg,#1E6E4E,#124D36)"><svg viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" d="M12 2.2 L21.6 21.4 H2.4 Z M13.5 4 Q11.3 12 10.3 21.4 H12.5 Q13.3 12.6 15.1 5 Z M12 13.2 L9.8 18.6 H14.2 Z" fill="#fff"/></svg></span>Atlas Rental.io</span>
     <div class="ob-progress"><i id="obBar"></i></div>
     <span class="ob-step-count" id="obCount">Step 1 of 7</span>
+    <button type="button" style="margin-left:14px;font-size:12px;color:var(--muted);background:none;border:none;cursor:pointer;text-decoration:underline;padding:4px" onclick="Atlas.logout()">Sign out</button>
   </div>
   <div class="ob-wrap"><div class="ob-card" id="obCard"></div><p style="text-align:center;font-size:12px;color:var(--muted);margin-top:14px">&#10003; Your progress saves automatically &mdash; you can close this and pick up right where you left off.</p></div>
 </div>
@@ -2206,7 +2207,8 @@ const Atlas = (function(){
     ['aiActions','Atlas.io can make changes for you (preview + one-tap undo)'],
     ['aiSiteCopy','Atlas.io writes your website copy with live AI (falls back to the built-in template)'],
     ['livePoll','Live dashboard &mdash; new website bookings appear on their own, no manual refresh'],
-    ['dreaming','Dreaming &mdash; while you are away, Atlas studies YOUR numbers for gaps + plays (free: 0 credits/day, 0/week)']
+    ['dreaming','Dreaming &mdash; while you are away, Atlas studies YOUR numbers for gaps + plays (free: 0 credits/day, 0/week)'],
+    ['perAssetPricing','Per-item pricing &mdash; set a security deposit, usage allowance + overage, and a weekly rate on each individual item (overrides your global Money defaults; adapts to any rental type)']
   ];
   function _flags(){ if(!S.flags)S.flags={}; if(S.flags.aiActions==null) S.flags.aiActions=true; if(S.flags.aiSiteCopy==null) S.flags.aiSiteCopy=true; if(S.flags.dreaming==null) S.flags.dreaming=true; return S.flags; }   // aiActions defaults ON: the edit engine is RBAC-gated + preview-before-apply on money + fully undoable; owner can still toggle it off in Settings.
   /* ---- Team roles & granular, enforced permissions ---- */
@@ -3093,7 +3095,7 @@ const Atlas = (function(){
     if(_authMode==='signup'){ try{ localStorage.removeItem('atlas_ref_code'); }catch(e){} }   // REFERRAL: the code (if any) rode along on the signup body -> clear it so a later signup on this browser can't reuse it
     if(_authMode==='signup') _funnelEvent('signup_submit');   // #297 funnel: account created (this path only runs once the server confirms a real session)
     if(ATLAS_BACKEND && (r.verify==='sent' || r.verified===0)){ showVerifyGate(email); return; }       // email confirmation gate: hold the account until the link is clicked (if the mailer is off the server auto-verifies -> this is skipped)
-    if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok'){
+    if(ATLAS_BACKEND && r.billing_state && r.billing_state!=='ok' && String(email||'').toLowerCase()!==OWNER_EMAIL){   // owner is comped (Diamond) -- NEVER paywalled/plan-gated, even if a stale/misconfigured server billing_state says otherwise
       // NEW funnel: a fresh signup that needs a card picks a PLAN FIRST (the plan picker collects the card via checkout).
       // The plain card-only paywall stays for RETURNING sessions that hit the gate mid-use.
       if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && !_isDemoTenant() && !_isNativeApp() && r.billing_state==='needs_card'){ showSignupPlans(); return; }   // #291: show the plan PICKER for ANY not-yet-carded user (fresh signup OR a returning / verify-on-a-different-device login) -- never silently drop them into onboarding at the default tier
@@ -3102,7 +3104,7 @@ const Atlas = (function(){
     if(_authMode==='signup'){
       // NEW funnel: pick a plan (full features) -> card on file (7-day trial at that plan) -> onboarding -> day-7 auto-charge.
       // Demo/offline/native fall through to the original onboarding-first flow. Already-carded (returning mid-funnel) skips ahead.
-      if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && !(S && S.card && S.card.onFile)){ showSignupPlans(); return; }
+      if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && !(S && S.card && S.card.onFile) && String(email||'').toLowerCase()!==OWNER_EMAIL){ showSignupPlans(); return; }   // owner is comped -- skip the plan/card gate, straight to onboarding
       startTrial(); return;                        // new account -> guided onboarding
     }
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }           // returning -> resume exactly where they were
@@ -3366,7 +3368,7 @@ const Atlas = (function(){
     }).catch(function(){ toast('Network error'); });
   }
   function _postVerifyProceed(bs){ S=load();
-    if(bs && bs!=='ok'){ if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && bs==='needs_card'){ showSignupPlans(); return; } showPaywall(bs); return; }   // #291: after email verify (often on a DIFFERENT device), a not-yet-carded user goes to the plan PICKER (their prior pick is highlighted), not the bare card gate. #280/#276: other locked states still hit the paywall.
+    if(bs && bs!=='ok' && !_isOwnerAcct()){ if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && bs==='needs_card'){ showSignupPlans(); return; } showPaywall(bs); return; }   // owner is comped -- never gated post-verify. #291: after email verify (often on a DIFFERENT device), a not-yet-carded user goes to the plan PICKER (their prior pick is highlighted), not the bare card gate. #280/#276: other locked states still hit the paywall.
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
     else { startTrial(); } }
@@ -3377,6 +3379,7 @@ const Atlas = (function(){
     else { step=0; S.onboardStarted=true; S.onboardStep=0; }
     save(); applyBrand(); show('onboarding'); renderStep(); }
   function renderStep(){
+    if(_isOwnerAcct() && S && !S.onboarded){ S.onboarded=true; S.onboardStarted=false; save(); applyBrand(); buildApp(); show('app'); return; }   // owner mirrors Prestige Black -- branding + fleet + money arrive from the PB bridge (read-only), NOT a manual setup wizard -> skip straight to the dashboard (and stay skipped on reload)
     const total=STEPS.length-1;
     document.getElementById('obBar').style.width=Math.round(step/total*100)+'%';
     document.getElementById('obCount').textContent = step===0?'Welcome':(step>=total?'All set':'Step '+step+' of '+(total-1));
@@ -4576,6 +4579,7 @@ const Atlas = (function(){
       +'<div class="field"><label>ZIP</label><input class="input" id="aLocZip" value="'+esc(a.locZip||'')+'" placeholder="'+esc((S.brand&&S.brand.zip)||'')+'"'+dis+'></div></div>'
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aRate" style="width:auto;flex:1;text-align:left" value="'+a.rate+'"'+dis+'><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="aStatus"'+dis+'>'+['Available','On rent','Maintenance'].map(function(s){return '<option'+(a.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'
+      +((_flags().perAssetPricing&&!ro)?('<div style="font-size:13px;font-weight:750;color:var(--ink);margin:14px 0 8px">Pricing details <span style="color:var(--muted);font-weight:500;font-size:12px">(per-'+esc(S.fleet.noun)+' overrides; leave any blank to use your global Money settings)</span></div><div class="row2"><div class="field"><label>Security deposit <span style="color:var(--muted);font-weight:400;font-size:12px">(refundable hold)</span></label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aDeposit" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+((+a.deposit>0)?(+a.deposit):'')+'" placeholder="global"></div></div><div class="field"><label>Weekly rate <span style="color:var(--muted);font-weight:400;font-size:12px">(flat 7-'+esc(S.money.rateModel)+' price)</span></label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aWeeklyRate" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+((+a.weeklyRate>0)?(+a.weeklyRate):'')+'" placeholder="global"></div></div></div><div class="row2"><div class="field"><label>Included '+_svcUnitWord()+' <span style="color:var(--muted);font-weight:400;font-size:12px">(per '+esc(S.money.rateModel)+', blank = unlimited)</span></label><input class="input tnum" id="aUsageAllow" inputmode="numeric" value="'+((+a.usageAllow>0)?(+a.usageAllow):'')+'" placeholder="unlimited"></div><div class="field"><label>Overage <span style="color:var(--muted);font-weight:400;font-size:12px">($ per '+_svcUnitWord().replace(/s$/,'')+')</span></label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aOverage" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+((+a.overageRate>0)?(+a.overageRate):'')+'" placeholder="0"></div></div></div><div class="bk-lenhint" style="margin:5px 0 0">Blank = use your global Money settings. Included '+_svcUnitWord()+' + overage bill automatically at return from the '+_svcUnitWord().replace(/s$/,'')+' reading.</div>'):'')
       +'<div class="field"><label>Quantity / units in stock <span style="color:var(--muted);font-weight:400;font-size:12px">(identical, interchangeable units)</span></label><input class="input tnum" id="aQty" inputmode="numeric" value="'+(+a.qty>1?(+a.qty):1)+'" placeholder="1"'+dis+'><div class="bk-lenhint" style="margin:5px 0 0">How many identical units of this '+esc(S.fleet.noun)+' you stock. Bookings can overlap up to this many at once.'+(function(){ var vc=_vehCap(); if(vc===Infinity) return ''; var room=Math.max(1,vc-(_fleetUnits()-Math.max(1,parseInt(a.qty,10)||1))); return ' Your plan allows up to <b>'+room+'</b> units for this '+esc(S.fleet.noun)+'.'; })()+'</div></div>'
       +'<div class="row2"><div class="field"><label>Min booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMinLen" value="'+((a.minLen>0)?a.minLen:'')+'" placeholder="no minimum"'+dis+'></div>'
       +'<div class="field"><label>Max booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMaxLen" value="'+((a.maxLen>0)?a.maxLen:'')+'" placeholder="no maximum"'+dis+'></div></div>'
@@ -4635,6 +4639,7 @@ const Atlas = (function(){
       if(_sd>0||_sm>0){ var _sv=_asService(a); _sv.intervalDays=(_sd>0?_sd:0); _sv.intervalMiles=(_sm>0?_sm:0); _serviceSyncLast(a); }
       else if(a.service){ a.service.intervalDays=0; a.service.intervalMiles=0; } }   // both blank -> stop tracking, but keep the last-serviced markers
     if(document.getElementById('aOdometer')){ var _od=parseInt(val('aOdometer'),10); if(_od>=0 && isFinite(_od)) a.odometer=_od; }   // scheduler: current usage reading -> feeds _serviceDue's odometer axis, written independently of any service log (blank = leave unchanged)
+    if(document.getElementById('aDeposit')){ var _dep=parseFloat(val('aDeposit')); if(_dep>0)a.deposit=_dep;else delete a.deposit; var _wk=parseFloat(val('aWeeklyRate')); if(_wk>0)a.weeklyRate=_wk;else delete a.weeklyRate; var _ua=parseFloat(val('aUsageAllow')); if(_ua>0)a.usageAllow=_ua;else delete a.usageAllow; var _ov=parseFloat(val('aOverage')); if(_ov>0)a.overageRate=_ov;else delete a.overageRate; }   // per-asset pricing overrides (deposit / weekly rate / usage allowance / overage); blank = global Money defaults; DOM-gated so flag-off is byte-identical
     var tn=(val('aTenName')||'').trim();
     a.tenant = tn? { name:tn, phone:val('aTenPhone'), email:val('aTenEmail'), since:(a.tenant&&a.tenant.since)||Date.now() } : null;
     _saveAssets(); closeModal(); renderFleet(); renderOverview();
@@ -7492,6 +7497,10 @@ const Atlas = (function(){
       b.innerHTML=html;
     }
     else if(setCur==='integrations'){ b.innerHTML=`
+      ${_isOwnerAcct()?`<div class="set-block"><h3>Sync from Prestige Black</h3><div class="desc">Pull your live Prestige Black bookings, customers and vehicles into Atlas &mdash; a <b>read-only mirror</b> (your PB data is never changed). One click; it runs on the Atlas server, no terminal.</div>
+        <button class="btn btn--primary" id="pbSyncBtn" onclick="Atlas.pbSyncNow()">Sync from Prestige Black now</button>
+        <div id="pbSyncOut" class="bk-lenhint" style="margin:10px 0 0;display:none"></div>
+      </div>`:''}
       <div class="set-block"><h3>Payments &amp; POS</h3><div class="desc">Process payments through <b>Stripe</b> today &mdash; bookings, portal payments and charges route straight to your Stripe account. Save the other processors below and we will use them once direct processing ships. Step-by-step guide for each.</div>
         ${_payProvider()?(_payProvider()==='stripe'?`<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>Active processor: ${esc(_payLabel())}</b> &mdash; portal payments, site checkout and charges run through it.</div>`:`<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>Payments process through Stripe.</b> Your ${esc(_payLabel())} key is saved for when direct ${esc(_payLabel())} processing ships.</div>`):`<div class="bk-lenhint" style="margin:0 0 12px">No processor connected yet &mdash; pick yours below. Nothing charges until you connect one.</div>`}
         ${PAY_PROVIDERS.map(p=>{ var isStripe=(p[0]==='stripe'), isPaypal=(p[0]==='paypal'), isSquare=(p[0]==='square'), conn=isPaypal?_ppConnected():(isSquare?_sqConnected():!!S.integrations[p[0]]), active=_payProvider()===p[0];
@@ -9178,6 +9187,19 @@ const Atlas = (function(){
   }
   // ===== Developer API: tenant self-serve keys for the read-only /api/v1 surface (pt.2) =====
   function _devAgo(ts){ if(!ts) return ''; var m=Math.round((Date.now()-ts)/60000); if(m<1) return 'just now'; if(m<60) return m+'m ago'; var h=Math.round(m/60); if(h<48) return h+'h ago'; return Math.round(h/24)+'d ago'; }
+  function pbSyncNow(){ if(!_isOwnerAcct())return; var btn=document.getElementById('pbSyncBtn'), out=document.getElementById('pbSyncOut');
+    if(btn){ btn.disabled=true; btn.textContent='Syncing from Prestige Black...'; }
+    _api('/api/pb-sync',{method:'POST'}).then(function(res){ var j=(res&&res.json)||{};
+      if(btn){ btn.disabled=false; btn.textContent='Sync from Prestige Black now'; }
+      if(!out) return; out.style.display='block';
+      if(j.ok){ out.style.borderColor='var(--brand)'; out.style.color='var(--ink)';
+        var n=(j.atlas&&j.atlas.mirrored)||0, e=(j.atlas&&j.atlas.errors)||0;
+        out.innerHTML='<b>Synced.</b> '+n+' booking'+(n===1?'':'s')+' mirrored'+(e?(' &middot; '+e+' skipped'):'')+(j.brandApplied?' &middot; branding applied':'')+'. Refreshing your data...';
+        setTimeout(function(){ try{ var sess=(typeof store!=='undefined'&&store.session)?store.session():null; if(sess&&sess.tenantId){ _srvHydrate(sess.tenantId).then(function(){ try{ DATA.bookings=_bookings(); }catch(_e){} try{ DATA.assets=store.assets(); }catch(_e){} try{ buildApp(); }catch(_e){} try{ renderFleet(); }catch(_e){} try{ renderOverview(); }catch(_e){} }); } }catch(_e){} }, 700);
+      } else { out.style.borderColor='var(--danger)'; out.style.color='var(--danger)';
+        out.textContent=(j.error==='not_configured')?'Not set up yet: add PB_BRIDGE_URL and PB_BRIDGE_SECRET to the Atlas worker environment, then try again.':('Could not sync: '+(j.message||j.error||'unknown error')); }
+    }).catch(function(){ if(btn){ btn.disabled=false; btn.textContent='Sync from Prestige Black now'; } if(out){ out.style.display='block'; out.style.color='var(--danger)'; out.textContent='Network error - please try again.'; } });
+  }
   function openDeveloper(){
     if(!ATLAS_BACKEND || !_apiCsrf){ openModal('<div class="modal__head"><h3>Developer API</h3>'+_xBtn()+'</div><div class="modal__body"><div class="bk-lenhint" style="margin:0">Sign in to your Atlas account to create API keys &mdash; the developer API is available once you are signed in.</div></div>'); return; }
     var base=(ATLAS_API||'https://atlasrental.io')+'/api/v1';
@@ -11508,7 +11530,7 @@ const Atlas = (function(){
       else if(S){ _billingReturn(); applyBrand();   // #280: a fresh signup gated pre-onboarding returns from Stripe checkout here -- _billingReturn marks the card on file
         // NEW funnel: a fresh signup that has not put a card on file yet is re-shown the plan picker on reload (so it cannot be
         // skipped by refreshing). Returning from the Stripe trial checkout, _billingReturn set card.onFile above -> onboarding.
-        if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && !(S.card && S.card.onFile)){ showSignupPlans(); }
+        if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && !(S.card && S.card.onFile) && !_isOwnerAcct()){ showSignupPlans(); }   // owner is comped -- never re-gated on reload
         else startTrial();
       }
       else { store.logout(); show('landing'); }   // dangling session, no tenant
@@ -11563,7 +11585,7 @@ const Atlas = (function(){
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,downloadReport,drillReportRow,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,
     renderTracking,openTrackerConnect,connectTrackerLive,connectTrackerGeneric,trkPickProvider,trkGenericAuthUpdate,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,pbSyncNow,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,mfaStepupToggle,
     S:()=>S,save2:save,setBackend};
 })();
