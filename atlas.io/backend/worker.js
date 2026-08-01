@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.31z';
+const ATLAS_BUILD = '2026.07.31z2';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -10303,7 +10303,8 @@ async function _availabilityCheck(env, prof, pubAssets, cfg, assetName, startTs,
     // X3 stock: COUNT overlapping active bookings of this asset; unavailable only once the count reaches the asset's unit count (qty from the matched pubAsset). qty absent/1 => first overlap blocks => byte-identical to the old any-overlap check.
     const _act = await env.DB.prepare("SELECT starts, ends, data FROM bookings WHERE tenant_id=? AND LOWER(status) NOT IN ('cancelled','completed') AND starts < ? AND ends > ?").bind(prof.id, endTs, startTs).all();   // PERF: bound to date-overlapping rows so /availability doesn't scan+parse every active booking; the JS filter still gates on d.asset
     const _qtyCap = Math.max(1, Number(_pa.qty) || 1);
-    const _overlap = (_act.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} return d && d.asset === assetName && Number(r.starts) < endTs && Number(r.ends) > startTs; }).length;
+    const _paidA = (_pa && _pa.id != null && _pa.id !== '') ? String(_pa.id) : '';   // #363 (audit BOOK-P2): match the authoritative /book gate -- prefer the stable asset id so the availability PREVIEW agrees with the gate after a rename (falls back to name when no id, byte-identical to before for id-less rows)
+    const _overlap = (_act.results || []).filter(function (r) { var d = {}; try { d = JSON.parse(r.data || '{}'); } catch (e) {} var _sm = (_paidA && d && d.assetId) ? (String(d.assetId) === _paidA) : (!!d && d.asset === assetName); return _sm && Number(r.starts) < endTs && Number(r.ends) > startTs; }).length;
     if (_overlap >= _qtyCap) return { available: false, reason: 'Already booked on these dates.' };
   } catch (e) {}
   return { available: true, reason: 'Available on these dates' };
