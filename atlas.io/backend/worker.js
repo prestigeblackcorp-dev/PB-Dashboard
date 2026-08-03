@@ -27,7 +27,7 @@ function securityHeaders(origin) {
     'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
-    'Content-Security-Policy': "frame-ancestors 'none'",
+    'Content-Security-Policy': "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'Permissions-Policy': 'geolocation=(self), camera=(), microphone=(), payment=(self)',
   };
@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03f';
+const ATLAS_BUILD = '2026.08.03g';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -11961,29 +11961,36 @@ function _pbmCustomer(b) {
 // mirrored asset on FIRST create so the owner's Atlas prices exactly like PB. Owner edits win afterward (assets are
 // created once; a re-sync never rewrites them -- see _pbSyncWrite). A vehicle NOT in this table just gets its day-rate
 // (rev/days) and is fully editable. This block is the ONLY PB-specific data; every field it sets is a generic per-asset field.
+// dayRate = PB's EXACT published daily price (mirrors docs/index.html VEHICLE_COSTS[name].rate). This is the authoritative
+// per-vehicle rate; _pbmAsset seeds it so a mirrored vehicle prices like PB instead of the old revenue/days guess (which
+// was wrong for any discounted, multi-day or add-on-inflated booking). Chauffeur cars (rate 0 in PB) keep 0 -> priced per trip.
 const _PB_VEH_CATALOG = {
-  'Corvette': { deposit: 750, weeklyRate: 1900, usageAllow: 150, overageRate: 2, usageUnit: 'miles' },
-  'Corvette Z51': { deposit: 750, weeklyRate: 1900, usageAllow: 150, overageRate: 2, usageUnit: 'miles' },
-  'BMW M3': { deposit: 750, weeklyRate: 2200, usageAllow: 150, overageRate: 3.5, usageUnit: 'miles' },
-  'BMW i4': { deposit: 300, weeklyRate: 950, usageAllow: 200, overageRate: 1.5, usageUnit: 'miles' },
-  'Macan': { deposit: 500, weeklyRate: 1750, usageAllow: 200, overageRate: 2, usageUnit: 'miles' },
-  'Porsche Boxster S': { deposit: 500, weeklyRate: 1250, usageAllow: 150, overageRate: 3, usageUnit: 'miles' },
-  'C300': { deposit: 500, weeklyRate: 1250, usageAllow: 200, overageRate: 1.25, usageUnit: 'miles' },
-  'Accord': { deposit: 200, weeklyRate: 455, usageAllow: 200, overageRate: 0.5, usageUnit: 'miles' },
-  'Lambo Huracan': { deposit: 1000, usageAllow: 125, overageRate: 10, usageUnit: 'miles' },
-  'Lambo Urus': { deposit: 1000, usageAllow: 125, overageRate: 10, usageUnit: 'miles' },
-  'Escalade Rental': { deposit: 500, usageAllow: 150, overageRate: 5, usageUnit: 'miles' },
-  'G Wagon': { deposit: 500, usageAllow: 150, overageRate: 5, usageUnit: 'miles' },
-  'Polaris Slingshot': { deposit: 250, weeklyRate: 1500, usageAllow: 300, overageRate: 1, usageUnit: 'miles' }
+  'Corvette': { dayRate: 450, deposit: 750, weeklyRate: 1900, usageAllow: 150, overageRate: 2, usageUnit: 'miles' },
+  'Corvette Z51': { dayRate: 450, deposit: 750, weeklyRate: 1900, usageAllow: 150, overageRate: 2, usageUnit: 'miles' },
+  'BMW M3': { dayRate: 450, deposit: 750, weeklyRate: 2200, usageAllow: 150, overageRate: 3.5, usageUnit: 'miles' },
+  'BMW i4': { dayRate: 150, deposit: 300, weeklyRate: 950, usageAllow: 200, overageRate: 1.5, usageUnit: 'miles' },
+  'Macan': { dayRate: 325, deposit: 500, weeklyRate: 1750, usageAllow: 200, overageRate: 2, usageUnit: 'miles' },
+  'Porsche Boxster S': { dayRate: 225, deposit: 500, weeklyRate: 1250, usageAllow: 150, overageRate: 3, usageUnit: 'miles' },
+  'C300': { dayRate: 200, deposit: 500, weeklyRate: 1250, usageAllow: 200, overageRate: 1.25, usageUnit: 'miles' },
+  'Accord': { dayRate: 85, deposit: 200, weeklyRate: 455, usageAllow: 200, overageRate: 0.5, usageUnit: 'miles' },
+  'Lambo Huracan': { dayRate: 1350, deposit: 1000, usageAllow: 125, overageRate: 10, usageUnit: 'miles' },
+  'Lambo Urus': { dayRate: 1350, deposit: 1000, usageAllow: 125, overageRate: 10, usageUnit: 'miles' },
+  'Escalade Rental': { dayRate: 500, deposit: 500, usageAllow: 150, overageRate: 5, usageUnit: 'miles' },
+  'G Wagon': { dayRate: 650, deposit: 500, usageAllow: 150, overageRate: 5, usageUnit: 'miles' },
+  'Polaris Slingshot': { dayRate: 300, deposit: 250, weeklyRate: 1500, usageAllow: 300, overageRate: 1, usageUnit: 'miles' }
 };
 function _pbmAsset(b) {
   const name = String(b.vehicle || 'Vehicle'); const vi = b.vehicleInfo || {};
   const days = Math.max(1, Number(b.days) || 1);
-  const dayRateCents = (Number(b.revenue) > 0 && b.type !== 'chauffeur') ? _pbmMoney(Number(b.revenue) / days) : 0;   // best-effort daily rate; the catalog/owner refines
+  const cat = _PB_VEH_CATALOG[name];
+  // Rate priority: PB's AUTHORITATIVE published day-rate from the catalog; else the old best-effort revenue/days (which is
+  // wrong for any discounted, multi-day or add-on-inflated booking -- the source of the "every vehicle has wrong pricing"
+  // report). Chauffeur cars (catalog rate 0 / no entry) still price per-trip.
+  const dayRateCents = (cat && Number(cat.dayRate) > 0) ? _pbmMoney(cat.dayRate)
+    : ((Number(b.revenue) > 0 && b.type !== 'chauffeur') ? _pbmMoney(Number(b.revenue) / days) : 0);
   const id = 'pbveh-' + _pbmSlug(name), type = (String(b.type || 'rental') === 'chauffeur') ? 'chauffeur' : 'car';
   // the client's _srvUnshape returns row.info AS the asset, so name/rate/status/pricing MUST all live inside info.
   const asset = { id: id, name: name, type: type, status: 'available', rate: dayRateCents / 100, qty: 1, year: vi.year || '', make: vi.make || '', model: vi.model || '', color: vi.color || '', vin: vi.vin || '', source: 'pb-mirror', readOnly: true };
-  const cat = _PB_VEH_CATALOG[name];
   if (cat) { if (cat.deposit) asset.deposit = cat.deposit; if (cat.weeklyRate) asset.weeklyRate = cat.weeklyRate; if (cat.usageAllow) asset.usageAllow = cat.usageAllow; if (cat.overageRate) asset.overageRate = cat.overageRate; if (cat.usageUnit) asset.usageUnit = cat.usageUnit; }
   return { id: id, name: name, type: type, status: 'available', day_rate_cents: dayRateCents, qty: 1, info: asset };
 }
@@ -12047,6 +12054,7 @@ function _pbmBooking(b, cust, asset) {
   if (Array.isArray(b.balancePayments)) for (const p of b.balancePayments) charges.push({ label: 'Balance payment', kind: 'charge', amount_cents: _pbmMoney(p.amount), method: String(p.method || ''), status: 'paid', offline: true, source: 'pb' });
   const data = {
     source: 'pb-mirror', readOnly: true, status: stUI,
+    periods: Math.max(1, Number(b.days) || 1), rate: (Number(asset.day_rate_cents) || 0) / 100,   // so the owner view shows Length + rate x periods correctly (mirror bookings carry no calcQuote fees[]; the client hardens q.fees too)
     cust: cust.name, custEmail: cust.email, custPhone: cust.phone, asset: asset.name, assetId: asset.id,
     pickupTime: b.pickupTime || '', dropoffTime: b.dropoffTime || '', location: b.pickupAddress || b.address || '', notes: String(b.notes || ''), promoCode: b.promoCode || '',
     quote: { subtotalCents: _pbmMoney(baseRev), totalCents: _pbmMoney(total), depositCents: _pbmMoney(dateLock), holdCents: _pbmMoney(deposit), discountCents: _pbmMoney(b.promoDiscount || 0), total: total, subtotal: baseRev },
@@ -12058,7 +12066,28 @@ function _pbmBooking(b, cust, asset) {
 }
 async function _pbSyncWrite(env, tenantId, coll, row) {   // idempotent upsert by preserved PB id; reuses patchFields' domain whitelist
   const existing = await env.DB.prepare('SELECT id FROM ' + coll + ' WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
-  if (coll === 'assets' && existing) return 'kept';   // assets are CREATED ONCE then owner-managed (rate/deposit/weekly/usage all editable) -> a re-sync must NEVER clobber those edits. Bookings + customers still upsert to reflect PB.
+  if (coll === 'assets' && existing) {
+    // Assets are CREATED ONCE then owner-managed -> a re-sync must NEVER clobber owner edits (deposit/weekly/usage/name).
+    // ONE narrow exception heals the "every vehicle has wrong pricing" report: a pb-mirror vehicle's daily RATE is meant to
+    // MIRROR PB. When the incoming row carries PB's authoritative catalog rate (day_rate_cents>0) and it differs from what's
+    // stored, correct ONLY info.rate + day_rate_cents -- every other field is left exactly as the owner has it. This repairs
+    // vehicles seeded with the old revenue/days guess on the owner's next Sync click, with zero risk to their other edits.
+    try {
+      if (Number(row.day_rate_cents) > 0 && row.info && row.info.source === 'pb-mirror') {
+        const ex = await env.DB.prepare('SELECT info FROM assets WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
+        const info = jparse(ex && ex.info, null);
+        if (info && info.source === 'pb-mirror') {
+          const newCents = Math.round(Number(row.day_rate_cents));
+          if (Math.round((Number(info.rate) || 0) * 100) !== newCents) {
+            info.rate = newCents / 100;
+            await env.DB.prepare('UPDATE assets SET info=?, day_rate_cents=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(info), newCents, Date.now(), row.id, tenantId).run();
+            return 'rate-healed';
+          }
+        }
+      }
+    } catch (e) { /* heal is best-effort; a failure just falls through to 'kept' */ }
+    return 'kept';   // Bookings + customers still upsert below to reflect PB.
+  }
   const pf = patchFields(coll, row); const cols = pf.cols, vals = pf.vals;
   if (coll === 'bookings' && Number(row._revenue) > 0) { cols.push('revenue_cents'); vals.push(_pbmMoney(row._revenue)); }   // committed-offline PB revenue -> server revenue_cents (P&L + GMV)
   if (!cols.length) return 'skip';

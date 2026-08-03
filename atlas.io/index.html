@@ -3111,6 +3111,7 @@ const Atlas = (function(){
   }
   // Whatever screen comes next once a real session exists -- shared by a direct login AND a post-2FA verify.
   async function _afterAuthSuccess(email, r){
+    try{ DATA={}; }catch(e){}   // #isolation: never let the PREVIOUS account's in-memory assets/bookings linger into -- or sync-push UNDER -- this new session (the vector by which another account's asset can bleed into this one). buildApp() below re-reads DATA from THIS tenant's own store; mirrors logout()'s clear.
     S=load();
     if(_authMode==='signup' && S){ S.tosAcceptedAt=Date.now(); S.tosVersion='2026-07-17'; save(); }   // record affirmative consent + version on the new account
     if(_authMode==='signup'){ try{ localStorage.removeItem('atlas_ref_code'); }catch(e){} }   // REFERRAL: the code (if any) rode along on the signup body -> clear it so a later signup on this browser can't reuse it
@@ -3895,7 +3896,7 @@ const Atlas = (function(){
     function row(l,v,cls){ return '<div class="mp-row '+(cls||'')+'"><span>'+l+'</span><span class="tnum">'+v+'</span></div>'; }
     var out=row(money(m.baseRate)+' &times; 3 '+per+'s', money(m.baseRate*3));
     if(q.disc) out+=row('Discount', '-'+money(q.disc), 'mp-ok');
-    q.fees.forEach(function(f){ out+=row(esc(f.name), money(f.amt)); });
+    (q.fees||[]).forEach(function(f){ out+=row(esc(f.name), money(f.amt)); });
     if(q.taxAmt) out+=row('Tax ('+m.tax+'%)', money(q.taxAmt));
     out+=row('Booking total', money(q.total), 'mp-total');
     out+=row('Deposit to reserve (now)', money(q.dueNow), 'mp-brand');
@@ -4243,7 +4244,12 @@ const Atlas = (function(){
       map[k].trips++; map[k].spent+=Math.round((b.quote&&b.quote.total)||0);
       var t=b.createdAt||b.startTs||0; if(t>map[k]._t){ map[k]._t=t; if(b.custEmail)map[k].email=b.custEmail; } });
     // X2: graft hydrated SERVER customers -- fill phone/id on email matches; surface server-only customers (created on another device or by a public booking that hasn't synced its booking row here yet).
-    try{ (S&&S._srvCustomers||[]).forEach(function(sc){ if(!sc||!sc.email)return; var hit=null; for(var kk in map){ if((map[kk].email||'').toLowerCase()===sc.email){ hit=map[kk]; break; } } if(hit){ if(!hit.phone&&sc.phone)hit.phone=sc.phone; if(!hit.id&&sc.id)hit.id=sc.id; } else { map['__srv:'+sc.email]={name:sc.name||sc.email,trips:0,spent:0,email:sc.email,phone:sc.phone||'',id:sc.id,_t:0,serverOnly:true}; } }); }catch(e){}
+    // PERF: index the map by lowercased email ONCE (O(m)) then look each server customer up in O(1) -- was a full map
+    // scan per server customer (O(customers * serverCustomers), quadratic at scale). Also case-normalizes the match:
+    // the old compare pitted a lowercased map email against a RAW sc.email, so an uppercase server email spuriously
+    // created a duplicate row. Same email == same person, so normalizing both sides is strictly more correct.
+    try{ var _cx={}; for(var _ck in map){ var _ce=(map[_ck].email||'').toLowerCase(); if(_ce&&!_cx[_ce]) _cx[_ce]=map[_ck]; }
+      (S&&S._srvCustomers||[]).forEach(function(sc){ if(!sc||!sc.email)return; var _se=String(sc.email).toLowerCase(); var hit=_cx[_se]; if(hit){ if(!hit.phone&&sc.phone)hit.phone=sc.phone; if(!hit.id&&sc.id)hit.id=sc.id; } else { var _ne={name:sc.name||sc.email,trips:0,spent:0,email:sc.email,phone:sc.phone||'',id:sc.id,_t:0,serverOnly:true}; map['__srv:'+sc.email]=_ne; _cx[_se]=_ne; } }); }catch(e){}
     return Object.keys(map).map(function(k){ var c=map[k], d=Math.max(0,Math.floor((now-c._t)/86400000));
       c.last=c._t?(d<1?'<1d':(d<30?d+'d':Math.floor(d/30)+'mo')):'new'; return c; }); }
   function seedData(){
@@ -5511,7 +5517,7 @@ const Atlas = (function(){
     var h='<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+_rmNote+'</span><span class="tnum">'+money(rate*(q.rateMult||1)*per)+'</span></div>';
     (q.extrasLines||[]).forEach(function(l){ h+='<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>'; });
     if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>';
-    q.fees.forEach(function(f){ h+='<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>'; });
+    (q.fees||[]).forEach(function(f){ h+='<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>'; });
     if(q.taxAmt) h+='<div class="mp-row"><span>Tax</span><span class="tnum">'+money(q.taxAmt)+'</span></div>';
     h+='<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div>';
     h+='<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(q.dueNow)+'</span></div>';
@@ -5564,7 +5570,7 @@ const Atlas = (function(){
   // both the sticky top command bar and the bottom action row read this, so the flow can never drift between them.
   // Returns [nextStatus, buttonLabel, plain-language hint] or null for terminal states. (#5: flow routes through
   // Returned so the asset stays reserved for close-out; Close out is what frees it.)
-  function _bkNextStep(b){ if(!b) return null; var n=esc(S.fleet.noun); return ({
+  function _bkNextStep(b){ if(!b) return null; var n=esc((S&&S.fleet&&S.fleet.noun)||'unit'); return ({
       'Pending':['Confirmed','Confirm booking','Reserves the '+n+' and locks in these dates.'],
       'Confirmed':['On rent','Start rental','Hand over the '+n+' &mdash; the rental clock starts now.'],
       'On rent':['Returned','Complete return','Mark it back &mdash; add fuel, late or damage charges before you close out.'],
@@ -5581,7 +5587,7 @@ const Atlas = (function(){
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')">Portal link</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button>'
       +'</div><div style="font-size:12px;color:var(--muted);margin-top:7px"><b style="color:var(--body);font-weight:600">Next:</b> '+st[2]+'</div></div>'; }
-    var term={'Completed':'This rental is complete.','Cancelled':'This booking was cancelled.','Voided':'This contract was voided &mdash; money kept, '+esc(S.fleet.noun)+' freed.'}[b.status]||('Status: '+esc(b.status||''));
+    var term={'Completed':'This rental is complete.','Cancelled':'This booking was cancelled.','Voided':'This contract was voided &mdash; money kept, '+esc((S&&S.fleet&&S.fleet.noun)||'unit')+' freed.'}[b.status]||('Status: '+esc(b.status||''));
     return wrap+'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between">'
       +'<span style="font-size:13px;color:var(--body)">'+term+'</span>'
       +'<span style="display:flex;gap:8px;flex:none"><button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')">Portal link</button><button class="btn btn--ghost btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button></span></div></div>'; }
@@ -5622,7 +5628,7 @@ const Atlas = (function(){
       +'<div class="mp-row"><span>'+money(b.rate!=null?b.rate:S.money.baseRate)+' &times; '+b.periods+' '+_perUnit()+'</span><span class="tnum">'+money((b.rate!=null?b.rate:S.money.baseRate)*b.periods)+'</span></div>'
       +(q.extrasLines||[]).map(function(l){return '<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>';}).join('')
       +(q.disc?'<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>':'')
-      +q.fees.map(function(f){return '<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>';}).join('')
+      +(q.fees||[]).map(function(f){return '<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>';}).join('')
       +(q.taxAmt?'<div class="mp-row"><span>Tax</span><span class="tnum">'+money(q.taxAmt)+'</span></div>':'')
       +'<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div>'
       +'<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(q.dueNow)+'</span></div>'
