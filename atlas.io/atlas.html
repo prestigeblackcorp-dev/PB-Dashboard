@@ -5569,7 +5569,7 @@ const Atlas = (function(){
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
     openModal('<div class="modal__head"><h3>'+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar">'+esc((b.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(b.cust)+'</b><div style="font-size:12.5px;color:var(--muted)">'+contact+'</div></div>'+statusChip(b.status)+'</div>'
-      +(function(){ var _blOn=(b.custEmail&&_isBlacklisted(b.custEmail))||!!b.blacklistFlag; if(!_blOn) return ''; var _lm=b.custEmail?_custMeta(String(b.custEmail).toLowerCase()):{}; var _rsn=(_lm&&_lm.blacklistReason)||(b.blacklistFlag&&b.blacklistFlag.reason)||''; return '<div style="background:rgba(176,52,42,.1);border:1px solid rgba(176,52,42,.4);border-radius:10px;padding:9px 12px;margin-bottom:14px;font-size:12.5px;color:var(--danger)">&#9940; This customer is on your blacklist'+(_rsn?(' &mdash; '+esc(_rsn)):'')+(b.blacklistFlag?' <span style="opacity:.75">(flagged when they booked online)</span>':'')+'</div>'; })()
+      +(function(){ var _blOn=(b.custEmail&&_isBlacklisted(b.custEmail))||!!b.blacklistFlag; if(!_blOn) return ''; var _lm=b.custEmail?_custMeta(String(b.custEmail).toLowerCase()):{}; var _rsn=(_lm&&_lm.blacklistReason)||(b.blacklistFlag&&b.blacklistFlag.reason)||''; return '<div style="background:rgba(176,52,42,.1);border:1px solid rgba(176,52,42,.4);border-radius:10px;padding:9px 12px;margin-bottom:14px;font-size:12.5px;color:var(--danger)">&#9940; This customer is on your blacklist'+(_rsn?(' &mdash; '+esc(_rsn)):'')+(b.blacklistFlag?(' <span style="opacity:.75">('+(b.blacklistFlag.matchedBy==='phone'?'matched by phone &mdash; booked under a different email':'flagged when they booked online')+')</span>'):'')+'</div>'; })()
       +(function(){ var v=b.idVerified, rj=b.idRejected&&!v; var chipCls=v?'chip--ok':rj?'chip--danger':'chip--warn', chipTxt=v?'ID verified':rj?'ID rejected':'ID not verified';
         var sub=v?('Verified '+_stamp(b.idVerifiedAt)):rj?('Rejected '+_stamp(b.idRejectedAt)+' \u2014 renter must re-submit'):'Check the renter\u2019s license before pickup';
         var btns=v?('<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClearVerify(\''+b.id+'\')">Undo</button>')
@@ -5657,7 +5657,12 @@ const Atlas = (function(){
   //     SAME DAY, legal record, optional blacklist. Additive + fully reversible (nothing deleted). Generic across every rental type.
   //     Unlike Cancel, void fires NO refund; revenue stays because _isCommitted() counts every non-Cancelled/non-Pending status. ===
   function _voidEnabled(){ try{ return !(S&&S.flags&&S.flags.voidContract===false); }catch(e){ return true; } }   // default ON; kill-switch: S.flags.voidContract=false
-  function _blacklistAdd(email,name,reason){ try{ var key=String(email||'').toLowerCase(); if(!key) return false; var m=_custMeta(key); m.blacklisted=true; m.blacklistedAt=Date.now(); m.blacklistReason=String(reason||'').slice(0,300); if(name) m.blacklistName=name; return true; }catch(e){ return false; } }
+  // Identity-based rebooking block: normalize a phone to its last 10 significant digits (drops a US country code + all
+  // formatting) so every way the same number is typed maps to ONE key -- BYTE-IDENTICAL to the worker's _normContact phone
+  // branch, so a stored blPhone matches what the worker computes from an incoming public booking. <7 digits -> '' (unusable).
+  function _normPhone(p){ try{ var d=String(p==null?'':p).replace(/[^0-9]/g,''); if(d.length>=11) d=d.slice(-10); return d.length>=7?d:''; }catch(e){ return ''; } }
+  function _normName(n){ try{ return String(n==null?'':n).toLowerCase().replace(/\s+/g,' ').trim(); }catch(e){ return ''; } }
+  function _blacklistAdd(email,name,reason,phone){ try{ var key=String(email||'').toLowerCase(); if(!key) return false; var m=_custMeta(key); m.blacklisted=true; m.blacklistedAt=Date.now(); m.blacklistReason=String(reason||'').slice(0,300); if(name) m.blacklistName=name; var _p=_normPhone(phone); if(_p) m.blPhone=_p; var _nm=_normName(name); if(_nm) m.blName=_nm; return true; }catch(e){ return false; } }
   function _isBlacklisted(email){ try{ var key=String(email||'').toLowerCase(); return !!(key&&S.custMeta&&S.custMeta[key]&&S.custMeta[key].blacklisted); }catch(e){ return false; } }
   function _blacklistRemove(email){ try{ var key=String(email||'').toLowerCase(); if(key&&S.custMeta&&S.custMeta[key]){ delete S.custMeta[key].blacklisted; delete S.custMeta[key].blacklistedAt; delete S.custMeta[key].blacklistReason; } return true; }catch(e){ return false; } }
   // Blacklist sync policy (tenant-wide): default is WARN-only (owner is flagged on every booking incl. website ones, but nothing is
@@ -5667,7 +5672,7 @@ const Atlas = (function(){
   function blacklistBlockToggle(on){ if(!_canCap('customersEdit')){ toast('Editing customers is not in your access'); return; } if(!S.flags) S.flags={}; S.flags.blacklistBlock=!!on; _logEvent('customer','Blacklist auto-decline of online bookings '+(on?'ON':'OFF'),{}); save(); toast(on?'Blacklisted customers will be auto-declined online':'Blacklist is warn-only again (owner still flagged)'); }
   function bkBlacklistToggle(i){ if(!_canCap('customersEdit')){ toast('Editing customers is not in your access'); return; } var c=DATA.customers[i]; if(!c)return; var key=String(c.email||'').toLowerCase(); if(!key){ toast('This customer has no email to blacklist'); return; }
     if(_isBlacklisted(key)){ _blacklistRemove(key); _logEvent('customer','Removed '+(c.name||key)+' from blacklist',{}); save(); viewCustomer(i); toast('Removed from blacklist'); }
-    else { var r=prompt('Blacklist '+(c.name||key)+'? Future bookings for this customer will warn you. Reason (optional):'); if(r===null) return; _blacklistAdd(key, c.name, r||'Manually blacklisted'); _logEvent('customer','Blacklisted '+(c.name||key)+(r?(' -- '+r):''),{}); save(); viewCustomer(i); toast('Added to blacklist'); } }
+    else { var r=prompt('Blacklist '+(c.name||key)+'? Future bookings for this customer will warn you. Reason (optional):'); if(r===null) return; _blacklistAdd(key, c.name, r||'Manually blacklisted', c.phone); _logEvent('customer','Blacklisted '+(c.name||key)+(r?(' -- '+r):''),{}); save(); viewCustomer(i); toast('Added to blacklist'); } }
   function bkVoidFlow(id){ if(!_guard('bookEdit','Voiding bookings'))return; if(!_voidEnabled()){ toast('Void is turned off.'); return; }
     var b=_getBooking(id); if(!b)return; if(b.status==='Voided'){ toast('This '+_fterm('book')+' is already voided.'); return; }
     var earned=_bkEarned(b), hold=b.hold, holdAmt=(hold&&hold.status==='authorized')?_r2(hold.amount||0):0;
@@ -5682,7 +5687,7 @@ const Atlas = (function(){
     var doBl=!!(document.getElementById('vdBlacklist')&&document.getElementById('vdBlacklist').checked);
     b._preVoidStatus=b.status; b.status='Voided'; b.voidReason=reason.slice(0,1000); b.voidedAt=Date.now(); b.voidedBy=_sessEmail()||'owner'; b.endedEarly=true; b._t=Date.now();
     b._history=(b._history||[]).concat([{at:Date.now(),by:b.voidedBy,note:'Voided (was '+b._preVoidStatus+'): '+reason.slice(0,140)}]);
-    if(doBl) _blacklistAdd(b.custEmail,b.cust,'Contract voided: '+reason.slice(0,120));
+    if(doBl) _blacklistAdd(b.custEmail,b.cust,'Contract voided: '+reason.slice(0,120), b.phone||b.custPhone);
     _upsertBooking(b); _logEvent('booking','Contract VOIDED on '+b.id+' -- money kept, '+(b.asset||'asset')+' freed'+(doBl?' + blacklisted':''),{booking:b.id}); save(); closeModal();
     try{ renderOverview(); renderBookings(); renderCustomers(); _refreshNavBadges(); }catch(e){}
     toast('\u26d4 Contract voided -- '+(b.asset||'asset')+' freed, money kept.');

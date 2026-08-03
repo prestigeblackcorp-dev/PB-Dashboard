@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03a';
+const ATLAS_BUILD = '2026.08.03b';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -5086,8 +5086,18 @@ function doReset(){
           // EMAIL only -- a determined person can use a new address -- so this is a deterrent + a heads-up, never an identity assertion.
           let _blFlag = null;
           try {
-            const _blm = (prof.settings && prof.settings.custMeta && prof.settings.custMeta[b.email.toLowerCase()]) || null;
-            if (_blm && _blm.blacklisted) _blFlag = { reason: String(_blm.blacklistReason || '').slice(0, 300), at: Number(_blm.blacklistedAt) || now };
+            const _cm = (prof.settings && prof.settings.custMeta) || null;
+            if (_cm) {
+              const _em = b.email.toLowerCase();
+              let _blm = (_cm[_em] && _cm[_em].blacklisted) ? _cm[_em] : null, _mb = 'email';
+              if (!_blm) {   // IDENTITY-BASED REBOOKING BLOCK: no email hit -> try PHONE. A blacklisted person rebooking under a NEW email but the
+                const _ip = _normContact(b.phone || '');   // SAME phone is caught. _normContact == the client's _normPhone key (last 10 digits), so blPhone matches exactly.
+                if (_ip && _ip.length >= 7) {
+                  for (const _k in _cm) { const _e = _cm[_k]; if (_e && _e.blacklisted && _e.blPhone && _e.blPhone === _ip) { _blm = _e; _mb = 'phone'; break; } }
+                }
+              }
+              if (_blm) _blFlag = { reason: String(_blm.blacklistReason || '').slice(0, 300), at: Number(_blm.blacklistedAt) || now, matchedBy: _mb };
+            }
           } catch (e) { _blFlag = null; }
           if (_blFlag && prof.settings && prof.settings.flags && prof.settings.flags.blacklistBlock === true) {
             try { await audit(env, { tenant_id: prof.id }, req, 'public.book.blocked', { email: b.email.toLowerCase(), reason: _blFlag.reason }); } catch (e) {}
@@ -5153,7 +5163,7 @@ function doReset(){
               const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
               // Blacklist sync: if this website customer is on the owner's blacklist, lead the notification with a clear red flag so
               // the owner reviews before confirming. (When the owner has turned on hard-block above, this branch never runs -- the booking was declined.)
-              const _blBanner = _blFlag ? ('<div style="background:#fdecea;border:1px solid #f5c6cb;border-radius:8px;padding:12px 14px;margin:0 0 14px;color:#8a1c1c"><b>&#9888; Blacklisted customer.</b> ' + esc(String(b.email)) + ' is on your blacklist' + (_blFlag.reason ? (' &mdash; ' + esc(_blFlag.reason)) : '') + '. Review before confirming.</div>') : '';
+              const _blBanner = _blFlag ? ('<div style="background:#fdecea;border:1px solid #f5c6cb;border-radius:8px;padding:12px 14px;margin:0 0 14px;color:#8a1c1c"><b>&#9888; Blacklisted customer.</b> ' + esc(String(b.email)) + ' ' + (_blFlag.matchedBy === 'phone' ? 'booked under a NEW email, but the phone number matches someone you blacklisted' : 'is on your blacklist') + (_blFlag.reason ? (' &mdash; ' + esc(_blFlag.reason)) : '') + '. Review before confirming.</div>') : '';
               if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
                 subject: (_blFlag ? '[Blacklist] ' : '') + 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
                 html: _emailShell(prof, _blBanner + '<h2>New website booking</h2><p><b>' + esc(String(b.name)) + '</b> (' + esc(b.email) + (b.phone ? ', ' + esc(String(b.phone)) : '') + ') requested <b>' + esc(assetName) + '</b> for ' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + '.</p><p>Estimated <b>' + money2(q.totalCents) + '</b>. Reference <b>' + esc(bref) + '</b>. Open Atlas to confirm.</p>') });
