@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03c';
+const ATLAS_BUILD = '2026.08.03d';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3489,6 +3489,7 @@ async function ensurePlatformSchema(env) {
   // 60s heartbeat is one cheap UPSERT, never a growing table. No IPs, no PII -- country only, same as visit_geo.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS active_now (sid TEXT PRIMARY KEY, last_at INTEGER, src TEXT, country TEXT)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS fraud_fingerprints (fp TEXT PRIMARY KEY, reason TEXT, first_tenant TEXT, reports INTEGER DEFAULT 1, first_at INTEGER, last_at INTEGER)").run(); } catch (e) {}   // F2 cross-tenant fraud signal: opaque Stripe card fingerprint only (same across merchants, NO cardholder PII). Recorded on a chargeback, checked at future payments. See _recordFraudFp/_lookupFraudFp/_bkStampFraud.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS payment_index (pi TEXT PRIMARY KEY, tenant_id TEXT, card_fp TEXT, at INTEGER)").run(); } catch (e) {}   // maps a payment_intent/charge id -> its opaque card fingerprint (captured at payment) so a chargeback resolves the card by INDEXED lookup, not a `data LIKE` full-table scan.
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activenow_last ON active_now(last_at)").run(); } catch (e) {}
   // Competitor watchlist (platform-level, owner-managed). The cron fetches each URL, snapshots it, and the AI brief
   // diffs today's snapshot vs last -> real "what changed" instead of model guesses. last_json = extracted signal.
@@ -5405,6 +5406,9 @@ function doReset(){
                   try {
                     const sk = await tenantStripeKey(env, md.tenant); if (!sk) return;
                     const info = await _fpForPayment(env, sk, obj.latest_charge || '', pi); if (!info || !info.fp) return;
+                    // Index PI -> fingerprint so a future chargeback resolves the card with an INDEXED lookup (payment_index PK)
+                    // instead of a cross-tenant `data LIKE` full-table scan. Opaque fingerprint only; no PII.
+                    try { const _pk = String(pi || info.chargeId || ''); if (_pk) await env.DB.prepare("INSERT INTO payment_index (pi,tenant_id,card_fp,at) VALUES (?,?,?,?) ON CONFLICT(pi) DO UPDATE SET card_fp=excluded.card_fp").bind(_pk.slice(0, 120), String(md.tenant).slice(0, 60), String(info.fp).slice(0, 80), Date.now()).run(); } catch (e) {}
                     const hit = await _lookupFraudFp(env, info.fp);
                     const highRisk = (info.risk === 'highest');
                     await _bkStampFraud(env, md.tenant, md.booking, info.fp, info.risk, hit ? { reason: hit.reason, reports: hit.reports } : (highRisk ? { reason: 'radar:highest_risk', reports: 0 } : null));
@@ -5676,15 +5680,11 @@ function doReset(){
             // guesswork. Fallback: fetch the charge with the platform key. Best-effort: any failure records nothing; we always ACK.
             try {
               await ensurePlatformSchema(env);
-              const _needle = obj.payment_intent || obj.charge || '';
+              const _pi = obj.payment_intent || '', _ch = obj.charge || '';
               let _fp = '';
-              if (_needle) {
-                try {
-                  const _rows = await env.DB.prepare("SELECT data FROM bookings WHERE data LIKE ? LIMIT 5").bind('%' + String(_needle).replace(/[%_]/g, '') + '%').all();
-                  for (const _r of (_rows.results || [])) { const _d = jparse(_r.data, {}); if (_d && _d.cardFp) { _fp = _d.cardFp; break; } }
-                } catch (e) {}
-              }
-              if (!_fp && obj.charge) { try { const _pk = _platStripe(env); if (_pk) { const _info = await _fpForPayment(env, _pk, obj.charge, ''); if (_info) _fp = _info.fp; } } catch (e) {} }
+              // INDEXED lookup: the fingerprint was recorded at payment time in payment_index keyed by PI/charge (PK). No table scan.
+              try { for (const _key of [_pi, _ch]) { if (!_key) continue; const _row = await env.DB.prepare("SELECT card_fp FROM payment_index WHERE pi=?").bind(String(_key).slice(0, 120)).first(); if (_row && _row.card_fp) { _fp = _row.card_fp; break; } } } catch (e) {}
+              if (!_fp && _ch) { try { const _pk = _platStripe(env); if (_pk) { const _info = await _fpForPayment(env, _pk, _ch, ''); if (_info) _fp = _info.fp; } } catch (e) {} }
               if (_fp) { await _recordFraudFp(env, _fp, 'chargeback:' + String(obj.reason || 'dispute').slice(0, 40), md.tenant || ''); await audit(env, md.tenant ? { tenant_id: md.tenant } : null, req, 'fraud.chargeback_recorded', { reason: String(obj.reason || 'dispute').slice(0, 40) }); }
             } catch (e) { _whErr = _whErr || e; }
           } else if (T === 'charge.refunded') {
@@ -10494,15 +10494,20 @@ function _legalShell(kind) {
     + '<div class="foot">Contact <a href="mailto:support@atlasrental.io">support@atlasrental.io</a>. &copy; 2026 Atlas Rental.io. All rights reserved.</div></div>';
   return { title: title + ' -- Atlas Rental.io', body: body };
 }
+// Pick a readable ink (near-black or white) for text placed ON the brand color, by YIQ luminance -- so a light brand
+// (yellow/pale) no longer renders unreadable white-on-light headers + CTAs (a11y WCAG 1.4.3). Falls back to white.
+function _inkFor(hex) { try { var h = String(hex || '').replace('#', ''); if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]; if (h.length < 6) return '#fff'; var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16); return ((r * 299 + g * 587 + b * 114) / 1000) >= 150 ? '#0a1a12' : '#ffffff'; } catch (e) { return '#fff'; } }
 function _pageDoc(title, brandColor, bodyHtml, scriptJs, headExtra) {
   var brand = /^#[0-9a-fA-F]{3,8}$/.test(brandColor || '') ? brandColor : '#1E6E4E';
+  var brandInk = _inkFor(brand);
   return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title><style>'
-    + ':root{--brand:' + brand + '}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#f6f7f9;color:#141414;line-height:1.5}'
-    + '.wrap{max-width:620px;margin:0 auto;padding:20px 16px 60px}.hd{background:var(--brand);color:#fff;padding:20px 18px;border-radius:14px;font-weight:800;font-size:20px;display:flex;align-items:center;gap:10px}'
+    + ':root{--brand:' + brand + ';--brand-ink:' + brandInk + '}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#f6f7f9;color:#141414;line-height:1.5}'
+    + '.wrap{max-width:620px;margin:0 auto;padding:20px 16px 60px}.hd{background:var(--brand);color:var(--brand-ink);padding:20px 18px;border-radius:14px;font-weight:800;font-size:20px;display:flex;align-items:center;gap:10px}'
     + '.card{background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:18px;margin-top:14px}label{display:block;font-size:13px;font-weight:600;margin:12px 0 5px}'
-    + 'input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d7d7d7;border-radius:9px;font-size:15px;font-family:inherit;background:#fff}'
-    + '.btn{display:block;width:100%;background:var(--brand);color:#fff;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;cursor:pointer;margin-top:16px}.btn:disabled{opacity:.5}'
-    + '.muted{color:#777;font-size:13px}.row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid #eee}.tot{display:flex;justify-content:space-between;font-weight:700;margin-top:6px;font-size:16px}.err{color:#b42318;font-size:13px;margin-top:8px}h2{margin:0 0 8px}</style>' + (headExtra || '') + '</head><body><div class="wrap">' + bodyHtml + '</div><scr' + 'ipt>' + scriptJs + '</scr' + 'ipt></body></html>';
+    + 'input,select,textarea{width:100%;padding:11px 12px;border:1px solid #8a8a8a;border-radius:9px;font-size:16px;font-family:inherit;background:#fff;color:#141414}'
+    + 'a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible,[role=radio]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}'
+    + '.btn{display:block;width:100%;background:var(--brand);color:var(--brand-ink);border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;cursor:pointer;margin-top:16px}.btn:disabled{opacity:.5}'
+    + '.muted{color:#616161;font-size:13px}.row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid #eee}.tot{display:flex;justify-content:space-between;font-weight:700;margin-top:6px;font-size:16px}.err{color:#b42318;font-size:13px;margin-top:8px}h2{margin:0 0 8px}</style>' + (headExtra || '') + '</head><body><div class="wrap">' + bodyHtml + '</div><scr' + 'ipt>' + scriptJs + '</scr' + 'ipt></body></html>';
 }
 
 // Read-only availability check for the customer preview. Same guard rails as the /book intake (min/max length,
