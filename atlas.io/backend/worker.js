@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.07.31z2';
+const ATLAS_BUILD = '2026.08.03a';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -5077,6 +5077,23 @@ function doReset(){
             }
           }
           _quoteDollars(q);   // CRITICAL: add the dollar-named fields the dashboard/analytics/tax exports read (else a real website booking records as $0)
+          // BLACKLIST SYNC (own list -> public bookings). The owner's in-dashboard blacklist lives in S.custMeta and is mirrored to
+          // settings.custMeta by the client (_srvMirrorProfile). Read it HERE so a flagged customer booking through the PUBLIC site is
+          // caught server-side -- the dashboard's client-only _isBlacklisted warning never ran for a website booking the owner had not
+          // opened yet. Default posture is WARN: stamp the booking (so the dashboard shows it server-authoritatively even on a fresh
+          // device) + flag the owner-notification email, and let the request through so the owner decides. An owner who opts in via
+          // settings.flags.blacklistBlock gets a soft hard-block: the request is politely declined with NO row and NO emails. Match is by
+          // EMAIL only -- a determined person can use a new address -- so this is a deterrent + a heads-up, never an identity assertion.
+          let _blFlag = null;
+          try {
+            const _blm = (prof.settings && prof.settings.custMeta && prof.settings.custMeta[b.email.toLowerCase()]) || null;
+            if (_blm && _blm.blacklisted) _blFlag = { reason: String(_blm.blacklistReason || '').slice(0, 300), at: Number(_blm.blacklistedAt) || now };
+          } catch (e) { _blFlag = null; }
+          if (_blFlag && prof.settings && prof.settings.flags && prof.settings.flags.blacklistBlock === true) {
+            try { await audit(env, { tenant_id: prof.id }, req, 'public.book.blocked', { email: b.email.toLowerCase(), reason: _blFlag.reason }); } catch (e) {}
+            if (_promoClaimedCode) { try { await _promoUnclaim(env, prof.id, _promoClaimedCode); } catch (_e) {} }   // release the promo slot claimed above -- no booking is created on a block
+            return err(403, 'We are unable to accept this booking online. Please contact us directly to arrange your reservation.');
+          }
           let custId = 'C-' + randId(10);
           try {
             const ex = await env.DB.prepare('SELECT id FROM customers WHERE tenant_id=? AND email=? LIMIT 1').bind(prof.id, b.email.toLowerCase()).first();
@@ -5093,7 +5110,8 @@ function doReset(){
           const data = { source: 'website', cust: String(b.name).slice(0, 120), custEmail: b.email.toLowerCase(), custPhone: String(b.phone || '').slice(0, 40),
             asset: assetName, assetId: _aid || undefined, periods: periods, notes: String(b.notes || '').slice(0, 600), deliveryAddr: String(b.deliveryAddr || '').slice(0, 200) || undefined, location: String(b.location || '').slice(0, 120) || undefined, quote: q, portalToken: token, status: 'Pending', promoCode: promoCode || undefined,   // X4: optional pickup/return location captured on the booking (additive; absent when empty, no availability impact). #361: stamp the stable asset id so future conflict checks survive a rename.
             extras: _resolvedExtras.length ? _resolvedExtras : undefined, pickupTime: /^\d{1,2}:\d{2}$/.test(String(b.time || '')) ? String(b.time) : undefined,   // G5: paid extras (server-priced) + pickup time-of-day
-            idVerified: _vcOk ? true : undefined, idVerifiedCarriedAt: _vcOk ? now : undefined };   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification (#5: gated on email+name match).
+            idVerified: _vcOk ? true : undefined, idVerifiedCarriedAt: _vcOk ? now : undefined,   // G4: carry a delivery/pickup address if the site collects one. Customers C: carry prior ID verification (#5: gated on email+name match).
+            blacklistFlag: _blFlag || undefined };   // Blacklist sync: stamp the flag on the booking so the dashboard shows it server-authoritatively even when the owner's local custMeta is stale/on another device.
           let _myRowid = 0;
           try {
             const _ins = await env.DB.prepare('INSERT INTO bookings (id,tenant_id,customer_id,asset_id,starts,ends,status,revenue_cents,data,portal_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -5133,9 +5151,12 @@ function doReset(){
           const _ownerNotify = (async function () {
             try {
               const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(prof.id, 'owner').first();
+              // Blacklist sync: if this website customer is on the owner's blacklist, lead the notification with a clear red flag so
+              // the owner reviews before confirming. (When the owner has turned on hard-block above, this branch never runs -- the booking was declined.)
+              const _blBanner = _blFlag ? ('<div style="background:#fdecea;border:1px solid #f5c6cb;border-radius:8px;padding:12px 14px;margin:0 0 14px;color:#8a1c1c"><b>&#9888; Blacklisted customer.</b> ' + esc(String(b.email)) + ' is on your blacklist' + (_blFlag.reason ? (' &mdash; ' + esc(_blFlag.reason)) : '') + '. Review before confirming.</div>') : '';
               if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io',
-                subject: 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
-                html: _emailShell(prof, '<h2>New website booking</h2><p><b>' + esc(String(b.name)) + '</b> (' + esc(b.email) + (b.phone ? ', ' + esc(String(b.phone)) : '') + ') requested <b>' + esc(assetName) + '</b> for ' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + '.</p><p>Estimated <b>' + money2(q.totalCents) + '</b>. Reference <b>' + esc(bref) + '</b>. Open Atlas to confirm.</p>') });
+                subject: (_blFlag ? '[Blacklist] ' : '') + 'New booking: ' + String(b.name).slice(0, 60) + ' - ' + assetName,
+                html: _emailShell(prof, _blBanner + '<h2>New website booking</h2><p><b>' + esc(String(b.name)) + '</b> (' + esc(b.email) + (b.phone ? ', ' + esc(String(b.phone)) : '') + ') requested <b>' + esc(assetName) + '</b> for ' + periods + ' ' + esc(cfg.unit || 'day') + (periods > 1 ? 's' : '') + '.</p><p>Estimated <b>' + money2(q.totalCents) + '</b>. Reference <b>' + esc(bref) + '</b>. Open Atlas to confirm.</p>') });
             } catch (e) {}
           })();
           if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_ownerNotify); else if (_ownerNotify && _ownerNotify.catch) _ownerNotify.catch(function () {});
