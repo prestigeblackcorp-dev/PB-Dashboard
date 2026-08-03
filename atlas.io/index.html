@@ -4632,7 +4632,11 @@ const Atlas = (function(){
   function statusChip(s){const m={'Confirmed':'info','On rent':'ok','Returned':'warn','Completed':'muted','Pending':'warn','Cancelled':'danger','Voided':'danger'};return `<span class="chip chip--${m[s]||'muted'}"><span class="dot"></span>${s}</span>`;}
   var _fleetLocFilter=null;
   function _assetLocs(){ if(!DATA.assets.some(function(a){return a.loc;})) return null; var g={}; DATA.assets.forEach(function(a){ var L=a.loc||'Unassigned'; (g[L]=g[L]||[]).push(a); }); return g; }
-  function fleetLoc(L){ _fleetLocFilter=(_fleetLocFilter===L)?null:L; renderFleet(); }
+  var _fleetSearch='', _fleetStatusF='', _fleetShowAll=false;   // Fleet-at-Scale: search + status filter + pagination -- fixes the 24-unit cap where a 50-vehicle owner couldn't open 26 of their own assets.
+  function fleetLoc(L){ _fleetLocFilter=(_fleetLocFilter===L)?null:L; _fleetShowAll=false; renderFleet(); }
+  function fleetSearch(inp){ var pos=(inp&&inp.selectionStart)||0; _fleetSearch=(inp&&inp.value)||''; _fleetShowAll=false; renderFleet(); var b=document.getElementById('fleetSearchBox'); if(b){ try{ b.focus(); b.setSelectionRange(pos,pos); }catch(_){} } }
+  function fleetStatusFilter(s){ _fleetStatusF=(_fleetStatusF===s)?'':s; _fleetShowAll=false; renderFleet(); }
+  function fleetShowAll(){ _fleetShowAll=true; renderFleet(); }
   // Unit detail: edit the unit + its current tenant/renter. Read-only for workers without fleetEdit.
   function openAsset(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return; var t=a.tenant||{}, ro=!_canCap('fleetEdit'), dis=ro?' disabled':'';
     var rl=(_fterm('book')==='reservation')?'tenant':'renter', locL=cap(_fterm('loc'));
@@ -4982,10 +4986,16 @@ const Atlas = (function(){
           <div class="loc-card__stat"><span>${arr.length} ${S.fleet.nouns}</span><span>${occ}% ${_fterm('occ')}</span></div>
           <div class="bar"><i style="width:${occ}%"></i></div></div>`; }).join('')+'</div>';
       var list=_fleetLocFilter?DATA.assets.filter(function(a){return a.loc===_fleetLocFilter;}):DATA.assets;
-      var shown=list.slice(0,24), more=list.length-shown.length;
-      grid.innerHTML=_lockBanner+'<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(S.fleet.nouns)))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+list.length+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+esc(_fleetLocFilter).replace(/'/g,"\\'")+'\')">Show all</button>':'')+'</div>'
-        +shown.map(_assetCard).join('')
-        +(more>0?'<div style="grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:10px">+ '+more+' more '+esc(S.fleet.nouns)+(_fleetLocFilter?'':' \u2014 tap a '+_fterm('loc')+' above to filter')+'</div>':'');
+      var _q=(_fleetSearch||'').trim().toLowerCase();
+      if(_q) list=list.filter(function(a){ return String(a.name||'').toLowerCase().indexOf(_q)>=0 || String(a.type||'').toLowerCase().indexOf(_q)>=0 || String(a.loc||'').toLowerCase().indexOf(_q)>=0; });
+      if(_fleetStatusF) list=list.filter(function(a){ return (a.status||'')===_fleetStatusF; });
+      var _statuses=[]; (_fleetLocFilter?DATA.assets.filter(function(a){return a.loc===_fleetLocFilter;}):DATA.assets).forEach(function(a){ if(a.status&&_statuses.indexOf(a.status)<0)_statuses.push(a.status); }); _statuses.sort();
+      var _chip=function(lbl,val){ return '<button class="btn btn--ghost btn--sm'+((_fleetStatusF===val)?' btn--primary':'')+'" onclick="Atlas.fleetStatusFilter(\''+esc(val).replace(/'/g,"\\'")+'\')">'+esc(lbl)+'</button>'; };
+      var _toolbar='<div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:2px 0 6px"><input id="fleetSearchBox" value="'+esc(_fleetSearch||'')+'" oninput="Atlas.fleetSearch(this)" placeholder="Search '+esc(S.fleet.nouns)+'\u2026" aria-label="Search '+esc(S.fleet.nouns)+'" style="flex:1;min-width:170px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;font-size:16px;background:var(--surface);color:var(--ink)">'+_chip('All','')+_statuses.map(function(s){return _chip(s,s);}).join('')+'</div>';
+      var _PAGE=60, _tot=list.length, shown=_fleetShowAll?list:list.slice(0,_PAGE), more=_tot-shown.length;
+      grid.innerHTML=_lockBanner+_toolbar+'<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(S.fleet.nouns)))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+_tot+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+esc(_fleetLocFilter).replace(/'/g,"\\'")+'\')">Show all '+esc(_fterm('locs'))+'</button>':'')+'</div>'
+        +(shown.length?shown.map(_assetCard).join(''):'<div style="grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:18px">No '+esc(S.fleet.nouns)+' match'+(_q?(' \u201c'+esc(_fleetSearch)+'\u201d'):'')+'.</div>')
+        +(more>0?'<div style="grid-column:1/-1;text-align:center;padding:10px"><button class="btn btn--ghost btn--sm" onclick="Atlas.fleetShowAll()">Show all '+_tot+' '+esc(S.fleet.nouns)+'</button></div>':'');
     } else {
       locsEl.innerHTML='';
       document.getElementById('fleetSub').textContent=`${_fleetUnits()} of ${capTxt} units (${n} ${S.fleet.nouns}) on ${_curTier().name} \u00b7 ${avail} available now`;
@@ -12029,7 +12039,7 @@ const Atlas = (function(){
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
     renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
-    setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,
+    setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,setTheme,toggleMenu,closeMenu,
