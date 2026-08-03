@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03b';
+const ATLAS_BUILD = '2026.08.03c';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3031,6 +3031,57 @@ async function _card4FromCharge(env, pk, chargeId) {
     return (r && r.ok && r.j && r.j.payment_method_details && r.j.payment_method_details.card && r.j.payment_method_details.card.last4) || '';
   } catch (e) { return ''; }
 }
+// ===== F2 SHARED FRAUD FINGERPRINT (privacy-safe, cross-tenant) =====
+// A Stripe card `fingerprint` is an OPAQUE token that is the SAME across merchants for the same card, but carries NO
+// cardholder data (not the number, name, or anything personal). It is designed for exactly this: recognizing a card
+// that charged back elsewhere WITHOUT sharing any person's identity. We record a fingerprint only when a chargeback
+// lands, and only ever surface "this card was reported for a chargeback (N reports)" -- never who, where, or any PII.
+// Every function is read-only-safe, own try/catch, returns null/'' on ANY failure -- never blocks a payment.
+async function _fpForPayment(env, pk, chargeId, pi) {
+  try {
+    if (!pk) return null;
+    var path = chargeId ? ('charges/' + encodeURIComponent(chargeId)) : (pi ? ('charges?payment_intent=' + encodeURIComponent(pi) + '&limit=1') : '');
+    if (!path) return null;
+    const r = await stripeApi(pk, 'GET', path, null);
+    if (!(r && r.ok && r.j)) return null;
+    const ch = chargeId ? r.j : ((r.j.data && r.j.data[0]) || null);
+    if (!ch) return null;
+    const card = ch.payment_method_details && ch.payment_method_details.card;
+    return { fp: (card && card.fingerprint) || '', risk: (ch.outcome && ch.outcome.risk_level) || '', chargeId: ch.id || chargeId || '' };
+  } catch (e) { return null; }
+}
+async function _recordFraudFp(env, fp, reason, tenantId) {
+  try {
+    if (!fp) return; await ensurePlatformSchema(env);
+    const now = Date.now();
+    await env.DB.prepare("INSERT INTO fraud_fingerprints (fp,reason,first_tenant,reports,first_at,last_at) VALUES (?,?,?,1,?,?) ON CONFLICT(fp) DO UPDATE SET reports=reports+1, last_at=excluded.last_at, reason=excluded.reason")
+      .bind(String(fp).slice(0, 80), String(reason || 'dispute').slice(0, 80), String(tenantId || '').slice(0, 60), now, now).run();
+  } catch (e) { /* best-effort */ }
+}
+async function _lookupFraudFp(env, fp) {
+  try {
+    if (!fp) return null; await ensurePlatformSchema(env);
+    return await env.DB.prepare("SELECT fp,reason,reports,first_at FROM fraud_fingerprints WHERE fp=?").bind(String(fp).slice(0, 80)).first();   // NOTE: never SELECT first_tenant into a tenant-visible path -- returns no cross-tenant identity.
+  } catch (e) { return null; }
+}
+// CAS-safe stamp of the fraud signal onto a booking blob. Only ever writes d.cardFp/d.cardRisk/d.fraudFlag -- NEVER touches
+// revenue_cents or status, so it can never double-count money or flip a booking. Best-effort with a bounded retry.
+async function _bkStampFraud(env, tenantId, bookingId, fp, risk, hit) {
+  try {
+    for (var t = 0; t < 4; t++) {
+      const row = await env.DB.prepare('SELECT data,updated_at FROM bookings WHERE id=? AND tenant_id=?').bind(bookingId, tenantId).first();
+      if (!row) return;
+      const d = jparse(row.data, {});
+      if (fp) d.cardFp = String(fp).slice(0, 80);
+      if (risk) d.cardRisk = String(risk).slice(0, 20);
+      if (hit) d.fraudFlag = { reason: String(hit.reason || '').slice(0, 80), at: Date.now(), reports: Number(hit.reports) || 0 };
+      d._t = Date.now();
+      const res = await env.DB.prepare('UPDATE bookings SET data=?, updated_at=? WHERE id=? AND tenant_id=? AND updated_at IS ?')
+        .bind(JSON.stringify(d), Math.max(Date.now(), (Number(row.updated_at) || 0) + 1), bookingId, tenantId, row.updated_at).run();
+      if (res && res.meta && res.meta.changes > 0) return;
+    }
+  } catch (e) { /* best-effort */ }
+}
 // Service-period label for a recurring invoice, derived from Stripe's own line-item period when present (e.g. a
 // prorated change mid-cycle) so the receipt never shows a misleading date range; falls back to a plain default.
 function _rcptPeriod(obj, fallback) {
@@ -3437,6 +3488,7 @@ async function ensurePlatformSchema(env) {
   // upserts this; the cron GC below drops rows once they go stale). sid is the PRIMARY KEY so a browser's repeat
   // 60s heartbeat is one cheap UPSERT, never a growing table. No IPs, no PII -- country only, same as visit_geo.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS active_now (sid TEXT PRIMARY KEY, last_at INTEGER, src TEXT, country TEXT)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS fraud_fingerprints (fp TEXT PRIMARY KEY, reason TEXT, first_tenant TEXT, reports INTEGER DEFAULT 1, first_at INTEGER, last_at INTEGER)").run(); } catch (e) {}   // F2 cross-tenant fraud signal: opaque Stripe card fingerprint only (same across merchants, NO cardholder PII). Recorded on a chargeback, checked at future payments. See _recordFraudFp/_lookupFraudFp/_bkStampFraud.
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_activenow_last ON active_now(last_at)").run(); } catch (e) {}
   // Competitor watchlist (platform-level, owner-managed). The cron fetches each URL, snapshots it, and the AI brief
   // diffs today's snapshot vs last -> real "what changed" instead of model guesses. last_json = extracted signal.
@@ -5344,6 +5396,31 @@ function doReset(){
               // connected (same fire-and-forget shape as _fireWebhook above). Changes NO existing money/revenue logic.
               try { if (_ectx && _ectx.waitUntil) { d.id = d.id || md.booking; _ectx.waitUntil(_qbSyncBooking(env, md.tenant, d)); } } catch (e) {}
               try { if (_ectx && _ectx.waitUntil) { d.id = d.id || md.booking; _ectx.waitUntil(_xeroSyncBooking(env, md.tenant, d)); } } catch (e) {}   // Xero twin of the QuickBooks accounting sync (ADDITIVE, best-effort, off the money path); pure no-op when Xero isn't connected
+              // F2 FRAUD FINGERPRINT (privacy-safe, cross-tenant, best-effort, OFF the money path -- deferred, own try/catch, never
+              // throws, never touches revenue): capture this card's opaque Stripe fingerprint so a card that later charges back is
+              // flagged network-wide, and if THIS card was ALREADY reported for a chargeback elsewhere (or scored highest Radar risk)
+              // flag the booking + email the owner to review BEFORE handover. No cardholder PII is ever used or shared.
+              if (md.kind !== 'security') {
+                const _ffTask = (async function () {
+                  try {
+                    const sk = await tenantStripeKey(env, md.tenant); if (!sk) return;
+                    const info = await _fpForPayment(env, sk, obj.latest_charge || '', pi); if (!info || !info.fp) return;
+                    const hit = await _lookupFraudFp(env, info.fp);
+                    const highRisk = (info.risk === 'highest');
+                    await _bkStampFraud(env, md.tenant, md.booking, info.fp, info.risk, hit ? { reason: hit.reason, reports: hit.reports } : (highRisk ? { reason: 'radar:highest_risk', reports: 0 } : null));
+                    if (hit || highRisk) {
+                      await audit(env, { tenant_id: md.tenant }, req, 'fraud.payment_flagged', { booking: md.booking, reason: hit ? hit.reason : 'radar:highest_risk', reports: hit ? (Number(hit.reports) || 0) : 0 });
+                      const _pr = tr ? tenantProfile(tr) : { name: 'Atlas', settings: {} };
+                      const _noun = (_pr.settings && _pr.settings.fleet && _pr.settings.fleet.noun) || 'asset';
+                      const _rc = hit ? (Number(hit.reports) || 1) : 0;
+                      const ownerRow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(md.tenant, 'owner').first();
+                      if (ownerRow) await sendEmail(env, { to: ownerRow.email, fromName: 'Atlas Rental.io', subject: '[Fraud watch] Payment on ' + String(md.booking).slice(0, 40) + ' -- review before handover',
+                        html: _emailShell(_pr, '<div style="background:#fdecea;border:1px solid #f5c6cb;border-radius:8px;padding:12px 14px;margin:0 0 14px;color:#8a1c1c"><b>&#9888; Fraud watch.</b> The card used for <b>' + esc(String(md.booking)) + '</b> ' + (hit ? ('was reported for a chargeback on another business (' + esc(hit.reason || 'dispute') + ((_rc > 1) ? (', ' + _rc + ' reports') : '') + ')') : 'was scored HIGHEST fraud risk by the card network') + '. The payment cleared, but review the ID and booking before you hand over the ' + esc(_noun) + '.</div><p style="color:#666;font-size:13px">This heads-up is based on an anonymous card signal &mdash; no personal information about the cardholder is shared between businesses.</p>') });
+                    }
+                  } catch (e) { /* best-effort; never blocks the payment */ }
+                })();
+                if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_ffTask); else if (_ffTask && _ffTask.catch) _ffTask.catch(function () {});
+              }
             }
           } catch (e) { _whErr = _whErr || e; }
         }
@@ -5592,6 +5669,24 @@ function doReset(){
               subject: 'Your Atlas free trial ends in 3 days',
               html: '<h2>Your trial ends soon</h2><p>Your Atlas Rental.io free trial ends in about 3 days, and your ' + esc(_planLabel(im.tier || 'pro')) + ' plan will begin on the card you saved &mdash; nothing to do to keep going. Prefer to stop? Cancel anytime under Settings &gt; Plan &amp; billing and you keep all your data.</p>' }); } catch (e) {} }
             if (im.tenant) await audit(env, { tenant_id: im.tenant }, req, 'billing.trial_will_end', {});
+          } else if (T === 'charge.dispute.created' || T === 'charge.dispute.funds_withdrawn') {
+            // F2 CROSS-TENANT FRAUD SIGNAL: a chargeback landed -> record the disputed card's OPAQUE fingerprint so future
+            // payments on ANY tenant are flagged. obj is the Dispute (no card details inline). We already captured d.cardFp at
+            // payment time, so find the booking by its payment_intent/charge and read the stored fingerprint -- no key-resolution
+            // guesswork. Fallback: fetch the charge with the platform key. Best-effort: any failure records nothing; we always ACK.
+            try {
+              await ensurePlatformSchema(env);
+              const _needle = obj.payment_intent || obj.charge || '';
+              let _fp = '';
+              if (_needle) {
+                try {
+                  const _rows = await env.DB.prepare("SELECT data FROM bookings WHERE data LIKE ? LIMIT 5").bind('%' + String(_needle).replace(/[%_]/g, '') + '%').all();
+                  for (const _r of (_rows.results || [])) { const _d = jparse(_r.data, {}); if (_d && _d.cardFp) { _fp = _d.cardFp; break; } }
+                } catch (e) {}
+              }
+              if (!_fp && obj.charge) { try { const _pk = _platStripe(env); if (_pk) { const _info = await _fpForPayment(env, _pk, obj.charge, ''); if (_info) _fp = _info.fp; } } catch (e) {} }
+              if (_fp) { await _recordFraudFp(env, _fp, 'chargeback:' + String(obj.reason || 'dispute').slice(0, 40), md.tenant || ''); await audit(env, md.tenant ? { tenant_id: md.tenant } : null, req, 'fraud.chargeback_recorded', { reason: String(obj.reason || 'dispute').slice(0, 40) }); }
+            } catch (e) { _whErr = _whErr || e; }
           } else if (T === 'charge.refunded') {
             // log refunds as NEGATIVE transactions so master-dashboard revenue is always net-of-refunds, to the cent.
             const rf = (obj.refunds && obj.refunds.data && obj.refunds.data[0]) || null;
