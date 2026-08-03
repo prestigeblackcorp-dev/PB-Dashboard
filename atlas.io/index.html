@@ -5560,10 +5560,35 @@ const Atlas = (function(){
     closeModal(); renderOverview(); renderBookings(); renderCustomers(); _bkBadge();   // fix: refresh Customers panel so new customers / Trips / Spent update live
     toast(editId?'Booking updated':'Booking created &mdash; '+money(q.total));
   }
+  // Booking Command Bar: the single most important next step for a booking, by status. ONE source of truth --
+  // both the sticky top command bar and the bottom action row read this, so the flow can never drift between them.
+  // Returns [nextStatus, buttonLabel, plain-language hint] or null for terminal states. (#5: flow routes through
+  // Returned so the asset stays reserved for close-out; Close out is what frees it.)
+  function _bkNextStep(b){ if(!b) return null; var n=esc(S.fleet.noun); return ({
+      'Pending':['Confirmed','Confirm booking','Reserves the '+n+' and locks in these dates.'],
+      'Confirmed':['On rent','Start rental','Hand over the '+n+' &mdash; the rental clock starts now.'],
+      'On rent':['Returned','Complete return','Mark it back &mdash; add fuel, late or damage charges before you close out.'],
+      'Returned':['Completed','Close out','Finish up and free the '+n+' so you can re-book it.']
+    })[b.status]||null; }
+  // The sticky command bar itself: pins the next action + quick links to the top of the (very tall) booking modal so
+  // the owner never has to scroll to the bottom to advance a booking. Purely additive -- the full action row still lives
+  // below. .modal is the scroll container (overflow:auto) so position:sticky pins here; degrades to a plain top card if not.
+  function _bkCommandBar(b){ if(!b) return ''; var st=_bkNextStep(b);
+    var wrap='<div style="position:sticky;top:0;z-index:6;background:var(--surface);margin:-22px -22px 16px;padding:14px 22px 13px;border-bottom:1px solid var(--line-2);box-shadow:0 8px 16px -14px rgba(0,0,0,.55)">';
+    if(st){ return wrap
+      +'<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">'
+      +'<button class="btn btn--primary" style="flex:1 1 auto;min-width:150px" onclick="Atlas.setBookingStatus(\''+b.id+'\',\''+st[0]+'\')">'+esc(st[1])+' &rarr;</button>'
+      +'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')">Portal link</button>'
+      +'<button class="btn btn--ghost btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button>'
+      +'</div><div style="font-size:12px;color:var(--muted);margin-top:7px"><b style="color:var(--body);font-weight:600">Next:</b> '+st[2]+'</div></div>'; }
+    var term={'Completed':'This rental is complete.','Cancelled':'This booking was cancelled.','Voided':'This contract was voided &mdash; money kept, '+esc(S.fleet.noun)+' freed.'}[b.status]||('Status: '+esc(b.status||''));
+    return wrap+'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between">'
+      +'<span style="font-size:13px;color:var(--body)">'+term+'</span>'
+      +'<span style="display:flex;gap:8px;flex:none"><button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')">Portal link</button><button class="btn btn--ghost btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button></span></div></div>'; }
   function openBooking(id){ var b=_getBooking(id); if(!b) return;
     var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var a='';
     if(b.status!=='Cancelled'&&b.status!=='Completed'&&b.status!=='Voided'){
-      var nx={'Pending':['Confirmed','Confirm'],'Confirmed':['On rent','Start rental'],'On rent':['Returned','Complete return'],'Returned':['Completed','Close out']}[b.status];   // #5: the one-click flow now routes through Returned (asset stays reserved for close-out) -> Close out frees it
+      var nx=_bkNextStep(b);   // #5: the one-click flow routes through Returned (asset stays reserved for close-out) -> Close out frees it
       if(nx) a+='<button class="btn btn--primary btn--sm" onclick="Atlas.setBookingStatus(\''+b.id+'\',\''+nx[0]+'\')">'+nx[1]+'</button>';
       a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button>';
       a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkExtendFlow(\''+b.id+'\')" title="Add time to this rental and bill the extra '+esc(_perUnit())+'"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M8 4.2V8l2.6 1.5M14 8A6 6 0 112 8a6 6 0 0112 0z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Extend</button>';
@@ -5578,6 +5603,7 @@ const Atlas = (function(){
     a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')" title="Copy this customer\'s signing + payment link"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M6.6 9.4l2.8-2.8M7 4.6l.8-.8a2.4 2.4 0 013.4 3.4l-.8.8M9 11.4l-.8.8a2.4 2.4 0 01-3.4-3.4l.8-.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg> Portal link</button>';
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
     openModal('<div class="modal__head"><h3>'+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +_bkCommandBar(b)
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><span class="avatar">'+esc((b.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(b.cust)+'</b><div style="font-size:12.5px;color:var(--muted)">'+contact+'</div></div>'+statusChip(b.status)+'</div>'
       +(function(){ var _blOn=(b.custEmail&&_isBlacklisted(b.custEmail))||!!b.blacklistFlag; if(!_blOn) return ''; var _lm=b.custEmail?_custMeta(String(b.custEmail).toLowerCase()):{}; var _rsn=(_lm&&_lm.blacklistReason)||(b.blacklistFlag&&b.blacklistFlag.reason)||''; return '<div style="background:rgba(176,52,42,.1);border:1px solid rgba(176,52,42,.4);border-radius:10px;padding:9px 12px;margin-bottom:14px;font-size:12.5px;color:var(--danger)">&#9940; This customer is on your blacklist'+(_rsn?(' &mdash; '+esc(_rsn)):'')+(b.blacklistFlag?(' <span style="opacity:.75">('+(b.blacklistFlag.matchedBy==='phone'?'matched by phone &mdash; booked under a different email':'flagged when they booked online')+')</span>'):'')+'</div>'; })()
       +(b.fraudFlag?('<div style="background:rgba(224,120,20,.1);border:1px solid rgba(224,120,20,.45);border-radius:10px;padding:9px 12px;margin-bottom:14px;font-size:12.5px;color:#c26a00">&#9888; Fraud watch &mdash; '+(String(b.fraudFlag.reason||'').indexOf('radar')===0?'the payment card scored HIGHEST fraud risk at the card network':('this card was reported for a chargeback on another business'+((Number(b.fraudFlag.reports)||0)>1?(' ('+(Number(b.fraudFlag.reports))+' reports)'):'')))+'. Verify ID before handover.</div>'):'')
