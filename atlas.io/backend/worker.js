@@ -11727,9 +11727,11 @@ function patchFields(coll, body) {
 //  runs, so every other tenant + the generic product are byte-identical.
 // ============================================================================
 async function _pbBridgeFetch(env, p) {
-  const base = String(env.PB_BRIDGE_URL || '').replace(/\/+$/, '');
-  const r = await fetch(base + '/' + String(p).replace(/^\/+/, ''), { headers: { 'Authorization': 'Bearer ' + env.PB_BRIDGE_SECRET, 'Accept': 'application/json' }, cf: { cacheTtl: 0 } });
-  if (!r.ok) throw new Error('PB ' + p + ' HTTP ' + r.status);
+  let base = String(env.PB_BRIDGE_URL || '').trim().replace(/\/+$/, '');
+  if (base && !/^https?:\/\//i.test(base)) base = 'https://' + base;   // tolerate a scheme-less host (e.g. "pb-booking.prestigeblackcorp.workers.dev") instead of throwing "Invalid URL"
+  let u; try { u = new URL(base + '/' + String(p).replace(/^\/+/, '')); } catch (e) { throw new Error('PB_BRIDGE_URL is not a valid URL. Set it to https://pb-booking.prestigeblackcorp.workers.dev'); }
+  const r = await fetch(u.href, { headers: { 'Authorization': 'Bearer ' + env.PB_BRIDGE_SECRET, 'Accept': 'application/json' }, cf: { cacheTtl: 0 } });
+  if (!r.ok) throw new Error('PB ' + p + ' returned HTTP ' + r.status + (r.status === 404 ? ' (check PB_BRIDGE_URL points to your PB booking worker, e.g. https://pb-booking.prestigeblackcorp.workers.dev)' : r.status === 401 || r.status === 403 ? ' (check PB_BRIDGE_SECRET matches your PB dashboard secret)' : ''));
   return await r.json().catch(function () { return null; });
 }
 function _pbmMoney(x) { return Math.round((Number(x) || 0) * 100); }   // dollars -> integer cents
