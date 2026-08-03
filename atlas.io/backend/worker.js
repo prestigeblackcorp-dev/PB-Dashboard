@@ -11820,6 +11820,31 @@ async function _pbmSignDocUrl(env, id) {   // HMAC-SHA256(PB_BRIDGE_SECRET, "<id
     return base + '/portal-docs?b=' + encodeURIComponent(id) + '&exp=' + exp + '&sig=' + sig;
   } catch (e) { return ''; }
 }
+// Faithful port of PB's chargeCategory (docs/index.html) -> lets us replicate totalRevenue exactly so Atlas revenue == PB revenue.
+function _pbmChargeCat(c) {
+  if (c && c.category) return c.category;
+  const d = String((c && c.description) || '').toLowerCase();
+  if (/late/.test(d)) return 'late'; if (/mile|overage|odomet/.test(d)) return 'mileage'; if (/fuel|gas\b|refuel/.test(d)) return 'fuel';
+  if (/clean|detail|smok/.test(d)) return 'cleaning'; if (/damage|repair|scratch|dent|windshield|tire|wheel|curb/.test(d)) return 'damage';
+  if (/toll/.test(d)) return 'tolls'; if (/date ?lock|hold the date|reservation hold/.test(d)) return 'datelock';
+  if (/deposit/.test(d)) return 'deposit'; if (/extend|extension|extra (day|hour)|additional (day|hour)|added (day|hour)/.test(d)) return 'extension';
+  return 'other';
+}
+function _pbmPortalChargesRev(b) {   // paid portal charges that are genuine extra revenue (exclude deposits/balance/extension-linked, mirroring PB's filter)
+  return ((b && b.portalCharges) || []).reduce(function (s, c) {
+    if (!c || !c.paidAt || c._foldedIntoRevenue || c._extPayment || c._extRecorded || c._dlApplied || c._extId) return s;
+    const cat = _pbmChargeCat(c);
+    const isDep = (cat === 'deposit') || /deposit/.test((String(c.category || '') + ' ' + String(c.description || '')).toLowerCase());   // == PB _isDepositCharge
+    if (isDep || cat === 'balance') return s;   // == PB _isBalanceCharge (category==='balance')
+    return s + (Number(c.amount) || 0);
+  }, 0);
+}
+function _pbmTotalRevenue(b) {   // EXACT port of PB totalRevenue(): base + fuel + mileage + kept-deposit(!refundSent) + late + extensions + portal + addlIncome + paid extra-drivers
+  const ext = Array.isArray(b.extensions) ? b.extensions.reduce(function (s, e) { return s + (e && !e._deleted ? (Number(e.additionalCharge) || 0) : 0); }, 0) : 0;
+  const authDrv = (Array.isArray(b.extraDrivers) ? b.extraDrivers : []).reduce(function (s, d) { return (d && d.paid && Number(d.payAmount) > 0) ? s + Number(d.payAmount) : s; }, 0);
+  const addl = (b && b.addlIncome && Number(b.addlIncome.amount)) ? Number(b.addlIncome.amount) : 0;
+  return (Number(b.revenue) || 0) + (Number(b.fuelCharge) || 0) + (Number(b.mileageCharge) || 0) + (b.refundSent ? 0 : (Number(b.depositKept) || 0)) + (Number(b.lateReturnFee) || 0) + ext + _pbmPortalChargesRev(b) + addl + authDrv;
+}
 function _pbmBooking(b, cust, asset) {
   const stKey = String(b.status || 'pending').toLowerCase();
   const stD1 = _PBM_STATUS[stKey] || 'pending', stUI = _PBM_STATUS_UI[stKey] || 'Pending';
@@ -11827,7 +11852,8 @@ function _pbmBooking(b, cust, asset) {
   const ends = _pbmCentralMs(b.dropoffDate || b.pickupDate || b.date, b.dropoffTime);
   const baseRev = Number(b.revenue) || 0;
   const extTotal = Array.isArray(b.extensions) ? b.extensions.reduce(function (s, e) { return s + (e && !e._deleted ? (Number(e.additionalCharge) || 0) : 0); }, 0) : 0;
-  const total = baseRev + extTotal;                                  // pre-tax trip value PB tracks
+  const total = baseRev + extTotal;                                  // pre-tax trip value PB tracks (drives the quote)
+  const fullRev = _pbmTotalRevenue(b);                               // PB's EXACT totalRevenue -> Atlas revenue_cents so the P&L/KPIs match PB to the cent
   const deposit = Number(b.deposit) || 0;                            // refundable security -> Atlas hold
   const dateLock = Number(b.dateLock) || 0;                          // non-refundable down -> Atlas reserve
   const paidSoFar = Array.isArray(b.balancePayments) ? b.balancePayments.reduce(function (s, p) { return s + (Number(p && p.amount) || 0); }, 0) : (Number(b.balancePaidAmount) || 0);
@@ -11842,7 +11868,7 @@ function _pbmBooking(b, cust, asset) {
     _t: Number(b._t) || Number(b.createdAt) || Date.now(),
     mirror: { source: 'pb', pbId: b.id, pbT: Number(b._t) || 0, syncedAt: Date.now(), pbType: b.type || 'rental', pbStatus: b.status || 'pending', readOnly: true }
   };
-  return { id: b.id, customer_id: cust.id, asset_id: asset.id, starts: starts, ends: ends, status: stD1, data: data, _revenue: total };
+  return { id: b.id, customer_id: cust.id, asset_id: asset.id, starts: starts, ends: ends, status: stD1, data: data, _revenue: fullRev };
 }
 async function _pbSyncWrite(env, tenantId, coll, row) {   // idempotent upsert by preserved PB id; reuses patchFields' domain whitelist
   const existing = await env.DB.prepare('SELECT id FROM ' + coll + ' WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
