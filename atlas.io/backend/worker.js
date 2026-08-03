@@ -1594,6 +1594,13 @@ function _graftServerPay(clientD, serverD) {
     var byId = {}; serverD.charges.forEach(function (sc) { if (sc && sc.id != null) byId[String(sc.id)] = sc; });
     clientD.charges.forEach(function (cc) { if (cc && cc.id != null && byId[String(cc.id)] && byId[String(cc.id)].paidOnline) { cc.paidOnline = true; var pa = byId[String(cc.id)].paidAt; if (pa != null) cc.paidAt = pa; } });
   }
+  // #extfix (legal): a customer's portal-signed EXTENSION addendum lives on b.extensions[].signedAt (stamped by /extsign). An owner
+  // edit that races the signature must not erase it -- graft the server's signed state back onto the incoming client blob, exactly
+  // like the payment fields above. (A signatures DB row also persists as the authoritative legal trail; this keeps the blob honest.)
+  if (Array.isArray(serverD.extensions) && Array.isArray(clientD.extensions)) {
+    var _xById = {}; serverD.extensions.forEach(function (sx) { if (sx && sx.id != null) _xById[String(sx.id)] = sx; });
+    clientD.extensions.forEach(function (cx) { if (cx && cx.id != null) { var sx = _xById[String(cx.id)]; if (sx && sx.signedAt && !cx.signedAt) { cx.signedAt = sx.signedAt; if (sx.signerName != null) cx.signerName = sx.signerName; if (sx.sigId != null) cx.sigId = sx.sigId; if (sx.sigIp != null) cx.sigIp = sx.sigIp; } } });
+  }
 }
 // #346-E2: CAS + pay-graft write for the bookings mirror (the generic /api/data/bookings PUT/re-POST). The old blind UPDATE was a
 // 4th non-atomic sibling: an owner edit racing a Stripe webhook could overwrite the webhook's d.paid ledger. Every attempt re-reads
@@ -7661,7 +7668,8 @@ function doReset(){
           const docHash = await _sha256Hex(_agrText + '|' + name + '|' + at);   // reproducible: we ALSO store the exact _agrText below
           const sigId = 'sg' + at.toString(36) + Math.random().toString(36).slice(2, 7);
           await ensurePlatformSchema(env);
-          try { await env.DB.prepare('INSERT INTO signatures (id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(sigId, brow.tenant_id, brow.id, docHash, _agrText, name, sig || name, ip, ua, at).run(); } catch (e) {}
+          var _sigOk = false; try { await env.DB.prepare('INSERT INTO signatures (id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(sigId, brow.tenant_id, brow.id, docHash, _agrText, name, sig || name, ip, ua, at).run(); _sigOk = true; } catch (e) {}
+          if (!_sigOk) return err(500, 'Could not record your signature just now -- please try again.');   // #honesty: the signatures row IS the defensible legal record; never report "Signed" (to customer + owner email) if it failed to persist
           d.portal = d.portal || {}; d.portal.signedAt = at; d.portal.signerName = name;   // NO 200KB sig blob in the booking row
           d.sigTrail = { signedAt: at, ip: ip, ua: ua, docHash: docHash, sigId: sigId, signer: name };
           d._t = at;   // FIX: bump the merge clock so the owner's dashboard actually picks up the signed state (client merges newest-wins on data._t; a later owner edit no longer wipes it)
@@ -7698,7 +7706,8 @@ function doReset(){
           const docHash = await _sha256Hex(addendum + '|' + name + '|' + at);
           const sigId = 'sx' + at.toString(36) + Math.random().toString(36).slice(2, 7);
           await ensurePlatformSchema(env);
-          try { await env.DB.prepare('INSERT INTO signatures (id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(sigId, brow.tenant_id, brow.id, docHash, addendum, name, sig || name, ip, ua, at).run(); } catch (e) {}
+          var _xSigOk = false; try { await env.DB.prepare('INSERT INTO signatures (id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(sigId, brow.tenant_id, brow.id, docHash, addendum, name, sig || name, ip, ua, at).run(); _xSigOk = true; } catch (e) {}
+          if (!_xSigOk) return err(500, 'Could not record your signature just now -- please try again.');   // #honesty: don't report the extension "Signed" if the legal-trail row failed to persist
           try { await _bkPatch(env, brow.id, brow.tenant_id, function (fd) { var arr = Array.isArray(fd.extensions) ? fd.extensions : []; for (var i = 0; i < arr.length; i++) { if (arr[i] && String(arr[i].id) === extId) { arr[i].signedAt = at; arr[i].signerName = name; arr[i].sigId = sigId; arr[i].sigIp = ip; break; } } fd._t = at; }); } catch (e) {}   // stamp the SIGNED state onto that extension record + bump the merge clock so the owner's dashboard picks it up
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.ext_signed', { booking: brow.id, ext: extId });
           try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first();
@@ -11662,13 +11671,18 @@ function _receiptBodyHtml(pr, brow, d, q, paid, got, due) {
   (q.fees || []).forEach(function (f) { rows += '<div class="rowr"><span>' + esc(f.name || 'Fee') + '</span><span>' + _m(f.amountCents || 0) + '</span></div>'; });
   if (q.discountCents) rows += '<div class="rowr"><span>Discount</span><span>-' + _m(q.discountCents) + '</span></div>';
   if (q.taxCents) rows += '<div class="rowr"><span>Tax</span><span>' + _m(q.taxCents) + '</span></div>';
+  // #extfix: owner-added charges (fuel / late / damage / EXTENSION) were invisible on the receipt and excluded from the balance.
+  // Itemize them and fold the paid ones into "paid to date" + the unpaid ones into "balance due" so the document reconciles.
+  var _chg = Array.isArray(d.charges) ? d.charges : [], _chgRows = '', _chgPaidC = 0, _chgDueC = 0;
+  _chg.forEach(function (c) { if (!c || !(Number(c.amount) > 0)) return; var cc = Math.round(Number(c.amount) * 100), isPaid = !!c.paidAt; if (isPaid) _chgPaidC += cc; else _chgDueC += cc; _chgRows += '<div class="rowr"><span>' + esc(c.label || 'Charge') + (isPaid ? '' : ' (unpaid)') + '</span><span>' + _m(cc) + '</span></div>'; });
   var pl = '';
   if (paid.deposit) pl += '<div class="rowr"><span>Reserve paid (down-payment)</span><span>' + _m(paid.deposit.amountCents || 0) + '</span></div>';
   if (paid.balance) pl += '<div class="rowr"><span>Balance paid</span><span>' + _m(paid.balance.amountCents || 0) + '</span></div>';
   if (paid.payment) pl += '<div class="rowr"><span>Payment</span><span>' + _m(paid.payment.amountCents || 0) + '</span></div>';
   // #290: the refundable SECURITY deposit is a separate line -- NOT part of the rental total or "paid to date" (got excludes it); returned after the rental unless kept for a claim.
   if (paid.security) pl += '<div class="rowr"><span>Refundable security deposit (' + (paid.security.hold ? 'held' : 'charged') + ', returned after return)</span><span>' + _m(paid.security.amountCents || 0) + '</span></div>';
-  return '<h1>' + esc(pr.name) + '</h1><div class="mut">Receipt &middot; Booking ' + esc(brow.id) + ' &middot; ' + esc(brow.status || '') + '</div><div class="bar"></div>' + rows + '<div class="totr"><span>Total</span><span>' + _m(q.totalCents || 0) + '</span></div>' + (pl ? ('<h3>Payments</h3>' + pl + '<div class="rowr"><span>Paid to date</span><span>' + _m(got) + '</span></div>') : '') + '<div class="totr"><span>Balance due</span><span>' + _m(due) + '</span></div><p class="mut" style="margin-top:18px">Thank you for booking with ' + esc(pr.name) + '.</p>';
+  var _paidAll = (Number(got) || 0) + _chgPaidC, _dueAll = Math.max(0, (Number(due) || 0) + _chgDueC);
+  return '<h1>' + esc(pr.name) + '</h1><div class="mut">Receipt &middot; Booking ' + esc(brow.id) + ' &middot; ' + esc(brow.status || '') + '</div><div class="bar"></div>' + rows + '<div class="totr"><span>Rental total</span><span>' + _m(q.totalCents || 0) + '</span></div>' + (_chgRows ? ('<h3>Additional charges</h3>' + _chgRows) : '') + ((pl || _chgPaidC) ? ('<h3>Payments</h3>' + pl + '<div class="rowr"><span>Paid to date</span><span>' + _m(_paidAll) + '</span></div>') : '') + '<div class="totr"><span>Balance due</span><span>' + _m(_dueAll) + '</span></div><p class="mut" style="margin-top:18px">Thank you for booking with ' + esc(pr.name) + '.</p>';
 }
 function _agreementBodyHtml(pr, brow, d, agr, signed) {
   var sb;
