@@ -53,8 +53,34 @@ for (const p of PAGES) {
     fail(`${p.name}: emitted script contains a bare empty-string concat -- a single-escaped quote almost certainly collapsed.`);
     continue;
   }
-  console.log(`ok  ${p.name} -- emitted script parses (${emitted.length} bytes)`);
+  // DEAD CONTROLS: parsing proves the script is valid; it does NOT prove every button wired with onclick="doThing()"
+  // has a doThing. A renamed or dropped handler leaves a control that looks alive and does nothing when a real
+  // customer taps it -- silent, and invisible to every other gate we run.
+  const defined = new Set();
+  for (const m of emitted.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)) defined.add(m[1]);
+  for (const m of emitted.matchAll(/(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*function/g)) defined.add(m[1]);
+  const GLOBALS = new Set(['alert','confirm','prompt','fetch','parseInt','parseFloat','String','Number','Boolean',
+    'Array','Object','JSON','Math','Date','isNaN','encodeURIComponent','decodeURIComponent','setTimeout',
+    'clearTimeout','setInterval','console','window','document','location','history','event','Intl','FormData',
+    'FileReader','Image','Blob','URL','Promise','RegExp','Error','if','for','while','return','typeof','this','new']);
+
+  const ATTR = /\son(?:click|change|input|submit|keydown|keyup|blur|focus|load|error)\s*=/g;
+  const CALL = /\son(?:click|change|input|submit|keydown|keyup|blur|focus|load|error)\s*=\s*(?:\\?["'])?\s*([A-Za-z_$][\w$]*)\s*\(/g;
+  const total = (emitted.match(ATTR) || []).length;
+  const calls = [...emitted.matchAll(CALL)];
+  // If some handler is built by concatenation we cannot resolve it statically -- say so rather than imply full cover.
+  if (calls.length < total) {
+    console.log(`    note: ${total - calls.length} of ${total} handler(s) on ${p.name} are built dynamically and were not checked`);
+  }
+  const missing = [...new Set(calls.map((m) => m[1]))].filter((n) => !GLOBALS.has(n) && !defined.has(n));
+  if (missing.length) {
+    fail(`${p.name}: inline handler(s) call a function this page never defines -- the control is DEAD for every\n` +
+         `       visitor who taps it: ${missing.join(', ')}`);
+    continue;
+  }
+
+  console.log(`ok  ${p.name} -- script parses (${emitted.length} bytes), ${calls.length}/${total} inline handlers all resolve`);
 }
 
 if (failures) { console.error(`\n${failures} inline-script page(s) would be broken for real users. Not deploying.`); process.exit(1); }
-console.log(`\nAll ${PAGES.length} served pages emit parseable JavaScript.`);
+console.log(`\nAll ${PAGES.length} served pages emit parseable JavaScript, with no dead inline controls.`);
