@@ -4171,6 +4171,7 @@ const Atlas = (function(){
     document.querySelectorAll('[data-cap]').forEach(function(el){ el.style.display=_canCap(el.getAttribute('data-cap'))?'':'none'; });
     // Multi-currency: load today's rates (cached), apply a region default once, then re-render so every number shows converted.
     try{ if(_curConvOn()){ _fxEnsure().then(function(){ _curAutoDefault(); if(((S.money&&S.money.currency)||'USD')!==_baseCur()) _rerenderAll(); }); } }catch(e){}
+    try{ _notifPing(); }catch(e){}
     _renderPreviewBar();
   }
   /* ---- hamburger nav drawer (tablet + phone) ---- built from the same RBAC-filtered nav list ---- */
@@ -5470,7 +5471,7 @@ const Atlas = (function(){
     if(empty)empty.style.display='none';
     var pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':(S.money.rateModel==='month'?'mo':'d'));
     el.innerHTML='<thead><tr><th>Booking</th><th>'+cap(_custNoun())+'</th><th>'+cap(S.fleet.noun)+'</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead><tbody>'
-      +list.map(function(b){ return '<tr style="cursor:pointer" onclick="Atlas.openBooking(\''+b.id+'\')"><td><b>'+b.id+'</b></td><td><div class="cust"><span class="avatar">'+esc((b.cust||'?')[0])+'</span>'+esc(b.cust)+'</div></td><td>'+esc(b.asset)+'</td><td class="tnum">'+_fmtWhen(b.startTs,b.time)+' &middot; '+b.periods+pu+'</td><td class="tnum"><b>'+money(_bkTotal(b))+'</b></td><td>'+statusChip(b.status)+'</td></tr>'; }).join('')+'</tbody>';
+      +list.map(function(b){ return '<tr style="cursor:pointer" onclick="Atlas.openBooking(\''+b.id+'\')"><td><b>'+b.id+'</b>'+(_bkHasReq(b)?' <span class="chip chip--warn" style="padding:1px 6px;font-size:10.5px;vertical-align:1px">Request</span>':'')+'</td><td><div class="cust"><span class="avatar">'+esc((b.cust||'?')[0])+'</span>'+esc(b.cust)+'</div></td><td>'+esc(b.asset)+'</td><td class="tnum">'+_fmtWhen(b.startTs,b.time)+' &middot; '+b.periods+pu+'</td><td class="tnum"><b>'+money(_bkTotal(b))+'</b></td><td>'+statusChip(b.status)+'</td></tr>'; }).join('')+'</tbody>';
   }
   function bkFilter(s){ _bkFilter=s; renderBookings(); }
   function newBooking(){ if(!_guard('bookEdit','Creating bookings'))return; _bookingForm(null); }
@@ -9775,11 +9776,20 @@ const Atlas = (function(){
   }
   function _notifIcon(ic){ return ({cal:'\u{1F4C5}',trend:'\u{1F4C8}',card:'\u{1F4B3}',clock:'\u{23F1}\u{FE0F}',plus:'\u{2795}',spark:'\u{1F50D}'})[ic]||'\u{2728}'; }
   // Real, state-derived notifications (no fake feed): pending bookings, idle assets, missing payments, trial, empty fleet.
+  function _bkHasReq(b){ try{ return ((b&&b.portal&&b.portal.requests)||[]).some(function(r){ return r&&(!r.status||r.status==='requested'); }); }catch(e){ return false; } }
+  function _notifPing(){ try{ var pg=document.querySelector('#notifBtn .ping'); if(pg) pg.style.display=_notifItems().length?'':'none'; }catch(e){} }   // the dot means something now: shown only when there is actually something waiting
   function _notifItems(){
     var out=[]; try{
       var _ki=_kbFor(1)[0]; if(_ki) out.push({ic:'spark',t:'Atlas.io dreamed up: '+_ki.t, s:_ki.d, ai:1, dream:1});   // idle-time "dreaming" surfaced to the owner
       var assets=(typeof DATA!=='undefined'&&DATA.assets)?DATA.assets:[];
       var books=(typeof DATA!=='undefined'&&DATA.bookings)?DATA.bookings:[];
+      // Customer asked for something from their portal ("Need changes?" -> more time / an add-on). The worker stores it on the
+      // booking AND emails the owner; surface it in the bell too, so it is never missed just because nobody opened that booking.
+      var _cq=[]; books.forEach(function(b){ if(!_bkHasReq(b)) return; ((b.portal&&b.portal.requests)||[]).forEach(function(r){ if(r&&(!r.status||r.status==='requested')) _cq.push({b:b,r:r}); }); });
+      if(_cq.length){ var _q0=_cq[0], _w0=String((_q0.r&&(_q0.r.extra||_q0.r.note))||'a change');
+        out.push({ic:'spark',ai:0,t:_cq.length===1?('Request from '+((_q0.b.cust||'a customer').split(' ')[0])+': '+_w0.slice(0,60)):(_cq.length+' customer requests waiting'),
+          s:_cq.length===1?('On '+_q0.b.id+' \u{2014} confirm the change and price, or turn it into a charge.'):'Open each to confirm the change and price.',
+          book:(_cq.length===1?_q0.b.id:''), nav:(_cq.length===1?'':'bookings')}); }
       var pend=books.filter(function(b){return b&&(b.status==='pending'||b.status==='request');});
       if(pend.length) out.push({ic:'cal',t:pend.length+' '+_fterm(pend.length===1?'book':'books')+' awaiting confirmation',s:'Confirm to put '+(pend.length===1?'it':'them')+' on the calendar.',nav:'bookings'});
       var idle=assets.filter(function(a){return a&&Number(a.util||0)<50;});
@@ -9796,10 +9806,11 @@ const Atlas = (function(){
   function openNotifications(){
     var items=_notifItems();
     var rows=items.map(function(n){
-      var on = n.ai ? 'Atlas.closeModal();Atlas.openAio()'
+      var on = n.book ? 'Atlas.closeModal();Atlas.openBooking(\''+n.book+'\')'   // a customer request opens the exact booking it came from
+             : n.ai ? 'Atlas.closeModal();Atlas.openAio()'
              : n.settings ? 'Atlas.closeModal();Atlas.goSettings(\''+n.settings+'\')'
              : n.nav ? 'Atlas.closeModal();Atlas.go(\''+n.nav+'\')' : 'Atlas.closeModal()';
-      var lbl = n.ai ? 'Ask Atlas.io' : 'Open';
+      var lbl = n.book ? 'Review' : n.ai ? 'Ask Atlas.io' : 'Open';
       return '<button class="notif-row" onclick="'+on+'"><span class="notif-row__ic">'+_notifIcon(n.ic)+'</span><span class="notif-row__t"><b>'+esc(n.t)+'</b><small>'+esc(n.s)+'</small></span><span class="notif-row__go">'+lbl+' \u{2192}</span></button>';
     }).join('');
     var body = items.length ? rows
@@ -11809,14 +11820,24 @@ const Atlas = (function(){
     var netTotal=Math.max(0, total-gift);                        // rental owed after gift credit
     var reserve=Math.min(netTotal, Math.max(0, _r2(q.dueNow||0)));   // deposit-to-reserve (capped at net)
     var reservePaid=!!p.reservePaidAt, balancePaid=!!p.balancePaidAt;
-    var rentalPaid = balancePaid? netTotal : (reservePaid? reserve : 0);    // balancePaid settles the whole rental
-    var rentalDue = Math.max(0, netTotal - rentalPaid);
-    var chg=(b.charges||[]);
-    var chTotal=chg.reduce(function(s,c){return s+_r2(c.amount||0);},0);
-    var chPaid=chg.reduce(function(s,c){return s+(c.paidAt?_r2(c.amount||0):0);},0);
+    var rentalPaid = balancePaid? billable : (reservePaid? reserve : 0);    // balancePaid settles the rental AND the pre-trip charges folded into it
+    var rentalDue = 0;   // set below, once the folded-in charges are known
+    // MIRRORS the worker's _portalDue so this preview shows exactly what the customer's real portal shows: charges the owner
+    // added BEFORE the trip starts fold into the balance (one payment, itemized); charges added once it is under way stay separate.
+    var chg=(b.charges||[]), _st=Number(b.startTs)||0;
+    var _isPost=function(c){ return _st>0 && (Number(c&&c.at)||0)>=_st; };
+    var preAll=chg.filter(function(c){ return c && _r2(c.amount||0)>0 && !_isPost(c); });
+    var post=chg.filter(function(c){ return c && _r2(c.amount||0)>0 && _isPost(c); });
+    var preUnpaid=preAll.filter(function(c){ return !c.paidAt; });
+    var preDue=preUnpaid.reduce(function(s,c){return s+_r2(c.amount||0);},0);
+    var billable=netTotal+preDue;                                // everything payable in ONE payment right now
+    var chTotal=post.reduce(function(s,c){return s+_r2(c.amount||0);},0);
+    var chPaid=post.reduce(function(s,c){return s+(c.paidAt?_r2(c.amount||0):0);},0);
     var chDue=Math.max(0, chTotal-chPaid);
     var twoStep = reserve>0 && reserve<netTotal;                 // owner uses a partial deposit -> reserve then balance
-    return { total:total, gift:gift, netTotal:netTotal, reserve:reserve, reservePaid:reservePaid, balancePaid:balancePaid,
+    rentalDue = Math.max(0, billable - rentalPaid);
+    return { total:total, gift:gift, netTotal:netTotal, billable:billable, preCharges:preAll, preUnpaid:preUnpaid, preDue:preDue, postCharges:post,
+      reserve:reserve, reservePaid:reservePaid, balancePaid:balancePaid,
       rentalPaid:rentalPaid, rentalDue:rentalDue, chTotal:chTotal, chPaid:chPaid, chDue:chDue, hold:_r2(q.hold||0),
       collected:rentalPaid+chPaid, totalDue:rentalDue+chDue, twoStep:twoStep, paidInFull:(rentalDue===0) }; }
   function _portalHomeHtml(b,p){ var pc=_portalCfg(), sec=pc.sections; var q=b.quote||{}; var total=_r2(q.total||0), due=_r2(q.dueNow||total), hold=_r2(q.hold||0);
@@ -11829,6 +11850,13 @@ const Atlas = (function(){
       +'<div class="portal__row"><span>When</span><b>'+_bkWhen(b)+'</b></div>'
       +'<div class="portal__row"><span>Status</span>'+statusChip(b.status)+'</div>'
       +'<div class="portal__row"><span>Total</span><b>'+money(total)+'</b></div>'
+      +(function(){ var m=_portalMoney(b); var o='';   // same breakdown the customer sees: pre-trip charges folded in, then what is actually left
+        if(m.preUnpaid.length){ o+='<div class="portal__row"><span style="font-size:12px;color:var(--muted)">Added before the '+esc(_fterm('book'))+'</span><span></span></div>';
+          o+=m.preUnpaid.map(function(c){ return '<div class="portal__row"><span>'+esc(c.label||'Charge')+'</span><b>'+money(c.amount||0)+'</b></div>'; }).join(''); }
+        if(m.collected>0) o+='<div class="portal__row"><span>Paid so far</span><b>&minus;'+money(m.collected)+'</b></div>';
+        o+='<div class="portal__row"><span><b>Balance due</b></span><b>'+money(m.rentalDue)+'</b></div>';
+        if(m.chDue>0) o+='<div class="portal__row"><span style="font-size:12px;color:var(--muted)">Billed separately (added during the '+esc(_fterm('book'))+')</span><b>'+money(m.chDue)+'</b></div>';
+        return o; })()
       +(_giftApplied(b)?('<div class="portal__row"><span>Gift credit</span><b>&minus;'+money(_giftApplied(b))+'</b></div><div class="portal__row"><span>Net total</span><b>'+money(Math.max(0,total-Math.round(_giftApplied(b))))+'</b></div>'):'')
       +(hold?'<div class="portal__row"><span>Refundable hold</span><b>'+money(hold)+'</b></div>':'')+'</div>';
     var acts='';
