@@ -24,6 +24,38 @@ const PAGES = [
 let failures = 0;
 const fail = (m) => { console.error('FAIL: ' + m); failures++; };
 
+// COVERAGE: this gate is only worth what it covers. If someone adds a 4th served page with an inline script and
+// forgets to list it above, that page silently inherits none of these checks -- exactly how the portal outage went
+// unnoticed. So count the _pageDoc() calls that actually pass a script and require the list to keep up.
+function splitArgs(src, open) {          // top-level comma split from the '(' at `open`
+  const out = []; let d = 0, start = open + 1, q = null;
+  for (let i = open + 1; i < src.length; i++) {
+    const c = src[i], prev = src[i - 1];
+    if (q) { if (c === q && prev !== '\\') q = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { q = c; continue; }
+    if (c === '(' || c === '[' || c === '{') d++;
+    else if (c === ')' || c === ']' || c === '}') { if (d === 0 && c === ')') { out.push(src.slice(start, i).trim()); return out; } d--; }
+    else if (c === ',' && d === 0) { out.push(src.slice(start, i).trim()); start = i + 1; }
+  }
+  return out;
+}
+const scripted = [];
+for (let i = src.indexOf('_pageDoc('); i >= 0; i = src.indexOf('_pageDoc(', i + 1)) {
+  if (/[A-Za-z0-9_$.]/.test(src[i - 1] || '')) continue;                 // member access / longer identifier
+  if (/function\s+$/.test(src.slice(Math.max(0, i - 12), i))) continue;   // the declaration itself, not a call
+  const args = splitArgs(src, i + '_pageDoc'.length);
+  const script = args[3];
+  if (script === undefined || script === "''" || script === '""' || script === '``') continue;   // static page
+  scripted.push({ line: src.slice(0, i).split('\n').length, arg: script.slice(0, 40) });
+}
+if (scripted.length !== PAGES.length) {
+  fail(`served-page COVERAGE drift: ${scripted.length} _pageDoc call(s) pass an inline script but this test lists ` +
+       `${PAGES.length}.\n       Scripted pages: ` + scripted.map((s) => `line ${s.line} (${s.arg})`).join(', ') +
+       `\n       Add the new page to PAGES so it gets these checks too.`);
+} else {
+  console.log(`ok  coverage -- ${scripted.length} served page(s) pass an inline script, all ${PAGES.length} are listed here`);
+}
+
 for (const p of PAGES) {
   const base = p.anchor ? src.indexOf(p.anchor) : 0;
   if (p.anchor && base < 0) { fail(`${p.name}: anchor ${p.anchor} not found -- did the function get renamed? Update test/pages.mjs.`); continue; }
