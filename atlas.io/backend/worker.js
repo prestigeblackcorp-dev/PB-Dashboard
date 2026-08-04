@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04t';
+const ATLAS_BUILD = '2026.08.04u';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -10165,6 +10165,7 @@ function doReset(){
     try { await _runLifecycleEmails(env, Date.now()); } catch (e) { /* lifecycle emails are best-effort */ }
     try { await _runDunning(env, Date.now()); } catch (e) { /* PART A3: dunning sweep is best-effort -- must never break the cron */ }
     try { await _runTrialDrip(env, Date.now()); } catch (e) { /* trial-conversion drip is best-effort + flag-gated OFF -- must never break the cron */ }
+    try { await _reconcileStuckTrials(env, Date.now()); } catch (e) { /* billing self-heal: reconcile trials whose end-of-trial webhook was missed -- best-effort, must never break the cron */ }
     // Nightly: write the daily metric snapshot (so "vs last week" is real) + generate the AI COO morning brief if enabled.
     try {
       await ensurePlatformSchema(env);
@@ -10345,6 +10346,56 @@ async function _runLifecycleEmails(env, now) {
 // charge, then every 4 days, max once/day, until the invoice is paid, the tenant unlocks another way (change-plan
 // void / cancel), or the attempt cap below is hit. Stripe's invoice.paid webhook remains the ONLY thing that ever
 // flips a tenant back to plan='active' -- this function only ever *attempts* a charge; it never sets plan itself.
+// TRIAL RECONCILIATION (billing self-heal). A tenant on plan='trial' whose LOCAL trial_ends has passed but who still has a
+// Stripe subscription (stripe_sub) means the end-of-trial webhook (customer.subscription.updated -> active/past_due) never
+// arrived or never verified -- e.g. a mode-mismatched / missing STRIPE_WEBHOOK_SECRET_TEST, a Stripe outage, or endpoint
+// downtime. Until now the plan flip was 100% webhook-dependent, so one missed event left a tenant on a free trial FOREVER
+// (silently un-billed) with no fallback. This pulls the subscription's REAL status from Stripe and mirrors it into
+// tenants.plan EXACTLY as the webhook would have. MONEY-SAFE: it NEVER charges (Stripe owns the charge) and only ever
+// copies Stripe's own truth back; every UPDATE is guarded `AND plan='trial'` so it can't race/override a webhook that
+// already flipped the tenant. Bounded per run; a 2h grace means it never fights a legitimately in-flight trial-end event.
+async function _reconcileStuckTrials(env, now) {
+  try {
+    const liveK = env.PLATFORM_STRIPE_KEY || '', testK = env.PLATFORM_STRIPE_TEST_KEY || '';
+    if (!liveK && !testK) return 0;                                   // no platform key at all -> nothing to reconcile against
+    const primary = await _platStripe(env);                          // mode-matched key (TEST key iff payments_test_mode is on)
+    const alt = (primary === testK) ? liveK : testK;                 // fall back to the OTHER mode's key on a 404 (sub was created in the other mode)
+    const rows = ((await env.DB.prepare(
+      "SELECT id, stripe_sub, tier FROM tenants WHERE deleted_at IS NULL AND plan='trial' AND trial_ends IS NOT NULL AND trial_ends < ? AND stripe_sub IS NOT NULL ORDER BY trial_ends ASC LIMIT 25"
+    ).bind(now - 2 * 3600000).all()).results) || [];
+    let n = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const t = rows[i];
+      try {
+        let s = primary ? await stripeApi(primary, 'GET', 'subscriptions/' + encodeURIComponent(t.stripe_sub)) : { ok: false, status: 0, j: {} };
+        if ((!s.ok) && s.status === 404 && alt) s = await stripeApi(alt, 'GET', 'subscriptions/' + encodeURIComponent(t.stripe_sub));
+        if (!s.ok || !s.j || !s.j.status) continue;                  // unreadable (network / wrong-mode 404 / hard-deleted) -> leave for next tick, never guess
+        const st = String(s.j.status);
+        const cust = s.j.customer || null, subId = s.j.id || t.stripe_sub;
+        const tier = (s.j.metadata && s.j.metadata.tier) || t.tier || null;
+        if (st === 'active') {                                        // trial converted (first charge went through) -> unlock. Mirrors webhook :5695. Revenue still books on invoice.paid, not here.
+          await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=? AND plan='trial'").bind(tier, cust, subId, now, t.id).run();
+          try { await audit(env, { tenant_id: t.id }, null, 'billing.trial_reconciled', { to: 'active', sub: t.stripe_sub, via: 'cron' }); } catch (e) {}
+          n++;
+        } else if (st === 'past_due' || st === 'unpaid') {           // first charge failed (or Stripe exhausted its retries) -> delinquent. Mirrors webhook :5697.
+          await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=? AND plan='trial'").bind(now, cust, subId, now, t.id).run();
+          try { await audit(env, { tenant_id: t.id }, null, 'billing.trial_reconciled', { to: 'past_due', sub: t.stripe_sub, via: 'cron' }); } catch (e) {}
+          n++;
+        } else if (st === 'trialing') {                              // Stripe is STILL trialing -> our local 7-day clock (set at signup) simply fired first. Sync to Stripe's real trial_end (unix seconds) so the tenant stops showing a false 'expired'. NEVER charges.
+          const te = s.j.trial_end ? Number(s.j.trial_end) * 1000 : 0;
+          if (te > now) { await env.DB.prepare("UPDATE tenants SET trial_ends=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=? AND plan='trial'").bind(te, cust, subId, now, t.id).run(); try { await audit(env, { tenant_id: t.id }, null, 'billing.trial_reconciled', { to: 'trialing_synced', until: te, sub: t.stripe_sub, via: 'cron' }); } catch (e) {} n++; }
+        } else if (st === 'canceled' || st === 'incomplete_expired') { // subscription is dead in Stripe -> clear the sub id (mirrors webhook :5716) so it drops out of this sweep and a later change-plan starts a fresh checkout.
+          await env.DB.prepare("UPDATE tenants SET stripe_sub=NULL, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=? AND plan='trial'").bind(now, t.id).run();
+          try { await audit(env, { tenant_id: t.id }, null, 'billing.trial_reconciled', { to: 'sub_cleared', status: st, sub: t.stripe_sub, via: 'cron' }); } catch (e) {}
+          n++;
+        }
+        // 'incomplete' (the initial payment has not completed yet) -> leave untouched; Stripe may still resolve it, and the webhook or a later tick will pick it up.
+      } catch (e) { /* per-tenant best-effort -- one bad row never stops the sweep */ }
+    }
+    if (n) { try { await _pcfgSet(env, 'trial_reconcile_last', String(n) + '@' + now); } catch (e) {} }
+    return n;
+  } catch (e) { return 0; }
+}
 async function _runDunning(env, now) {
   try {
     if (!(await _due(env, 'dunning', 20 * 3600000))) return;
