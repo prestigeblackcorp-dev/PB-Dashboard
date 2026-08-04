@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04u';
+const ATLAS_BUILD = '2026.08.04v';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2879,6 +2879,19 @@ async function stripeApi(secretKey, method, path, form) {
 // payments_test_mode on AND set PLATFORM_STRIPE_TEST_KEY. Off by default -> the self-test + test-charge route are the
 // only callers today, so the live checkout/refund/Connect paths are byte-identical and never touched.
 async function _platStripe(env) { try { if ((await _pcfgGet(env, 'payments_test_mode', '0')) === '1' && env.PLATFORM_STRIPE_TEST_KEY) return env.PLATFORM_STRIPE_TEST_KEY; } catch (e) {} return env.PLATFORM_STRIPE_KEY || ''; }
+// The Stripe webhook events the worker ACTS on, split by criticality. WH_REQUIRED = the money loop (subscription
+// trial->charge, booking payments, refund accounting) silently breaks without them; WH_RECOMMENDED = lifecycle +
+// chargeback polish. The payments self-test compares a configured endpoint's enabled_events against these so "are the
+// right events on the webhook?" is a CHECKED fact, not a guess. Keep in lockstep with the /api/stripe/webhook handlers.
+const WH_REQUIRED = ['checkout.session.completed', 'payment_intent.succeeded', 'customer.subscription.created', 'customer.subscription.updated', 'customer.subscription.deleted', 'invoice.paid', 'invoice.payment_failed', 'charge.refunded'];
+const WH_RECOMMENDED = ['customer.subscription.trial_will_end', 'charge.dispute.created', 'charge.dispute.funds_withdrawn'];
+function _whMissing(enabled) {
+  try {
+    const set = Array.isArray(enabled) ? enabled.map(String) : [];
+    if (set.indexOf('*') >= 0) return { all: true, missing_required: [], missing_recommended: [] };   // "receive all events" -> nothing missing
+    return { all: false, missing_required: WH_REQUIRED.filter(function (e) { return set.indexOf(e) < 0; }), missing_recommended: WH_RECOMMENDED.filter(function (e) { return set.indexOf(e) < 0; }) };
+  } catch (e) { return null; }
+}
 
 // ---- Atlas PLATFORM billing (Atlas gets paid): server-authoritative prices for the SaaS subscription + one-time purchases,
 // charged on the platform's OWN Stripe account (env.PLATFORM_STRIPE_KEY), separate from each tenant's connected Stripe. ----
@@ -4032,7 +4045,7 @@ function _alert(env, ectx, o) {
 // analytics/ + monitor/ added: /api/admin/analytics/* (cohorts, segmented funnel) + /api/admin/monitor/* (uptime) all
 // surface CROSS-TENANT aggregates (MRR/LTV, every tenant's site status) -- same owner-only tier as funnel/seo-health/
 // site-uptime above, never reachable by a support/analyst staff token.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/testcharge|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub)|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -6687,9 +6700,9 @@ function doReset(){
           else out.notes.push('Stripe rejected the key (HTTP ' + acct.status + '). Re-check PLATFORM_STRIPE_KEY.');
           if (!out.checks.webhook_secret_set) out.notes.push('Set ' + (_testMode ? 'STRIPE_WEBHOOK_SECRET_TEST (the TEST webhook signing secret)' : 'STRIPE_WEBHOOK_SECRET (the webhook signing secret)') + ' from Stripe > Developers > Webhooks.');
           const eps = await stripeApi(pk, 'GET', 'webhook_endpoints?limit=100', null);   // read-only: is a webhook pointed at us?
-          if (eps.ok && Array.isArray(eps.j.data)) { const m = eps.j.data.filter(function (e) { return e && e.url && e.url.indexOf('/api/stripe/webhook') >= 0; })[0]; if (m) { out.checks.webhook_endpoint_configured = true; out.webhook = { url: m.url, status: m.status, events: (m.enabled_events || []).slice(0, 8) }; } }
+          if (eps.ok && Array.isArray(eps.j.data)) { const m = eps.j.data.filter(function (e) { return e && e.url && e.url.indexOf('/api/stripe/webhook') >= 0; })[0]; if (m) { out.checks.webhook_endpoint_configured = true; const _wm = _whMissing(m.enabled_events); out.webhook = { url: m.url, status: m.status, all_events: (m.enabled_events || []).indexOf('*') >= 0, event_count: (m.enabled_events || []).length }; if (_wm) { out.checks.webhook_events_ok = _wm.missing_required.length === 0; out.webhook.missing_required = _wm.missing_required; out.webhook.missing_recommended = _wm.missing_recommended; } } }
           // Sandbox / Workbench webhooks register as v2 EVENT DESTINATIONS, which the v1 webhook_endpoints list above never returns -- so a real, working endpoint reads as "missing". Best-effort check the v2 API too (read-only, wrapped; ignored if the account/version has no v2 access).
-          if (!out.checks.webhook_endpoint_configured) { try { const _v2 = await _fetchTimeout('https://api.stripe.com/v2/core/event_destinations?limit=100', { method: 'GET', headers: { 'Authorization': 'Bearer ' + pk, 'Stripe-Version': '2025-06-30.basil' } }, 12000); const _v2j = await _v2.json().catch(function () { return {}; }); if (_v2.ok && Array.isArray(_v2j.data) && _v2j.data.filter(function (d) { try { return JSON.stringify(d).indexOf('/api/stripe/webhook') >= 0; } catch (e) { return false; } })[0]) { out.checks.webhook_endpoint_configured = true; out.webhook = { url: out.expected_webhook_url, kind: 'event_destination' }; } } catch (e) {} }
+          if (!out.checks.webhook_endpoint_configured) { try { const _v2 = await _fetchTimeout('https://api.stripe.com/v2/core/event_destinations?limit=100', { method: 'GET', headers: { 'Authorization': 'Bearer ' + pk, 'Stripe-Version': '2025-06-30.basil' } }, 12000); const _v2j = await _v2.json().catch(function () { return {}; }); const _v2m = (_v2.ok && Array.isArray(_v2j.data)) ? _v2j.data.filter(function (d) { try { return JSON.stringify(d).indexOf('/api/stripe/webhook') >= 0; } catch (e) { return false; } })[0] : null; if (_v2m) { out.checks.webhook_endpoint_configured = true; const _v2ev = _v2m.enabled_events || _v2m.events || null; const _wm2 = _v2ev ? _whMissing(_v2ev) : null; out.webhook = { url: out.expected_webhook_url, kind: 'event_destination', all_events: Array.isArray(_v2ev) && _v2ev.indexOf('*') >= 0, event_count: Array.isArray(_v2ev) ? _v2ev.length : null }; if (_wm2) { out.checks.webhook_events_ok = _wm2.missing_required.length === 0; out.webhook.missing_required = _wm2.missing_required; out.webhook.missing_recommended = _wm2.missing_recommended; } } } catch (e) {} }
           // STRONGEST proof: did a signature-verified event actually REACH us? (stamped by the webhook handler on receipt.) Stripe's API
           // can't list Sandbox/Workbench event-destinations, so auto-detect alone reads a real, working endpoint as "missing" -- a received
           // signed event is definitive, so go green on it.
@@ -6698,8 +6711,14 @@ function doReset(){
           if (out.checks.key_valid && !out.checks.charges_enabled) out.notes.push('Charges are not enabled on this Stripe account yet -- finish Stripe onboarding (business + bank details).');
           // Recent payments (read-only) so you can WATCH a test (or live) charge land after a checkout -- the loop, full circle.
           if (out.checks.key_valid) { const ch = await stripeApi(pk, 'GET', 'charges?limit=8', null); if (ch.ok && Array.isArray(ch.j.data)) out.recent_payments = ch.j.data.map(function (c) { return { amount: c.amount, currency: c.currency, status: c.status, paid: !!c.paid, refunded: !!c.refunded, created: (c.created || 0) * 1000, desc: String(c.description || (c.metadata && (c.metadata.booking || c.metadata.kind)) || '').slice(0, 80) }; }); }
-          out.ready_for_live = out.mode === 'live' && out.checks.key_valid && out.checks.charges_enabled && out.checks.webhook_secret_set && out.checks.webhook_endpoint_configured;
-          out.test_ready = out.mode === 'test' && out.checks.key_valid && out.checks.webhook_endpoint_configured;   // the full-circle sandbox loop will complete
+          // Event-subscription verdict on the detected endpoint (not just "does an endpoint exist"). A missing REQUIRED event
+          // silently breaks the money loop even with the secret set, so name exactly what to add.
+          if (out.checks.webhook_events_ok === false && out.webhook && out.webhook.missing_required && out.webhook.missing_required.length) out.notes.push('Webhook is MISSING required events -- the trial/booking money loop will not complete until you add: ' + out.webhook.missing_required.join(', ') + '.');
+          else if (out.checks.webhook_events_ok === true && out.webhook && out.webhook.missing_recommended && out.webhook.missing_recommended.length) out.notes.push('Webhook has every REQUIRED event. Recommended to also add (chargebacks / trial reminder): ' + out.webhook.missing_recommended.join(', ') + '.');
+          else if (out.checks.webhook_events_ok === true) out.notes.push('Webhook is subscribed to every required event.');
+          else if (out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok === undefined) out.notes.push('Endpoint found, but its event list was not readable here -- confirm it includes: ' + WH_REQUIRED.join(', ') + '.');
+          out.ready_for_live = out.mode === 'live' && out.checks.key_valid && out.checks.charges_enabled && out.checks.webhook_secret_set && out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok !== false;
+          out.test_ready = out.mode === 'test' && out.checks.key_valid && out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok !== false;   // the full-circle sandbox loop will complete
           if (out.mode === 'test') out.notes.push('Test mode (Sandbox): run a booking and pay with card 4242 4242 4242 4242 (any future expiry / any CVC / any ZIP). The charge appears below and flows through the webhook to Purchases + revenue -- no real money moves.');
           if (out.mode === 'test' && !out.checks.webhook_endpoint_configured) out.notes.push('For the loop to close (booking -> paid), add a TEST-mode webhook in Stripe pointed at ' + out.expected_webhook_url + '.');
           if (out.ready_for_live) out.notes.push('Ready for live: run one real end-to-end charge -> refund -> payout to confirm settlement.');
@@ -6785,6 +6804,49 @@ function doReset(){
           if (!co.ok) return json({ ok: false, message: 'Could not start the test checkout (HTTP ' + co.status + ').' });
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.payments.testcharge', { cents: cents });
           return json({ ok: true, payUrl: co.url, amountCents: cents });
+        }
+
+        // FULL-CIRCLE TEST SUBSCRIPTION (test mode only). Runs the entire subscription->charge->webhook loop SERVER-SIDE on the
+        // TEST key with Stripe's published test token (pm/tok, no PAN, no card entry, no real money), then AUTO-CLEANS. Tagged
+        // metadata.billing='platform_test' so the webhook ACKs it WITHOUT booking revenue or touching any tenant -- it exercises
+        // the exact invoice.paid / customer.subscription.* handlers a real trial-end charge hits, proving the loop end to end.
+        if (path === '/api/admin/payments/testsub' && method === 'POST') {
+          const tk = env.PLATFORM_STRIPE_TEST_KEY || '';
+          if (!tk) return json({ ok: false, message: 'Set PLATFORM_STRIPE_TEST_KEY (an sk_test_... key) in the worker first. It stays separate from your live key.' });
+          if (!/_test_/.test(tk)) return json({ ok: false, message: 'PLATFORM_STRIPE_TEST_KEY must be a TEST key (starts with sk_test_). This tool refuses to run on a live key.' });
+          const steps = []; const step = function (name, ok2, detail) { steps.push({ step: name, ok: ok2, detail: detail || '' }); };
+          const _wokBefore = parseInt(await _pcfgGet(env, 'stripe_webhook_ok_test', '0'), 10) || 0;
+          let cid = null, subId = null; const out = { ok: false, mode: 'test', steps: steps };
+          try {
+            // 1) test customer with a test card (tok_visa = Stripe's published test token -> default_source; no real card, no entry)
+            const cu = await stripeApi(tk, 'POST', 'customers', 'email=' + encodeURIComponent(env.OWNER_EMAIL || 'test@atlasrental.io') + '&source=tok_visa&description=' + encodeURIComponent('Atlas full-circle test (auto-cleanup)'));
+            if (!cu.ok || !cu.j || !cu.j.id) { step('create test customer', false, 'HTTP ' + cu.status + ' ' + ((cu.j && cu.j.error && cu.j.error.message) || '')); out.message = 'Could not create the test customer -- re-check the test key.'; await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.payments.testsub', { ok: false }); return json(out); }
+            cid = cu.j.id; step('create test customer + attach test card', true, cid);
+            // 2) subscription that charges NOW (no trial) -> same invoice.paid / subscription.updated path a trial-end charge hits.
+            const subForm = 'customer=' + encodeURIComponent(cid) + '&items[0][price_data][currency]=usd&items[0][price_data][product_data][name]=' + encodeURIComponent('Atlas Rental.io full-circle test') + '&items[0][price_data][unit_amount]=4999&items[0][price_data][recurring][interval]=month&metadata[billing]=platform_test&metadata[kind]=platform_test&expand[]=latest_invoice';
+            const su = await stripeApi(tk, 'POST', 'subscriptions', subForm);
+            if (!su.ok || !su.j || !su.j.id) { step('create test subscription + charge', false, 'HTTP ' + su.status + ' ' + ((su.j && su.j.error && su.j.error.message) || '')); out.message = 'Could not create the test subscription.'; }
+            else {
+              subId = su.j.id; const inv = su.j.latest_invoice || {}; const paid = (inv.status === 'paid') || !!inv.paid; const amt = inv.amount_paid || 0;
+              out.subscription = { id: subId, status: su.j.status, invoice_status: inv.status || null, amount_paid: amt };
+              step('create test subscription', true, subId + ' (status ' + su.j.status + ')');
+              step('first charge settles (invoice paid)', paid, paid ? ('$' + (amt / 100).toFixed(2) + ' test charge succeeded') : ('invoice status=' + (inv.status || '?')));
+              out.ok = (su.j.status === 'active' || su.j.status === 'trialing') && paid;
+            }
+          } catch (e) { step('unexpected error', false, String((e && e.message) || e)); }
+          // 3) CLEANUP -- always attempt, so a test run never litters the Stripe account
+          try { if (subId) { const dc = await stripeApi(tk, 'DELETE', 'subscriptions/' + encodeURIComponent(subId), null); step('cleanup: cancel test subscription', dc.ok, dc.ok ? '' : ('HTTP ' + dc.status)); } } catch (e) { step('cleanup: cancel test subscription', false, String(e)); }
+          try { if (cid) { const dd = await stripeApi(tk, 'DELETE', 'customers/' + encodeURIComponent(cid), null); step('cleanup: delete test customer', dd.ok, dd.ok ? '' : ('HTTP ' + dd.status)); } } catch (e) { step('cleanup: delete test customer', false, String(e)); }
+          // 4) webhook receipt proof. The charge fires invoice.paid + subscription.* at your endpoint; a verified event stamps
+          //    stripe_webhook_ok_test (BEFORE the handler chain, so even the platform_test event counts). Delivery is async
+          //    (Stripe -> worker), so it may lag this response by a few seconds -- re-run to watch the timestamp advance.
+          const _wokAfter = parseInt(await _pcfgGet(env, 'stripe_webhook_ok_test', '0'), 10) || 0;
+          out.webhook = { last_test_receipt_before: _wokBefore || null, last_test_receipt_after: _wokAfter || null, advanced: _wokAfter > _wokBefore };
+          if (out.webhook.advanced) step('webhook received a signed event', true, 'stripe_webhook_ok_test advanced -> signature verified end to end');
+          else steps.push({ step: 'webhook receipt (async)', ok: null, detail: 'Not yet seen in this request -- delivery is async. Re-run in a few seconds; if the endpoint + STRIPE_WEBHOOK_SECRET_TEST are set, this advances (that is the signed event verifying at your worker).' });
+          out.note = 'Test mode only -- no real money moved; the subscription + customer were auto-deleted. This exercised the exact invoice.paid / customer.subscription.* handlers a real trial-end charge uses.';
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.payments.testsub', { ok: out.ok, sub: subId || null, charged: !!(out.subscription && out.subscription.amount_paid) });
+          return json(out);
         }
 
         // ---- Competitor watchlist (owner-managed). The cron fetches each URL + snapshots it; the AI brief diffs them. ----
