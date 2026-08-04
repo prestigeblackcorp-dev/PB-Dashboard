@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04c';
+const ATLAS_BUILD = '2026.08.04d';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3475,6 +3475,14 @@ async function ensurePlatformSchema(env) {
   // funnel_events above. Best-effort; a failed write never affects the served page.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS tenant_visits (tenant_id TEXT, day TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, day))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tv_tenant ON tenant_visits(tenant_id, day)").run(); } catch (e) {}
+  // Real per-tenant breakdowns from genuine request signals: dim='ref' (referrer host), 'geo' (Cloudflare country), 'dev'
+  // (mobile/tablet/desktop from UA), 'asset' (per-vehicle detail-page views). One flexible table keeps the write cheap (a
+  // single batched upsert per view). tenant_visit_uniques dedupes real unique visitors via a SALTED, day-scoped IP hash --
+  // non-reversible + unlinkable across days (privacy). Both bot-filtered, best-effort, owner-only via /api/tenant/site-stats.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS tenant_dims (tenant_id TEXT, day TEXT, dim TEXT, val TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, day, dim, val))").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_td_tenant ON tenant_dims(tenant_id, dim, day)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS tenant_visit_uniques (tenant_id TEXT, day TEXT, vhash TEXT, PRIMARY KEY(tenant_id, day, vhash))").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tvu_tenant ON tenant_visit_uniques(tenant_id, day)").run(); } catch (e) {}
   // Atlas Counsel institutional memory: an append-only, dated, ranked feed of "what deserves attention". Written nightly by the
   // cron (deterministic scoring from real data; AI adds a narrative when a key is set). status: new|done|dismissed (the feedback loop) | brief.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS counsel_journal (id TEXT PRIMARY KEY, day TEXT, layer TEXT, kind TEXT, tenant_id TEXT, title TEXT, body_md TEXT, data_json TEXT, severity TEXT, impact_score INTEGER DEFAULT 0, action TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run(); } catch (e) {}
@@ -4499,6 +4507,7 @@ export default {
             const _asset2 = _assetBySlug(_pr2, path.slice(3));   // strip '/v/'
             if (_asset2) {
               let _rev2 = { count: 0, avg: 0, recent: [] }; try { _rev2 = await _publicReviewSummary(env, _cd2.id); } catch (e) {}
+              _tenantVisitTick(env, _ectx, _pr2, req, slugify((_asset2 && _asset2.name) || ''));   // per-vehicle detail-page view -> owner's Most-viewed vehicles
               return _ok2(_assetDetailHtml(_pr2, _color2, _asset2, _seob2, _rev2));
             }
             return new Response(_pageDoc('Not found', _color2, '<div class="card"><h2>Page not found</h2><p class="muted">This page does not exist. <a href="' + esc(_seob2.home) + '">Go to booking</a>.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
@@ -7541,6 +7550,7 @@ function doReset(){
         const _pgasset = _assetBySlug(_pgpr, _pgsub.slice(2));   // strip 'v/'
         if (_pgasset) {
           let _pgrev = { count: 0, avg: 0, recent: [] }; try { _pgrev = await _publicReviewSummary(env, _pgtr.id); } catch (e) {}
+          _tenantVisitTick(env, _ectx, _pgpr, req, slugify((_pgasset && _pgasset.name) || ''));   // per-vehicle detail-page view -> owner's Most-viewed vehicles
           return _pgok(_assetDetailHtml(_pgpr, _pgcolor, _pgasset, _pgseob, _pgrev));
         }
         return new Response(_pageDoc('Not found', _pgcolor, '<div class="card"><h2>Page not found</h2><p class="muted"><a href="' + esc(_pgseob.home) + '">Go to booking</a>.</p></div>', ''), { status: 404, headers: Object.assign({}, securityHeaders(), { 'Content-Type': 'text/html; charset=utf-8' }) });
@@ -8756,15 +8766,23 @@ function doReset(){
       if (path === '/api/tenant/site-stats' && method === 'GET') {
         if (!ctx || !ctx.tenant_id) return err(401, 'Sign in required.');
         await ensurePlatformSchema(env);
-        var _sNow = Date.now();
+        var _tid = ctx.tenant_id, _sNow = Date.now();
         var _sD7 = new Date(_sNow - 6 * 86400000).toISOString().slice(0, 10);
         var _sD30 = new Date(_sNow - 29 * 86400000).toISOString().slice(0, 10);
-        var _sv7 = 0, _sv30 = 0, _sb7 = 0, _sb30 = 0;
-        try { var _sr7 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(ctx.tenant_id, _sD7).first(); _sv7 = (_sr7 && _sr7.v) || 0; } catch (e) {}
-        try { var _sr30 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(ctx.tenant_id, _sD30).first(); _sv30 = (_sr30 && _sr30.v) || 0; } catch (e) {}
-        try { var _sb7r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(ctx.tenant_id, _sNow - 7 * 86400000).first(); _sb7 = (_sb7r && _sb7r.c) || 0; } catch (e) {}
-        try { var _sb30r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(ctx.tenant_id, _sNow - 30 * 86400000).first(); _sb30 = (_sb30r && _sb30r.c) || 0; } catch (e) {}
-        return json({ ok: true, views7: _sv7, views30: _sv30, bookings7: _sb7, bookings30: _sb30 });
+        var _sv7 = 0, _sv30 = 0, _sb7 = 0, _sb30 = 0, _su7 = 0, _su30 = 0;
+        var _series = [], _refs = [], _geo = [], _dev = { mobile: 0, desktop: 0, tablet: 0 }, _assets = [];
+        try { var _sr7 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(_tid, _sD7).first(); _sv7 = (_sr7 && _sr7.v) || 0; } catch (e) {}
+        try { var _sr30 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(_tid, _sD30).first(); _sv30 = (_sr30 && _sr30.v) || 0; } catch (e) {}
+        try { var _su7r = await env.DB.prepare("SELECT COUNT(*) c FROM tenant_visit_uniques WHERE tenant_id=? AND day>=?").bind(_tid, _sD7).first(); _su7 = (_su7r && _su7r.c) || 0; } catch (e) {}
+        try { var _su30r = await env.DB.prepare("SELECT COUNT(*) c FROM tenant_visit_uniques WHERE tenant_id=? AND day>=?").bind(_tid, _sD30).first(); _su30 = (_su30r && _su30r.c) || 0; } catch (e) {}
+        try { var _sb7r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(_tid, _sNow - 7 * 86400000).first(); _sb7 = (_sb7r && _sb7r.c) || 0; } catch (e) {}
+        try { var _sb30r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(_tid, _sNow - 30 * 86400000).first(); _sb30 = (_sb30r && _sb30r.c) || 0; } catch (e) {}
+        try { var _srows = (await env.DB.prepare("SELECT day, views FROM tenant_visits WHERE tenant_id=? AND day>=? ORDER BY day ASC").bind(_tid, _sD30).all()).results || []; var _bd = {}; _srows.forEach(function (r) { _bd[r.day] = r.views || 0; }); for (var _i = 29; _i >= 0; _i--) { var _dk = new Date(_sNow - _i * 86400000).toISOString().slice(0, 10); _series.push({ day: _dk, views: _bd[_dk] || 0 }); } } catch (e) {}
+        try { _refs = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='ref' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 6").bind(_tid, _sD30).all()).results || []).map(function (r) { return { name: r.val, count: r.c || 0 }; }); } catch (e) {}
+        try { _geo = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='geo' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 8").bind(_tid, _sD30).all()).results || []).map(function (r) { return { code: r.val, count: r.c || 0 }; }); } catch (e) {}
+        try { ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='dev' AND day>=? GROUP BY val").bind(_tid, _sD30).all()).results || []).forEach(function (r) { if (_dev.hasOwnProperty(r.val)) _dev[r.val] = r.c || 0; }); } catch (e) {}
+        try { _assets = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='asset' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 8").bind(_tid, _sD30).all()).results || []).map(function (r) { return { slug: r.val, count: r.c || 0 }; }); } catch (e) {}
+        return json({ ok: true, views7: _sv7, views30: _sv30, uniques7: _su7, uniques30: _su30, bookings7: _sb7, bookings30: _sb30, series: _series, refs: _refs, geo: _geo, devices: _dev, assets: _assets });
       }
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
@@ -10051,6 +10069,7 @@ function doReset(){
       await env.DB.prepare("DELETE FROM audit_log WHERE at < ? AND (action LIKE 'admin.%' OR action LIKE 'owner.%')").bind(now - 365 * 24 * 3600 * 1000).run();
       try { await env.DB.prepare('DELETE FROM platform_errors WHERE last_at < ?').bind(now - 30 * 24 * 3600 * 1000).run(); } catch (e) {}   // #253 B2: platform_errors GC (own try/catch, mirrors the pattern above)
       try { await env.DB.prepare('DELETE FROM active_now WHERE last_at < ?').bind(now - 30 * 60000).run(); } catch (e) {}   // #274: presence rows are meaningless after 30 min of silence (own try/catch, same pattern)
+      try { var _tvCut = new Date(now - 120 * 86400000).toISOString().slice(0, 10); await env.DB.prepare('DELETE FROM tenant_visits WHERE day < ?').bind(_tvCut).run(); await env.DB.prepare('DELETE FROM tenant_dims WHERE day < ?').bind(_tvCut).run(); await env.DB.prepare('DELETE FROM tenant_visit_uniques WHERE day < ?').bind(_tvCut).run(); } catch (e) {}   // tenant site-analytics: 120-day rolling window (own try/catch)
     } catch (e) { /* best-effort GC; a cron error must never surface */ }
     try { await _runLifecycleEmails(env, Date.now()); } catch (e) { /* lifecycle emails are best-effort */ }
     try { await _runDunning(env, Date.now()); } catch (e) { /* PART A3: dunning sweep is best-effort -- must never break the cron */ }
@@ -11785,16 +11804,40 @@ async function _publicReviewSummary(env, tenantId) {
 }
 // Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
 // `reviews` (optional) = _publicReviewSummary output; drives the server-rendered reviews section (absent -> section skipped).
-// Best-effort per-tenant view tick: increments tenant_visits for TODAY on a served booking-home load, skipping obvious
-// bots so the number reflects real visitors. Fire-and-forget via ctx.waitUntil; never blocks or fails the page render.
-function _tenantVisitTick(env, ctxObj, prof, req) {
+// Best-effort per-tenant view tick on a served public page (booking home OR /v/<asset> detail). Records the total view plus
+// REAL breakdowns from genuine request signals -- referrer host, Cloudflare country, device class, and (on a detail page)
+// the vehicle -- plus a privacy-safe unique-visitor hash. Bots are skipped. Everything runs in one batched write inside
+// ctx.waitUntil, so it never blocks or fails the page render. No external calls, no fabricated data.
+function _tenantVisitTick(env, ctxObj, prof, req, assetSlug) {
   try {
     if (!env || !env.DB || !prof || !prof.id) return;
     var ua = ''; try { ua = String((req && req.headers && req.headers.get('User-Agent')) || ''); } catch (e) {}
     if (/bot|crawl|spider|slurp|bingpreview|facebookexternalhit|embedly|preview|monitor|curl|wget|python-requests|headless|lighthouse|pingdom|uptime/i.test(ua)) return;
+    var work = _tenantVisitWrite(env, prof, req, ua, assetSlug);
+    if (ctxObj && ctxObj.waitUntil) ctxObj.waitUntil(work); else if (work && work.catch) work.catch(function () {});
+  } catch (e) {}
+}
+async function _tenantVisitWrite(env, prof, req, ua, assetSlug) {
+  try {
     var day = new Date(Date.now()).toISOString().slice(0, 10);
-    var p = env.DB.prepare("INSERT INTO tenant_visits (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(prof.id, day).run().catch(function () {});
-    if (ctxObj && ctxObj.waitUntil) ctxObj.waitUntil(p); else if (p && p.catch) p.catch(function () {});
+    var ip = ''; try { ip = String((req && req.headers && req.headers.get('CF-Connecting-IP')) || ''); } catch (e) {}
+    var country = ''; try { country = String((req && req.cf && req.cf.country) || (req && req.headers && req.headers.get('CF-IPCountry')) || ''); } catch (e) {}
+    country = (String(country || '').toUpperCase().replace(/[^A-Z]/g, '') || 'XX').slice(0, 2) || 'XX';
+    var device = /Mobi|Android|iPhone|iPod/i.test(ua) ? 'mobile' : (/iPad|Tablet|PlayBook|Silk/i.test(ua) ? 'tablet' : 'desktop');
+    var ref = 'Direct';
+    try {
+      var rh = String((req && req.headers && req.headers.get('Referer')) || '');
+      if (rh) { var m = rh.match(/^https?:\/\/([^\/:?#]+)/i); if (m && m[1]) { var host = m[1].toLowerCase().replace(/^www\./, ''); var selfHost = ''; try { selfHost = String((req && req.headers.get('Host')) || '').toLowerCase().replace(/^www\./, ''); } catch (e2) {} if (host && host !== selfHost) ref = host.slice(0, 80); } }
+    } catch (e) {}
+    var vhash = ''; try { vhash = (await _sha256Hex(prof.id + '|' + day + '|' + ip + '|' + ((env && env.SESSION_KEY) || 'atlas'))).slice(0, 16); } catch (e) {}
+    var st = [];
+    st.push(env.DB.prepare("INSERT INTO tenant_visits (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(prof.id, day));
+    if (vhash) st.push(env.DB.prepare("INSERT OR IGNORE INTO tenant_visit_uniques (tenant_id,day,vhash) VALUES (?,?,?)").bind(prof.id, day, vhash));
+    st.push(env.DB.prepare("INSERT INTO tenant_dims (tenant_id,day,dim,val,count) VALUES (?,?,'ref',?,1) ON CONFLICT(tenant_id,day,dim,val) DO UPDATE SET count=count+1").bind(prof.id, day, ref));
+    st.push(env.DB.prepare("INSERT INTO tenant_dims (tenant_id,day,dim,val,count) VALUES (?,?,'geo',?,1) ON CONFLICT(tenant_id,day,dim,val) DO UPDATE SET count=count+1").bind(prof.id, day, country));
+    st.push(env.DB.prepare("INSERT INTO tenant_dims (tenant_id,day,dim,val,count) VALUES (?,?,'dev',?,1) ON CONFLICT(tenant_id,day,dim,val) DO UPDATE SET count=count+1").bind(prof.id, day, device));
+    if (assetSlug) st.push(env.DB.prepare("INSERT INTO tenant_dims (tenant_id,day,dim,val,count) VALUES (?,?,'asset',?,1) ON CONFLICT(tenant_id,day,dim,val) DO UPDATE SET count=count+1").bind(prof.id, day, String(assetSlug).slice(0, 80)));
+    await env.DB.batch(st);
   } catch (e) {}
 }
 function _bookPageHtml(slug, color, seo, prof, reviews, seob) {
