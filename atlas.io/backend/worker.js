@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04o';
+const ATLAS_BUILD = '2026.08.04p';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -10552,8 +10552,12 @@ async function _runTrialDrip(env, now) {
 function _emailShell(prof, inner) {
   var color = (prof && prof.brand && /^#[0-9a-fA-F]{3,8}$/.test(prof.brand.color || '')) ? prof.brand.color : '#1E6E4E';
   var name = (prof && prof.name) || 'Atlas Rental.io';
+  // Lead with the tenant's own logo when set (http/https only -- a data: URI is stripped by most mail clients, and we
+  // never want a broken-image icon atop a receipt). Falls back to the name-only header, byte-identical to before.
+  var _logo = (prof && prof.brand && String(prof.brand.logo || '').trim()) || '';
+  var _logoImg = /^https?:\/\//i.test(_logo) ? ('<img src="' + esc(_logo) + '" alt="" height="24" style="height:24px;border-radius:5px;vertical-align:middle;margin-right:9px">') : '';
   return '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;color:#141414">'
-    + '<div style="background:' + esc(color) + ';color:#fff;padding:18px 22px;border-radius:12px 12px 0 0;font-weight:700;font-size:18px">' + esc(name) + '</div>'
+    + '<div style="background:' + esc(color) + ';color:#fff;padding:18px 22px;border-radius:12px 12px 0 0;font-weight:700;font-size:18px">' + _logoImg + esc(name) + '</div>'
     + '<div style="border:1px solid #eee;border-top:0;border-radius:0 0 12px 12px;padding:22px">' + inner
     + '<p style="color:#888;font-size:12px;margin-top:22px">Sent by ' + esc(name) + ' &middot; powered by Atlas Rental.io</p></div></div>';
 }
