@@ -10850,6 +10850,122 @@ const Atlas = (function(){
       }catch(e){ fail(); } });
     }catch(e){ restore(); }
   }
+  /* ==== AI Copilot (Increment 2, additive + money/booking-safe): edit the EXISTING sections of the open page from a natural
+     -language instruction. The AI returns structured OPERATIONS (edit/add/remove/reorder), never HTML; we validate every
+     proposed prop through _aiSectionPatch (reusing _AIDS_SCALARS/_AIDS_CAPS from Increment 1) and apply them with the SAME
+     section fns the manual editor uses. On ANY failure the owner just gets a toast and nothing changes. ==== */
+  // Pure validator (no I/O): given a section type + an AI-proposed props object, return a NEW patch of ONLY the safe, length
+  // -capped props we let the AI set. Mirrors the overlay rules in _aiComposeSections. Never returns real-data arrays (fleet
+  // cars, gallery images, faq/contact) -- only their heading via the scalars rule. May return {}.
+  function _aiSectionPatch(type, incoming){
+    var out={}, inc=incoming||{};
+    var allow=_AIDS_SCALARS[type]||[];
+    for(var s=0;s<allow.length;s++){ var key=allow[s], raw=inc[key]; if(typeof raw==='string' && raw.trim()) out[key]=String(raw).slice(0, _AIDS_CAPS[key]||120); }
+    if(inc.tone==='light'||inc.tone==='dark'||inc.tone==='brand') out.tone=inc.tone;
+    if(type==='split' && (inc.side==='left'||inc.side==='right')) out.side=inc.side;
+    if(type==='features' && (inc.columns==='2'||inc.columns==='3'||inc.columns==='4')) out.columns=String(inc.columns);
+    if(type==='features' && Array.isArray(inc.items)){ var fi=inc.items.map(function(x){ x=x||{}; return {title:String(x.title||'').slice(0,80), text:String(x.text||'').slice(0,200)}; }).filter(function(x){ return x.title||x.text; }).slice(0,6); if(fi.length>=2) out.items=fi; }
+    if(type==='stats' && Array.isArray(inc.items)){ var si=inc.items.map(function(x){ x=x||{}; return {number:String(x.number||'').slice(0,12), label:String(x.label||'').slice(0,40)}; }).filter(function(x){ return x.number||x.label; }).slice(0,4); if(si.length>=2) out.items=si; }
+    return out; }
+  // Apply an AI ops array to page pid using ONLY the existing section fns (each already guards + saves). Ignores malformed/
+  // unknown ops; every prop goes through _aiSectionPatch. Refreshes editor + preview ONCE at the end. Returns the count applied.
+  function _aiApplyOps(pid, ops){
+    if(!Array.isArray(ops)) return 0;
+    var count=0;
+    for(var i=0;i<ops.length;i++){ var op=ops[i]||{}, kind=String(op.op||'');
+      try{
+        if(kind==='edit'){ var sec=_webPageSection(pid, op.id); if(sec && SECTION_REG[sec.type]){ var patch=_aiSectionPatch(sec.type, op.props||{}); if(Object.keys(patch).length) webPageSectionSet(pid, op.id, patch); count++; } }
+        else if(kind==='add'){ if(SECTION_REG[op.type]){ var nid=webPageSectionAdd(pid, op.type); if(nid){
+              var patch2=_aiSectionPatch(op.type, op.props||{}); if(Object.keys(patch2).length) webPageSectionSet(pid, nid, patch2);
+              if(op.after && op.after!==nid && _webPageSection(pid, op.after)){ var pg=_webPage(pid); if(pg && Array.isArray(pg.sections)){ var secs=pg.sections, ni=-1, ai=-1, k;
+                  for(k=0;k<secs.length;k++){ if(secs[k]&&secs[k].id===nid) ni=k; }
+                  if(ni>=0){ var moved=secs.splice(ni,1)[0];
+                    for(k=0;k<secs.length;k++){ if(secs[k]&&secs[k].id===op.after) ai=k; }
+                    if(ai>=0) secs.splice(ai+1,0,moved); else secs.push(moved); } } }
+              count++; } } }
+        else if(kind==='remove'){ if(_webPageSection(pid, op.id)){ webPageSectionRemove(pid, op.id); count++; } }
+        else if(kind==='reorder'){ if(Array.isArray(op.order)){ var pg2=_webPage(pid); if(pg2 && Array.isArray(pg2.sections)){ var orig=pg2.sections, seen={}, next=[], j, m;
+              for(j=0;j<op.order.length;j++){ var oid=op.order[j]; for(m=0;m<orig.length;m++){ if(orig[m]&&orig[m].id===oid && !seen[oid]){ seen[oid]=1; next.push(orig[m]); break; } } }
+              for(j=0;j<orig.length;j++){ if(orig[j] && !seen[orig[j].id]) next.push(orig[j]); }
+              pg2.sections=next; save(); count++; } } }
+      }catch(e){}
+    }
+    try{ save(); }catch(e){}
+    try{ _webRefreshPages(); _webRefreshPreview(); }catch(e){}
+    return count; }
+  /* AI call (mirrors _aiSiteDesignGen): same /api/aio council, adopts the server credit balance, 20s hard stop, cb(null) on
+     ANY failure (flag off / no live backend / non-2xx / no text / unparseable / stall / throw). Sends the owner instruction +
+     a compact snapshot of the current sections and asks for ONLY the ops needed. Parses the first candidate that yields an
+     object with an ops array (SAME string-aware brace scan as _aiSiteDesignGen). Never throws. */
+  function _aiEditPageGen(instruction, snapshot, cb){
+    var done=false, fin=function(x){ if(done)return; done=true; try{ cb(x); }catch(e){} };
+    var parse=function(text){ try{
+        var s=String(text||''); if(!s) return null;
+        var a=s.indexOf('{'); if(a<0) return null;
+        var depth=0, inStr=false, esc2=false, end=-1;
+        for(var i=a;i<s.length;i++){ var ch=s.charAt(i);
+          if(inStr){ if(esc2){ esc2=false; } else if(ch==='\\'){ esc2=true; } else if(ch==='"'){ inStr=false; } }
+          else { if(ch==='"'){ inStr=true; } else if(ch==='{'){ depth++; } else if(ch==='}'){ depth--; if(depth===0){ end=i; break; } } }
+        }
+        if(end<0) return null;
+        var obj=JSON.parse(s.slice(a,end+1));
+        if(!obj || typeof obj!=='object' || !Array.isArray(obj.ops)) return null;
+        return { summary:String(obj.summary||'').slice(0,200), ops:obj.ops };
+      }catch(e){ return null; } };
+    try{
+      if(!_flags().aiSiteCopy || !(ATLAS_BACKEND && _apiCsrf)){ fin(null); return; }
+      var prompt='You are editing an EXISTING page of THIS rental business website. The owner\'s instruction is below,'
+        +' followed by the page\'s current sections as JSON. Return ONLY the operations needed to fulfil the instruction --'
+        +' target existing sections by their "id" and leave every other section untouched. Never invent locations, prices,'
+        +' reviews, awards or fleet facts. Allowed section types: hero, features, split, stats, fleet, gallery, faq, cta,'
+        +' text, contact. Operation vocabulary: {"op":"edit","id":"<existing section id>","props":{...}} changes a section\'s'
+        +' text (heading, subheading, body, subtext, btnLabel as the type allows; features may also set items:[{title,text}]'
+        +' and columns "2"|"3"|"4"; stats may set items:[{number,label}]; any section may set tone "light"|"dark"|"brand";'
+        +' split may set side "left"|"right"). {"op":"add","type":"<section type>","after":"<existing section id,optional>",'
+        +'"props":{...}} adds a new section (placed right after the given id when present, else at the end).'
+        +' {"op":"remove","id":"<existing section id>"} deletes a section. {"op":"reorder","order":["<id>","<id>",...]} sets'
+        +' the whole section order by id. Only include the ops you actually need. Respond with ONLY a JSON object, no markdown'
+        +' and no prose, EXACTLY in this shape: {"summary":"one short sentence of what changed","ops":[{"op":"edit","id":'
+        +'"...","props":{"heading":"...","subheading":"..."}},{"op":"add","type":"features","props":{"heading":"...","items":'
+        +'[{"title":"...","text":"..."}]}},{"op":"remove","id":"..."},{"op":"reorder","order":["...","..."]}]}.'
+        +'\nINSTRUCTION: '+String(instruction||'')
+        +'\nCURRENT SECTIONS: '+JSON.stringify(snapshot||[]);
+      var _to=setTimeout(function(){ fin(null); }, 20000);   // hard client-side stop (same as _aiSiteDesignGen)
+      _api('/api/aio',{method:'POST',body:{q:prompt, context:_aioBizContext()}}).then(function(res){
+        clearTimeout(_to);
+        var j=(res&&res.json)||{};
+        try{ if(typeof j.credits==='number'){ if(!S.credits)S.credits={}; S.credits.bal=j.credits; save(); } }catch(e){}   // adopt the server-authoritative credit balance
+        if(!(res&&res.status>=200&&res.status<300) || j.error){ fin(null); return; }
+        var cands=[]; if(j.synthesis) cands.push(String(j.synthesis));
+        (j.models||[]).forEach(function(m){ if(m&&m.text) cands.push(String(m.text)); });
+        for(var i=0;i<cands.length;i++){ var o=parse(cands[i]); if(o){ fin(o); return; } }
+        fin(null);
+      }).catch(function(){ clearTimeout(_to); fin(null); });
+    }catch(e){ fin(null); }
+  }
+  // Owner action (PUBLIC): read the "Ask Atlas" instruction, snapshot the open page's sections, ask the AI for structured ops,
+  // then apply them deterministically via _aiApplyOps. Button loading-state is always restored, even on a throw.
+  function aiEditPage(){
+    if(!_guard('webEdit','Editing your site'))return;
+    if(!_webEditPageId){ toast('Open a page first, then ask Atlas to edit it.'); return; }
+    var pg=_webPage(_webEditPageId); if(!pg){ toast('Open a page first.'); return; }
+    var instr=(val('aiEditInstr')||'').trim(); if(instr.length<3){ toast('Tell Atlas what to change (e.g. "make the hero punchier").'); return; }
+    var arr=Array.isArray(pg.sections)?pg.sections:[];
+    var snapshot=arr.slice(0,20).filter(Boolean).map(function(s){ var p=(s&&s.props)||{}, o={id:s.id, type:s.type};
+      ['heading','subheading','body','subtext'].forEach(function(k){ if(p[k]!=null) o[k]=String(p[k]).slice(0,200); });
+      return o; });
+    var btn=document.getElementById('aiEditBtn'), _lbl=btn?btn.innerHTML:'';
+    var restore=function(){ try{ if(btn){ btn.disabled=false; btn.innerHTML=_lbl; } }catch(e){} };
+    try{
+      if(btn){ btn.disabled=true; btn.innerHTML='Working\u2026'; }
+      _aiEditPageGen(instr, snapshot, function(res){ try{
+        if(!res || !res.ops || !res.ops.length){ restore(); toast('Atlas could not act on that. Try rephrasing.'); return; }
+        var n=_aiApplyOps(_webEditPageId, res.ops); restore();
+        if(n>0){ var inp=document.getElementById('aiEditInstr'); if(inp) inp.value=''; toast(res.summary || ('Updated '+n+' section'+(n===1?'':'s')+'.')); }
+        else { toast('No changes were applied.'); }
+      }catch(e){ restore(); toast('Something went wrong applying that.'); } });
+    }catch(e){ restore(); }
+  }
   // ---- Pages editor UI (a "Pages" set-block in the builder). List view -> per-page rows; Edit -> the section stack. ----
   function _webPagesHtml(){ return '<div id="webPagesBox">'+_webPagesInner()+'</div>'; }
   function _webRefreshPages(){ var el=document.getElementById('webPagesBox'); if(el) el.innerHTML=_webPagesInner(); }
@@ -10882,7 +10998,8 @@ const Atlas = (function(){
     var picker='<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px"><div class="desc" style="margin:0 0 6px">Add a section</div><div style="display:flex;flex-wrap:wrap;gap:6px">'
       +_PG_TYPE_ORDER.map(function(t){ var e=SECTION_REG[t]; return '<button class="btn btn--ghost btn--sm" title="'+esc(e.label)+'" onclick="Atlas.webPageSectionAdd(\''+esc(pid)+'\',\''+t+'\')"><b style="color:var(--brand);font-size:10px;letter-spacing:.4px">'+esc(e.icon)+'</b> '+esc(e.label)+'</button>'; }).join('')
       +'</div></div>';
-    return head+seo+'<div style="margin-top:6px">'+stack+'</div>'+picker; }
+    var ask='<div style="display:flex;gap:6px;margin:0 0 10px"><input class="input" id="aiEditInstr" placeholder="Ask Atlas to edit this page &mdash; e.g. make the hero punchier, add a testimonials section" style="flex:1" onkeydown="if(event.key===\'Enter\'){event.preventDefault();Atlas.aiEditPage();}"><button class="btn btn--primary" id="aiEditBtn" onclick="Atlas.aiEditPage()">Ask Atlas</button></div>';
+    return head+seo+ask+'<div style="margin-top:6px">'+stack+'</div>'+picker; }
   function _webSectionCardHtml(pid, sec, idx, total){ var e=SECTION_REG[sec.type]; if(!e) return ''; var props=sec.props||{};
     var tone=(props.tone==='dark'||props.tone==='brand')?props.tone:'light';
     var fields=(e.fields||[]).map(function(f){ return _pgFieldHtml(pid, sec, f); }).join('');
@@ -12173,7 +12290,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
