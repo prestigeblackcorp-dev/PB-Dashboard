@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04a';
+const ATLAS_BUILD = '2026.08.04b';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -11305,6 +11305,31 @@ function _pgSafeImg(u) {
 // Normalize a section's columns prop to '2'|'3'|'4' (default '3') -- EXACT twin of the client _pgCols so the served grid
 // matches the builder preview the owner saw. Used for features/fleet/gallery via the .pg-grid.cols<N> rules in _pgStyle.
 function _pgCols(v) { var c = String(v == null ? 3 : v).replace(/[^0-9]/g, '') || '3'; return (c === '2' || c === '3' || c === '4') ? c : '3'; }
+// Video section: turn a YouTube/Vimeo/mp4 URL into a safe responsive embed. Only whitelisted hosts + an alphanumeric id
+// (or a quote/space-free https mp4/webm) ever reach the DOM -> no arbitrary iframe src. Returns '' when unrecognized.
+function _pgVideoEmbed(url) {
+  var u = String(url || '').trim(); if (!u) return '';
+  var yt = u.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{6,20})/);
+  if (yt) return '<div class="pg-embed"><iframe src="https://www.youtube-nocookie.com/embed/' + esc(yt[1]) + '" title="Video" loading="lazy" allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" allowfullscreen></iframe></div>';
+  var vm = u.match(/vimeo\.com\/(?:video\/)?(\d{5,})/);
+  if (vm) return '<div class="pg-embed"><iframe src="https://player.vimeo.com/video/' + esc(vm[1]) + '" title="Video" loading="lazy" allow="autoplay;fullscreen;picture-in-picture" allowfullscreen></iframe></div>';
+  if (/^https:\/\/[^"'()\s]+\.(mp4|webm)(\?[^"'()\s]*)?$/i.test(u)) return '<div class="pg-embed"><video src="' + esc(u.slice(0, 4000)) + '" controls preload="metadata" playsinline></video></div>';
+  return '';
+}
+// Map section: keyless Google Maps embed by address query (no API key, no geocoding needed). Address is encodeURIComponent'd
+// so it can never break out of the src. Returns '' when there is no address.
+function _pgMapEmbed(addr) {
+  var a = String(addr || '').trim(); if (!a) return '';
+  return '<div class="pg-embed pg-embed-map"><iframe src="https://maps.google.com/maps?q=' + encodeURIComponent(a.slice(0, 300)) + '&output=embed" title="Map" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe></div>';
+}
+// Social links: map a bare handle (or a full URL) to a safe https profile URL for a known network. Returns '' if unusable.
+function _pgSocialUrl(net, val) {
+  var v = String(val || '').trim().replace(/^@/, ''); if (!v) return '';
+  if (/^https:\/\/[^"'()\s]+$/i.test(v)) return v.slice(0, 300);           // already a full https url
+  if (!/^[A-Za-z0-9_.\/-]{1,64}$/.test(v)) return '';                       // handle: strict charset only
+  var base = ({ instagram: 'https://instagram.com/', facebook: 'https://facebook.com/', tiktok: 'https://tiktok.com/@', x: 'https://x.com/', youtube: 'https://youtube.com/@', linkedin: 'https://linkedin.com/company/' })[net];
+  return base ? (base + v) : '';
+}
 // One <style> block (added once in _customPageHtml head) for the .pg-sec/.pg-* responsive rules. Mobile stacks at <=640px;
 // grids are CSS grid auto-fit; hero/cta are full-width bands; tone-dark/tone-brand recolor the section. All rules are
 // hard-coded constants -> no tenant string is ever interpolated into CSS here.
@@ -11330,6 +11355,10 @@ function _pgStyle(brandColor) {
     + '.pg-split-media{flex:1 1 0;min-width:0}.pg-split-text{flex:1 1 0;min-width:0}'
     + '.pg-stats-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px}.pg-stat{flex:1 1 120px;text-align:center}'
     + '.pg-faq-item{border-top:1px solid #eee}.pg-faq-item:first-child{border-top:0}'
+    + '.pg-embed{position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:12px;margin-top:10px;background:#000}.pg-embed iframe,.pg-embed video{position:absolute;top:0;left:0;width:100%;height:100%;border:0}'
+    + '.pg-testi{border-left:3px solid var(--brand)}.pg-testi .pg-quote{font-size:15px;line-height:1.6;color:#333}.pg-quote-by{margin-top:8px;font-weight:700;font-size:13px}'
+    + '.pg-announce{background:var(--brand);color:' + _bi + ';border-radius:10px;padding:12px 16px;text-align:center;font-weight:600;font-size:14px}'
+    + '.pg-social{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}.pg-social a{color:var(--brand);text-decoration:none;font-weight:600;font-size:13.5px;border:1px solid var(--brand);border-radius:20px;padding:6px 15px}'
     + '.tone-dark{background:#141414;color:#f6f7f9;border-radius:14px;padding:8px 16px}.tone-dark h2{color:#fff}.tone-dark .muted{color:#b9b9b9}.tone-dark .card{background:#1f1f1f;border-color:#333;color:#f6f7f9}'
     + '.tone-brand{background:var(--brand);color:' + _bi + ';border-radius:14px;padding:8px 16px}.tone-brand h2{color:' + _bi + '}.tone-brand .muted{color:' + _bmut + '}.tone-brand .card{background:' + _bcard + ';border-color:' + _bcbd + ';color:' + _bi + '}'
     + '@media(max-width:640px){.pg-split,.pg-split-r{flex-direction:column}.pg-hero-inner{padding:34px 16px}.pg-hero-inner h2{font-size:23px}.pg-grid.cols3,.pg-grid.cols4{grid-template-columns:repeat(2,1fr)}}'
@@ -11484,6 +11513,47 @@ function _renderSection(s, prof, color, seob) {
           + (yh ? ('<h2>' + esc(yh) + '</h2>') : '')
           + (rows ? ('<div style="margin:6px 0 4px">' + rows + '</div>') : '')
           + '<a class="btn" href="' + esc(_pgHref(p.btnLink, home)) + '" style="max-width:220px">' + esc(ybtn) + '</a></div>';
+        break;
+      }
+      case 'video': {
+        var vh = String(p.heading || '').trim(), vcap = String(p.caption || '').trim();
+        var vemb = _pgVideoEmbed(p.url);
+        if (!vh && !vemb) return '';
+        inner = (vh ? ('<h2>' + esc(vh) + '</h2>') : '') + vemb + (vcap ? ('<div class="muted" style="margin-top:6px;text-align:center">' + esc(vcap) + '</div>') : '');
+        break;
+      }
+      case 'map': {
+        var mh = String(p.heading || '').trim(), maddr = String(p.address || '').trim(), mcap = String(p.caption || '').trim();
+        var memb = _pgMapEmbed(maddr);
+        if (!mh && !memb) return '';
+        inner = (mh ? ('<h2>' + esc(mh) + '</h2>') : '') + memb + ((mcap || maddr) ? ('<div class="muted" style="margin-top:6px">' + esc(mcap || maddr) + '</div>') : '');
+        break;
+      }
+      case 'testimonials': {
+        var rh = String(p.heading || '').trim();
+        var ritems = (Array.isArray(p.items) ? p.items : []).slice(0, 9).filter(function (it) { return it && String(it.quote || '').trim(); });
+        if (!rh && !ritems.length) return '';
+        var rcards = ritems.map(function (it) {
+          var rq = String(it.quote || '').trim(), rn = String(it.name || '').trim(), rr = String(it.role || '').trim();
+          return '<div class="card pg-testi"><div class="pg-quote">' + esc(rq) + '</div>'
+            + ((rn || rr) ? ('<div class="pg-quote-by">' + esc(rn) + (rr ? (' <span class="muted" style="font-weight:400">' + esc(rr) + '</span>') : '') + '</div>') : '') + '</div>';
+        }).join('');
+        inner = (rh ? ('<h2>' + esc(rh) + '</h2>') : '') + (rcards ? ('<div class="pg-grid cols' + _pgCols(p.columns) + '">' + rcards + '</div>') : '');
+        break;
+      }
+      case 'announce': {
+        var ax = String(p.text || '').trim(); if (!ax) return '';
+        var alab = String(p.linkLabel || '').trim();
+        inner = '<div class="pg-announce">' + esc(ax)
+          + (alab ? (' <a href="' + esc(_pgHref(p.link, home)) + '" style="color:inherit;text-decoration:underline;font-weight:700">' + esc(alab) + '</a>') : '') + '</div>';
+        break;
+      }
+      case 'social': {
+        var sh = String(p.heading || '').trim();
+        var _nets = [['instagram', 'Instagram'], ['facebook', 'Facebook'], ['tiktok', 'TikTok'], ['x', 'X'], ['youtube', 'YouTube'], ['linkedin', 'LinkedIn']];
+        var slinks = _nets.map(function (n) { var su = _pgSocialUrl(n[0], p[n[0]]); return su ? ('<a href="' + esc(su) + '" target="_blank" rel="noopener nofollow">' + esc(n[1]) + '</a>') : ''; }).filter(function (h) { return !!h; }).join('');
+        if (!sh && !slinks) return '';
+        inner = (sh ? ('<h2>' + esc(sh) + '</h2>') : '') + (slinks ? ('<div class="pg-social">' + slinks + '</div>') : '');
         break;
       }
       default: return '';
