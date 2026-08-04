@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04b';
+const ATLAS_BUILD = '2026.08.04c';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3470,6 +3470,11 @@ async function ensurePlatformSchema(env) {
   // read per-step over a date range by _hqGrowthData for the master-dashboard drop-off view. No sid, no path, no PII.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS funnel_events (day TEXT, step TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(day, step))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_fe_day ON funnel_events(day)").run(); } catch (e) {}
+  // Per-tenant public-site views: a (tenant_id, day) daily counter incremented on each served booking-home load (bots
+  // filtered). Surfaced ONLY to that tenant via owner-gated /api/tenant/site-stats -- distinct from the platform-wide
+  // funnel_events above. Best-effort; a failed write never affects the served page.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS tenant_visits (tenant_id TEXT, day TEXT, views INTEGER DEFAULT 0, PRIMARY KEY(tenant_id, day))").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tv_tenant ON tenant_visits(tenant_id, day)").run(); } catch (e) {}
   // Atlas Counsel institutional memory: an append-only, dated, ranked feed of "what deserves attention". Written nightly by the
   // cron (deterministic scoring from real data; AI adds a narrative when a key is set). status: new|done|dismissed (the feedback loop) | brief.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS counsel_journal (id TEXT PRIMARY KEY, day TEXT, layer TEXT, kind TEXT, tenant_id TEXT, title TEXT, body_md TEXT, data_json TEXT, severity TEXT, impact_score INTEGER DEFAULT 0, action TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run(); } catch (e) {}
@@ -4590,6 +4595,7 @@ export default {
               // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
               const _wg278 = _websiteServeGrandfather(env, cd); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278); else _wg278.catch(function () {});
               const _revSumA = await _publicReviewSummary(env, cd.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
+              _tenantVisitTick(env, _ectx, pr, req);   // per-tenant site view (bot-filtered, best-effort) -> owner's /api/tenant/site-stats
               return new Response(_bookPageHtml(cd.subdomain, color, _bookHeadTags(pr, url.origin + url.pathname, _revSumA), pr, _revSumA, _seoBase(url.origin, cd.subdomain, true)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
             }
           }
@@ -7555,6 +7561,7 @@ function doReset(){
         // #278: flag-gated, NEVER blocks -- grandfathers a site already live (see _grandfatherWebsite/_websiteServeGrandfather); deferred so a public page load is never held up by this.
         const _wg278b = _websiteServeGrandfather(env, tr); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_wg278b); else _wg278b.catch(function () {});
         const _revSumB = await _publicReviewSummary(env, tr.id);   // P0-1: aggregated reviews for the server-rendered reviews section (fail-open -> {} -> section skipped)
+        _tenantVisitTick(env, _ectx, pr, req);   // per-tenant site view (bot-filtered, best-effort) -> owner's /api/tenant/site-stats
         return new Response(_bookPageHtml(bp[1], color, _bookHeadTags(pr, url.origin + url.pathname, _revSumB), pr, _revSumB, _seoBase(url.origin, bp[1], false)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'X-Atlas-Frameable': '1' } });   // public booking page: tenants <iframe> this on their own site (atlas.html _modalEmbed) -- must stay embeddable, see the frameable carve-out at the response merge
       }
       // ---- PayPal RETURN (public; the customer's browser lands here after approving on PayPal): capture the approved order and
@@ -8743,6 +8750,21 @@ function doReset(){
           await audit(env, ctx, req, 'tenant.webhook.delete', { id: id });
           return json({ ok: true });
         }
+      }
+      // Tenant-facing site traffic: the OWNER's own public-site views (7d/30d) + booking requests + conversion. Owner/tenant
+      // -session gated via ctx.tenant_id (same gate as /api/tenant/profile). Read-only; distinct from the platform master dash.
+      if (path === '/api/tenant/site-stats' && method === 'GET') {
+        if (!ctx || !ctx.tenant_id) return err(401, 'Sign in required.');
+        await ensurePlatformSchema(env);
+        var _sNow = Date.now();
+        var _sD7 = new Date(_sNow - 6 * 86400000).toISOString().slice(0, 10);
+        var _sD30 = new Date(_sNow - 29 * 86400000).toISOString().slice(0, 10);
+        var _sv7 = 0, _sv30 = 0, _sb7 = 0, _sb30 = 0;
+        try { var _sr7 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(ctx.tenant_id, _sD7).first(); _sv7 = (_sr7 && _sr7.v) || 0; } catch (e) {}
+        try { var _sr30 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(ctx.tenant_id, _sD30).first(); _sv30 = (_sr30 && _sr30.v) || 0; } catch (e) {}
+        try { var _sb7r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(ctx.tenant_id, _sNow - 7 * 86400000).first(); _sb7 = (_sb7r && _sb7r.c) || 0; } catch (e) {}
+        try { var _sb30r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(ctx.tenant_id, _sNow - 30 * 86400000).first(); _sb30 = (_sb30r && _sb30r.c) || 0; } catch (e) {}
+        return json({ ok: true, views7: _sv7, views30: _sv30, bookings7: _sb7, bookings30: _sb30 });
       }
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
@@ -11763,6 +11785,18 @@ async function _publicReviewSummary(env, tenantId) {
 }
 // Served public booking page: loads /api/public/<slug>, renders assets + form, live estimate, posts to /book.
 // `reviews` (optional) = _publicReviewSummary output; drives the server-rendered reviews section (absent -> section skipped).
+// Best-effort per-tenant view tick: increments tenant_visits for TODAY on a served booking-home load, skipping obvious
+// bots so the number reflects real visitors. Fire-and-forget via ctx.waitUntil; never blocks or fails the page render.
+function _tenantVisitTick(env, ctxObj, prof, req) {
+  try {
+    if (!env || !env.DB || !prof || !prof.id) return;
+    var ua = ''; try { ua = String((req && req.headers && req.headers.get('User-Agent')) || ''); } catch (e) {}
+    if (/bot|crawl|spider|slurp|bingpreview|facebookexternalhit|embedly|preview|monitor|curl|wget|python-requests|headless|lighthouse|pingdom|uptime/i.test(ua)) return;
+    var day = new Date(Date.now()).toISOString().slice(0, 10);
+    var p = env.DB.prepare("INSERT INTO tenant_visits (tenant_id,day,views) VALUES (?,?,1) ON CONFLICT(tenant_id,day) DO UPDATE SET views=views+1").bind(prof.id, day).run().catch(function () {});
+    if (ctxObj && ctxObj.waitUntil) ctxObj.waitUntil(p); else if (p && p.catch) p.catch(function () {});
+  } catch (e) {}
+}
 function _bookPageHtml(slug, color, seo, prof, reviews, seob) {
   // Growth badge -- "Powered by Atlas Rental.io" on every public tenant booking page (the #1 free-impression lever:
   // each tenant's booking visitors become Atlas impressions). Shown BY DEFAULT; hidden ONLY when the tenant opted
