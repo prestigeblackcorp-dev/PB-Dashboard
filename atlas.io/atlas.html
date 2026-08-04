@@ -10726,7 +10726,7 @@ const Atlas = (function(){
   var _webDragSid=null;    // section id currently being dragged in the page editor (HTML5 DnD reorder; session-only, not persisted)
   var _webDevice='desktop';   // live-preview device width (desktop|tablet|mobile) -- session-only, never persisted to S.website
   var _webUndo=null;          // snapshot of the site design taken BEFORE an AI change (session-only one-step undo; never persisted -> no sync bloat)
-  var _PG_TYPE_ORDER=['hero','text','split','features','fleet','cta','gallery','faq','stats','contact'];
+  var _PG_TYPE_ORDER=['hero','text','split','features','fleet','cta','gallery','faq','stats','contact','video','map','testimonials','announce','social'];
   // SECTION REGISTRY -- the single source of truth. Each type: label, a short ASCII icon badge, def() -> default props
   // (pre-filled from the owner's real brand/assets so every add looks finished), and the editable fields the editor
   // renders. props are CONTENT ONLY; tone (light|dark|brand) is the only style knob and is edited on every card.
@@ -10750,7 +10750,17 @@ const Atlas = (function(){
     stats:{ label:'Stats', icon:'ST', def:function(){ return {tone:'light', heading:'', items:[{number:String((DATA.assets||[]).length||'10'),label:String(S.fleet.nouns||'assets')},{number:'24/7',label:'Support'},{number:'100%',label:'Online booking'}]}; },
       fields:[{key:'heading',label:'Heading',kind:'text'},{key:'items',label:'Stats',kind:'list',cap:4,addLabel:'Add stat',sub:[{key:'number',label:'Number',kind:'text'},{key:'label',label:'Label',kind:'text'}]}] },
     contact:{ label:'Contact', icon:'CO', def:function(){ return {tone:'light', heading:'Contact us', phone:String((S.brand&&S.brand.phone)||''), email:String((S.brand&&S.brand.email)||''), address:String((S.brand&&S.brand.city)||''), btnLabel:'Book', btnLink:''}; },
-      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'phone',label:'Phone',kind:'text'},{key:'email',label:'Email',kind:'text'},{key:'address',label:'Address',kind:'text'},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] }
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'phone',label:'Phone',kind:'text'},{key:'email',label:'Email',kind:'text'},{key:'address',label:'Address',kind:'text'},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] },
+    video:{ label:'Video', icon:'VD', def:function(){ return {tone:'light', heading:'', url:'', caption:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'url',label:'Video URL (YouTube, Vimeo, or .mp4)',kind:'text'},{key:'caption',label:'Caption',kind:'text'}] },
+    map:{ label:'Map', icon:'MP', def:function(){ return {tone:'light', heading:'Find us', address:String((S.brand&&S.brand.city)||''), caption:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'address',label:'Address or place',kind:'text'},{key:'caption',label:'Caption',kind:'text'}] },
+    testimonials:{ label:'Testimonials', icon:'TM', def:function(){ return {tone:'light', heading:'What customers say', columns:'3', items:[{quote:'',name:'',role:''}]}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'columns',label:'Columns',kind:'select',opts:[['2','2 columns'],['3','3 columns'],['4','4 columns']]},{key:'items',label:'Testimonials',kind:'list',cap:9,addLabel:'Add testimonial',sub:[{key:'quote',label:'Quote',kind:'textarea'},{key:'name',label:'Name',kind:'text'},{key:'role',label:'Role / detail',kind:'text'}]}] },
+    announce:{ label:'Announcement', icon:'AN', def:function(){ return {tone:'light', text:'', link:'', linkLabel:''}; },
+      fields:[{key:'text',label:'Announcement text',kind:'text'},{key:'linkLabel',label:'Link label (optional)',kind:'text'},{key:'link',label:'Link URL (optional)',kind:'text'}] },
+    social:{ label:'Social links', icon:'SO', def:function(){ return {tone:'light', heading:'Follow us', instagram:'', facebook:'', tiktok:'', x:'', youtube:'', linkedin:''}; },
+      fields:[{key:'heading',label:'Heading',kind:'text'},{key:'instagram',label:'Instagram',kind:'text'},{key:'facebook',label:'Facebook',kind:'text'},{key:'tiktok',label:'TikTok',kind:'text'},{key:'x',label:'X (Twitter)',kind:'text'},{key:'youtube',label:'YouTube',kind:'text'},{key:'linkedin',label:'LinkedIn',kind:'text'}] }
   };
   function _pageId(){ return 'pg'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }   // 'pg'+ unique -- same scheme as _postId, distinct prefix
   function _secId(){ return 's'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }     // stable section id so reorder/undo are safe
@@ -10824,8 +10834,8 @@ const Atlas = (function(){
      sections (varied per business), then reuse the EXISTING page builder + renderer to drop them onto a custom page the
      owner can edit. No new render code -- _pgNewSection() fills every section's props from real brand/fleet data first,
      and the AI only overlays its text content on top. On ANY failure the owner just gets a toast and nothing changes. ==== */
-  var _AIDS_SCALARS={ hero:['heading','subheading','btnLabel'], text:['heading','body'], split:['heading','body','btnLabel'], features:['heading'], fleet:['heading'], cta:['heading','subtext','btnLabel'], gallery:['heading'], faq:['heading'], stats:['heading'], contact:['heading'] };   // scalar text props the AI may overlay per type -- everything else (fleet cars, faq/contact/gallery real-data) stays from def()
-  var _AIDS_CAPS={ heading:120, subheading:200, body:600, subtext:300, btnLabel:40 };
+  var _AIDS_SCALARS={ hero:['heading','subheading','btnLabel'], text:['heading','body'], split:['heading','body','btnLabel'], features:['heading'], fleet:['heading'], cta:['heading','subtext','btnLabel'], gallery:['heading'], faq:['heading'], stats:['heading'], contact:['heading'], video:['heading','caption'], map:['heading','caption'], testimonials:['heading'], announce:['text','linkLabel'], social:['heading'] };   // scalar text props the AI may overlay per type -- everything else (fleet cars, faq/contact/gallery real-data, and DELIBERATELY video url / map address / testimonial quotes / social handles) stays from def() so the AI never invents a URL, address, review, or handle
+  var _AIDS_CAPS={ heading:120, subheading:200, body:600, subtext:300, btnLabel:40, caption:200, text:200, linkLabel:40 };
   // Pure composer -- no AI, no I/O. Maps a validated layout array into real {id,type,props} sections via _pgNewSection
   // (def() pre-fills props from real data), overlaying ONLY the AI's known scalar content. Guarantees hero-first, cta-last.
   function _aiComposeSections(layout){
@@ -10902,10 +10912,14 @@ const Atlas = (function(){
   // prior AI page if one exists), then open it in the editor. Button loading-state is always restored, even on a throw.
   function aiDesignSite(){
     if(!_guard('webEdit','Designing your site'))return;
+    // A2 (honest messaging): when the AI can't run -- no backend (preview mode) or the AI copy flag is off -- say exactly
+    // that instead of a dead-end "try again" the owner can never satisfy. (Out-of-credits is caught by fail() below.)
+    if(typeof _flags==='function' && !_flags().aiSiteCopy){ toast('Atlas AI site design is turned off for this account.'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Atlas AI isn\'t connected here yet -- connect your Atlas backend (see go-live) to design with AI, or add sections manually below.'); return; }
     _webSnapshot();   // one-step undo: capture the design just before the AI changes it (owner authorized above)
     var btn=document.getElementById('aiDesignSiteBtn'), _lbl=btn?btn.innerHTML:'';
     var restore=function(){ try{ if(btn){ btn.disabled=false; btn.innerHTML=_lbl; } }catch(e){} };
-    var fail=function(){ restore(); toast('Could not design the site right now. Please try again.'); };
+    var fail=function(){ restore(); toast('Atlas couldn\'t design the site right now -- you may be out of AI credits, or the AI is busy. Try again in a moment, or build sections manually.'); };
     try{
       if(btn){ btn.disabled=true; btn.innerHTML='Designing your site\u2026'; }
       _aiSiteDesignGen(function(res){ try{
@@ -10919,8 +10933,9 @@ const Atlas = (function(){
         var id;
         if(existing){ existing.sections=secs; id=existing.id; save(); }
         else { id=webPageAdd((S.brand&&S.brand.name)||'Home', null, secs); if(!id){ fail(); return; } var pg=_webPage(id); if(pg){ pg._aiDesigned=true; pg.nav=true; } save(); }
+        try{ w.homePageId=id; save(); }catch(e){}   // A1: the flagship flow now actually makes the designed page your HOMEPAGE (worker renders it above the booking form). Was a disconnect -- owner published and their home was unchanged. Reversible via "Set as homepage".
         _webEditPageId=id; try{ renderWebsite(); }catch(e){ _webRefreshPages(); _webRefreshPreview(); }   // full builder render so the editor opens AND the "Undo last change" button appears (mirrors webPageStarterLanding + surfaces undo)
-        restore(); toast('Your site is designed -- edit any section or publish.');
+        restore(); toast('Your site is designed and set as your homepage -- edit any section or publish.');
       }catch(e){ fail(); } });
     }catch(e){ restore(); }
   }
@@ -10995,7 +11010,9 @@ const Atlas = (function(){
         +' followed by the page\'s current sections as JSON. Return ONLY the operations needed to fulfil the instruction --'
         +' target existing sections by their "id" and leave every other section untouched. Never invent locations, prices,'
         +' reviews, awards or fleet facts. Allowed section types: hero, features, split, stats, fleet, gallery, faq, cta,'
-        +' text, contact. Operation vocabulary: {"op":"edit","id":"<existing section id>","props":{...}} changes a section\'s'
+        +' text, contact, video, map, testimonials, announce, social. For video/map/testimonials/social, ADD the section but'
+        +' leave its url/address/quotes/handles EMPTY (the owner fills those -- never invent them); you may set their heading'
+        +' and an announce section\'s text. Operation vocabulary: {"op":"edit","id":"<existing section id>","props":{...}} changes a section\'s'
         +' text (heading, subheading, body, subtext, btnLabel as the type allows; features may also set items:[{title,text}]'
         +' and columns "2"|"3"|"4"; stats may set items:[{number,label}]; any section may set tone "light"|"dark"|"brand",'
         +' align "left"|"center"|"right", pad "compact"|"normal"|"spacious", bg a hex color like "#0b1f17";'
@@ -11025,6 +11042,8 @@ const Atlas = (function(){
   // then apply them deterministically via _aiApplyOps. Button loading-state is always restored, even on a throw.
   function aiEditPage(){
     if(!_guard('webEdit','Editing your site'))return;
+    if(typeof _flags==='function' && !_flags().aiSiteCopy){ toast('Atlas AI editing is turned off for this account.'); return; }   // A2: honest, not a dead-end retry
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Atlas AI isn\'t connected here yet -- connect your Atlas backend to use Ask Atlas, or edit sections manually.'); return; }
     _webSnapshot();   // one-step undo: capture the design just before the AI changes it (owner authorized above)
     if(!_webEditPageId){ toast('Open a page first, then ask Atlas to edit it.'); return; }
     var pg=_webPage(_webEditPageId); if(!pg){ toast('Open a page first.'); return; }
@@ -11177,10 +11196,24 @@ const Atlas = (function(){
     +'.pg-cta-btn{display:inline-block;margin-top:12px;padding:9px 18px;border-radius:10px;background:#111111;color:#ffffff;font-weight:700;font-size:13px}'
     +'.pg-sec.tone-brand .pg-cta-btn,.pg-hero .pg-cta-btn{background:#ffffff;color:var(--brand)}'
     +'.pg-sec.tone-dark .pg-cta-btn{background:#ffffff;color:#111111}'
+    +'.pg-embed{position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:10px;max-width:720px;margin:12px auto 0;background:#000}.pg-embed iframe,.pg-embed video{position:absolute;top:0;left:0;width:100%;height:100%;border:0}'
+    +'.pg-testi{border-left:3px solid var(--brand)}.pg-quote{font-size:14px;line-height:1.55}.pg-quote-by{margin-top:6px;font-weight:700;font-size:12.5px}'
+    +'.pg-announce{background:var(--brand);color:#ffffff;border-radius:10px;padding:12px 16px;max-width:720px;margin:0 auto;font-weight:600}'
+    +'.pg-social{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:8px}.pg-social-link{border:1px solid var(--brand);color:var(--brand);border-radius:20px;padding:5px 13px;font-size:12.5px;font-weight:600}'
     +'@media(max-width:640px){.pg-grid.cols3,.pg-grid.cols4{grid-template-columns:repeat(2,1fr)}.pg-split-inner{flex-direction:column}}'
     +'</style>';
   function _pgCols(v){ var c=String(v==null?3:v).replace(/[^0-9]/g,'')||'3'; if(c!=='2'&&c!=='3'&&c!=='4')c='3'; return c; }
   function _pgPvBtn(lbl){ lbl=String(lbl||'').trim(); return lbl?('<span class="pg-cta-btn">'+esc(lbl)+'</span>'):''; }
+  // CLIENT twins of the worker embed helpers (video/map/social) -- same whitelists so preview == served page.
+  function _pgVideoEmbed(url){ var u=String(url||'').trim(); if(!u) return '';
+    var yt=u.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{6,20})/);
+    if(yt) return '<div class="pg-embed"><iframe src="https://www.youtube-nocookie.com/embed/'+esc(yt[1])+'" title="Video" loading="lazy" allowfullscreen></iframe></div>';
+    var vm=u.match(/vimeo\.com\/(?:video\/)?(\d{5,})/);
+    if(vm) return '<div class="pg-embed"><iframe src="https://player.vimeo.com/video/'+esc(vm[1])+'" title="Video" loading="lazy" allowfullscreen></iframe></div>';
+    if(/^https:\/\/[^"'()\s]+\.(mp4|webm)(\?[^"'()\s]*)?$/i.test(u)) return '<div class="pg-embed"><video src="'+esc(u.slice(0,4000))+'" controls preload="metadata" playsinline></video></div>';
+    return ''; }
+  function _pgMapEmbed(addr){ var a=String(addr||'').trim(); if(!a) return ''; return '<div class="pg-embed pg-embed-map"><iframe src="https://maps.google.com/maps?q='+encodeURIComponent(a.slice(0,300))+'&output=embed" title="Map" loading="lazy"></iframe></div>'; }
+  function _pgSocialUrl(net,val){ var v=String(val||'').trim().replace(/^@/,''); if(!v) return ''; if(/^https:\/\/[^"'()\s]+$/i.test(v)) return v.slice(0,300); if(!/^[A-Za-z0-9_.\/-]{1,64}$/.test(v)) return ''; var base=({instagram:'https://instagram.com/',facebook:'https://facebook.com/',tiktok:'https://tiktok.com/@',x:'https://x.com/',youtube:'https://youtube.com/@',linkedin:'https://linkedin.com/company/'})[net]; return base?(base+v):''; }
   // ---- Per-section style knobs (align/pad/bg): CLIENT twins of the worker's _renderSection logic so the dashboard preview
   //      matches the served page. _pgInk mirrors the worker's luminance->ink helper; _pgSecStyle builds the SAME inline style
   //      string the worker computes; _pgInjectStyle merges it into a section's opening tag (prepending into an existing
@@ -11224,6 +11257,17 @@ const Atlas = (function(){
         if(String(p.email||'').trim()) rows+='<div class="pg-contact-row">Email: '+esc(String(p.email).trim())+'</div>';
         if(String(p.address||'').trim()) rows+='<div class="pg-contact-row">'+esc(String(p.address).trim())+'</div>';
         return '<section class="pg-sec pg-contact tone-'+tone+'"><h2>'+esc(coHead)+'</h2><div class="pg-inner">'+rows+_pgPvBtn(p.btnLabel||'Book')+'</div></section>'; }
+      case 'video':{ var vHead=String(p.heading||'').trim(), vCap=String(p.caption||'').trim(); var vEmb=_pgVideoEmbed(p.url); if(!vHead&&!vEmb) return '';
+        return '<section class="pg-sec pg-video tone-'+tone+'">'+(vHead?'<h2>'+esc(vHead)+'</h2>':'')+(vEmb||'<div class="muted">Add a YouTube, Vimeo or .mp4 URL to embed a video.</div>')+(vCap?'<div class="muted" style="margin-top:6px">'+esc(vCap)+'</div>':'')+'</section>'; }
+      case 'map':{ var mHead=String(p.heading||'').trim(), mAddr=String(p.address||'').trim(), mCap=String(p.caption||'').trim(); var mEmb=_pgMapEmbed(mAddr); if(!mHead&&!mEmb) return '';
+        return '<section class="pg-sec pg-map tone-'+tone+'">'+(mHead?'<h2>'+esc(mHead)+'</h2>':'')+mEmb+((mCap||mAddr)?'<div class="muted" style="margin-top:6px">'+esc(mCap||mAddr)+'</div>':'')+'</section>'; }
+      case 'testimonials':{ var rHead=String(p.heading||'').trim(); var ri=(Array.isArray(p.items)?p.items:[]).filter(function(x){ return x&&String(x.quote||'').trim(); }); if(!rHead&&!ri.length) return '';
+        var rc=_pgCols(p.columns); var rgrid=ri.slice(0,9).map(function(x){ var nm=String(x.name||'').trim(), rl=String(x.role||'').trim(); return '<div class="pg-card pg-testi"><div class="pg-quote">'+esc(String(x.quote||'').trim())+'</div>'+((nm||rl)?('<div class="pg-quote-by">'+esc(nm)+(rl?(' <span class="muted" style="font-weight:400">'+esc(rl)+'</span>'):'')+'</div>'):'')+'</div>'; }).join('');
+        return '<section class="pg-sec pg-testimonials tone-'+tone+'">'+(rHead?'<h2>'+esc(rHead)+'</h2>':'')+(rgrid?('<div class="pg-grid cols'+rc+'">'+rgrid+'</div>'):'<div class="muted">Add a testimonial to show it here.</div>')+'</section>'; }
+      case 'announce':{ var aTxt=String(p.text||'').trim(); if(!aTxt) return ''; var aLab=String(p.linkLabel||'').trim();
+        return '<section class="pg-sec pg-announce-sec tone-'+tone+'"><div class="pg-announce">'+esc(aTxt)+(aLab?(' <span style="text-decoration:underline;font-weight:700">'+esc(aLab)+'</span>'):'')+'</div></section>'; }
+      case 'social':{ var soHead=String(p.heading||'').trim(); var _n=[['instagram','Instagram'],['facebook','Facebook'],['tiktok','TikTok'],['x','X'],['youtube','YouTube'],['linkedin','LinkedIn']]; var slk=_n.map(function(n){ return _pgSocialUrl(n[0],p[n[0]])?('<span class="pg-social-link">'+esc(n[1])+'</span>'):''; }).filter(function(h){return !!h;}).join(''); if(!soHead&&!slk) return '';
+        return '<section class="pg-sec pg-social-sec tone-'+tone+'">'+(soHead?'<h2>'+esc(soHead)+'</h2>':'')+(slk?('<div class="pg-social">'+slk+'</div>'):'<div class="muted">Add your social handles to show links.</div>')+'</section>'; }
       default: return '';
     } }
   function _webPagePreviewHtml(pg, fontStack, a2){
@@ -11265,7 +11309,7 @@ const Atlas = (function(){
       +'<div class="set-block"><h3>Public booking site</h3><div class="desc">A branded page where customers book '+esc(S.fleet.nouns)+' directly &mdash; everything above is editable and updates when you re-publish.</div>'
         +(ATLAS_BACKEND
           ? ('<div class="field"><label>Your booking link</label><div style="display:flex;gap:8px"><input class="input mono" readonly value="'+esc(_bookingLink())+'"><button class="btn btn--ghost btn--sm" onclick="Atlas.copyBookingLink()">Copy</button></div></div>'
-             +'<button class="btn btn--primary" onclick="Atlas.publishBookingSite()">'+(_web().published?(_siteDirty()?'Publish changes':'Re-publish changes'):'Publish booking site')+'</button>'
+             +'<button class="btn btn--primary" onclick="Atlas.publishBookingSite()">'+(_web().published?(_siteDirty()?'Publish changes':'Re-publish site'):'Publish booking site')+'</button>'
              +(_web().published?('<div class="bk-lenhint" style="margin:8px 0 0;'+(_siteDirty()?'border-color:#C77D0A;color:#8a5200"><b>Unpublished changes</b> &mdash; your live site still shows the last published version. Publish to push your latest fleet, pricing and copy.':'border-color:var(--brand);color:var(--ink)"><b>Live</b> &mdash; customers can book at your link now.')+'</div>'):''))
           : '<div class="bk-lenhint" style="margin:0">This is a <b>preview</b>. Your public booking site and shareable link go live once your Atlas backend is connected (see go-live steps) &mdash; then Publish here. Nothing is served publicly until then.</div>')
       +'</div>'
