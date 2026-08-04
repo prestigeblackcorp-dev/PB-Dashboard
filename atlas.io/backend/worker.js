@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04d';
+const ATLAS_BUILD = '2026.08.04e';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1654,6 +1654,10 @@ async function _bkPatch(env, id, tid, patch) {
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
 function money2(cents) { return '$' + (Math.round(Number(cents) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+// Served-site money with the tenant's real currency SYMBOL (Intl gives the right symbol + decimal rules per ISO code).
+// Display only -- the CHARGED amount is computed server-side in cents with the tenant's currency; this never changes it.
+function _moneyCur(cents, code) { var n = (Math.round(Number(cents) || 0) / 100); try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: (String(code || 'USD').toUpperCase().replace(/[^A-Z]/g, '') || 'USD') }).format(n); } catch (e) { return money2(cents); } }
+function _curSym(code) { try { var s = new Intl.NumberFormat('en-US', { style: 'currency', currency: (String(code || 'USD').toUpperCase().replace(/[^A-Z]/g, '') || 'USD'), minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(0); return s.replace(/[0-9\s.,]/g, '') || '$'; } catch (e) { return '$'; } }
 function renderTpl(str, vars) { return String(str || '').replace(/\{(\w+)\}/g, function (m, k) { return vars[k] != null ? String(vars[k]) : ''; }); }
 function slugify(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63); }
 
@@ -8767,22 +8771,29 @@ function doReset(){
         if (!ctx || !ctx.tenant_id) return err(401, 'Sign in required.');
         await ensurePlatformSchema(env);
         var _tid = ctx.tenant_id, _sNow = Date.now();
+        var _days = Math.max(1, Math.min(120, parseInt(url.searchParams.get('days'), 10) || 30));   // selectable time filter, clamped to the 120-day retention window
+        var _dR = new Date(_sNow - (_days - 1) * 86400000).toISOString().slice(0, 10);
         var _sD7 = new Date(_sNow - 6 * 86400000).toISOString().slice(0, 10);
         var _sD30 = new Date(_sNow - 29 * 86400000).toISOString().slice(0, 10);
-        var _sv7 = 0, _sv30 = 0, _sb7 = 0, _sb30 = 0, _su7 = 0, _su30 = 0;
+        var _sv7 = 0, _sv30 = 0, _sb7 = 0, _sb30 = 0, _su7 = 0, _su30 = 0, _vR = 0, _uR = 0, _bR = 0;
         var _series = [], _refs = [], _geo = [], _dev = { mobile: 0, desktop: 0, tablet: 0 }, _assets = [];
+        // Fixed 7/30-day headline windows (legacy fields, always returned).
         try { var _sr7 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(_tid, _sD7).first(); _sv7 = (_sr7 && _sr7.v) || 0; } catch (e) {}
         try { var _sr30 = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(_tid, _sD30).first(); _sv30 = (_sr30 && _sr30.v) || 0; } catch (e) {}
         try { var _su7r = await env.DB.prepare("SELECT COUNT(*) c FROM tenant_visit_uniques WHERE tenant_id=? AND day>=?").bind(_tid, _sD7).first(); _su7 = (_su7r && _su7r.c) || 0; } catch (e) {}
         try { var _su30r = await env.DB.prepare("SELECT COUNT(*) c FROM tenant_visit_uniques WHERE tenant_id=? AND day>=?").bind(_tid, _sD30).first(); _su30 = (_su30r && _su30r.c) || 0; } catch (e) {}
         try { var _sb7r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(_tid, _sNow - 7 * 86400000).first(); _sb7 = (_sb7r && _sb7r.c) || 0; } catch (e) {}
         try { var _sb30r = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(_tid, _sNow - 30 * 86400000).first(); _sb30 = (_sb30r && _sb30r.c) || 0; } catch (e) {}
-        try { var _srows = (await env.DB.prepare("SELECT day, views FROM tenant_visits WHERE tenant_id=? AND day>=? ORDER BY day ASC").bind(_tid, _sD30).all()).results || []; var _bd = {}; _srows.forEach(function (r) { _bd[r.day] = r.views || 0; }); for (var _i = 29; _i >= 0; _i--) { var _dk = new Date(_sNow - _i * 86400000).toISOString().slice(0, 10); _series.push({ day: _dk, views: _bd[_dk] || 0 }); } } catch (e) {}
-        try { _refs = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='ref' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 6").bind(_tid, _sD30).all()).results || []).map(function (r) { return { name: r.val, count: r.c || 0 }; }); } catch (e) {}
-        try { _geo = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='geo' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 8").bind(_tid, _sD30).all()).results || []).map(function (r) { return { code: r.val, count: r.c || 0 }; }); } catch (e) {}
-        try { ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='dev' AND day>=? GROUP BY val").bind(_tid, _sD30).all()).results || []).forEach(function (r) { if (_dev.hasOwnProperty(r.val)) _dev[r.val] = r.c || 0; }); } catch (e) {}
-        try { _assets = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='asset' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 8").bind(_tid, _sD30).all()).results || []).map(function (r) { return { slug: r.val, count: r.c || 0 }; }); } catch (e) {}
-        return json({ ok: true, views7: _sv7, views30: _sv30, uniques7: _su7, uniques30: _su30, bookings7: _sb7, bookings30: _sb30, series: _series, refs: _refs, geo: _geo, devices: _dev, assets: _assets });
+        // RANGE-scoped totals + series + breakdowns (driven by ?days). Default 30 -> identical to the prior behavior.
+        try { var _vRr = await env.DB.prepare("SELECT COALESCE(SUM(views),0) v FROM tenant_visits WHERE tenant_id=? AND day>=?").bind(_tid, _dR).first(); _vR = (_vRr && _vRr.v) || 0; } catch (e) {}
+        try { var _uRr = await env.DB.prepare("SELECT COUNT(*) c FROM tenant_visit_uniques WHERE tenant_id=? AND day>=?").bind(_tid, _dR).first(); _uR = (_uRr && _uRr.c) || 0; } catch (e) {}
+        try { var _bRr = await env.DB.prepare("SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?").bind(_tid, _sNow - _days * 86400000).first(); _bR = (_bRr && _bRr.c) || 0; } catch (e) {}
+        try { var _srows = (await env.DB.prepare("SELECT day, views FROM tenant_visits WHERE tenant_id=? AND day>=? ORDER BY day ASC").bind(_tid, _dR).all()).results || []; var _bd = {}; _srows.forEach(function (r) { _bd[r.day] = r.views || 0; }); for (var _i = _days - 1; _i >= 0; _i--) { var _dk = new Date(_sNow - _i * 86400000).toISOString().slice(0, 10); _series.push({ day: _dk, views: _bd[_dk] || 0 }); } } catch (e) {}
+        try { _refs = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='ref' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 6").bind(_tid, _dR).all()).results || []).map(function (r) { return { name: r.val, count: r.c || 0 }; }); } catch (e) {}
+        try { _geo = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='geo' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 8").bind(_tid, _dR).all()).results || []).map(function (r) { return { code: r.val, count: r.c || 0 }; }); } catch (e) {}
+        try { ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='dev' AND day>=? GROUP BY val").bind(_tid, _dR).all()).results || []).forEach(function (r) { if (_dev.hasOwnProperty(r.val)) _dev[r.val] = r.c || 0; }); } catch (e) {}
+        try { _assets = ((await env.DB.prepare("SELECT val, SUM(count) c FROM tenant_dims WHERE tenant_id=? AND dim='asset' AND day>=? GROUP BY val ORDER BY c DESC LIMIT 8").bind(_tid, _dR).all()).results || []).map(function (r) { return { slug: r.val, count: r.c || 0 }; }); } catch (e) {}
+        return json({ ok: true, days: _days, views: _vR, uniques: _uR, bookings: _bR, views7: _sv7, views30: _sv30, uniques7: _su7, uniques30: _su30, bookings7: _sb7, bookings30: _sb30, series: _series, refs: _refs, geo: _geo, devices: _dev, assets: _assets });
       }
       if (path === '/api/tenant/profile') {
         if (method === 'GET') {
@@ -11067,7 +11078,8 @@ function _servedPageHead(prof, cfg, color, o) {
   var biz = String((prof && prof.name) || '');
   var desc = String(o.desc || '').replace(/\s+/g, ' ').trim().slice(0, 300);
   var canon = String(o.canon || '');
-  var img = /^https:\/\//i.test(String(o.image || '')) ? String(o.image).slice(0, 600) : '';
+  // og:image: a per-site share image (config.metaImage, set in the builder's SEO block) wins, else the caller's image (logo).
+  var img = (cfg && /^https:\/\//i.test(String(cfg.metaImage || ''))) ? String(cfg.metaImage).slice(0, 600) : (/^https:\/\//i.test(String(o.image || '')) ? String(o.image).slice(0, 600) : '');
   var _flogo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
   var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': o.graph || [] }).replace(/</g, '\\u003c');
   return (_flogo ? ('<link rel="icon" href="' + esc(_flogo) + '">') : '')
@@ -11698,8 +11710,9 @@ function _bookHeadTags(prof, canonicalUrl, reviews) {
   var _mt = String(cfg.metaTitle || '').trim(); if (_mt) title = _mt.slice(0, 160);
   var _md = String(cfg.metaDescription || '').trim(); if (_md) desc = _md.replace(/\s+/g, ' ').trim().slice(0, 300);
   var canon = String(canonicalUrl || '').slice(0, 500);
-  // og:image: an https brand logo, else the first https asset photo (data: URIs skipped -- oversized + poorly unfurled).
-  var img = /^https:\/\//i.test(String(brand.logo || '')) ? String(brand.logo).slice(0, 600) : '';
+  // og:image: a per-site share image (config.metaImage) wins, else an https brand logo, else the first https asset photo
+  // (data: URIs skipped -- oversized + poorly unfurled).
+  var img = /^https:\/\//i.test(String(cfg.metaImage || '')) ? String(cfg.metaImage).slice(0, 600) : (/^https:\/\//i.test(String(brand.logo || '')) ? String(brand.logo).slice(0, 600) : '');
   if (!img) { for (var i = 0; i < assets.length; i++) { var ph = assets[i] && assets[i].photo; if (/^https:\/\//i.test(String(ph || ''))) { img = String(ph).slice(0, 600); break; } } }
   // JSON-LD: LocalBusiness + up to 10 Product/Offer. `<` -> < so no tenant string can close the script early.
   var ld = { '@type': 'LocalBusiness', name: biz };
