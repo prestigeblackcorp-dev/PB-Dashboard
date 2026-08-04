@@ -10508,14 +10508,34 @@ const Atlas = (function(){
   // Mirrors seoHealthLoad -- cache-guarded lazy load, owner-gated read, honest gates for preview/unpublished.
   var _webStats=null;
   function _webStatsRender(j){ var el=document.getElementById('webStatsBox'); if(!el) return;
-    var v7=Number(j.views7)||0, v30=Number(j.views30)||0, b7=Number(j.bookings7)||0, b30=Number(j.bookings30)||0;
+    var v7=Number(j.views7)||0, v30=Number(j.views30)||0, u7=Number(j.uniques7)||0, u30=Number(j.uniques30)||0, b7=Number(j.bookings7)||0, b30=Number(j.bookings30)||0;
     var conv=v7>0?(Math.round((b7/v7)*1000)/10):0;
     function stat(lbl,val,sub){ return '<div style="flex:1 1 96px;text-align:center;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)"><div style="font-size:22px;font-weight:800;color:var(--brand)">'+esc(String(val))+'</div><div class="desc" style="margin:2px 0 0">'+esc(lbl)+'</div>'+(sub?('<div class="desc" style="margin:0;font-size:11px">'+esc(sub)+'</div>'):'')+'</div>'; }
+    // 30-day daily-visits sparkline (real series)
+    var series=Array.isArray(j.series)?j.series:[], spark='';
+    if(series.length){ var mx=1; series.forEach(function(p){ if((p.views||0)>mx)mx=p.views; }); var W=280,H=44,n=series.length,bw=W/n;
+      var bars=series.map(function(p,i){ var h=Math.max(1,Math.round((p.views||0)/mx*(H-4))); return '<rect x="'+(i*bw).toFixed(1)+'" y="'+(H-h)+'" width="'+Math.max(1,bw-1.2).toFixed(1)+'" height="'+h+'" rx="1" fill="var(--brand)" opacity="'+((p.views||0)?'0.85':'0.2')+'"><title>'+esc(p.day)+': '+(p.views||0)+'</title></rect>'; }).join('');
+      spark='<div style="margin-top:10px"><div class="desc" style="margin:0 0 4px">Daily visits (last 30 days)</div><svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" preserveAspectRatio="none" style="display:block">'+bars+'</svg></div>'; }
+    function barList(title, rows, labelFn){ if(!rows||!rows.length) return ''; var tot=0; rows.forEach(function(r){ tot+=(r.count||0); }); if(tot<=0)tot=1;
+      var items=rows.map(function(r){ var pct=Math.round((r.count||0)/tot*100); return '<div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:12.5px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(labelFn(r))+'</span><span style="color:var(--muted);flex:none">'+(r.count||0)+'</span></div><div style="height:5px;border-radius:3px;background:var(--line);margin-top:2px"><div style="height:5px;border-radius:3px;background:var(--brand);width:'+pct+'%"></div></div></div>'; }).join('');
+      return '<div style="margin-top:12px"><div class="desc" style="margin:0 0 2px;font-weight:600">'+esc(title)+'</div>'+items+'</div>'; }
+    function _sl(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,63); }
+    var nameBySlug={}; (DATA.assets||[]).forEach(function(a){ if(a&&a.name) nameBySlug[_sl(a.name)]=a.name; });
+    var _rn=null; try{ _rn=new Intl.DisplayNames(['en'],{type:'region'}); }catch(e){}
+    function cName(code){ try{ return (_rn&&_rn.of(code))||code; }catch(e){ return code; } }
+    var dev=j.devices||{}; var devRows=[['mobile','Mobile'],['desktop','Desktop'],['tablet','Tablet']].map(function(d){ return {count:Number(dev[d[0]])||0, name:d[1]}; }).filter(function(x){ return x.count>0; });
     el.innerHTML='<div style="display:flex;gap:8px;flex-wrap:wrap">'
       +stat('Visits (7d)', v7.toLocaleString(), v30.toLocaleString()+' in 30d')
+      +stat('Unique visitors (7d)', u7.toLocaleString(), u30.toLocaleString()+' in 30d')
       +stat('Booking requests (7d)', b7.toLocaleString(), b30.toLocaleString()+' in 30d')
       +stat('Conversion (7d)', conv+'%', 'requests / visits')
-      +'</div><div class="desc" style="margin:8px 0 0">Real visitors to your published booking site (bots filtered). Counting begins when your site is live.</div>'; }
+      +'</div>'
+      +spark
+      +barList('Top referrers', (j.refs||[]), function(r){ return r.name; })
+      +barList('Top countries', (j.geo||[]), function(r){ return cName(r.code); })
+      +barList('Devices', devRows, function(r){ return r.name; })
+      +barList('Most-viewed '+String((S.fleet&&S.fleet.nouns)||'vehicles'), (j.assets||[]), function(r){ return nameBySlug[r.slug]||r.slug; })
+      +'<div class="desc" style="margin:10px 0 0">Real visitors to your published site (bots filtered), last 30 days. Counting begins when your site is live.</div>'; }
   function webLoadSiteStats(force){ var el=document.getElementById('webStatsBox'); if(!el) return;
     if(!ATLAS_BACKEND || !_apiCsrf){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Your site traffic appears once your Atlas backend is connected.</div>'; return; }
     if(!_bookingSitePublished()){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Publish your site to start counting visits.</div>'; return; }
