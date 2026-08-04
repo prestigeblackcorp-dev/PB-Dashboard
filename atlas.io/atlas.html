@@ -11770,6 +11770,30 @@ const Atlas = (function(){
   function openPortal(id){ try{ var _ep=((S.brand&&S.brand.externalPortal)||'').trim(); if(/^https?:\/\//i.test(_ep)){ window.open(_ep,'_blank','noopener'); return; } }catch(e){}   // link-out: if the operator set their own portal URL, open that instead of Atlas's built-in preview
     if(!id){ var b0=_bookings()[0]; id=b0&&b0.id; } if(!id){ toast('Create a booking first, then preview the portal'); return; } _portalBk=id; _portalView='home'; _renderPortal(); }
   function portalView(v){ _portalView=v; _renderPortal(); if(v==='sign') setTimeout(_initSigPad,40); }
+  // TWIN of the worker's _pWords (worker.js) -- the customer-facing wording for THIS rental business type. Kept byte-identical
+  // so the owner's portal preview says exactly what the served portal says to the real customer (parity test: chk_pwords_jsc).
+  var _PW={
+    cars:{hd:'Your rental',noun:'rental',back:'return',ph:'Pickup / condition photos',req:'e.g. 2 more days, or a child seat'},
+    property:{hd:'Your stay',noun:'stay',back:'checkout',ph:'Arrival photos',req:'e.g. 2 more nights, or a late checkout'},
+    units:{hd:'Your lease',noun:'lease',back:'move-out',ph:'Move-in photos',req:'e.g. an extra parking spot'},
+    salon:{hd:'Your suite',noun:'lease',back:'move-out',ph:'Move-in photos',req:'e.g. an extra week, or more storage'},
+    rv:{hd:'Your rental',noun:'rental',back:'return',ph:'Pickup / condition photos',req:'e.g. 2 more days, or a generator'},
+    boats:{hd:'Your charter',noun:'charter',back:'return',ph:'Pre-departure photos',req:'e.g. 2 more hours, or a captain'},
+    air:{hd:'Your charter',noun:'charter',back:'return',ph:'Preflight photos',req:'e.g. a later return, or extra seats'},
+    power:{hd:'Your rental',noun:'rental',back:'return',ph:'Pickup / condition photos',req:'e.g. 1 more day, or an extra helmet'},
+    construction:{hd:'Your rental',noun:'rental',back:'return',ph:'Delivery / condition photos',req:'e.g. 2 more days, or another attachment'},
+    equip:{hd:'Your rental',noun:'rental',back:'return',ph:'Pickup / condition photos',req:'e.g. 1 more day, or extra accessories'},
+    trailer:{hd:'Your rental',noun:'rental',back:'return',ph:'Pickup / condition photos',req:'e.g. 1 more day, or extra straps'},
+    events:{hd:'Your event',noun:'event',back:'pickup',ph:'Setup photos',req:'e.g. 20 more chairs, or a later pickup'},
+    party:{hd:'Your event',noun:'event',back:'pickup',ph:'Setup photos',req:'e.g. one more hour, or a second attraction'},
+    camera:{hd:'Your rental',noun:'rental',back:'return',ph:'Gear condition photos',req:'e.g. 1 more day, or an extra lens'},
+    medical:{hd:'Your rental',noun:'rental',back:'pickup',ph:'Delivery photos',req:'e.g. 1 more week, or extra supplies'},
+    av:{hd:'Your event',noun:'event',back:'pickup',ph:'Setup photos',req:'e.g. an extra speaker, or a later pickup'},
+    furniture:{hd:'Your event',noun:'event',back:'pickup',ph:'Setup photos',req:'e.g. 4 more chairs, or a later pickup'},
+    custom:{hd:'Your booking',noun:'booking',back:'return',ph:'Condition photos',req:'e.g. more time, or an add-on'}
+  };
+  function _pWords(b){ var a=b?_bkAssetObj(b):null; var id=(a&&a.type)||(S&&S.fleet&&S.fleet.id)||'custom'; return _PW[String(id).toLowerCase()]||_PW.custom; }
+  function _pHandover(W){ var k=(W&&W.back)||'return'; return k==='checkout'?'check-in':k==='pickup'?'delivery':k==='move-out'?'move-in':'pickup'; }   // what the customer's FIRST step is called, derived from what giving it back is called
   function _renderPortal(){ var b=_pBk(); if(!b){ closeModal(); return; } var p=_portal(b);
     var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" alt="business logo">'):esc(S.brand.initial);
     var head='<div class="portal"><div class="portal__top" style="background:'+S.brand.color+'"><div class="portal__logo">'+logo+'</div><div style="flex:1;min-width:0"><b>'+esc(S.brand.name)+'</b><small>Customer portal</small></div>'+_xBtn()+'</div>';
@@ -11808,7 +11832,8 @@ const Atlas = (function(){
       +(_giftApplied(b)?('<div class="portal__row"><span>Gift credit</span><b>&minus;'+money(_giftApplied(b))+'</b></div><div class="portal__row"><span>Net total</span><b>'+money(Math.max(0,total-Math.round(_giftApplied(b))))+'</b></div>'):'')
       +(hold?'<div class="portal__row"><span>Refundable hold</span><b>'+money(hold)+'</b></div>':'')+'</div>';
     var acts='';
-    if(sec.agreement) acts+=_pAct('Sign rental agreement', signed?('Signed '+_stamp(p.signedAt)):'Required before pickup', signed, 'Atlas.portalView(\'sign\')', signed?'View':'Sign');
+    var _W=_pWords(b);   // same wording the served portal shows this customer (villa = check-in, wedding tent = delivery)
+    if(sec.agreement) acts+=_pAct('Sign rental agreement', signed?('Signed '+_stamp(p.signedAt)):('Required before '+esc(_pHandover(_W))), signed, 'Atlas.portalView(\'sign\')', signed?'View':'Sign');
     if(sec.balance){ var pm=_portalMoney(b);
       if(pm.twoStep){   // owner set a partial deposit: reserve first, then the remaining balance -- paying the reserve no longer marks the whole booking paid
         acts+=_pAct('Pay deposit to reserve', pm.reservePaid?('Paid '+_stamp(p.reservePaidAt)):('Reserve '+money(pm.reserve)), pm.reservePaid, 'Atlas.portalPay(\'reserve\')', pm.reservePaid?'Paid':('Pay '+money(pm.reserve)));
