@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03h';
+const ATLAS_BUILD = '2026.08.03i';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -11757,7 +11757,21 @@ function _bookPageHtml(slug, color, seo, prof, reviews, seob) {
         + '</div>';
     }
   } catch (e) { _faqSec = ''; }
-  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + _mktStyle + ((_anyOn && seob) ? _servedNav(prof, seob, 'home') : '') + ((seo && seo.noscript) || '') + _hero + _fleet + _aboutSec + _reviewsSec + _faqSec + '<div id="app" class="card">Loading&hellip;</div>' + _contact + _footer + _atlasBadge;
+  var _homeSections = '';   // Increment 3 (flag-gated): optional section-based homepage. Empty unless the owner designated one -> body stays byte-identical.
+  try {
+    var _hpId = (_pcfg && _pcfg.homePageId) || (_pub && _pub.homePageId) || '';
+    if (_hpId) {
+      var _hpArr = (Array.isArray(_pcfg.pages) ? _pcfg.pages : (Array.isArray(_pub.pages) ? _pub.pages : []));
+      for (var _hi = 0; _hi < _hpArr.length; _hi++) {
+        var _hp = _hpArr[_hi];
+        if (_hp && _hp.id === _hpId && _hp.published !== false && Array.isArray(_hp.sections) && _hp.sections.length) {
+          _homeSections = _pgStyle() + _hp.sections.map(function (s) { return _renderSection(s, prof, color, seob); }).join('');
+          break;
+        }
+      }
+    }
+  } catch (e) { _homeSections = ''; }
+  var body = '<style>.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:8px 0}.acard{border:1.5px solid rgba(0,0,0,.12);border-radius:12px;overflow:hidden;cursor:pointer;background:#fff;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column}.acard:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(0,0,0,.1)}.acard.sel{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand) inset}.acard-ph{height:96px;width:100%;object-fit:cover;background:#eee;display:block}.acard-noph{display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;color:#bbb;background:#f3f3f3}.acard-b{padding:9px 11px;display:flex;flex-direction:column;gap:2px}.acard-nm{font-weight:700;font-size:14px}.acard-ty{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999}.acard-ds{font-size:12px;color:#666;line-height:1.35;max-height:50px;overflow:hidden}.acard-pr{font-weight:700;font-size:13px;color:var(--brand);margin-top:2px}.acard-rule{font-size:11px;color:#888}.avail{font-size:13px;margin:8px 0 2px;min-height:18px;font-weight:600}.avail-ok{color:#12813f}.avail-no{color:#c0392b}.avail-wait{color:#999;font-weight:400}</style>' + _mktStyle + (((_homeSections || _anyOn) && seob) ? _servedNav(prof, seob, 'home') : '') + ((seo && seo.noscript) || '') + (_homeSections || (_hero + _fleet + _aboutSec + _reviewsSec + _faqSec)) + '<div id="app" class="card">Loading&hellip;</div>' + _contact + _footer + _atlasBadge;
   var js = `
 var S=${JSON.stringify(slug)};var D=null;
 function el(i){return document.getElementById(i)}
