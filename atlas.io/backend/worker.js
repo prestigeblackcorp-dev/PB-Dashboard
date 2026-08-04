@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04r';
+const ATLAS_BUILD = '2026.08.04s';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1911,7 +1911,7 @@ async function isSuppressed(env, tenant, contact) {
   // match the normalized key, the legacy raw-lowercased key, AND a legacy E.164 key (+1XXXXXXXXXX) -- an opt-out stored
   // before the normalize fix (inbound Twilio STOP wrote E.164) is still honored without a data migration
   try { var _n = _normContact(contact), _e164 = /^[0-9]{10}$/.test(_n) ? ('+1' + _n) : _n;
-    var row = await env.DB.prepare('SELECT contact FROM suppressions WHERE tenant_id=? AND contact IN (?,?,?)').bind(tenant, _n, String(contact).toLowerCase(), _e164).first(); return !!row; } catch (e) { return false; }
+    var row = await env.DB.prepare('SELECT contact FROM suppressions WHERE tenant_id=? AND contact IN (?,?,?)').bind(tenant, _n, String(contact).toLowerCase(), _e164).first(); return !!row; } catch (e) { return true; }   // #402 fail-CLOSED: on ANY DB error, treat as SUPPRESSED and do NOT send. A prohibited text (TCPA $500-1500/msg) cannot be un-sent; a dropped legit message can be retried. Matches the _promoClaim house rule.
 }
 async function suppress(env, tenant, contact, kind, reason) {
   try { await env.DB.prepare('INSERT INTO suppressions (tenant_id,contact,kind,reason,at) VALUES (?,?,?,?,?) ON CONFLICT(tenant_id,contact) DO UPDATE SET kind=?,reason=?,at=?')
