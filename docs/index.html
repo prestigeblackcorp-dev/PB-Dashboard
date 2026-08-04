@@ -1370,7 +1370,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <button class="hbg-item" onclick="openContractTemplate('waiver');closeHamburger()">&#127949; Slingshot Waiver</button>
           <div class="hbg-divider"></div>
           <button class="hbg-item" id="hbg-btn-settings" onclick="openSettings();closeHamburger()">&#9881;&#65039; Settings</button>
-          <button class="hbg-item" id="hbg-btn-push" onclick="_ownerPushSubscribe(true).then(function(ok){ showToast(ok?'Push notifications enabled on this device':'Enable notifications for this site in your browser settings'); });closeHamburger()">&#128276; Enable Push (this device)</button>
+          <button class="hbg-item" id="hbg-btn-push" onclick="_ownerPushToggle()">&#128276; Enable Push (this device)</button>
           <button class="hbg-item" onclick="pbDataUsage();closeHamburger()">&#128202; PB Data Usage</button>
         </div>
       </div>
@@ -4310,6 +4310,49 @@ async function _ownerPushSubscribe(interactive){
     return true;
   }catch(e){ return false; }
 }
+// Keep owner push ALIVE on this device. A push subscription can be silently invalidated (browser update, iOS
+// PWA eviction, endpoint rotation) and then never re-established -> push "turns off" on its own. This
+// re-registers / restores it (no prompt) UNLESS the owner explicitly disabled push here. Called on load, on
+// return-to-tab, and on a timer; with the SW pushsubscriptionchange handler it stays on until manually turned off.
+function _ownerPushKeepAlive(){
+  try{
+    if(localStorage.getItem('pb_owner_push')==='0') return;                 // explicitly disabled on THIS device
+    if(!('Notification' in window) || Notification.permission!=='granted') return;
+    _ownerPushSubscribe(false);                                             // restores a lapsed subscription; never prompts
+  }catch(_){}
+}
+// Manual OFF: unregister on the worker + in the browser, and REMEMBER the choice so keep-alive won't turn it back on.
+async function _ownerPushDisable(){
+  try{ localStorage.setItem('pb_owner_push','0'); }catch(_){}
+  try{
+    var reg=await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    if(sub){
+      try{ await fetch(WORKER_URL+'/push/unsubscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role:'owner', token:DASHBOARD_SECRET, endpoint:sub.endpoint})}); }catch(_){}
+      try{ await sub.unsubscribe(); }catch(_){}
+    }
+  }catch(e){}
+  _ownerPushSyncBtn();
+  return true;
+}
+// Reflect the current state on the hamburger button (Enable vs Disable).
+function _ownerPushSyncBtn(){
+  try{
+    var b=document.getElementById('hbg-btn-push'); if(!b) return;
+    var on=(localStorage.getItem('pb_owner_push')!=='0') && ('Notification' in window) && Notification.permission==='granted';
+    b.innerHTML=(on?'&#128276; Disable Push (this device)':'&#128276; Enable Push (this device)');
+  }catch(_){}
+}
+// Hamburger tap: toggle push on/off for THIS device.
+function _ownerPushToggle(){
+  try{ closeHamburger(); }catch(_){}
+  var on=(localStorage.getItem('pb_owner_push')!=='0') && ('Notification' in window) && Notification.permission==='granted';
+  if(on){
+    _ownerPushDisable().then(function(){ try{ showToast('Push turned off on this device'); }catch(_){} });
+  } else {
+    _ownerPushSubscribe(true).then(function(ok){ try{ showToast(ok?'Push notifications enabled on this device':'Enable notifications for this site in your browser settings'); }catch(_){} _ownerPushSyncBtn(); });
+  }
+}
 // ===== Data-usage diagnostic (hamburger -> PB Data Usage). Wraps fetch, tallies per-endpoint traffic,
 // flags Firebase-backed endpoints, renders an on-screen panel. Opt-in: fetch is only wrapped while open;
 // Close restores it. Firebase free quota = 360 MB/DAY. =====
@@ -4368,8 +4411,8 @@ function pbDataUsage(){
   try{
     var _oaInit=function(){
       _loadOwnerAlerts(); setInterval(_loadOwnerAlerts, 90000);  // 90s (was 45s): owner alerts also arrive via web push; halves this baseline poll. Read is worker-capped to newest 50.
-      document.addEventListener('visibilitychange', function(){ if(!document.hidden) _loadOwnerAlerts(); });
-      try{ if(('Notification' in window) && Notification.permission==='granted') _ownerPushSubscribe(false); }catch(_){}
+      document.addEventListener('visibilitychange', function(){ if(!document.hidden){ _loadOwnerAlerts(); _ownerPushKeepAlive(); } });
+      try{ _ownerPushSyncBtn(); _ownerPushKeepAlive(); setInterval(_ownerPushKeepAlive, 4*3600*1000); }catch(_){}   // self-heal owner push: on load, on return-to-tab, and every 4h -> stays enabled until manually disabled
     };
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', _oaInit); else _oaInit();
   }catch(e){}
@@ -4821,7 +4864,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v293';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v294';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v295';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
