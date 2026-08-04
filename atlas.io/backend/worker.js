@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03j';
+const ATLAS_BUILD = '2026.08.04a';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -10500,7 +10500,12 @@ function _inkFor(hex) { try { var h = String(hex || '').replace('#', ''); if (h.
 function _pageDoc(title, brandColor, bodyHtml, scriptJs, headExtra) {
   var brand = /^#[0-9a-fA-F]{3,8}$/.test(brandColor || '') ? brandColor : '#1E6E4E';
   var brandInk = _inkFor(brand);
-  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title><style>'
+  // Default favicon: a brand-colored rounded square with the tenant's initial (no blank tab on any served page). A real
+  // logo, when set, is emitted LATER in <head> via _servedPageHead's headExtra and wins (browsers use the last icon).
+  var _favLtr = (String(title || 'A').replace(/[^A-Za-z0-9]/g, '').charAt(0) || 'A').toUpperCase();
+  var _favSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="' + brand + '"/><text x="16" y="22" font-family="Arial,Helvetica,sans-serif" font-size="19" font-weight="700" text-anchor="middle" fill="' + brandInk + '">' + _favLtr + '</text></svg>';
+  var _favTag = '<link rel="icon" href="data:image/svg+xml,' + encodeURIComponent(_favSvg) + '">';
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title>' + _favTag + '<style>'
     + ':root{--brand:' + brand + ';--brand-ink:' + brandInk + '}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#f6f7f9;color:#141414;line-height:1.5}'
     + '.wrap{max-width:620px;margin:0 auto;padding:20px 16px 60px}.hd{background:var(--brand);color:var(--brand-ink);padding:20px 18px;border-radius:14px;font-weight:800;font-size:20px;display:flex;align-items:center;gap:10px}'
     + '.card{background:#fff;border:1px solid #eaeaea;border-radius:14px;padding:18px;margin-top:14px}label{display:block;font-size:13px;font-weight:600;margin:12px 0 5px}'
@@ -11022,8 +11027,10 @@ function _servedPageHead(prof, cfg, color, o) {
   var desc = String(o.desc || '').replace(/\s+/g, ' ').trim().slice(0, 300);
   var canon = String(o.canon || '');
   var img = /^https:\/\//i.test(String(o.image || '')) ? String(o.image).slice(0, 600) : '';
+  var _flogo = /^https:\/\//i.test(String((prof && prof.brand && prof.brand.logo) || '')) ? String(prof.brand.logo).slice(0, 600) : '';
   var ldJson = JSON.stringify({ '@context': 'https://schema.org', '@graph': o.graph || [] }).replace(/</g, '\\u003c');
-  return '<meta name="description" content="' + esc(desc) + '">'
+  return (_flogo ? ('<link rel="icon" href="' + esc(_flogo) + '">') : '')
+    + '<meta name="description" content="' + esc(desc) + '">'
     + (canon ? ('<link rel="canonical" href="' + esc(canon) + '">') : '')
     + '<meta name="robots" content="' + (o.noindex ? 'noindex,follow' : 'index,follow') + '">'
     + (o.sitemapUrl ? ('<link rel="sitemap" type="application/xml" href="' + esc(o.sitemapUrl) + '">') : '')
@@ -11295,26 +11302,37 @@ function _pgSafeImg(u) {
   if (/["'()\\]/.test(u) || /\s/.test(u)) return '';
   return u.slice(0, 4000);
 }
+// Normalize a section's columns prop to '2'|'3'|'4' (default '3') -- EXACT twin of the client _pgCols so the served grid
+// matches the builder preview the owner saw. Used for features/fleet/gallery via the .pg-grid.cols<N> rules in _pgStyle.
+function _pgCols(v) { var c = String(v == null ? 3 : v).replace(/[^0-9]/g, '') || '3'; return (c === '2' || c === '3' || c === '4') ? c : '3'; }
 // One <style> block (added once in _customPageHtml head) for the .pg-sec/.pg-* responsive rules. Mobile stacks at <=640px;
 // grids are CSS grid auto-fit; hero/cta are full-width bands; tone-dark/tone-brand recolor the section. All rules are
 // hard-coded constants -> no tenant string is ever interpolated into CSS here.
-function _pgStyle() {
+function _pgStyle(brandColor) {
+  // Contrast-aware ink for the brand tone + CTA/hero bands: when the tenant's brand color is LIGHT, white text fails WCAG,
+  // so flip to dark ink (mirrors _inkFor, used already for custom bg + .hd). For dark/medium brands _bi resolves to '#fff'
+  // and every string below is BYTE-IDENTICAL to before -> no change for the overwhelmingly common dark-brand tenant.
+  var _bi = (brandColor && _inkFor(brandColor) === '#0a1a12') ? '#0a1a12' : '#fff';
+  var _bmut = (_bi === '#0a1a12') ? 'rgba(0,0,0,.62)' : 'rgba(255,255,255,.85)';
+  var _bcard = (_bi === '#0a1a12') ? 'rgba(0,0,0,.05)' : 'rgba(255,255,255,.10)';
+  var _bcbd = (_bi === '#0a1a12') ? 'rgba(0,0,0,.14)' : 'rgba(255,255,255,.25)';
   return '<style>'
     + '.pg-sec{margin:14px 0}.pg-sec h2{margin:0 0 8px}'
     + '.pg-hero-inner{border-radius:14px;padding:46px 22px;text-align:center}'
     + '.pg-hero-inner h2{margin:0 0 8px;font-size:28px;color:inherit}.pg-hero-inner p{margin:0 auto 14px;max-width:520px;font-size:15px;opacity:.95}'
     + '.pg-hero-inner .btn,.pg-cta-inner .btn{display:inline-block;width:auto;padding:12px 26px;background:#fff;color:var(--brand);margin-top:6px}'
-    + '.pg-cta-inner{border-radius:14px;padding:36px 22px;text-align:center;background:linear-gradient(135deg,var(--brand),var(--accent2,var(--brand)));color:#fff}'
-    + '.pg-cta-inner h2{margin:0 0 8px;color:#fff}.pg-cta-inner p{margin:0 auto 14px;max-width:520px;opacity:.95}'
+    + '.pg-cta-inner{border-radius:14px;padding:36px 22px;text-align:center;background:linear-gradient(135deg,var(--brand),var(--accent2,var(--brand)));color:' + _bi + '}'
+    + '.pg-cta-inner h2{margin:0 0 8px;color:' + _bi + '}.pg-cta-inner p{margin:0 auto 14px;max-width:520px;opacity:.95}'
     + '.pg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:10px}'
     + '.pg-gallery-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}'
+    + '.pg-grid.cols2{grid-template-columns:repeat(2,1fr)}.pg-grid.cols3{grid-template-columns:repeat(3,1fr)}.pg-grid.cols4{grid-template-columns:repeat(4,1fr)}'
     + '.pg-split{display:flex;gap:18px;align-items:center}.pg-split-r{flex-direction:row-reverse}'
     + '.pg-split-media{flex:1 1 0;min-width:0}.pg-split-text{flex:1 1 0;min-width:0}'
     + '.pg-stats-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px}.pg-stat{flex:1 1 120px;text-align:center}'
     + '.pg-faq-item{border-top:1px solid #eee}.pg-faq-item:first-child{border-top:0}'
     + '.tone-dark{background:#141414;color:#f6f7f9;border-radius:14px;padding:8px 16px}.tone-dark h2{color:#fff}.tone-dark .muted{color:#b9b9b9}.tone-dark .card{background:#1f1f1f;border-color:#333;color:#f6f7f9}'
-    + '.tone-brand{background:var(--brand);color:#fff;border-radius:14px;padding:8px 16px}.tone-brand h2{color:#fff}.tone-brand .muted{color:rgba(255,255,255,.85)}.tone-brand .card{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.25);color:#fff}'
-    + '@media(max-width:640px){.pg-split,.pg-split-r{flex-direction:column}.pg-hero-inner{padding:34px 16px}.pg-hero-inner h2{font-size:23px}}'
+    + '.tone-brand{background:var(--brand);color:' + _bi + ';border-radius:14px;padding:8px 16px}.tone-brand h2{color:' + _bi + '}.tone-brand .muted{color:' + _bmut + '}.tone-brand .card{background:' + _bcard + ';border-color:' + _bcbd + ';color:' + _bi + '}'
+    + '@media(max-width:640px){.pg-split,.pg-split-r{flex-direction:column}.pg-hero-inner{padding:34px 16px}.pg-hero-inner h2{font-size:23px}.pg-grid.cols3,.pg-grid.cols4{grid-template-columns:repeat(2,1fr)}}'
     + '</style>';
 }
 // Render ONE section to its served HTML, wrapped in <section class="pg-sec pg-<type> tone-<tone>">...</section>. A switch over
@@ -11333,9 +11351,12 @@ function _renderSection(s, prof, color, seob) {
         var hh = String(p.heading || '').trim(), hs = String(p.subheading || '').trim(), hbtn = String(p.btnLabel || '').trim();
         if (!hh && !hs && !hbtn) return '';
         var himg = _pgSafeImg(p.image);
+        // No-image hero paints the brand gradient; white text fails contrast on a LIGHT brand, so ink to _inkFor(brand).
+        // Dark/medium brands resolve to '#fff' -> byte-identical. Image heroes keep #fff (they carry a dark overlay).
+        var _hi = (_inkFor(color) === '#0a1a12') ? '#0a1a12' : '#fff';
         var bg = himg
           ? ("background-image:linear-gradient(rgba(0,0,0,.45),rgba(0,0,0,.45)),url('" + esc(himg) + "');background-size:cover;background-position:center;color:#fff")
-          : 'background:linear-gradient(135deg,var(--brand),var(--accent2,var(--brand)));color:#fff';
+          : 'background:linear-gradient(135deg,var(--brand),var(--accent2,var(--brand)));color:' + _hi;
         inner = '<div class="pg-hero-inner" style="' + bg + '">'
           + (hh ? ('<h2>' + esc(hh) + '</h2>') : '')
           + (hs ? ('<p>' + esc(hs) + '</p>') : '')
@@ -11357,7 +11378,8 @@ function _renderSection(s, prof, color, seob) {
         var ximg = String(p.image || ''), xHasImg = /^(https?:|data:)/i.test(ximg);
         if (!xh && !xb && !xHasImg) return '';
         var xside = String(p.side || 'left').toLowerCase() === 'right' ? 'right' : 'left';
-        var xMedia = xHasImg ? ('<div class="pg-split-media"><img src="' + esc(ximg) + '" alt="' + esc(xh || '') + '" width="560" height="360" loading="lazy" decoding="async" style="width:100%;height:auto;object-fit:cover;display:block;border-radius:12px;background:#eee"></div>') : '';
+        var xAlt = xh || (String((prof && prof.name) || '').trim() ? (String(prof.name).trim() + ' photo') : 'Photo');
+        var xMedia = xHasImg ? ('<div class="pg-split-media"><img src="' + esc(ximg) + '" alt="' + esc(xAlt) + '" width="560" height="360" loading="lazy" decoding="async" style="width:100%;height:auto;object-fit:cover;display:block;border-radius:12px;background:#eee"></div>') : '';
         var xText = '<div class="pg-split-text">'
           + (xh ? ('<h2>' + esc(xh) + '</h2>') : '')
           + (xb ? ('<div class="pg-rich" style="color:#444;font-size:15px;line-height:1.7;white-space:pre-wrap">' + esc(xb) + '</div>') : '')
@@ -11376,7 +11398,7 @@ function _renderSection(s, prof, color, seob) {
             + (t ? ('<div style="font-weight:700">' + esc(t) + '</div>') : '')
             + (x ? ('<div class="muted" style="margin-top:5px">' + esc(x) + '</div>') : '') + '</div>';
         }).join('');
-        inner = (fh ? ('<h2>' + esc(fh) + '</h2>') : '') + (fcards ? ('<div class="pg-grid">' + fcards + '</div>') : '');
+        inner = (fh ? ('<h2>' + esc(fh) + '</h2>') : '') + (fcards ? ('<div class="pg-grid cols' + _pgCols(p.columns) + '">' + fcards + '</div>') : '');
         break;
       }
       case 'fleet': {
@@ -11401,7 +11423,7 @@ function _renderSection(s, prof, color, seob) {
             + (showPrice && rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + money2(Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
             + '<a class="btn" href="' + esc(bookHref) + '">' + esc(lbtn) + '</a></div></div>';
         }).join('');
-        inner = (lh ? ('<h2>' + esc(lh) + '</h2>') : '') + '<div class="pg-grid">' + lcards + '</div>';
+        inner = (lh ? ('<h2>' + esc(lh) + '</h2>') : '') + '<div class="pg-grid cols' + _pgCols(p.columns) + '">' + lcards + '</div>';
         break;
       }
       case 'cta': {
@@ -11418,10 +11440,10 @@ function _renderSection(s, prof, color, seob) {
         var gh = String(p.heading || '').trim();
         var gimgs = (Array.isArray(p.images) ? p.images : []).filter(function (u) { return /^(https?:|data:)/i.test(String(u || '')); }).slice(0, 12);
         if (!gh && !gimgs.length) return '';
-        var gcells = gimgs.map(function (u) {
-          return '<img src="' + esc(String(u)) + '" alt="' + esc(gh || 'Gallery image') + '" width="320" height="220" loading="lazy" decoding="async" style="width:100%;height:180px;object-fit:cover;display:block;border-radius:10px;background:#eee">';
+        var gcells = gimgs.map(function (u, i) {
+          return '<img src="' + esc(String(u)) + '" alt="' + esc((gh || 'Gallery image') + ' ' + (i + 1)) + '" width="320" height="220" loading="lazy" decoding="async" style="width:100%;height:180px;object-fit:cover;display:block;border-radius:10px;background:#eee">';
         }).join('');
-        inner = (gh ? ('<h2>' + esc(gh) + '</h2>') : '') + (gcells ? ('<div class="pg-grid pg-gallery-grid">' + gcells + '</div>') : '');
+        inner = (gh ? ('<h2>' + esc(gh) + '</h2>') : '') + (gcells ? ('<div class="pg-grid pg-gallery-grid cols' + _pgCols(p.columns) + '">' + gcells + '</div>') : '');
         break;
       }
       case 'faq': {
@@ -11473,7 +11495,10 @@ function _renderSection(s, prof, color, seob) {
     if (p.align === 'left' || p.align === 'center' || p.align === 'right') _xs += 'text-align:' + p.align + ';';
     if (p.pad === 'compact') _xs += 'padding-top:14px;padding-bottom:14px;'; else if (p.pad === 'spacious') _xs += 'padding-top:56px;padding-bottom:56px;';
     var _bg = String(p.bg || '').trim(); if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(_bg)) _xs += 'background:' + _bg + ';color:' + _inkFor(_bg) + ';';
-    return '<section class="pg-sec pg-' + type + ' tone-' + tone + '"' + (_xs ? (' style="' + _xs + '"') : '') + '>' + inner + '</section>';
+    // Fleet sections carry id="fleet" so the top-nav "Fleet" anchor (home + '#fleet') lands correctly on a section-based
+    // homepage (where the marketing _fleet block -- the other id="fleet" -- is not rendered). Additive attribute only.
+    var _secId = (type === 'fleet') ? ' id="fleet"' : '';
+    return '<section' + _secId + ' class="pg-sec pg-' + type + ' tone-' + tone + '"' + (_xs ? (' style="' + _xs + '"') : '') + '>' + inner + '</section>';
   } catch (e) { return ''; }
 }
 // A full, standalone, crawlable custom page (/p/<slug>): shared top-nav (active 'p:'+slug), the page title printed ONCE as the
@@ -11519,7 +11544,7 @@ function _customPageHtml(prof, color, seob, page) {
   });
   if (faqQ.length) graph.push({ '@type': 'FAQPage', mainEntity: faqQ });
   var title = (biz ? (biz + ' — ') : '') + titleTxt;
-  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph, noindex: rendered.length === 0 }) + _pgStyle();
+  var head = _servedPageHead(prof, cfg, color, { title: title, desc: desc, canon: canon, sitemapUrl: seob.sitemapUrl, image: logo, graph: graph, noindex: rendered.length === 0 }) + _pgStyle(color);
   return _pageDoc(title, color, body, '', head);
 }
 // Custom-page descriptors: one /p/<slug> per published page, deduped on slug. [] when none. Mirrors _seoBlogPages; used by
@@ -11771,7 +11796,10 @@ function _bookPageHtml(slug, color, seo, prof, reviews, seob) {
       for (var _hi = 0; _hi < _hpArr.length; _hi++) {
         var _hp = _hpArr[_hi];
         if (_hp && _hp.id === _hpId && _hp.published !== false && Array.isArray(_hp.sections) && _hp.sections.length) {
-          _homeSections = _pgStyle() + _hp.sections.map(function (s) { return _renderSection(s, prof, color, seob); }).join('');
+          // A section-based homepage renders sections (each an <h2>) INSTEAD of the marketing _hero (the page's usual <h1>).
+          // Emit a visually-hidden <h1> (business name) so the home page keeps exactly one top-level heading (SEO + a11y).
+          var _srH1 = '<h1 style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0">' + esc(String((prof && prof.name) || '').trim() || 'Home') + '</h1>';
+          _homeSections = _pgStyle(color) + _srH1 + _hp.sections.map(function (s) { return _renderSection(s, prof, color, seob); }).join('');
           break;
         }
       }
