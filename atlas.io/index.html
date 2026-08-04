@@ -138,6 +138,7 @@ img{max-width:100%}
 .bk-viewtog{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:2px;flex:none}
 .bk-viewtog button{border:0;background:none;font-family:inherit;font-size:12.5px;font-weight:650;color:var(--muted);padding:5px 13px;border-radius:7px;cursor:pointer}
 .bk-viewtog button.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.07)}
+.web-devbar .btn.on{background:var(--brand-050);border-color:var(--brand);color:var(--brand);font-weight:650}
 .bkcal__hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
 .bkcal__hd b{font-size:16px;color:var(--ink)}
 .bkcal__nav{display:flex;gap:6px}
@@ -10606,6 +10607,11 @@ const Atlas = (function(){
   function _webInlineKey(ev,el){ if(ev&&ev.key==='Enter'&&el&&el.getAttribute('data-ie')!=='about'){ ev.preventDefault(); el.blur(); } }
   function toggleWebSection(sec,on){ var w=_web(); w[sec]=!!on; save(); _webRefreshPreview(); }
   function _webRefreshPreview(){ var p=document.getElementById('webPrev'); if(p) p.innerHTML=_webPreviewHtml(); }
+  // Device preview toggle (desktop|tablet|mobile): lightweight -- resizes #webPrev in place so it never re-renders the builder (keeps scroll/focus). ADDITIVE, session-only, never persisted.
+  function webSetDevice(d){ _webDevice=(d==='mobile'||d==='tablet')?d:'desktop'; var p=document.getElementById('webPrev'); if(p){ var mw=(_webDevice==='mobile')?'390px':(_webDevice==='tablet')?'768px':'100%'; p.style.maxWidth=mw; p.style.margin=(_webDevice==='desktop')?'0':'0 auto'; p.style.transition='max-width .18s ease'; } var ids=['desktop','tablet','mobile']; for(var i=0;i<ids.length;i++){ var b=document.getElementById('webDev-'+ids[i]); if(b){ if(ids[i]===_webDevice) b.classList.add('on'); else b.classList.remove('on'); } } }
+  // One-step undo for the AI design/edit features: snapshot the design BEFORE an AI mutation into a MODULE var (never persisted -> no sync bloat).
+  function _webSnapshot(){ try{ var w=_web(); _webUndo=JSON.parse(JSON.stringify({headline:w.headline||'',tagline:w.tagline||'',about:w.about||'',homePageId:w.homePageId||'',pages:Array.isArray(w.pages)?w.pages:[],faq:Array.isArray(w.faq)?w.faq:[],posts:Array.isArray(w.posts)?w.posts:[],showFleet:w.showFleet,showAbout:w.showAbout,showContact:w.showContact,font:w.font||'',template:w.template||'',accent2:w.accent2||''})); }catch(e){ _webUndo=null; } }
+  function webUndoDesign(){ if(!_guard('webEdit'))return; if(!_webUndo){ toast('Nothing to undo yet.'); return; } if(!confirm('Undo the last Atlas change to your site? This restores your pages and homepage settings to just before it.'))return; var w=_web(); var s=_webUndo; w.headline=s.headline; w.tagline=s.tagline; w.about=s.about; w.homePageId=s.homePageId; w.pages=s.pages; w.faq=s.faq; w.posts=s.posts; w.showFleet=s.showFleet; w.showAbout=s.showAbout; w.showContact=s.showContact; w.font=s.font; w.template=s.template; w.accent2=s.accent2; _webUndo=null; _webEditPageId=''; save(); try{ renderWebsite(); }catch(e){} toast('Reverted the last change.'); }
   // ---- Website builder: font / template / accent / FAQ. All persist to _web() and publish via _publicSiteConfig()
   //      (the worker renders font/template/faq/accent2 on the served page). Reuses save/_web/setBrandColor/_aioHex. ----
   var WEB_FONTS=[['system','System (clean sans-serif)'],['serif','Serif (editorial)'],['modern','Modern (geometric sans)'],['elegant','Elegant (luxury serif)']];
@@ -10687,6 +10693,8 @@ const Atlas = (function(){
      _sitePubSig). A single SECTION_REG drives BOTH the editor fields and the preview renderer so preview ~= served.
      ADDITIVE + money-safe: nothing here touches calcQuote/pricing/booking/Stripe. ==== */
   var _webEditPageId='';   // which page is open in the editor (drives the section stack + the live preview target)
+  var _webDevice='desktop';   // live-preview device width (desktop|tablet|mobile) -- session-only, never persisted to S.website
+  var _webUndo=null;          // snapshot of the site design taken BEFORE an AI change (session-only one-step undo; never persisted -> no sync bloat)
   var _PG_TYPE_ORDER=['hero','text','split','features','fleet','cta','gallery','faq','stats','contact'];
   // SECTION REGISTRY -- the single source of truth. Each type: label, a short ASCII icon badge, def() -> default props
   // (pre-filled from the owner's real brand/assets so every add looks finished), and the editable fields the editor
@@ -10831,6 +10839,7 @@ const Atlas = (function(){
   // prior AI page if one exists), then open it in the editor. Button loading-state is always restored, even on a throw.
   function aiDesignSite(){
     if(!_guard('webEdit','Designing your site'))return;
+    _webSnapshot();   // one-step undo: capture the design just before the AI changes it (owner authorized above)
     var btn=document.getElementById('aiDesignSiteBtn'), _lbl=btn?btn.innerHTML:'';
     var restore=function(){ try{ if(btn){ btn.disabled=false; btn.innerHTML=_lbl; } }catch(e){} };
     var fail=function(){ restore(); toast('Could not design the site right now. Please try again.'); };
@@ -10847,7 +10856,7 @@ const Atlas = (function(){
         var id;
         if(existing){ existing.sections=secs; id=existing.id; save(); }
         else { id=webPageAdd((S.brand&&S.brand.name)||'Home', null, secs); if(!id){ fail(); return; } var pg=_webPage(id); if(pg){ pg._aiDesigned=true; pg.nav=true; } save(); }
-        _webEditPageId=id; _webRefreshPages(); _webRefreshPreview();   // open it in the editor (mirrors webPageStarterLanding)
+        _webEditPageId=id; try{ renderWebsite(); }catch(e){ _webRefreshPages(); _webRefreshPreview(); }   // full builder render so the editor opens AND the "Undo last change" button appears (mirrors webPageStarterLanding + surfaces undo)
         restore(); toast('Your site is designed -- edit any section or publish.');
       }catch(e){ fail(); } });
     }catch(e){ restore(); }
@@ -10949,6 +10958,7 @@ const Atlas = (function(){
   // then apply them deterministically via _aiApplyOps. Button loading-state is always restored, even on a throw.
   function aiEditPage(){
     if(!_guard('webEdit','Editing your site'))return;
+    _webSnapshot();   // one-step undo: capture the design just before the AI changes it (owner authorized above)
     if(!_webEditPageId){ toast('Open a page first, then ask Atlas to edit it.'); return; }
     var pg=_webPage(_webEditPageId); if(!pg){ toast('Open a page first.'); return; }
     var instr=(val('aiEditInstr')||'').trim(); if(instr.length<3){ toast('Tell Atlas what to change (e.g. "make the hero punchier").'); return; }
@@ -10963,7 +10973,7 @@ const Atlas = (function(){
       _aiEditPageGen(instr, snapshot, function(res){ try{
         if(!res || !res.ops || !res.ops.length){ restore(); toast('Atlas could not act on that. Try rephrasing.'); return; }
         var n=_aiApplyOps(_webEditPageId, res.ops); restore();
-        if(n>0){ var inp=document.getElementById('aiEditInstr'); if(inp) inp.value=''; toast(res.summary || ('Updated '+n+' section'+(n===1?'':'s')+'.')); }
+        if(n>0){ var inp=document.getElementById('aiEditInstr'); if(inp) inp.value=''; toast(res.summary || ('Updated '+n+' section'+(n===1?'':'s')+'.')); try{ renderWebsite(); }catch(e){} }   // full render so the "Undo last change" button surfaces after an AI edit
         else { toast('No changes were applied.'); }
       }catch(e){ restore(); toast('Something went wrong applying that.'); } });
     }catch(e){ restore(); }
@@ -11140,6 +11150,7 @@ const Atlas = (function(){
       +'<div class="set-block"><h3>Blog / Content</h3><div class="desc">Publish posts, news and guides &mdash; each becomes a page on your site, great for SEO and returning customers. Atlas.io can also draft one from chat.</div>'+_webPostsHtml()+'</div>'
       +'<div class="set-block"><h3>Pages</h3><div class="desc">Build freeform pages from sections &mdash; a landing page, about, services, anything. Reorder with the arrows; each gets its own <b>/p/</b> link. Atlas.io can also make one from chat.</div>'
         +'<button class="btn btn--primary btn--full" id="aiDesignSiteBtn" onclick="Atlas.aiDesignSite()">Design my site with Atlas</button>'
+        +(_webUndo?'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:6px" onclick="Atlas.webUndoDesign()">&#8630; Undo last change</button>':'')
         +'<div class="bk-lenhint" style="margin:8px 0 12px">Atlas composes a full, on-brand multi-section page from your real fleet and details -- then you edit anything.</div>'
         +_webPagesHtml()+'</div>'
       +'<div class="set-block"><h3>Sections</h3><div class="desc">Show or hide parts of your site.</div>'
@@ -11160,7 +11171,8 @@ const Atlas = (function(){
       +'<div class="set-block"><h3>Connections &amp; API keys</h3><div class="desc">Save your integration keys here &mdash; stored securely on your account, never shared. Add, edit or remove them anytime.</div>'+_webKeysHtml()+'</div>'
       +'</div>';
     var prev='<div class="web-prev"><div class="browser"><div class="browser__bar"><div class="browser__dots"><i></i><i></i><i></i></div><div class="browser__url">'+esc(_siteUrl())+'</div></div>'
-      +'<div class="browser__view" id="webPrev">'+_webPreviewHtml()+'</div></div>'
+      +'<div class="web-devbar" style="display:flex;gap:6px;justify-content:center;padding:6px 0 10px">'+[['desktop','Desktop'],['tablet','Tablet'],['mobile','Mobile']].map(function(d){ return '<button class="btn btn--ghost btn--sm'+((_webDevice===d[0])?' on':'')+'" id="webDev-'+d[0]+'" onclick="Atlas.webSetDevice(\''+d[0]+'\')">'+d[1]+'</button>'; }).join('')+'</div>'
+      +'<div class="browser__view" id="webPrev" style="max-width:'+((_webDevice==='mobile')?'390px':(_webDevice==='tablet')?'768px':'100%')+';margin:'+((_webDevice==='desktop')?'0':'0 auto')+'">'+_webPreviewHtml()+'</div></div>'
       +'<div style="text-align:center;font-size:12px;color:var(--muted);margin-top:10px">'+(_bookingSitePublished()?'This is your live site &mdash; the <b>Book</b> buttons create real bookings in your dashboard.':'Live preview &mdash; <b>Publish</b> (left) to put it online. The <b>Book</b> buttons create real bookings in your dashboard.')+'</div></div>';
     return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:8px"><div><h2 style="font-size:22px">Website</h2><p style="color:var(--muted);font-size:14px">Your branded site '+(_bookingSitePublished()?'is live and taking bookings.':'&mdash; a preview until you publish.')+'</p></div>'
       +(_bookingSitePublished()?('<a class="btn btn--ghost" href="'+esc(_bookingLink())+'" target="_blank" rel="noopener">Visit site</a>'):('<button class="btn btn--ghost" onclick="Atlas.publishBookingSite()">Publish to go live</button>'))+'</div>'
@@ -12296,7 +12308,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
