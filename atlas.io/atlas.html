@@ -5648,8 +5648,9 @@ const Atlas = (function(){
     if(b.status!=='Cancelled'&&b.status!=='Completed'&&b.status!=='Voided'){
       var nx=_bkNextStep(b);   // #5: the one-click flow routes through Returned (asset stays reserved for close-out) -> Close out frees it
       if(nx) a+='<button class="btn btn--primary btn--sm" onclick="Atlas.setBookingStatus(\''+b.id+'\',\''+nx[0]+'\')">'+nx[1]+'</button>';
-      if(b.status==='Confirmed') a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkCheckIn(\''+b.id+'\')" title="Guided pickup: capture the odometer + fuel baseline, then hand over"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M6 8l1.6 1.6L11 6M13.5 8A5.5 5.5 0 112.5 8a5.5 5.5 0 0111 0z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Check-in</button>';
-      else if(b.status==='On rent'||b.status==='Returned') a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkCloseOut(\''+b.id+'\')" title="Guided return: auto-total any overage, fuel + late fee and bill them"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M3 8.5l3.5 3.5L13 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> Close-out</button>';
+      var _F=_flowFor(b), _bk=String(_F.lt||'Late return').replace(/^Late\s+/i,'').toLowerCase();   // the guided steps speak THIS business's language (check in a guest, deliver a tent, release a machine)
+      if(b.status==='Confirmed') a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkCheckIn(\''+b.id+'\')" title="Guided hand-over: capture the baseline readings and the pre-'+esc(_bk)+' checklist"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M6 8l1.6 1.6L11 6M13.5 8A5.5 5.5 0 112.5 8a5.5 5.5 0 0111 0z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> '+esc(_F.gi)+'</button>';
+      else if(b.status==='On rent'||b.status==='Returned') a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkCloseOut(\''+b.id+'\')" title="Guided '+esc(_bk)+': auto-total anything billable and bill it"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M3 8.5l3.5 3.5L13 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg> '+(_bk==='return'?'Close out':cap(_bk))+'</button>';
       a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button>';
       a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkExtendFlow(\''+b.id+'\')" title="Add time to this rental and bill the extra '+esc(_perUnit())+'"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M8 4.2V8l2.6 1.5M14 8A6 6 0 112 8a6 6 0 0112 0z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Extend</button>';
       a+='<button class="btn btn--sm btn--danger" onclick="Atlas.bkCancelFlow(\''+b.id+'\')">Cancel</button>';
@@ -6149,67 +6150,117 @@ const Atlas = (function(){
   //      "replace prior UNPAID same-kind charge" dedup -- so accounting is byte-identical to billing them by hand. Money-safe:
   //      every amount is previewed and the owner ticks what to bill; nothing is auto-marked paid. Purely ADDITIVE -- the quick
   //      command-bar status flip is untouched; this is an optional guided path. ----
-  function bkCheckIn(id){ if(!_guard('bookEdit','Starting rentals'))return; var b=_getBooking(id); if(!b)return; var a=_bkAssetObj(b);
-    var unit=(a&&a.usageUnit)||_svcUnitWord()||'miles', odo=(b.checkIn&&b.checkIn.odoOut!=null)?b.checkIn.odoOut:((a&&+a.odometer>0)?+a.odometer:'');
+  // Per-BUSINESS-TYPE flow map: what "hand it over" and "take it back" actually MEAN for this tenant. A beachfront villa has
+  // no odometer, a bounce house has no fuel tank, a camera kit is counted piece by piece, a yacht runs on engine hours. Keys:
+  //   u = usage reading ('odo' odometer | 'hrs' engine/run hours | '' none)   f = burns fuel/charge
+  //   hi/ho = modal titles   gi = the hand-over button   lt = late-fee wording   ci/co = the checklist worth ticking
+  // Checklists record FACTS on the booking (time-stamped evidence, nothing blocked). MONEY is unchanged everywhere: still
+  // exactly overage + fuel + late through b.charges, and a section simply does not render when it is meaningless here.
+  var _FLOW={
+    cars:{u:'odo',f:1,hi:'Start rental \u2014 pickup capture',ho:'Close out \u2014 return capture',gi:'Hand over',lt:'Late return',ci:['Keys / fob handed over','Registration + insurance inside'],co:['Keys returned','Personal items removed']},
+    property:{u:'',f:0,hi:'Check in \u2014 guest arrival',ho:'Check out \u2014 departure',gi:'Check in',lt:'Late checkout',ci:['Access code / keys issued','Cleaned and ready','House rules shared'],co:['Keys / access returned','Walkthrough done','Ready for turnover clean']},
+    units:{u:'',f:0,hi:'Move in',ho:'Move out',gi:'Hand over the unit',lt:'Late move-out',ci:['Keys issued','Move-in condition documented','Utilities confirmed'],co:['Keys returned','Move-out walkthrough done','Unit cleared out']},
+    salon:{u:'',f:0,hi:'Start lease \u2014 suite hand-over',ho:'End of term \u2014 suite returned',gi:'Hand over the suite',lt:'Late vacate',ci:['Access issued','Suite cleaned and stocked'],co:['Access returned','Suite cleared and cleaned']},
+    rv:{u:'odo',f:1,hi:'Start rental \u2014 departure check',ho:'Close out \u2014 return check',gi:'Hand over',lt:'Late return',ci:['Keys handed over','Systems walkthrough (water, propane, power)','Registration + insurance aboard'],co:['Keys returned','Tanks emptied','Personal items removed']},
+    boats:{u:'hrs',f:1,hi:'Departure \u2014 pre-charter check',ho:'Return to slip \u2014 post-charter check',gi:'Send them off',lt:'Late return',ci:['Safety briefing done','Life jackets aboard','Keys handed over'],co:['Back in the slip','Safety gear accounted for','Hull + prop checked']},
+    air:{u:'hrs',f:1,hi:'Release \u2014 preflight',ho:'Return \u2014 postflight',gi:'Release the aircraft',lt:'Late return',ci:['Preflight briefing done','Documents aboard','Keys handed over'],co:['Secured on the ramp','Postflight walkaround done','Squawks logged']},
+    power:{u:'hrs',f:1,hi:'Start rental \u2014 hand-off',ho:'Close out \u2014 return check',gi:'Hand it over',lt:'Late return',ci:['Safety briefing done','Helmets / gear issued','Keys handed over'],co:['Keys returned','Gear returned','Checked for damage']},
+    construction:{u:'hrs',f:1,hi:'Release to the jobsite',ho:'Return from the jobsite',gi:'Release it',lt:'Late return',ci:['Operator walkthrough done','Attachments loaded','Delivered to site'],co:['Attachments returned','Cleaned of debris','Fluids checked']},
+    equip:{u:'hrs',f:1,hi:'Hand-off',ho:'Return check',gi:'Hand it over',lt:'Late return',ci:['Operating instructions given','Accessories included','Tested working'],co:['Accessories returned','Cleaned','Tested working']},
+    trailer:{u:'odo',f:0,hi:'Hitch up \u2014 hand-off',ho:'Return check',gi:'Hitch up and release',lt:'Late return',ci:['Lights + brakes checked','Straps / ramps included','Registration aboard'],co:['Straps / ramps returned','Lights + tires checked','Swept out']},
+    events:{u:'',f:0,hi:'Delivery + setup',ho:'Pickup + teardown',gi:'Mark delivered',lt:'Late pickup',ci:['Delivered on site','Setup complete','Client walkthrough done'],co:['Everything picked up','Item count matches','Checked for damage']},
+    party:{u:'',f:0,hi:'Delivery + setup',ho:'Pickup + teardown',gi:'Mark delivered',lt:'Late pickup',ci:['Delivered and set up','Safety rules given','Power / blower connected'],co:['Picked up','Cleaned and dried','Checked for damage']},
+    camera:{u:'',f:0,hi:'Kit check-out',ho:'Kit check-in',gi:'Check the kit out',lt:'Late return',ci:['Checked out piece by piece','Batteries + media included','Glass inspected'],co:['All pieces returned','Batteries + media returned','Glass inspected']},
+    medical:{u:'hrs',f:0,hi:'Delivery + setup',ho:'Pickup',gi:'Mark delivered',lt:'Late pickup',ci:['Delivered and set up','Use instructions given','Sanitized before delivery'],co:['Picked up','Sanitized after return','Working order confirmed']},
+    av:{u:'hrs',f:0,hi:'Delivery + setup',ho:'Pickup + teardown',gi:'Mark delivered',lt:'Late pickup',ci:['Delivered on site','Setup + sound check done','Cables + stands included'],co:['Everything picked up','Item count matches','Cables + stands returned']},
+    furniture:{u:'',f:0,hi:'Delivery + setup',ho:'Pickup + teardown',gi:'Mark delivered',lt:'Late pickup',ci:['Delivered on site','Placement complete','Item count confirmed'],co:['Everything picked up','Item count matches','Checked for damage']},
+    custom:{u:'',f:0,hi:'Start \u2014 hand-off',ho:'Close out \u2014 return',gi:'Hand it over',lt:'Late return',ci:['Handed over to the customer','Condition documented'],co:['Returned by the customer','Condition documented']}
+  };
+  // Resolve from the BOOKING'S OWN asset first (a.type is set on multi-type fleets), then the tenant's type -- so a company
+  // renting both villas and jet skis gets the right wizard on each booking, not one blanket guess.
+  function _flowFor(b){ var a=_bkAssetObj(b); var id=(a&&a.type)||(S&&S.fleet&&S.fleet.id)||'custom'; return _FLOW[id]||_FLOW.custom; }
+  function _flowRead(F){ return F.u==='odo'?'Odometer':F.u==='hrs'?'Engine hours':'Reading'; }
+  function _flowUnit(F){ return F.u==='odo'?'miles':F.u==='hrs'?'hours':(_svcUnitWord()||'units'); }
+  function _flowChecks(list,pfx){ return (list||[]).map(function(t,i){ return '<label style="display:flex;align-items:center;gap:9px;padding:5px 0;font-size:13px;color:var(--ink)"><input type="checkbox" id="'+pfx+i+'">'+esc(t)+'</label>'; }).join(''); }
+  function _flowTicked(list,pfx){ var out=[]; (list||[]).forEach(function(t,i){ var e=document.getElementById(pfx+i); if(e&&e.checked) out.push(t); }); return out; }
+  function bkCheckIn(id){ if(!_guard('bookEdit','Starting rentals'))return; var b=_getBooking(id); if(!b)return; var a=_bkAssetObj(b), F=_flowFor(b);
+    var unit=(a&&a.usageUnit)||_flowUnit(F), showU=!!F.u||(a&&+a.usageAllow>0);
+    var odo=(b.checkIn&&b.checkIn.odoOut!=null)?b.checkIn.odoOut:((a&&+a.odometer>0)?+a.odometer:'');
     var fuelSel=(b.checkIn&&b.checkIn.fuelOut)||'Full';
     var opts=_FUEL_LEVELS.slice().reverse().map(function(l){ return '<option'+(l===fuelSel?' selected':'')+'>'+l+'</option>'; }).join('');
-    openModal('<div class="modal__head"><h3>Start rental &mdash; pickup capture</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="bk-lenhint" style="margin:0 0 12px">Record the '+esc(unit)+' and fuel as it goes out &mdash; this is the baseline that makes overage and fuel exact at return.</div>'
-      +'<div class="row2"><div class="field"><label>'+cap(unit)+' out</label><input class="input tnum" id="ciOdo" inputmode="numeric" value="'+esc(String(odo))+'" placeholder="e.g. 42150"></div>'
-      +'<div class="field"><label>Fuel out</label><select class="select" id="ciFuel">'+opts+'</select></div></div>'
-      +'<div class="field"><label>Pickup note <span style="color:var(--muted);font-weight:400">(optional)</span></label><input class="input" id="ciNote" placeholder="Condition, existing marks, agreed notes"></div>'
-      +'<button class="btn btn--ghost btn--sm btn--full" style="margin-bottom:10px" onclick="Atlas.bkAddCondition(\''+id+'\',\'pickup\')">+ Add pickup photos / video</button>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doCheckIn(\''+id+'\')">'+(b.status==='Confirmed'?('Hand over &mdash; start '+esc(_fterm('book'))):'Save pickup readings')+'</button></div>'); }
-  function doCheckIn(id){ var b=_getBooking(id); if(!b)return; var odo=val('ciOdo'), fuel=val('ciFuel')||'Full', note=(val('ciNote')||'').trim();
-    b.checkIn={ odoOut:(odo!==''&&odo!=null)?_r2(parseFloat(odo)||0):null, fuelOut:fuel, note:note.slice(0,300), at:Date.now() };
+    var vis=[], hid='';
+    if(showU) vis.push('<div class="field"><label>'+esc(_flowRead(F))+' out <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(unit)+')</span></label><input class="input tnum" id="ciOdo" inputmode="numeric" value="'+esc(String(odo))+'" placeholder="reading now"></div>');
+    else hid+='<input type="hidden" id="ciOdo" value="">';
+    if(F.f) vis.push('<div class="field"><label>Fuel out</label><select class="select" id="ciFuel">'+opts+'</select></div>');
+    else hid+='<input type="hidden" id="ciFuel" value="">';
+    var hint=(showU&&F.f)?('Record the '+_flowRead(F).toLowerCase()+' and fuel as it goes out \u2014 the baseline that makes overage and fuel exact at return.')
+      :showU?('Record the '+_flowRead(F).toLowerCase()+' as it goes out \u2014 the baseline that makes overage exact at return.')
+      :F.f?'Record the fuel level as it goes out.'
+      :('Confirm everything below before it goes out \u2014 it is time-stamped on this '+esc(_fterm('book'))+' as your record.');
+    openModal('<div class="modal__head"><h3>'+esc(F.hi)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">'+hint+'</div>'
+      +hid+(vis.length===2?('<div class="row2">'+vis.join('')+'</div>'):vis.join(''))
+      +((F.ci&&F.ci.length)?('<div class="field"><label>Before hand-over</label><div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:8px 12px">'+_flowChecks(F.ci,'ciChk')+'</div></div>'):'')
+      +'<div class="field"><label>Note <span style="color:var(--muted);font-weight:400">(optional)</span></label><input class="input" id="ciNote" placeholder="Condition, existing marks, anything agreed"></div>'
+      +'<button class="btn btn--ghost btn--sm btn--full" style="margin-bottom:10px" onclick="Atlas.bkAddCondition(\''+id+'\',\'pickup\')">+ Add photos / video</button>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doCheckIn(\''+id+'\')">'+(b.status==='Confirmed'?(esc(F.gi)+' &mdash; start '+esc(_fterm('book'))):'Save readings')+'</button></div>'); }
+  function doCheckIn(id){ var b=_getBooking(id); if(!b)return; var F=_flowFor(b), odo=val('ciOdo'), fuel=val('ciFuel')||'', note=(val('ciNote')||'').trim();
+    b.checkIn={ odoOut:(odo!==''&&odo!=null)?_r2(parseFloat(odo)||0):null, fuelOut:fuel||null, checks:_flowTicked(F.ci,'ciChk'), note:note.slice(0,300), at:Date.now() };
     _upsertBooking(b); _logEvent('booking','Pickup captured on '+b.id+(b.checkIn.odoOut!=null?(' ('+b.checkIn.odoOut+' out)'):''),{booking:b.id}); save(); closeModal();
-    if(b.status==='Confirmed'){ setBookingStatus(id,'On rent'); } else { openBooking(id); toast('Pickup readings saved'); } }   // reuse the guarded transition (persists + re-renders + toast)
+    if(b.status==='Confirmed'){ setBookingStatus(id,'On rent'); } else { openBooking(id); toast('Saved'); } }   // reuse the guarded transition (persists + re-renders + toast)
   // Shared pure compute for the close-out wizard: overage + fuel + late from the current fields. Reuses _fuelCharge/_lateFee verbatim.
   function _coCompute(){ var cfg=document.getElementById('coCfg'); if(!cfg) return null;
     var per=+cfg.getAttribute('data-per')||1, allow=+cfg.getAttribute('data-allow')||0, ov=+cfg.getAttribute('data-ov')||0, unit=cfg.getAttribute('data-unit')||'miles', sched=+cfg.getAttribute('data-sched')||0, daily=+cfg.getAttribute('data-daily')||0;
+    var hasFuel=cfg.getAttribute('data-fuel')==='1', lt=cfg.getAttribute('data-lt')||'Late return', verb=cfg.getAttribute('data-verb')||'driven';
     var out=parseFloat(val('coOdoOut'))||0, inn=parseFloat(val('coOdoIn'))||0, driven=Math.max(0,inn-out), inc=allow*per;
     var over=(allow>0&&ov>0&&inn>0&&inn>=out)?Math.max(0,driven-inc):0, ovAmt=_r2(over*ov);
-    var fo=val('coFuelOut')||'Full', fi=val('coFuelIn')||'Full', fc=_fuelCharge(fo,fi,_fuelRate());
+    var fo=val('coFuelOut')||'', fi=val('coFuelIn')||'', fc=hasFuel?_fuelCharge(fo,fi,_fuelRate()):{short:0,amount:0,ok:false};
     var ret=val('coRet'), rm=ret?new Date(ret).getTime():0, lf=_lateFee(sched,rm,_lateGrace(),_lateRate(),daily);
-    return { over:over, ovAmt:ovAmt, unit:unit, inc:inc, driven:driven, fuelShort:fc.short, fuelAmt:fc.amount, fo:fo, fi:fi, lateHrs:lf.hrsLate, lateAmt:lf.amount, lateNote:lf.note, sched:sched, ret:rm }; }
+    return { over:over, ovAmt:ovAmt, unit:unit, inc:inc, driven:driven, verb:verb, hasOv:(allow>0&&ov>0), hasFuel:hasFuel, lt:lt,
+      fuelShort:fc.short, fuelAmt:fc.amount, fo:fo, fi:fi, lateHrs:lf.hrsLate, lateAmt:lf.amount, lateNote:lf.note, sched:sched, ret:rm }; }
   function _coCalc(){ var c=_coCompute(), s=document.getElementById('coSummary'); if(!s||!c) return;
     var row=function(on,rid,label,amt){ return '<label style="display:flex;align-items:center;gap:9px;padding:6px 0;font-size:13px;color:var(--ink)"><input type="checkbox" id="'+rid+'"'+(amt>0?(on?' checked':''):' disabled')+'><span style="flex:1;min-width:0">'+label+'</span><b class="tnum">'+money(amt)+'</b></label>'; };
+    var tot=c.ovAmt+c.fuelAmt+c.lateAmt;   // a row only renders when it can EXIST for this business type -- a villa never sees a fuel line
     s.innerHTML='<div style="font-size:11.5px;font-weight:750;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px">Charges to bill</div>'
-      +row(true,'coApOv',(c.ovAmt>0?('<b>'+c.over+' '+esc(c.unit)+'</b> over ('+c.driven+' driven, '+c.inc+' incl.)'):('No '+esc(c.unit)+' overage')),c.ovAmt)
-      +row(true,'coApFuel',(c.fuelAmt>0?('Fuel <b>'+c.fuelShort+'/8</b> short (out '+esc(c.fo)+', in '+esc(c.fi)+')'):'Fuel returned full / fuller'),c.fuelAmt)
-      +row(true,'coApLate',(c.lateAmt>0?('Late return &middot; '+esc(c.lateNote)):esc(c.lateNote||'On time')),c.lateAmt)
-      +'<div style="border-top:1px solid var(--line-2);margin-top:6px;padding-top:7px;display:flex;justify-content:space-between;font-weight:800;color:var(--ink)"><span>Total to bill</span><b class="tnum">'+money(c.ovAmt+c.fuelAmt+c.lateAmt)+'</b></div>'
-      +'<div class="bk-lenhint" style="margin:6px 0 0">'+((c.ovAmt+c.fuelAmt+c.lateAmt)>0?'Billed to the customer portal to pay online &mdash; untick anything you are waiving.':'Nothing to bill &mdash; you can still record the return.')+'</div>'; }
-  function bkCloseOut(id){ if(!_guard('bookEdit','Closing out rentals'))return; var b=_getBooking(id); if(!b)return; var a=_bkAssetObj(b);
-    var per=_bkPeriods(b)+_bkExtPeriods(b), unit=(a&&a.usageUnit)||_svcUnitWord()||'miles';
+      +(c.hasOv?row(true,'coApOv',(c.ovAmt>0?('<b>'+c.over+' '+esc(c.unit)+'</b> over ('+c.driven+' '+esc(c.verb)+', '+c.inc+' incl.)'):('Within the included '+esc(c.unit))),c.ovAmt):'')
+      +(c.hasFuel?row(true,'coApFuel',(c.fuelAmt>0?('Fuel <b>'+c.fuelShort+'/8</b> short (out '+esc(c.fo)+', in '+esc(c.fi)+')'):'Fuel returned full / fuller'),c.fuelAmt):'')
+      +row(true,'coApLate',(c.lateAmt>0?(esc(c.lt)+' &middot; '+esc(c.lateNote)):esc(c.lateNote||'On time')),c.lateAmt)
+      +'<div style="border-top:1px solid var(--line-2);margin-top:6px;padding-top:7px;display:flex;justify-content:space-between;font-weight:800;color:var(--ink)"><span>Total to bill</span><b class="tnum">'+money(tot)+'</b></div>'
+      +'<div class="bk-lenhint" style="margin:6px 0 0">'+(tot>0?'Billed to the customer portal to pay online &mdash; untick anything you are waiving.':('Nothing to bill &mdash; you can still record the '+esc(String(c.lt||'Late return').replace(/^Late\s+/i,'').toLowerCase())+'.'))+'</div>'; }
+  function bkCloseOut(id){ if(!_guard('bookEdit','Closing out rentals'))return; var b=_getBooking(id); if(!b)return; var a=_bkAssetObj(b), F=_flowFor(b);
+    var per=_bkPeriods(b)+_bkExtPeriods(b), unit=(a&&a.usageUnit)||_flowUnit(F);
     var allow=(a&&+a.usageAllow>0)?+a.usageAllow:0, ovRate=(a&&+a.overageRate>0)?+a.overageRate:0;
     var odoOut=(b.checkIn&&b.checkIn.odoOut!=null)?b.checkIn.odoOut:((a&&+a.odometer>0)?+a.odometer:'');
     var fuelOut=(b.checkIn&&b.checkIn.fuelOut)||'Full';
     var sched=_bkSchedReturnMs(b), daily=(((S.money&&S.money.rateModel)||'day')==='day')?_bkPeriodRate(b):0;
     var pad=function(n){return (n<10?'0':'')+n;}, d=new Date(), defRet=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
     var fOpts=function(sel){ return _FUEL_LEVELS.slice().reverse().map(function(l){ return '<option'+(l===sel?' selected':'')+'>'+l+'</option>'; }).join(''); };
-    openModal('<div class="modal__head"><h3>Close out &mdash; return capture</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="bk-lenhint" style="margin:0 0 12px">Enter the return readings &mdash; Atlas totals any '+esc(unit)+' overage, fuel and late fee. Review, then bill the ones you want to the customer portal.</div>'
-      +'<input type="hidden" id="coCfg" data-per="'+per+'" data-allow="'+allow+'" data-ov="'+ovRate+'" data-unit="'+esc(unit)+'" data-sched="'+(sched||0)+'" data-daily="'+daily+'">'
-      +((allow>0&&ovRate>0)?('<div class="row2"><div class="field"><label>'+cap(unit)+' out</label><input class="input tnum" id="coOdoOut" inputmode="numeric" value="'+esc(String(odoOut))+'" oninput="Atlas._coCalc()"></div><div class="field"><label>'+cap(unit)+' in</label><input class="input tnum" id="coOdoIn" inputmode="numeric" placeholder="return reading" oninput="Atlas._coCalc()"></div></div><div class="bk-lenhint" style="margin:-4px 0 10px">Included: <b>'+(allow*per)+' '+esc(unit)+'</b> &middot; '+money(ovRate)+'/'+esc(unit.replace(/s$/,''))+' over.</div>'):'<input type="hidden" id="coOdoOut" value=""><input type="hidden" id="coOdoIn" value="">')
-      +'<div class="row2"><div class="field"><label>Fuel out</label><select class="select" id="coFuelOut" onchange="Atlas._coCalc()">'+fOpts(fuelOut)+'</select></div><div class="field"><label>Fuel in</label><select class="select" id="coFuelIn" onchange="Atlas._coCalc()">'+fOpts('Full')+'</select></div></div>'
-      +'<div class="field"><label>Actual return</label><input class="input" type="datetime-local" id="coRet" value="'+defRet+'" oninput="Atlas._coCalc()"></div>'
+    var showU=!!F.u||(allow>0&&ovRate>0), verb=F.u==='odo'?'driven':F.u==='hrs'?'run':'used';
+    var back=String(F.lt||'Late return').replace(/^Late\s+/i,'').toLowerCase();   // "return" | "checkout" | "pickup" | "move-out" | "vacate" -- one word, reused in the labels below
+    var bits=[]; if(allow>0&&ovRate>0) bits.push(esc(unit)+' overage'); if(F.f) bits.push('fuel'); bits.push(back==='return'?'late return':('late '+esc(back)));
+    openModal('<div class="modal__head"><h3>'+esc(F.ho)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px">Enter what came back &mdash; Atlas totals any '+bits.join(', ')+'. Review, then bill the ones you want to the customer portal.</div>'
+      +'<input type="hidden" id="coCfg" data-per="'+per+'" data-allow="'+allow+'" data-ov="'+ovRate+'" data-unit="'+esc(unit)+'" data-sched="'+(sched||0)+'" data-daily="'+daily+'" data-fuel="'+(F.f?1:0)+'" data-lt="'+esc(F.lt)+'" data-verb="'+esc(verb)+'">'
+      +(showU?('<div class="row2"><div class="field"><label>'+esc(_flowRead(F))+' out</label><input class="input tnum" id="coOdoOut" inputmode="numeric" value="'+esc(String(odoOut))+'" oninput="Atlas._coCalc()"></div><div class="field"><label>'+esc(_flowRead(F))+' in</label><input class="input tnum" id="coOdoIn" inputmode="numeric" placeholder="reading now" oninput="Atlas._coCalc()"></div></div>'+((allow>0&&ovRate>0)?('<div class="bk-lenhint" style="margin:-4px 0 10px">Included: <b>'+(allow*per)+' '+esc(unit)+'</b> &middot; '+money(ovRate)+'/'+esc(unit.replace(/s$/,''))+' over.</div>'):'')):'<input type="hidden" id="coOdoOut" value=""><input type="hidden" id="coOdoIn" value="">')
+      +(F.f?('<div class="row2"><div class="field"><label>Fuel out</label><select class="select" id="coFuelOut" onchange="Atlas._coCalc()">'+fOpts(fuelOut)+'</select></div><div class="field"><label>Fuel in</label><select class="select" id="coFuelIn" onchange="Atlas._coCalc()">'+fOpts('Full')+'</select></div></div>'):'<input type="hidden" id="coFuelOut" value=""><input type="hidden" id="coFuelIn" value="">')
+      +'<div class="field"><label>Actual '+esc(back)+'</label><input class="input" type="datetime-local" id="coRet" value="'+defRet+'" oninput="Atlas._coCalc()"></div>'
+      +((F.co&&F.co.length)?('<div class="field"><label>On '+esc(back)+'</label><div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:8px 12px">'+_flowChecks(F.co,'coChk')+'</div></div>'):'')
       +'<div id="coSummary" style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin:4px 0 12px"></div>'
-      +'<button class="btn btn--ghost btn--sm btn--full" style="margin-bottom:10px" onclick="Atlas.bkAddCondition(\''+id+'\',\'return\')">+ Add return photos / video</button>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doCloseOut(\''+id+'\')">Record return &amp; bill selected</button></div>');
+      +'<button class="btn btn--ghost btn--sm btn--full" style="margin-bottom:10px" onclick="Atlas.bkAddCondition(\''+id+'\',\'return\')">+ Add photos / video</button>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doCloseOut(\''+id+'\')">Record '+esc(back)+' &amp; bill selected</button></div>');
     setTimeout(function(){ _coCalc(); },20); }
-  function doCloseOut(id){ var b=_getBooking(id); if(!b)return; var c=_coCompute(); if(!c){ closeModal(); return; } var applied=[];
+  function doCloseOut(id){ var b=_getBooking(id); if(!b)return; var c=_coCompute(); if(!c){ closeModal(); return; } var F=_flowFor(b), applied=[];
     var ck=function(rid){ var e=document.getElementById(rid); return !!(e&&e.checked); };
     if(c.ovAmt>0 && ck('coApOv')){ b.charges=_charges(b).filter(function(x){ return !((x.kind==='meter'||/^Usage:/.test(String(x.label||'')))&&!x.paidAt); });
       b.charges.push({id:_chId(), kind:'meter', label:'Usage: '+c.over+' '+c.unit+' over', amount:c.ovAmt, at:Date.now(), paidAt:null}); applied.push('overage '+money(c.ovAmt)); }
     if(c.fuelAmt>0 && ck('coApFuel')){ if(_fuelRate()>0){ S.money.fuelRate=_fuelRate(); } b.charges=_charges(b).filter(function(x){ return !(x.kind==='fuel'&&!x.paidAt); });
       b.charges.push({id:_chId(), kind:'fuel', label:'Fuel: returned '+c.fi+' (out '+c.fo+'), '+c.fuelShort+'/8 short', amount:c.fuelAmt, at:Date.now(), paidAt:null}); applied.push('fuel '+money(c.fuelAmt)); }
     if(c.lateAmt>0 && ck('coApLate')){ b.charges=_charges(b).filter(function(x){ return !(x.kind==='late'&&!x.paidAt); });
-      b.charges.push({id:_chId(), kind:'late', label:'Late return: '+c.lateNote, amount:c.lateAmt, at:Date.now(), paidAt:null}); applied.push('late '+money(c.lateAmt)); }
-    b.closeOut={ odoIn:(val('coOdoIn')!==''?_r2(parseFloat(val('coOdoIn'))||0):null), fuelIn:val('coFuelIn')||null, returnedAt:c.ret||Date.now(), at:Date.now() };
+      b.charges.push({id:_chId(), kind:'late', label:(c.lt||'Late return')+': '+c.lateNote, amount:c.lateAmt, at:Date.now(), paidAt:null}); applied.push('late '+money(c.lateAmt)); }
+    b.closeOut={ odoIn:(val('coOdoIn')!==''?_r2(parseFloat(val('coOdoIn'))||0):null), fuelIn:val('coFuelIn')||null, checks:_flowTicked(F.co,'coChk'), returnedAt:c.ret||Date.now(), at:Date.now() };
     _upsertBooking(b); _logEvent('booking','Close-out on '+b.id+(applied.length?(' -- billed '+applied.join(', ')):' -- no charges'),{booking:b.id}); save(); closeModal();
     if(b.status==='On rent'){ setBookingStatus(id,'Returned'); } else { openBooking(id); }
-    toast(applied.length?('Return recorded &mdash; billed '+applied.join(', ')):'Return recorded'); }
+    toast(applied.length?('Recorded &mdash; billed '+applied.join(', ')):'Recorded'); }
   /* ---- Booking EXTENSION: extend the rental (move the return date + bill the extra time). Money-safe & synced. ----
      The base booking (b.periods / b.endTs / b.quote) stays the ORIGINAL rental, so a later Edit reprices only the base and can
      NEVER double-count an extension. Each extension is a record in b.extensions[] (schedule + who/when + the linked charge id);
