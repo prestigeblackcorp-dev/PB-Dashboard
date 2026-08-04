@@ -4864,8 +4864,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v300';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v301';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v301';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v302';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8211,6 +8211,28 @@ function extensionCharge(b){ return _extLive(b).reduce(function(s,e){return s+(N
 // balance are computed IDENTICALLY no matter the path. Revenue/broker for the extension live
 // ONLY on the entry (additionalCharge / brokerFee) \u2014 callers must NOT also add the fee to
 // b.revenue, or extensionCharge()/brokerFeeTotal() would double-count it.
+// Percent rate of a booking's promo, for carrying the SAME discount onto its extensions. Returns a number
+// like 15 for "15% off", or 0 for a flat-$ / unknown / no code (those do NOT auto-discount extensions).
+function _bookingPromoPct(b){
+  if(!b || !b.promoCode) return 0;
+  var code=String(b.promoCode).toUpperCase();
+  var c=(typeof promoCodes!=='undefined'?promoCodes:[]).find(function(x){ return x && !x._deleted && String(x.code||'').toUpperCase()===code; });
+  if(c && c.discType==='percent' && Number(c.discValue)>0) return Number(c.discValue);
+  var m=String(b.promoLabel||'').match(/(\d+(?:\.\d+)?)\s*%/);   // fallback: parse "15% off" from the stored label
+  if(m && Number(m[1])>0) return Number(m[1]);
+  return 0;
+}
+// Live preview under the extension "Additional charge" field: shows the net charge after the promo % so the
+// owner sees exactly what the customer will be billed BEFORE saving. Reads window._extPromoPct/_extPromoCode.
+function _extPromoPreview(){
+  var el=$d('extPromoPreview'); if(!el) return;
+  var pct=Number(window._extPromoPct)||0; if(pct<=0){ el.textContent=''; return; }
+  var codeU=esc(String(window._extPromoCode||'').toUpperCase());
+  var charge=Math.max(0, parseFloat(($d('extCharge')&&$d('extCharge').value)||'0')||0);
+  if(charge<=0){ el.innerHTML='Promo '+codeU+' ('+pct+'% off) applies to this extension.'; return; }
+  var disc=Math.round(charge*pct)/100, net=Math.round((charge-disc)*100)/100;
+  el.innerHTML='Promo '+codeU+' &#183; '+pct+'% off &#8594; customer billed <b>'+$$(net)+'</b> (&#8722;'+$$(disc)+')';
+}
 function recordExtension(b, opts){
   if(!b) return null;
   opts = opts || {};
@@ -12090,8 +12112,10 @@ function tripCard(b, showCountdown){
   // Promo badge -- deliberately set APART from the status-badge/chip cluster: its own gold ribbon pinned at
   // the very top of the card, above the vehicle, so a discounted booking reads at a glance. Shows the code
   // (+ the dollars taken off when known). Gated on the booking's own promo fields (promoCode/promoDiscount).
-  var _promoOn=(b.promoCode||Number(b.promoDiscount)>0||b.promoLabel);
-  var promoBadge=_promoOn?'<div style="margin:0 0 7px"><span style="display:inline-flex;align-items:center;gap:5px;background:linear-gradient(135deg,#f5d27a,#c9a962);color:#241a06;font-weight:800;font-size:10px;letter-spacing:.4px;padding:3px 9px;border-radius:999px;box-shadow:0 1px 4px rgba(201,169,98,.45)">\uD83C\uDFF7\uFE0F PROMO'+(b.promoCode?' \u00B7 '+esc(String(b.promoCode).toUpperCase()):'')+(Number(b.promoDiscount)>0?' \u00B7 -'+$$(b.promoDiscount):'')+'</span></div>':'';
+  var _extPromoSum=_extLive(b).reduce(function(s,e){return s+(Number(e&&e.promoDiscount)||0);},0);
+  var _promoDiscTot=(Number(b.promoDiscount)||0)+_extPromoSum;   // original discount + each extension's carried promo discount
+  var _promoOn=(b.promoCode||_promoDiscTot>0||b.promoLabel);
+  var promoBadge=_promoOn?'<div style="margin:0 0 7px"><span style="display:inline-flex;align-items:center;gap:5px;background:linear-gradient(135deg,#f5d27a,#c9a962);color:#241a06;font-weight:800;font-size:10px;letter-spacing:.4px;padding:3px 9px;border-radius:999px;box-shadow:0 1px 4px rgba(201,169,98,.45)">\uD83C\uDFF7\uFE0F PROMO'+(b.promoCode?' \u00B7 '+esc(String(b.promoCode).toUpperCase()):'')+(_promoDiscTot>0?' \u00B7 -'+$$(_promoDiscTot):'')+'</span></div>':'';
 
   return '<div class="trip-card" id="tripcard-'+b.id+'" style="cursor:pointer" onclick="openBookingDetail(\''+b.id+'\')">'+
     '<div>'+dateColHtml+'</div>'+
@@ -22979,6 +23003,7 @@ function addExtensionContract(){
   var _defPerDay = (Number(b.includedMiles)>0 && _origDaysE>0) ? Math.round(Number(b.includedMiles)/_origDaysE) : (Number(_vmE.miles)||150);
   var _lastMode = exts.length ? !!exts[exts.length-1].unlimited : (Number(b.unlimited)>0);
   window._extCurEnd = currentEnd;
+  var _extPct=_bookingPromoPct(b); window._extPromoPct=_extPct; window._extPromoCode=(b.promoCode||'');
 
   var _old=$d('extCreateOverlay'); if(_old) _old.remove();
   var ov=document.createElement('div');
@@ -22991,7 +23016,9 @@ function addExtensionContract(){
       '<div style="margin-bottom:12px"><div class="flabel">New return date</div>'+
         '<input id="extNewDate" type="date" class="finput" style="width:100%" min="'+_minDate+'" value="'+_minDate+'" onchange="_extMileToggle()"></div>'+
       '<div style="margin-bottom:12px"><div class="flabel">Additional charge ($)</div>'+
-        '<input id="extCharge" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00"></div>'+
+        '<input id="extCharge" type="number" min="0" step="0.01" class="finput" style="width:100%" placeholder="0.00" oninput="_extPromoPreview()">'+
+        (_extPct>0?'<div id="extPromoPreview" style="font-size:11.5px;color:var(--gold);font-weight:700;margin-top:5px"></div>':'')+
+      '</div>'+
       '<div style="margin-bottom:12px;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:10px;padding:10px 12px">'+
         '<div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">'+
           '<input type="checkbox" id="extUnlimited" style="width:16px;height:16px;accent-color:var(--gold);cursor:pointer" onchange="_extMileToggle()">'+
@@ -23051,6 +23078,12 @@ function confirmAddExtension(){
   if(!(toMs > fromMs)){ alert('The new return date must be AFTER the current return date.'); return; }
   var extDays = Math.max(1, Math.round((toMs - fromMs) / 86400000));
   var addlCharge   = Math.max(0, parseFloat(($d('extCharge')&&$d('extCharge').value)||'0')||0);
+  // Carry the booking's promo onto this extension at the SAME percent rate (percent codes only). The owner
+  // saw the net charge in the form; here we discount the amount the customer is actually billed + record it.
+  var _extPct = _bookingPromoPct(b);
+  var _extPromoDisc = (_extPct>0 && addlCharge>0) ? Math.round(addlCharge*_extPct)/100 : 0;
+  var _extBaseCharge = addlCharge;
+  if(_extPromoDisc>0){ addlCharge = Math.round((addlCharge - _extPromoDisc)*100)/100; }
   var _extBrokerInput = Math.max(0, parseFloat(($d('extBroker')&&$d('extBroker').value)||'0')||0);
   var _extBrokerMode  = ($d('extBrokerMode')&&$d('extBrokerMode').value)||'total';
   // "per day" multiplies the entered rate by the number of extended days; "total" is a flat amount.
@@ -23073,6 +23106,7 @@ function confirmAddExtension(){
   });
   // Remember how the broker fee was entered, for the per-day breakdown on the contract.
   if(newExt && _extBrokerMode==='perday'){ newExt.brokerMode='perday'; newExt.brokerPerDay=_extBrokerInput; }
+  if(newExt && _extPromoDisc>0){ newExt.promoCode=b.promoCode; newExt.promoDiscount=_extPromoDisc; newExt.promoBaseCharge=_extBaseCharge; }
   bookings[idx]._t = Date.now();
   var _extNum = _extLive(bookings[idx]).length;
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
