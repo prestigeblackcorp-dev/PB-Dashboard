@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04i';
+const ATLAS_BUILD = '2026.08.04j';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -7961,7 +7961,21 @@ function doReset(){
           d._t = Date.now();
           try { await _bkPatch(env, brow.id, brow.tenant_id, function (fd) { fd.portal = fd.portal || {}; fd.portal.requests = fd.portal.requests || []; fd.portal.requests.push(_reqEntry); fd._t = Date.now(); }); } catch (e) {}   // #346-E2b
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.request', { booking: brow.id, type: kind });
-          try { const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first(); if (ow) await sendEmail(env, { to: ow.email, fromName: 'Atlas Rental.io', subject: 'Booking request (' + kind + ') - ' + brow.id, html: _emailShell(pr, '<h2>Customer wants to ' + (kind === 'addon' ? 'add an extra' : 'extend') + '</h2><p>Booking <b>' + esc(brow.id) + '</b> (' + esc(d.asset || '') + ')</p>' + (extra ? ('<p><b>' + esc(extra) + '</b></p>') : '') + (note ? ('<p style="color:#555">' + esc(note) + '</p>') : '') + '<p style="color:#666;font-size:13px">Open the booking in your dashboard to confirm and charge the change.</p>') }); } catch (e) {}
+          // Reach the owner the way THEY chose (Settings > How Atlas reaches you). Email defaults on; SMS only when they
+          // turned it on AND gave a number. sendSms enforces STOP suppression itself, so an opted-out number is never texted.
+          // Best-effort in every direction -- the request is already saved on the booking and shown in the dashboard, so a
+          // mail/SMS outage can never lose it.
+          try {
+            var _np = (pr.settings && pr.settings.notify) || {};
+            var _what = extra || note || 'a change';
+            var _line = 'Booking ' + brow.id + (d.asset ? (' (' + d.asset + ')') : '') + ' - ' + (d.cust || 'a customer') + ' asked to ' + (kind === 'addon' ? 'add' : 'extend') + ': ' + _what;
+            if (_np.email !== false) {
+              const ow = await env.DB.prepare('SELECT email FROM users WHERE tenant_id=? AND role=? LIMIT 1').bind(brow.tenant_id, 'owner').first();
+              if (ow) await sendEmail(env, { to: ow.email, fromName: 'Atlas Rental.io', subject: 'Booking request (' + kind + ') - ' + brow.id, html: _emailShell(pr, '<h2>Customer wants to ' + (kind === 'addon' ? 'add an extra' : 'extend') + '</h2><p>Booking <b>' + esc(brow.id) + '</b> (' + esc(d.asset || '') + ')</p>' + (extra ? ('<p><b>' + esc(extra) + '</b></p>') : '') + (note ? ('<p>' + esc(note) + '</p>') : '') + '<p>Open it in your dashboard to confirm the change and price.</p>') });
+            }
+            var _to = String(_np.phone || '').trim();
+            if (_np.sms && _to) await sendSms(env, brow.tenant_id, { to: _to, body: _line.slice(0, 300) + ' - open Atlas to confirm. Reply STOP to opt out.' });
+          } catch (e) {}
           return json({ ok: true, message: 'Sent to the owner - they will confirm the change and any price with you.' });
         }
         // G1: leave a review FROM THE REAL PORTAL (the only writer used to be the owner's in-dashboard preview, so reviews could never be collected in production). Verified=true because it came through the tokenized portal.

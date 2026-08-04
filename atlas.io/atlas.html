@@ -7919,6 +7919,11 @@ const Atlas = (function(){
           +'<button class="btn btn--primary" onclick="Atlas.openLiveDashboard()">Open my live dashboard</button></div>'
         +'<div class="set-block"><h3>Owner analytics</h3><div class="desc">Totals across everything you run.</div>'
           +'<div class="owner-stats">'+oa.map(function(s){return '<div class="owner-stat"><div class="owner-stat__v tnum">'+s[1]+'</div><div class="owner-stat__l">'+s[0]+'</div></div>';}).join('')+'</div></div>'
+        +(function(){ var n=_notifyCfg();   // where Atlas reaches YOU when a customer needs something (portal change-requests today; more alerts route here over time)
+          return '<div class="set-block"><h3>How Atlas reaches you</h3><div class="desc">When a customer asks for a change from their portal, we tell you here. It always lands in your dashboard &mdash; these add email and text.</div>'
+          +'<div class="auto-row"><label class="switch"><input type="checkbox" '+(n.email!==false?'checked':'')+' onchange="Atlas.setNotify(\'email\',this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">Email me</b><div style="font-size:12.5px;color:var(--muted)">'+esc(_sessEmail()||S.owner||'your account email')+'</div></div></div>'
+          +'<div class="auto-row"><label class="switch"><input type="checkbox" '+(n.sms?'checked':'')+' onchange="Atlas.setNotify(\'sms\',this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">Text me</b><div style="font-size:12.5px;color:var(--muted)">Needs a mobile number below'+(n.sms&&!_notifyPhone()?' &mdash; <span style="color:var(--danger)">add one or texts cannot send</span>':'')+'</div></div></div>'
+          +'<div class="field" style="margin-top:6px"><label>Mobile number for alerts</label><input class="input" id="ntfPhone" value="'+esc(n.phone||'')+'" placeholder="+1 555 123 4567" onchange="Atlas.setNotify(\'phone\',this.value)"><div class="bk-lenhint" style="margin:5px 0 0">Standard rates apply. Reply STOP to any Atlas text to stop them &mdash; we honor it immediately.</div></div></div>'; })()
         +'<div class="set-block"><h3>Developer &amp; upgrades</h3><div class="desc">Version '+APP_VERSION+'. Flip upgrades on live &mdash; no reinstall, no downtime.</div>'
           +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn btn--ghost btn--sm" onclick="Atlas.checkUpdates()">Check for updates</button><button class="btn btn--ghost btn--sm" onclick="Atlas.viewChangelog()">Changelog</button><button class="btn btn--ghost btn--sm" onclick="Atlas.installApp()">Install app</button></div>'
           +OWNER_FLAGS.map(function(f){ return '<div class="auto-row"><label class="switch"><input type="checkbox" '+(_flags()[f[0]]?'checked':'')+' onchange="Atlas.toggleFlag(\''+f[0]+'\',this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">'+f[1]+'</b><div style="font-size:12.5px;color:var(--muted)">Beta &middot; toggles instantly</div></div></div>'; }).join('')
@@ -9776,6 +9781,16 @@ const Atlas = (function(){
   }
   function _notifIcon(ic){ return ({cal:'\u{1F4C5}',trend:'\u{1F4C8}',card:'\u{1F4B3}',clock:'\u{23F1}\u{FE0F}',plus:'\u{2795}',spark:'\u{1F50D}'})[ic]||'\u{2728}'; }
   // Real, state-derived notifications (no fake feed): pending bookings, idle assets, missing payments, trial, empty fleet.
+  // Where Atlas reaches the OWNER. Stored on S.notify, so _srvMirrorProfile carries it to the tenant profile the worker reads.
+  // Email defaults ON (they gave one at signup); SMS defaults OFF -- no number, no consent, so it is never assumed.
+  function _notifyCfg(){ if(!S.notify||typeof S.notify!=='object') S.notify={email:true,sms:false,phone:''}; if(S.notify.email==null) S.notify.email=true; return S.notify; }
+  function _notifyPhone(){ try{ return String(_notifyCfg().phone||'').replace(/[^0-9+]/g,''); }catch(e){ return ''; } }
+  function setNotify(k,v){ if(!_isOwnerAcct()&&!_canCap('settings')){ toast('Notification settings are not in your access'); return; } var n=_notifyCfg();
+    if(k==='phone'){ n.phone=String(v||'').slice(0,24); if(n.phone&&!/[0-9]{7}/.test(n.phone.replace(/[^0-9]/g,''))){ toast('That does not look like a full mobile number'); } }
+    else n[k]=!!v;
+    if(k==='sms'&&v&&!_notifyPhone()) toast('Add your mobile number below so texts can send');
+    save(); _logEvent('owner','Alert preference '+k+' set to '+(k==='phone'?'(number)':(v?'on':'off')),{}); renderSet();
+    toast(k==='phone'?'Alert number saved':('Text alerts '+(v?'on':'off')).replace('Text',k==='email'?'Email':'Text')); }
   function _bkHasReq(b){ try{ return ((b&&b.portal&&b.portal.requests)||[]).some(function(r){ return r&&(!r.status||r.status==='requested'); }); }catch(e){ return false; } }
   function _notifPing(){ try{ var pg=document.querySelector('#notifBtn .ping'); if(pg) pg.style.display=_notifItems().length?'':'none'; }catch(e){} }   // the dot means something now: shown only when there is actually something waiting
   function _notifItems(){
@@ -12715,7 +12730,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
