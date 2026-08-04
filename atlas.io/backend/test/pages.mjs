@@ -114,5 +114,21 @@ for (const p of PAGES) {
   console.log(`ok  ${p.name} -- script parses (${emitted.length} bytes), ${calls.length}/${total} inline handlers all resolve`);
 }
 
+// _PUB_CUR_JS (#403): the public-marketing currency converter. It is NOT passed at a _pageDoc call site -- _pageDoc injects
+// it into any served page that carries priced spans and has no script of its own -- so the coverage counter above does not
+// see it. It is still an inline script every marketing visitor runs, so parse it here directly.
+{
+  const key = 'const _PUB_CUR_JS = `';
+  const i = src.indexOf(key);
+  if (i < 0) { fail('_PUB_CUR_JS not found -- did the #403 currency converter get renamed? Update test/pages.mjs.'); }
+  else {
+    let j = i + key.length;
+    while (j < src.length) { if (src[j] === '`' && src[j - 1] !== '\\') break; j++; }
+    const jsBody = src.slice(i + key.length, j).replace(/\$\{[^{}]*\}/g, '"X"');
+    try { new Function(jsBody); console.log(`ok  _PUB_CUR_JS -- public currency converter parses (${jsBody.length} bytes)`); }
+    catch (e) { fail(`_PUB_CUR_JS does not parse -- every marketing visitor would hit a script error: ${e.message}`); }
+  }
+}
+
 if (failures) { console.error(`\n${failures} inline-script page(s) would be broken for real users. Not deploying.`); process.exit(1); }
 console.log(`\nAll ${PAGES.length} served pages emit parseable JavaScript, with no dead inline controls.`);

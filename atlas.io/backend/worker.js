@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04s';
+const ATLAS_BUILD = '2026.08.04t';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -10633,6 +10633,53 @@ function _legalShell(kind) {
 // Pick a readable ink (near-black or white) for text placed ON the brand color, by YIQ luminance -- so a light brand
 // (yellow/pale) no longer renders unreadable white-on-light headers + CTAs (a11y WCAG 1.4.3). Falls back to white.
 function _inkFor(hex) { try { var h = String(hex || '').replace('#', ''); if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]; if (h.length < 6) return '#fff'; var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16); return ((r * 299 + g * 587 + b * 114) / 1000) >= 150 ? '#0a1a12' : '#ffffff'; } catch (e) { return '#fff'; } }
+// ---- #403 Public-marketing currency: DISPLAY-ONLY, flag-gated (settings.flags.liveCurrency), SEO- and cache-SAFE. ----
+// The served HTML always stays USD (so structured-data offers.price, meta descriptions and the indexed text stay USD --
+// which is what Google shows AND what Stripe charges), and the page stays fully edge-cacheable because it is identical for
+// every viewer. A tiny client script (_PUB_CUR_JS, injected by _pageDoc ONLY when a page carries priced spans AND has no
+// script of its own -- so the booking page, which runs its own money() converter, never gets a second switcher) rewrites
+// the VISIBLE numbers in the browser and adds an easy currency switcher that remembers the choice. The USD cents live in
+// data-c and are never mutated, so this can only change what a human SEES, never what is charged. Flag OFF -> plain USD,
+// byte-identical to before (no span, no script).
+function _pubCurOn(prof) { return !!(prof && prof.settings && prof.settings.flags && prof.settings.flags.liveCurrency); }
+function _pubPriceSpan(prof, cents) { cents = Math.round(Number(cents) || 0); var s = money2(cents); return _pubCurOn(prof) ? ('<span class="apr" data-c="' + cents + '">' + s + '</span>') : s; }
+function _pubCurScriptFor(bodyHtml) { return (typeof bodyHtml === 'string' && bodyHtml.indexOf('class="apr"') >= 0) ? _PUB_CUR_JS : ''; }
+const _PUB_CUR_JS = `(function(){
+  try{
+    var P=document.querySelectorAll('.apr'); if(!P.length) return;
+    var BASE='USD';
+    var LIST=['USD','EUR','GBP','CAD','AUD','JPY','CHF','MXN','INR','BRL','ZAR','NZD','SGD','AED'];
+    var L2C={US:'USD',GB:'GBP',UK:'GBP',IE:'EUR',DE:'EUR',FR:'EUR',ES:'EUR',IT:'EUR',NL:'EUR',AT:'EUR',BE:'EUR',PT:'EUR',FI:'EUR',GR:'EUR',CA:'CAD',AU:'AUD',NZ:'NZD',JP:'JPY',CH:'CHF',MX:'MXN',IN:'INR',BR:'BRL',ZA:'ZAR',SG:'SGD',AE:'AED'};
+    function store(k,v){try{localStorage.setItem(k,v)}catch(e){}}
+    function load(k){try{return localStorage.getItem(k)}catch(e){return null}}
+    function guess(){ try{ var r=((navigator.language||'').toUpperCase().split('-')[1])||''; if(L2C[r]) return L2C[r]; }catch(e){} return BASE; }
+    var pick=(load('apub_cur')||'').toUpperCase(); if(LIST.indexOf(pick)<0) pick=guess();
+    function withRates(cb){
+      try{ var c=JSON.parse(load('apub_fx')||'null'); if(c&&c.t&&(Date.now()-c.t)<43200000&&c.rates){ return cb(c.rates); } }catch(e){}
+      fetch('/api/fx?base='+BASE).then(function(r){return r.json()}).then(function(j){
+        if(j&&j.ok&&j.rates){ store('apub_fx',JSON.stringify({t:Date.now(),rates:j.rates})); cb(j.rates); } else cb(null);
+      }).catch(function(){cb(null)});
+    }
+    function fmt(v,code){ try{ return new Intl.NumberFormat(undefined,{style:'currency',currency:code,currencyDisplay:'narrowSymbol'}).format(v); }catch(e){ try{ return new Intl.NumberFormat(undefined,{style:'currency',currency:code}).format(v); }catch(e2){ return null; } } }
+    for(var i=0;i<P.length;i++){ P[i].setAttribute('data-usd', P[i].textContent); }
+    var noteEl;
+    function apply(code,rates){
+      var rate=(code===BASE)?1:((rates&&Number(rates[code])>0)?Number(rates[code]):0);
+      for(var i=0;i<P.length;i++){ var el=P[i]; var usd=(Number(el.getAttribute('data-c'))||0)/100;
+        if(code===BASE||rate<=0){ el.textContent=el.getAttribute('data-usd'); }
+        else { var s=fmt(usd*rate,code); if(s!=null) el.textContent=s; }
+      }
+      var on=(code!==BASE&&rate>0);
+      if(noteEl){ noteEl.style.display=on?'block':'none'; if(on) noteEl.textContent='Prices shown in '+code+' at the current rate. You are charged in '+BASE+'.'; }
+    }
+    var box=document.createElement('div'); box.style.cssText='position:fixed;top:10px;right:10px;z-index:2147483000;font:13px -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif';
+    var sel=document.createElement('select'); sel.setAttribute('aria-label','Display currency'); sel.style.cssText='padding:5px 9px;border-radius:8px;border:1px solid rgba(0,0,0,.2);background:#fff;color:#111;box-shadow:0 1px 5px rgba(0,0,0,.14);cursor:pointer';
+    for(var i=0;i<LIST.length;i++){ var o=document.createElement('option'); o.value=LIST[i]; o.textContent=LIST[i]; if(LIST[i]===pick)o.selected=true; sel.appendChild(o); }
+    noteEl=document.createElement('div'); noteEl.style.cssText='max-width:230px;margin-top:6px;padding:6px 9px;border-radius:8px;background:rgba(0,0,0,.74);color:#fff;font-size:11px;line-height:1.4;display:none';
+    box.appendChild(sel); box.appendChild(noteEl); document.body.appendChild(box);
+    withRates(function(rates){ apply(pick,rates); sel.addEventListener('change',function(){ var c=sel.value; store('apub_cur',c); apply(c,rates); }); });
+  }catch(e){}
+})();`;
 function _pageDoc(title, brandColor, bodyHtml, scriptJs, headExtra) {
   var brand = /^#[0-9a-fA-F]{3,8}$/.test(brandColor || '') ? brandColor : '#1E6E4E';
   var brandInk = _inkFor(brand);
@@ -10648,7 +10695,7 @@ function _pageDoc(title, brandColor, bodyHtml, scriptJs, headExtra) {
     + 'input,select,textarea{width:100%;padding:11px 12px;border:1px solid #8a8a8a;border-radius:9px;font-size:16px;font-family:inherit;background:#fff;color:#141414}'
     + 'a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible,[role=radio]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}'
     + '.btn{display:block;width:100%;background:var(--brand);color:var(--brand-ink);border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;cursor:pointer;margin-top:16px}.btn:disabled{opacity:.5}'
-    + '.muted{color:#616161;font-size:13px}.row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid #eee}.tot{display:flex;justify-content:space-between;font-weight:700;margin-top:6px;font-size:16px}.err{color:#b42318;font-size:13px;margin-top:8px}h2{margin:0 0 8px}</style>' + (headExtra || '') + '</head><body><div class="wrap">' + bodyHtml + '</div><scr' + 'ipt>' + scriptJs + '</scr' + 'ipt></body></html>';
+    + '.muted{color:#616161;font-size:13px}.row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid #eee}.tot{display:flex;justify-content:space-between;font-weight:700;margin-top:6px;font-size:16px}.err{color:#b42318;font-size:13px;margin-top:8px}h2{margin:0 0 8px}</style>' + (headExtra || '') + '</head><body><div class="wrap">' + bodyHtml + '</div><scr' + 'ipt>' + (scriptJs || _pubCurScriptFor(bodyHtml)) + '</scr' + 'ipt></body></html>';
 }
 
 // Read-only availability check for the customer preview. Same guard rails as the /book intake (min/max length,
@@ -10903,7 +10950,7 @@ function _seoLandingHtml(prof, color, land, seob, reviews) {
       + '<div style="padding:10px 12px"><div style="font-weight:700">' + esc(nm) + '</div>'
       + (ty ? ('<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999">' + esc(ty) + '</div>') : '')
       + (a && a.desc ? ('<div style="font-size:12px;color:#666;margin-top:3px">' + esc(String(a.desc).slice(0, 140)) + '</div>') : '')
-      + (rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + money2(Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
+      + (rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + _pubPriceSpan(prof, Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
       + '</div></div>';
   }).join('');
   var faqHtml = faq.map(function (f) { return '<div style="border-top:1px solid #eee;padding:12px 0"><div style="font-weight:700">' + esc(f.q) + '</div><div class="muted" style="margin-top:4px">' + esc(f.a) + '</div></div>'; }).join('');
@@ -11213,7 +11260,7 @@ function _assetDetailHtml(prof, color, asset, seob, reviews) {
     + '<h1 style="margin:14px 0 2px;font-size:24px">' + esc(nm) + '</h1>'
     + (ty ? ('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#999">' + esc(ty) + '</div>') : '')
     + ratingLine
-    + (rate > 0 ? ('<div style="font-weight:800;color:var(--brand);font-size:20px;margin-top:10px">' + money2(Math.round(rate * 100)) + ' <span style="font-size:14px;font-weight:600;color:#777">/ ' + esc(unit) + '</span></div>') : '')
+    + (rate > 0 ? ('<div style="font-weight:800;color:var(--brand);font-size:20px;margin-top:10px">' + _pubPriceSpan(prof, Math.round(rate * 100)) + ' <span style="font-size:14px;font-weight:600;color:#777">/ ' + esc(unit) + '</span></div>') : '')
     + (dsc ? ('<p style="color:#444;font-size:15px;line-height:1.6;margin-top:12px;white-space:pre-wrap">' + esc(dsc) + '</p>') : '')
     + '<a class="btn" href="' + esc(bookHref) + '" style="max-width:260px">Book this ' + esc(noun) + '</a>'
     + '<div style="margin-top:12px"><a href="' + esc(home) + '#fleet" style="color:var(--brand);text-decoration:none;font-size:13.5px">&lsaquo; Back to the fleet</a></div></div>';
@@ -11586,7 +11633,7 @@ function _renderSection(s, prof, color, seob) {
           return '<div class="pg-fleet-card" style="border:1px solid #ececec;border-radius:12px;overflow:hidden;background:#fff">' + im
             + '<div style="padding:10px 12px"><div style="font-weight:700">' + esc(nm) + '</div>'
             + (ty ? ('<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999">' + esc(ty) + '</div>') : '')
-            + (showPrice && rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + money2(Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
+            + (showPrice && rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + _pubPriceSpan(prof, Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
             + '<a class="btn" href="' + esc(bookHref) + '">' + esc(lbtn) + '</a></div></div>';
         }).join('');
         inner = (lh ? ('<h2>' + esc(lh) + '</h2>') : '') + '<div class="pg-grid cols' + _pgCols(p.columns) + '">' + lcards + '</div>';
