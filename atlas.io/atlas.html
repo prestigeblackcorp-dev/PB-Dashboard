@@ -11479,6 +11479,26 @@ const Atlas = (function(){
     testimonials:[['h2','heading',0]],
     social:[['h2','heading',0]]
   };
+  /* List-item inline editing: feature cards, FAQ question+answer, stat numbers, testimonial quotes -- the most text-heavy
+     part of a page, and the part that was still a trip to the left panel. The rendered rows are FILTERED and CAPPED, so
+     DOM row N is NOT props items[N]: an owner who leaves one card blank shifts every row after it. Each predicate below
+     mirrors its renderer exactly, AND the commit path re-verifies the resolved item still holds the text that was on
+     screen -- so any drift between this map and the renderer can only ever DROP an edit, never write it to a sibling. */
+  function _pgT(v){ return String(v==null?'':v).trim(); }
+  var _PG_LIST={
+    features:{ key:'items', row:'.pg-grid > .pg-card', cap:6,  shown:function(x){ return !!(_pgT(x.title)||_pgT(x.text)); },   fields:[['b','title',0],['.muted','text',0]] },
+    faq:{ key:'items', row:'.pg-faq-item', cap:12, shown:function(x){ return !!(_pgT(x.q)&&_pgT(x.a)); },   fields:[['summary','q',0],['.muted','a',1]] },
+    stats:{ key:'items', row:'.pg-stat-item', cap:4,  shown:function(x){ return !!(_pgT(x.number)||_pgT(x.label)); }, fields:[['.pg-stat','number',0],['.muted','label',0]] },
+    testimonials:{ key:'items', row:'.pg-grid > .pg-card', cap:9,  shown:function(x){ return !!_pgT(x.quote); },   fields:[['.pg-quote','quote',1]] }
+  };
+  // DOM row index -> props index. Refuses to guess (-1) rather than risk writing to the wrong item.
+  function _pgListIdx(items, cfg, subKey, domIdx, origText){
+    var vis=[]; for(var i=0;i<items.length && vis.length<cfg.cap;i++){ if(items[i] && cfg.shown(items[i])) vis.push(i); }
+    var want=_pgT(origText);
+    if(domIdx>=0 && domIdx<vis.length && _pgT((items[vis[domIdx]]||{})[subKey])===want) return vis[domIdx];
+    var hit=-1, n=0;                                   // positional check failed -> only accept an UNAMBIGUOUS text match
+    for(var j=0;j<items.length;j++){ if(_pgT((items[j]||{})[subKey])===want){ hit=j; n++; } }
+    return (n===1)?hit:-1; }
   function _pgSidSafe(s){ return String(s==null?'':s).replace(/[^A-Za-z0-9_\-]/g,''); }
   function _pgInjectSid(html, sid, type){ if(typeof html!=='string' || html.indexOf('<section')!==0) return html;
     return html.replace(/^(<section\b)/, '$1 data-sid="'+esc(String(sid||''))+'" data-stype="'+esc(String(type||''))+'"'); }
@@ -11496,14 +11516,29 @@ const Atlas = (function(){
         t.setAttribute('contenteditable','true'); t.setAttribute('spellcheck','false');
         t.setAttribute('data-se',sid); t.setAttribute('data-sk',key);
         if(map[j][2]) t.setAttribute('data-multi','1');
-        t.setAttribute('title','Click to edit'); } }
+        t.setAttribute('title','Click to edit'); }
+      // repeated rows (feature cards, FAQ pairs, stats, testimonial quotes) -- data-si is the DOM row, resolved to a props index at commit
+      var lc=_PG_LIST[ty];
+      if(lc && _pgFieldByKey(ty,lc.key)){
+        var rows=[]; try{ rows=el.querySelectorAll(lc.row); }catch(_){ rows=[]; }
+        for(var r=0;r<rows.length;r++){ for(var q=0;q<lc.fields.length;q++){
+          var t2=null; try{ t2=rows[r].querySelector(lc.fields[q][0]); }catch(_){ t2=null; }
+          if(!t2 || t2.getAttribute('data-sk')) continue;
+          t2.setAttribute('contenteditable','true'); t2.setAttribute('spellcheck','false');
+          t2.setAttribute('data-se',sid); t2.setAttribute('data-sk',lc.fields[q][1]);
+          t2.setAttribute('data-sl',lc.key); t2.setAttribute('data-si',String(r));
+          if(lc.fields[q][2]) t2.setAttribute('data-multi','1');
+          t2.setAttribute('title','Click to edit'); } } } }
     // Listeners live on #webPrev itself, which survives innerHTML replacement -- wire once per builder render.
     if(!box.getAttribute('data-ie-wired')){ box.setAttribute('data-ie-wired','1');
       // focusin/focusout, NOT focus/blur: the latter do not bubble, and delegating them via capture proved unreliable.
       box.addEventListener('focusin', function(ev){ var t=ev.target; if(t&&t.getAttribute&&t.getAttribute('data-sk')) t.setAttribute('data-ie0', String(t.innerText||t.textContent||'')); }, false);
       box.addEventListener('focusout', function(ev){ var t=ev.target; if(t&&t.getAttribute&&t.getAttribute('data-sk')) _webSecInline(t); }, false);
       box.addEventListener('keydown', function(ev){ var t=ev.target; if(t&&t.getAttribute&&t.getAttribute('data-sk')) _webSecInlineKey(ev,t); }, false);
-      box.addEventListener('click', function(ev){ var t=ev.target; if(!t||!t.closest) return; if(t.closest('[data-sk]')) return;
+      box.addEventListener('click', function(ev){ var t=ev.target; if(!t||!t.closest) return;
+        var ed=t.closest('[data-sk]');
+        // a FAQ question is a <summary>: without this, clicking to edit it also collapses the answer under the cursor
+        if(ed){ if(ed.tagName==='SUMMARY') ev.preventDefault(); return; }
         var s=t.closest('section[data-sid]'); if(s) webSecSelect(s.getAttribute('data-sid')); }, false); } }
   function _pgInlineNorm(v, multi){ v=String(v==null?'':v).replace(/\u00a0/g,' ');
     return multi ? v.replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim() : v.replace(/\s+/g,' ').trim(); }
@@ -11518,6 +11553,18 @@ const Atlas = (function(){
     var was=_pgInlineNorm(el.getAttribute('data-ie0'), multi);
     if(el.hasAttribute('data-ie0') && was===v) return;
     var sec=_webPageSection(pid,sid); if(!sec) return;
+    var listKey=el.getAttribute('data-sl');
+    if(listKey){                                    // a repeated row: resolve the DOM row back to its props index FIRST
+      var lcfg=_PG_LIST[sec.type]; if(!lcfg) return;
+      var arr=Array.isArray(sec.props&&sec.props[listKey])?sec.props[listKey]:[];
+      var _di=parseInt(el.getAttribute('data-si'),10);
+      var pi=_pgListIdx(arr, lcfg, key, isNaN(_di)?-1:_di, el.getAttribute('data-ie0'));
+      if(pi<0){ toast('Could not match that item - edit it in the panel on the left.'); _webRefreshPreview(); return; }
+      if(_pgT(arr[pi]&&arr[pi][key])===v) return;
+      webPageSectionListSet(pid, sid, listKey, pi, key, v);
+      try{ _webRefreshPages(); }catch(_){}
+      try{ webSecSelect(sid); }catch(_){}
+      return; }
     var cur=String(((sec.props||{})[key]==null)?'':(sec.props||{})[key]);
     if(cur===v) return;
     var patch={}; patch[key]=v; webPageSectionSet(pid,sid,patch);   // -> save() + _webRefreshPreview() + _pgDecorateInline()
