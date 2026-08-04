@@ -10751,6 +10751,105 @@ const Atlas = (function(){
   function webPageStarterLanding(){ if(!_guard('webEdit'))return; var id=webPageAdd('Welcome to '+String(S.brand.name||'us'), undefined, _pgStarter(['hero','fleet','features','cta','contact'])); if(id){ _webEditPageId=id; _webRefreshPages(); _webRefreshPreview(); toast('Starter landing page added \u2014 edit anything'); } }
   function webEditPage(id){ if(!_canCap('webEdit'))return; _webEditPageId=String(id||''); _webRefreshPages(); _webRefreshPreview(); var el=document.getElementById('webPagesBox'); if(el&&el.scrollIntoView){ try{ el.scrollIntoView({block:'nearest'}); }catch(e){} } }
   function webPagesBack(){ _webEditPageId=''; _webRefreshPages(); _webRefreshPreview(); }
+  /* ==== AI Site Designer (additive, money/booking-safe): let the council compose an ordered layout of REAL SECTION_REG
+     sections (varied per business), then reuse the EXISTING page builder + renderer to drop them onto a custom page the
+     owner can edit. No new render code -- _pgNewSection() fills every section's props from real brand/fleet data first,
+     and the AI only overlays its text content on top. On ANY failure the owner just gets a toast and nothing changes. ==== */
+  var _AIDS_SCALARS={ hero:['heading','subheading','btnLabel'], text:['heading','body'], split:['heading','body','btnLabel'], features:['heading'], fleet:['heading'], cta:['heading','subtext','btnLabel'], gallery:['heading'], faq:['heading'], stats:['heading'], contact:['heading'] };   // scalar text props the AI may overlay per type -- everything else (fleet cars, faq/contact/gallery real-data) stays from def()
+  var _AIDS_CAPS={ heading:120, subheading:200, body:600, subtext:300, btnLabel:40 };
+  // Pure composer -- no AI, no I/O. Maps a validated layout array into real {id,type,props} sections via _pgNewSection
+  // (def() pre-fills props from real data), overlaying ONLY the AI's known scalar content. Guarantees hero-first, cta-last.
+  function _aiComposeSections(layout){
+    var out=[]; if(!Array.isArray(layout)) layout=[];
+    for(var i=0;i<layout.length && out.length<12;i++){ var c=layout[i]||{}; var type=String(c.type||'').trim();
+      if(!SECTION_REG[type]) continue;
+      var sec=_pgNewSection(type); if(!sec) continue; var props=sec.props||(sec.props={});
+      var allow=_AIDS_SCALARS[type]||[];
+      for(var s=0;s<allow.length;s++){ var key=allow[s], raw=c[key]; if(typeof raw==='string' && raw.trim()) props[key]=String(raw).slice(0, _AIDS_CAPS[key]||120); }
+      if(c.tone==='light'||c.tone==='dark'||c.tone==='brand') props.tone=c.tone;
+      if(type==='split' && (c.side==='left'||c.side==='right')) props.side=c.side;
+      if(type==='features' && (c.columns==='2'||c.columns==='3'||c.columns==='4')) props.columns=String(c.columns);
+      if(type==='features' && Array.isArray(c.items)){ var fi=c.items.map(function(x){ x=x||{}; return {title:String(x.title||'').slice(0,80), text:String(x.text||'').slice(0,200)}; }).filter(function(x){ return x.title||x.text; }).slice(0,6); if(fi.length>=2) props.items=fi; }
+      if(type==='stats' && Array.isArray(c.items)){ var si=c.items.map(function(x){ x=x||{}; return {number:String(x.number||'').slice(0,12), label:String(x.label||'').slice(0,40)}; }).filter(function(x){ return x.number||x.label; }).slice(0,4); if(si.length>=2) props.items=si; }
+      out.push(sec); }
+    if(!out.length){ var h0=_pgNewSection('hero'); if(h0) out.push(h0); var c0=_pgNewSection('cta'); if(c0) out.push(c0); return out; }
+    if(out[0].type!=='hero'){ var hero=_pgNewSection('hero'); if(hero) out.unshift(hero); }
+    if(out[out.length-1].type!=='cta'){ var cta=_pgNewSection('cta'); if(cta) out.push(cta); }
+    if(out.length>12){ var last=out[out.length-1]; out=out.slice(0,11); out.push(last); }
+    return out; }
+  /* AI call (mirrors _aiSiteCopyGen exactly): hits the same /api/aio council, adopts the server credit balance, 20s hard
+     stop, cb(null) on ANY failure (flag off / no live backend / non-2xx / no text / unparseable / stall / throw). Parses
+     the first candidate that yields a valid object with the SAME string-aware brace scan as _aiParseCopy, validates that
+     sections is a non-empty array, and hands back {headline,tagline,layout}. Never throws. */
+  function _aiSiteDesignGen(cb){
+    var done=false, fin=function(x){ if(done)return; done=true; try{ cb(x); }catch(e){} };
+    var parse=function(text){ try{
+        var s=String(text||''); if(!s) return null;
+        var a=s.indexOf('{'); if(a<0) return null;
+        var depth=0, inStr=false, esc2=false, end=-1;
+        for(var i=a;i<s.length;i++){ var ch=s.charAt(i);
+          if(inStr){ if(esc2){ esc2=false; } else if(ch==='\\'){ esc2=true; } else if(ch==='"'){ inStr=false; } }
+          else { if(ch==='"'){ inStr=true; } else if(ch==='{'){ depth++; } else if(ch==='}'){ depth--; if(depth===0){ end=i; break; } } }
+        }
+        if(end<0) return null;
+        var obj=JSON.parse(s.slice(a,end+1));
+        if(!obj || typeof obj!=='object' || !Array.isArray(obj.sections) || !obj.sections.length) return null;
+        return { headline:String(obj.headline||'').trim().slice(0,90), tagline:String(obj.tagline||'').trim().slice(0,200), layout:obj.sections };
+      }catch(e){ return null; } };
+    try{
+      if(!_flags().aiSiteCopy || !(ATLAS_BACKEND && _apiCsrf)){ fin(null); return; }
+      var prompt='Design the homepage of THIS rental business as an ordered list of sections. Use ONLY the facts in the'
+        +' context below -- never invent locations, prices, reviews, awards or fleet counts. Infer the tone (luxury vs'
+        +' budget) from the brand and fleet. Choose 5 to 8 sections that best fit this specific business, from EXACTLY'
+        +' these types: hero, features, split, stats, fleet, gallery, faq, cta, text, contact. ALWAYS start with hero and'
+        +' end with cta. Include a fleet section (it renders their real inventory) and usually features plus one split and'
+        +' a faq. For each section include ONLY its text content: hero (heading at most 90 chars, subheading, btnLabel);'
+        +' features (heading plus 3 items each {title, text}); split (heading, body, side "left" or "right"); stats (3'
+        +' items {number, label} using ONLY true numbers from the context or generic ones like "24/7" or "100%"); cta'
+        +' (heading, btnLabel). fleet, gallery, faq and contact need only a heading. Respond with ONLY a JSON object and'
+        +' nothing else -- no markdown, no commentary -- in EXACTLY this shape: {"headline":"...","tagline":"...",'
+        +'"sections":[{"type":"hero","heading":"...","subheading":"...","btnLabel":"Book now"},{"type":"features",'
+        +'"heading":"...","items":[{"title":"...","text":"..."}]},{"type":"split","heading":"...","body":"...",'
+        +'"side":"left"},{"type":"fleet","heading":"..."},{"type":"faq"},{"type":"cta","heading":"...",'
+        +'"btnLabel":"Book now"}]}';
+      var _to=setTimeout(function(){ fin(null); }, 20000);   // hard client-side stop (same as _aiSiteCopyGen)
+      _api('/api/aio',{method:'POST',body:{q:prompt, context:_aioBizContext()}}).then(function(res){
+        clearTimeout(_to);
+        var j=(res&&res.json)||{};
+        try{ if(typeof j.credits==='number'){ if(!S.credits)S.credits={}; S.credits.bal=j.credits; save(); } }catch(e){}   // adopt the server-authoritative credit balance
+        if(!(res&&res.status>=200&&res.status<300) || j.error){ fin(null); return; }
+        var cands=[]; if(j.synthesis) cands.push(String(j.synthesis));
+        (j.models||[]).forEach(function(m){ if(m&&m.text) cands.push(String(m.text)); });
+        for(var i=0;i<cands.length;i++){ var o=parse(cands[i]); if(o){ fin(o); return; } }
+        fin(null);
+      }).catch(function(){ clearTimeout(_to); fin(null); });
+    }catch(e){ fin(null); }
+  }
+  // Owner action (PUBLIC): design a full multi-section page with the AI, drop it onto a custom page (reusing/refreshing a
+  // prior AI page if one exists), then open it in the editor. Button loading-state is always restored, even on a throw.
+  function aiDesignSite(){
+    if(!_guard('webEdit','Designing your site'))return;
+    var btn=document.getElementById('aiDesignSiteBtn'), _lbl=btn?btn.innerHTML:'';
+    var restore=function(){ try{ if(btn){ btn.disabled=false; btn.innerHTML=_lbl; } }catch(e){} };
+    var fail=function(){ restore(); toast('Could not design the site right now. Please try again.'); };
+    try{
+      if(btn){ btn.disabled=true; btn.innerHTML='Designing your site\u2026'; }
+      _aiSiteDesignGen(function(res){ try{
+        if(!res){ fail(); return; }
+        var secs=_aiComposeSections(res.layout); if(!secs||!secs.length){ fail(); return; }
+        var w=_web();
+        if(res.headline && !String(w.headline||'').trim()) w.headline=String(res.headline).slice(0,120);   // optional polish: only fill when empty
+        if(res.tagline && !String(w.tagline||'').trim()) w.tagline=String(res.tagline).slice(0,200);
+        var pages=Array.isArray(w.pages)?w.pages:[], existing=null;
+        for(var i=0;i<pages.length;i++){ if(pages[i]&&pages[i]._aiDesigned){ existing=pages[i]; break; } }   // reuse a prior AI-designed page
+        var id;
+        if(existing){ existing.sections=secs; id=existing.id; save(); }
+        else { id=webPageAdd((S.brand&&S.brand.name)||'Home', null, secs); if(!id){ fail(); return; } var pg=_webPage(id); if(pg){ pg._aiDesigned=true; pg.nav=true; } save(); }
+        _webEditPageId=id; _webRefreshPages(); _webRefreshPreview();   // open it in the editor (mirrors webPageStarterLanding)
+        restore(); toast('Your site is designed -- edit any section or publish.');
+      }catch(e){ fail(); } });
+    }catch(e){ restore(); }
+  }
   // ---- Pages editor UI (a "Pages" set-block in the builder). List view -> per-page rows; Edit -> the section stack. ----
   function _webPagesHtml(){ return '<div id="webPagesBox">'+_webPagesInner()+'</div>'; }
   function _webRefreshPages(){ var el=document.getElementById('webPagesBox'); if(el) el.innerHTML=_webPagesInner(); }
@@ -10918,7 +11017,10 @@ const Atlas = (function(){
       +'</div>'
       +'<div class="set-block"><h3>FAQ</h3><div class="desc">Answer common questions right on your site.</div>'+_webFaqHtml()+'</div>'
       +'<div class="set-block"><h3>Blog / Content</h3><div class="desc">Publish posts, news and guides &mdash; each becomes a page on your site, great for SEO and returning customers. Atlas.io can also draft one from chat.</div>'+_webPostsHtml()+'</div>'
-      +'<div class="set-block"><h3>Pages</h3><div class="desc">Build freeform pages from sections &mdash; a landing page, about, services, anything. Reorder with the arrows; each gets its own <b>/p/</b> link. Atlas.io can also make one from chat.</div>'+_webPagesHtml()+'</div>'
+      +'<div class="set-block"><h3>Pages</h3><div class="desc">Build freeform pages from sections &mdash; a landing page, about, services, anything. Reorder with the arrows; each gets its own <b>/p/</b> link. Atlas.io can also make one from chat.</div>'
+        +'<button class="btn btn--primary btn--full" id="aiDesignSiteBtn" onclick="Atlas.aiDesignSite()">Design my site with Atlas</button>'
+        +'<div class="bk-lenhint" style="margin:8px 0 12px">Atlas composes a full, on-brand multi-section page from your real fleet and details -- then you edit anything.</div>'
+        +_webPagesHtml()+'</div>'
       +'<div class="set-block"><h3>Sections</h3><div class="desc">Show or hide parts of your site.</div>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showFleet?'checked':'')+' onchange="Atlas.toggleWebSection(\'showFleet\',this.checked)">Fleet listings ('+DATA.assets.length+' '+esc(S.fleet.nouns)+')</label>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showAbout?'checked':'')+' onchange="Atlas.toggleWebSection(\'showAbout\',this.checked)">About section</label>'
@@ -12071,7 +12173,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
