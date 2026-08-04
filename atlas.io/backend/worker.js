@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04p';
+const ATLAS_BUILD = '2026.08.04q';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -12106,7 +12106,7 @@ function _receiptBodyHtml(pr, brow, d, q, paid, got, due) {
   // #290: the refundable SECURITY deposit is a separate line -- NOT part of the rental total or "paid to date" (got excludes it); returned after the rental unless kept for a claim.
   if (paid.security) pl += '<div class="rowr"><span>Refundable security deposit (' + (paid.security.hold ? 'held' : 'charged') + ', returned after return)</span><span>' + _m(paid.security.amountCents || 0) + '</span></div>';
   var _paidAll = (Number(got) || 0) + _chgPaidC, _dueAll = Math.max(0, (Number(due) || 0) + _chgDueC);
-  return '<h1>' + esc(pr.name) + '</h1><div class="mut">Receipt &middot; Booking ' + esc(brow.id) + ' &middot; ' + esc(brow.status || '') + '</div><div class="bar"></div>' + rows + '<div class="totr"><span>Rental total</span><span>' + _m(q.totalCents || 0) + '</span></div>' + (_chgRows ? ('<h3>Additional charges</h3>' + _chgRows) : '') + ((pl || _chgPaidC) ? ('<h3>Payments</h3>' + pl + '<div class="rowr"><span>Paid to date</span><span>' + _m(_paidAll) + '</span></div>') : '') + '<div class="totr"><span>Balance due</span><span>' + _m(_dueAll) + '</span></div><p class="mut" style="margin-top:18px">Thank you for booking with ' + esc(pr.name) + '.</p>';
+  return _pDocHeader(pr) + '<div class="mut">Receipt &middot; Booking ' + esc(brow.id) + ' &middot; ' + esc(brow.status || '') + '</div><div class="bar"></div>' + rows + '<div class="totr"><span>Rental total</span><span>' + _m(q.totalCents || 0) + '</span></div>' + (_chgRows ? ('<h3>Additional charges</h3>' + _chgRows) : '') + ((pl || _chgPaidC) ? ('<h3>Payments</h3>' + pl + '<div class="rowr"><span>Paid to date</span><span>' + _m(_paidAll) + '</span></div>') : '') + '<div class="totr"><span>Balance due</span><span>' + _m(_dueAll) + '</span></div><p class="mut" style="margin-top:18px">Thank you for booking with ' + esc(pr.name) + '.</p>';
 }
 function _agreementBodyHtml(pr, brow, d, agr, signed) {
   var sb;
@@ -12116,7 +12116,14 @@ function _agreementBodyHtml(pr, brow, d, agr, signed) {
   // agreement shows the whole contract history, not just the base rental.
   var _xe = (Array.isArray(d.extensions) ? d.extensions : []).filter(function (e) { return e && !e._deleted && e.signedAt; }), xb = '';
   if (_xe.length) { xb = '<h3>Signed extension addenda</h3><table>'; _xe.forEach(function (e) { var np = Number(e.addedPeriods) || 0, ne = Number(e.newEndTs) || 0, ch = Number(e.charge) || 0; xb += '<div class="rowr"><span>+' + np + ' period' + (np === 1 ? '' : 's') + (ne ? (' &middot; new return ' + new Date(ne).toISOString().slice(0, 10)) : '') + (ch ? (' &middot; ' + _m(Math.round(ch * 100))) : '') + (e.note ? (' &middot; ' + esc(String(e.note).slice(0, 120))) : '') + '</span><span>Signed' + (e.signerName ? (' by ' + esc(e.signerName)) : '') + ' ' + new Date(Number(e.signedAt)).toISOString().slice(0, 10) + '</span></div>'; }); xb += '</table>'; }
-  return '<h1>' + esc(pr.name) + '</h1><div class="mut">Rental Agreement &middot; Booking ' + esc(brow.id) + '</div><div class="bar"></div><pre>' + esc(agr) + '</pre>' + sb + xb;
+  return _pDocHeader(pr) + '<div class="mut">Rental Agreement &middot; Booking ' + esc(brow.id) + '</div><div class="bar"></div><pre>' + esc(agr) + '</pre>' + sb + xb;
+}
+// Shared header for the printable legal docs (agreement + receipt). Leads with the tenant logo when it is an http/https
+// URL (a data: URI would break in a print-to-PDF's image fetch), keeping the <h1> business name for the document title.
+function _pDocHeader(pr) {
+  var _lg = (pr && pr.brand && String(pr.brand.logo || '').trim()) || '';
+  var _img = /^https?:\/\//i.test(_lg) ? ('<img src="' + esc(_lg) + '" alt="" style="height:30px;border-radius:6px;vertical-align:middle;margin-right:10px">') : '';
+  return '<h1 style="display:flex;align-items:center;gap:0">' + _img + esc((pr && pr.name) || '') + '</h1>';
 }
 // Payments G6: a compact itemized booking receipt, built SERVER-side (the rich _receiptHtml lives in the client). Fired from the paid webhook when the tenant's smartReceipts toggle is on.
 function _bookingReceiptInner(pr, d, md, amt) {
