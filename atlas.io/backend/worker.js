@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03g';
+const ATLAS_BUILD = '2026.08.03h';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -11961,6 +11961,25 @@ function _pbmCustomer(b) {
 // mirrored asset on FIRST create so the owner's Atlas prices exactly like PB. Owner edits win afterward (assets are
 // created once; a re-sync never rewrites them -- see _pbSyncWrite). A vehicle NOT in this table just gets its day-rate
 // (rev/days) and is fully editable. This block is the ONLY PB-specific data; every field it sets is a generic per-asset field.
+// PB fleet photos (the exact prestigeblackrentals.com storefront images, keyed by the vehicle name that rides on a booking).
+// _pbmAsset stamps asset.photo from this so a mirrored vehicle shows its real picture in the owner's Atlas fleet.
+const _PB_VEH_IMAGES = {
+  'BMW M3': 'https://prestigeblackrentals.com/cdn/shop/files/Sleek_BMW_M3_at_twilight.png?width=640',
+  'BMW i4': 'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_16_2026_10_29_04_PM.png?width=640',
+  'Corvette Z51': 'https://prestigeblackrentals.com/cdn/shop/files/67E01466-6370-4766-9664-B3177F7A0BF3.png?width=640',
+  'Corvette': 'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Corvette_against_a_moody_backdrop.png?width=640',
+  'Macan': 'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Porsche_Macan_at_twilight.png?width=640',
+  'Porsche Boxster S': 'https://prestigeblackrentals.com/cdn/shop/files/IMG_7810.jpg?width=640',
+  'C300': 'https://prestigeblackrentals.com/cdn/shop/files/Mercedes-Benz_AMG_C300_at_twilight.png?width=640',
+  'Accord': 'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_4_2026_11_04_00_PM.png?width=640',
+  'Lambo Huracan': 'https://prestigeblackrentals.com/cdn/shop/files/6E5F23BF-88AE-446E-BF29-516AECBB0BAD.png?width=640',
+  'Lambo Urus': 'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_May_18_2026_02_28_46_PM.png?width=640',
+  'G Wagon': 'https://prestigeblackrentals.com/cdn/shop/files/A7402504.jpg?width=640',
+  'Escalade Rental': 'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Apr_30_2026_09_26_46_AM.png?width=640',
+  'Polaris Slingshot': 'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_27_2026_11_35_14_PM.png?width=640',
+  'Suburban': 'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Suburban_outside_luxury_hotel.png?width=640',
+  'Escalade Chauffeur': 'https://prestigeblackrentals.com/cdn/shop/files/IMG_5982.png?width=640'
+};
 // dayRate = PB's EXACT published daily price (mirrors docs/index.html VEHICLE_COSTS[name].rate). This is the authoritative
 // per-vehicle rate; _pbmAsset seeds it so a mirrored vehicle prices like PB instead of the old revenue/days guess (which
 // was wrong for any discounted, multi-day or add-on-inflated booking). Chauffeur cars (rate 0 in PB) keep 0 -> priced per trip.
@@ -11990,7 +12009,7 @@ function _pbmAsset(b) {
     : ((Number(b.revenue) > 0 && b.type !== 'chauffeur') ? _pbmMoney(Number(b.revenue) / days) : 0);
   const id = 'pbveh-' + _pbmSlug(name), type = (String(b.type || 'rental') === 'chauffeur') ? 'chauffeur' : 'car';
   // the client's _srvUnshape returns row.info AS the asset, so name/rate/status/pricing MUST all live inside info.
-  const asset = { id: id, name: name, type: type, status: 'available', rate: dayRateCents / 100, qty: 1, year: vi.year || '', make: vi.make || '', model: vi.model || '', color: vi.color || '', vin: vi.vin || '', source: 'pb-mirror', readOnly: true };
+  const asset = { id: id, name: name, type: type, status: 'available', rate: dayRateCents / 100, qty: 1, year: vi.year || '', make: vi.make || '', model: vi.model || '', color: vi.color || '', vin: vi.vin || '', photo: _PB_VEH_IMAGES[name] || (vi && vi.image) || '', source: 'pb-mirror', readOnly: true };
   if (cat) { if (cat.deposit) asset.deposit = cat.deposit; if (cat.weeklyRate) asset.weeklyRate = cat.weeklyRate; if (cat.usageAllow) asset.usageAllow = cat.usageAllow; if (cat.overageRate) asset.overageRate = cat.overageRate; if (cat.usageUnit) asset.usageUnit = cat.usageUnit; }
   return { id: id, name: name, type: type, status: 'available', day_rate_cents: dayRateCents, qty: 1, info: asset };
 }
@@ -12068,20 +12087,22 @@ async function _pbSyncWrite(env, tenantId, coll, row) {   // idempotent upsert b
   const existing = await env.DB.prepare('SELECT id FROM ' + coll + ' WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
   if (coll === 'assets' && existing) {
     // Assets are CREATED ONCE then owner-managed -> a re-sync must NEVER clobber owner edits (deposit/weekly/usage/name).
-    // ONE narrow exception heals the "every vehicle has wrong pricing" report: a pb-mirror vehicle's daily RATE is meant to
-    // MIRROR PB. When the incoming row carries PB's authoritative catalog rate (day_rate_cents>0) and it differs from what's
-    // stored, correct ONLY info.rate + day_rate_cents -- every other field is left exactly as the owner has it. This repairs
-    // vehicles seeded with the old revenue/days guess on the owner's next Sync click, with zero risk to their other edits.
+    // TWO narrow exceptions MIRROR PB, touching only these fields and leaving everything else exactly as the owner has it:
+    //  (a) the daily RATE -> PB's authoritative catalog rate (fixes the "every vehicle has wrong pricing" report from the old
+    //      revenue/days seed); (b) the PHOTO -> the PB storefront image when the stored asset has none. Both self-repair on
+    //      the owner's next Sync click with zero risk to their other edits.
     try {
-      if (Number(row.day_rate_cents) > 0 && row.info && row.info.source === 'pb-mirror') {
-        const ex = await env.DB.prepare('SELECT info FROM assets WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
+      if (row.info && row.info.source === 'pb-mirror') {
+        const ex = await env.DB.prepare('SELECT info, day_rate_cents FROM assets WHERE id=? AND tenant_id=?').bind(row.id, tenantId).first();
         const info = jparse(ex && ex.info, null);
         if (info && info.source === 'pb-mirror') {
-          const newCents = Math.round(Number(row.day_rate_cents));
-          if (Math.round((Number(info.rate) || 0) * 100) !== newCents) {
-            info.rate = newCents / 100;
-            await env.DB.prepare('UPDATE assets SET info=?, day_rate_cents=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(info), newCents, Date.now(), row.id, tenantId).run();
-            return 'rate-healed';
+          let changed = false, drc = Number(ex.day_rate_cents) || 0;
+          const catCents = Math.round(Number(row.day_rate_cents) || 0);
+          if (catCents > 0 && Math.round((Number(info.rate) || 0) * 100) !== catCents) { info.rate = catCents / 100; drc = catCents; changed = true; }
+          if (!info.photo && row.info.photo) { info.photo = row.info.photo; changed = true; }
+          if (changed) {
+            await env.DB.prepare('UPDATE assets SET info=?, day_rate_cents=?, updated_at=? WHERE id=? AND tenant_id=?').bind(JSON.stringify(info), drc, Date.now(), row.id, tenantId).run();
+            return 'healed';
           }
         }
       }
