@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04e';
+const ATLAS_BUILD = '2026.08.04f';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3487,6 +3487,10 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_td_tenant ON tenant_dims(tenant_id, dim, day)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS tenant_visit_uniques (tenant_id TEXT, day TEXT, vhash TEXT, PRIMARY KEY(tenant_id, day, vhash))").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tvu_tenant ON tenant_visit_uniques(tenant_id, day)").run(); } catch (e) {}
+  // Multi-currency DISPLAY rates (ECB daily via Frankfurter). Cached per base currency so we hit the upstream at most a
+  // couple times/day/base and serve the last-good table if it is ever down. Rates are DISPLAY-only -- money is always
+  // stored, charged and settled in each tenant's base currency; conversion never changes a stored amount. See /api/fx.
+  try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS fx_rates (base TEXT PRIMARY KEY, rates TEXT, day TEXT, fetched_at INTEGER)").run(); } catch (e) {}
   // Atlas Counsel institutional memory: an append-only, dated, ranked feed of "what deserves attention". Written nightly by the
   // cron (deterministic scoring from real data; AI adds a narrative when a key is set). status: new|done|dismissed (the feedback loop) | brief.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS counsel_journal (id TEXT PRIMARY KEY, day TEXT, layer TEXT, kind TEXT, tenant_id TEXT, title TEXT, body_md TEXT, data_json TEXT, severity TEXT, impact_score INTEGER DEFAULT 0, action TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run(); } catch (e) {}
@@ -5270,6 +5274,35 @@ function doReset(){
       // (req.cf.country); no path, no referrer, no IP is ever stored here. Best-effort in every direction: a
       // bad/missing body, an unrecognized src, or a rate-limit hit all just return 204 with nothing recorded --
       // this endpoint must NEVER error or block the page that called it.
+      // Multi-currency DISPLAY rates. Public (rates are public ECB data) + server-cached ~12h so a burst can't hammer the
+      // upstream, and last-good is served if Frankfurter is ever down -> the currency switcher never breaks. Rates are
+      // DISPLAY-only; money is stored/charged/settled in the tenant's base currency (this endpoint changes nothing there).
+      if (path === '/api/fx' && method === 'GET') {
+        var _fxBase = (String(url.searchParams.get('base') || 'USD').toUpperCase().replace(/[^A-Z]/g, '') || 'USD').slice(0, 3);
+        try {
+          await ensurePlatformSchema(env);
+          var _fxRow = null; try { _fxRow = await env.DB.prepare('SELECT rates, day, fetched_at FROM fx_rates WHERE base=?').bind(_fxBase).first(); } catch (e) {}
+          if (_fxRow && _fxRow.fetched_at && (Date.now() - Number(_fxRow.fetched_at) < 12 * 3600000)) {
+            return json({ ok: true, base: _fxBase, day: _fxRow.day, rates: _hqJson(_fxRow.rates, {}) || {}, stale: false });
+          }
+          if (await rateLimit(env, 'fx:' + _fxBase, 4, 60000)) {
+            try {
+              var _fxRes = await fetch('https://api.frankfurter.dev/v1/latest?base=' + _fxBase, { headers: { 'accept': 'application/json' }, cf: { cacheTtl: 3600, cacheEverything: true } });
+              if (_fxRes && _fxRes.ok) {
+                var _fxJson = await _fxRes.json();
+                if (_fxJson && _fxJson.rates && typeof _fxJson.rates === 'object') {
+                  _fxJson.rates[_fxBase] = 1;   // base->base = 1, so the client can look up any code uniformly
+                  var _fxDay = String(_fxJson.date || '').slice(0, 10);
+                  try { await env.DB.prepare('INSERT INTO fx_rates (base,rates,day,fetched_at) VALUES (?,?,?,?) ON CONFLICT(base) DO UPDATE SET rates=excluded.rates, day=excluded.day, fetched_at=excluded.fetched_at').bind(_fxBase, JSON.stringify(_fxJson.rates), _fxDay, Date.now()).run(); } catch (e) {}
+                  return json({ ok: true, base: _fxBase, day: _fxDay, rates: _fxJson.rates, stale: false });
+                }
+              }
+            } catch (e) {}
+          }
+          if (_fxRow) return json({ ok: true, base: _fxBase, day: _fxRow.day, rates: _hqJson(_fxRow.rates, {}) || {}, stale: true });   // upstream down -> last-good, never break the switcher
+          return json({ ok: false, base: _fxBase, rates: {}, error: 'rates_unavailable' });
+        } catch (e) { return json({ ok: false, base: _fxBase, rates: {}, error: 'rates_error' }); }
+      }
       if (path === '/api/visit-ping' && (method === 'POST' || method === 'GET')) {
         try {
           const vip = req.headers.get('CF-Connecting-IP') || 'x';
