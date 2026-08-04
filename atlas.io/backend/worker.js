@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.03i';
+const ATLAS_BUILD = '2026.08.03j';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -11467,7 +11467,13 @@ function _renderSection(s, prof, color, seob) {
       default: return '';
     }
     if (!inner) return '';
-    return '<section class="pg-sec pg-' + type + ' tone-' + tone + '">' + inner + '</section>';
+    // Per-section styling (Increment 5): optional align/pad/bg. Purely additive -- when all three are unset (default for
+    // every existing section) _xs is '' and the wrapper is BYTE-IDENTICAL to before, so no published site changes.
+    var _xs = '';
+    if (p.align === 'left' || p.align === 'center' || p.align === 'right') _xs += 'text-align:' + p.align + ';';
+    if (p.pad === 'compact') _xs += 'padding-top:14px;padding-bottom:14px;'; else if (p.pad === 'spacious') _xs += 'padding-top:56px;padding-bottom:56px;';
+    var _bg = String(p.bg || '').trim(); if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(_bg)) _xs += 'background:' + _bg + ';color:' + _inkFor(_bg) + ';';
+    return '<section class="pg-sec pg-' + type + ' tone-' + tone + '"' + (_xs ? (' style="' + _xs + '"') : '') + '>' + inner + '</section>';
   } catch (e) { return ''; }
 }
 // A full, standalone, crawlable custom page (/p/<slug>): shared top-nav (active 'p:'+slug), the page title printed ONCE as the
