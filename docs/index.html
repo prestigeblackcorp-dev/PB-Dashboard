@@ -4871,8 +4871,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v308';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v309';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v309';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v310';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -8487,6 +8487,11 @@ function _applyExtensionCharge(b, c){
     additionalCharge: fee, paid: !!c.paidAt, paidAt: c.paidAt||Date.now(),
     paymentMethod: c.paymentMethod||'card', source:'portal-charge', notes: c.description||''
   });
+  // Carry the promo discount from the portal charge onto the folded extension entry so the trip-card
+  // promo badge counts it once paid — parity with the owner-modal path (which sets promoDiscount on
+  // recordExtension). c.promoDiscount is the dollar SAVINGS stored by the self-service / pay-charge flow
+  // when a code applied; without this the badge total omitted every portal-extension's discount.
+  if(ext && Number(c.promoDiscount)>0){ ext.promoDiscount=Number(c.promoDiscount)||0; ext.promoCode=c.promoCode||b.promoCode||''; if(c.promoLabel) ext.promoLabel=c.promoLabel; }
   c._extApplied=true; c._extRecorded=true; c._extId=ext.id;
 }
 // Exact reverse of _applyExtensionCharge \u2014 rolls the dropoff, day/hour count and fee back out.
@@ -8570,6 +8575,14 @@ function _reconcilePaidExtensionCharges(){
           b._t=Date.now(); changed=true;
           var _en=_extLive(b).findIndex(function(e){ return e&&e.id===c._extId; })+1;
           logNotif('payment','Extension #'+_en+' paid (portal) \u2014 $'+(Number(_ext.additionalCharge)||0).toFixed(2)+' via '+(c.paidMethod||'card'),(b.name||''),b.id);
+        }
+        // BACKFILL (past bookings): a portal extension folded BEFORE the promo-carry fix has no
+        // promoDiscount, so the trip-card promo badge omitted its saving. If the source charge carries a
+        // discount, copy it onto the linked extension ONCE (only when the extension is missing it), so the
+        // badge total heals on next load. Idempotent + additive \u2014 never overwrites an existing discount.
+        if(_ext && Number(c.promoDiscount)>0 && !(Number(_ext.promoDiscount)>0)){
+          _ext.promoDiscount=Number(c.promoDiscount)||0; _ext.promoCode=_ext.promoCode||c.promoCode||b.promoCode||''; if(c.promoLabel&&!_ext.promoLabel) _ext.promoLabel=c.promoLabel;
+          b._t=Date.now(); changed=true;
         }
       }
     });
