@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04q';
+const ATLAS_BUILD = '2026.08.04r';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -9659,6 +9659,12 @@ function doReset(){
             if (!_msg) return err(400, 'Write a message to text.');
             // TCPA/CTIA: every marketing text MUST carry an opt-out. The dashboard promises "every text ends with Reply STOP to opt out", so ENFORCE it server-side. Applied AFTER _fillTokens (per recipient) so token expansion ({name}/{business}) can never push the suffix past the 1500 cap and clip it: if the FILLED body already contains STOP we just cap it, else we reserve exactly the suffix length (23) and append. sendSms adds no STOP of its own, so there's no double-append.
             const _appendStop = function (t) { t = String(t || ''); return /\bstop\b/i.test(t) ? t.slice(0, 1500) : (t.slice(0, 1477) + ' Reply STOP to opt out.'); };
+          // CTIA/10DLC: a marketing text must identify the sending brand, or carriers filter it and the recipient has no
+          // idea who texted them. The composer can use {business}, but tenants forget -- so enforce sender-ID server-side
+          // the same way STOP is enforced. Prefix the business name ONLY when it is not already in the copy (no doubling).
+          // Runs BEFORE _appendStop, so the STOP slice still bounds the whole message to 1500 chars.
+          const _ensureBrand = function (t) { t = String(t || ''); var nm = String((_pr && _pr.name) || '').trim();
+            return (!nm || t.toLowerCase().indexOf(nm.toLowerCase()) >= 0) ? t : (nm + ': ' + t); };
             let _rows = [];
             try { _rows = ((await env.DB.prepare('SELECT id,data FROM bookings WHERE tenant_id=? ORDER BY created_at DESC LIMIT 5000').bind(ctx.tenant_id).all()).results) || []; } catch (e) { _rows = []; }
             const _seen = {}, _recips = [];
@@ -9674,7 +9680,7 @@ function doReset(){
               if (_recips.length >= 500) break;                                                   // hard cap per send (parity with the email branch)
             }
             let _smsSent = 0, _smsSkipped = 0;
-            const _res = await _sendChunked(_recips, 8, (r) => sendSms(env, ctx.tenant_id, { to: r.phone, from: _from, body: _appendStop(_fillTokens(_msg, r, _pr)) }));   // (c) sendSms honors the STOP-suppression list per recipient -> a suppressed (or unreachable) number returns {sent:false} and is counted as skipped
+            const _res = await _sendChunked(_recips, 8, (r) => sendSms(env, ctx.tenant_id, { to: r.phone, from: _from, body: _appendStop(_ensureBrand(_fillTokens(_msg, r, _pr))) }));   // (c) sendSms honors the STOP-suppression list per recipient -> a suppressed (or unreachable) number returns {sent:false} and is counted as skipped
             for (const _x of _res) { if (_x && _x.sent) _smsSent++; else _smsSkipped++; }
             await audit(env, ctx, req, 'outreach.sms', { total: _recips.length, sent: _smsSent, skipped: _smsSkipped });
             return json({ ok: true, emailSent: 0, smsSent: _smsSent, smsSkipped: _smsSkipped, total: _recips.length });
