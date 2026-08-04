@@ -4864,8 +4864,8 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v297';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
-var PB_SW = 'pb-v298';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
+var PB_BUILD = 'v298';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_SW = 'pb-v299';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
    Transparent: the app keeps calling localStorage.getItem/setItem/removeItem for a
@@ -7490,8 +7490,27 @@ function savePricingRules(){
 // only (never the refundable deposit). Synced across the owner's devices AND published to the worker
 // (/promo/publish) so every checkout (portal, booking.live, events) validates live via /promo/validate.
 var promoCodes = [];
+// Real redemptions are counted SERVER-side (the worker bumps Firebase `uses` at each paid checkout); the local
+// promoCodes copy never sees them, so the panel would always read 0. _promoServerUses holds the authoritative
+// counts pulled from /promo/list; the panel shows max(local, server) so a real redemption always shows up.
+var _promoServerUses = {};                       // code(UPPER) -> server-authoritative uses
+var _promoUsesLoaded = false, _promoUsesLoading = false;
 function loadPromoCodes(){
   try { var r=localStorage.getItem('pb_promo_codes'); if(r) promoCodes=JSON.parse(r)||[]; } catch(e){ promoCodes=[]; }
+}
+function _refreshPromoServerUses(cb){
+  if(_promoUsesLoading){ return; }
+  var WORKER=(typeof PB_WORKER!=='undefined'?PB_WORKER:(typeof WORKER_URL!=='undefined'?WORKER_URL:''));
+  var secret=(typeof DASHBOARD_SECRET!=='undefined'?DASHBOARD_SECRET:'');
+  if(!WORKER||!secret){ if(cb)cb(); return; }
+  _promoUsesLoading=true;
+  fetch(WORKER+'/promo/list',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+secret}})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var m={}; ((d&&d.codes)||[]).forEach(function(c){ if(c&&c.code) m[String(c.code).toUpperCase()]=Number(c.uses||0); });
+      _promoServerUses=m; _promoUsesLoaded=true; _promoUsesLoading=false; if(cb)cb();
+    })
+    .catch(function(){ _promoUsesLoading=false; if(cb)cb(); });
 }
 function savePromoCodes(publish){
   try { localStorage.setItem('pb_promo_codes', JSON.stringify(promoCodes)); } catch(e){}
@@ -20173,6 +20192,9 @@ var _editingPromoId=null;
 function _promoEnabled(){ return !!((window.PB_FLAGS||{}).promoCodes); }
 function renderPromoCodesPanel(){
   var el=$d('promoCodesContent'); if(!el) return;
+  // First paint after opening pulls the server-authoritative uses once, then repaints with the real counts.
+  if(!_promoUsesLoaded && !_promoUsesLoading){ _refreshPromoServerUses(function(){ renderPromoCodesPanel(); }); }
+  function _useCount(c){ return Math.max(Number(c.uses||0), Number(_promoServerUses[String((c&&c.code)||'').toUpperCase()]||0)); }
   // The manager is ALWAYS available to the owner (owner-only, harmless). PB_FLAGS.promoCodes gates only the
   // CLIENT-FACING promo entry (portal / booking.live / events) so codes go live at checkout deliberately.
   var _liveAtCheckout=_promoEnabled();
@@ -20181,7 +20203,7 @@ function renderPromoCodesPanel(){
   function statusChip(c){
     if(!c.active) return '<span style="color:var(--muted);font-size:12px">\u25cb Inactive</span>';
     if(c.expires && c.expires<=today) return '<span style="color:var(--red);font-size:12px;font-weight:700">\u25cf Expired</span>';
-    if(c.maxUses && Number(c.uses||0)>=Number(c.maxUses)) return '<span style="color:var(--red);font-size:12px;font-weight:700">\u25cf Used up</span>';
+    if(c.maxUses && _useCount(c)>=Number(c.maxUses)) return '<span style="color:var(--red);font-size:12px;font-weight:700">\u25cf Used up</span>';
     return '<span style="color:var(--green);font-size:12px;font-weight:700">\u25cf Active</span>';
   }
   function appliesLabel(c){
@@ -20207,7 +20229,7 @@ function renderPromoCodesPanel(){
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:12px;color:var(--muted);margin-bottom:10px">'+
             '<div>Applies: <b style="color:var(--text)">'+esc(appliesLabel(c))+'</b></div>'+
             '<div>Expires: <b style="color:var(--text)">'+(c.expires?esc(fmtDate(c.expires)):'No deadline')+'</b></div>'+
-            '<div>Uses: <b style="color:var(--text)">'+(Number(c.uses||0))+(c.maxUses?(' / '+c.maxUses):'')+'</b></div>'+
+            '<div>Uses: <b style="color:var(--text)">'+_useCount(c)+(c.maxUses?(' / '+c.maxUses):'')+'</b></div>'+
             (c.minSubtotal?'<div>Min order: <b style="color:var(--text)">$'+c.minSubtotal+'</b></div>':'')+
             ((c.rules&&c.rules.length)?'<div style="grid-column:1/-1">Vehicle deals: <b style="color:var(--text)">'+c.rules.map(function(r){ var w=(r.vehicles||[]).join(', '); var d=(r.kind==='flat'?('$'+(Number(r.flatPrice)||0)+' / '+(Number(r.days)||0)+'-day'):(r.kind==='amount'?('$'+(Number(r.value)||0)+' off'):((Number(r.value)||0)+'% off'))); return esc(w)+' &#8212; '+d; }).join(' &#8226; ')+'</b></div>':'')+
             (c.banner!==false?'<div style="grid-column:1/-1;color:var(--green)">&#9679; On sale banner'+(c.title?(': &#8220;'+esc(c.title)+'&#8221;'):'')+'</div>':'')+
