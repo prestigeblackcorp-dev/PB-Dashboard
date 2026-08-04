@@ -10388,7 +10388,7 @@ const Atlas = (function(){
   function _publicSiteConfig(){ var wk=_webKeys(), w=_web(); return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
     collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
     showFleet:w.showFleet!==false, showAbout:w.showAbout!==false, showReviews:w.showReviews!==false, showContact:w.showContact!==false,   // P0-1: owner section toggles now reach the served page (worker _sec() hides a section only on explicit false)
-    faq:_webFaqList(), font:(w.font||'system'), template:(w.template||'classic'), metaTitle:String(w.metaTitle||'').trim().slice(0,70), metaDescription:String(w.metaDescription||'').trim().slice(0,300), accent2:(_aioHex(w.accent2)||''),   // Website builder (AI + owner controls): worker RENDERS these from config -- faq[{q,a}], font system|serif|modern|elegant, template classic|luxury|bold|minimal, meta tags + secondary accent. Defaults ''/'system'/'classic' = current look.
+    faq:_webFaqList(), font:(w.font||'system'), template:(w.template||'classic'), metaTitle:String(w.metaTitle||'').trim().slice(0,70), metaDescription:String(w.metaDescription||'').trim().slice(0,300), metaImage:(/^https:\/\//i.test(String(w.metaImage||''))?String(w.metaImage).slice(0,600):''), accent2:(_aioHex(w.accent2)||''),   // Website builder (AI + owner controls): worker RENDERS these from config -- faq[{q,a}], font system|serif|modern|elegant, template classic|luxury|bold|minimal, meta tags + secondary accent. Defaults ''/'system'/'classic' = current look.
     posts:(Array.isArray(w.posts)?w.posts:[]).map(function(p){ return {slug:p.slug,title:p.title,body:p.body,excerpt:p.excerpt,published:p.published!==false,at:p.at}; }),   // Blog: emit all posts; the worker filters to published for /blog + per-post pages
     pages:(Array.isArray(w.pages)?w.pages:[]).map(function(p){ return {id:p.id,slug:p.slug,title:p.title,seoDesc:p.seoDesc,published:p.published!==false,nav:!!p.nav,at:p.at,sections:p.sections}; }),   // Custom pages: emit all; the worker filters to published + >=1 section for /p/<slug> + nav + sitemap
     homePageId:(w.homePageId||''),   // Increment 3: owner-designated homepage id -- worker renders this page's section stack above the #app booking form (empty = default marketing block; served page byte-identical)
@@ -10506,16 +10506,18 @@ const Atlas = (function(){
     }).catch(function(){ var e3=document.getElementById('seoHealthBody'); if(e3) e3.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">Could not load &mdash; <a onclick="Atlas.seoHealthLoad(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; }); }
   // Tenant SITE TRAFFIC card: the owner's OWN public-site visits + booking requests (from worker /api/tenant/site-stats).
   // Mirrors seoHealthLoad -- cache-guarded lazy load, owner-gated read, honest gates for preview/unpublished.
-  var _webStats=null;
+  var _webStats=null, _webStatsDays=30;
   function _webStatsRender(j){ var el=document.getElementById('webStatsBox'); if(!el) return;
-    var v7=Number(j.views7)||0, v30=Number(j.views30)||0, u7=Number(j.uniques7)||0, u30=Number(j.uniques30)||0, b7=Number(j.bookings7)||0, b30=Number(j.bookings30)||0;
-    var conv=v7>0?(Math.round((b7/v7)*1000)/10):0;
-    function stat(lbl,val,sub){ return '<div style="flex:1 1 96px;text-align:center;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)"><div style="font-size:22px;font-weight:800;color:var(--brand)">'+esc(String(val))+'</div><div class="desc" style="margin:2px 0 0">'+esc(lbl)+'</div>'+(sub?('<div class="desc" style="margin:0;font-size:11px">'+esc(sub)+'</div>'):'')+'</div>'; }
-    // 30-day daily-visits sparkline (real series)
+    var D=Math.max(1,Math.min(120,Number(j.days)||30));   // the selected window; range-scoped fields fall back to the 30d legacy fields
+    var vv=Number(j.views!=null?j.views:j.views30)||0, uu=Number(j.uniques!=null?j.uniques:j.uniques30)||0, bb=Number(j.bookings!=null?j.bookings:j.bookings30)||0;
+    var conv=vv>0?(Math.round((bb/vv)*1000)/10):0;
+    var lbl=(D>=120?'all time':(D===1?'today':D+' days'));
+    var dsel='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">'+[[7,'7 days'],[30,'30 days'],[90,'90 days'],[120,'All time']].map(function(o){ var d=o[0], on=(D===d); return '<button class="btn btn--ghost btn--sm" style="flex:none'+(on?';border-color:var(--brand);color:var(--brand);font-weight:700':'')+'" onclick="Atlas.webLoadSiteStats(true,'+d+')">'+o[1]+'</button>'; }).join('')+'</div>';
+    function stat(l,val,sub){ return '<div style="flex:1 1 96px;text-align:center;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)"><div style="font-size:22px;font-weight:800;color:var(--brand)">'+esc(String(val))+'</div><div class="desc" style="margin:2px 0 0">'+esc(l)+'</div>'+(sub?('<div class="desc" style="margin:0;font-size:11px">'+esc(sub)+'</div>'):'')+'</div>'; }
     var series=Array.isArray(j.series)?j.series:[], spark='';
     if(series.length){ var mx=1; series.forEach(function(p){ if((p.views||0)>mx)mx=p.views; }); var W=280,H=44,n=series.length,bw=W/n;
       var bars=series.map(function(p,i){ var h=Math.max(1,Math.round((p.views||0)/mx*(H-4))); return '<rect x="'+(i*bw).toFixed(1)+'" y="'+(H-h)+'" width="'+Math.max(1,bw-1.2).toFixed(1)+'" height="'+h+'" rx="1" fill="var(--brand)" opacity="'+((p.views||0)?'0.85':'0.2')+'"><title>'+esc(p.day)+': '+(p.views||0)+'</title></rect>'; }).join('');
-      spark='<div style="margin-top:10px"><div class="desc" style="margin:0 0 4px">Daily visits (last 30 days)</div><svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" preserveAspectRatio="none" style="display:block">'+bars+'</svg></div>'; }
+      spark='<div style="margin-top:10px"><div class="desc" style="margin:0 0 4px">Daily visits (last '+lbl+')</div><svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" preserveAspectRatio="none" style="display:block">'+bars+'</svg></div>'; }
     function barList(title, rows, labelFn){ if(!rows||!rows.length) return ''; var tot=0; rows.forEach(function(r){ tot+=(r.count||0); }); if(tot<=0)tot=1;
       var items=rows.map(function(r){ var pct=Math.round((r.count||0)/tot*100); return '<div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:12.5px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(labelFn(r))+'</span><span style="color:var(--muted);flex:none">'+(r.count||0)+'</span></div><div style="height:5px;border-radius:3px;background:var(--line);margin-top:2px"><div style="height:5px;border-radius:3px;background:var(--brand);width:'+pct+'%"></div></div></div>'; }).join('');
       return '<div style="margin-top:12px"><div class="desc" style="margin:0 0 2px;font-weight:600">'+esc(title)+'</div>'+items+'</div>'; }
@@ -10524,24 +10526,25 @@ const Atlas = (function(){
     var _rn=null; try{ _rn=new Intl.DisplayNames(['en'],{type:'region'}); }catch(e){}
     function cName(code){ try{ return (_rn&&_rn.of(code))||code; }catch(e){ return code; } }
     var dev=j.devices||{}; var devRows=[['mobile','Mobile'],['desktop','Desktop'],['tablet','Tablet']].map(function(d){ return {count:Number(dev[d[0]])||0, name:d[1]}; }).filter(function(x){ return x.count>0; });
-    el.innerHTML='<div style="display:flex;gap:8px;flex-wrap:wrap">'
-      +stat('Visits (7d)', v7.toLocaleString(), v30.toLocaleString()+' in 30d')
-      +stat('Unique visitors (7d)', u7.toLocaleString(), u30.toLocaleString()+' in 30d')
-      +stat('Booking requests (7d)', b7.toLocaleString(), b30.toLocaleString()+' in 30d')
-      +stat('Conversion (7d)', conv+'%', 'requests / visits')
+    el.innerHTML=dsel+'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +stat('Visits', vv.toLocaleString(), 'over '+lbl)
+      +stat('Unique visitors', uu.toLocaleString(), 'over '+lbl)
+      +stat('Booking requests', bb.toLocaleString(), 'over '+lbl)
+      +stat('Conversion', conv+'%', 'requests / visits')
       +'</div>'
       +spark
       +barList('Top referrers', (j.refs||[]), function(r){ return r.name; })
       +barList('Top countries', (j.geo||[]), function(r){ return cName(r.code); })
       +barList('Devices', devRows, function(r){ return r.name; })
       +barList('Most-viewed '+String((S.fleet&&S.fleet.nouns)||'vehicles'), (j.assets||[]), function(r){ return nameBySlug[r.slug]||r.slug; })
-      +'<div class="desc" style="margin:10px 0 0">Real visitors to your published site (bots filtered), last 30 days. Counting begins when your site is live.</div>'; }
-  function webLoadSiteStats(force){ var el=document.getElementById('webStatsBox'); if(!el) return;
+      +'<div class="desc" style="margin:10px 0 0">Real visitors to your published site (bots filtered), last '+lbl+'. Counting begins when your site is live.</div>'; }
+  function webLoadSiteStats(force, days){ var el=document.getElementById('webStatsBox'); if(!el) return;
+    if(days){ days=Math.max(1,Math.min(120,parseInt(days,10)||30)); _webStatsDays=days; }
     if(!ATLAS_BACKEND || !_apiCsrf){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Your site traffic appears once your Atlas backend is connected.</div>'; return; }
     if(!_bookingSitePublished()){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Publish your site to start counting visits.</div>'; return; }
-    if(!force && _webStats){ _webStatsRender(_webStats); return; }
+    if(!force && _webStats && Number(_webStats.days)===_webStatsDays){ _webStatsRender(_webStats); return; }
     el.innerHTML='<div class="bk-lenhint" style="margin:0">Loading your traffic&hellip;</div>';
-    _api('/api/tenant/site-stats',{method:'GET'}).then(function(res){ var j=res&&res.json, e2=document.getElementById('webStatsBox'); if(!e2) return;
+    _api('/api/tenant/site-stats?days='+encodeURIComponent(_webStatsDays),{method:'GET'}).then(function(res){ var j=res&&res.json, e2=document.getElementById('webStatsBox'); if(!e2) return;
       if(!(res.status>=200 && res.status<300 && j && j.ok)){ e2.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">'+esc((j&&j.error)||'Could not load your traffic')+' &mdash; <a onclick="Atlas.webLoadSiteStats(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; return; }
       _webStats=j; _webStatsRender(j);
     }).catch(function(){ var e3=document.getElementById('webStatsBox'); if(e3) e3.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">Could not load &mdash; <a onclick="Atlas.webLoadSiteStats(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; }); }
@@ -10849,6 +10852,7 @@ const Atlas = (function(){
   function _webUploadImg(file, cb){ if(!file){ if(cb)cb(null); return; } if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to upload images.'); if(cb)cb(null); return; } if(file.size>15000000){ toast('Image too large (max 15MB).'); if(cb)cb(null); return; } var rd=new FileReader(); rd.onload=function(e){ _downscaleImg(String(e.target.result||''), 1400, 0.82, function(out){ var data=out||String(e.target.result||''); _api('/api/files',{method:'POST',body:{data:data, name:(file.name||'image')}}).then(function(res){ var j=(res&&res.json)||{}; if(j.ok&&j.url){ if(cb)cb(j.url); } else { toast(j.message||'Could not upload the image.'); if(cb)cb(null); } }).catch(function(){ toast('Upload failed. Please try again.'); if(cb)cb(null); }); }); }; rd.readAsDataURL(file); }
   function webSecImgUpload(pid, secId, fieldKey, inp){ if(!_guard('webEdit'))return; var f=inp&&inp.files&&inp.files[0]; if(!f)return; toast('Uploading image\u2026'); _webUploadImg(f, function(url){ try{ inp.value=''; }catch(_){} if(!url)return; var patch={}; patch[fieldKey]=url; webPageSectionSet(pid, secId, patch); try{ _webRefreshPages(); }catch(_){}; toast('Image uploaded'); }); }
   function webSecGalleryUpload(pid, secId, fieldKey, inp){ if(!_guard('webEdit'))return; var files=inp&&inp.files?Array.prototype.slice.call(inp.files):[]; if(!files.length)return; var sec=_webPageSection(pid, secId); if(!sec)return; if(!sec.props)sec.props={}; if(!Array.isArray(sec.props[fieldKey]))sec.props[fieldKey]=[]; try{ inp.value=''; }catch(_){} toast('Uploading '+files.length+' image'+(files.length===1?'':'s')+'\u2026'); var done=0,total=files.length,ok=0; files.forEach(function(file){ _webUploadImg(file, function(url){ if(url && sec.props[fieldKey].length<12){ sec.props[fieldKey].push(url); ok++; } done++; if(done>=total){ save(); try{ _webRefreshPages(); }catch(_){}; try{ _webRefreshPreview(); }catch(_){}; toast(ok?(ok+' image'+(ok===1?'':'s')+' added'):'No images added'); } }); }); }
+  function webMetaImageUpload(inp){ if(!_guard('webEdit'))return; var f=inp&&inp.files&&inp.files[0]; if(!f)return; toast('Uploading image\u2026'); _webUploadImg(f, function(url){ try{ inp.value=''; }catch(_){} if(!url)return; setWebField('metaImage', url); try{ renderWebsite(); }catch(e){} toast('Share image set'); }); }
   function webPageSectionRemove(pageId, secId){ if(!_guard('webEdit'))return; var pg=_webPage(pageId); if(!pg||!Array.isArray(pg.sections))return; var n=pg.sections.length; pg.sections=pg.sections.filter(function(x){ return x&&x.id!==secId; }); if(pg.sections.length!==n){ save(); _webRefreshPages(); _webRefreshPreview(); } }
   function webPageSectionMove(pageId, secId, dir){ if(!_guard('webEdit'))return; var pg=_webPage(pageId); if(!pg||!Array.isArray(pg.sections))return; var a=pg.sections, i=-1; for(var k=0;k<a.length;k++){ if(a[k]&&a[k].id===secId){ i=k; break; } } if(i<0)return; var j=(dir==='up')?i-1:i+1; if(j<0||j>=a.length)return; var t=a[i]; a[i]=a[j]; a[j]=t; save(); _webRefreshPages(); _webRefreshPreview(); }
   /* ---- HTML5 drag-and-drop section reordering (additive). The up/down arrows above stay as the touch/mobile fallback --
@@ -11333,7 +11337,13 @@ const Atlas = (function(){
       +'<div class="set-block"><h3>Design</h3><div class="desc">Fonts, layout template and your brand accents.</div>'+_webDesignHtml()+'</div>'
       +'<div class="set-block"><h3>Search &amp; SEO</h3><div class="desc">How your site shows up in Google and when shared. Atlas.io can also set these from chat.</div>'
         +'<div class="field"><label>SEO title <span style="color:var(--muted);font-weight:500">&mdash; browser tab &amp; search result</span></label><input class="input" maxlength="70" placeholder="'+esc((S.brand.name||'Your business')+' \u2014 book online')+'" value="'+esc(w.metaTitle||'')+'" oninput="Atlas.setWebField(\'metaTitle\',this.value)"></div>'
-        +'<div class="field" style="margin-bottom:0"><label>SEO description</label><textarea class="input" rows="2" maxlength="300" placeholder="A short summary that shows under your title in search results." oninput="Atlas.setWebField(\'metaDescription\',this.value)">'+esc(w.metaDescription||'')+'</textarea></div>'
+        +'<div class="field"><label>SEO description</label><textarea class="input" rows="2" maxlength="300" placeholder="A short summary that shows under your title in search results." oninput="Atlas.setWebField(\'metaDescription\',this.value)">'+esc(w.metaDescription||'')+'</textarea></div>'
+        +'<div class="field" style="margin-bottom:0"><label>Share image <span style="color:var(--muted);font-weight:500">&mdash; shown when your link is posted on social</span></label>'
+          +'<input class="input" placeholder="https://... or upload below" value="'+esc(w.metaImage||'')+'" oninput="Atlas.setWebField(\'metaImage\',this.value)">'
+          +'<div style="display:flex;gap:8px;align-items:center;margin-top:6px">'
+            +'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">Upload image<input type="file" accept="image/*" style="display:none" onchange="Atlas.webMetaImageUpload(this)"></label>'
+            +(/^https?:\/\//i.test(String(w.metaImage||''))?('<img src="'+esc(w.metaImage)+'" alt="" style="height:34px;border-radius:6px;border:1px solid var(--line);object-fit:cover">'):'')
+          +'</div><div class="desc" style="margin:4px 0 0">1200&#215;630 works best. Defaults to your logo.</div></div>'
       +'</div>'
       +'<div class="set-block"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3>SEO health</h3><div class="desc" style="margin-bottom:0">A live checkup of how well your site is set up to be found on Google. Fix the flagged items to climb the rankings.</div></div><button class="btn btn--ghost btn--sm" style="flex:none" onclick="Atlas.seoHealthLoad(true)">Re-check</button></div>'
         +'<div id="seoHealthBody" style="margin-top:14px"><div class="bk-lenhint" style="margin:0">Loading your SEO health&hellip;</div></div>'
@@ -12500,7 +12510,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
