@@ -10504,11 +10504,33 @@ const Atlas = (function(){
         e2.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">'+esc((j&&j.error)||'Could not load your SEO health')+' &mdash; <a onclick="Atlas.seoHealthLoad(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; return; }
       _seoHealth=j; _seoHealthRender(j);
     }).catch(function(){ var e3=document.getElementById('seoHealthBody'); if(e3) e3.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">Could not load &mdash; <a onclick="Atlas.seoHealthLoad(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; }); }
+  // Tenant SITE TRAFFIC card: the owner's OWN public-site visits + booking requests (from worker /api/tenant/site-stats).
+  // Mirrors seoHealthLoad -- cache-guarded lazy load, owner-gated read, honest gates for preview/unpublished.
+  var _webStats=null;
+  function _webStatsRender(j){ var el=document.getElementById('webStatsBox'); if(!el) return;
+    var v7=Number(j.views7)||0, v30=Number(j.views30)||0, b7=Number(j.bookings7)||0, b30=Number(j.bookings30)||0;
+    var conv=v7>0?(Math.round((b7/v7)*1000)/10):0;
+    function stat(lbl,val,sub){ return '<div style="flex:1 1 96px;text-align:center;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)"><div style="font-size:22px;font-weight:800;color:var(--brand)">'+esc(String(val))+'</div><div class="desc" style="margin:2px 0 0">'+esc(lbl)+'</div>'+(sub?('<div class="desc" style="margin:0;font-size:11px">'+esc(sub)+'</div>'):'')+'</div>'; }
+    el.innerHTML='<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +stat('Visits (7d)', v7.toLocaleString(), v30.toLocaleString()+' in 30d')
+      +stat('Booking requests (7d)', b7.toLocaleString(), b30.toLocaleString()+' in 30d')
+      +stat('Conversion (7d)', conv+'%', 'requests / visits')
+      +'</div><div class="desc" style="margin:8px 0 0">Real visitors to your published booking site (bots filtered). Counting begins when your site is live.</div>'; }
+  function webLoadSiteStats(force){ var el=document.getElementById('webStatsBox'); if(!el) return;
+    if(!ATLAS_BACKEND || !_apiCsrf){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Your site traffic appears once your Atlas backend is connected.</div>'; return; }
+    if(!_bookingSitePublished()){ el.innerHTML='<div class="bk-lenhint" style="margin:0">Publish your site to start counting visits.</div>'; return; }
+    if(!force && _webStats){ _webStatsRender(_webStats); return; }
+    el.innerHTML='<div class="bk-lenhint" style="margin:0">Loading your traffic&hellip;</div>';
+    _api('/api/tenant/site-stats',{method:'GET'}).then(function(res){ var j=res&&res.json, e2=document.getElementById('webStatsBox'); if(!e2) return;
+      if(!(res.status>=200 && res.status<300 && j && j.ok)){ e2.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">'+esc((j&&j.error)||'Could not load your traffic')+' &mdash; <a onclick="Atlas.webLoadSiteStats(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; return; }
+      _webStats=j; _webStatsRender(j);
+    }).catch(function(){ var e3=document.getElementById('webStatsBox'); if(e3) e3.innerHTML='<div class="bk-lenhint" style="margin:0;border-color:#C77D0A;color:#8a5200">Could not load &mdash; <a onclick="Atlas.webLoadSiteStats(true)" style="cursor:pointer;text-decoration:underline;color:var(--brand)">try again</a>.</div>'; }); }
   function renderWebsite(){ var el=document.getElementById('webBody'); if(!el||!S) return; var w=_web();
     if(!_canBuildSite() && !w.built){ el.innerHTML=_webGateHtml(); return; }
     if(!w.built){ el.innerHTML=_webStartHtml(); return; }
     el.innerHTML=_webBuilderHtml(w);
     try{ seoHealthLoad(); }catch(e){}   // lazy: renders the SEO Health card once the builder mounts (cache-guarded -- fetches only on first open / Re-check)
+    try{ webLoadSiteStats(); }catch(e){}   // lazy: renders the Site traffic card (cache-guarded)
     try{ webDomLoad(); }catch(e){}   // lazy: My-domains portfolio loads when the builder (Domain block) mounts; cache-guarded -- fetches only on first open / Refresh
   }
   function _webHead(sub){ return '<div style="margin-bottom:18px"><h2 style="font-size:22px">Website</h2><p style="color:var(--muted);font-size:14px">'+sub+'</p></div>'; }
@@ -11280,6 +11302,9 @@ const Atlas = (function(){
   function _webBuilderHtml(w){
     var side='<div class="web-side">'
       +'<div class="web-live"><span class="dot"></span><div>'+(_bookingSitePublished()?('Live at <b>'+esc(_bookingLink())+'</b>'):'Preview &mdash; <b>publish below</b> to go live')+'</div></div>'
+      +'<div class="set-block"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3>Site traffic</h3><div class="desc" style="margin-bottom:0">How many people visit your published site and how many ask to book.</div></div><button class="btn btn--ghost btn--sm" style="flex:none" onclick="Atlas.webLoadSiteStats(true)">Refresh</button></div>'
+        +'<div id="webStatsBox" style="margin-top:14px"><div class="bk-lenhint" style="margin:0">Loading your traffic&hellip;</div></div>'
+      +'</div>'
       +'<div class="set-block"><h3>Content</h3><div class="desc">Atlas.io drafted this. Edit anything.</div>'
         +'<div class="field"><label>Headline</label><input class="input" data-webfield="headline" value="'+esc(w.headline)+'" oninput="Atlas.setWebField(\'headline\',this.value)"></div>'
         +'<div class="field"><label>Tagline</label><input class="input" data-webfield="tagline" value="'+esc(w.tagline)+'" oninput="Atlas.setWebField(\'tagline\',this.value)"></div>'
@@ -12455,7 +12480,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
