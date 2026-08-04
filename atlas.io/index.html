@@ -10748,6 +10748,7 @@ const Atlas = (function(){
     if(!_canBuildSite() && !w.built){ el.innerHTML=_webGateHtml(); return; }
     if(!w.built){ el.innerHTML=_webStartHtml(); return; }
     el.innerHTML=_webBuilderHtml(w);
+    try{ _pgDecorateInline(); }catch(e){}   // #357: this path builds #webPrev inline (not via _webRefreshPreview), so decorate here too
     try{ seoHealthLoad(); }catch(e){}   // lazy: renders the SEO Health card once the builder mounts (cache-guarded -- fetches only on first open / Re-check)
     try{ webLoadSiteStats(); }catch(e){}   // lazy: renders the Site traffic card (cache-guarded)
     try{ webDomLoad(); }catch(e){}   // lazy: My-domains portfolio loads when the builder (Domain block) mounts; cache-guarded -- fetches only on first open / Refresh
@@ -10877,7 +10878,7 @@ const Atlas = (function(){
   // Single-line fields (headline/tagline): Enter commits instead of inserting a newline.
   function _webInlineKey(ev,el){ if(ev&&ev.key==='Enter'&&el&&el.getAttribute('data-ie')!=='about'){ ev.preventDefault(); el.blur(); } }
   function toggleWebSection(sec,on){ var w=_web(); w[sec]=!!on; save(); _webRefreshPreview(); }
-  function _webRefreshPreview(){ var p=document.getElementById('webPrev'); if(p) p.innerHTML=_webPreviewHtml(); }
+  function _webRefreshPreview(){ var p=document.getElementById('webPrev'); if(p){ p.innerHTML=_webPreviewHtml(); try{ _pgDecorateInline(); }catch(_){} } }   // innerHTML wipes the decoration -- re-apply on every render (one funnel, so it can never be missed)
   // Device preview toggle (desktop|tablet|mobile): lightweight -- resizes #webPrev in place so it never re-renders the builder (keeps scroll/focus). ADDITIVE, session-only, never persisted.
   function webSetDevice(d){ _webDevice=(d==='mobile'||d==='tablet')?d:'desktop'; var p=document.getElementById('webPrev'); if(p){ var mw=(_webDevice==='mobile')?'390px':(_webDevice==='tablet')?'768px':'100%'; p.style.maxWidth=mw; p.style.margin=(_webDevice==='desktop')?'0':'0 auto'; p.style.transition='max-width .18s ease'; } var ids=['desktop','tablet','mobile']; for(var i=0;i<ids.length;i++){ var b=document.getElementById('webDev-'+ids[i]); if(b){ if(ids[i]===_webDevice) b.classList.add('on'); else b.classList.remove('on'); } } }
   // One-step undo for the AI design/edit features: snapshot the design BEFORE an AI mutation into a MODULE var (never persisted -> no sync bloat).
@@ -11341,8 +11342,10 @@ const Atlas = (function(){
       +_PG_TYPE_ORDER.map(function(t){ var e=SECTION_REG[t]; return '<button class="btn btn--ghost btn--sm" title="'+esc(e.label)+'" onclick="Atlas.webPageSectionAdd(\''+esc(pid)+'\',\''+t+'\')"><b style="color:var(--brand);font-size:10px;letter-spacing:.4px">'+esc(e.icon)+'</b> '+esc(e.label)+'</button>'; }).join('')
       +'</div></div>';
     var ask='<div style="display:flex;gap:6px;margin:0 0 10px"><input class="input" id="aiEditInstr" placeholder="Ask Atlas to edit this page &mdash; e.g. make the hero punchier, add a testimonials section" style="flex:1" onkeydown="if(event.key===\'Enter\'){event.preventDefault();Atlas.aiEditPage();}"><button class="btn btn--primary" id="aiEditBtn" onclick="Atlas.aiEditPage()">Ask Atlas</button></div>';
-    var dndCss='<style>.pg-dragging{opacity:.45}.pg-drop-before{box-shadow:inset 0 3px 0 var(--brand)}.pg-drop-after{box-shadow:inset 0 -3px 0 var(--brand)}.pg-grip{letter-spacing:-3px;padding-left:8px;padding-right:8px}</style>';
-    return dndCss+head+seo+ask+'<div id="pgSecStack" style="margin-top:6px">'+stack+'</div>'+picker; }
+    var dndCss='<style>.pg-dragging{opacity:.45}.pg-drop-before{box-shadow:inset 0 3px 0 var(--brand)}.pg-drop-after{box-shadow:inset 0 -3px 0 var(--brand)}.pg-grip{letter-spacing:-3px;padding-left:8px;padding-right:8px}'
+      +'.pg-card-flash{box-shadow:0 0 0 2px var(--brand);transition:box-shadow .2s ease}</style>';
+    var inlineHint='<div class="bk-lenhint" style="margin:0 0 10px">Click any heading, paragraph or button label <b>in the preview</b> to edit it right there. Click anywhere else in a section to jump to its settings. Drag the <b>&#8942;&#8942;</b> grip to reorder.</div>';
+    return dndCss+head+seo+ask+inlineHint+'<div id="pgSecStack" style="margin-top:6px">'+stack+'</div>'+picker; }
   function _webSectionCardHtml(pid, sec, idx, total){ var e=SECTION_REG[sec.type]; if(!e) return ''; var props=sec.props||{};
     var tone=(props.tone==='dark'||props.tone==='brand')?props.tone:'light';
     var fields=(e.fields||[]).map(function(f){ return _pgFieldHtml(pid, sec, f); }).join('');
@@ -11443,9 +11446,93 @@ const Atlas = (function(){
     +'.pg-announce{background:var(--brand);color:#ffffff;border-radius:10px;padding:12px 16px;max-width:720px;margin:0 auto;font-weight:600}'
     +'.pg-social{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:8px}.pg-social-link{border:1px solid var(--brand);color:var(--brand);border-radius:20px;padding:5px 13px;font-size:12.5px;font-weight:600}'
     +'@media(max-width:640px){.pg-grid.cols3,.pg-grid.cols4{grid-template-columns:repeat(2,1fr)}.pg-split-inner{flex-direction:column}}'
+    /* Inline click-to-edit affordances. PREVIEW ONLY -- the served page never carries these (the worker renders its own
+       markup and never sees this stylesheet), so a visitor can never get an editable site. */
+    +'.pg-sec[data-sid]{cursor:pointer}'
+    +'.pg-sec[data-sid]:hover{outline:1px dashed rgba(128,128,128,.5);outline-offset:-2px}'
+    +'.pg-sec[data-sid].pg-sel{outline:2px solid var(--brand);outline-offset:-2px}'
+    +'[data-sk]{cursor:text;border-radius:4px}'
+    +'[data-sk]:hover{box-shadow:0 0 0 2px rgba(128,128,128,.3)}'
+    +'[data-sk]:focus{outline:0;box-shadow:0 0 0 2px var(--brand)}'
     +'</style>';
   function _pgCols(v){ var c=String(v==null?3:v).replace(/[^0-9]/g,'')||'3'; if(c!=='2'&&c!=='3'&&c!=='4')c='3'; return c; }
   function _pgPvBtn(lbl){ lbl=String(lbl||'').trim(); return lbl?('<span class="pg-cta-btn">'+esc(lbl)+'</span>'):''; }
+  /* ==== INLINE CLICK-TO-EDIT (#357). The owner clicks the text IN the preview and types, instead of hunting for the
+     matching form field in the left stack. Deliberately built as DECORATION, not as a change to _renderSectionPreview:
+     the renderer stays byte-for-byte what it was, so preview-vs-served parity is untouched and no editable attribute can
+     ever reach a real visitor. We tag each <section> with its id, then after every render walk the DOM and mark the known
+     text nodes contenteditable. A (selector -> prop) pair is only applied when SECTION_REG actually declares that field
+     for that type, so the map can never write a prop the editor cannot also show. ==== */
+  var _PG_INLINE={
+    hero:[['.pg-hero-inner h2','heading',0],['.pg-hero-inner p','subheading',0],['.pg-cta-btn','btnLabel',0]],
+    text:[['h2','heading',0],['.pg-rich','body',1]],
+    split:[['h2','heading',0],['.pg-rich','body',1],['.pg-cta-btn','btnLabel',0]],
+    features:[['h2','heading',0]],
+    fleet:[['h2','heading',0]],
+    cta:[['.pg-hero-inner h2','heading',0],['.pg-hero-inner p','subtext',0],['.pg-cta-btn','btnLabel',0]],
+    gallery:[['h2','heading',0]],
+    faq:[['h2','heading',0]],
+    stats:[['h2','heading',0]],
+    contact:[['h2','heading',0],['.pg-cta-btn','btnLabel',0]],
+    video:[['h2','heading',0]],
+    map:[['h2','heading',0]],
+    testimonials:[['h2','heading',0]],
+    social:[['h2','heading',0]]
+  };
+  function _pgSidSafe(s){ return String(s==null?'':s).replace(/[^A-Za-z0-9_\-]/g,''); }
+  function _pgInjectSid(html, sid, type){ if(typeof html!=='string' || html.indexOf('<section')!==0) return html;
+    return html.replace(/^(<section\b)/, '$1 data-sid="'+esc(String(sid||''))+'" data-stype="'+esc(String(type||''))+'"'); }
+  // Runs after EVERY preview render (see _webRefreshPreview). Only inside the page editor -- the homepage-inside-default-
+  // preview path renders sections of a DIFFERENT page, and editing there would write to the wrong page.
+  function _pgDecorateInline(){
+    var box=document.getElementById('webPrev'); if(!box || !_webEditPageId) return;
+    var secs=box.querySelectorAll('section[data-sid]');
+    for(var i=0;i<secs.length;i++){ var el=secs[i], sid=el.getAttribute('data-sid'), ty=el.getAttribute('data-stype');
+      var map=_PG_INLINE[ty]; if(!map) continue;
+      for(var j=0;j<map.length;j++){ var key=map[j][1];
+        if(!_pgFieldByKey(ty,key)) continue;                       // self-validating against SECTION_REG
+        var t=null; try{ t=el.querySelector(map[j][0]); }catch(_){ t=null; }
+        if(!t || t.getAttribute('data-sk')) continue;
+        t.setAttribute('contenteditable','true'); t.setAttribute('spellcheck','false');
+        t.setAttribute('data-se',sid); t.setAttribute('data-sk',key);
+        if(map[j][2]) t.setAttribute('data-multi','1');
+        t.setAttribute('title','Click to edit'); } }
+    // Listeners live on #webPrev itself, which survives innerHTML replacement -- wire once per builder render.
+    if(!box.getAttribute('data-ie-wired')){ box.setAttribute('data-ie-wired','1');
+      // focusin/focusout, NOT focus/blur: the latter do not bubble, and delegating them via capture proved unreliable.
+      box.addEventListener('focusin', function(ev){ var t=ev.target; if(t&&t.getAttribute&&t.getAttribute('data-sk')) t.setAttribute('data-ie0', String(t.innerText||t.textContent||'')); }, false);
+      box.addEventListener('focusout', function(ev){ var t=ev.target; if(t&&t.getAttribute&&t.getAttribute('data-sk')) _webSecInline(t); }, false);
+      box.addEventListener('keydown', function(ev){ var t=ev.target; if(t&&t.getAttribute&&t.getAttribute('data-sk')) _webSecInlineKey(ev,t); }, false);
+      box.addEventListener('click', function(ev){ var t=ev.target; if(!t||!t.closest) return; if(t.closest('[data-sk]')) return;
+        var s=t.closest('section[data-sid]'); if(s) webSecSelect(s.getAttribute('data-sid')); }, false); } }
+  function _pgInlineNorm(v, multi){ v=String(v==null?'':v).replace(/\u00a0/g,' ');
+    return multi ? v.replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim() : v.replace(/\s+/g,' ').trim(); }
+  // Commits on BLUR (never per-keystroke) so the caret is never yanked mid-word by a re-render.
+  function _webSecInline(el){ if(!el)return; var sid=el.getAttribute('data-se'), key=el.getAttribute('data-sk'); if(!sid||!key)return;
+    var pid=_webEditPageId; if(!pid) return;
+    if(!_guard('webEdit','Editing your site')){ _webRefreshPreview(); return; }
+    var multi=(el.getAttribute('data-multi')==='1');
+    var v=_pgInlineNorm(el.innerText||el.textContent, multi);
+    // Compare against what was RENDERED, not against the stored prop. Several sections render a default when their prop
+    // is blank (contact -> "Contact us"); without this a click-through-and-blur would silently persist that default.
+    var was=_pgInlineNorm(el.getAttribute('data-ie0'), multi);
+    if(el.hasAttribute('data-ie0') && was===v) return;
+    var sec=_webPageSection(pid,sid); if(!sec) return;
+    var cur=String(((sec.props||{})[key]==null)?'':(sec.props||{})[key]);
+    if(cur===v) return;
+    var patch={}; patch[key]=v; webPageSectionSet(pid,sid,patch);   // -> save() + _webRefreshPreview() + _pgDecorateInline()
+    try{ _webRefreshPages(); }catch(_){}                            // the left-panel field follows what was typed here
+    try{ webSecSelect(sid); }catch(_){} }
+  function _webSecInlineKey(ev,el){ if(!ev||ev.key!=='Enter')return; if(el&&el.getAttribute('data-multi')==='1')return; ev.preventDefault(); try{ el.blur(); }catch(_){} }
+  // Click any section in the preview -> highlight it and bring its editor card into view (the other half of click-to-edit:
+  // the fields that have no inline text -- image, columns, tone -- are still one scroll away, not a hunt).
+  function webSecSelect(sid){ var id=_pgSidSafe(sid); if(!id) return;
+    var box=document.getElementById('webPrev');
+    if(box){ var all=box.querySelectorAll('section[data-sid]'); for(var i=0;i<all.length;i++) all[i].classList.remove('pg-sel');
+      var me=box.querySelector('section[data-sid="'+id+'"]'); if(me) me.classList.add('pg-sel'); }
+    var card=document.querySelector('#pgSecStack [data-sid="'+id+'"]'); if(!card) return;
+    try{ card.scrollIntoView({block:'center',behavior:'smooth'}); }catch(_){ try{ card.scrollIntoView(); }catch(__){} }
+    card.classList.add('pg-card-flash'); setTimeout(function(){ try{ card.classList.remove('pg-card-flash'); }catch(_){} }, 1400); }
   // CLIENT twins of the worker embed helpers (video/map/social) -- same whitelists so preview == served page.
   function _pgVideoEmbed(url){ var u=String(url||'').trim(); if(!u) return '';
     var yt=u.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{6,20})/);
@@ -11514,7 +11601,7 @@ const Atlas = (function(){
     } }
   function _webPagePreviewHtml(pg, fontStack, a2){
     var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" alt="business logo">'):esc(S.brand.initial);
-    var secs=(Array.isArray(pg.sections)?pg.sections:[]).map(function(s){ return _pgInjectStyle(_renderSectionPreview(s), _pgSecStyle((s&&s.props)||{})); }).join('');
+    var secs=(Array.isArray(pg.sections)?pg.sections:[]).map(function(s){ return _pgInjectSid(_pgInjectStyle(_renderSectionPreview(s), _pgSecStyle((s&&s.props)||{})), s&&s.id, s&&s.type); }).join('');
     return '<div class="site" data-tpl="'+esc(_web().template||'classic')+'" style="font-family:'+fontStack+(a2?(';--accent2:'+a2):'')+'">'+_PG_PREVIEW_CSS
       +'<div class="site__hero" style="padding:28px 16px"><div class="site__logo">'+logo+'</div><h1 style="margin:6px 0 0">'+esc(pg.title||'Untitled page')+'</h1>'+(pg.seoDesc?('<p>'+esc(pg.seoDesc)+'</p>'):'')+'</div>'
       +'<div class="pg-page">'+(secs||'<div class="site__sec"><div class="sub">No sections yet. Add one from the editor on the left.</div></div>')+'</div>'
