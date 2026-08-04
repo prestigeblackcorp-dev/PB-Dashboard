@@ -10144,7 +10144,7 @@ const Atlas = (function(){
   function _nextTierUp(){ var maxI=0; for(var i=0;i<TIERS.length;i++){ if(!TIERS[i].owner && !TIERS[i].comp) maxI=i; }   // fix: clamp to the last SELLABLE tier so 'unlimited' never leaks the owner-only Diamond (or comp Gold) tier
     return TIERS[Math.min(_tierIndex((S&&S.tier)||'starter')+1, maxI)]; }
   function _vehCap(){ return _curTier().vehicles; }
-  function _saveAssets(){ store.saveAssets(DATA.assets); }
+  function _saveAssets(){ store.saveAssets(DATA.assets); try{ _autoSyncPublishedAssetsSoon(); }catch(e){} }   // LIVE asset->site: any asset change auto-updates a connected published site's fleet/pricing (design stays publish-gated). See _autoSyncPublishedAssets.
   function _settingsActive(){ var p=document.querySelector('.panel[data-panel="settings"]'); return p&&p.classList.contains('active'); }
   // --- Vehicles: cannot exceed the plan's cap; trying prompts an upgrade ---
   function addVehicle(){ if(!_guard('fleetEdit','Adding '+S.fleet.nouns))return; if(_vehCap()!==Infinity && _fleetUnits() >= _vehCap()){ promptUpgrade('vehicles'); return; } _vehicleForm(); }   // packaging(1): gate on total UNITS (sum of qty), not asset rows
@@ -10410,6 +10410,36 @@ const Atlas = (function(){
       else if(res.status===402 && res.json && res.json.error==='website_addon_required'){ toast('Add the website ($199 once or $19/mo) or upgrade to Enterprise to publish'); buyWebsiteAddon(); }   // #278: honest gate, same $199/$19-or-upgrade copy as _webGateHtml
       else toast((res.json&&res.json.error)||'Could not publish \u2014 please try again'); }).catch(function(){ toast('Network error while publishing'); }); }
   function _bookingSitePublished(){ return !!(ATLAS_BACKEND && _web().published); }
+  // LIVE asset -> site sync (money-safe, integrity): when the owner changes ANY asset (price, photo, availability, stock,
+  // add/remove) and they have a CONNECTED published site, the public fleet + the booking quote update immediately -- the
+  // customer always sees the true, current price, and it is in effect the moment the owner changes it. DESIGN stays
+  // publish-gated: this refreshes ONLY the fleet/pricing snapshot and reuses the LAST-PUBLISHED config/headline/about
+  // (recovered from w.pubSig), so unpublished copy/layout edits are NOT pushed. Because the served page AND the /book
+  // quote read this same snapshot, shown == charged always -- there is no path to display one price and charge another.
+  function _autoSyncPublishedAssets(){
+    try{
+      if(!ATLAS_BACKEND || !_apiCsrf || _bootSync) return;
+      if(!_bookingSitePublished()) return;
+      var w=_web(); if(!w || !w.publishedSlug || w.pubSig==null) return;   // only ever update the EXACT published site; never guess a slug (would move/duplicate the tenant)
+      var last; try{ last=JSON.parse(w.pubSig); }catch(e){ return; }
+      if(!last || last.c==null || last.a==null) return;                    // need last-published config to keep DESIGN gated
+      var fresh=_publicSiteAssets();
+      if(JSON.stringify(fresh)===JSON.stringify(last.a)) return;           // no public-facing asset change -> nothing to push (cheap for maintenance/vault saves)
+      var payload={ subdomain:w.publishedSlug, name:S.brand.name,
+        brand:{ color:S.brand.color, logo:S.brand.logo, initial:S.brand.initial, name:S.brand.name },
+        money:{ baseRate:S.money.baseRate, tax:S.money.tax, deposit:S.money.deposit, depositPct:S.money.depositPct, rateModel:S.money.rateModel, currency:S.money.currency },
+        settings:{ comms:_comms(), publicSite:{ published:true, headline:(last.h||''), about:(last.ab||''), assets:fresh, config:last.c } } };
+      _api('/api/tenant/profile',{method:'PUT',body:payload}).then(function(res){
+        if(res && res.status>=200 && res.status<300 && res.json && res.json.ok){
+          var w2=_web(); w2.pubSig=JSON.stringify({a:fresh,c:last.c,h:(last.h||''),ab:(last.ab||'')}); save();   // re-stamp so the auto-synced assets are NOT flagged as "unpublished changes" (design edits still are)
+          try{ var wb=document.getElementById('webBody'); if(wb && wb.offsetParent!==null) renderWebsite(); }catch(e){}
+          try{ toast('Live site updated \u2014 new pricing is in effect'); }catch(e){}
+        }
+      }).catch(function(){});
+    }catch(e){}
+  }
+  var _asyncAssetT=null;
+  function _autoSyncPublishedAssetsSoon(){ try{ if(_asyncAssetT) clearTimeout(_asyncAssetT); _asyncAssetT=setTimeout(function(){ _asyncAssetT=null; _autoSyncPublishedAssets(); }, 1000); }catch(e){ _autoSyncPublishedAssets(); } }
   // ---- SEO Health card (website builder). Read-only checkup: GET /api/seo/health (already deployed, tenant-session
   //      gated) through the SHARED _api() helper -- same cookie auth + 402 interception as every other tenant call.
   //      ADDITIVE + money-safe: nothing here touches calcQuote/pricing/booking. The last result is cached on _seoHealth
@@ -10745,6 +10775,15 @@ const Atlas = (function(){
   function webPageToggle(id){ if(!_guard('webEdit'))return; var p=_webPage(id); if(!p)return; p.published=(p.published===false); save(); _webRefreshPages(); _webRefreshPreview(); }
   function webPageNavToggle(id){ if(!_guard('webEdit'))return; var p=_webPage(id); if(!p)return; p.nav=!p.nav; save(); _webRefreshPages(); _webRefreshPreview(); }
   function webSetHomePage(id){ if(!_guard('webEdit'))return; var w=_web(); w.homePageId=(String(w.homePageId||'')===String(id))?'':String(id); save(); _webRefreshPages(); _webRefreshPreview(); toast(w.homePageId?'Set as your homepage':'Homepage reset to the default'); }
+  // BACKWARD sync (site editor -> live asset): edit a price inside the builder's fleet section and it writes to the CANONICAL
+  // asset (DATA.assets), exactly like the Fleet tab. _saveAssets() then fires _autoSyncPublishedAssets, so the same change also
+  // reflects on the live site -- one asset, one truth, editable from either surface. Money-safe: writes the per-asset base rate.
+  function webFleetPriceSet(assetId, val){ if(!_guard('fleetEdit'))return; var a=(DATA.assets||[]).filter(function(x){return x.id===assetId;})[0]; if(!a)return;
+    var r=parseFloat(String(val==null?'':val).replace(/[^0-9.]/g,'')); if(!isFinite(r)||r<0) r=0; r=Math.round(r*100)/100;
+    if(r===(Number(a.rate)||0)){ try{ _webRefreshPreview(); }catch(e){} return; }   // no change
+    a.rate=r; _saveAssets();   // canonical -> Fleet tab + published site both update (via _saveAssets -> _autoSyncPublishedAssetsSoon)
+    try{ renderFleet(); }catch(e){} try{ renderOverview(); }catch(e){} try{ _webRefreshPreview(); }catch(e){}
+    toast(esc(a.name)+' \u2192 '+money(r)+' / '+esc(S.money.rateModel||'day')); }
   function webPageSectionAdd(pageId, type){ if(!_guard('webEdit'))return ''; if(!SECTION_REG[type]){ toast('Unknown section'); return ''; } var pg=_webPage(pageId); if(!pg)return ''; if(!Array.isArray(pg.sections))pg.sections=[]; if(pg.sections.length>=20){ toast('Up to 20 sections per page'); return ''; }
     var sec=_pgNewSection(type); if(!sec)return ''; pg.sections.push(sec); save(); _webRefreshPages(); _webRefreshPreview(); return sec.id; }
   function webPageSectionSet(pageId, secId, patch){ if(!_canCap('webEdit'))return; var sec=_webPageSection(pageId,secId); if(!sec)return; if(!sec.props)sec.props={}; patch=patch||{};
@@ -11054,6 +11093,25 @@ const Atlas = (function(){
       +[['','Normal'],['compact','Compact'],['spacious','Spacious']].map(function(o){ return '<option value="'+o[0]+'"'+(((props.pad||'')===o[0])?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select></div>';
     var bgInp='<div class="field" style="margin-bottom:0"><label>Background</label><input class="input" value="'+esc(props.bg||'')+'" placeholder="#0b1f17" onchange="Atlas.webPageSectionSet(\''+esc(pid)+'\',\''+esc(sec.id)+'\',{bg:this.value})"><div class="desc" style="margin:4px 0 0">Leave blank to use the tone. Any hex, e.g. &#35;0b1f17.</div></div>';
     var _pgStyleRow='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:6px;margin-top:8px">'+toneSel+alignSel+padSel+'</div><div style="margin-top:6px">'+bgInp+'</div>';
+    // BACKWARD sync editor: a fleet section gets an inline per-asset price editor. Editing writes the CANONICAL asset
+    // (webFleetPriceSet -> _saveAssets), which also auto-updates the live site. One asset, one truth, editable here or in Fleet.
+    var _fleetEditor='';
+    if(sec.type==='fleet'){
+      var _fa=(DATA.assets||[]).filter(function(a){ return a && (a.status||'')!=='Maintenance' && String(a.name||'').trim(); });
+      var _unit=esc(S.money.rateModel||'day');
+      var _rows=_fa.slice(0,60).map(function(a){
+        var _eff=Number((typeof _moneyFor==='function' && _moneyFor(a.name) && _moneyFor(a.name).baseRate)|| a.rate)||0;
+        return '<div style="display:grid;grid-template-columns:1fr 108px;gap:8px;align-items:center;margin-top:6px">'
+          +'<span style="font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(a.name)+'">'+esc(a.name)+'</span>'
+          +'<div class="rule-input" style="padding:0 8px"><span>'+_curSym()+'</span><input class="tnum" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+esc(String(_eff))+'" onchange="Atlas.webFleetPriceSet(\''+esc(a.id)+'\',this.value)" title="Price per '+_unit+' -- updates the live asset and your site"></div>'
+          +'</div>';
+      }).join('');
+      _fleetEditor='<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-2)">'
+        +'<label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:2px">Fleet &amp; pricing (live)</label>'
+        +'<div class="desc" style="margin:0 0 2px">Edit a price here and it updates the live '+esc(S.fleet.noun||'asset')+' AND your published site instantly. Full editing is in the Fleet tab.</div>'
+        +(_rows||'<div class="desc">No '+esc(S.fleet.nouns||'assets')+' yet -- add them in the Fleet tab.</div>')
+        +'</div>';
+    }
     return '<div data-sid="'+esc(sec.id)+'" ondragover="Atlas.webSecDragOver(event,\''+esc(sec.id)+'\')" ondragleave="Atlas.webSecDragLeave(event,\''+esc(sec.id)+'\')" ondrop="Atlas.webSecDrop(event,\''+esc(sec.id)+'\')" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
       +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px">'
         +'<b style="font-size:13px"><span style="color:var(--brand);font-size:10px;letter-spacing:.4px">'+esc(e.icon)+'</span> '+esc(e.label)+'</b>'
@@ -11063,7 +11121,7 @@ const Atlas = (function(){
           +'<button class="btn btn--ghost btn--sm"'+(idx>=total-1?' disabled':'')+' title="Move down" onclick="Atlas.webPageSectionMove(\''+esc(pid)+'\',\''+esc(sec.id)+'\',\'down\')">&darr;</button>'
           +'<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="if(confirm(\'Remove this section?\'))Atlas.webPageSectionRemove(\''+esc(pid)+'\',\''+esc(sec.id)+'\')">Remove</button>'
         +'</div></div>'
-      +fields+_pgStyleRow
+      +fields+_fleetEditor+_pgStyleRow
       +'</div>'; }
   function _pgFieldHtml(pid, sec, f){ var p=sec.props||{}, v=p[f.key];
     var set=function(expr){ return 'Atlas.webPageSectionSet(\''+esc(pid)+'\',\''+esc(sec.id)+'\',{'+f.key+':'+expr+'})'; };
@@ -12353,7 +12411,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
-    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
