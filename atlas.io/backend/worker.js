@@ -588,7 +588,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.05c';
+const ATLAS_BUILD = '2026.08.05d';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -726,9 +726,9 @@ async function askGPT(key, q, context, _mEnv, _mCtx) {
 }
 async function askGemini(key, q, context, _mEnv, _mCtx) {
   try {
-    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(_mEnv) + ':generateContent?key=' + encodeURIComponent(key), {
+    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(_mEnv) + ':generateContent', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({ systemInstruction: { parts: [{ text: AIO_SAFETY_PROMPT + _aioCtx(context) }] },
         contents: [{ parts: [{ text: q }] }] })
     }, 12000);
@@ -764,7 +764,7 @@ async function _aiSelfTest(env) {
   var g = { provider: 'gemini', keyPresent: !!env.GEMINI_KEY, model: 'gemini-3.6-flash' };
   if (env.GEMINI_KEY) {
     try {
-      var rg = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(env) + ':generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: 'ping' }] }] }) }, 12000);
+      var rg = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(env) + ':generateContent', { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_KEY }, body: JSON.stringify({ contents: [{ parts: [{ text: 'ping' }] }] }) }, 12000);   // #sec: key via header, not URL query
       g.status = rg.status; g.ok = rg.ok; var jg = await rg.json().catch(function () { return {}; });
       if (!rg.ok) g.error = String((jg && jg.error && ((jg.error.status || 'error') + ': ' + (jg.error.message || ''))) || ('HTTP ' + rg.status)).slice(0, 300);
     } catch (e) { g.ok = false; g.error = 'network: ' + String(e).slice(0, 200); }
@@ -801,8 +801,8 @@ async function _researchGPT(key, prompt, _mEnv, _mCtx, source) {
 }
 async function _researchGemini(key, prompt, _mEnv, _mCtx, source) {
   try {
-    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(_mEnv) + ':generateContent?key=' + encodeURIComponent(key), {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+    const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(_mEnv) + ':generateContent', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({ tools: [{ google_search: {} }], contents: [{ parts: [{ text: prompt }] }] })
     }, 28000);
     const j = await r.json().catch(() => ({})); const cand = (j.candidates || [])[0] || {}; let src = [];
@@ -1189,7 +1189,7 @@ async function _hqAsk(env, system, user, maxTok, opts, ectx) {
       const r = await _fetchTimeout('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'authorization': 'Bearer ' + env.OPENAI_KEY, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-4o', max_tokens: mt, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) }, 22000);
       if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'gpt-4o', _aiUsageFrom('openai', j), opts.source); return (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ? j.choices[0].message.content.trim() : ''; } },
     { p: 'gemini', has: !!env.GEMINI_KEY, call: async function () {
-      const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(env) + ':generateContent?key=' + encodeURIComponent(env.GEMINI_KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ parts: [{ text: user }] }] }) }, 22000);
+      const r = await _fetchTimeout('https://generativelanguage.googleapis.com/v1beta/models/' + _geminiModel(env) + ':generateContent', { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_KEY }, body: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ parts: [{ text: user }] }] }) }, 22000);   // #sec: key via header, not URL query
       if (r.status === 429 || r.status >= 500) throw new Error('rest'); const j = await r.json().catch(function () { return {}; }); _meterAIDeferred(ectx, env, 'gemini-3.6-flash', _aiUsageFrom('gemini', j), opts.source); return ((((((j.candidates || [])[0] || {}).content || {}).parts || [])[0] || {}).text || '').trim(); } }
   ];
   var order = fleet.filter(function (m) { return m.has; });
@@ -3866,6 +3866,7 @@ async function _logAttackWrite(env, o) {
     if (!env || !env.DB) return;
     await ensurePlatformSchema(env);
     o = o || {};
+    if (o.ip && !(await rateLimit(env, 'atklog:' + String(o.ip).slice(0, 64), 30, 60000))) return;   // #sec: cap attack_log writes at 30/min per source IP -- plenty for the recommend-bans aggregation, but stops cheap high-volume traffic from flooding the owner's own attack feed (write amplification)
     await env.DB.prepare('INSERT INTO attack_log (id,ts,ip,email,kind,path,method,detail,blocked,outcome,ua) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
       .bind('atk' + randId(12), Date.now(), String(o.ip || '').slice(0, 64), String(o.email || '').slice(0, 254), String(o.kind || '').slice(0, 40),
         _redactPath(o.path), String(o.method || '').slice(0, 10), String(o.detail || '').slice(0, 300),
@@ -6057,6 +6058,7 @@ function doReset(){
       if (_fm && method === 'GET') {
         const r2 = _r2(env); if (!r2) return err(404, 'File storage not configured.');
         const key = decodeURIComponent(_fm[1]).slice(0, 300);
+        if (key.indexOf('atlas/') !== 0) return err(404, 'Not found.');   // #sec: the R2 bucket is SHARED (pb-videos); only ever serve Atlas's own atlas/ namespace, mirroring the DELETE handler's prefix discipline -- never depend on "no sibling app names a key requestable here"
         // #260 KYC/ID photos are sensitive PII -- a capability key alone isn't enough for these. Require the viewer
         // to be a session on the SAME tenant the file belongs to, or hold the portal token for that exact booking.
         // Non-id kinds (pickup/condition/return/photo) are unchanged: they still serve on the (now-strong) key alone.
@@ -6071,7 +6073,8 @@ function doReset(){
               if (_ptok) { const _pbrow = await env.DB.prepare('SELECT id, data, ends, created_at FROM bookings WHERE portal_token=? LIMIT 1').bind(_ptok).first(); if (_pbrow && _pbrow.id === _bookingId && _portalLive(env, _pbrow)) _authed = true; }   // #sec: a REVOKED or EXPIRED portal token must NOT unlock the KYC ID/license photo (was accepting the token forever)
             } catch (e) {}
           }
-          if (!_authed) return err(403, 'Not authorized.');
+          if (!_authed) { try { await audit(env, null, req, 'file.id_denied', { booking: _bookingId, tenant: _tenantId }); } catch (e) {} return err(403, 'Not authorized.'); }   // #sec: log unauthorized KYC/ID-photo access attempts
+          try { const _av = audit(env, null, req, 'file.id_view', { booking: _bookingId, tenant: _tenantId }); if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_av); else if (_av && _av.catch) _av.catch(function () {}); } catch (e) {}   // #sec: successful KYC/ID-photo view is auditable PII access; fire-and-forget so it adds no latency
         }
         try {
           const obj = await r2.get(key); if (!obj) return err(404, 'Not found.');
@@ -8146,10 +8149,10 @@ function doReset(){
           const q = _quoteCents(d.quote || {}); const paid = d.paid || {};
           const got = ((paid.deposit && paid.deposit.amountCents) || 0) + ((paid.balance && paid.balance.amountCents) || 0) + ((paid.payment && paid.payment.amountCents) || 0);
           const due = Math.max(0, (Number(q.totalCents) || 0) - got);
-          return new Response(_portalDocHtml(pr, 'Receipt - ' + brow.id, _receiptBodyHtml(pr, brow, d, q, paid, got, due)), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+          return new Response(_portalDocHtml(pr, 'Receipt - ' + brow.id, _receiptBodyHtml(pr, brow, d, q, paid, got, due)), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' } });
         }
         if (psub === 'agreement' && method === 'GET') {
-          return new Response(_portalDocHtml(pr, 'Rental Agreement - ' + brow.id, _agreementBodyHtml(pr, brow, d, _agrText, !!(d.portal && d.portal.signedAt))), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+          return new Response(_portalDocHtml(pr, 'Rental Agreement - ' + brow.id, _agreementBodyHtml(pr, brow, d, _agrText, !!(d.portal && d.portal.signedAt))), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' } });
         }
         if (psub === 'upload' && method === 'POST') {
           if (!await rateLimit(env, 'pup:' + token, 24, 3600000)) return err(429, 'Too many uploads - please wait a moment.');
@@ -8236,7 +8239,7 @@ function doReset(){
           await audit(env, { tenant_id: brow.tenant_id }, req, 'portal.prefs', { booking: brow.id, email: email, sms: sms });
           return json({ ok: true, commsPref: { email: email, sms: sms }, message: 'Saved - thank you.' });
         }
-        return new Response(_portalPageHtml(token, pr.brand.color || '#1E6E4E'), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        return new Response(_portalPageHtml(token, pr.brand.color || '#1E6E4E'), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store' } });   // #sec: token-bearing URL + booking PII must not persist to disk on a shared device
       }
 
       // ---- one-tap email unsubscribe (public; signature-verified so it can't be forged for another address) ----
