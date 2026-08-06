@@ -416,11 +416,21 @@ function _whUrlOk(u) { let _u; try { _u = new URL(String(u || '').trim()); } cat
 function _whWants(eventsJson, event) { try { if (!eventsJson || eventsJson === '*') return true; const arr = JSON.parse(eventsJson); if (!Array.isArray(arr) || !arr.length) return true; return arr.indexOf(event) >= 0 || arr.indexOf('*') >= 0; } catch (e) { return true; } }
 const WH_MAX_ATTEMPTS = 8;   // #257: give up (mark 'dead') after this many total delivery attempts
 function _whBackoffMs(attempts) { const s = [60000, 300000, 1800000, 7200000, 21600000, 86400000]; return s[Math.min(Math.max(1, attempts) - 1, s.length - 1)]; }   // 1m,5m,30m,2h,6h,24h (cron is hourly, so sub-hour delays land on the next tick)
+// #sec: the webhook signing secret is stored ENCRYPTED at rest (AES-GCM, AAD-bound to the endpoint id), like every other
+// integration credential (integrations.secret_enc). Encrypt on create; decrypt on every sign. BACK-COMPAT: a legacy plaintext
+// secret is 'whsec_<hex>' (no ':'), so any value without a ':' is used as-is -- existing endpoints keep signing unchanged and
+// re-encrypt naturally on their next secret rotation. encSecret failing (no ENC_KEY) falls back to plaintext so create never breaks.
+async function _whSecretStore(env, plain, id) { try { return await encSecret(env, plain, 'webhook:' + id); } catch (e) { return plain; } }
+async function _whSecret(env, ep) {
+  var raw = (ep && ep.secret) || '';
+  if (!raw || String(raw).indexOf(':') < 0) return raw;   // plaintext whsec_ (legacy) -> use as-is
+  try { return await decSecret(env, raw, 'webhook:' + (ep.id || '')); } catch (e) { return raw; }
+}
 // POST one already-built body to an endpoint + record the endpoint's health. Returns {ok,status,error}. Shared by the
 // first attempt AND every backoff retry, so a retry is byte-identical (same body, same X-Atlas-Delivery id, same signature).
 async function _whAttempt(env, ep, event, body, id) {
   const ts = Date.now(); let status = 0, errTxt = '';
-  try { const sig = await _whSignHex(ep.secret, body);
+  try { const sig = await _whSignHex(await _whSecret(env, ep), body);
     const resp = await _fetchTimeout(ep.url, { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Atlas-Webhooks/1.0', 'X-Atlas-Event': event, 'X-Atlas-Delivery': id, 'X-Atlas-Signature': 'sha256=' + sig }, body: body }, 12000);
     status = (resp && resp.status) || 0;
   } catch (e) { status = 0; errTxt = String((e && e.message) || e || 'error').slice(0, 200); }
@@ -588,7 +598,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.05d';
+const ATLAS_BUILD = '2026.08.05e';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4138,7 +4148,12 @@ const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-stat
 // so a query-construction mistake can never silently under- or over-expose rows -- same fail-safe posture as the
 // OWNER_ONLY/RBAC allow-lists above.
 const SECURITY_ACTIONS = ['login', 'login_fail', 'logout', 'email_verified', 'connect.onboard', 'domain.connect', 'domain.verified', 'domain.disconnect', 'integration.connect'];
-const SECURITY_PREFIXES = ['auth.', 'mfa.', 'admin.', 'owner.', 'comp.', 'tenant.', 'team.', 'billing.', 'pay.'];   // #ops: team.* (RBAC/permission changes), billing.*/pay.* (money), and all tenant.* (incl tenant.export) were invisible in the security-log; broadened tenant.apikey./tenant.webhook. -> tenant.
+const SECURITY_PREFIXES = ['auth.', 'mfa.', 'admin.', 'owner.', 'comp.', 'tenant.', 'team.', 'billing.', 'pay.', 'rbac.', 'csrf.', 'file.'];   // #ops: team.* (RBAC/permission changes), billing.*/pay.* (money), and all tenant.* (incl tenant.export) were invisible in the security-log; broadened tenant.apikey./tenant.webhook. -> tenant. #sec: rbac.denied + csrf.fail (unauthorized-attempt forensics) + file.id_* (KYC PII access) now surface too.
+// #sec: fire-and-forget denial audit -- record an unauthorized attempt (RBAC cap denied / CSRF rejected) on a sensitive
+// route WITHOUT adding latency or an await to the guard. Mirrors the _logAttack/_fireWebhook waitUntil idiom.
+function _denyAudit(env, ectx, req, ctx, action, detail) {
+  try { const p = audit(env, ctx, req, action, detail || {}); if (ectx && ectx.waitUntil) ectx.waitUntil(p); else if (p && p.catch) p.catch(function () {}); } catch (e) {}
+}
 function _isSecurityAction(a) {
   a = String(a || '');
   if (SECURITY_ACTIONS.indexOf(a) >= 0) return true;
@@ -7628,7 +7643,7 @@ function doReset(){
           const _fb = await req.json().catch(() => ({}));
           const _fem = String(_fb.email || '').toLowerCase(), _fon = (_fb.on !== false);
           const _fg = _ownerMgmtGuard(env, _reqTier, _fem);
-          if (!_fg.ok) return err(_fg.status, _fg.msg);
+          if (!_fg.ok) { try { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control_denied', { action: 'freeze', target: _fem, reason: _fg.msg }); } catch (e) {} return err(_fg.status, _fg.msg); }   // #sec: a tier-privilege violation on the highest-privilege ops must be forensically recorded
           const _fnow = Date.now();
           await env.DB.prepare('INSERT INTO owner_control (email,frozen,frozen_at,frozen_by,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET frozen=?,frozen_at=?,frozen_by=?,updated_at=?').bind(_fem, _fon ? 1 : 0, _fnow, _actor, _fnow, _fon ? 1 : 0, _fnow, _actor, _fnow).run();
           _ownerControlBust(_fem);
@@ -7643,7 +7658,7 @@ function doReset(){
           const _tb = await req.json().catch(() => ({}));
           const _tem = String(_tb.email || '').toLowerCase(), _ton = (_tb.on !== false);
           const _tg = _ownerMgmtGuard(env, _reqTier, _tem);
-          if (!_tg.ok) return err(_tg.status, _tg.msg);
+          if (!_tg.ok) { try { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control_denied', { action: 'trap', target: _tem, reason: _tg.msg }); } catch (e) {} return err(_tg.status, _tg.msg); }
           const _tnow = Date.now();
           await env.DB.prepare('INSERT INTO owner_control (email,trapped,trapped_at,trapped_by,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET trapped=?,trapped_at=?,trapped_by=?,updated_at=?').bind(_tem, _ton ? 1 : 0, _tnow, _actor, _tnow, _ton ? 1 : 0, _tnow, _actor, _tnow).run();
           _ownerControlBust(_tem);
@@ -7655,7 +7670,7 @@ function doReset(){
           if (!(_reqTier >= 2)) return err(403, 'Take Control is restricted to the super-admin.');
           const _iem = String(new URL(req.url).searchParams.get('email') || '').toLowerCase();
           const _ig = _ownerMgmtGuard(env, _reqTier, _iem);
-          if (!_ig.ok) return err(_ig.status, _ig.msg);
+          if (!_ig.ok) { try { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control_denied', { action: 'incidents', target: _iem, reason: _ig.msg }); } catch (e) {} return err(_ig.status, _ig.msg); }
           const _ilim = Math.min(2000, Math.max(1, parseInt(new URL(req.url).searchParams.get('limit') || '500', 10) || 500));
           const _ir = await env.DB.prepare('SELECT id,ts,ip,geo,asn,as_org,ua,fingerprint,action,typed,is_anon,anon_detail,req_detail FROM owner_incidents WHERE target_email=? ORDER BY ts DESC LIMIT ?').bind(_iem, _ilim).all();
           const _rows = (_ir.results || []).map(function (r) { return { id: r.id, ts: r.ts, ip: r.ip, geo: jparse(r.geo, {}), asn: r.asn, as_org: r.as_org, ua: r.ua, fingerprint: jparse(r.fingerprint, null), action: r.action, typed: r.typed, is_anon: !!r.is_anon, anon_detail: jparse(r.anon_detail, null), req_detail: jparse(r.req_detail, null) }; });
@@ -7668,7 +7683,7 @@ function doReset(){
           const _rb = await req.json().catch(() => ({}));
           const _rem = String(_rb.email || '').toLowerCase();
           const _rg = _ownerMgmtGuard(env, _reqTier, _rem);
-          if (!_rg.ok) return err(_rg.status, _rg.msg);
+          if (!_rg.ok) { try { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control_denied', { action: 'reset_creds', target: _rem, reason: _rg.msg }); } catch (e) {} return err(_rg.status, _rg.msg); }
           const _ru = await env.DB.prepare('SELECT id,email FROM users WHERE email=?').bind(_rem).first();
           if (!_ru) return err(404, 'That owner has no account yet.');
           const _scr = await hashPassword('x' + randId(40));
@@ -7684,7 +7699,7 @@ function doReset(){
           const _lb = await req.json().catch(() => ({}));
           const _lem = String(_lb.email || '').toLowerCase(), _lon = (_lb.on !== false);
           const _lg = _ownerMgmtGuard(env, _reqTier, _lem);
-          if (!_lg.ok) return err(_lg.status, _lg.msg);
+          if (!_lg.ok) { try { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control_denied', { action: 'data_lock', target: _lem, reason: _lg.msg }); } catch (e) {} return err(_lg.status, _lg.msg); }
           const _lnow = Date.now();
           await env.DB.prepare('INSERT INTO owner_control (email,data_locked,updated_at) VALUES (?,?,?) ON CONFLICT(email) DO UPDATE SET data_locked=?,updated_at=?').bind(_lem, _lon ? 1 : 0, _lnow, _lon ? 1 : 0, _lnow).run();
           _ownerControlBust(_lem);
@@ -7697,7 +7712,7 @@ function doReset(){
           const _db3 = await req.json().catch(() => ({}));
           const _dem = String(_db3.email || '').toLowerCase();
           const _dg = _ownerMgmtGuard(env, _reqTier, _dem);
-          if (!_dg.ok) return err(_dg.status, _dg.msg);
+          if (!_dg.ok) { try { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'owner.take_control_denied', { action: 'delete', target: _dem, reason: _dg.msg }); } catch (e) {} return err(_dg.status, _dg.msg); }
           if (String(_db3.confirm || '').toLowerCase() !== _dem) return err(400, 'Type the exact email to confirm deletion.');
           const _du = await env.DB.prepare('SELECT id,tenant_id FROM users WHERE email=?').bind(_dem).first();
           if (!_du) return err(404, 'That owner has no account to delete.');
@@ -8486,7 +8501,7 @@ function doReset(){
       // get created, listed, re-scoped, and removed. Guardrails: tenant-scoped everywhere; NEVER invite/promote to
       // 'owner'; NEVER touch the owner row or your own access; removing a member revokes their live sessions at once. ----
       if (path === '/api/team' && method === 'GET') {
-        if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to manage the team.');   // teamManage, NOT settings: a manager has the Settings module but is configured WITHOUT team management (client preset caps.teamManage=false), so gating on 'settings' over-granted team admin. Owner-only unless a custom role is explicitly granted teamManage.
+        if (!_can(ctx, 'teamManage')) { _denyAudit(env, _ectx, req, ctx, 'rbac.denied', { cap: 'teamManage', route: 'team.manage' }); return err(403, 'You do not have permission to manage the team.'); }   // #sec: log the privilege-escalation attempt   // teamManage, NOT settings: a manager has the Settings module but is configured WITHOUT team management (client preset caps.teamManage=false), so gating on 'settings' over-granted team admin. Owner-only unless a custom role is explicitly granted teamManage.
         const rows = (await env.DB.prepare("SELECT id,email,role,caps,status,created_at,last_login FROM users WHERE tenant_id=? ORDER BY (role='owner') DESC, created_at").bind(ctx.tenant_id).all()).results || [];
         return json({ ok: true, team: rows.map(function (u) { return { id: u.id, email: u.email, role: u.role, caps: jparse(u.caps, null), status: u.status || 'active', pending: u.status === 'invited', isOwner: u.role === 'owner', self: u.id === ctx.user.id, created_at: u.created_at, last_login: u.last_login || null }; }) });
       }
@@ -8542,7 +8557,7 @@ function doReset(){
       }
       if (path === '/api/team/invite' && method === 'POST') {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
-        if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to invite teammates.');   // teamManage cap (owner-only by default) -- see the GET note above
+        if (!_can(ctx, 'teamManage')) { _denyAudit(env, _ectx, req, ctx, 'rbac.denied', { cap: 'teamManage', route: 'team.invite' }); return err(403, 'You do not have permission to invite teammates.'); }   // #sec: log the privilege-escalation attempt   // teamManage cap (owner-only by default) -- see the GET note above
         await ensurePlatformSchema(env);
         if (!await rateLimit(env, 'teaminv:' + ctx.tenant_id, 30, 3600000)) return err(429, 'Please wait a moment before inviting more people.');
         const body = await req.json().catch(() => ({}));
@@ -8574,7 +8589,7 @@ function doReset(){
       }
       if (path === '/api/team' && (method === 'PUT' || method === 'DELETE')) {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
-        if (!_can(ctx, 'teamManage')) return err(403, 'You do not have permission to manage the team.');   // teamManage cap (owner-only by default) -- see the GET note above
+        if (!_can(ctx, 'teamManage')) { _denyAudit(env, _ectx, req, ctx, 'rbac.denied', { cap: 'teamManage', route: 'team.manage' }); return err(403, 'You do not have permission to manage the team.'); }   // #sec: log the privilege-escalation attempt   // teamManage cap (owner-only by default) -- see the GET note above
         const body = method === 'PUT' ? await req.json().catch(() => ({})) : {};
         const tid = method === 'PUT' ? String(body.id || '') : (url.searchParams.get('id') || '');
         if (!tid) return err(400, 'Which teammate?');
@@ -9052,7 +9067,8 @@ function doReset(){
           let events = '*';
           if (Array.isArray(b.events) && b.events.length) { const sel = b.events.filter(function (e) { return WEBHOOK_EVENTS.indexOf(e) >= 0; }); if (sel.length) events = JSON.stringify(sel); }
           const secret = 'whsec_' + randId(40), id = 'wh_' + randId(16);
-          await env.DB.prepare('INSERT INTO webhook_endpoints (id,tenant_id,url,secret,events,active,created_at) VALUES (?,?,?,?,?,1,?)').bind(id, ctx.tenant_id, u, secret, events, Date.now()).run();
+          const _secStore = await _whSecretStore(env, secret, id);   // #sec: persist the signing secret ENCRYPTED; the plaintext is returned to the tenant ONCE below but never stored in the clear
+          await env.DB.prepare('INSERT INTO webhook_endpoints (id,tenant_id,url,secret,events,active,created_at) VALUES (?,?,?,?,?,1,?)').bind(id, ctx.tenant_id, u, _secStore, events, Date.now()).run();
           await audit(env, ctx, req, 'tenant.webhook.create', { url: u });
           return json({ ok: true, id: id, secret: secret, note: 'Copy this signing secret now - it verifies our requests come from Atlas and will never be shown again.' });
         }
