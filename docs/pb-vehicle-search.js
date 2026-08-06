@@ -265,7 +265,10 @@
       {label:'Copart pool', url:'https://www.salvagereseller.com/cars-for-sale/make/'+q(mk.toUpperCase())+'/model/'+q(md.toUpperCase())},
       {label:'IAAI', url:'https://www.iaai.com/Vehiclelisting/'+q(mk.toLowerCase())+'/'+q(md.toLowerCase().replace(/\s+/g,''))},
       {label:'SCA', url:'https://sca.auction/en/search/type-cars/make-'+q(mk.toLowerCase())+'/model-'+q(md.toLowerCase().replace(/\s+/g,'-'))},
-      {label:'bid.cars', url:'https://bid.cars/en/automobile/'+q(mk.toLowerCase())+'/'+q(md.toLowerCase().replace(/\s+/g,'-'))}
+      {label:'bid.cars', url:'https://bid.cars/en/automobile/'+q(mk.toLowerCase())+'/'+q(md.toLowerCase().replace(/\s+/g,'-'))},
+      {label:'Whole web', url:'https://www.google.com/search?q='+q(mk+' '+md+' for sale (salvage OR rebuildable OR wrecked OR project OR cash)')},
+      {label:'FB Marketplace', url:'https://www.facebook.com/marketplace/search/?query='+q(mk+' '+md)},
+      {label:'Cars &amp; Bids', url:'https://carsandbids.com/search/'+q((mk+' '+md).toLowerCase().replace(/\s+/g,'-'))}
     ];
   }
 
@@ -714,6 +717,8 @@
       {label:'RockAuto', url: part.oem ? ('https://www.rockauto.com/en/partsearch/?partnum='+q(part.oem)) : ('https://www.rockauto.com/en/catalog/'+q(v.make)+','+q(v.year)+','+q(v.model))},
       {label:'Car-Part yards', url:'https://www.google.com/search?q='+q('site:car-part.com '+kw)}
     ];
+    out.push({label:'Whole web', url:'https://www.google.com/search?q='+q(kw+' for sale')});
+    out.push({label:'Shopping', url:'https://www.google.com/search?tbm=shop&q='+q(kw)});
     if(euro) out.push({label:'FCP Euro', url:'https://www.fcpeuro.com/search?q='+q(kw)});
     return out;
   }
@@ -751,11 +756,28 @@
       if(act==='closemodal'){ m.style.display='none'; }
       else if(act==='addcart'){ if(_cartFromReport(+t.getAttribute('data-i'))){ t.textContent='\u2713'; t.disabled=true; } else { t.textContent='in cart'; } }
       else if(act==='sendall'){ _sendAllToCart(); t.textContent='\u2713 All added'; }
+      else if(act==='bestprice'){ _bestPrice(+t.getAttribute('data-i'), t); }
     });
     return m;
   }
   function _cartFromReport(i){ if(!_modalCtx) return false; var p=_modalCtx.parts[i]; if(!p) return false; return addToCart({name:p.name, vehicle:vehStr(_modalCtx.lead), oem:p.oem||'', links:partLinks(_modalCtx.vehicle,p)}); }
   function _sendAllToCart(){ if(!_modalCtx) return; var n=0; _modalCtx.parts.forEach(function(p){ if(addToCart({name:p.name,vehicle:vehStr(_modalCtx.lead),oem:p.oem||'',links:partLinks(_modalCtx.vehicle,p)})) n++; }); _toast(n+' part'+(n===1?'':'s')+' added to cart'); }
+  // live best-price via the worker eBay Browse endpoint (auto-upgrades once EBAY keys exist)
+  function _bestPrice(i, btn){
+    if(!_modalCtx) return; var p=_modalCtx.parts[i]; if(!p) return;
+    var box=el('best-'+i); if(box) box.innerHTML='Finding cheapest good-condition&#8230;'; if(btn) btn.disabled=true;
+    var w=_worker(); var kw=(vehStr(_modalCtx.vehicle)+' '+(p.search||p.name)).trim();
+    if(!w){ if(box) box.innerHTML='Best-price lookup needs the worker deployed. Use the cheapest-sorted links above.'; if(btn) btn.disabled=false; return; }
+    fetch(w+'/parts-best',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify({q:kw})})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(d){ if(btn) btn.disabled=false; if(!box) return;
+        if(d&&d.notConfigured){ box.innerHTML='Add an eBay API key for live best-price ranking (the &ldquo;used/new cheapest&rdquo; link above is sorted low-to-high in the meantime).'; return; }
+        var items=(d&&d.items)||[];
+        if(!items.length){ box.innerHTML='No good-condition listing found right now.'; return; }
+        box.innerHTML=items.slice(0,3).map(function(it){ return '<div style="margin-top:3px">'+esc(it.condition||'')+' &middot; <b style="color:#22c55e">$'+esc(it.price)+'</b>'+(it.seller?(' &middot; '+esc(it.seller)+'% seller'):'')+' &middot; <a href="'+esc(it.url)+'" target="_blank" rel="noopener" style="color:#c9a962">'+esc(String(it.title||'').slice(0,58))+' &#8599;</a></div>'; }).join('');
+      })
+      .catch(function(){ if(btn) btn.disabled=false; if(box) box.innerHTML='Lookup failed.'; });
+  }
 
   function _showReportModal(l, rep, loading){
     var m=_ensureModal(); var v={year:l.year,make:l.make,model:l.model}; var body;
@@ -767,7 +789,8 @@
       var rows=(rep.parts||[]).map(function(p,i){
         var links=partLinks(v,p).map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
         return '<div class="pbvs-preprow"><div style="flex:1;min-width:0"><b>'+esc(p.name)+'</b> <span class="pbvs-pill" style="color:'+(prio[p.priority]||'#8b939e')+'">'+esc(p.priority||'')+'</span>'+(p.oem?' <span class="pbvs-pill">OEM '+esc(p.oem)+'</span>':'')+
-          (p.why?'<div class="pbvs-hint">'+esc(p.why)+'</div>':'')+'<div class="pbvs-src" style="margin-top:5px">'+links+'</div></div>'+
+          (p.why?'<div class="pbvs-hint">'+esc(p.why)+'</div>':'')+'<div class="pbvs-src" style="margin-top:5px">'+links+'<button class="pbvs-srcbtn" data-act="bestprice" data-i="'+i+'">$ Best price</button></div>'+
+          '<div id="best-'+i+'" class="pbvs-hint" style="margin-top:4px"></div></div>'+
           '<button class="pbvs-srcbtn" data-act="addcart" data-i="'+i+'">+ Cart</button></div>';
       }).join('');
       body='<div class="pbvs-modinner">'+
