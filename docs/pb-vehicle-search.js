@@ -72,14 +72,15 @@
   function saveConfig(){ _lsSet(LSK_CFG, PBVS.config); _touch(); _pushState(); }
   function _pushState(){
     var w=_worker(); if(!w) return;
-    // Never PUT before we have merged the server copy on load -- otherwise the first
-    // edit on a fresh device wipes the server watchlist/targets/cart. Queue instead.
-    if(!PBVS._hydrated){ PBVS._pendingPush=true; return; }
+    // Never PUT before we have MERGED the server copy on load -- otherwise the first edit on a fresh
+    // device wipes the server watchlist/targets/cart. Queue, and kick a (re)hydrate if none is running.
+    if(!PBVS._merged){ PBVS._pendingPush=true; if(!PBVS._hydrating) _hydrateState(); return; }
     var C=cfg();
-    // map the owner-facing settings to the worker's config field names, and carry the
-    // owner-facing config verbatim under `ui` so the other device rebuilds it exactly.
+    // map the owner-facing settings to the worker's config field names, and carry the owner-facing config
+    // verbatim under `ui` so the other device rebuilds it exactly. titleWant carries Salvage/Rebuilt intent.
     var wcfg={ yearMin:+C.yearMin||0, maxBuyNow:+C.maxPrice||0, maxMiles:+C.maxMiles||0,
-      requireCleanTitle:(C.title==='Clean'), excludeDamage:C.excludeDamage||'', snipeDays:+C.snipeDays||1,
+      requireCleanTitle:(C.title==='Clean'), titleWant:(C.title&&C.title!=='Any')?String(C.title).toLowerCase():'',
+      excludeDamage:C.excludeDamage||'', snipeDays:+C.snipeDays||1,
       stealEnabled:C.stealOn!==false, snipeEnabled:C.snipeOn!==false, heartEnabled:C.heartOn!==false,
       ui:(PBVS.config||{}) };
     try{
@@ -93,27 +94,33 @@
   // Pull the server copy ONCE on load and merge BEFORE any push. Watch + cart are UNIONed
   // (no device loses saved items); criteria/config adopt the server's when it is newer.
   function _hydrateState(){
-    var w=_worker(); if(!w){ PBVS._hydrated=true; return; }
-    var fin=function(){ PBVS._hydrated=true; if(PBVS._pendingPush){ PBVS._pendingPush=false; _pushState(); } if(el('pbvsBody')&&(PBVS.sub==='leads'||PBVS.sub==='cart')) render(); };
-    try{
-      fetch(w+'/vehicle-search/state?_='+Date.now(),{headers:_auth(),cache:'no-store'})
-        .then(function(r){ return r.ok?r.json():null; })
-        .then(function(st){
-          if(st){
-            var srvAt=+st.savedAt||(st.config&&+st.config.savedAt)||0;
-            PBVS.watch=_unionBy(PBVS.watch, st.watch, function(x){return String(x.id);});
-            PBVS.cart =_unionBy(PBVS.cart,  st.cart,  function(x){return ((x.name||'')+'|'+(x.vehicle||'')).toLowerCase();});
-            _lsSet(LSK_WATCH,PBVS.watch); _lsSet(LSK_CART,PBVS.cart);
-            if(!PBVS.savedAt || srvAt>PBVS.savedAt){
-              if(Array.isArray(st.criteria)&&st.criteria.length){ PBVS.criteria=st.criteria; _lsSet(LSK_CRIT,PBVS.criteria); }
-              var ui=st.config&&st.config.ui; if(ui&&typeof ui==='object'){ PBVS.config=ui; _lsSet(LSK_CFG,PBVS.config); }
-            }
-            if(srvAt>PBVS.savedAt){ PBVS.savedAt=srvAt; _lsSet(LSK_SAVED,srvAt); }
+    var w=_worker(); if(!w){ PBVS._merged=true; PBVS._hydrated=true; return; }
+    if(PBVS._hydrating) return; PBVS._hydrating=true;
+    _fetchT(w+'/vehicle-search/state?_='+Date.now(),{headers:_auth(),cache:'no-store'},10000)
+      .then(function(r){ return r.ok?r.json():Promise.reject('http'); })
+      .then(function(st){
+        if(st){
+          var srvAt=+st.savedAt||(st.config&&+st.config.savedAt)||0;
+          PBVS.watch=_unionBy(PBVS.watch, st.watch, function(x){return String(x.id);});
+          // cart union is STATUS/uid-aware so an ordered copy + a to-order copy never collide (no lost order log)
+          PBVS.cart =_unionBy(PBVS.cart,  st.cart,  function(x){return x.uid||((x.name||'')+'|'+(x.vehicle||'')+'|'+(x.status||''));});
+          _lsSet(LSK_WATCH,PBVS.watch); _lsSet(LSK_CART,PBVS.cart);
+          if(!PBVS.savedAt || srvAt>PBVS.savedAt){
+            if(Array.isArray(st.criteria)&&st.criteria.length){ PBVS.criteria=st.criteria; _lsSet(LSK_CRIT,PBVS.criteria); }
+            var ui=st.config&&st.config.ui; if(ui&&typeof ui==='object'){ PBVS.config=ui; _lsSet(LSK_CFG,PBVS.config); }
           }
-        })
-        .catch(function(){})
-        .then(fin,fin);
-    }catch(e){ fin(); }
+          if(srvAt>PBVS.savedAt){ PBVS.savedAt=srvAt; _lsSet(LSK_SAVED,srvAt); }
+        }
+        PBVS._merged=true; PBVS._hydrated=true; PBVS._hydrating=false;
+        if(PBVS._pendingPush){ PBVS._pendingPush=false; _pushState(); }
+        if(el('pbvsBody')) render();   // re-render whatever sub-tab is open (kit/find/parts too) with adopted criteria/config
+      })
+      .catch(function(){
+        // Attempted but NOT merged -> do NOT set _merged, so a queued push can't overwrite the server with
+        // un-merged local data; retry shortly so cross-device sync still recovers.
+        PBVS._hydrated=true; PBVS._hydrating=false;
+        setTimeout(function(){ if(!PBVS._merged) _hydrateState(); }, 8000);
+      });
   }
 
   // ===========================================================================
@@ -134,15 +141,15 @@
     {id:'mc-570s-noho', make:'McLaren', model:'570S', year:2020, damage:'Unknown', miles:20681, milesActual:true, location:'North Hollywood, CA', state:'CA', pool:'IAAI', url:'https://sca.auction/en/1045457643-2020-mclaren-570s', saleDate:'future', verdict:'watch', note:'Newer 570S; pull the condition report.'},
     {id:'mc-gt-hou', make:'McLaren', model:'GT', year:2022, damage:'Left front', miles:9517, milesActual:true, location:'Houston, TX', state:'TX', pool:'IAAI', url:'https://sca.auction/en/1057457448-2022-mclaren-gt', saleDate:'future', verdict:'maybe', note:'Local, low miles; GT is a softer tourer.'},
 
-    {id:'fer-calT-hou', make:'Ferrari', model:'California T', year:2017, damage:'Side + front', price:19700, priceType:'bid', title:'Salvage', miles:20012, milesActual:true, keys:true, runDrive:true, location:'Houston, TX', state:'TX', pool:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/51468406-2017-ferrari-california-t-houston-tx', saleDate:'2026-08-06', verdict:'caution', note:'Local, low miles, runs. Damage is side AND front; airbag status not disclosed. Sale imminent -- broker + PPI must already be lined up.'},
+    {id:'fer-calT-hou', make:'Ferrari', model:'California T', year:2017, damage:'Side + front', price:19700, priceType:'bid', title:'Salvage', miles:20012, milesActual:true, keys:true, runDrive:true, location:'Houston, TX', state:'TX', pool:'salvagereseller', url:'https://www.salvagereseller.com/cars-for-sale/51468406-2017-ferrari-california-t-houston-tx', saleDate:'2026-08-06', verdict:'caution', note:'Local, low miles, runs. Damage is side AND front; airbag status not disclosed. Sale imminent -- broker + PPI must already be lined up.'},
     {id:'fer-cal-ny13', make:'Ferrari', model:'California', year:2013, damage:'Right rear', miles:22944, milesActual:true, location:'Medford, NY', state:'NY', pool:'IAAI', url:'https://sca.auction/en/1088556216-2013-ferrari-california', saleDate:'future', verdict:'good', note:'Rear = buy-zone; low miles.'},
     {id:'fer-cal-ny11', make:'Ferrari', model:'California', year:2011, damage:'Front', miles:27491, milesActual:true, location:'Medford, NY', state:'NY', pool:'IAAI', url:'https://sca.auction/en/1019554948-2011-ferrari-california', saleDate:'future', verdict:'good', note:'Front hit; low miles.'},
     {id:'fer-cal-hou12', make:'Ferrari', model:'California', year:2012, damage:'Front / repo', miles:44132, milesActual:true, location:'Houston, TX', state:'TX', pool:'IAAI', url:'https://sca.auction/en/1044657048-2012-ferrari-california', saleDate:'future', verdict:'maybe', note:'Local; repossession.'},
 
-    {id:'p-cs-mi', make:'Porsche', model:'911 Carrera S', year:2012, damage:'Front end', price:48500, priceType:'buynow', title:'Clean', miles:0, milesActual:false, keys:true, location:'Woodhaven, MI', state:'MI', pool:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/57423956', saleDate:'2026-08-07', verdict:'chase', note:'CLEAN title + front-end = doctrine pick (full insurability, no rebuilt tax). Bid ~$39k rather than BIN $48.5k. Confirm 0-mi/not-actual is just intake-blank.'},
-    {id:'p-turbo-fl', make:'Porsche', model:'911 Turbo', year:2014, damage:'Front end', price:42250, priceType:'bid', title:'Salvage', miles:62844, milesActual:true, keys:true, location:'Orlando, FL', state:'FL', pool:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/52337276', saleDate:'2026-08-06', verdict:'watch', note:'Turbo rents well; salvage + 63k mi carry the rebuilt tax.'},
-    {id:'p-carrera-ca', make:'Porsche', model:'911 Carrera', year:2020, damage:'Front end', price:10100, priceType:'bid', title:'Salvage', miles:32793, milesActual:true, keys:true, location:'Colton, CA', state:'CA', pool:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/58692346', saleDate:'2026-08-10', verdict:'watch', note:'Cheap now (bid climbs); base trim, salvage.'},
-    {id:'p-carrera-ut', make:'Porsche', model:'911 Carrera', year:2017, damage:'Front end', price:51000, priceType:'buynow', title:'Clean', miles:45591, milesActual:true, keys:true, location:'Magna, UT', state:'UT', pool:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/49285266', saleDate:'2026-08-07', verdict:'maybe', note:'Clean + actual miles; base trim, steep BIN.'}
+    {id:'p-cs-mi', make:'Porsche', model:'911 Carrera S', year:2012, damage:'Front end', price:48500, priceType:'buynow', title:'Clean', miles:0, milesActual:false, keys:true, location:'Woodhaven, MI', state:'MI', pool:'salvagereseller', url:'https://www.salvagereseller.com/cars-for-sale/57423956', saleDate:'2026-08-07', verdict:'chase', note:'CLEAN title + front-end = doctrine pick (full insurability, no rebuilt tax). Bid ~$39k rather than BIN $48.5k. Confirm 0-mi/not-actual is just intake-blank.'},
+    {id:'p-turbo-fl', make:'Porsche', model:'911 Turbo', year:2014, damage:'Front end', price:42250, priceType:'bid', title:'Salvage', miles:62844, milesActual:true, keys:true, location:'Orlando, FL', state:'FL', pool:'salvagereseller', url:'https://www.salvagereseller.com/cars-for-sale/52337276', saleDate:'2026-08-06', verdict:'watch', note:'Turbo rents well; salvage + 63k mi carry the rebuilt tax.'},
+    {id:'p-carrera-ca', make:'Porsche', model:'911 Carrera', year:2020, damage:'Front end', price:10100, priceType:'bid', title:'Salvage', miles:32793, milesActual:true, keys:true, location:'Colton, CA', state:'CA', pool:'salvagereseller', url:'https://www.salvagereseller.com/cars-for-sale/58692346', saleDate:'2026-08-10', verdict:'watch', note:'Cheap now (bid climbs); base trim, salvage.'},
+    {id:'p-carrera-ut', make:'Porsche', model:'911 Carrera', year:2017, damage:'Front end', price:51000, priceType:'buynow', title:'Clean', miles:45591, milesActual:true, keys:true, location:'Magna, UT', state:'UT', pool:'salvagereseller', url:'https://www.salvagereseller.com/cars-for-sale/49285266', saleDate:'2026-08-07', verdict:'maybe', note:'Clean + actual miles; base trim, steep BIN.'}
   ];
 
   var VERDICT = {
@@ -230,7 +237,7 @@
   // ===========================================================================
   //  NHTSA vPIC -- real makes/models/years (free, CORS). Curated fallback.
   // ===========================================================================
-  var CURATED_MAKES = ['Acura','Alfa Romeo','Aston Martin','Audi','Bentley','BMW','Cadillac','Chevrolet','Dodge','Ferrari','Ford','GMC','Honda','Jaguar','Jeep','Lamborghini','Land Rover','Lexus','Lotus','Maserati','Mazda','McLaren','Mercedes-Benz','Nissan','Polaris','Porsche','Rolls-Royce','Subaru','Tesla','Toyota','Volkswagen','Volvo'];
+  var CURATED_MAKES = ['Acura','Alfa Romeo','Aston Martin','Audi','Bentley','BMW','Bugatti','Cadillac','Chevrolet','Dodge','Ferrari','Ford','GMC','Honda','Jaguar','Jeep','Koenigsegg','Lamborghini','Land Rover','Lexus','Lotus','Maserati','Maybach','Mazda','McLaren','Mercedes-Benz','Mercedes-Maybach','Nissan','Pagani','Polaris','Porsche','Rolls-Royce','Subaru','Tesla','Toyota','Volkswagen','Volvo'];
   function getMakes(cb){
     if(PBVS.nMakes){ cb(PBVS.nMakes); return; }
     var done=false, to=setTimeout(function(){ if(done)return; done=true; PBVS.nMakes=CURATED_MAKES.slice(); cb(PBVS.nMakes); },3500);
@@ -248,12 +255,16 @@
     }catch(e){ if(done)return; done=true; clearTimeout(to); PBVS.nMakes=CURATED_MAKES.slice(); cb(PBVS.nMakes); }
   }
   function getModels(make,year,cb){
-    var key=(make||'').toLowerCase()+'|'+(year||'');
+    if(!make){ cb([]); return; }
+    var key=(make||'').toLowerCase()+'|'+(year||'all');
     if(PBVS.nModels[key]){ cb(PBVS.nModels[key]); return; }
-    if(!make||!year){ cb([]); return; }
-    var done=false, to=setTimeout(function(){ if(done)return; done=true; cb([]); },3500);
+    // no explicit year -> query ALL years so DISCONTINUED exotics (R8, 570S, California) still appear;
+    // a year-specific query would only return that year's lineup (e.g. 2026) and hide them.
+    var url = year ? ('https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/'+q(make)+'/modelyear/'+q(year)+'?format=json')
+                   : ('https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMake/'+q(make)+'?format=json');
+    var done=false, to=setTimeout(function(){ if(done)return; done=true; cb([]); },4000);
     try{
-      fetch('https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/'+q(make)+'/modelyear/'+q(year)+'?format=json')
+      fetch(url)
         .then(function(r){ return r.json(); })
         .then(function(d){ if(done)return; done=true; clearTimeout(to);
           var arr=(d&&d.Results||[]).map(function(x){ return x.Model_Name; }).filter(Boolean);
@@ -321,7 +332,7 @@
   function liveSearches(c){
     var mk=(c.make||''), md=(c.model||'');
     return [
-      {label:'Copart pool', url:'https://www.salvagereseller.com/cars-for-sale/make/'+q(mk.toUpperCase())+'/model/'+q(md.toUpperCase())},
+      {label:'salvagereseller (Copart)', url:'https://www.salvagereseller.com/cars-for-sale/make/'+q(mk.toUpperCase())+'/model/'+q(md.toUpperCase())},
       {label:'IAAI', url:'https://www.iaai.com/Vehiclelisting/'+q(mk.toLowerCase())+'/'+q(md.toLowerCase().replace(/\s+/g,''))},
       {label:'SCA', url:'https://sca.auction/en/search/type-cars/make-'+q(mk.toLowerCase())+'/model-'+q(md.toLowerCase().replace(/\s+/g,'-'))},
       {label:'bid.cars', url:'https://bid.cars/en/automobile/'+q(mk.toLowerCase())+'/'+q(md.toLowerCase().replace(/\s+/g,'-'))},
@@ -361,12 +372,14 @@
 
   // ---- Current Leads ---------------------------------------------------------
   function daysUntil(d){ if(!d||d==='future') return null; var t=Date.parse(d+'T12:00:00'); if(isNaN(t)) return null; return Math.round((t-Date.now())/86400000); }
-  function actionDays(){ var n=+cfg().snipeDays; return (n>0)?n:3; }   // the "Actionable" window follows the owner's Selling-soon setting
+  function actionDays(){ var n=+cfg().snipeDays; if(!(n>0)) n=1; return Math.min(60,n); }   // matches the worker sniper: default 1, clamp 60
   function isActionable(l){ if(l.steal) return true; var pt=(l.priceType||''); if(pt==='buynow'||pt==='bin'||pt==='cash') return true; var du=daysUntil(l.saleDate); if(du===null) return true; /* not-yet-scheduled: keep */ var win=actionDays(); return du<=win && du>=-1; }
   // owner Hunt-Settings filters applied to the displayed leads (instant; also synced to the sniper)
   function _passCfg(l,C){
+    if(l.steal) return true;   // a worker-flagged STEAL already passed the sniper caps -- never let a display cap hide it
     if(C.yearMin && l.year && l.year < +C.yearMin) return false;
-    if(+C.maxPrice>0 && (l.buyNow||0) > +C.maxPrice) return false;
+    var _bn=(Number(l.buyNow)>0)?Number(l.buyNow):((l.priceType==='buynow'||l.priceType==='bin'||l.priceType==='cash')?Number(l.price||0):0);
+    if(+C.maxPrice>0 && _bn > +C.maxPrice) return false;
     if(+C.maxMiles>0 && l.miles>0 && l.miles > +C.maxMiles) return false;
     if(!l.gov && C.title && C.title!=='Any' && String(l.title||'').toLowerCase().indexOf(String(C.title).toLowerCase())<0) return false;
     if(!l.gov && C.excludeDamage){ var ex=String(C.excludeDamage).toLowerCase().split(/[\s,]+/).filter(Boolean); var d=String(l.damage||'').toLowerCase(); for(var i=0;i<ex.length;i++){ if(ex[i]&&d.indexOf(ex[i])>=0) return false; } }
@@ -377,8 +390,11 @@
   function _dedup(arr){ var byId={}, soft={}, out=[]; (arr||[]).forEach(function(l){ if(!l||!l.id||byId[l.id]) return;
     // soft key: VIN merges relists of the SAME car; otherwise include damage so two distinct
     // same-city same-model cars aren't wrongly collapsed into one (sku-based key never merged relists)
-    var k=(l.vin?('vin:'+String(l.vin)):((l.year||'')+'|'+(l.make||'')+'|'+(l.model||'')+'|'+(l.damage||'')+'|'+(l.location||l.state||''))).toLowerCase();
+    // prefer VIN, then the worker's per-lot dedupKey (sku-unique) so two DISTINCT lots are never collapsed;
+    // fall back to a composite only for seed-shaped leads that lack both.
+    var k=(l.vin?('vin:'+String(l.vin)):(l.dedupKey||((l.year||'')+'|'+(l.make||'')+'|'+(l.model||'')+'|'+(l.damage||'')+'|'+(l.location||l.state||'')))).toLowerCase();
     if(soft[k]) return; byId[l.id]=1; soft[k]=1; out.push(l); }); return out; }
+  var _SEED_IDS={}; try{ SEED_LEADS.forEach(function(s){ _SEED_IDS[s.id]=1; }); }catch(e){}
   function watchHas(id){ return PBVS.watch.some(function(w){ return w.id===id; }); }
 
   function renderLeads(){
@@ -386,7 +402,7 @@
     var feed=activeFeed().filter(function(l){ return l.verdict!=='pass'; });
     var makes=uniq(feed.map(function(l){return l.make;}));
     var models=uniq(feed.filter(function(l){return !PBVS.fMake||l.make===PBVS.fMake;}).map(function(l){return l.model;}));
-    var years=uniq(feed.map(function(l){return String(l.year);})).sort().reverse();
+    var years=uniq(feed.filter(function(l){return !PBVS.fMake||l.make===PBVS.fMake;}).map(function(l){return String(l.year);})).sort().reverse();
     var _C=cfg(), showAll=!!PBVS.showEverything, win=actionDays();
     // the make/model/year dropdowns only NARROW the shown list; they do not change what's hunted
     var _mmy=feed.filter(function(l){
@@ -414,11 +430,14 @@
         '</div>'+
       '</div>';
 
+    // first-run one-liner: define STEAL + the broker prerequisite (no dealer license needed)
+    h+='<div class="pbvs-hint" style="margin:-4px 2px 10px;font-size:11.5px">A <b style="color:#f0a020">STEAL</b> = a buy-now exotic at/under your price cap. No dealer license needed &mdash; buy through a <button class="pbvs-srcbtn" data-act="sub" data-k="kit" style="padding:2px 8px">broker (set up in Kit)</button>.</div>';
+
     // active hunt-cap chips (removable) -- never a mystery why a lead is missing
     var caps=_capChips(_C);
     if(caps.length){
       h+='<div class="pbvs-card" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:11px 14px">'+
-          '<span class="pbvs-hint" style="font-weight:700;color:#c9a962">Hunting with caps:</span>'+
+          '<span class="pbvs-hint" style="font-weight:700;color:'+(showAll?'#8b939e':'#c9a962')+'">'+(showAll?'Caps (paused &mdash; showing everything):':'Hunting with caps:')+'</span>'+
           caps.map(function(c){ return '<button class="pbvs-chip on" data-act="clearcap" data-k="'+c.k+'" title="Remove this cap" aria-label="Remove cap '+esc(c.t.replace(/&[a-z#0-9]+;/g,''))+'">'+c.t+' &#10006;</button>'; }).join('')+
           '<span class="pbvs-hint">tap a cap to remove it &middot; <button class="pbvs-srcbtn" data-act="sub" data-k="kit" style="padding:3px 9px">edit all</button></span>'+
         '</div>';
@@ -439,7 +458,7 @@
     function _sc(n,label,color){ return '<span class="pbvs-pill" style="font-weight:700;color:'+color+'"><b style="font-size:14px">'+n+'</b> '+label+'</span>'; }
     var _steal=shown.filter(function(l){return l.steal;}).length;
     var _clean=shown.filter(function(l){return /clean/i.test(l.title||'');}).length;
-    var _salv =shown.filter(function(l){return /salvage|rebuilt|junk|non/i.test(l.title||'');}).length;
+    var _salv =shown.filter(function(l){return /salvage|rebuilt|junk|non|flood|fire/i.test(l.title||'');}).length;
     var _unk  =shown.filter(function(l){return !l.title && !l.gov;}).length;
     var _bnow =shown.filter(function(l){return l.priceType==='buynow'||l.priceType==='bin';}).length;
     var _chase=shown.filter(function(l){return l.verdict==='chase'||l.verdict==='good';}).length;
@@ -463,7 +482,7 @@
       var why=[];
       if(dateHidden>0) why.push('the '+win+'-day "Actionable only" filter');
       if(capHidden>0){ why.push('your hunt caps ('+caps.map(function(c){return c.t;}).join(', ')+')'); }
-      h+='<div class="pbvs-empty">No leads match'+(why.length?(' &mdash; hidden by '+why.join(' and ')):'')+'.<br><button class="pbvs-srcbtn" data-act="showeverything" style="margin-top:10px">Show everything (ignore filters + caps)</button></div>';
+      h+='<div class="pbvs-empty">No leads match'+(why.length?(' &mdash; hidden by '+why.join(' and ')):'')+'.<br><button class="pbvs-srcbtn" data-act="resetall" style="margin-top:10px">Show everything (clear filters + caps)</button></div>';
     } else {
       h+='<div class="pbvs-grid pbvs-leadgrid">'+shown.map(leadCard).join('')+'</div>';
     }
@@ -506,6 +525,7 @@
     if(l.runDrive) facts.push('<span class="pbvs-pill">run &amp; drive</span>');
     if(l.airbags==='intact') facts.push('<span class="pbvs-pill" style="border-color:rgba(34,197,94,.4);color:#22c55e">airbags intact</span>');
     facts.push('<span class="pbvs-pill">'+esc(l.pool)+'</span>');
+    if(_SEED_IDS[l.id]) facts.push('<span class="pbvs-pill" style="opacity:.7;border-style:dashed" title="Starter sample -- hit Refresh feed for live listings">sample</span>');
     var _stealB = l.steal ? '<span class="pbvs-badge pbvs-badge-steal">&#128293; STEAL</span> ' : '';
     return '<div class="pbvs-lead'+(l.steal?' pbvs-steal':'')+'">'+
       '<button class="pbvs-heart'+(watchHas(l.id)?' on':'')+'" data-act="heart" data-id="'+esc(l.id)+'" title="Save to watchlist + get alerts" aria-label="'+(watchHas(l.id)?'Remove ':'Save ')+esc(vehStr(l))+' to watchlist" aria-pressed="'+(watchHas(l.id)?'true':'false')+'">'+(watchHas(l.id)?'&#10084;':'&#9825;')+'</button>'+
@@ -726,6 +746,7 @@
       else if(act==='toggleact'){ PBVS.actionable=!PBVS.actionable; _lsSet(LSK_ACT,PBVS.actionable); renderLeads(); }
       else if(act==='showall'){ PBVS.actionable=false; _lsSet(LSK_ACT,false); renderLeads(); }
       else if(act==='showeverything'){ PBVS.showEverything=true; renderLeads(); }
+      else if(act==='resetall'){ PBVS.fMake=PBVS.fModel=PBVS.fYear=''; PBVS.showEverything=true; renderLeads(); }
       else if(act==='reapply'){ PBVS.showEverything=false; renderLeads(); }
       else if(act==='clearcap'){ var ck=t.getAttribute('data-k'); if(ck==='title') PBVS.config.title='Any'; else if(ck==='excludeDamage') PBVS.config.excludeDamage=''; else PBVS.config[ck]=0; saveConfig(); renderLeads(); }
       else if(act==='clearfilter'){ PBVS.fMake=PBVS.fModel=PBVS.fYear=''; PBVS.showEverything=false; renderLeads(); }
@@ -739,7 +760,7 @@
       else if(act==='delcrit'){ PBVS.criteria.splice(+t.getAttribute('data-i'),1); saveCrit(); renderKit(); }
       else if(act==='report'){ openReport(t.getAttribute('data-id')); }
       else if(act==='partcart'){ _addManualPartToCart(); }
-      else if(act==='ordertoggle'){ var _c=PBVS.cart[+t.getAttribute('data-i')]; if(_c){ _c.status=(_c.status==='ordered')?'to-order':'ordered'; _c.orderedAt=(_c.status==='ordered')?Date.now():null; saveCart(); renderCart(); } }
+      else if(act==='ordertoggle'){ var _c=PBVS.cart[+t.getAttribute('data-i')]; if(_c){ if(_c.status==='ordered'){ _c.status='to-order'; } else { _c.status='ordered'; _c.orderedAt=_c.orderedAt||Date.now(); } saveCart(); renderCart(); } }
       else if(act==='qtyinc'){ var _qi=PBVS.cart[+t.getAttribute('data-i')]; if(_qi){ _qi.qty=(+_qi.qty||1)+1; saveCart(); renderCart(); } }
       else if(act==='qtydec'){ var _qd=PBVS.cart[+t.getAttribute('data-i')]; if(_qd){ _qd.qty=Math.max(1,(+_qd.qty||1)-1); saveCart(); renderCart(); } }
       else if(act==='cartremove'){ var _ri=+t.getAttribute('data-i'), _rc=PBVS.cart[_ri]; if(_rc&&_rc.status==='ordered'&&!window.confirm('Remove this ordered item from your purchase log?')) return; PBVS.cart.splice(_ri,1); saveCart(); renderCart(); }
@@ -766,8 +787,8 @@
       else if(id==='psYear'){ partsSel.year=e.target.value; partsSel.vin=''; refreshPartsModels(); updateVehLine(); }
       else if(id==='psMake'){ partsSel.make=e.target.value; partsSel.model=''; partsSel.vin=''; refreshPartsModels(); updateVehLine(); }
       else if(id==='psModel'){ partsSel.model=e.target.value; updateVehLine(); }
-      else if(id==='ncMake'){ getModels(e.target.value, (el('ncYmin')&&el('ncYmin').value)||new Date().getFullYear(), function(arr){ var s=el('ncModel'); if(s) fillSelect(s,arr,''); }); }
-      else if(id==='fdMake'){ findSel.make=e.target.value; findSel.model=''; getModels(findSel.make, findSel.yearMin||(new Date().getFullYear()), function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,''); }); renderFindDeepLinks(); }
+      else if(id==='ncMake'){ getModels(e.target.value, (el('ncYmin')&&el('ncYmin').value)||'', function(arr){ var s=el('ncModel'); if(s) fillSelect(s,arr,''); }); }
+      else if(id==='fdMake'){ findSel.make=e.target.value; findSel.model=''; getModels(findSel.make, findSel.yearMin||'', function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,''); }); renderFindDeepLinks(); }
       else if(id==='fdModel'){ findSel.model=e.target.value; renderFindDeepLinks(); }
       else if(id==='fdYmin'){ findSel.yearMin=e.target.value; if(findSel.make){ getModels(findSel.make, findSel.yearMin, function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,findSel.model); }); } renderFindDeepLinks(); }
       else if(id==='fdYmax'){ findSel.yearMax=e.target.value; renderFindDeepLinks(); }
@@ -810,10 +831,12 @@
     if(i>=0){ PBVS.watch.splice(i,1); _toast('Removed from watchlist'); }
     else{
       var l=activeFeed().concat(SEED_LEADS, PBVS.findLeads||[]).filter(function(x){return x&&x.id===id;})[0];
-      if(l){ var c=JSON.parse(JSON.stringify(l)); c.addedAt=Date.now(); c._lastSeen=Date.now(); PBVS.watch.push(c); _toast('&#10004; Watching -- you\'ll be alerted on changes'); }
+      if(l){ var c=JSON.parse(JSON.stringify(l)); c.addedAt=Date.now(); PBVS.watch.push(c); _toast('&#10004; Watching -- you\'ll be alerted on changes'); }
     }
     saveWatch();
-    if(PBVS._inWatch) renderWatch(); else if(PBVS.sub==='leads') renderLeads();
+    if(PBVS._inWatch) renderWatch();
+    else if(PBVS.sub==='leads') renderLeads();
+    else if(PBVS.sub==='find'){ var _fr=el('findResults'), _g=_fr&&_fr.querySelector('.pbvs-leadgrid'); if(_g) _g.innerHTML=(PBVS.findLeads||[]).map(leadCard).join(''); }
     updateWatchCount();
   }
   function updateWatchCount(){ var host=el('vehSearchContent'); if(host){ var b=host.querySelector('[data-act="watchview"]'); if(b) b.innerHTML='&#10084; Watchlist ('+PBVS.watch.length+')'; } }
@@ -874,7 +897,7 @@
         }).catch(function(){ if(manual) _toast('Feed offline -- showing starter set'); });
     }catch(e){}
   }
-  function _wkey(l){ return (l&&l.vin?('vin:'+String(l.vin)):((l&&l.year||'')+'|'+(l&&l.make||'')+'|'+(l&&l.model||'')+'|'+((l&&l.location)||(l&&l.state)||''))).toLowerCase(); }
+  function _wkey(l){ if(l&&l.vin) return ('vin:'+l.vin).toLowerCase(); var st=(l&&l.state)||''; if(!st){ var m=String((l&&l.location)||'').toUpperCase().match(/\b[A-Z]{2}\b/); st=m?m[0]:''; } return ((l&&l.year||'')+'|'+(l&&l.make||'')+'|'+(l&&l.model||'')+'|'+st).toLowerCase(); }
   // local diff so watched cars alert you the moment the feed changes (pre-worker-cron)
   function diffWatch(arr){
     if(!PBVS.watch.length) return;
@@ -889,9 +912,9 @@
         // self-heal the saved snapshot from the freshest feed (corrected title / photo / price / etc.)
         ['price','buyNow','bid','saleDate','title','image','damage','miles','milesActual','location','steal'].forEach(function(k){ if(n[k]!=null) w[k]=n[k]; });
         w._lastSeen=Date.now(); if(w._sold){ w._sold=false; } dirty=true;
-      } else if(!w._sold && w._lastSeen){
-        // gone from a feed that DID scrape this make/model -> likely sold/removed
-        // (only fire if the same model IS present now, so a partial feed doesn't false-alarm)
+      } else if(!w._sold && w._lastSeen && /copart|salvagereseller|gsa|gov/i.test(String(w.pool||''))){
+        // Only infer "sold" for a car in a pool THIS feed actually scrapes (salvagereseller/GSA) AND that we
+        // previously OBSERVED live (_lastSeen set on a real match) -- so IAAI/SCA/seed-only hearts never false-fire.
         var sameModel=arr.some(function(l){ return l && String(l.make||'').toLowerCase()===String(w.make||'').toLowerCase() && String(l.model||'').toLowerCase()===String(w.model||'').toLowerCase(); });
         if(sameModel){ w._sold=true; dirty=true; changed.push(vehStr(w)+': no longer listed (likely sold)'); }
       }
@@ -946,7 +969,7 @@
     // and an already-ORDERED part CAN be re-added (arrived cracked / you need two)
     var ex=(PBVS.cart||[]).filter(function(c){ return c.status!=='ordered' && ((c.name||'')+'|'+(c.vehicle||'')).toLowerCase()===key; })[0];
     if(ex){ ex.qty=(+ex.qty||1)+1; saveCart(); return true; }
-    PBVS.cart.push(Object.assign({status:'to-order', qty:1, addedAt:Date.now()}, item));
+    PBVS.cart.push(Object.assign({status:'to-order', qty:1, addedAt:Date.now(), uid:'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,7)}, item));
     saveCart(); return true;
   }
 
@@ -987,21 +1010,37 @@
     if(!/clean/.test(String(l.title||'').toLowerCase())) flags.push({flag:'Branded-title tax',impact:'Salvage/rebuilt caps resale ~20-40% under clean -- price the exit.'});
     return {deepDive:deep, redFlags:flags, visibleConcerns:[{item:'Cosmetic scuffs / curb rash likely in the photos',note:'wheels + lower lips not itemized above',estLow:400,estHigh:2500}]};
   }
-  function _clientReport(l){ var g=_genericConcerns(l); return {id:l.id, vehicle:vehStr(l), damage:l.damage||'', images:(l.image?[l.image]:[]), provider:'fallback', summary:'Damage-type estimate (server report unavailable) -- verify against the listing photos.', opportunityScore:_heuristicScore(l), scoreRationale:'Heuristic from title, damage area + miles; deploy the worker for the full AI photo scan.', askPrice:(Number(l.buyNow||l.price||0)||null), parts:_fallbackParts(l.damage), deepDive:g.deepDive, redFlags:g.redFlags, visibleConcerns:g.visibleConcerns}; }
+  function _clientReport(l){ var g=_genericConcerns(l); var fp=_fallbackParts(l.damage); var nc=fp.filter(function(p){return p.priority==='critical';}).length; var pLo=fp.length*250, pHi=fp.length*1800+nc*1500, hrs=40+fp.length*3; return {id:l.id, vehicle:vehStr(l), damage:l.damage||'', images:(l.image?[l.image]:[]), provider:'fallback', summary:'Damage-type estimate (server report unavailable) -- ROUGH ranges; verify against the photos.', opportunityScore:_heuristicScore(l), scoreRationale:'Heuristic from title, damage area + miles; deploy the worker for the full AI photo scan.', askPrice:(Number(l.buyNow||l.price||0)||null), parts:fp, deepDive:g.deepDive, redFlags:g.redFlags, visibleConcerns:g.visibleConcerns, partsCostLow:pLo, partsCostHigh:pHi, laborHours:hrs, allInLow:pLo+hrs*90, allInHigh:pHi+hrs*140}; }
   // report render helpers
   function _money(n){ return '$'+Number(n||0).toLocaleString('en-US'); }
   function _range(a,b){ a=Number(a||0); b=Number(b||0); if(a&&b) return _money(a)+'-'+_money(b); if(a) return '~'+_money(a); if(b) return '~'+_money(b); return ''; }
   function _scoreColor(s){ return s>=70?'#22c55e':s>=45?'#c9a962':'#ef4444'; }
-  function _scoreBlock(rep){
+  function _scoreBlock(rep, l){
     if(rep.opportunityScore==null) return '';
     var sc=Math.round(rep.opportunityScore), col=_scoreColor(sc), pills=[];
-    if(rep.allInLow||rep.allInHigh) pills.push('<span class="pbvs-pill">All-in rebuild <b style="color:#fff">'+_range(rep.allInLow,rep.allInHigh)+'</b></span>');
-    else if(rep.partsCostLow||rep.partsCostHigh) pills.push('<span class="pbvs-pill">Parts <b style="color:#fff">'+_range(rep.partsCostLow,rep.partsCostHigh)+'</b></span>');
-    if(rep.estValueClean) pills.push('<span class="pbvs-pill">Clean value ~<b style="color:#22c55e">'+_money(rep.estValueClean)+'</b></span>');
-    if(rep.askPrice) pills.push('<span class="pbvs-pill">Ask <b style="color:#fff">'+_money(rep.askPrice)+'</b></span>');
+    var ask=Number(rep.askPrice||0);
+    // is the ask price a firm buy or a climbing auction bid? label honestly.
+    var isBid=!!(l && l.priceType==='bid') || !!(l && !(l.priceType==='buynow'||l.priceType==='bin'||l.priceType==='cash') && !(Number(l&&l.buyNow)>0) && ask>0);
+    var rLo=Number(rep.allInLow||0), rHi=Number(rep.allInHigh||0);
+    // TOTAL in = purchase + rebuild (the AI's all-in is REBUILD only, not the car)
+    if(ask && (rLo||rHi)) pills.push('<span class="pbvs-pill" style="border-color:rgba(201,169,98,.5)">Total in <b style="color:#fff">'+_range(ask+rLo, ask+rHi)+'</b></span>');
+    if(rLo||rHi) pills.push('<span class="pbvs-pill">Rebuild '+_range(rLo,rHi)+'</span>');
+    else if(rep.partsCostLow||rep.partsCostHigh) pills.push('<span class="pbvs-pill">Parts '+_range(rep.partsCostLow,rep.partsCostHigh)+'</span>');
+    if(ask) pills.push('<span class="pbvs-pill">'+(isBid?'Current bid ':'Ask ')+'<b style="color:#fff">'+_money(ask)+'</b>'+(isBid?' (climbs)':'')+'</span>');
+    if(rep.estValueClean){
+      pills.push('<span class="pbvs-pill">Clean retail ~<b style="color:#22c55e">'+_money(rep.estValueClean)+'</b></span>');
+      // rough margin vs a TITLE-ADJUSTED exit (branded titles resell ~25% under clean)
+      var branded=!!(l && !/clean/i.test(String(l.title||'')));
+      var exit=branded?Math.round(rep.estValueClean*0.75):rep.estValueClean;
+      if(ask && rHi){ var mLo=exit-(ask+rHi), mHi=exit-(ask+rLo), mc=(mLo>0)?'#22c55e':(mHi>0?'#c9a962':'#ef4444');
+        pills.push('<span class="pbvs-pill" style="color:'+mc+'" title="'+(branded?'exit discounted 25% for a branded title':'clean-title exit')+'">Est. margin '+_range(mLo,mHi)+'</span>'); }
+    }
     if(rep.laborHours) pills.push('<span class="pbvs-pill">~'+rep.laborHours+' labor hrs</span>');
     return '<div class="pbvs-scorewrap"><div class="pbvs-score" style="border-color:'+col+';color:'+col+'"><div class="pbvs-scoreN">'+sc+'</div><div class="pbvs-scoreL">opportunity</div></div>'+
-      '<div style="flex:1;min-width:0">'+(rep.scoreRationale?'<div class="pbvs-hint" style="color:#cdd3da;margin-bottom:6px">'+esc(rep.scoreRationale)+'</div>':'')+'<div style="display:flex;flex-wrap:wrap;gap:5px">'+pills.join('')+'</div></div></div>';
+      '<div style="flex:1;min-width:0">'+(rep.scoreRationale?'<div class="pbvs-hint" style="color:#cdd3da;margin-bottom:6px">'+esc(rep.scoreRationale)+'</div>':'')+
+      '<div style="display:flex;flex-wrap:wrap;gap:5px">'+pills.join('')+'</div>'+
+      '<div class="pbvs-hint" style="margin-top:5px;font-size:11px">Score 70+ chase &middot; 45-69 verify &middot; under 45 walk. Margin = title-adjusted clean retail minus (buy + rebuild) &mdash; estimates, not a guarantee.</div>'+
+      '</div></div>';
   }
   function _flagsBlock(rep){ var f=(rep.redFlags||[]); if(!f.length) return '';
     return '<div class="pbvs-risk"><div class="pbvs-sec" style="color:#ef4444;margin:0 0 6px">&#9888; Red flags &mdash; could lower the score</div>'+f.map(function(x){ return '<div class="pbvs-riskrow"><b style="color:#f59e0b">'+esc(x.flag||'')+'</b>'+(x.impact?' &mdash; <span style="color:#a7afba">'+esc(x.impact)+'</span>':'')+'</div>'; }).join('')+'</div>'; }
@@ -1069,8 +1108,8 @@
           '<button class="pbvs-srcbtn" data-act="addcart" data-i="'+i+'">+ Cart</button></div>';
       }).join('');
       body='<div class="pbvs-modinner">'+
-        '<div class="pbvs-modhead"><div><b style="font-size:16px;color:#fff">'+esc(vehStr(l))+'</b> &mdash; parts report <span class="pbvs-pill">'+(rep.provider==='claude'?(hasImgs?'AI + photos':'AI (no photos)'):'checklist')+'</span></div><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div>'+
-        _scoreBlock(rep)+
+        '<div class="pbvs-modhead"><div><b style="font-size:16px;color:#fff">'+esc(vehStr(l))+'</b> &mdash; parts report <span class="pbvs-pill">'+(/^claude/.test(rep.provider||'')?(hasImgs?'AI + photos':'AI (no photos)'):'checklist')+'</span></div><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div>'+
+        _scoreBlock(rep, l)+
         (rep.summary?'<div class="pbvs-hint" style="margin:4px 0 10px">'+esc(rep.summary)+'</div>':'')+
         (ebayOff?'<div class="pbvs-hint" style="color:#a7afba;margin:2px 0 8px">Each part shows the AI\'s price <b>estimate</b>; tap <b style="color:#c9a962">$ Live prices</b> (Google Shopping) or <b style="color:#c9a962">eBay</b> for the real current price &mdash; no API needed. Inline live prices auto-fill once an eBay API key is added.</div>':'')+
         (imgs?'<div class="pbvs-gallery">'+imgs+'</div>':'<div class="pbvs-hint">No listing photos available &mdash; <a href="'+esc(l.url||'#')+'" target="_blank" rel="noopener" style="color:#c9a962">open the listing &#8599;</a></div>')+
@@ -1104,7 +1143,7 @@
     }
     body.innerHTML=h;
   }
-  function _fmtDate(ts){ try{ var d=new Date(+ts); if(isNaN(d.getTime())) return ''; return (d.getMonth()+1)+'/'+d.getDate(); }catch(e){ return ''; } }
+  function _fmtDate(ts){ try{ var d=new Date(+ts); if(isNaN(d.getTime())) return ''; return (d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(-2); }catch(e){ return ''; } }
   function cartRow(c){
     var i=PBVS.cart.indexOf(c); var ordered=c.status==='ordered'; var qty=+c.qty||1;
     var links=(c.links||[]).map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
@@ -1146,7 +1185,8 @@
     var g=function(site){ return 'https://www.google.com/search?q='+q('site:'+site+' '+kwq+' for sale'); };
     return [
       {g:'Salvage / auction', items:[
-        {label:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/make/'+q(mk.toUpperCase())+'/model/'+q(md.toUpperCase())},
+        {label:'salvagereseller (Copart)', url:'https://www.salvagereseller.com/cars-for-sale/make/'+q(mk.toUpperCase())+'/model/'+q(md.toUpperCase())},
+        {label:'Copart.com', url:'https://www.copart.com/lotSearchResults?free=true&query='+q((findSel.make||'')+' '+(findSel.model||''))},
         {label:'IAAI', url:'https://www.iaai.com/Vehiclelisting/'+q(mkL)+'/'+q(mdL.replace(/-/g,''))},
         {label:'SCA', url:'https://sca.auction/en/search/type-cars/make-'+q(mkL)+'/model-'+q(mdL)},
         {label:'bid.cars', url:'https://bid.cars/en/automobile/'+q(mkL)+'/'+q(mdL)},
@@ -1181,7 +1221,7 @@
     var years=[]; var y0=(new Date().getFullYear())+1; for(var y=y0;y>=1980;y--) years.push(String(y));
     var titleSel=['Any','Clean','Salvage','Rebuilt'].map(function(o){return '<option'+(findSel.title===o?' selected':'')+'>'+o+'</option>';}).join('');
     var h='<div class="pbvs-card"><div class="pbvs-sec">Search any vehicle &mdash; every source, your filters</div>'+
-      '<div class="pbvs-hint" style="margin-bottom:10px">Live listings pull from the auto-scrapeable sources (Copart, GSA gov, eBay when keyed). The JS-only sites (IAAI, Autotrader, Cars &amp; Bids, FB, gov) are one-click deep-links below &mdash; pre-filtered to your search.</div>'+
+      '<div class="pbvs-hint" style="margin-bottom:10px">Live results = <b>salvage/auction</b> (salvagereseller / Copart pool), <b>gov fleet</b> (GSA), and eBay (when keyed). <b style="color:#c9a962">Dealer / clean-title retail (CarGurus, Autotrader, Cars.com, Bring a Trailer) can\'t be auto-scraped &mdash; they are the one-click links in the "Retail / private" group below</b>, pre-filtered to your search.</div>'+
       '<div class="pbvs-row">'+
         fldSelRaw('Make','fdMake',(PBVS.nMakes||CURATED_MAKES),findSel.make)+
         fldSelRaw('Model','fdModel',(findSel._models||[]),findSel.model)+
@@ -1199,13 +1239,13 @@
     body.innerHTML=h;
     renderFindDeepLinks();
     getMakes(function(){ var sel=el('fdMake'); if(sel) fillSelect(sel,PBVS.nMakes,findSel.make); });
-    if(findSel.make){ getModels(findSel.make, findSel.yearMin||(new Date().getFullYear()), function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,findSel.model); }); }
+    if(findSel.make){ getModels(findSel.make, findSel.yearMin||'', function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,findSel.model); }); }
   }
   function runFind(){
     findSel.maxPrice=(el('fdMax')&&el('fdMax').value)||''; findSel.title=(el('fdTitle')&&el('fdTitle').value)||''; findSel.state=(el('fdState')&&el('fdState').value)||'';
     renderFindDeepLinks();
     var r=el('findResults'); if(!findSel.make){ if(r) r.innerHTML='<div class="pbvs-empty">Pick a make first (the deep-links below still work without one).</div>'; return; }
-    if(r) r.innerHTML='<div class="pbvs-empty">Searching Copart + GSA gov + eBay&#8230;</div>';
+    if(r) r.innerHTML='<div class="pbvs-empty">Searching salvagereseller + GSA gov + eBay&#8230;</div>';
     var w=_worker();
     if(!w){ if(r) r.innerHTML='<div class="pbvs-empty">Live search needs the worker deployed &mdash; use the deep-links below.</div>'; return; }
     var payload={make:findSel.make,model:findSel.model,yearMin:findSel.yearMin,yearMax:findSel.yearMax,maxPrice:findSel.maxPrice,title:(findSel.title==='Any'?'':findSel.title),state:findSel.state};
@@ -1216,7 +1256,7 @@
         if(!res.ok){ r.innerHTML='<div class="pbvs-empty">Search '+(res.status===401?'needs you signed in to the dashboard (Settings &rarr; secret)':'failed (server '+res.status+')')+' &mdash; the deep-links below still work.</div>'; return; }
         var d=res.j, leads=(d&&d.leads)||[], s=(d&&d.sources)||{};
         PBVS.findLeads=leads;   // so the heart + Parts report resolve on found cars
-        var head='<div class="pbvs-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span class="pbvs-count"><b style="color:#c9a962">'+leads.length+'</b> live listings &middot; Copart '+(s.copart||0)+' &middot; gov '+(s.gov||0)+' &middot; eBay '+(s.ebay||0)+'</span>'+((!leads.length&&!findSel.model)?'<span class="pbvs-hint">&mdash; add a model for live Copart results</span>':'')+'</div>';
+        var head='<div class="pbvs-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span class="pbvs-count"><b style="color:#c9a962">'+leads.length+'</b> live salvage/gov listings &middot; salvagereseller '+(s.copart||0)+' &middot; gov '+(s.gov||0)+' &middot; eBay '+(s.ebay||0)+'</span>'+((!leads.length&&!findSel.model)?'<span class="pbvs-hint">&mdash; add a model for live salvagereseller results</span>':'')+'<span class="pbvs-hint" style="width:100%">Dealer / clean-title cars are the <b style="color:#c9a962">Retail / private</b> deep-links below.</span></div>';
         r.innerHTML = head + (leads.length ? '<div class="pbvs-grid pbvs-leadgrid">'+leads.map(leadCard).join('')+'</div>' : '<div class="pbvs-empty">No live listings from the auto-sources for those filters &mdash; the deep-links below cover the JS-only sites.</div>');
       })
       .catch(function(){ if(r) r.innerHTML='<div class="pbvs-empty">Search failed or timed out &mdash; use the deep-links below.</div>'; });
