@@ -250,6 +250,8 @@
     if(euro) out.push({label:'FCP Euro', url:'https://www.fcpeuro.com/search?q='+q(kw)});
     // Junkyards + phone numbers (nationwide): Car-Part.com is THE tool.
     out.push({label:'&#9742; Car-Part.com (yards + phones)', gold:true, url:'https://www.google.com/search?q='+q('site:car-part.com '+kw)});
+    out.push({label:'Parts stores', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:rockauto.com OR site:autozone.com OR site:oreillyauto.com OR site:napaonline.com OR site:advanceautoparts.com OR site:partsgeek.com OR site:summitracing.com OR site:1aauto.com)')});
+    out.push({label:'Junkyards', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:car-part.com OR site:row52.com OR site:lkqonline.com OR site:pullapart.com)')});
     out.push({label:'LKQ Online', url:'https://www.lkqonline.com/search?q='+q(kw)});
     // OEM diagrams / exact part numbers by VIN:
     if(v.vin) out.push({label:'OEM by VIN (Partsouq)', gold:true, url:'https://partsouq.com/en/search/all?q='+q(v.vin)});
@@ -268,7 +270,7 @@
       {label:'bid.cars', url:'https://bid.cars/en/automobile/'+q(mk.toLowerCase())+'/'+q(md.toLowerCase().replace(/\s+/g,'-'))},
       {label:'Whole web', url:'https://www.google.com/search?q='+q(mk+' '+md+' for sale (salvage OR rebuildable OR wrecked OR project OR cash)')},
       {label:'FB Marketplace', url:'https://www.facebook.com/marketplace/search/?query='+q(mk+' '+md)},
-      {label:'Cars &amp; Bids', url:'https://carsandbids.com/search/'+q((mk+' '+md).toLowerCase().replace(/\s+/g,'-'))}
+      {label:'Cars &amp; Bids', url:'https://www.google.com/search?q='+q('site:carsandbids.com '+mk+' '+md)}
     ];
   }
 
@@ -283,6 +285,7 @@
     host.innerHTML = _dlB +
       '<div class="pbvs-subnav">'+
         subBtn('leads','&#128293; Current Leads')+
+        subBtn('find','&#128269; Vehicle Search')+
         subBtn('parts','&#128736; Parts Search')+
         subBtn('kit','&#128203; Outreach &amp; Watch-list Kit')+
         subBtn('cart','&#128722; Parts Cart'+(_cartN()?' ('+_cartN()+')':''))+
@@ -291,6 +294,7 @@
       '</div>'+
       '<div id="pbvsBody"></div>';
     if(s==='parts') renderParts();
+    else if(s==='find') renderFind();
     else if(s==='kit') renderKit();
     else if(s==='cart') renderCart();
     else renderLeads();
@@ -595,6 +599,7 @@
       else if(act==='fleetpick'){ pickFleet(t.getAttribute('data-k')); }
       else if(act==='vindecode'){ doVinDecode(); }
       else if(act==='partsgo'){ runPartsSearch(); }
+      else if(act==='findgo'){ runFind(); }
       else if(act==='copy'){ doCopy(t); }
       else if(act==='addcrit'){ addCrit(); }
       else if(act==='delcrit'){ PBVS.criteria.splice(+t.getAttribute('data-i'),1); saveCrit(); renderKit(); }
@@ -619,6 +624,10 @@
       else if(id==='psMake'){ partsSel.make=e.target.value; partsSel.model=''; partsSel.vin=''; refreshPartsModels(); updateVehLine(); }
       else if(id==='psModel'){ partsSel.model=e.target.value; updateVehLine(); }
       else if(id==='ncMake'){ getModels(e.target.value, (el('ncYmin')&&el('ncYmin').value)||new Date().getFullYear(), function(arr){ var s=el('ncModel'); if(s) fillSelect(s,arr,''); }); }
+      else if(id==='fdMake'){ findSel.make=e.target.value; findSel.model=''; getModels(findSel.make, findSel.yearMin||(new Date().getFullYear()), function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,''); }); }
+      else if(id==='fdModel'){ findSel.model=e.target.value; }
+      else if(id==='fdYmin'){ findSel.yearMin=e.target.value; }
+      else if(id==='fdYmax'){ findSel.yearMax=e.target.value; }
     });
   }
   function ensureShell(){ if(!el('pbvsBody')) render(); }
@@ -723,6 +732,10 @@
       {label:'RockAuto', url: part.oem ? ('https://www.rockauto.com/en/partsearch/?partnum='+q(part.oem)) : ('https://www.rockauto.com/en/catalog/'+q(v.make)+','+q(v.year)+','+q(v.model))},
       {label:'Car-Part yards', url:'https://www.google.com/search?q='+q('site:car-part.com '+kw)}
     ];
+    // parts STORES (AutoZone/O'Reilly/NAPA/Advance/PartsGeek/Summit/1A/RockAuto) + JUNKYARDS
+    // (Car-Part/Row52/LKQ/Pull-A-Part) via Google site: -> always real, in-stock findings
+    out.push({label:'Parts stores', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:rockauto.com OR site:autozone.com OR site:oreillyauto.com OR site:napaonline.com OR site:advanceautoparts.com OR site:partsgeek.com OR site:summitracing.com OR site:1aauto.com)')});
+    out.push({label:'Junkyards', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:car-part.com OR site:row52.com OR site:lkqonline.com OR site:pullapart.com)')});
     out.push({label:'Whole web', url:'https://www.google.com/search?q='+q(kw+' for sale')});
     out.push({label:'Shopping', url:'https://www.google.com/search?tbm=shop&q='+q(kw)});
     if(euro) out.push({label:'FCP Euro', url:'https://www.fcpeuro.com/search?q='+q(kw)});
@@ -842,6 +855,84 @@
     var p=el('psPart'); var part=p?p.value.trim():''; if(!part){ _toast('Type a part first'); return; }
     var v={year:partsSel.year,make:partsSel.make,model:partsSel.model,vin:partsSel.vin};
     if(addToCart({name:part, vehicle:vehStr(v)||'(no car selected)', oem:looksLikePart(part)?part:'', links:partLinks(v,{name:part,search:part})})) _toast('&#10004; Added to cart'); else _toast('Already in cart');
+  }
+
+  // ============================================================================
+  //  VEHICLE SEARCH -- search ANY vehicle across every source within filters
+  // ============================================================================
+  var findSel = {yearMin:'', yearMax:'', make:'', model:'', maxPrice:'', title:'', state:'', _models:[]};
+  function findSources(){
+    var y=findSel.yearMin||'', mk=findSel.make||'', md=findSel.model||'', kw=(y+' '+mk+' '+md).trim();
+    var mkL=mk.toLowerCase().replace(/\s+/g,'-'), mdL=md.toLowerCase().replace(/\s+/g,'-');
+    // Google site: search ALWAYS returns real, current, criteria-fit listings from that
+    // exact site (bulletproof vs. guessing fragile per-site URL slugs that 404).
+    var g=function(site){ return 'https://www.google.com/search?q='+q('site:'+site+' '+kw+' for sale'); };
+    return [
+      {g:'Salvage / auction', items:[
+        {label:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/make/'+q(mk.toUpperCase())+'/model/'+q(md.toUpperCase())},
+        {label:'IAAI', url:'https://www.iaai.com/Vehiclelisting/'+q(mkL)+'/'+q(mdL.replace(/-/g,''))},
+        {label:'SCA', url:'https://sca.auction/en/search/type-cars/make-'+q(mkL)+'/model-'+q(mdL)},
+        {label:'bid.cars', url:'https://bid.cars/en/automobile/'+q(mkL)+'/'+q(mdL)},
+        {label:'erepairables', url:g('erepairables.com')}
+      ]},
+      {g:'Retail / private (clean title)', items:[
+        {label:'Autotrader', url:g('autotrader.com')},
+        {label:'Cars.com', url:g('cars.com')},
+        {label:'CarGurus', url:g('cargurus.com')},
+        {label:'Cars &amp; Bids', url:g('carsandbids.com')},
+        {label:'Bring a Trailer', url:g('bringatrailer.com')},
+        {label:'FB Marketplace', url:'https://www.facebook.com/marketplace/search/?query='+q(kw)},
+        {label:'Craigslist', url:g('craigslist.org')},
+        {label:'Whole web', url:'https://www.google.com/search?q='+q(kw+' for sale')}
+      ]},
+      {g:'Government / seized', items:[
+        {label:'GovDeals', url:g('govdeals.com')},
+        {label:'Bid4Assets', url:g('bid4assets.com')},
+        {label:'GSA Auctions', url:g('gsaauctions.gov')},
+        {label:'PropertyRoom', url:g('propertyroom.com')}
+      ]}
+    ];
+  }
+  function renderFind(){
+    var body=el('pbvsBody'); if(!body) return;
+    var years=[]; var y0=(new Date().getFullYear())+1; for(var y=y0;y>=1980;y--) years.push(String(y));
+    var titleSel=['Any','Clean','Salvage','Rebuilt'].map(function(o){return '<option'+(findSel.title===o?' selected':'')+'>'+o+'</option>';}).join('');
+    var h='<div class="pbvs-card"><div class="pbvs-sec">Search any vehicle &mdash; every source, your filters</div>'+
+      '<div class="pbvs-hint" style="margin-bottom:10px">Live listings pull from the auto-scrapeable sources (Copart, GSA gov, eBay when keyed). The JS-only sites (IAAI, Autotrader, Cars &amp; Bids, FB, gov) are one-click deep-links below &mdash; pre-filtered to your search.</div>'+
+      '<div class="pbvs-row">'+
+        fldSelRaw('Make','fdMake',(PBVS.nMakes||CURATED_MAKES),findSel.make)+
+        fldSelRaw('Model','fdModel',(findSel._models||[]),findSel.model)+
+        fldSelRaw('Year from','fdYmin',years,findSel.yearMin)+
+        fldSelRaw('Year to','fdYmax',years,findSel.yearMax)+
+      '</div>'+
+      '<div class="pbvs-row" style="margin-top:8px">'+
+        '<div class="pbvs-fld"><label>Max price $</label><input id="fdMax" class="finput" style="width:110px" placeholder="any" value="'+esc(findSel.maxPrice)+'"></div>'+
+        '<div class="pbvs-fld"><label>Title</label><select id="fdTitle" class="finput" style="min-width:110px">'+titleSel+'</select></div>'+
+        '<div class="pbvs-fld"><label>State</label><input id="fdState" class="finput" style="width:74px;text-transform:uppercase" maxlength="2" placeholder="any" value="'+esc(findSel.state)+'"></div>'+
+        '<button class="btn" data-act="findgo" style="background:#c9a962;border-color:#c9a962;color:#111;font-weight:800">Search all sources</button>'+
+      '</div></div>'+
+      '<div id="findResults"></div>'+
+      '<div class="pbvs-card"><div class="pbvs-sec">Open the search on every source</div>'+
+        findSources().map(function(g){ return '<div style="margin-bottom:9px"><div class="pbvs-hint" style="font-weight:700;color:#c9a962;margin-bottom:3px">'+g.g+'</div><div class="pbvs-src">'+g.items.map(function(s){ return '<a href="'+s.url+'" target="_blank" rel="noopener">'+s.label+' &#8599;</a>'; }).join('')+'</div></div>'; }).join('')+
+      '</div>';
+    body.innerHTML=h;
+    getMakes(function(){ var sel=el('fdMake'); if(sel) fillSelect(sel,PBVS.nMakes,findSel.make); });
+    if(findSel.make){ getModels(findSel.make, findSel.yearMin||(new Date().getFullYear()), function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,findSel.model); }); }
+  }
+  function runFind(){
+    findSel.maxPrice=(el('fdMax')&&el('fdMax').value)||''; findSel.title=(el('fdTitle')&&el('fdTitle').value)||''; findSel.state=(el('fdState')&&el('fdState').value)||'';
+    var r=el('findResults'); if(!findSel.make){ if(r) r.innerHTML='<div class="pbvs-empty">Pick a make first.</div>'; return; }
+    if(r) r.innerHTML='<div class="pbvs-empty">Searching Copart + GSA gov + eBay&#8230;</div>';
+    var w=_worker();
+    if(!w){ if(r) r.innerHTML='<div class="pbvs-empty">Live search needs the worker deployed &mdash; use the deep-links below.</div>'; return; }
+    var payload={make:findSel.make,model:findSel.model,yearMin:findSel.yearMin,yearMax:findSel.yearMax,maxPrice:findSel.maxPrice,title:(findSel.title==='Any'?'':findSel.title),state:findSel.state};
+    fetch(w+'/vehicle-find',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify(payload)})
+      .then(function(x){ return x.ok?x.json():null; })
+      .then(function(d){ if(!r) return; var leads=(d&&d.leads)||[]; var s=(d&&d.sources)||{};
+        var head='<div class="pbvs-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span class="pbvs-count"><b style="color:#c9a962">'+leads.length+'</b> live listings &middot; Copart '+(s.copart||0)+' &middot; gov '+(s.gov||0)+' &middot; eBay '+(s.ebay||0)+'</span></div>';
+        r.innerHTML = head + (leads.length ? '<div class="pbvs-grid pbvs-leadgrid">'+leads.map(leadCard).join('')+'</div>' : '<div class="pbvs-empty">No live listings from the auto-sources for those filters &mdash; the deep-links below cover the JS-only sites.</div>');
+      })
+      .catch(function(){ if(r) r.innerHTML='<div class="pbvs-empty">Search failed &mdash; use the deep-links below.</div>'; });
   }
 
   // ---- public entry ----------------------------------------------------------
