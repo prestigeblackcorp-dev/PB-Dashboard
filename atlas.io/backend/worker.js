@@ -542,6 +542,14 @@ function _sanitizeErrMsg(s) {
 function _normalizeErrMsg(s) {
   try { return String(s || '').toLowerCase().replace(/[0-9a-f-]{8,}/g, '#').replace(/\d+/g, '#').slice(0, 200); } catch (e) { return ''; }
 }
+// #sec: strip capability tokens from a path before it is persisted to platform_errors/attack_log or emailed to the
+// owner. Portal + e-sign links carry a live secret token as a path segment; /api/f and others carry it as ?token=.
+// An error/attack row (or the owner-alert email) must never leak a still-valid credential.
+function _redactPath(path) {
+  return String(path == null ? '' : path).slice(0, 200)
+    .replace(/^(\/api\/(?:portal|extsign|signing))\/[^\/?]+/i, '$1/[tok]')
+    .replace(/([?&](?:token|t|sig|s)=)[^&]+/ig, '$1[tok]');
+}
 async function _recordError(env, req, e, path, method) {
   try {
     await ensurePlatformSchema(env);
@@ -549,7 +557,7 @@ async function _recordError(env, req, e, path, method) {
     var rawMsg = (e && e.message) ? String(e.message) : String(e || '');
     var norm = _normalizeErrMsg(rawMsg);
     var msg = _sanitizeErrMsg(rawMsg);
-    var p = String(path || '').slice(0, 200);
+    var p = _redactPath(path);   // #sec: portal/e-sign capability tokens stripped before storage + owner-alert email
     var sig = (await _sha256Hex(name + '|' + norm + '|' + p)).slice(0, 32);
     var now = Date.now();
     var ip = (req && req.headers.get('CF-Connecting-IP')) || '';
@@ -581,7 +589,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.05a';
+const ATLAS_BUILD = '2026.08.05b';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -594,6 +602,36 @@ function _roleCaps(role) {
     case 'viewer': return {};
     default: return {};
   }
+}
+// #sec: is a booking's portal capability token still live? Shared by /api/portal and the /api/f KYC-photo serve so the
+// two can never drift (the KYC branch previously accepted a token WITHOUT checking revoke/expiry). Fails closed.
+function _portalLive(env, brow) {
+  if (!brow) return false;
+  var d = null; try { d = brow.data ? JSON.parse(brow.data) : null; } catch (e) {}
+  if (d && d.portalRevoked) return false;                                   // #14: honor early revocation
+  var graceMs = Math.max(0, parseInt(env.PORTAL_GRACE_DAYS, 10) || 90) * 86400000;
+  var ends = Number(brow.ends) || Number(brow.created_at) || 0;            // #14: open-ended booking still expires (fall back to created_at)
+  if (ends > 0 && Date.now() > ends + graceMs) return false;
+  return true;
+}
+// #sec: a non-owner granter may only delegate capabilities they THEMSELVES hold (no privilege amplification), and only
+// from a fixed whitelist (unknown keys never stored). Owner is unrestricted. Granting/removing FALSE is always allowed.
+function _grantableCaps(ctx, requested) {
+  if (!requested || typeof requested !== 'object' || Array.isArray(requested)) return null;
+  if (ctx && (ctx.isOwner || (ctx.user && ctx.user.role === 'owner'))) return requested;
+  var KNOWN = ['fleetEdit', 'bookEdit', 'pricing', 'webEdit', 'customers', 'customersEdit', 'settings', 'analytics', 'teamManage'];
+  var out = {};
+  ['caps', 'mods'].forEach(function (g) {
+    var src = requested[g]; if (!src || typeof src !== 'object' || Array.isArray(src)) return;
+    var dst = {};
+    Object.keys(src).forEach(function (k) {
+      if (KNOWN.indexOf(k) < 0) return;                 // whitelist: drop unknown keys entirely
+      if (!src[k]) { dst[k] = src[k]; return; }         // removing/false is always permitted
+      if (_can(ctx, k)) dst[k] = src[k];                // granting TRUE only if the granter holds it
+    });
+    if (Object.keys(dst).length) out[g] = dst;
+  });
+  return out;
 }
 function _can(ctx, cap) {
   if (!ctx || !ctx.user) return false;
@@ -1506,7 +1544,7 @@ function _extractLinks(html) { var out = [], re = /href\s*=\s*["']([^"'>]+)["']/
 async function _competitorCrawl(env, startUrl) {
   var origin = ''; try { origin = new URL(startUrl).origin; } catch (e) {}
   var mainHtml = '', mainStatus = 0;
-  try { const r = await _fetchTimeout(startUrl, { headers: { 'User-Agent': 'AtlasRentalBot/1.0 (+https://atlasrental.io)', 'Accept': 'text/html' } }, 10000); mainStatus = r.status; mainHtml = (await r.text()).slice(0, 300000); } catch (e) {}
+  try { const r = await _fetchTimeout(startUrl, { redirect: 'manual', headers: { 'User-Agent': 'AtlasRentalBot/1.0 (+https://atlasrental.io)', 'Accept': 'text/html' } }, 10000); mainStatus = r.status; mainHtml = (await r.text()).slice(0, 300000); } catch (e) {}
   var main = _compExtract(mainHtml, mainStatus);
   var links = _extractLinks(mainHtml).map(function (a) { try { return new URL(a.split('#')[0], startUrl).href; } catch (e) { return ''; } }).filter(function (u) { return u && origin && u.indexOf(origin) === 0 && u !== startUrl && !/\.(jpg|jpeg|png|gif|svg|pdf|zip|css|js|ico|webp|mp4|woff2?)(\?|$)/i.test(u); });
   var KW = /pric|rate|plan|rent|fleet|vehicle|\bcars?\b|boat|\brv\b|yacht|review|testimon|about|faq|book|cost|\bfees?\b|listing|catalog/i;
@@ -1514,7 +1552,7 @@ async function _competitorCrawl(env, startUrl) {
   links.forEach(function (u) { var key = u.split('?')[0]; if (seen[key]) return; seen[key] = 1; (KW.test(u) ? pri : rest).push(u); });
   var toFetch = pri.slice(0, 5); if (toFetch.length < 5) toFetch = toFetch.concat(rest.slice(0, 5 - toFetch.length));
   var pages = [{ url: startUrl, title: main.title, prices: main.prices, sample: main.sample, reviews: main.reviews }];
-  for (var i = 0; i < toFetch.length; i++) { try { const r = await _fetchTimeout(toFetch[i], { headers: { 'User-Agent': 'AtlasRentalBot/1.0 (+https://atlasrental.io)', 'Accept': 'text/html' } }, 8000); const hh = (await r.text()).slice(0, 250000); const ex = _compExtract(hh, r.status); pages.push({ url: toFetch[i], title: ex.title, prices: ex.prices, sample: ex.sample, reviews: ex.reviews }); } catch (e) {} }
+  for (var i = 0; i < toFetch.length; i++) { try { const r = await _fetchTimeout(toFetch[i], { redirect: 'manual', headers: { 'User-Agent': 'AtlasRentalBot/1.0 (+https://atlasrental.io)', 'Accept': 'text/html' } }, 8000); const hh = (await r.text()).slice(0, 250000); const ex = _compExtract(hh, r.status); pages.push({ url: toFetch[i], title: ex.title, prices: ex.prices, sample: ex.sample, reviews: ex.reviews }); } catch (e) {} }
   var pseen = {}, prices = []; pages.forEach(function (p) { (p.prices || []).forEach(function (x) { if (!pseen[x]) { pseen[x] = 1; prices.push(x); } }); });
   var reviews = []; pages.forEach(function (p) { (p.reviews || []).forEach(function (rv) { if (reviews.length < 24) reviews.push(rv); }); });
   return { status: mainStatus, origin: origin, title: main.title, prices: prices.slice(0, 40), reviews: reviews, pages: pages.map(function (p) { return { url: p.url, title: p.title, prices: (p.prices || []).slice(0, 15), reviews: (p.reviews || []).slice(0, 6), sample: (p.sample || '').slice(0, 1400) }; }), crawledPages: pages.length, crawled_at: Date.now() };
@@ -2462,7 +2500,7 @@ async function _geotabAuth(env, server, database, user, password) {
   var h = _trkSafeHost(/^https?:\/\//.test(String(server || '')) ? server : ('https://' + String(server || 'my.geotab.com')));
   if (!h.ok) return { ok: false, reason: h.reason };
   var body = JSON.stringify({ method: 'Authenticate', params: { database: database, userName: user, password: password } });
-  var r = await _fetchTimeout(h.origin + '/apiv1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body }, 12000);
+  var r = await _fetchTimeout(h.origin + '/apiv1', { redirect: 'manual', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body }, 12000);
   var j = await r.json().catch(function () { return {}; });
   if (!j || !j.result || !j.result.credentials) return { ok: false, reason: 'auth' };
   var srv = h.origin, path = j.result.path;
@@ -2574,14 +2612,11 @@ async function _trackerFetch(env, provider, cred, meta) {
     }
     if (provider === 'traccar') {
       // SSRF guard: require an https URL, use ONLY its origin (no attacker-chosen path via #/?), and block private/link-local/metadata hosts.
-      var _u; try { _u = new URL(String((meta && meta.host) || '').trim()); } catch (e) { return { ok: false, reason: 'bad_host' }; }
-      if (_u.protocol !== 'https:') return { ok: false, reason: 'https_required' };
-      var _hn = _u.hostname.toLowerCase();
-      if (_hn === 'localhost' || _hn === '::1' || _hn.indexOf('.') < 0 || _hn.indexOf('metadata') >= 0 ||
-        /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(_hn) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(_hn)) return { ok: false, reason: 'blocked_host' };
-      var host = _u.origin;
+      var _th = _trkSafeHost((meta && meta.host) || '');   // #sec: use the shared hardened SSRF guard (closes the IPv6-literal / hex-IPv4 bypass) instead of a stale inline copy -- parity with gpswox/wialon/navixy/generic
+      if (!_th.ok) return { ok: false, reason: _th.reason };
+      var host = _th.origin;
       var auth = (meta && meta.user) ? ('Basic ' + btoa(meta.user + ':' + cred)) : ('Bearer ' + cred);
-      var rp = await _fetchTimeout(host + '/api/positions', { headers: { 'Authorization': auth } }, 12000);
+      var rp = await _fetchTimeout(host + '/api/positions', { redirect: 'manual', headers: { 'Authorization': auth } }, 12000);
       var pos = await rp.json().catch(function () { return []; }); if (!Array.isArray(pos)) return { ok: false, reason: 'shape' };
       return { ok: true, positions: pos.map(function (p) { return { deviceId: String(p.deviceId || ''), label: '', vin: '', lat: Number(p.latitude), lng: Number(p.longitude), heading: Number(p.course) || 0, speed: (Number(p.speed) || 0) * 1.15078, ts: p.fixTime || p.deviceTime || '', address: '', moving: (Number(p.speed) || 0) > 0.5 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
     }
@@ -2591,13 +2626,13 @@ async function _trackerFetch(env, provider, cred, meta) {
       var gAuth = await _geotabAuth(env, gc.server || (meta && meta.server) || 'my.geotab.com', gc.database || (meta && meta.database) || '', gc.user || (meta && meta.user) || '', gc.password || '');
       if (!gAuth.ok) return { ok: false, reason: gAuth.reason || 'auth' };
       var gBody = JSON.stringify({ method: 'Get', params: { typeName: 'DeviceStatusInfo', credentials: gAuth.credentials } });
-      var gr = await _fetchTimeout(gAuth.server + '/apiv1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: gBody }, 12000);
+      var gr = await _fetchTimeout(gAuth.server + '/apiv1', { redirect: 'manual', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: gBody }, 12000);
       var gj = await gr.json().catch(function () { return {}; });
       var gRows = (gj && gj.result) || []; if (!Array.isArray(gRows)) return { ok: false, reason: 'shape' };
       var gMap = {};   // best-effort device id -> {name,vin} so devices label + VIN-match to fleet assets (a failure here still returns positions)
       try {
         var dBody = JSON.stringify({ method: 'Get', params: { typeName: 'Device', credentials: gAuth.credentials } });
-        var dr = await _fetchTimeout(gAuth.server + '/apiv1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: dBody }, 12000);
+        var dr = await _fetchTimeout(gAuth.server + '/apiv1', { redirect: 'manual', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: dBody }, 12000);
         var dj = await dr.json().catch(function () { return {}; }); ((dj && dj.result) || []).forEach(function (d) { if (d && d.id) gMap[d.id] = { name: d.name || '', vin: d.vehicleIdentificationNumber || '' }; });
       } catch (e) {}
       return { ok: true, positions: gRows.map(function (v) { var dev = v.device || {}, inf = gMap[dev.id] || {}; return { deviceId: String(dev.id || ''), label: inf.name || '', vin: inf.vin || '', lat: Number(v.latitude), lng: Number(v.longitude), heading: Number(v.bearing) || 0, speed: (Number(v.speed) || 0) * 0.621371, ts: v.dateTime || '', address: '', moving: !!v.isDriving }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
@@ -2605,7 +2640,7 @@ async function _trackerFetch(env, provider, cred, meta) {
     if (provider === 'gpswox') {
       // GPSWOX / white-label GpsWox servers: GET <host>/api/get_devices?user_api_hash=<cred>. cred = user_api_hash; meta.host = server URL. Speed km/h -> mph.
       var gwH = _trkSafeHost((meta && meta.host) || ''); if (!gwH.ok) return { ok: false, reason: gwH.reason };
-      var gwr = await _fetchTimeout(gwH.origin + '/api/get_devices?lang=en&user_api_hash=' + encodeURIComponent(cred || ''), {}, 12000);
+      var gwr = await _fetchTimeout(gwH.origin + '/api/get_devices?lang=en&user_api_hash=' + encodeURIComponent(cred || ''), { redirect: 'manual' }, 12000);
       var gwj = await gwr.json().catch(function () { return null; });
       var groups = Array.isArray(gwj) ? gwj : ((gwj && (gwj.data || gwj.items)) || []); if (!Array.isArray(groups)) return { ok: false, reason: 'shape' };
       var gwOut = [];
@@ -2633,10 +2668,10 @@ async function _trackerFetch(env, provider, cred, meta) {
       // Wialon (Gurtam) Remote API. cred = access token; meta.host optional (Wialon Local self-host; default Hosting SaaS).
       // token/login -> eid session; core/search_items(avl_unit, flags 1+1024=1025) -> items[].pos {x:lng,y:lat,s:km/h,c:course,t:unix}, .nm name. km/h -> mph.
       var wHost = _trkSafeHost((meta && meta.host) || 'https://hst-api.wialon.com'); if (!wHost.ok) return { ok: false, reason: wHost.reason };
-      var wL = await _fetchTimeout(wHost.origin + '/wialon/ajax.html?svc=token/login&params=' + encodeURIComponent(JSON.stringify({ token: cred || '' })), {}, 12000);
+      var wL = await _fetchTimeout(wHost.origin + '/wialon/ajax.html?svc=token/login&params=' + encodeURIComponent(JSON.stringify({ token: cred || '' })), { redirect: 'manual' }, 12000);
       var wlj = await wL.json().catch(function () { return {}; }); if (!wlj || !wlj.eid) return { ok: false, reason: 'auth' };
       var wParams = JSON.stringify({ spec: { itemsType: 'avl_unit', propName: 'sys_name', propValueMask: '*', sortType: 'sys_name' }, force: 1, flags: 1025, from: 0, to: 4294967295 });
-      var wS = await _fetchTimeout(wHost.origin + '/wialon/ajax.html', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'svc=core/search_items&sid=' + encodeURIComponent(wlj.eid) + '&params=' + encodeURIComponent(wParams) }, 12000);
+      var wS = await _fetchTimeout(wHost.origin + '/wialon/ajax.html', { redirect: 'manual', method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'svc=core/search_items&sid=' + encodeURIComponent(wlj.eid) + '&params=' + encodeURIComponent(wParams) }, 12000);
       var wsj = await wS.json().catch(function () { return {}; }); var wItems = (wsj && wsj.items) || []; if (!Array.isArray(wItems)) return { ok: false, reason: 'shape' };
       return { ok: true, positions: wItems.map(function (it) { var p = it.pos || {}, s = Number(p.s) || 0; return { deviceId: String(it.id || ''), label: it.nm || '', vin: '', lat: Number(p.y), lng: Number(p.x), heading: Number(p.c) || 0, speed: s * 0.621371, ts: p.t ? new Date(Number(p.t) * 1000).toISOString() : '', address: '', moving: s > 1 }; }).filter(function (p) { return isFinite(p.lat) && isFinite(p.lng); }) };
     }
@@ -2646,11 +2681,11 @@ async function _trackerFetch(env, provider, cred, meta) {
       var _nu; try { _nu = new URL(String((meta && meta.host) || 'https://api.us.navixy.com/v2').trim()); } catch (e) { return { ok: false, reason: 'bad_host' }; }
       var nGuard = _trkSafeHost(_nu.origin); if (!nGuard.ok) return { ok: false, reason: nGuard.reason };
       var nBase = _nu.origin + _nu.pathname.replace(/\/+$/, '');
-      var nLR = await _fetchTimeout(nBase + '/tracker/list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash: cred || '' }) }, 12000);
+      var nLR = await _fetchTimeout(nBase + '/tracker/list', { redirect: 'manual', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash: cred || '' }) }, 12000);
       var nlj = await nLR.json().catch(function () { return {}; }); if (!nlj || nlj.success === false) return { ok: false, reason: 'auth' };
       var nList = (nlj && nlj.list) || []; if (!Array.isArray(nList)) return { ok: false, reason: 'shape' }; if (!nList.length) return { ok: true, positions: [] };
       var nLabels = {}, nIds = nList.map(function (t) { nLabels[String(t.id)] = t.label || ''; return t.id; });
-      var nSR = await _fetchTimeout(nBase + '/tracker/get_states', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash: cred || '', trackers: nIds }) }, 12000);
+      var nSR = await _fetchTimeout(nBase + '/tracker/get_states', { redirect: 'manual', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hash: cred || '', trackers: nIds }) }, 12000);
       var nsj = await nSR.json().catch(function () { return {}; }); var nStates = (nsj && nsj.states) || {}; if (typeof nStates !== 'object') return { ok: false, reason: 'shape' };
       var nOut = []; Object.keys(nStates).forEach(function (id) { var st = nStates[id] || {}, g = st.gps || {}, loc = g.location || {}, s = Number(g.speed) || 0, lat = Number(loc.lat), lng = Number(loc.lng); if (!(isFinite(lat) && isFinite(lng))) return; nOut.push({ deviceId: String(id), label: nLabels[String(id)] || '', vin: '', lat: lat, lng: lng, heading: Number(g.heading) || 0, speed: s * 0.621371, ts: g.updated ? _trkTsIso(g.updated) : '', address: '', moving: String(st.movement_status || '') === 'moving' || s > 1 }); });
       return { ok: true, positions: nOut };
@@ -2763,7 +2798,7 @@ async function _trackerFetch(env, provider, cred, meta) {
       if (gType === 'bearer') { if (cred) gHeaders['Authorization'] = 'Bearer ' + cred; }
       else if (gType === 'header') { if (cred) gHeaders[String(gAuth.name || 'Authorization')] = (gAuth.prefix ? (gAuth.prefix + ' ') : '') + cred; }
       else if (gType === 'query') { _gu.searchParams.set(String(gAuth.name || 'api_key'), cred || ''); }
-      var gr = await _fetchTimeout(_gu.href, { headers: gHeaders }, 12000);
+      var gr = await _fetchTimeout(_gu.href, { redirect: 'manual', headers: gHeaders }, 12000);
       var gj = await gr.json().catch(function () { return null; }); if (gj == null) return { ok: false, reason: 'shape' };
       return { ok: true, positions: _trkExtract(_trkResolveList(gj, (gm.paths || {}).list), gm.paths, gm.speedUnit) };
     }
@@ -3822,7 +3857,7 @@ async function _logAttackWrite(env, o) {
     o = o || {};
     await env.DB.prepare('INSERT INTO attack_log (id,ts,ip,email,kind,path,method,detail,blocked,outcome,ua) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
       .bind('atk' + randId(12), Date.now(), String(o.ip || '').slice(0, 64), String(o.email || '').slice(0, 254), String(o.kind || '').slice(0, 40),
-        String(o.path || '').slice(0, 200), String(o.method || '').slice(0, 10), String(o.detail || '').slice(0, 300),
+        _redactPath(o.path), String(o.method || '').slice(0, 10), String(o.detail || '').slice(0, 300),
         o.blocked ? 1 : 0, String(o.outcome || '').slice(0, 60), String(o.ua || '').slice(0, 240)).run();
   } catch (e) { /* attack logging must never break the request it is observing */ }
 }
@@ -4083,7 +4118,7 @@ function _alert(env, ectx, o) {
 // analytics/ + monitor/ added: /api/admin/analytics/* (cohorts, segmented funnel) + /api/admin/monitor/* (uptime) all
 // surface CROSS-TENANT aggregates (MRR/LTV, every tenant's site status) -- same owner-only tier as funnel/seo-health/
 // site-uptime above, never reachable by a support/analyst staff token.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs)|payments-ledger|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|members|transactions|purchases|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs)|payments-ledger|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -6020,7 +6055,7 @@ function doReset(){
           if (!_authed) {
             try {
               const _ptok = url.searchParams.get('token') || '';
-              if (_ptok) { const _pbrow = await env.DB.prepare('SELECT id FROM bookings WHERE portal_token=? LIMIT 1').bind(_ptok).first(); if (_pbrow && _pbrow.id === _bookingId) _authed = true; }
+              if (_ptok) { const _pbrow = await env.DB.prepare('SELECT id, data, ends, created_at FROM bookings WHERE portal_token=? LIMIT 1').bind(_ptok).first(); if (_pbrow && _pbrow.id === _bookingId && _portalLive(env, _pbrow)) _authed = true; }   // #sec: a REVOKED or EXPIRED portal token must NOT unlock the KYC ID/license photo (was accepting the token forever)
             } catch (e) {}
           }
           if (!_authed) return err(403, 'Not authorized.');
@@ -8498,7 +8533,7 @@ function doReset(){
         const email = vEmail(body.email) ? String(body.email).trim().toLowerCase() : '';
         if (!email) return err(400, 'Enter a valid email address.');
         const role = ['manager', 'ops', 'desk', 'viewer'].indexOf(String(body.role || '')) >= 0 ? body.role : 'desk';   // NEVER 'owner' via invite
-        const caps = (body.caps && typeof body.caps === 'object' && !Array.isArray(body.caps)) ? JSON.stringify(body.caps) : null;
+        const _gcaps = _grantableCaps(ctx, body.caps); const caps = _gcaps ? JSON.stringify(_gcaps) : null;   // #sec: a non-owner granter may only delegate caps they themselves hold (no privilege amplification) + fixed whitelist
         const existing = await env.DB.prepare("SELECT id,tenant_id FROM users WHERE lower(email)=?").bind(email).first();
         if (existing) return err(409, existing.tenant_id === ctx.tenant_id ? 'That person is already on your team.' : 'That email already has an Atlas account.');
         const uid = 'U' + randId(14), token = randId(28), now = Date.now();
@@ -8534,7 +8569,7 @@ function doReset(){
         }
         const role = ['manager', 'ops', 'desk', 'viewer'].indexOf(String(body.role || '')) >= 0 ? body.role : target.role;   // NEVER promote to owner
         const hasCaps = body.caps && typeof body.caps === 'object' && !Array.isArray(body.caps);
-        if (hasCaps) await env.DB.prepare("UPDATE users SET role=?, caps=? WHERE id=? AND tenant_id=? AND role!='owner'").bind(role, JSON.stringify(body.caps), tid, ctx.tenant_id).run();
+        if (hasCaps) await env.DB.prepare("UPDATE users SET role=?, caps=? WHERE id=? AND tenant_id=? AND role!='owner'").bind(role, JSON.stringify(_grantableCaps(ctx, body.caps) || {}), tid, ctx.tenant_id).run();   // #sec: intersect requested caps with the granter's own (owner unrestricted)
         else if (body.caps === null) await env.DB.prepare("UPDATE users SET role=?, caps=NULL WHERE id=? AND tenant_id=? AND role!='owner'").bind(role, tid, ctx.tenant_id).run();
         else await env.DB.prepare("UPDATE users SET role=? WHERE id=? AND tenant_id=? AND role!='owner'").bind(role, tid, ctx.tenant_id).run();
         await audit(env, ctx, req, 'team.update', { id: tid, role: role });
@@ -9059,13 +9094,13 @@ function doReset(){
           if (!_can(ctx, 'pricing') && !_can(ctx, 'webEdit') && !_can(ctx, 'settings')) return err(403, 'You do not have permission to edit money rules, the website, or settings.');
           const body = await req.json().catch(function () { return {}; });
           const sets = [], vals = [];
-          if (body.brand && typeof body.brand === 'object') {
+          if ((_can(ctx, 'webEdit') || _can(ctx, 'settings')) && body.brand && typeof body.brand === 'object') {   // #sec: brand write needs webEdit|settings (silently skip -- the client auto-mirror re-sends every section on each save)
             const _bl = body.brand.logo;   // M1: a logo must be a data: image or an https URL -- never an arbitrary string an owner-facing view could interpret as markup/attribute (e.g. `x" onerror=...`)
             const _brand = (typeof _bl === 'string' && _bl && !/^data:image\//i.test(_bl) && !/^https:\/\//i.test(_bl)) ? Object.assign({}, body.brand, { logo: '' }) : body.brand;
             sets.push('brand=?'); vals.push(JSON.stringify(_brand));
           }
-          if (!ctx.viaApiKey && body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }   // key-auth (bridge) never writes money rules
-          if (!ctx.viaApiKey && body.settings && typeof body.settings === 'object') {   // key-auth (bridge) never writes the live-site settings (publicSite/legal/trackers/etc.)
+          if (!ctx.viaApiKey && _can(ctx, 'pricing') && body.money && typeof body.money === 'object') { sets.push('money=?'); vals.push(JSON.stringify(body.money)); }   // #sec: money rules require the 'pricing' cap specifically -- a lone webEdit/settings must NOT rewrite pricing/fees/tax (silently skip otherwise)
+          if (!ctx.viaApiKey && _can(ctx, 'settings') && body.settings && typeof body.settings === 'object') {   // #sec: live-site settings require the 'settings' cap specifically (silently skip otherwise)
             // ---- #278 FEATURE-LEVEL PAYMENT GATING: server-authoritative, flag-gated OFF by default (platform_config.
             // feature_gate_enabled). Building/editing/previewing the site (this same PUT, with settings.publicSite.
             // published anything other than true) is ALWAYS free -- only actually GOING live requires entitlement.
