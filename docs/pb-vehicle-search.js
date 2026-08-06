@@ -33,7 +33,7 @@
   function looksLikePart(s){ s=String(s||'').trim(); return s.length>=4 && /\d/.test(s) && /[A-Za-z0-9][-A-Za-z0-9. ]{3,}/.test(s) && !/\s{2,}/.test(s) && s.split(' ').length<=3; }
 
   // ---- persisted state (own keys; never in the bookings blob) ----------------
-  var LSK_CRIT='pbvs_criteria', LSK_WATCH='pbvs_watch', LSK_SUB='pbvs_sub', LSK_ACT='pbvs_actionable', LSK_CART='pbvs_cart', LSK_CFG='pbvs_config';
+  var LSK_CRIT='pbvs_criteria', LSK_WATCH='pbvs_watch', LSK_SUB='pbvs_sub', LSK_ACT='pbvs_actionable', LSK_CART='pbvs_cart', LSK_CFG='pbvs_config', LSK_SAVED='pbvs_saved_at';
   var _DEF_CFG={ yearMin:2015, maxPrice:30000, maxMiles:0, title:'Any', excludeDamage:'burn,fire,flood,rollover', snipeDays:1, stealOn:true, snipeOn:true, heartOn:true };
   function _lsGet(k,f){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):f; }catch(e){ return f; } }
   function _lsSet(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
@@ -48,36 +48,72 @@
 
   var PBVS = {
     sub:      _lsGet(LSK_SUB,'leads'),
-    actionable: _lsGet(LSK_ACT,true),
+    actionable: _lsGet(LSK_ACT,false),     // date filter OFF by default so nothing is silently hidden on first load
     criteria: _lsGet(LSK_CRIT, DEFAULT_CRITERIA),
     watch:    _lsGet(LSK_WATCH, []),      // [{...lead, addedAt}]
     cart:     _lsGet(LSK_CART, []),        // parts cart + order log
     config:   _lsGet(LSK_CFG, {}),         // hunt filters (merged with _DEF_CFG)
+    savedAt:  _lsGet(LSK_SAVED, 0),        // last local edit time (arbitrates cross-device merge)
     leads:    [],                          // live feed if worker returns one
+    findLeads:[],                          // last Vehicle-Search results (so heart/report work on them)
     feedSrc:  'starter',
-    feedAt:   0,
+    feedAt:   0, feedScraped:null, feedGov:null, feedBlocked:false,
+    showEverything:false,                  // "Show everything" bypass (session only)
     fMake:'', fModel:'', fYear:'',        // leads filter
     nMakes:null, nModels:{}                // NHTSA caches
   };
-  function saveCrit(){ _lsSet(LSK_CRIT,PBVS.criteria); _pushState(); }
-  function saveWatch(){ _lsSet(LSK_WATCH,PBVS.watch); _pushState(); }
+  function _touch(){ PBVS.savedAt=Date.now(); _lsSet(LSK_SAVED,PBVS.savedAt); }
+  function saveCrit(){ _lsSet(LSK_CRIT,PBVS.criteria); _touch(); _pushState(); }
+  function saveWatch(){ _lsSet(LSK_WATCH,PBVS.watch); _touch(); _pushState(); }
 
   // Best-effort cross-device mirror (Phase 2 worker endpoint). Falls back to
   // localStorage-only; never blocks or throws.
   function cfg(){ return Object.assign({}, _DEF_CFG, PBVS.config||{}); }
-  function saveConfig(){ _lsSet(LSK_CFG, PBVS.config); _pushState(); }
+  function saveConfig(){ _lsSet(LSK_CFG, PBVS.config); _touch(); _pushState(); }
   function _pushState(){
     var w=_worker(); if(!w) return;
+    // Never PUT before we have merged the server copy on load -- otherwise the first
+    // edit on a fresh device wipes the server watchlist/targets/cart. Queue instead.
+    if(!PBVS._hydrated){ PBVS._pendingPush=true; return; }
     var C=cfg();
-    // map the owner-facing settings to the worker's config field names
+    // map the owner-facing settings to the worker's config field names, and carry the
+    // owner-facing config verbatim under `ui` so the other device rebuilds it exactly.
     var wcfg={ yearMin:+C.yearMin||0, maxBuyNow:+C.maxPrice||0, maxMiles:+C.maxMiles||0,
       requireCleanTitle:(C.title==='Clean'), excludeDamage:C.excludeDamage||'', snipeDays:+C.snipeDays||1,
-      stealEnabled:C.stealOn!==false, snipeEnabled:C.snipeOn!==false, heartEnabled:C.heartOn!==false };
+      stealEnabled:C.stealOn!==false, snipeEnabled:C.snipeOn!==false, heartEnabled:C.heartOn!==false,
+      ui:(PBVS.config||{}) };
     try{
       fetch(w+'/vehicle-search/state',{method:'PUT',
         headers:Object.assign({'Content-Type':'application/json'},_auth()),
-        body:JSON.stringify({criteria:PBVS.criteria,watch:PBVS.watch,cart:PBVS.cart,config:wcfg})}).catch(function(){});
+        body:JSON.stringify({criteria:PBVS.criteria,watch:PBVS.watch,cart:PBVS.cart,config:wcfg,savedAt:PBVS.savedAt})}).catch(function(){});
     }catch(e){}
+  }
+  // union two arrays by a key function (local wins on collision) -- so a second device NEVER loses items
+  function _unionBy(local,remote,keyFn){ local=Array.isArray(local)?local.slice():[]; var seen={}; local.forEach(function(x){ if(x)seen[keyFn(x)]=1; }); (Array.isArray(remote)?remote:[]).forEach(function(x){ if(x&&!seen[keyFn(x)]){ seen[keyFn(x)]=1; local.push(x); } }); return local; }
+  // Pull the server copy ONCE on load and merge BEFORE any push. Watch + cart are UNIONed
+  // (no device loses saved items); criteria/config adopt the server's when it is newer.
+  function _hydrateState(){
+    var w=_worker(); if(!w){ PBVS._hydrated=true; return; }
+    var fin=function(){ PBVS._hydrated=true; if(PBVS._pendingPush){ PBVS._pendingPush=false; _pushState(); } if(el('pbvsBody')&&(PBVS.sub==='leads'||PBVS.sub==='cart')) render(); };
+    try{
+      fetch(w+'/vehicle-search/state?_='+Date.now(),{headers:_auth(),cache:'no-store'})
+        .then(function(r){ return r.ok?r.json():null; })
+        .then(function(st){
+          if(st){
+            var srvAt=+st.savedAt||(st.config&&+st.config.savedAt)||0;
+            PBVS.watch=_unionBy(PBVS.watch, st.watch, function(x){return String(x.id);});
+            PBVS.cart =_unionBy(PBVS.cart,  st.cart,  function(x){return ((x.name||'')+'|'+(x.vehicle||'')).toLowerCase();});
+            _lsSet(LSK_WATCH,PBVS.watch); _lsSet(LSK_CART,PBVS.cart);
+            if(!PBVS.savedAt || srvAt>PBVS.savedAt){
+              if(Array.isArray(st.criteria)&&st.criteria.length){ PBVS.criteria=st.criteria; _lsSet(LSK_CRIT,PBVS.criteria); }
+              var ui=st.config&&st.config.ui; if(ui&&typeof ui==='object'){ PBVS.config=ui; _lsSet(LSK_CFG,PBVS.config); }
+            }
+            if(srvAt>PBVS.savedAt){ PBVS.savedAt=srvAt; _lsSet(LSK_SAVED,srvAt); }
+          }
+        })
+        .catch(function(){})
+        .then(fin,fin);
+    }catch(e){ fin(); }
   }
 
   // ===========================================================================
@@ -143,11 +179,11 @@
       '.pbvs-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px;margin:8px 0}',
       '.pbvs-gallery img{width:100%;height:86px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:#0c0e11}',
       '.pbvs-preprow{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:9px 0;border-bottom:1px dashed var(--border)}',
-      '.pbvs-check{flex:none;width:24px;height:24px;border-radius:6px;border:1.5px solid #323e4a;background:#0c0e11;color:#fff;cursor:pointer;font-weight:800;line-height:1;display:grid;place-items:center}',
+      '.pbvs-check{flex:none;width:30px;height:30px;border-radius:6px;border:1.5px solid #323e4a;background:#0c0e11;color:#fff;cursor:pointer;font-weight:800;line-height:1;display:grid;place-items:center}',
       '.pbvs-check.on{background:#22c55e;border-color:#22c55e}',
-      '.pbvs-heart{position:absolute;top:12px;right:12px;background:none;border:none;font-size:20px;cursor:pointer;line-height:1;color:#555;transition:.12s}',
+      '.pbvs-heart{position:absolute;top:6px;right:6px;background:none;border:none;font-size:20px;cursor:pointer;line-height:1;color:#7a828c;width:40px;height:40px;display:grid;place-items:center;border-radius:9px;transition:.12s}',
       '.pbvs-heart.on{color:#ef4444;transform:scale(1.12)}',
-      '.pbvs-title{font-weight:800;font-size:15px;color:#fff;padding-right:34px}',
+      '.pbvs-title{font-weight:800;font-size:15px;color:#fff;padding-right:44px}',
       '.pbvs-badge{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.03em;padding:2px 7px;border-radius:6px;vertical-align:middle}',
       '.pbvs-meta{font-size:12px;color:var(--muted);margin:7px 0}',
       '.pbvs-meta b{color:var(--text)}',
@@ -174,7 +210,10 @@
       '.pbvs-copy.done{border-color:#22c55e;color:#22c55e}',
       '.pbvs-empty{text-align:center;color:var(--muted);font-size:13px;padding:34px 10px}',
       '.pbvs-count{font-size:12px;color:var(--muted)}',
-      '.pbvs-x{background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0 4px}'
+      '.pbvs-x{background:none;border:none;color:#ef4444;cursor:pointer;font-size:15px;padding:8px 10px;min-height:34px;border-radius:8px;line-height:1}',
+      '.pbvs-hint,.pbvs-count,.pbvs-meta{color:#a7afba}',   /* brighter than --muted -> clears AA contrast */
+      '.pbvs-subbtn:focus-visible,.pbvs-srcbtn:focus-visible,.pbvs-chip:focus-visible,.pbvs-heart:focus-visible,.pbvs-check:focus-visible,.pbvs-x:focus-visible,.pbvs-copy:focus-visible,.pbvs-src a:focus-visible{outline:2px solid #c9a962;outline-offset:2px}',
+      '@media(max-width:768px){.pbvs-src a,.pbvs-srcbtn,.pbvs-chip{padding:9px 12px}.pbvs-x{min-width:40px;min-height:40px}.pbvs-check{width:34px;height:34px}}'
     ].join('\n');
     document.head.appendChild(s);
   }
@@ -313,7 +352,8 @@
 
   // ---- Current Leads ---------------------------------------------------------
   function daysUntil(d){ if(!d||d==='future') return null; var t=Date.parse(d+'T12:00:00'); if(isNaN(t)) return null; return Math.round((t-Date.now())/86400000); }
-  function isActionable(l){ if(l.steal) return true; var pt=(l.priceType||''); if(pt==='buynow'||pt==='bin'||pt==='cash') return true; var du=daysUntil(l.saleDate); if(du===null) return true; /* not-yet-scheduled: keep */ return du<=3 && du>=-1; }
+  function actionDays(){ var n=+cfg().snipeDays; return (n>0)?n:3; }   // the "Actionable" window follows the owner's Selling-soon setting
+  function isActionable(l){ if(l.steal) return true; var pt=(l.priceType||''); if(pt==='buynow'||pt==='bin'||pt==='cash') return true; var du=daysUntil(l.saleDate); if(du===null) return true; /* not-yet-scheduled: keep */ var win=actionDays(); return du<=win && du>=-1; }
   // owner Hunt-Settings filters applied to the displayed leads (instant; also synced to the sniper)
   function _passCfg(l,C){
     if(C.yearMin && l.year && l.year < +C.yearMin) return false;
@@ -326,44 +366,67 @@
   function activeFeed(){ return _dedup((PBVS.leads&&PBVS.leads.length)?PBVS.leads:SEED_LEADS); }
   // no double-feed: drop exact id repeats AND soft duplicates (same year+make+model+location/state)
   function _dedup(arr){ var byId={}, soft={}, out=[]; (arr||[]).forEach(function(l){ if(!l||!l.id||byId[l.id]) return;
-    var k=(l.dedupKey||((l.year||'')+'|'+(l.make||'')+'|'+(l.model||'')+'|'+(l.location||l.state||''))).toLowerCase();
+    // soft key: VIN merges relists of the SAME car; otherwise include damage so two distinct
+    // same-city same-model cars aren't wrongly collapsed into one (sku-based key never merged relists)
+    var k=(l.vin?('vin:'+String(l.vin)):((l.year||'')+'|'+(l.make||'')+'|'+(l.model||'')+'|'+(l.damage||'')+'|'+(l.location||l.state||''))).toLowerCase();
     if(soft[k]) return; byId[l.id]=1; soft[k]=1; out.push(l); }); return out; }
   function watchHas(id){ return PBVS.watch.some(function(w){ return w.id===id; }); }
 
   function renderLeads(){
     var body=el('pbvsBody'); if(!body) return;
     var feed=activeFeed().filter(function(l){ return l.verdict!=='pass'; });
-    // filter chips (make/model/year) built from the feed's real values
     var makes=uniq(feed.map(function(l){return l.make;}));
     var models=uniq(feed.filter(function(l){return !PBVS.fMake||l.make===PBVS.fMake;}).map(function(l){return l.model;}));
     var years=uniq(feed.map(function(l){return String(l.year);})).sort().reverse();
-    var _C=cfg();
-    var shown=feed.filter(function(l){
-      if(PBVS.fMake && l.make!==PBVS.fMake) return false;
-      if(PBVS.fModel && l.model!==PBVS.fModel) return false;
-      if(PBVS.fYear && String(l.year)!==PBVS.fYear) return false;
-      if(!_passCfg(l,_C)) return false;
-      if(PBVS.actionable && !isActionable(l)) return false;
+    var _C=cfg(), showAll=!!PBVS.showEverything, win=actionDays();
+    // the make/model/year dropdowns only NARROW the shown list; they do not change what's hunted
+    var _mmy=feed.filter(function(l){
+      if(PBVS.fMake&&l.make!==PBVS.fMake)return false;
+      if(PBVS.fModel&&l.model!==PBVS.fModel)return false;
+      if(PBVS.fYear&&String(l.year)!==PBVS.fYear)return false;
+      return true; });
+    // apply hunt caps + the date filter, counting WHY each lead is hidden (honest split)
+    var capHidden=0, dateHidden=0;
+    var shown=_mmy.filter(function(l){
+      if(!showAll && !_passCfg(l,_C)){ capHidden++; return false; }
+      if(!showAll && PBVS.actionable && !isActionable(l)){ dateHidden++; return false; }
       return true;
     }).sort(function(a,b){ if(!!b.steal!==!!a.steal) return b.steal?1:-1; var r=(VRANK[a.verdict]||9)-(VRANK[b.verdict]||9); if(r) return r; var da=daysUntil(a.saleDate), db=daysUntil(b.saleDate); da=(da===null?999:da); db=(db===null?999:db); return da-db; });
 
-    var feedNote = (PBVS.leads&&PBVS.leads.length)
-      ? 'Live daily feed &middot; '+shown.length+' shown'
-      : 'Starter set (real cars from the 2026-08 sweep). The daily worker feed replaces this once deployed.';
-
+    var _fa=_feedAgeNote();
     var h='';
+    // header: feed status + the controls that change WHAT'S HUNTED (real config lives in the Kit)
     h+='<div class="pbvs-card" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">'+
         '<div><div style="font-weight:800;color:#fff;font-size:15px">&#128293; Nationwide leads</div>'+
-        '<div class="pbvs-count">'+feedNote+'</div></div>'+
+        '<div class="pbvs-count" style="color:'+_fa.c+'">'+_fa.t+'</div></div>'+
         '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+          '<button class="pbvs-srcbtn" data-act="sub" data-k="kit" title="Add/remove which exotics are hunted + set mileage / title / damage caps">&#9881; Edit what\'s hunted</button>'+
           '<button class="pbvs-srcbtn" data-act="refresh">&#8635; Refresh feed</button>'+
-          '<label class="pbvs-chip'+(PBVS.actionable?' on':'')+'" data-act="toggleact" title="Hide auctions more than 3 days out that have no Buy-Now">'+(PBVS.actionable?'&#9989; ':'')+'Actionable only (&#8804;3 days or Buy-Now)</label>'+
         '</div>'+
       '</div>';
 
-    // ALWAYS-ON stats strip (title breakdown + counts)
-    var _mmy=feed.filter(function(l){ if(PBVS.fMake&&l.make!==PBVS.fMake)return false; if(PBVS.fModel&&l.model!==PBVS.fModel)return false; if(PBVS.fYear&&String(l.year)!==PBVS.fYear)return false; return true; });
-    var _hidden = PBVS.actionable ? Math.max(0,_mmy.length - shown.length) : 0;
+    // active hunt-cap chips (removable) -- never a mystery why a lead is missing
+    var caps=_capChips(_C);
+    if(caps.length){
+      h+='<div class="pbvs-card" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:11px 14px">'+
+          '<span class="pbvs-hint" style="font-weight:700;color:#c9a962">Hunting with caps:</span>'+
+          caps.map(function(c){ return '<button class="pbvs-chip on" data-act="clearcap" data-k="'+c.k+'" title="Remove this cap" aria-label="Remove cap '+esc(c.t.replace(/&[a-z#0-9]+;/g,''))+'">'+c.t+' &#10006;</button>'; }).join('')+
+          '<span class="pbvs-hint">tap a cap to remove it &middot; <button class="pbvs-srcbtn" data-act="sub" data-k="kit" style="padding:3px 9px">edit all</button></span>'+
+        '</div>';
+    }
+
+    // date-filter toggle + ALWAYS-VISIBLE explanation (no more hover-only tooltip)
+    h+='<div class="pbvs-card" style="padding:11px 14px">'+
+        '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">'+
+          '<button class="pbvs-chip'+(PBVS.actionable?' on':'')+'" data-act="toggleact" aria-pressed="'+(PBVS.actionable?'true':'false')+'">'+(PBVS.actionable?'&#9989; ':'')+'Actionable only (&#8804;'+win+' day'+(win===1?'':'s')+' or Buy-Now)</button>'+
+          (showAll?'<span class="pbvs-hint" style="color:#f0a020">Showing everything &mdash; filters bypassed. <button class="pbvs-srcbtn" data-act="reapply" style="padding:3px 9px">Re-apply filters</button></span>':'')+
+        '</div>'+
+        '<div class="pbvs-hint" style="margin-top:5px">'+(PBVS.actionable
+          ? 'Showing only Buy-Now lots and auctions selling within <b>'+win+' day'+(win===1?'':'s')+'</b> (plus not-yet-scheduled cars). Change the window under &#9881; Edit what\'s hunted &rarr; "Selling-soon within".'
+          : 'Showing all sale timings. Turn on to focus on cars you can act on within your <b>'+win+'-day</b> window.')+'</div>'+
+      '</div>';
+
+    // ALWAYS-ON stats strip with an HONEST split of what is hidden and why
     function _sc(n,label,color){ return '<span class="pbvs-pill" style="font-weight:700;color:'+color+'"><b style="font-size:14px">'+n+'</b> '+label+'</span>'; }
     var _steal=shown.filter(function(l){return l.steal;}).length;
     var _clean=shown.filter(function(l){return /clean/i.test(l.title||'');}).length;
@@ -371,13 +434,16 @@
     var _unk  =shown.filter(function(l){return !l.title && !l.gov;}).length;
     var _bnow =shown.filter(function(l){return l.priceType==='buynow'||l.priceType==='bin';}).length;
     var _chase=shown.filter(function(l){return l.verdict==='chase'||l.verdict==='good';}).length;
+    var hiddenBits=[];
+    if(dateHidden>0) hiddenBits.push(dateHidden+' by the '+win+'-day filter');
+    if(capHidden>0) hiddenBits.push(capHidden+' by hunt caps');
     h+='<div class="pbvs-card" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+
         (_steal>0?_sc(_steal,'&#128293; STEALS','#f0a020'):'')+_sc(shown.length,'shown','#c9a962')+_sc(_clean,'clean title','#22c55e')+_sc(_salv,'salvage/rebuilt','#f59e0b')+_sc(_unk,'title: verify','#ef4444')+_sc(_bnow,'buy-now','#c9a962')+_sc(_chase,'chase-rated','#22c55e')+
-        (_hidden>0?'<span class="pbvs-hint" style="margin-left:auto">'+_hidden+' hidden by &#8804;3-day filter &middot; <button class="pbvs-srcbtn" data-act="showall" style="padding:3px 9px">Show all</button></span>':'')+
+        (hiddenBits.length?'<span class="pbvs-hint" style="margin-left:auto">'+(capHidden+dateHidden)+' hidden ('+hiddenBits.join(', ')+') &middot; <button class="pbvs-srcbtn" data-act="showeverything" style="padding:3px 9px">Show everything</button></span>':'')+
       '</div>';
 
-    // filters
-    h+='<div class="pbvs-card"><div class="pbvs-row">'+
+    // narrowing filters -- labeled so it's clear these FILTER results (they don't change what's hunted)
+    h+='<div class="pbvs-card"><div class="pbvs-hint" style="margin-bottom:7px;font-weight:700">Filter these results</div><div class="pbvs-row">'+
         fldSel('Make', 'fMake', [''].concat(makes))+
         fldSel('Model','fModel',[''].concat(models))+
         fldSel('Year', 'fYear', [''].concat(years))+
@@ -385,12 +451,25 @@
       '</div></div>';
 
     if(!shown.length){
-      h+='<div class="pbvs-empty">No leads match. Turn off "Actionable only" or clear filters to see everything viable.</div>';
+      var why=[];
+      if(dateHidden>0) why.push('the '+win+'-day "Actionable only" filter');
+      if(capHidden>0){ why.push('your hunt caps ('+caps.map(function(c){return c.t;}).join(', ')+')'); }
+      h+='<div class="pbvs-empty">No leads match'+(why.length?(' &mdash; hidden by '+why.join(' and ')):'')+'.<br><button class="pbvs-srcbtn" data-act="showeverything" style="margin-top:10px">Show everything (ignore filters + caps)</button></div>';
     } else {
       h+='<div class="pbvs-grid pbvs-leadgrid">'+shown.map(leadCard).join('')+'</div>';
     }
     body.innerHTML=h;
     syncSelects();
+  }
+  // describe the active (non-empty) hunt caps as removable chips
+  function _capChips(C){
+    var chips=[];
+    if(+C.yearMin>0) chips.push({k:'yearMin',t:'Year &#8805; '+(+C.yearMin)});
+    if(+C.maxPrice>0) chips.push({k:'maxPrice',t:'Buy-now &#8804; $'+Number(C.maxPrice).toLocaleString('en-US')});
+    if(+C.maxMiles>0) chips.push({k:'maxMiles',t:'Miles &#8804; '+Number(C.maxMiles).toLocaleString('en-US')});
+    if(C.title&&C.title!=='Any') chips.push({k:'title',t:'Title: '+esc(String(C.title))});
+    if(C.excludeDamage) chips.push({k:'excludeDamage',t:'Excl: '+esc(String(C.excludeDamage))});
+    return chips;
   }
 
   function leadCard(l){
@@ -420,8 +499,8 @@
     facts.push('<span class="pbvs-pill">'+esc(l.pool)+'</span>');
     var _stealB = l.steal ? '<span class="pbvs-badge pbvs-badge-steal">&#128293; STEAL</span> ' : '';
     return '<div class="pbvs-lead'+(l.steal?' pbvs-steal':'')+'">'+
-      '<button class="pbvs-heart'+(watchHas(l.id)?' on':'')+'" data-act="heart" data-id="'+esc(l.id)+'" title="Save to watchlist + get alerts">'+(watchHas(l.id)?'&#10084;':'&#9825;')+'</button>'+
-      (l.image?'<img class="pbvs-thumb" src="'+esc(l.image)+'" loading="lazy" onerror="this.style.display=\'none\'">':'')+
+      '<button class="pbvs-heart'+(watchHas(l.id)?' on':'')+'" data-act="heart" data-id="'+esc(l.id)+'" title="Save to watchlist + get alerts" aria-label="'+(watchHas(l.id)?'Remove ':'Save ')+esc(vehStr(l))+' to watchlist" aria-pressed="'+(watchHas(l.id)?'true':'false')+'">'+(watchHas(l.id)?'&#10084;':'&#9825;')+'</button>'+
+      (l.image?'<img class="pbvs-thumb" src="'+esc(l.image)+'" alt="'+esc(vehStr(l))+' listing photo" loading="lazy" onerror="this.style.display=\'none\'">':'')+
       '<div class="pbvs-title">'+_stealB+esc(vehStr(l))+' <span class="pbvs-badge" style="color:'+vd.c+';background:'+vd.bg+';border:1px solid '+vd.b+'">'+vd.t+'</span></div>'+
       '<div class="pbvs-meta"><b>'+esc(l.damage)+'</b> &middot; '+esc(l.location)+' &middot; <b>'+price+'</b> &middot; '+when+'</div>'+
       '<div>'+facts.join(' ')+'</div>'+
@@ -455,7 +534,7 @@
     var fleet = fleetCars();
     var chips = fleet.map(function(f){
       var on = (partsSel.make===f.make && partsSel.model===f.model && String(partsSel.year)===String(f.year));
-      return '<span class="pbvs-chip'+(on?' on':'')+'" data-act="fleetpick" data-k="'+esc(f.key)+'">'+esc(f.year+' '+f.make+' '+f.model)+'</span>';
+      return '<span class="pbvs-chip'+(on?' on':'')+'" data-act="fleetpick" data-k="'+esc(f.key)+'" role="button" tabindex="0" aria-pressed="'+(on?'true':'false')+'">'+esc(f.year+' '+f.make+' '+f.model)+'</span>';
     }).join('');
     var years=[]; var y0=(new Date().getFullYear())+1; for(var y=y0;y>=1990;y--) years.push(String(y));
 
@@ -579,9 +658,9 @@
        '</div>'+
        '<div class="pbvs-row" style="margin-top:8px;align-items:center">'+
          '<div class="pbvs-fld"><label>Selling-soon within (days)</label><input id="cfSnipeDays" class="finput" style="width:66px" value="'+esc(C.snipeDays)+'"></div>'+
-         '<label class="pbvs-chip'+(C.stealOn!==false?' on':'')+'" data-act="cfToggle" data-k="stealOn">&#128293; STEAL push</label>'+
-         '<label class="pbvs-chip'+(C.snipeOn!==false?' on':'')+'" data-act="cfToggle" data-k="snipeOn">&#9200; Selling-soon push</label>'+
-         '<label class="pbvs-chip'+(C.heartOn!==false?' on':'')+'" data-act="cfToggle" data-k="heartOn">&#10084; Watchlist push</label>'+
+         '<span class="pbvs-chip'+(C.stealOn!==false?' on':'')+'" data-act="cfToggle" data-k="stealOn" role="button" tabindex="0" aria-pressed="'+(C.stealOn!==false?'true':'false')+'">&#128293; STEAL push</span>'+
+         '<span class="pbvs-chip'+(C.snipeOn!==false?' on':'')+'" data-act="cfToggle" data-k="snipeOn" role="button" tabindex="0" aria-pressed="'+(C.snipeOn!==false?'true':'false')+'">&#9200; Selling-soon push</span>'+
+         '<span class="pbvs-chip'+(C.heartOn!==false?' on':'')+'" data-act="cfToggle" data-k="heartOn" role="button" tabindex="0" aria-pressed="'+(C.heartOn!==false?'true':'false')+'">&#10084; Watchlist push</span>'+
          '<button class="pbvs-srcbtn" data-act="cfReset">Reset</button>'+
        '</div>'+
        '<div class="pbvs-hint" style="margin-top:6px">Applies to your leads instantly and syncs to the sniper so alerts match. Price caps only priced (buy-now) listings; bid-only lots still show.</div>'+
@@ -637,7 +716,10 @@
       else if(act==='backleads'||act==='refresh'){ if(act==='refresh') forceRefresh(); PBVS.sub='leads'; _lsSet(LSK_SUB,'leads'); render(); }
       else if(act==='toggleact'){ PBVS.actionable=!PBVS.actionable; _lsSet(LSK_ACT,PBVS.actionable); renderLeads(); }
       else if(act==='showall'){ PBVS.actionable=false; _lsSet(LSK_ACT,false); renderLeads(); }
-      else if(act==='clearfilter'){ PBVS.fMake=PBVS.fModel=PBVS.fYear=''; renderLeads(); }
+      else if(act==='showeverything'){ PBVS.showEverything=true; renderLeads(); }
+      else if(act==='reapply'){ PBVS.showEverything=false; renderLeads(); }
+      else if(act==='clearcap'){ var ck=t.getAttribute('data-k'); if(ck==='title') PBVS.config.title='Any'; else if(ck==='excludeDamage') PBVS.config.excludeDamage=''; else PBVS.config[ck]=0; saveConfig(); renderLeads(); }
+      else if(act==='clearfilter'){ PBVS.fMake=PBVS.fModel=PBVS.fYear=''; PBVS.showEverything=false; renderLeads(); }
       else if(act==='heart'){ toggleHeart(t.getAttribute('data-id')); }
       else if(act==='fleetpick'){ pickFleet(t.getAttribute('data-k')); }
       else if(act==='vindecode'){ doVinDecode(); }
@@ -649,16 +731,23 @@
       else if(act==='report'){ openReport(t.getAttribute('data-id')); }
       else if(act==='partcart'){ _addManualPartToCart(); }
       else if(act==='ordertoggle'){ var _c=PBVS.cart[+t.getAttribute('data-i')]; if(_c){ _c.status=(_c.status==='ordered')?'to-order':'ordered'; _c.orderedAt=(_c.status==='ordered')?Date.now():null; saveCart(); renderCart(); } }
-      else if(act==='cartremove'){ PBVS.cart.splice(+t.getAttribute('data-i'),1); saveCart(); renderCart(); }
-      else if(act==='clearordered'){ PBVS.cart=PBVS.cart.filter(function(c){return c.status!=='ordered';}); saveCart(); renderCart(); }
+      else if(act==='qtyinc'){ var _qi=PBVS.cart[+t.getAttribute('data-i')]; if(_qi){ _qi.qty=(+_qi.qty||1)+1; saveCart(); renderCart(); } }
+      else if(act==='qtydec'){ var _qd=PBVS.cart[+t.getAttribute('data-i')]; if(_qd){ _qd.qty=Math.max(1,(+_qd.qty||1)-1); saveCart(); renderCart(); } }
+      else if(act==='cartremove'){ var _ri=+t.getAttribute('data-i'), _rc=PBVS.cart[_ri]; if(_rc&&_rc.status==='ordered'&&!window.confirm('Remove this ordered item from your purchase log?')) return; PBVS.cart.splice(_ri,1); saveCart(); renderCart(); }
+      else if(act==='clearordered'){ if(!window.confirm('Clear the entire ordered log? This permanently erases your purchase history and cannot be undone.')) return; PBVS.cart=PBVS.cart.filter(function(c){return c.status!=='ordered';}); saveCart(); renderCart(); }
       else if(act==='dldismiss'){ PBVS._deepLink=null; render(); }
       else if(act==='cfToggle'){ var _k=t.getAttribute('data-k'); PBVS.config[_k]=(cfg()[_k]===false); saveConfig(); renderKit(); }
       else if(act==='cfReset'){ PBVS.config={}; saveConfig(); renderKit(); }
     });
     host.addEventListener('keydown', function(e){
-      if(e.key!=='Enter') return;
-      if(e.target && e.target.id==='psPart'){ e.preventDefault(); runPartsSearch(); }
-      else if(e.target && e.target.id==='psVin'){ e.preventDefault(); doVinDecode(); }
+      if(e.key==='Enter'){
+        if(e.target && e.target.id==='psPart'){ e.preventDefault(); runPartsSearch(); return; }
+        if(e.target && e.target.id==='psVin'){ e.preventDefault(); doVinDecode(); return; }
+      }
+      // Enter / Space activates role=button chips (spans) just like a real button
+      if(e.key==='Enter'||e.key===' '||e.key==='Spacebar'){
+        var t=e.target; if(t && t.getAttribute && t.getAttribute('data-act') && /^(SPAN|LABEL|DIV)$/.test(t.tagName||'')){ e.preventDefault(); t.click(); }
+      }
     });
     host.addEventListener('change', function(e){
       var id=e.target.id;
@@ -669,16 +758,21 @@
       else if(id==='psMake'){ partsSel.make=e.target.value; partsSel.model=''; partsSel.vin=''; refreshPartsModels(); updateVehLine(); }
       else if(id==='psModel'){ partsSel.model=e.target.value; updateVehLine(); }
       else if(id==='ncMake'){ getModels(e.target.value, (el('ncYmin')&&el('ncYmin').value)||new Date().getFullYear(), function(arr){ var s=el('ncModel'); if(s) fillSelect(s,arr,''); }); }
-      else if(id==='fdMake'){ findSel.make=e.target.value; findSel.model=''; getModels(findSel.make, findSel.yearMin||(new Date().getFullYear()), function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,''); }); }
-      else if(id==='fdModel'){ findSel.model=e.target.value; }
-      else if(id==='fdYmin'){ findSel.yearMin=e.target.value; }
-      else if(id==='fdYmax'){ findSel.yearMax=e.target.value; }
+      else if(id==='fdMake'){ findSel.make=e.target.value; findSel.model=''; getModels(findSel.make, findSel.yearMin||(new Date().getFullYear()), function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,''); }); renderFindDeepLinks(); }
+      else if(id==='fdModel'){ findSel.model=e.target.value; renderFindDeepLinks(); }
+      else if(id==='fdYmin'){ findSel.yearMin=e.target.value; if(findSel.make){ getModels(findSel.make, findSel.yearMin, function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,findSel.model); }); } renderFindDeepLinks(); }
+      else if(id==='fdYmax'){ findSel.yearMax=e.target.value; renderFindDeepLinks(); }
+      else if(id==='fdMax'){ findSel.maxPrice=e.target.value; renderFindDeepLinks(); }
+      else if(id==='fdTitle'){ findSel.title=e.target.value; renderFindDeepLinks(); }
+      else if(id==='fdState'){ findSel.state=e.target.value; renderFindDeepLinks(); }
       else if(id==='cfYearMin'){ PBVS.config.yearMin=e.target.value; saveConfig(); }
       else if(id==='cfMaxPrice'){ PBVS.config.maxPrice=e.target.value; saveConfig(); }
       else if(id==='cfMaxMiles'){ PBVS.config.maxMiles=e.target.value; saveConfig(); }
       else if(id==='cfTitle'){ PBVS.config.title=e.target.value; saveConfig(); }
       else if(id==='cfExDmg'){ PBVS.config.excludeDamage=e.target.value; saveConfig(); }
       else if(id==='cfSnipeDays'){ PBVS.config.snipeDays=e.target.value; saveConfig(); }
+      else if(id.indexOf('cprice-')===0){ var _pi=+id.slice(7); if(PBVS.cart[_pi]){ PBVS.cart[_pi].price=e.target.value; saveCart(); } }
+      else if(id.indexOf('cvendor-')===0){ var _vi=+id.slice(8); if(PBVS.cart[_vi]){ PBVS.cart[_vi].vendor=e.target.value; saveCart(); } }
     });
   }
   function ensureShell(){ if(!el('pbvsBody')) render(); }
@@ -706,8 +800,8 @@
     var i=-1; PBVS.watch.forEach(function(w,ix){ if(w.id===id) i=ix; });
     if(i>=0){ PBVS.watch.splice(i,1); _toast('Removed from watchlist'); }
     else{
-      var l=activeFeed().concat(SEED_LEADS).filter(function(x){return x.id===id;})[0];
-      if(l){ var c=JSON.parse(JSON.stringify(l)); c.addedAt=Date.now(); PBVS.watch.push(c); _toast('&#10004; Watching -- you\'ll be alerted on changes'); }
+      var l=activeFeed().concat(SEED_LEADS, PBVS.findLeads||[]).filter(function(x){return x&&x.id===id;})[0];
+      if(l){ var c=JSON.parse(JSON.stringify(l)); c.addedAt=Date.now(); c._lastSeen=Date.now(); PBVS.watch.push(c); _toast('&#10004; Watching -- you\'ll be alerted on changes'); }
     }
     saveWatch();
     if(PBVS._inWatch) renderWatch(); else if(PBVS.sub==='leads') renderLeads();
@@ -731,40 +825,70 @@
   }
 
   // ---- live feed (worker) with graceful fallback -----------------------------
+  // fetch with a hard timeout so "Refresh" / load never hangs forever on a CF edge stall
+  function _fetchT(url,opts,ms){ opts=opts||{}; try{ if(typeof AbortController!=='undefined'){ var ac=new AbortController(); opts.signal=ac.signal; setTimeout(function(){ try{ac.abort();}catch(e){} }, ms||15000); } }catch(e){} return fetch(url,opts); }
+  function _ago(ms){ var m=Math.max(0,Math.round(ms/60000)); if(m<1) return 'just now'; if(m<60) return m+'m ago'; var hr=Math.round(m/60); if(hr<48) return hr+'h ago'; return Math.round(hr/24)+'d ago'; }
+  // feed freshness banner: green <24h, amber 1-3d, red STALE / blocked -- so nobody chases a dead lot
+  function _feedAgeNote(){
+    if(!(PBVS.leads&&PBVS.leads.length)) return {t:'Starter set (real cars from the 2026-08 sweep). Hit Refresh once the daily worker feed is live.',c:'var(--muted)'};
+    var at=+PBVS.feedAt||0, cnt=' &middot; '+PBVS.leads.length+' cars'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' Copart, '+(PBVS.feedGov||0)+' gov)'):'');
+    if(PBVS.feedBlocked) return {t:'&#9888; Live sources blocked &mdash; showing last-good feed'+cnt,c:'#ef4444'};
+    if(!at) return {t:'Live feed'+cnt,c:'#22c55e'};
+    var age=Date.now()-at, hrs=age/3600000;
+    if(hrs<24) return {t:'Live feed &middot; updated '+_ago(age)+cnt,c:'#22c55e'};
+    if(hrs<72) return {t:'Feed '+_ago(age)+' old &mdash; may be stale'+cnt,c:'#f59e0b'};
+    return {t:'STALE &mdash; '+_ago(age)+' old; scraper may be blocked. Hit Refresh.'+cnt,c:'#ef4444'};
+  }
   // "Refresh feed" -> force the worker to RE-SCRAPE now (POST /refresh), then re-load
   function forceRefresh(){
     var w=_worker(); if(!w){ fetchFeed(true); return; }
     _toast('Re-scanning all sources&#8230;');
-    fetch(w+'/vehicle-leads/refresh',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth())})
+    _fetchT(w+'/vehicle-leads/refresh',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth())},22000)
       .then(function(r){ return r.ok?r.json():null; })
-      .then(function(d){ if(d&&d.count!=null) _toast('&#10004; Re-scanned: '+d.count+' leads'); fetchFeed(true); })
-      .catch(function(){ fetchFeed(true); });
+      .then(function(d){
+        if(d){ PBVS.feedBlocked=!!d.blocked;
+          if(d.blocked) _toast('&#9888; Live sources blocked right now &mdash; last-good feed kept');
+          else if(d.count!=null) _toast('&#10004; Re-scanned: '+d.count+' leads'+(d.scraped!=null?(' ('+d.scraped+' Copart, '+(d.gov||0)+' gov)'):'')); }
+        fetchFeed(true);
+      })
+      .catch(function(){ _toast('Refresh timed out &mdash; showing current feed'); fetchFeed(true); });
   }
   function fetchFeed(manual){
     var w=_worker(); if(!w){ if(manual) _toast('Showing starter set'); return; }
     try{
-      fetch(w+'/vehicle-leads?_='+Date.now(),{cache:'no-store'})
+      _fetchT(w+'/vehicle-leads?_='+Date.now(),{cache:'no-store',headers:_auth()},15000)
         .then(function(r){ return r.ok?r.json():null; })
         .then(function(d){
           var arr=(d&&(d.leads||d.vehicles))||null;
-          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=Date.now(); diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('&#10004; Feed refreshed ('+arr.length+')'); }
+          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=(d&&d.updatedAt)||Date.now(); PBVS.feedScraped=(d&&d.scraped!=null)?d.scraped:null; PBVS.feedGov=(d&&d.gov!=null)?d.gov:null; PBVS.feedBlocked=!!(d&&d.blocked); diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('&#10004; Feed refreshed ('+arr.length+')'); }
           else if(manual){ _toast('No live feed yet -- showing starter set'); }
         }).catch(function(){ if(manual) _toast('Feed offline -- showing starter set'); });
     }catch(e){}
   }
+  function _wkey(l){ return (l&&l.vin?('vin:'+String(l.vin)):((l&&l.year||'')+'|'+(l&&l.make||'')+'|'+(l&&l.model||'')+'|'+((l&&l.location)||(l&&l.state)||''))).toLowerCase(); }
   // local diff so watched cars alert you the moment the feed changes (pre-worker-cron)
   function diffWatch(arr){
-    if(!PBVS.watch.length) return; var byId={}; arr.forEach(function(l){ byId[l.id]=l; });
-    var changed=[];
+    if(!PBVS.watch.length) return;
+    var byId={}, byKey={}; arr.forEach(function(l){ if(l&&l.id){ byId[l.id]=l; byKey[_wkey(l)]=l; } });
+    var changed=[], dirty=false;
     PBVS.watch.forEach(function(w){
-      var n=byId[w.id]; if(!n) return;
-      if(Number(n.price)!==Number(w.price)) changed.push(vehStr(w)+': price '+ (w.price?('$'+w.price):'-') +' -> '+(n.price?('$'+n.price):'-'));
-      else if(n.saleDate!==w.saleDate) changed.push(vehStr(w)+': sale date '+w.saleDate+' -> '+n.saleDate);
-      else if(String(n.title||'')!==String(w.title||'')) changed.push(vehStr(w)+': title '+(w.title||'?')+' -> '+(n.title||'?'));
-      // self-heal the saved snapshot from the freshest feed (corrected title / photo / price / etc.)
-      ['price','buyNow','bid','saleDate','title','image','damage','miles','milesActual','location','steal'].forEach(function(k){ if(n[k]!=null) w[k]=n[k]; });
+      var n=byId[w.id]||byKey[_wkey(w)];   // match on id OR a stable vehicle key -- live scrape ids differ from seed ids
+      if(n){
+        if(Number(n.price)!==Number(w.price)) changed.push(vehStr(w)+': price '+ (w.price?('$'+w.price):'-') +' -> '+(n.price?('$'+n.price):'-'));
+        else if(n.saleDate!==w.saleDate) changed.push(vehStr(w)+': sale date '+w.saleDate+' -> '+n.saleDate);
+        else if(String(n.title||'')!==String(w.title||'')) changed.push(vehStr(w)+': title '+(w.title||'?')+' -> '+(n.title||'?'));
+        // self-heal the saved snapshot from the freshest feed (corrected title / photo / price / etc.)
+        ['price','buyNow','bid','saleDate','title','image','damage','miles','milesActual','location','steal'].forEach(function(k){ if(n[k]!=null) w[k]=n[k]; });
+        w._lastSeen=Date.now(); if(w._sold){ w._sold=false; } dirty=true;
+      } else if(!w._sold && w._lastSeen){
+        // gone from a feed that DID scrape this make/model -> likely sold/removed
+        // (only fire if the same model IS present now, so a partial feed doesn't false-alarm)
+        var sameModel=arr.some(function(l){ return l && String(l.make||'').toLowerCase()===String(w.make||'').toLowerCase() && String(l.model||'').toLowerCase()===String(w.model||'').toLowerCase(); });
+        if(sameModel){ w._sold=true; dirty=true; changed.push(vehStr(w)+': no longer listed (likely sold)'); }
+      }
     });
-    if(changed.length){ _lsSet(LSK_WATCH,PBVS.watch); _toast('&#128276; Watchlist: '+changed[0]+(changed.length>1?(' (+'+(changed.length-1)+' more)'):'')); }
+    if(dirty) _lsSet(LSK_WATCH,PBVS.watch);
+    if(changed.length){ _toast('&#128276; Watchlist: '+changed[0]+(changed.length>1?(' (+'+(changed.length-1)+' more)'):'')); }
   }
 
   // ============================================================================
@@ -786,14 +910,20 @@
   }
   // condition-filtered (used/new only), cheapest-first buy links for one part
   function partLinks(v, part){
-    var kw=(vehStr(v)+' '+(part.search||part.name)).trim();
+    // name-based keyword -- robust even when an AI-suggested OEM number is wrong (a wrong # dead-ends the search)
+    var kw=(vehStr(v)+' '+(part.name||part.search||'')).trim();
     var euro=/audi|bmw|mercedes|porsche|ferrari|lamborghini|mclaren|bentley|rolls|maserati|aston|jaguar|land rover|volkswagen|volvo|alfa/i.test(v.make||'');
     var out=[
       {label:'eBay used/new (cheapest)', gold:true, url:'https://www.ebay.com/sch/i.html?_nkw='+q(kw)+'&_sacat=6028&LH_ItemCondition=1000%7C3000&_sop=15'},
       {label:'Amazon', url:'https://www.amazon.com/s?k='+q(kw)+'&i=automotive'},
-      {label:'RockAuto', url: part.oem ? ('https://www.rockauto.com/en/partsearch/?partnum='+q(part.oem)) : ('https://www.rockauto.com/en/catalog/'+q(v.make)+','+q(v.year)+','+q(v.model))},
+      {label:'RockAuto catalog', url:'https://www.rockauto.com/en/catalog/'+q(v.make)+','+q(v.year)+','+q(v.model)},
       {label:'Car-Part yards', url:'https://www.google.com/search?q='+q('site:car-part.com '+kw)}
     ];
+    // AI-suggested OEM numbers are NOT guaranteed to fit this exact car -- offer them clearly labeled "verify"
+    if(part.oem){
+      out.push({label:'RockAuto #'+part.oem+' (verify)', url:'https://www.rockauto.com/en/partsearch/?partnum='+q(part.oem)});
+      out.push({label:'eBay #'+part.oem+' (verify)', url:'https://www.ebay.com/sch/i.html?_nkw='+q(part.oem)});
+    }
     // parts STORES (AutoZone/O'Reilly/NAPA/Advance/PartsGeek/Summit/1A/RockAuto) + JUNKYARDS
     // (Car-Part/Row52/LKQ/Pull-A-Part) via Google site: -> always real, in-stock findings
     out.push({label:'Parts stores', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:rockauto.com OR site:autozone.com OR site:oreillyauto.com OR site:napaonline.com OR site:advanceautoparts.com OR site:partsgeek.com OR site:summitracing.com OR site:1aauto.com)')});
@@ -805,14 +935,17 @@
   }
   function addToCart(item){
     var key=((item.name||'')+'|'+(item.vehicle||'')).toLowerCase();
-    if((PBVS.cart||[]).some(function(c){ return ((c.name||'')+'|'+(c.vehicle||'')).toLowerCase()===key; })) return false;
-    PBVS.cart.push(Object.assign({status:'to-order', addedAt:Date.now()}, item));
+    // only a NON-ordered duplicate blocks a plain re-add: re-adding an existing to-order line bumps qty,
+    // and an already-ORDERED part CAN be re-added (arrived cracked / you need two)
+    var ex=(PBVS.cart||[]).filter(function(c){ return c.status!=='ordered' && ((c.name||'')+'|'+(c.vehicle||'')).toLowerCase()===key; })[0];
+    if(ex){ ex.qty=(+ex.qty||1)+1; saveCart(); return true; }
+    PBVS.cart.push(Object.assign({status:'to-order', qty:1, addedAt:Date.now()}, item));
     saveCart(); return true;
   }
 
   var _reportCache={}, _modalCtx=null;
   function openReport(id){
-    var l=activeFeed().concat(SEED_LEADS, PBVS.watch||[]).filter(function(x){return x&&x.id===id;})[0];
+    var l=activeFeed().concat(SEED_LEADS, PBVS.watch||[], PBVS.findLeads||[]).filter(function(x){return x&&x.id===id;})[0];
     if(!l){ _toast('Lead not found'); return; }
     _showReportModal(l, null, true);
     if(_reportCache[id]){ _showReportModal(l, _reportCache[id], false); return; }
@@ -831,53 +964,65 @@
   function _ensureModal(){
     var m=el('pbvsModal'); if(m) return m;
     m=document.createElement('div'); m.id='pbvsModal'; m.className='pbvs-modal'; document.body.appendChild(m);
+    var _close=function(){ try{ if(_modalCtx&&_modalCtx._timers) _modalCtx._timers.forEach(function(t){ clearTimeout(t); }); }catch(e){} _modalCtx=null; m.style.display='none'; };
     m.addEventListener('click', function(e){
-      if(e.target===m){ m.style.display='none'; return; }
+      if(e.target===m){ _close(); return; }
       var t=e.target.closest('[data-act]'); if(!t) return; var act=t.getAttribute('data-act');
-      if(act==='closemodal'){ m.style.display='none'; }
+      if(act==='closemodal'){ _close(); }
       else if(act==='addcart'){ if(_cartFromReport(+t.getAttribute('data-i'))){ t.textContent='\u2713'; t.disabled=true; } else { t.textContent='in cart'; } }
       else if(act==='sendall'){ _sendAllToCart(); t.textContent='\u2713 All added'; }
       else if(act==='bestprice'){ _bestPrice(+t.getAttribute('data-i'), t); }
     });
+    document.addEventListener('keydown', function(e){ if(e.key==='Escape' && m.style.display==='flex') _close(); });
     return m;
   }
   function _cartFromReport(i){ if(!_modalCtx) return false; var p=_modalCtx.parts[i]; if(!p) return false; return addToCart({name:p.name, vehicle:vehStr(_modalCtx.lead), oem:p.oem||'', links:partLinks(_modalCtx.vehicle,p)}); }
   function _sendAllToCart(){ if(!_modalCtx) return; var n=0; _modalCtx.parts.forEach(function(p){ if(addToCart({name:p.name,vehicle:vehStr(_modalCtx.lead),oem:p.oem||'',links:partLinks(_modalCtx.vehicle,p)})) n++; }); _toast(n+' part'+(n===1?'':'s')+' added to cart'); }
-  // live best-price via the worker eBay Browse endpoint (auto-upgrades once EBAY keys exist)
-  function _bestPrice(i, btn, cascade){
+  // live best-price via the worker eBay Browse endpoint (auto-upgrades once EBAY keys exist).
+  // Cached per (leadId, partIndex) so re-opening a report never re-burns eBay quota; drops
+  // results if the modal was closed/reopened; single-flight per row.
+  var _bestCache={};
+  function _bestPrice(i, btn){
     if(!_modalCtx || PBVS._ebayOff) return; var p=_modalCtx.parts[i]; if(!p) return;
-    var box=el('best-'+i); if(box) box.innerHTML='Finding cheapest good-condition&#8230;'; if(btn) btn.disabled=true;
-    var w=_worker(); var kw=(vehStr(_modalCtx.vehicle)+' '+(p.oem||p.search||p.name)).trim();
-    if(!w){ if(box) box.innerHTML='Best-price needs the worker deployed.'; if(btn) btn.disabled=false; return; }
-    fetch(w+'/parts-best',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify({q:kw})})
+    var box=el('best-'+i), ck=(_modalCtx.leadId||'x')+'|'+i;
+    if(_bestCache[ck]){ if(box) box.innerHTML=_bestCache[ck]; if(btn) btn.disabled=false; return; }
+    _modalCtx._inflight=_modalCtx._inflight||{}; if(_modalCtx._inflight[i]) return; _modalCtx._inflight[i]=1;
+    if(box) box.innerHTML='Finding cheapest good-condition&#8230;'; if(btn) btn.disabled=true;
+    var w=_worker(), mctx=_modalCtx, kw=(vehStr(_modalCtx.vehicle)+' '+(p.name||p.search||'')).trim();
+    if(!w){ if(box) box.innerHTML='Best-price needs the worker deployed.'; if(btn) btn.disabled=false; mctx._inflight[i]=0; return; }
+    _fetchT(w+'/parts-best',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify({q:kw})},15000)
       .then(function(r){ return r.ok?r.json():null; })
-      .then(function(d){ if(btn) btn.disabled=false; if(!box) return;
-        if(d&&d.notConfigured){ PBVS._ebayOff=true; box.innerHTML='<span style="color:var(--muted)">Live prices &amp; real listings appear here once your eBay API key is in the worker.</span>'; return; }
+      .then(function(d){ if(mctx!==_modalCtx) return;   // modal changed -> stale, ignore
+        mctx._inflight[i]=0; if(btn) btn.disabled=false; var b2=el('best-'+i); if(!b2) return;
+        if(d&&d.notConfigured){ PBVS._ebayOff=true; b2.innerHTML='<span style="color:var(--muted)">Live prices appear here once your eBay API key is in the worker.</span>'; return; }
         var items=(d&&d.items)||[];
-        if(!items.length){ box.innerHTML='<span style="color:var(--muted)">No good-condition listing found right now.</span>'; }
-        else box.innerHTML='<div style="font-weight:700;color:#22c55e;margin-top:2px">Best prices (used/new only):</div>'+items.slice(0,3).map(function(it){ return '<div style="margin-top:2px">'+esc(it.condition||'')+' &middot; <b style="color:#22c55e">$'+esc(it.price)+'</b>'+(it.seller?(' &middot; '+esc(it.seller)+'%'):'')+' &middot; <a href="'+esc(it.url)+'" target="_blank" rel="noopener" style="color:#c9a962">'+esc(String(it.title||'').slice(0,54))+' &#8599;</a></div>'; }).join('');
-        if(cascade && items.length){ (_modalCtx.parts||[]).forEach(function(pp,j){ if(j!==i) setTimeout(function(){ _bestPrice(j,null,false); }, 80+j*220); }); }  // eBay live -> auto-price every part
+        var html = items.length
+          ? ('<div style="font-weight:700;color:#22c55e;margin-top:2px">Best prices (used/new/reman):</div>'+items.slice(0,3).map(function(it){ return '<div style="margin-top:2px">'+esc(it.condition||'')+' &middot; <b style="color:#22c55e">$'+esc(it.price)+'</b>'+(it.seller?(' &middot; '+esc(it.seller)+'%'):'')+' &middot; <a href="'+esc(it.url)+'" target="_blank" rel="noopener" style="color:#c9a962">'+esc(String(it.title||'').slice(0,54))+' &#8599;</a></div>'; }).join(''))
+          : '<span style="color:var(--muted)">No good-condition listing found right now.</span>';
+        _bestCache[ck]=html; b2.innerHTML=html;
       })
-      .catch(function(){ if(btn) btn.disabled=false; if(box) box.innerHTML='<span style="color:var(--muted)">Lookup failed.</span>'; });
+      .catch(function(){ if(mctx!==_modalCtx) return; mctx._inflight[i]=0; if(btn) btn.disabled=false; var b3=el('best-'+i); if(b3) b3.innerHTML='<span style="color:var(--muted)">Lookup failed.</span>'; });
   }
 
   function _showReportModal(l, rep, loading){
     var m=_ensureModal(); var v={year:l.year,make:l.make,model:l.model}; var body;
     if(loading){ body='<div class="pbvs-modinner"><div class="pbvs-modhead"><b style="color:#fff;font-size:16px">'+esc(vehStr(l))+'</b><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div><div class="pbvs-empty">Reading listing + photos and building the parts list&#8230;</div></div>'; }
     else {
-      _modalCtx={ lead:l, vehicle:v, parts:rep.parts||[] };
+      _modalCtx={ lead:l, vehicle:v, parts:rep.parts||[], leadId:l.id, _timers:[], _inflight:{} };
+      var hasImgs=(rep.images||[]).length>0, ebayOff=!!PBVS._ebayOff;
       var prio={critical:'#ef4444',recommended:'#c9a962',inspect:'#8b939e'};
       var imgs=(rep.images||[]).slice(0,10).map(function(u){ return '<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" loading="lazy" onerror="this.parentNode.style.display=\'none\'"></a>'; }).join('');
       var rows=(rep.parts||[]).map(function(p,i){
         var links=partLinks(v,p).map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
-        return '<div class="pbvs-preprow"><div style="flex:1;min-width:0"><b>'+esc(p.name)+'</b> <span class="pbvs-pill" style="color:'+(prio[p.priority]||'#8b939e')+'">'+esc(p.priority||'')+'</span>'+(p.oem?' <span class="pbvs-pill">OEM '+esc(p.oem)+'</span>':'')+
-          (p.why?'<div class="pbvs-hint">'+esc(p.why)+'</div>':'')+'<div class="pbvs-src" style="margin-top:5px">'+links+'<button class="pbvs-srcbtn" data-act="bestprice" data-i="'+i+'">$ Best price</button></div>'+
+        return '<div class="pbvs-preprow"><div style="flex:1;min-width:0"><b>'+esc(p.name)+'</b> <span class="pbvs-pill" style="color:'+(prio[p.priority]||'#8b939e')+'">'+esc(p.priority||'')+'</span>'+(p.oem?' <span class="pbvs-pill" style="color:#f59e0b" title="AI-suggested OEM number -- verify it fits before ordering">OEM '+esc(p.oem)+' &middot; verify</span>':'')+
+          (p.why?'<div class="pbvs-hint">'+esc(p.why)+'</div>':'')+'<div class="pbvs-src" style="margin-top:5px">'+links+(ebayOff?'':'<button class="pbvs-srcbtn" data-act="bestprice" data-i="'+i+'">$ Best price</button>')+'</div>'+
           '<div id="best-'+i+'" class="pbvs-hint" style="margin-top:4px"></div></div>'+
           '<button class="pbvs-srcbtn" data-act="addcart" data-i="'+i+'">+ Cart</button></div>';
       }).join('');
       body='<div class="pbvs-modinner">'+
-        '<div class="pbvs-modhead"><div><b style="font-size:16px;color:#fff">'+esc(vehStr(l))+'</b> &mdash; parts report <span class="pbvs-pill">'+(rep.provider==='claude'?'AI + photos':'checklist')+'</span></div><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div>'+
+        '<div class="pbvs-modhead"><div><b style="font-size:16px;color:#fff">'+esc(vehStr(l))+'</b> &mdash; parts report <span class="pbvs-pill">'+(rep.provider==='claude'?(hasImgs?'AI + photos':'AI (no photos)'):'checklist')+'</span></div><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div>'+
         (rep.summary?'<div class="pbvs-hint" style="margin:4px 0 10px">'+esc(rep.summary)+'</div>':'')+
+        (ebayOff?'<div class="pbvs-hint" style="color:#f59e0b;margin:2px 0 8px">Live eBay best-price needs your eBay API key in the worker &mdash; the buy-links on each part still work.</div>':'')+
         (imgs?'<div class="pbvs-gallery">'+imgs+'</div>':'<div class="pbvs-hint">No listing photos available &mdash; <a href="'+esc(l.url||'#')+'" target="_blank" rel="noopener" style="color:#c9a962">open the listing &#8599;</a></div>')+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;gap:10px"><div class="pbvs-sec" style="margin:0">Itemized parts ('+(rep.parts||[]).length+')</div>'+
           '<button class="btn" data-act="sendall" style="background:#c9a962;border-color:#c9a962;color:#111;font-weight:800;white-space:nowrap">&#128722; Send all to cart</button></div>'+
@@ -885,8 +1030,13 @@
     }
     m.innerHTML='<div class="pbvs-modbox">'+body+'</div>';
     m.style.display='flex';
-    // auto-run eBay best-price: probe part 0; if live it cascades to every part
-    if(!loading && rep && rep.parts && rep.parts.length && !PBVS._ebayOff && _worker()){ setTimeout(function(){ _bestPrice(0, null, true); }, 140); }
+    // image fallback: if EVERY gallery photo fails to load, swap in an open-listing hint
+    if(!loading){ var gal=m.querySelector('.pbvs-gallery'); if(gal){ var ims=gal.querySelectorAll('img'), tot=ims.length, okc=0, dn=0; var chk=function(){ dn++; if(dn>=tot&&okc===0&&gal.parentNode){ var fb=document.createElement('div'); fb.className='pbvs-hint'; fb.innerHTML='No listing photos loaded &mdash; <a href="'+esc(l.url||'#')+'" target="_blank" rel="noopener" style="color:#c9a962">open the listing &#8599;</a>'; gal.parentNode.replaceChild(fb,gal); } }; ims.forEach(function(im){ if(im.complete){ if(im.naturalWidth>0) okc++; chk(); } else { im.addEventListener('load',function(){ okc++; chk(); }); im.addEventListener('error',chk); } }); } }
+    // auto-price the first parts only (capped so casual browsing never burns the eBay quota); the rest price on demand
+    if(!loading && rep && rep.parts && rep.parts.length && !PBVS._ebayOff && _worker()){
+      var N=Math.min(rep.parts.length,8);
+      for(var ci=0; ci<N; ci++){ (function(idx){ _modalCtx._timers.push(setTimeout(function(){ _bestPrice(idx,null); }, 140+idx*240)); })(ci); }
+    }
   }
 
   function renderCart(){
@@ -903,20 +1053,28 @@
     }
     body.innerHTML=h;
   }
+  function _fmtDate(ts){ try{ var d=new Date(+ts); if(isNaN(d.getTime())) return ''; return (d.getMonth()+1)+'/'+d.getDate(); }catch(e){ return ''; } }
   function cartRow(c){
-    var i=PBVS.cart.indexOf(c); var ordered=c.status==='ordered';
+    var i=PBVS.cart.indexOf(c); var ordered=c.status==='ordered'; var qty=+c.qty||1;
     var links=(c.links||[]).map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
+    var when=ordered?(c.orderedAt?(' &middot; ordered '+_fmtDate(c.orderedAt)):' &middot; ordered'):'';
+    var qtyUI = ordered ? (qty>1?' <span class="pbvs-pill">x'+qty+'</span>':'')
+      : ' <span style="white-space:nowrap"><button class="pbvs-x" data-act="qtydec" data-i="'+i+'" title="Fewer" aria-label="Decrease quantity" style="color:var(--muted)">&#8722;</button><b style="padding:0 3px">'+qty+'</b><button class="pbvs-x" data-act="qtyinc" data-i="'+i+'" title="More" aria-label="Increase quantity" style="color:var(--muted)">+</button></span>';
+    var orderedFields = ordered ? ('<div class="pbvs-row" style="margin-top:6px;gap:8px">'+
+        '<div class="pbvs-fld"><label>Paid $</label><input id="cprice-'+i+'" class="finput" style="width:90px" value="'+esc(c.price||'')+'" placeholder="price"></div>'+
+        '<div class="pbvs-fld"><label>Vendor</label><input id="cvendor-'+i+'" class="finput" style="width:150px" value="'+esc(c.vendor||'')+'" placeholder="eBay / yard / RockAuto"></div>'+
+      '</div>') : '';
     return '<div class="pbvs-lead" style="display:flex;gap:12px;align-items:flex-start">'+
-      '<button class="pbvs-check'+(ordered?' on':'')+'" data-act="ordertoggle" data-i="'+i+'" title="Mark ordered">'+(ordered?'&#10004;':'')+'</button>'+
-      '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;color:#fff'+(ordered?';opacity:.55;text-decoration:line-through':'')+'">'+esc(c.name)+'</div>'+
-        '<div class="pbvs-hint">'+esc(c.vehicle||'')+(ordered?' &middot; ordered':'')+'</div>'+
-        (!ordered&&links?'<div class="pbvs-src" style="margin-top:5px">'+links+'</div>':'')+'</div>'+
-      '<button class="pbvs-x" data-act="cartremove" data-i="'+i+'" title="Remove">&#10006;</button></div>';
+      '<button class="pbvs-check'+(ordered?' on':'')+'" data-act="ordertoggle" data-i="'+i+'" title="Mark ordered" aria-label="'+(ordered?'Mark not ordered':'Mark ordered')+'" aria-pressed="'+(ordered?'true':'false')+'">'+(ordered?'&#10004;':'')+'</button>'+
+      '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;color:#fff'+(ordered?';opacity:.55;text-decoration:line-through':'')+'">'+esc(c.name)+qtyUI+'</div>'+
+        '<div class="pbvs-hint">'+esc(c.vehicle||'')+when+'</div>'+
+        (!ordered&&links?'<div class="pbvs-src" style="margin-top:5px">'+links+'</div>':'')+orderedFields+'</div>'+
+      '<button class="pbvs-x" data-act="cartremove" data-i="'+i+'" title="Remove" aria-label="Remove '+esc(c.name)+'">&#10006;</button></div>';
   }
   function _addManualPartToCart(){
     var p=el('psPart'); var part=p?p.value.trim():''; if(!part){ _toast('Type a part first'); return; }
     var v={year:partsSel.year,make:partsSel.make,model:partsSel.model,vin:partsSel.vin};
-    if(addToCart({name:part, vehicle:vehStr(v)||'(no car selected)', oem:looksLikePart(part)?part:'', links:partLinks(v,{name:part,search:part})})) _toast('&#10004; Added to cart'); else _toast('Already in cart');
+    addToCart({name:part, vehicle:vehStr(v)||'(no car selected)', oem:looksLikePart(part)?part:'', links:partLinks(v,{name:part,search:part})}); _toast('&#10004; Added to cart');
   }
 
   // ============================================================================
@@ -924,11 +1082,17 @@
   // ============================================================================
   var findSel = {yearMin:'', yearMax:'', make:'', model:'', maxPrice:'', title:'', state:'', _models:[]};
   function findSources(){
-    var y=findSel.yearMin||'', mk=findSel.make||'', md=findSel.model||'', kw=(y+' '+mk+' '+md).trim();
+    var y0=findSel.yearMin||'', y1=findSel.yearMax||'', mk=findSel.make||'', md=findSel.model||'';
     var mkL=mk.toLowerCase().replace(/\s+/g,'-'), mdL=md.toLowerCase().replace(/\s+/g,'-');
+    var yr=(y0&&y1&&y0!==y1)?(y0+'..'+y1):(y0||y1||'');   // Google understands a year range; single year for slug sites
+    var ttl=(findSel.title&&findSel.title!=='Any')?(' '+String(findSel.title).toLowerCase()+' title'):'';
+    var stt=(findSel.state?(' '+String(findSel.state).toUpperCase()):'');
+    var pr=(+findSel.maxPrice>0?(' under $'+(+findSel.maxPrice)):'');
+    var kw=((yr?yr+' ':'')+(mk+' '+md).trim()).trim();     // base (year+make+model)
+    var kwq=(kw+ttl+stt+pr).trim();                        // full query: folds title / state / price for retail+gov+web
     // Google site: search ALWAYS returns real, current, criteria-fit listings from that
     // exact site (bulletproof vs. guessing fragile per-site URL slugs that 404).
-    var g=function(site){ return 'https://www.google.com/search?q='+q('site:'+site+' '+kw+' for sale'); };
+    var g=function(site){ return 'https://www.google.com/search?q='+q('site:'+site+' '+kwq+' for sale'); };
     return [
       {g:'Salvage / auction', items:[
         {label:'Copart', url:'https://www.salvagereseller.com/cars-for-sale/make/'+q(mk.toUpperCase())+'/model/'+q(md.toUpperCase())},
@@ -943,9 +1107,9 @@
         {label:'CarGurus', url:g('cargurus.com')},
         {label:'Cars &amp; Bids', url:g('carsandbids.com')},
         {label:'Bring a Trailer', url:g('bringatrailer.com')},
-        {label:'FB Marketplace', url:'https://www.facebook.com/marketplace/search/?query='+q(kw)},
+        {label:'FB Marketplace', url:'https://www.facebook.com/marketplace/search/?query='+q(kwq)},
         {label:'Craigslist', url:g('craigslist.org')},
-        {label:'Whole web', url:'https://www.google.com/search?q='+q(kw+' for sale')}
+        {label:'Whole web', url:'https://www.google.com/search?q='+q(kwq+' for sale')}
       ]},
       {g:'Government / seized', items:[
         {label:'GovDeals', url:g('govdeals.com')},
@@ -954,6 +1118,12 @@
         {label:'PropertyRoom', url:g('propertyroom.com')}
       ]}
     ];
+  }
+  // re-render the deep-link block from the CURRENT form values (so links are always pre-filtered)
+  function renderFindDeepLinks(){
+    var box=el('findDeepLinks'); if(!box) return;
+    box.innerHTML='<div class="pbvs-sec">Open the search on every source'+(findSel.make?'':' &mdash; pick a make/model to pre-fill')+'</div>'+
+      findSources().map(function(g){ return '<div style="margin-bottom:9px"><div class="pbvs-hint" style="font-weight:700;color:#c9a962;margin-bottom:3px">'+g.g+'</div><div class="pbvs-src">'+g.items.map(function(s){ return '<a href="'+s.url+'" target="_blank" rel="noopener">'+s.label+' &#8599;</a>'; }).join('')+'</div></div>'; }).join('');
   }
   function renderFind(){
     var body=el('pbvsBody'); if(!body) return;
@@ -974,33 +1144,38 @@
         '<button class="btn" data-act="findgo" style="background:#c9a962;border-color:#c9a962;color:#111;font-weight:800">Search all sources</button>'+
       '</div></div>'+
       '<div id="findResults"></div>'+
-      '<div class="pbvs-card"><div class="pbvs-sec">Open the search on every source</div>'+
-        findSources().map(function(g){ return '<div style="margin-bottom:9px"><div class="pbvs-hint" style="font-weight:700;color:#c9a962;margin-bottom:3px">'+g.g+'</div><div class="pbvs-src">'+g.items.map(function(s){ return '<a href="'+s.url+'" target="_blank" rel="noopener">'+s.label+' &#8599;</a>'; }).join('')+'</div></div>'; }).join('')+
-      '</div>';
+      '<div class="pbvs-card" id="findDeepLinks"></div>';
     body.innerHTML=h;
+    renderFindDeepLinks();
     getMakes(function(){ var sel=el('fdMake'); if(sel) fillSelect(sel,PBVS.nMakes,findSel.make); });
     if(findSel.make){ getModels(findSel.make, findSel.yearMin||(new Date().getFullYear()), function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,findSel.model); }); }
   }
   function runFind(){
     findSel.maxPrice=(el('fdMax')&&el('fdMax').value)||''; findSel.title=(el('fdTitle')&&el('fdTitle').value)||''; findSel.state=(el('fdState')&&el('fdState').value)||'';
-    var r=el('findResults'); if(!findSel.make){ if(r) r.innerHTML='<div class="pbvs-empty">Pick a make first.</div>'; return; }
+    renderFindDeepLinks();
+    var r=el('findResults'); if(!findSel.make){ if(r) r.innerHTML='<div class="pbvs-empty">Pick a make first (the deep-links below still work without one).</div>'; return; }
     if(r) r.innerHTML='<div class="pbvs-empty">Searching Copart + GSA gov + eBay&#8230;</div>';
     var w=_worker();
     if(!w){ if(r) r.innerHTML='<div class="pbvs-empty">Live search needs the worker deployed &mdash; use the deep-links below.</div>'; return; }
     var payload={make:findSel.make,model:findSel.model,yearMin:findSel.yearMin,yearMax:findSel.yearMax,maxPrice:findSel.maxPrice,title:(findSel.title==='Any'?'':findSel.title),state:findSel.state};
-    fetch(w+'/vehicle-find',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify(payload)})
-      .then(function(x){ return x.ok?x.json():null; })
-      .then(function(d){ if(!r) return; var leads=(d&&d.leads)||[]; var s=(d&&d.sources)||{};
-        var head='<div class="pbvs-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span class="pbvs-count"><b style="color:#c9a962">'+leads.length+'</b> live listings &middot; Copart '+(s.copart||0)+' &middot; gov '+(s.gov||0)+' &middot; eBay '+(s.ebay||0)+'</span></div>';
+    _fetchT(w+'/vehicle-find',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify(payload)},20000)
+      .then(function(x){ var st=x.status; return x.json().then(function(j){ return {ok:x.ok,status:st,j:j}; },function(){ return {ok:x.ok,status:st,j:null}; }); })
+      .then(function(res){ if(!r) return;
+        // an errored / unauthorized search must NOT look like "0 results found"
+        if(!res.ok){ r.innerHTML='<div class="pbvs-empty">Search '+(res.status===401?'needs you signed in to the dashboard (Settings &rarr; secret)':'failed (server '+res.status+')')+' &mdash; the deep-links below still work.</div>'; return; }
+        var d=res.j, leads=(d&&d.leads)||[], s=(d&&d.sources)||{};
+        PBVS.findLeads=leads;   // so the heart + Parts report resolve on found cars
+        var head='<div class="pbvs-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><span class="pbvs-count"><b style="color:#c9a962">'+leads.length+'</b> live listings &middot; Copart '+(s.copart||0)+' &middot; gov '+(s.gov||0)+' &middot; eBay '+(s.ebay||0)+'</span>'+((!leads.length&&!findSel.model)?'<span class="pbvs-hint">&mdash; add a model for live Copart results</span>':'')+'</div>';
         r.innerHTML = head + (leads.length ? '<div class="pbvs-grid pbvs-leadgrid">'+leads.map(leadCard).join('')+'</div>' : '<div class="pbvs-empty">No live listings from the auto-sources for those filters &mdash; the deep-links below cover the JS-only sites.</div>');
       })
-      .catch(function(){ if(r) r.innerHTML='<div class="pbvs-empty">Search failed &mdash; use the deep-links below.</div>'; });
+      .catch(function(){ if(r) r.innerHTML='<div class="pbvs-empty">Search failed or timed out &mdash; use the deep-links below.</div>'; });
   }
 
   // ---- public entry ----------------------------------------------------------
   window.renderVehSearchTab = function(){
     if((window.PB_FLAGS||{}).vehicleSearch===false){ var h=el('vehSearchContent'); if(h) h.innerHTML='<div class="pbvs-empty">Vehicle/Parts Search is turned off.</div>'; return; }
     render();
+    if(!PBVS.__hydrated1){ PBVS.__hydrated1=true; _hydrateState(); }
     if(!PBVS.__feedTried){ PBVS.__feedTried=true; fetchFeed(false); }
   };
 
