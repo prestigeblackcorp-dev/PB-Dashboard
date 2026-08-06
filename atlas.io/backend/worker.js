@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04z';
+const ATLAS_BUILD = '2026.08.05a';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1406,7 +1406,7 @@ async function _hqGrowthData(env, range) {
   function bump(day, k, v) { if (!day) return; days[day] = days[day] || { day: day, visits: 0, signups: 0, revenue_cents: 0 }; days[day][k] += v; }
   try { const pv = (await env.DB.prepare('SELECT day, COALESCE(SUM(views),0) v FROM page_views WHERE day>=? AND day<=? GROUP BY day').bind(range.startDay, range.endDay).all()).results || []; pv.forEach(function (r) { bump(r.day, 'visits', r.v || 0); }); } catch (e) {}
   try { var _xg = _excludeOwnerTenants(env, 'id'); const su = (await env.DB.prepare('SELECT created_at FROM tenants WHERE deleted_at IS NULL AND created_at>=? AND created_at<?' + _xg.clause).bind(range.start, range.end, ..._xg.binds).all()).results || []; su.forEach(function (r) { bump(iso(r.created_at), 'signups', 1); }); } catch (e) {}
-  try { const tx = (await env.DB.prepare('SELECT created_at, amount_cents FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).all()).results || []; tx.forEach(function (r) { bump(iso(r.created_at), 'revenue_cents', r.amount_cents || 0); }); } catch (e) {}
+  try { const tx = (await env.DB.prepare('SELECT created_at, amount_cents FROM platform_transactions WHERE created_at>=? AND created_at<? AND COALESCE(livemode,0)=?').bind(range.start, range.end, ((await _pcfgGet(env, 'payments_test_mode', '1')) === '1') ? 0 : 1).all()).results || []; tx.forEach(function (r) { bump(iso(r.created_at), 'revenue_cents', r.amount_cents || 0); }); } catch (e) {}   // #mode-aware charts: growth timeseries revenue line follows the LIVE/TEST toggle
   const series = Object.keys(days).sort().map(function (d) { return days[d]; });
   const totals = series.reduce(function (a, r) { a.visits += r.visits; a.signups += r.signups; a.revenue_cents += r.revenue_cents; return a; }, { visits: 0, signups: 0, revenue_cents: 0 });
   let fleet = []; try { fleet = ((await env.DB.prepare("SELECT COALESCE(fleet_type,'other') ft, COUNT(*) c FROM tenants WHERE deleted_at IS NULL GROUP BY fleet_type ORDER BY c DESC").all()).results) || []; } catch (e) {}
@@ -3390,6 +3390,7 @@ async function ensurePlatformSchema(env) {
   try { if ((await _pcfgGet(env, '_schema_ver', '')) === _schemaVer()) { _pReady = true; return; } } catch (e) {}   // PERF: DB already at THIS schema version -> skip the ~138 serial CREATE/INDEX/ALTER statements on this cold isolate
   try {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_transactions (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, kind TEXT, tier TEXT, pack TEXT, amount_cents INTEGER DEFAULT 0, currency TEXT DEFAULT 'usd', stripe_id TEXT, created_at INTEGER)").run();
+    try { await env.DB.prepare("ALTER TABLE platform_transactions ADD COLUMN livemode INTEGER").run(); } catch (e) { /* already exists */ }   // #mode-aware charts: 1=live / 0=test, from the webhook's evt.livemode. NULL (pre-migration = all test) is treated as test via COALESCE(livemode,0) in every revenue read.
     await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_ptxn_stripe ON platform_transactions(stripe_id)").run();
     await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_ptxn_tenant ON platform_transactions(tenant_id, created_at)").run();
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_feedback (id TEXT PRIMARY KEY, tenant_id TEXT, email TEXT, type TEXT, message TEXT, page TEXT, status TEXT DEFAULT 'new', created_at INTEGER)").run();
@@ -4152,8 +4153,8 @@ async function recordTxn(env, o) {
   try {
     await ensurePlatformSchema(env);
     const id = 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    const _r = await env.DB.prepare("INSERT OR IGNORE INTO platform_transactions (id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-      .bind(id, o.tenant || null, o.email || null, o.kind || '', o.tier || null, o.pack || null, Math.round(Number(o.amount_cents) || 0), o.currency || 'usd', o.stripe_id || id, Date.now()).run();
+    const _r = await env.DB.prepare("INSERT OR IGNORE INTO platform_transactions (id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at,livemode) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(id, o.tenant || null, o.email || null, o.kind || '', o.tier || null, o.pack || null, Math.round(Number(o.amount_cents) || 0), o.currency || 'usd', o.stripe_id || id, Date.now(), (o.livemode === 1 || o.livemode === 0) ? o.livemode : null).run();   // #mode-aware: 1=live/0=test from the webhook
     return { new: !!(_r && _r.meta && _r.meta.changes) };   // false when a replayed webhook hit the OR IGNORE -> callers use this to avoid double-granting credits
   } catch (e) { return { new: false }; }   // revenue logging must never break the webhook
 }
@@ -5419,6 +5420,7 @@ function doReset(){
         let evt = {}; try { evt = JSON.parse(raw); } catch (e) { return err(400, 'Bad payload.'); }
         const obj = (evt.data && evt.data.object) || {};
         const md = obj.metadata || {};
+        const _lm = (evt.livemode === false) ? 0 : 1;   // #mode-aware charts: stamp every recorded txn with the event's Stripe mode (1=live/0=test) so the revenue KPIs + charts filter by the current LIVE/TEST toggle.
         // #sec (latent Connect cross-account spoof): this platform runs Stripe in DIRECT mode, where a legitimate event never carries a
         // top-level `account` (that field only appears on CONNECT events for a connected account). If one arrives it's a misconfiguration
         // or a cross-account spoof of the md.tenant the handlers below trust -- so ACK (200, no Stripe retry storm) and process NOTHING.
@@ -5562,7 +5564,7 @@ function doReset(){
             const _trialEnds = Date.now() + 7 * 24 * 3600 * 1000;
             await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind(md.tier || null, _trialEnds, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
             try { const _dk = (evt.livemode === false && env.PLATFORM_STRIPE_TEST_KEY) ? env.PLATFORM_STRIPE_TEST_KEY : (env.PLATFORM_STRIPE_KEY || ''); const _dn = await _cancelSiblingPlanSubs(env, _dk, obj.customer, obj.subscription); if (_dn) await audit(env, { tenant_id: md.tenant }, req, 'billing.dup_subs_cancelled', { count: _dn, kept: obj.subscription }); } catch (e) {}   // #dup: one trial sub per account
-            const _trtx = await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
+            const _trtx = await recordTxn(env, { livemode: _lm, tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.trial_card', { tier: md.tier });
             // PART D -- idempotent trial welcome + "hidden gems" email: only on the FIRST delivery of this event
             // (recordTxn.new), so a Stripe webhook replay never re-sends it. Guarded on RESEND_KEY presence (skip
@@ -5587,7 +5589,7 @@ function doReset(){
               } catch (e) {}
             }
           } else if (T === 'checkout.session.completed' && md.billing === 'credits' && md.tenant) {
-            const _ctxn = await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
+            const _ctxn = await recordTxn(env, { livemode: _lm, tenant: md.tenant, email: md.email, kind: 'credits', pack: md.pack, amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'credits', pack: md.pack });
             if (_ctxn.new) {   // only grant + receipt on the FIRST delivery of this event (a Stripe replay must not re-grant free credits)
               const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); const _biz = await _tenantName(env, md.tenant); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), business: _biz, lineLabel: (md.pack || '') + ' Atlas.io credits', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) });
@@ -5598,11 +5600,11 @@ function doReset(){
             // #280/#282: also stamp website_sub for 'mo' -- a DIFFERENT Stripe subscription than the tenant's plan (stripe_sub) -- so a later cancel can target the right one. 'once' has no subscription; website_sub stays NULL.
             if (md.plan === 'mo') await env.DB.prepare("UPDATE tenants SET website_addon='mo', website_sub=?, updated_at=? WHERE id=?").bind(obj.subscription || null, Date.now(), md.tenant).run();
             else await env.DB.prepare("UPDATE tenants SET website_addon='once', updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();
-            if (md.plan !== 'mo') await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
+            if (md.plan !== 'mo') await recordTxn(env, { livemode: _lm, tenant: md.tenant, email: md.email, kind: 'website', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });   // monthly websites book on invoice.paid
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'website', plan: md.plan });
             if (md.plan !== 'mo') { const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0); const _biz = await _tenantName(env, md.tenant); await _sendAtlasReceipt(env, { to: md.email, ref: (sid || '').slice(-10).toUpperCase(), dateStr: _rcptDate(), business: _biz, lineLabel: 'Atlas Rental.io hosted website (one-time)', amountStr: money2(_tt - _tx), taxStr: _tx ? money2(_tx) : '', totalStr: money2(_tt) }); }
           } else if (T === 'checkout.session.completed' && md.billing === 'domain' && md.tenant) {
-            await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'domain', pack: md.domain || '', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
+            await recordTxn(env, { livemode: _lm, tenant: md.tenant, email: md.email, kind: 'domain', pack: md.domain || '', amount_cents: Number(obj.amount_total || 0), stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.purchase', { kind: 'domain', domain: md.domain });
             const _tt = Number(obj.amount_total || 0), _tx = Number((obj.total_details && obj.total_details.amount_tax) || 0);
             const _biz = await _tenantName(env, md.tenant);   // C4: fetched once here, reused by both receipt call sites below (registered / pending_registrar)
@@ -5682,7 +5684,7 @@ function doReset(){
           } else if (T === 'invoice.paid') {
             const im = (obj.subscription_details && obj.subscription_details.metadata) || obj.metadata || {};
             if (im.tenant && (im.billing === 'plan' || im.billing === 'trial') && Number(obj.amount_paid || 0) > 0) {   // ignore the $0 subscription_create invoice at trial start -- only a REAL charge (trial->paid conversion or a renewal) books revenue, flips to active, and emails a receipt. A trialing tenant stays 'trial' with a card on file until the first real charge.
-              const _ptx = await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              const _ptx = await recordTxn(env, { livemode: _lm, tenant: im.tenant, email: im.email, kind: 'subscription', tier: im.tier, amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               // #281: THE back-to-active transition for a recovered past_due tenant -- clear delinquent_since in the SAME statement so the public-site takedown (_siteTakenDown) lifts instantly, with no separate step.
               // PART A4: also clear dunning in this SAME statement -- a successful charge (first-try or a recovered
               // past_due retry) means there is nothing left to dun, regardless of which path got them here.
@@ -5700,7 +5702,7 @@ function doReset(){
             } else if (im.tenant && im.billing === 'website') {
               // #280/#282: COALESCE-backfill website_sub on renewal -- self-heals any 'mo' tenant that subscribed before this column existed, without ever overwriting an already-stamped id.
               await env.DB.prepare("UPDATE tenants SET website_addon='mo', website_sub=COALESCE(website_sub,?), updated_at=? WHERE id=?").bind(obj.subscription || null, Date.now(), im.tenant).run();   // #278: monthly renewal keeps the entitlement current
-              await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              await recordTxn(env, { livemode: _lm, tenant: im.tenant, email: im.email, kind: 'website', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               { const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
                 const _biz = await _tenantName(env, im.tenant);
                 let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
@@ -5708,7 +5710,7 @@ function doReset(){
             } else if (im.tenant && im.billing === 'asset_unlock' && Number(obj.amount_paid || 0) > 0) {
               // PER-ASSET UNLOCK: the first month AND every monthly renewal book here (each invoice has a unique
               // stripe_id -> recordTxn dedupes on webhook replay; receipt guarded on .new so a replay never re-emails).
-              const _autx = await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'asset_unlock', pack: im.asset || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+              const _autx = await recordTxn(env, { livemode: _lm, tenant: im.tenant, email: im.email, kind: 'asset_unlock', pack: im.asset || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
               if (_autx && _autx.new) {
                 const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
                 const _biz = await _tenantName(env, im.tenant);
@@ -5726,7 +5728,7 @@ function doReset(){
                 await audit(env, { tenant_id: im.tenant }, req, rn.ok ? 'domain.renewed' : 'domain.renew_failed', { domain: im.domain, reason: rn.reason });
                 try { await ensurePlatformSchema(env); await env.DB.prepare("UPDATE domains_sold SET status=? WHERE domain=? AND tenant_id=?").bind(rn.ok ? 'registered' : 'renew_failed', im.domain, im.tenant).run(); } catch (e) {} }
               if (_rnOk) {   // only book revenue + a receipt when the domain actually renewed
-                await recordTxn(env, { tenant: im.tenant, email: im.email, kind: 'domain', pack: im.domain || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
+                await recordTxn(env, { livemode: _lm, tenant: im.tenant, email: im.email, kind: 'domain', pack: im.domain || '', amount_cents: Number(obj.amount_paid || 0), stripe_id: sid });
                 const _tt = Number(obj.amount_paid || 0), _tx = Number(obj.tax || 0);
                 const _biz = await _tenantName(env, im.tenant);
                 let _c4 = ''; try { const _pk = await _platStripe(env); if (obj.charge) _c4 = await _card4FromCharge(env, _pk, obj.charge); } catch (e) {}
@@ -5819,7 +5821,7 @@ function doReset(){
             if (!tid && obj.customer) { const pr = await env.DB.prepare('SELECT id FROM tenants WHERE stripe_customer=?').bind(obj.customer).first(); if (pr) tid = pr.id; }
             const amt = rf ? Number(rf.amount) : Number(obj.amount_refunded || 0);
             let _rfTxn = null;
-            if (amt > 0) _rfTxn = await recordTxn(env, { tenant: tid || null, email: md.email || (obj.billing_details && obj.billing_details.email) || '', kind: 'refund', amount_cents: -Math.abs(amt), stripe_id: 'refund:' + (rf ? rf.id : (sid + ':' + amt)) });   // fallback key includes the cumulative amount so distinct partial refunds don't collide-dedup
+            if (amt > 0) _rfTxn = await recordTxn(env, { livemode: _lm, tenant: tid || null, email: md.email || (obj.billing_details && obj.billing_details.email) || '', kind: 'refund', amount_cents: -Math.abs(amt), stripe_id: 'refund:' + (rf ? rf.id : (sid + ':' + amt)) });   // fallback key includes the cumulative amount so distinct partial refunds don't collide-dedup
             if (tid) await audit(env, { tenant_id: tid }, req, 'billing.refunded', { cents: amt });
             // PART C5: branded credit-note/refund receipt to the tenant OWNER -- idempotent on the refund txn's OWN
             // dedup (.new), so a replayed charge.refunded webhook never re-sends. Own try/catch, best-effort; never
@@ -6184,10 +6186,11 @@ function doReset(){
               if (_tcs.trapped && (await _pcfgGet(env, 'trap_decoy', '1')) !== '0') return json(_decoyOverview(now, range));
             }
           } catch (e) {}
-          const revTot = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions').first();
-          const revMo = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=?').bind(monthStart).first();
-          const revRange = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).first();
-          const byKind = await env.DB.prepare('SELECT kind, COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<? GROUP BY kind').bind(range.start, range.end).all();
+          const _wl = ((await _pcfgGet(env, 'payments_test_mode', '1')) === '1') ? 0 : 1;   // #mode-aware charts: which Stripe mode's txns to show -- test-mode dashboard shows livemode=0 rows, live-mode shows livemode=1. Flips with the LIVE/TEST toggle so revenue KPIs + charts swap test<->live cleanly when we go live.
+          const revTot = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE COALESCE(livemode,0)=?').bind(_wl).first();
+          const revMo = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND COALESCE(livemode,0)=?').bind(monthStart, _wl).first();
+          const revRange = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<? AND COALESCE(livemode,0)=?').bind(range.start, range.end, _wl).first();
+          const byKind = await env.DB.prepare('SELECT kind, COALESCE(SUM(amount_cents),0) AS c FROM platform_transactions WHERE created_at>=? AND created_at<? AND COALESCE(livemode,0)=? GROUP BY kind').bind(range.start, range.end, _wl).all();
           const by_kind = { subscription: 0, credits: 0, website: 0, asset_unlock: 0, domain: 0, trial: 0 };
           (byKind.results || []).forEach(function (r) { const k = (r.kind === 'plan') ? 'subscription' : r.kind; by_kind[k] = (by_kind[k] || 0) + (r.c || 0); });
           // SQL-aggregated (was: fetch EVERY tenant row + bucket in JS). Same bucketing rules, now scales with result
@@ -6210,7 +6213,7 @@ function doReset(){
           const bo = await env.DB.prepare("SELECT COUNT(*) AS c FROM platform_feedback WHERE status!='resolved'").first();
           const bt = await env.DB.prepare('SELECT COUNT(*) AS c FROM platform_feedback').first();
           const inbox = await env.DB.prepare("SELECT COUNT(*) AS c FROM support_inbox WHERE status='new'").first();
-          const recent = await env.DB.prepare('SELECT id,tenant_id,email,kind,tier,pack,amount_cents,created_at FROM platform_transactions WHERE created_at>=? AND created_at<? ORDER BY created_at DESC LIMIT 12').bind(range.start, range.end).all();
+          const recent = await env.DB.prepare('SELECT id,tenant_id,email,kind,tier,pack,amount_cents,created_at FROM platform_transactions WHERE created_at>=? AND created_at<? AND COALESCE(livemode,0)=? ORDER BY created_at DESC LIMIT 12').bind(range.start, range.end, _wl).all();
           return json({ ok: true, ts: now, range: { key: range.key, label: range.label },
             revenue: { total_cents: revTot.c || 0, month_cents: revMo.c || 0, range_cents: revRange.c || 0, mrr_cents: mrr, by_kind: by_kind },
             members: { total: total, paid: paid, comped: comped, trials: trials, trials_with_card: twc, by_tier: by_tier },
@@ -6256,13 +6259,14 @@ function doReset(){
           const kind = String(u.get('kind') || '').toLowerCase().slice(0, 20);
           const q = String(u.get('q') || '').toLowerCase().slice(0, 80).trim();
           const lim = Math.min(1000, Math.max(1, parseInt(u.get('limit'), 10) || 300));
-          let sql = "SELECT pt.id, pt.tenant_id, pt.email, pt.kind, pt.tier, pt.pack, pt.amount_cents, pt.currency, pt.created_at, t.tz AS tz, ds.cost_cents AS cost_cents, ds.margin_cents AS margin_cents, ds.buyer_name AS buyer_name FROM platform_transactions pt LEFT JOIN tenants t ON t.id=pt.tenant_id LEFT JOIN domains_sold ds ON pt.kind='domain' AND ds.tenant_id=pt.tenant_id AND ds.domain=pt.pack WHERE pt.created_at>=? AND pt.created_at<?";
-          const binds = [range.start, range.end];
+          const _wl = ((await _pcfgGet(env, 'payments_test_mode', '1')) === '1') ? 0 : 1;   // #mode-aware charts: current-mode purchases only (test-mode shows livemode=0, live shows livemode=1).
+          let sql = "SELECT pt.id, pt.tenant_id, pt.email, pt.kind, pt.tier, pt.pack, pt.amount_cents, pt.currency, pt.created_at, t.tz AS tz, ds.cost_cents AS cost_cents, ds.margin_cents AS margin_cents, ds.buyer_name AS buyer_name FROM platform_transactions pt LEFT JOIN tenants t ON t.id=pt.tenant_id LEFT JOIN domains_sold ds ON pt.kind='domain' AND ds.tenant_id=pt.tenant_id AND ds.domain=pt.pack WHERE pt.created_at>=? AND pt.created_at<? AND COALESCE(pt.livemode,0)=?";
+          const binds = [range.start, range.end, _wl];
           if (kind && kind !== 'all') { if (kind === 'subscription') sql += " AND pt.kind IN ('plan','subscription')"; else { sql += ' AND pt.kind=?'; binds.push(kind); } }
           if (q) { sql += ' AND (LOWER(pt.email) LIKE ? OR LOWER(pt.pack) LIKE ? OR LOWER(pt.tier) LIKE ?)'; binds.push('%' + q + '%', '%' + q + '%', '%' + q + '%'); }
           sql += ' ORDER BY pt.created_at DESC LIMIT ?'; binds.push(lim);
           const rows = await env.DB.prepare(sql).bind(...binds).all();
-          const byk = await env.DB.prepare('SELECT kind, COUNT(*) n, COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=? AND created_at<? GROUP BY kind').bind(range.start, range.end).all();
+          const byk = await env.DB.prepare('SELECT kind, COUNT(*) n, COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=? AND created_at<? AND COALESCE(livemode,0)=? GROUP BY kind').bind(range.start, range.end, _wl).all();
           const kinds = {}; let grand = 0, gcount = 0; (byk.results || []).forEach(function (r) { const k = (r.kind === 'plan') ? 'subscription' : (r.kind || 'other'); kinds[k] = kinds[k] || { n: 0, c: 0 }; kinds[k].n += r.n; kinds[k].c += r.c; grand += r.c; gcount += r.n; });
           const items = rows.results || []; const shown = items.reduce(function (s, r) { return s + (r.amount_cents || 0); }, 0);
           return json({ ok: true, range: { key: range.key, label: range.label }, items: items, count: items.length, shown_total_cents: shown, by_kind: kinds, grand_total_cents: grand, grand_count: gcount });
@@ -6311,9 +6315,10 @@ function doReset(){
           const range = _adminRange(new URL(req.url).searchParams.get('range'));
           const micros2cents = function (m) { return Math.round((Number(m) || 0) / 10000); };
           // ---- Revenue: identical source/shape to /api/admin/overview's revenue block ----
-          const revRangeR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=? AND created_at<?').bind(range.start, range.end).first();
-          const revMonthR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=?').bind(monthStart).first();
-          const revTotalR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions').first();
+          const _wl = ((await _pcfgGet(env, 'payments_test_mode', '1')) === '1') ? 0 : 1;   // #mode-aware charts: P&L revenue reflects the current Stripe mode (test vs live), same LIVE/TEST toggle as Overview. earliestTxR below is deliberately NOT mode-filtered -- platform-age proration anchors to true first activity.
+          const revRangeR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=? AND created_at<? AND COALESCE(livemode,0)=?').bind(range.start, range.end, _wl).first();
+          const revMonthR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE created_at>=? AND COALESCE(livemode,0)=?').bind(monthStart, _wl).first();
+          const revTotalR = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE COALESCE(livemode,0)=?').bind(_wl).first();
           // ---- Domain resale COGS: what we paid the registrar (Dynadot) WHOLESALE for domains registered in the window. The retail
           // revenue above includes this real cash cost (drawn from the prepaid registrar balance), so net profit must subtract it ->
           // then Net reflects the true resale MARGIN, not gross. Defensive (table may predate a domain sale) -> 0. ----
@@ -6420,12 +6425,13 @@ function doReset(){
         }
 
         if (path === '/api/admin/members' && method === 'GET') {
+          const _wl = ((await _pcfgGet(env, 'payments_test_mode', '1')) === '1') ? 0 : 1;   // #mode-aware charts: per-tenant lifetime revenue column shows the current Stripe mode only. _wl is a validated 0|1 int (safe to inline into the correlated subquery below).
           const rows = await env.DB.prepare(
             "SELECT t.id AS tenant_id, t.name, t.plan, t.tier, t.created_at, t.trial_ends, t.card_on_file, t.tos_version, t.tos_accepted_at, " +
             "(SELECT email FROM users WHERE tenant_id=t.id AND role='owner' ORDER BY created_at LIMIT 1) AS email, " +
             "(SELECT COUNT(*) FROM customers WHERE tenant_id=t.id) AS customers, " +
             "(SELECT COUNT(*) FROM bookings WHERE tenant_id=t.id) AS bookings, " +
-            "(SELECT COALESCE(SUM(amount_cents),0) FROM platform_transactions WHERE tenant_id=t.id) AS revenue_cents " +
+            "(SELECT COALESCE(SUM(amount_cents),0) FROM platform_transactions WHERE tenant_id=t.id AND COALESCE(livemode,0)=" + _wl + ") AS revenue_cents " +
             "FROM tenants t WHERE t.deleted_at IS NULL ORDER BY t.created_at DESC LIMIT 500").all();
           const comps = await env.DB.prepare('SELECT email, role FROM comp_grants').all();
           const cmap = {}; (comps.results || []).forEach(function (c) { cmap[(c.email || '').toLowerCase()] = (c.role === 'admin' ? 'gold' : c.role); });   // legacy admin rows display as gold -- never owner
@@ -6440,7 +6446,8 @@ function doReset(){
 
         if (path === '/api/admin/transactions' && method === 'GET') {
           const lim = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
-          const rows = await env.DB.prepare('SELECT id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at FROM platform_transactions ORDER BY created_at DESC LIMIT ?').bind(lim).all();
+          const _wl = ((await _pcfgGet(env, 'payments_test_mode', '1')) === '1') ? 0 : 1;   // #mode-aware charts: recent-transactions strip shows the current Stripe mode only (test vs live).
+          const rows = await env.DB.prepare('SELECT id,tenant_id,email,kind,tier,pack,amount_cents,currency,stripe_id,created_at FROM platform_transactions WHERE COALESCE(livemode,0)=? ORDER BY created_at DESC LIMIT ?').bind(_wl, lim).all();
           return json({ ok: true, transactions: (rows.results || []) });
         }
 
@@ -7092,7 +7099,7 @@ function doReset(){
             const nb = ((await env.DB.prepare('SELECT COUNT(*) c FROM bookings WHERE tenant_id=?').bind(tid).first()) || {}).c || 0;
             const nb30 = ((await env.DB.prepare('SELECT COUNT(*) c FROM bookings WHERE tenant_id=? AND created_at>=?').bind(tid, Date.now() - 30 * 86400000).first()) || {}).c || 0;
             const na = ((await env.DB.prepare('SELECT COUNT(*) c FROM assets WHERE tenant_id=?').bind(tid).first()) || {}).c || 0;
-            const rev = ((await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE tenant_id=?').bind(tid).first()) || {}).c || 0;
+            const rev = ((await env.DB.prepare('SELECT COALESCE(SUM(amount_cents),0) c FROM platform_transactions WHERE tenant_id=? AND COALESCE(livemode,0)=?').bind(tid, ((await _pcfgGet(env, 'payments_test_mode', '1')) === '1') ? 0 : 1).first()) || {}).c || 0;   // #mode-aware: tenant lifetime revenue-to-Atlas in the current Stripe mode only
             const tix = ((await env.DB.prepare("SELECT COUNT(*) c FROM support_tickets WHERE tenant_id=? AND status!='resolved'").bind(tid).first()) || {}).c || 0;
             const facts = { name: t.name, fleet_type: t.fleet_type, plan: t.plan, tier: t.tier, card_on_file: !!t.card_on_file, trial_ends: t.trial_ends, created_at: t.created_at, custom_domain: t.custom_domain || null, owner_last_login: (own && own.last_login) || null, bookings_total: nb, bookings_30d: nb30, assets: na, revenue_cents: rev, open_tickets: tix };
             const txt = await _hqAsk(env, HQ_SYS + ' Give a 3-line health read for THIS one tenant: line 1 = health (Healthy/Watch/At-risk) + the why in a few words; line 2 = the biggest risk OR opportunity; line 3 = the one action to take. Ground every claim in the facts.', 'Tenant facts (JSON): ' + JSON.stringify(facts), 350, { source: 'tenant_health' });
